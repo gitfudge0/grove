@@ -1,6 +1,7 @@
 use crate::agent::Agent;
 use crate::git::{self, Worktree};
 use crate::launch;
+use crate::session::Session;
 use crate::storage::{self, Project, Store};
 use anyhow::Result;
 
@@ -8,6 +9,14 @@ use anyhow::Result;
 pub enum Pane {
     Projects,
     Worktrees,
+}
+
+#[derive(Copy, Clone, PartialEq)]
+pub enum UiMode {
+    /// Browsing the project/worktree sidebar.
+    Browser,
+    /// An agent session pane has the keyboard; keys are forwarded to the PTY.
+    Agent,
 }
 
 #[derive(Clone)]
@@ -55,14 +64,14 @@ pub struct App {
     pub modal: Modal,
     pub status: String,
     pub should_quit: bool,
-    pub pending_exec: Option<PendingExec>,
-}
-
-#[derive(Clone)]
-pub struct PendingExec {
-    pub program: String,
-    pub cwd: String,
-    pub args: Vec<String>,
+    pub sessions: Vec<Session>,
+    pub active_session: Option<usize>,
+    pub ui_mode: UiMode,
+    /// Set when the leader key (Ctrl-g) was just pressed in Agent mode.
+    pub leader_pending: bool,
+    /// Total worktrees across all projects, cached so the renderer doesn't
+    /// shell out to `git` for every project on every frame.
+    pub worktree_count: usize,
 }
 
 impl App {
@@ -77,10 +86,36 @@ impl App {
             modal: Modal::None,
             status: String::new(),
             should_quit: false,
-            pending_exec: None,
+            sessions: vec![],
+            active_session: None,
+            ui_mode: UiMode::Browser,
+            leader_pending: false,
+            worktree_count: 0,
         };
         app.refresh_worktrees();
         Ok(app)
+    }
+
+    /// Recompute the cross-project worktree total. Call after any change that
+    /// adds or removes projects or worktrees.
+    pub fn recount_worktrees(&mut self) {
+        // `self.worktrees` already holds the selected project's worktrees;
+        // reuse it instead of shelling out to `git` for that project again.
+        let proj_idx = self.proj_idx;
+        let selected = self.worktrees.iter().filter(|w| !w.is_main).count();
+        self.worktree_count = self
+            .store
+            .projects
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                if i == proj_idx {
+                    selected
+                } else {
+                    git::list_worktrees(&p.path).iter().filter(|w| !w.is_main).count()
+                }
+            })
+            .sum();
     }
 
     pub fn selected_project(&self) -> Option<&Project> {
@@ -95,6 +130,7 @@ impl App {
         if self.wt_idx >= self.worktrees.len() {
             self.wt_idx = self.worktrees.len().saturating_sub(1);
         }
+        self.recount_worktrees();
     }
 
     pub fn move_up(&mut self) {
@@ -202,27 +238,151 @@ impl App {
 
     pub fn open_worktree(&mut self, force_pick: bool) {
         let Some(wt) = self.worktrees.get(self.wt_idx).cloned() else { return };
-        if !force_pick {
-            if let Some(agent) = self.store.default_agent {
-                self.launch_agent(agent, wt.path);
-                return;
-            }
+        let project = self
+            .selected_project()
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        if force_pick {
+            self.modal = Modal::AgentPicker { wt_path: wt.path, sel: self.picker_sel() };
+            return;
         }
-        let sel = self
-            .store
-            .default_agent
-            .and_then(|a| Agent::ALL.iter().position(|x| *x == a))
-            .unwrap_or(0);
-        self.modal = Modal::AgentPicker { wt_path: wt.path, sel };
+        // An existing session for this worktree: jump into it rather than
+        // spawning a second agent against the same checkout.
+        if let Some(idx) = self.sessions.iter().position(|s| s.wt_path == wt.path) {
+            self.active_session = Some(idx);
+            self.focus_active_session();
+            return;
+        }
+        self.launch_or_pick(project, wt.path);
     }
 
     pub fn launch_agent(&mut self, agent: Agent, cwd: String) {
-        self.pending_exec = Some(PendingExec {
-            program: agent.program().to_string(),
-            cwd,
-            args: agent.launch_args(),
-        });
-        self.should_quit = true;
+        let project = self
+            .selected_project()
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        let label = path_basename(&cwd);
+        let args = agent.launch_args();
+        self.spawn_session(label, project, cwd.clone(), agent, args, &cwd);
+    }
+
+    /// Index of the default agent in the picker, or 0 if none is set.
+    fn picker_sel(&self) -> usize {
+        self.store
+            .default_agent
+            .and_then(|a| Agent::ALL.iter().position(|x| *x == a))
+            .unwrap_or(0)
+    }
+
+    /// Launch the default agent for `wt_path`, or open the picker if no
+    /// default is configured.
+    fn launch_or_pick(&mut self, project: String, wt_path: String) {
+        if let Some(agent) = self.store.default_agent {
+            let label = path_basename(&wt_path);
+            let args = agent.launch_args();
+            self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path);
+        } else {
+            self.modal = Modal::AgentPicker { wt_path, sel: self.picker_sel() };
+        }
+    }
+
+    /// Spawn an agent in a new embedded PTY session and focus it.
+    pub fn spawn_session(
+        &mut self,
+        label: String,
+        project: String,
+        wt_path: String,
+        agent: Agent,
+        args: Vec<String>,
+        cwd: &str,
+    ) {
+        match Session::spawn(label.clone(), project, wt_path, agent, &args, cwd) {
+            Ok(s) => {
+                self.sessions.push(s);
+                self.active_session = Some(self.sessions.len() - 1);
+                self.ui_mode = UiMode::Agent;
+                self.leader_pending = false;
+                self.status = format!("started {label}");
+            }
+            Err(e) => {
+                self.modal = Modal::Message(format!("failed to start agent: {e}"));
+            }
+        }
+    }
+
+    /// Spawn an additional session for the active session's worktree. Used by
+    /// the `^g c` leader binding while inside the sessions page.
+    pub fn new_session_for_active(&mut self) {
+        let Some(i) = self.active_session else { return };
+        let Some(s) = self.sessions.get(i) else { return };
+        let wt_path = s.wt_path.clone();
+        let project = s.project.clone();
+        self.launch_or_pick(project, wt_path);
+    }
+
+    /// Open the agent picker for the active session's worktree, ignoring any
+    /// configured default. Bound to `^g C`.
+    pub fn new_session_for_active_pick(&mut self) {
+        let Some(i) = self.active_session else { return };
+        let Some(s) = self.sessions.get(i) else { return };
+        let wt_path = s.wt_path.clone();
+        self.modal = Modal::AgentPicker { wt_path, sel: self.picker_sel() };
+    }
+
+    /// Open a plain terminal session for the active session's worktree.
+    /// Bound to `^g t`.
+    pub fn new_terminal_for_active(&mut self) {
+        let Some(i) = self.active_session else { return };
+        let Some(s) = self.sessions.get(i) else { return };
+        let wt_path = s.wt_path.clone();
+        self.launch_agent(Agent::Terminal, wt_path);
+    }
+
+    pub fn active_session_mut(&mut self) -> Option<&mut Session> {
+        self.active_session.and_then(move |i| self.sessions.get_mut(i))
+    }
+
+    pub fn enter_browser(&mut self) {
+        self.ui_mode = UiMode::Browser;
+        self.leader_pending = false;
+    }
+
+    pub fn focus_active_session(&mut self) {
+        if self.active_session.is_some() {
+            self.ui_mode = UiMode::Agent;
+            self.leader_pending = false;
+        }
+    }
+
+    pub fn session_cycle(&mut self, delta: i32) {
+        if self.sessions.is_empty() {
+            return;
+        }
+        let len = self.sessions.len() as i32;
+        let cur = self.active_session.unwrap_or(0) as i32;
+        let next = (cur + delta).rem_euclid(len) as usize;
+        self.active_session = Some(next);
+    }
+
+    pub fn session_select(&mut self, idx: usize) {
+        if idx < self.sessions.len() {
+            self.active_session = Some(idx);
+            self.focus_active_session();
+        }
+    }
+
+    pub fn kill_active_session(&mut self) {
+        let Some(i) = self.active_session else { return };
+        if i >= self.sessions.len() {
+            return;
+        }
+        self.sessions.remove(i);
+        if self.sessions.is_empty() {
+            self.active_session = None;
+            self.enter_browser();
+        } else {
+            self.active_session = Some(i.min(self.sessions.len() - 1));
+        }
     }
 
     pub fn picker_move(&mut self, delta: i32) {
@@ -351,12 +511,14 @@ impl App {
                     return Ok(());
                 }
                 let Some(p) = self.selected_project().cloned() else { return Ok(()); };
-                self.pending_exec = Some(PendingExec {
-                    program: "claude".into(),
-                    cwd: p.path,
-                    args: vec!["--worktree".into(), value],
-                });
-                self.should_quit = true;
+                self.spawn_session(
+                    value.clone(),
+                    p.name.clone(),
+                    p.path.clone(),
+                    Agent::Claude,
+                    vec!["--worktree".into(), value],
+                    &p.path,
+                );
             }
         }
         Ok(())
@@ -429,6 +591,15 @@ impl App {
         }
         Ok(())
     }
+}
+
+/// Last path component, or the whole string if there is no separator.
+pub fn path_basename(p: &str) -> String {
+    std::path::Path::new(p)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(p)
+        .to_string()
 }
 
 pub fn list_dirs(buffer: &str) -> Vec<String> {
