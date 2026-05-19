@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# wm — project + worktree manager with inline Claude
+set -euo pipefail
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/work-manager"
+PROJECTS_FILE="$CONFIG_DIR/projects.json"
+mkdir -p "$CONFIG_DIR"
+[[ -f "$PROJECTS_FILE" ]] || echo '{"projects":{}}' > "$PROJECTS_FILE"
+
+need() { command -v "$1" >/dev/null || { echo "missing: $1" >&2; exit 1; }; }
+need gum; need jq; need git; need claude
+
+jq_save() {
+  local tmp; tmp=$(mktemp)
+  jq "$1" "$PROJECTS_FILE" > "$tmp" && mv "$tmp" "$PROJECTS_FILE"
+}
+
+list_projects()      { jq -r '.projects | keys[]' "$PROJECTS_FILE"; }
+project_path()       { jq -r --arg n "$1" '.projects[$n].path' "$PROJECTS_FILE"; }
+list_worktrees() {
+  local p; p=$(project_path "$1")
+  [[ -d "$p" ]] || return 0
+  git -C "$p" worktree list --porcelain | awk '/^worktree /{print $2}' | grep -v "^$p$" || true
+}
+
+generate_worktreeinclude() {
+  local path="$1"
+  pushd "$path" >/dev/null
+  if [[ -f .worktreeinclude ]]; then
+    gum style --foreground 212 ".worktreeinclude already exists, skipping."
+    popd >/dev/null; return
+  fi
+  gum style --foreground 33 "Spawning Claude (haiku) to generate .worktreeinclude..."
+  claude --model haiku --dangerously-skip-permissions -p \
+    "Inspect this project directory and create a .worktreeinclude file at its root. The file lists paths (one per line, relative to repo root) that should be copied or symlinked into a fresh git worktree so it can run immediately — things like .env files, local config, node_modules, vendor dirs, .venv, build caches, IDE settings that are gitignored but needed. Look at the actual project structure (package.json, pyproject.toml, Gemfile, go.mod, .gitignore, etc.) to decide. Output only the file. No commentary." \
+    || gum style --foreground 196 "Claude failed; create .worktreeinclude manually."
+  popd >/dev/null
+}
+
+add_project() {
+  local path name
+  path=$(gum file --directory --header "Select project directory") || return
+  path=$(cd "$path" && pwd)
+  name=$(basename "$path")
+  name=$(gum input --value "$name" --header "Project name")
+  [[ -z "$name" ]] && return
+  if jq -e --arg n "$name" '.projects[$n]' "$PROJECTS_FILE" >/dev/null; then
+    gum style --foreground 196 "Project '$name' already exists."; return
+  fi
+  jq_save ".projects[\"$name\"] = {\"path\": \"$path\"}"
+  gum style --foreground 42 "Added project: $name -> $path"
+  [[ -d "$path/.git" ]] || git -C "$path" init -q
+  generate_worktreeinclude "$path"
+}
+
+remove_project() {
+  local name
+  name=$(list_projects | gum choose --header "Remove which project?") || return
+  [[ -z "$name" ]] && return
+  gum confirm "Remove project '$name' from manager (files untouched)?" || return
+  jq_save "del(.projects[\"$name\"])"
+  gum style --foreground 42 "Removed: $name"
+}
+
+copy_included() {
+  local src="$1" dst="$2"
+  [[ -f "$src/.worktreeinclude" ]] || return
+  while IFS= read -r line; do
+    line="${line%%#*}"; line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" ]] && continue
+    if [[ -e "$src/$line" ]]; then
+      mkdir -p "$dst/$(dirname "$line")"
+      cp -R "$src/$line" "$dst/$line" 2>/dev/null || true
+    fi
+  done < "$src/.worktreeinclude"
+}
+
+add_worktree() {
+  local proj name path wt_path branch
+  proj=$(list_projects | gum choose --header "Project?") || return
+  [[ -z "$proj" ]] && return
+  path=$(project_path "$proj")
+  name=$(gum input --header "Worktree / branch name") || return
+  [[ -z "$name" ]] && return
+  wt_path="$path/../${proj}-wt-${name}"
+  branch="$name"
+  if git -C "$path" show-ref --verify --quiet "refs/heads/$branch"; then
+    git -C "$path" worktree add "$wt_path" "$branch"
+  else
+    git -C "$path" worktree add -b "$branch" "$wt_path"
+  fi
+  wt_path=$(cd "$wt_path" && pwd)
+  copy_included "$path" "$wt_path"
+  gum style --foreground 42 "Worktree ready: $wt_path"
+  cd "$wt_path" && exec claude --dangerously-skip-permissions
+}
+
+remove_worktree() {
+  local proj wt path
+  proj=$(list_projects | gum choose --header "Project?") || return
+  [[ -z "$proj" ]] && return
+  path=$(project_path "$proj")
+  wt=$(list_worktrees "$proj" | gum choose --header "Remove which worktree?") || return
+  [[ -z "$wt" ]] && return
+  gum confirm "Remove worktree $wt?" || return
+  git -C "$path" worktree remove "$wt" --force
+  gum style --foreground 42 "Removed worktree: $wt"
+}
+
+enter_worktree() {
+  local proj wt
+  proj=$(list_projects | gum choose --header "Project?") || return
+  [[ -z "$proj" ]] && return
+  wt=$(list_worktrees "$proj" | gum choose --header "Enter which worktree?") || return
+  [[ -z "$wt" ]] && return
+  cd "$wt" && exec claude --dangerously-skip-permissions
+}
+
+list_all() {
+  for p in $(list_projects); do
+    gum style --bold --foreground 33 "▸ $p  ($(project_path "$p"))"
+    list_worktrees "$p" | sed 's/^/    /'
+  done
+}
+
+main_menu() {
+  local choice
+  choice=$(gum choose --header "work-manager" \
+    "Add project" "Remove project" "List all" \
+    "Add worktree" "Enter worktree" "Remove worktree" \
+    "Quit") || exit 0
+  case "$choice" in
+    "Add project")     add_project ;;
+    "Remove project")  remove_project ;;
+    "List all")        list_all ;;
+    "Add worktree")    add_worktree ;;
+    "Enter worktree")  enter_worktree ;;
+    "Remove worktree") remove_worktree ;;
+    *) exit 0 ;;
+  esac
+}
+
+case "${1:-menu}" in
+  menu) main_menu ;;
+  project) shift; case "${1:-}" in add) add_project;; rm|remove) remove_project;; ls|list) list_all;; *) echo "usage: wm project {add|rm|ls}";; esac ;;
+  worktree) shift; case "${1:-}" in add) add_worktree;; rm|remove) remove_worktree;; ls|list) list_all;; enter) enter_worktree;; *) echo "usage: wm worktree {add|rm|ls|enter}";; esac ;;
+  *) echo "usage: wm [menu|project ...|worktree ...]" ;;
+esac
