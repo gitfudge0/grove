@@ -173,6 +173,11 @@ impl App {
             }
             Pane::Worktrees => {
                 if let Some(wt) = self.worktrees.get(self.wt_idx) {
+                    if wt.is_main {
+                        self.modal =
+                            Modal::Message("can't remove the project's main checkout".into());
+                        return;
+                    }
                     let path = wt.path.clone();
                     self.modal = Modal::Confirm {
                         prompt: format!("git worktree remove --force {}?", path),
