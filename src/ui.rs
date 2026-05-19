@@ -1,6 +1,8 @@
 use crate::agent::Agent;
-use crate::app::{App, InputKind, Modal, Pane};
+use crate::app::{App, InputKind, Modal, Pane, UiMode};
+use crate::session::SessionStatus;
 use crate::theme;
+use tui_term::widget::PseudoTerminal;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -11,6 +13,26 @@ use ratatui::{
 
 fn base_style() -> Style {
     Style::default().bg(theme::BG).fg(theme::FG)
+}
+
+/// Inner rect of the agent pane for a given full-frame area. Mirrors the
+/// layout split in `render`; the event loop uses it to size the active PTY.
+pub fn agent_pane_inner(frame: Rect) -> Rect {
+    let v = Layout::vertical([
+        Constraint::Length(7),
+        Constraint::Min(3),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(frame);
+    let h = Layout::horizontal([Constraint::Length(30), Constraint::Min(10)]).split(v[1]);
+    let a = h[1];
+    Rect {
+        x: a.x + 1,
+        y: a.y + 1,
+        width: a.width.saturating_sub(2),
+        height: a.height.saturating_sub(2),
+    }
 }
 
 pub fn render(f: &mut Frame, app: &App) {
@@ -34,16 +56,28 @@ pub fn render(f: &mut Frame, app: &App) {
     if app.store.projects.is_empty() {
         render_empty(f, vchunks[1]);
     } else {
+        let constraints = match app.ui_mode {
+            UiMode::Browser => [Constraint::Percentage(35), Constraint::Percentage(65)],
+            UiMode::Agent => [Constraint::Length(30), Constraint::Min(10)],
+        };
         let hchunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+            .constraints(constraints)
             .split(vchunks[1]);
 
-        render_projects(f, app, hchunks[0]);
-        render_worktrees(f, app, hchunks[1]);
+        match app.ui_mode {
+            UiMode::Browser => {
+                render_projects(f, app, hchunks[0]);
+                render_worktrees(f, app, hchunks[1]);
+            }
+            UiMode::Agent => {
+                render_session_list(f, app, hchunks[0]);
+                render_agent(f, app, hchunks[1]);
+            }
+        }
     }
     render_status(f, app, vchunks[2]);
-    render_footer(f, vchunks[3]);
+    render_footer(f, app, vchunks[3]);
 
     match &app.modal {
         Modal::None => {}
@@ -59,7 +93,7 @@ fn render_agent_picker(f: &mut Frame, app: &App, sel: usize, area: Rect) {
     let r = centered(area, 60, 10);
     f.render_widget(Clear, r);
     let block = Block::default()
-        .title(" Start agent ")
+        .title(" Start session ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::MAGENTA))
@@ -143,17 +177,7 @@ fn render_banner(f: &mut Frame, app: &App, area: Rect) {
 
     let version = env!("CARGO_PKG_VERSION");
     let projects = app.store.projects.len();
-    let worktrees: usize = app
-        .store
-        .projects
-        .iter()
-        .map(|p| {
-            crate::git::list_worktrees(&p.path)
-                .iter()
-                .filter(|w| !w.is_main)
-                .count()
-        })
-        .sum();
+    let worktrees = app.worktree_count;
     let default_agent = app
         .store
         .default_agent
@@ -232,11 +256,24 @@ fn render_projects(f: &mut Frame, app: &App, area: Rect) {
             .projects
             .iter()
             .map(|p| {
-                ListItem::new(Line::from(vec![
+                let running = app
+                    .sessions
+                    .iter()
+                    .filter(|s| s.project == p.name && s.status() == SessionStatus::Running)
+                    .count();
+                let mut spans = vec![
                     Span::styled(p.name.clone(), Style::default().fg(theme::FG).add_modifier(Modifier::BOLD)),
                     Span::raw("  "),
                     Span::styled(p.path.clone(), Style::default().fg(theme::COMMENT)),
-                ]))
+                ];
+                if running > 0 {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        format!("●{running}"),
+                        Style::default().fg(theme::GREEN).add_modifier(Modifier::BOLD),
+                    ));
+                }
+                ListItem::new(Line::from(spans))
             })
             .collect()
     };
@@ -290,11 +327,7 @@ fn render_worktrees(f: &mut Frame, app: &App, area: Rect) {
         .worktrees
         .iter()
         .map(|w| {
-            let short = std::path::Path::new(&w.path)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(&w.path)
-                .to_string();
+            let short = crate::app::path_basename(&w.path);
             let age = w.mtime.map(format_age).unwrap_or_else(|| "—".into());
             let mut spans = vec![
                 Span::styled(short, Style::default().fg(theme::FG).add_modifier(Modifier::BOLD)),
@@ -313,6 +346,18 @@ fn render_worktrees(f: &mut Frame, app: &App, area: Rect) {
                 spans.push(Span::styled(
                     "● main checkout",
                     Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
+                ));
+            }
+            let running = app
+                .sessions
+                .iter()
+                .filter(|s| s.wt_path == w.path && s.status() == SessionStatus::Running)
+                .count();
+            if running > 0 {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    format!("●{running}"),
+                    Style::default().fg(theme::GREEN).add_modifier(Modifier::BOLD),
                 ));
             }
             ListItem::new(Line::from(spans))
@@ -345,32 +390,145 @@ fn render_worktrees(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
+fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .title(" Sessions ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(active_style(false))
+        .style(base_style());
+
+    let items: Vec<ListItem> = if app.sessions.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "no sessions",
+            Style::default().fg(theme::FG_DARK).add_modifier(Modifier::ITALIC),
+        )))]
+    } else {
+        app.sessions
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let (dot, dot_style) = match s.status() {
+                    SessionStatus::Running => {
+                        ("●", Style::default().fg(theme::GREEN))
+                    }
+                    SessionStatus::Exited(_) => {
+                        ("○", Style::default().fg(theme::FG_DARK))
+                    }
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{} ", i + 1), Style::default().fg(theme::COMMENT)),
+                    Span::styled(dot, dot_style),
+                    Span::raw(" "),
+                    Span::styled(
+                        s.label.clone(),
+                        Style::default().fg(theme::FG).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(s.agent.label(), Style::default().fg(theme::YELLOW)),
+                    Span::raw("  "),
+                    Span::styled(s.project.clone(), Style::default().fg(theme::COMMENT)),
+                ]))
+            })
+            .collect()
+    };
+
+    let list = List::new(items)
+        .block(block)
+        .style(base_style())
+        .highlight_style(
+            Style::default()
+                .bg(theme::BLUE)
+                .fg(theme::FG)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(if app.sessions.is_empty() { "  " } else { "▶ " });
+
+    let mut state = ListState::default();
+    if !app.sessions.is_empty() {
+        state.select(app.active_session);
+    }
+    f.render_stateful_widget(list, area, &mut state);
+}
+
+fn render_agent(f: &mut Frame, app: &App, area: Rect) {
+    let Some(idx) = app.active_session else { return };
+    let Some(session) = app.sessions.get(idx) else { return };
+
+    let (title, border) = match session.status() {
+        SessionStatus::Running => (
+            format!(" {} · {} ", session.project, session.label),
+            Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
+        ),
+        SessionStatus::Exited(code) => (
+            format!(
+                " {} · {} — exited ({}) · Ctrl-g x to close ",
+                session.project,
+                session.label,
+                code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
+            ),
+            Style::default().fg(theme::RED).add_modifier(Modifier::BOLD),
+        ),
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(border)
+        .style(base_style());
+
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    f.render_widget(block, area);
+    if let Ok(parser) = session.parser.lock() {
+        let screen = parser.screen();
+        f.render_widget(PseudoTerminal::new(screen), inner);
+    }
+}
+
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let p = Paragraph::new(app.status.clone())
         .style(Style::default().bg(theme::BG).fg(theme::GREEN));
     f.render_widget(p, area);
 }
 
-fn render_footer(f: &mut Frame, area: Rect) {
+fn render_footer(f: &mut Frame, app: &App, area: Rect) {
+    let pairs: &[(&str, &str)] = match app.ui_mode {
+        UiMode::Agent => &[
+            ("Ctrl-g", " leader  "),
+            ("<leader>g", " main  "),
+            ("<leader>n/p", " cycle  "),
+            ("<leader>1-9", " jump  "),
+            ("<leader>c", " new  "),
+            ("<leader>C", " pick  "),
+            ("<leader>t", " term  "),
+            ("<leader>x", " close  "),
+            ("<leader>?", " help"),
+        ],
+        UiMode::Browser => &[
+            ("tab", " switch  "),
+            ("a", " add  "),
+            ("d", " del  "),
+            ("↵", " open  "),
+            ("Ctrl-g", " session  "),
+            ("r", " refresh  "),
+            ("?", " help  "),
+            ("q", " quit"),
+        ],
+    };
     let key = Style::default().fg(theme::CYAN);
     let dim = Style::default().fg(theme::FG_DARK);
-    let line = Line::from(vec![
-        Span::styled("tab", key),
-        Span::styled(" switch  ", dim),
-        Span::styled("a", key),
-        Span::styled(" add  ", dim),
-        Span::styled("d", key),
-        Span::styled(" del  ", dim),
-        Span::styled("↵", key),
-        Span::styled(" open  ", dim),
-        Span::styled("r", key),
-        Span::styled(" refresh  ", dim),
-        Span::styled("?", key),
-        Span::styled(" help  ", dim),
-        Span::styled("q", key),
-        Span::styled(" quit", dim),
-    ]);
-    f.render_widget(Paragraph::new(line).style(base_style()), area);
+    let spans: Vec<Span> = pairs
+        .iter()
+        .flat_map(|(k, d)| [Span::styled(*k, key), Span::styled(*d, dim)])
+        .collect();
+    f.render_widget(Paragraph::new(Line::from(spans)).style(base_style()), area);
 }
 
 fn format_age(t: std::time::SystemTime) -> String {
@@ -510,7 +668,7 @@ fn render_message(f: &mut Frame, msg: &str, area: Rect) {
 }
 
 fn render_help(f: &mut Frame, area: Rect) {
-    let r = centered(area, 60, 14);
+    let r = centered(area, 64, 24);
     f.render_widget(Clear, r);
     let block = Block::default()
         .title(" Help ")
@@ -519,15 +677,30 @@ fn render_help(f: &mut Frame, area: Rect) {
         .border_style(Style::default().fg(theme::CYAN))
         .style(base_style());
     let lines = vec![
+        Line::from(Span::styled(
+            "Browser",
+            Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
+        )),
         Line::from("j/k or ↑/↓     move"),
         Line::from("tab / h / l    switch pane"),
-        Line::from("enter          focus worktrees / open agent (uses default)"),
-        Line::from("shift+enter    open worktree, always show agent picker"),
-        Line::from("a              add project / worktree"),
-        Line::from("d              delete (with confirm)"),
-        Line::from("r              refresh worktrees"),
-        Line::from("?              this help"),
+        Line::from("enter          focus worktrees / open session (uses default)"),
+        Line::from("shift+enter    open worktree, always show session picker"),
+        Line::from("a / d          add / delete   r  refresh"),
+        Line::from("Ctrl-g         jump to active session"),
         Line::from("q / esc        quit"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Session pane (Ctrl-g is the leader)",
+            Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
+        )),
+        Line::from("<leader>g / esc   back to browser"),
+        Line::from("<leader>n / p     next / prev session"),
+        Line::from("<leader>1-9       jump to session N"),
+        Line::from("<leader>c         new session (default agent)"),
+        Line::from("<leader>C         new session, pick agent"),
+        Line::from("<leader>t         new terminal for this worktree"),
+        Line::from("<leader>x         kill current session"),
+        Line::from("<leader><leader>  send a literal Ctrl-g"),
         Line::from(""),
         Line::from(Span::styled(
             "press any key to close",
