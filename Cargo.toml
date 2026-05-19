@@ -1,0 +1,17 @@
+[package]
+name = "grove"
+version = "0.1.0"
+edition = "2021"
+description = "Grove — a worktree launchpad for AI coding agents"
+
+[[bin]]
+name = "grove"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.28"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+dirs = "5"
