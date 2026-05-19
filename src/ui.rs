@@ -143,7 +143,12 @@ fn render_banner(f: &mut Frame, app: &App, area: Rect) {
 
     let version = env!("CARGO_PKG_VERSION");
     let projects = app.store.projects.len();
-    let worktrees = app.worktrees.len();
+    let worktrees: usize = app
+        .store
+        .projects
+        .iter()
+        .map(|p| crate::git::list_worktrees(&p.path).len())
+        .sum();
     let default_agent = app
         .store
         .default_agent
