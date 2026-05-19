@@ -147,7 +147,12 @@ fn render_banner(f: &mut Frame, app: &App, area: Rect) {
         .store
         .projects
         .iter()
-        .map(|p| crate::git::list_worktrees(&p.path).len())
+        .map(|p| {
+            crate::git::list_worktrees(&p.path)
+                .iter()
+                .filter(|w| !w.is_main)
+                .count()
+        })
         .sum();
     let default_agent = app
         .store
@@ -291,7 +296,7 @@ fn render_worktrees(f: &mut Frame, app: &App, area: Rect) {
                 .unwrap_or(&w.path)
                 .to_string();
             let age = w.mtime.map(format_age).unwrap_or_else(|| "—".into());
-            ListItem::new(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(short, Style::default().fg(theme::FG).add_modifier(Modifier::BOLD)),
                 Span::raw("  "),
                 Span::styled(
@@ -302,7 +307,15 @@ fn render_worktrees(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(format!("{:>5} ago", age), Style::default().fg(theme::GREEN)),
                 Span::raw("  "),
                 Span::styled(w.path.clone(), Style::default().fg(theme::COMMENT)),
-            ]))
+            ];
+            if w.is_main {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    "● main checkout",
+                    Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
+                ));
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect()
     };

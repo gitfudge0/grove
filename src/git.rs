@@ -7,6 +7,7 @@ pub struct Worktree {
     pub path: String,
     pub branch: String,
     pub mtime: Option<SystemTime>,
+    pub is_main: bool,
 }
 
 pub fn list_worktrees(project_path: &str) -> Vec<Worktree> {
@@ -24,14 +25,14 @@ pub fn list_worktrees(project_path: &str) -> Vec<Worktree> {
     for line in stdout.lines() {
         if let Some(p) = line.strip_prefix("worktree ") {
             if let Some(path) = cur_path.take() {
-                if path != project_path {
-                    let mtime = worktree_mtime(&path);
-                    result.push(Worktree {
-                        path,
-                        branch: std::mem::take(&mut cur_branch),
-                        mtime,
-                    });
-                }
+                let mtime = worktree_mtime(&path);
+                let is_main = result.is_empty();
+                result.push(Worktree {
+                    path,
+                    branch: std::mem::take(&mut cur_branch),
+                    mtime,
+                    is_main,
+                });
             }
             cur_path = Some(p.to_string());
             cur_branch = String::new();
@@ -42,16 +43,20 @@ pub fn list_worktrees(project_path: &str) -> Vec<Worktree> {
         }
     }
     if let Some(path) = cur_path {
-        if path != project_path {
-            let mtime = worktree_mtime(&path);
-            result.push(Worktree {
-                path,
-                branch: cur_branch,
-                mtime,
-            });
-        }
+        let mtime = worktree_mtime(&path);
+        let is_main = result.is_empty();
+        result.push(Worktree {
+            path,
+            branch: cur_branch,
+            mtime,
+            is_main,
+        });
     }
-    result.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    // `git worktree list` always emits the main checkout first; keep it pinned
+    // at the top and sort only the linked worktrees by recency.
+    if result.len() > 1 {
+        result[1..].sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    }
     result
 }
 
