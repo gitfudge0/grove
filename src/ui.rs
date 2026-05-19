@@ -19,7 +19,7 @@ fn base_style() -> Style {
 /// layout split in `render`; the event loop uses it to size the active PTY.
 pub fn agent_pane_inner(frame: Rect) -> Rect {
     let v = Layout::vertical([
-        Constraint::Length(7),
+        Constraint::Length(5),
         Constraint::Min(3),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -44,7 +44,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let vchunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),
+            Constraint::Length(5),
             Constraint::Min(3),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -189,7 +189,6 @@ fn render_banner(f: &mut Frame, app: &App, area: Rect) {
     let accent = Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD);
 
     let info = vec![
-        Line::from(""),
         Line::from(vec![
             Span::styled("Grove", accent),
             Span::raw("  "),
@@ -398,40 +397,78 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
         .border_style(active_style(false))
         .style(base_style());
 
-    let items: Vec<ListItem> = if app.sessions.is_empty() {
-        vec![ListItem::new(Line::from(Span::styled(
+    if app.sessions.is_empty() {
+        let items = vec![ListItem::new(Line::from(Span::styled(
             "no sessions",
             Style::default().fg(theme::FG_DARK).add_modifier(Modifier::ITALIC),
-        )))]
-    } else {
-        app.sessions
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
+        )))];
+        let list = List::new(items).block(block).style(base_style()).highlight_symbol("  ");
+        f.render_stateful_widget(list, area, &mut ListState::default());
+        return;
+    }
+
+    // Build a project → worktree → session tree, preserving first-seen order.
+    // Each emitted row is either a non-selectable header or a session row that
+    // carries its original `app.sessions` index (for selection / jump keys).
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut sel_display: Option<usize> = None;
+
+    let mut projects: Vec<&str> = Vec::new();
+    for s in &app.sessions {
+        if !projects.contains(&s.project.as_str()) {
+            projects.push(&s.project);
+        }
+    }
+
+    for proj in projects {
+        items.push(ListItem::new(Line::from(Span::styled(
+            proj.to_string(),
+            Style::default().fg(theme::FG).add_modifier(Modifier::BOLD),
+        ))));
+
+        // Worktree paths for this project, in first-seen order.
+        let mut wts: Vec<&str> = Vec::new();
+        for s in &app.sessions {
+            if s.project == proj && !wts.contains(&s.wt_path.as_str()) {
+                wts.push(&s.wt_path);
+            }
+        }
+
+        for (wi, wt) in wts.iter().enumerate() {
+            let last_wt = wi + 1 == wts.len();
+            let (branch, child) = if last_wt { ("└ ", "   ") } else { ("├ ", "│  ") };
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(branch, Style::default().fg(theme::COMMENT)),
+                Span::styled(
+                    crate::app::path_basename(wt),
+                    Style::default().fg(theme::CYAN),
+                ),
+            ])));
+
+            for (i, s) in app.sessions.iter().enumerate() {
+                if s.project != proj || s.wt_path != **wt {
+                    continue;
+                }
+                if app.active_session == Some(i) {
+                    sel_display = Some(items.len());
+                }
                 let (dot, dot_style) = match s.status() {
-                    SessionStatus::Running => {
-                        ("●", Style::default().fg(theme::GREEN))
-                    }
-                    SessionStatus::Exited(_) => {
-                        ("○", Style::default().fg(theme::FG_DARK))
-                    }
+                    SessionStatus::Running => ("●", Style::default().fg(theme::GREEN)),
+                    SessionStatus::Exited(_) => ("○", Style::default().fg(theme::FG_DARK)),
                 };
-                ListItem::new(Line::from(vec![
+                items.push(ListItem::new(Line::from(vec![
+                    Span::styled(child, Style::default().fg(theme::COMMENT)),
                     Span::styled(format!("{} ", i + 1), Style::default().fg(theme::COMMENT)),
                     Span::styled(dot, dot_style),
                     Span::raw(" "),
                     Span::styled(
-                        s.label.clone(),
+                        s.agent.label(),
                         Style::default().fg(theme::FG).add_modifier(Modifier::BOLD),
                     ),
-                    Span::raw("  "),
-                    Span::styled(s.agent.label(), Style::default().fg(theme::YELLOW)),
-                    Span::raw("  "),
-                    Span::styled(s.project.clone(), Style::default().fg(theme::COMMENT)),
-                ]))
-            })
-            .collect()
-    };
+                ])));
+            }
+        }
+    }
 
     let list = List::new(items)
         .block(block)
@@ -442,12 +479,10 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
                 .fg(theme::FG)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol(if app.sessions.is_empty() { "  " } else { "▶ " });
+        .highlight_symbol("▶ ");
 
     let mut state = ListState::default();
-    if !app.sessions.is_empty() {
-        state.select(app.active_session);
-    }
+    state.select(sel_display);
     f.render_stateful_widget(list, area, &mut state);
 }
 
