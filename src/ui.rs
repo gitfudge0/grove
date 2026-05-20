@@ -513,17 +513,34 @@ fn render_agent(f: &mut Frame, app: &App, area: Rect) {
         .border_style(border)
         .style(base_style());
 
-    let inner = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    };
-
+    let inner = block.inner(area);
     f.render_widget(block, area);
     if let Ok(parser) = session.parser.lock() {
         let screen = parser.screen();
         f.render_widget(PseudoTerminal::new(screen), inner);
+    }
+
+    // Overlay the active text selection by reversing the affected cells.
+    if let Some(sel) = app.selection {
+        let ((sc, sr), (ec, er)) = sel.normalized();
+        let last_col = inner.width.saturating_sub(1);
+        let buf = f.buffer_mut();
+        for row in sr..=er.min(inner.height.saturating_sub(1)) {
+            let (from, to) = if sr == er {
+                (sc, ec)
+            } else if row == sr {
+                (sc, last_col)
+            } else if row == er {
+                (0, ec)
+            } else {
+                (0, last_col)
+            };
+            for col in from..=to.min(last_col) {
+                if let Some(cell) = buf.cell_mut((inner.x + col, inner.y + row)) {
+                    cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
+                }
+            }
+        }
     }
 }
 
