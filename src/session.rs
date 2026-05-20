@@ -1,4 +1,6 @@
 use crate::agent::Agent;
+use crate::session_meta::{self, SessionMeta};
+use crate::tmux;
 use anyhow::Result;
 use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use vt100::{MouseProtocolEncoding, MouseProtocolMode};
@@ -26,6 +28,9 @@ pub struct Session {
     #[allow(dead_code)]
     pub wt_path: String,
     pub agent: Agent,
+    /// Backing tmux session name. The agent process runs inside this session;
+    /// grove embeds a `tmux attach-client` to it.
+    pub tmux_name: String,
     pub parser: Arc<Mutex<vt100::Parser>>,
     pub dirty: Arc<AtomicBool>,
     pub status: Arc<Mutex<SessionStatus>>,
@@ -48,6 +53,47 @@ impl Session {
         let rows = INIT_ROWS;
         let cols = INIT_COLS;
 
+        // Create the persistent tmux session, then attach a client to it via
+        // our embedded PTY. The agent process lives inside tmux, not as a
+        // direct child of grove, so it survives grove restarts.
+        let n = tmux::next_free_n(&wt_path, agent);
+        let tmux_name = tmux::make_name(&wt_path, agent, n);
+        tmux::new_session(&tmux_name, cwd, rows, cols, &agent.program(), args)?;
+        let _ = session_meta::write(
+            &tmux_name,
+            &SessionMeta {
+                wt_path: wt_path.clone(),
+                project: project.clone(),
+                label: label.clone(),
+                agent,
+            },
+        );
+
+        Self::attach(label, project, wt_path, agent, tmux_name, rows, cols)
+    }
+
+    /// Re-attach to an existing tmux session previously created by grove.
+    pub fn attach_existing(d: tmux::DiscoveredSession) -> Result<Self> {
+        Self::attach(
+            d.label,
+            d.project,
+            d.wt_path,
+            d.agent,
+            d.name,
+            INIT_ROWS,
+            INIT_COLS,
+        )
+    }
+
+    fn attach(
+        label: String,
+        project: String,
+        wt_path: String,
+        agent: Agent,
+        tmux_name: String,
+        rows: u16,
+        cols: u16,
+    ) -> Result<Self> {
         let pty_system = NativePtySystem::default();
         let pair = pty_system.openpty(PtySize {
             rows,
@@ -56,11 +102,12 @@ impl Session {
             pixel_height: 0,
         })?;
 
-        let mut cmd = CommandBuilder::new(agent.program());
-        for a in args {
-            cmd.arg(a);
-        }
-        cmd.cwd(cwd);
+        let mut cmd = CommandBuilder::new("tmux");
+        cmd.arg("-L");
+        cmd.arg(tmux::SOCKET);
+        cmd.arg("attach-session");
+        cmd.arg("-t");
+        cmd.arg(format!("={}", tmux_name));
         cmd.env("TERM", "xterm-256color");
 
         let child = pair.slave.spawn_command(cmd)?;
@@ -110,6 +157,7 @@ impl Session {
             project,
             wt_path,
             agent,
+            tmux_name,
             parser,
             dirty,
             status,
@@ -119,6 +167,13 @@ impl Session {
             rows,
             cols,
         })
+    }
+
+    /// Destroy the backing tmux session. Use this when the user explicitly
+    /// kills a session — otherwise we only detach (the server keeps it alive).
+    pub fn kill_persistent(&mut self) {
+        tmux::kill_session(&self.tmux_name);
+        session_meta::delete(&self.tmux_name);
     }
 
     pub fn status(&self) -> SessionStatus {

@@ -3,6 +3,7 @@ use crate::git::{self, Worktree};
 use crate::launch;
 use crate::session::Session;
 use crate::storage::{self, Project, Store};
+use crate::tmux;
 use anyhow::Result;
 
 #[derive(Copy, Clone, PartialEq)]
@@ -86,7 +87,7 @@ impl App {
             modal: Modal::None,
             status: String::new(),
             should_quit: false,
-            sessions: vec![],
+            sessions: discover_sessions(),
             active_session: None,
             ui_mode: UiMode::Browser,
             leader_pending: false,
@@ -376,6 +377,9 @@ impl App {
         if i >= self.sessions.len() {
             return;
         }
+        // Tear down the persistent tmux session before dropping our handle;
+        // otherwise the agent would simply detach and reappear next launch.
+        self.sessions[i].kill_persistent();
         self.sessions.remove(i);
         if self.sessions.is_empty() {
             self.active_session = None;
@@ -591,6 +595,16 @@ impl App {
         }
         Ok(())
     }
+}
+
+/// Re-attach to any tmux sessions grove left running from a previous launch.
+/// Sessions that fail to attach are silently dropped.
+fn discover_sessions() -> Vec<Session> {
+    tmux::list_grove_sessions()
+        .into_iter()
+        .filter(|d| tmux::has_session(&d.name))
+        .filter_map(|d| Session::attach_existing(d).ok())
+        .collect()
 }
 
 /// Last path component, or the whole string if there is no separator.

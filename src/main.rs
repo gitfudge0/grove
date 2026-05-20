@@ -3,8 +3,10 @@ mod app;
 mod git;
 mod launch;
 mod session;
+mod session_meta;
 mod storage;
 mod theme;
+mod tmux;
 mod ui;
 
 use anyhow::Result;
@@ -29,6 +31,10 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 fn main() -> Result<()> {
+    if !tmux::available() {
+        eprintln!("grove requires tmux on PATH (used for persistent agent sessions).");
+        std::process::exit(1);
+    }
     let mut app = App::new()?;
 
     enable_raw_mode()?;
