@@ -1,4 +1,5 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
@@ -86,6 +87,93 @@ pub fn remove_worktree(project_path: &str, wt_path: &str) -> Result<()> {
             "git worktree remove failed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+    }
+    Ok(())
+}
+
+pub fn worktrees_root() -> Result<PathBuf> {
+    let base = dirs::state_dir()
+        .or_else(dirs::data_dir)
+        .context("no state/data dir")?;
+    Ok(base.join("grove").join("worktrees"))
+}
+
+pub fn add_worktree(project_path: &str, project_name: &str, name: &str) -> Result<String> {
+    let dest = worktrees_root()?.join(project_name).join(name);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create {}", parent.display()))?;
+    }
+    let dest_str = dest.to_string_lossy().to_string();
+
+    let branch_exists = Command::new("git")
+        .args([
+            "-C",
+            project_path,
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{name}"),
+        ])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    let mut args = vec!["-C", project_path, "worktree", "add"];
+    if !branch_exists {
+        args.extend(["-b", name]);
+        args.push(&dest_str);
+    } else {
+        args.push(&dest_str);
+        args.push(name);
+    }
+    let out = Command::new("git").args(&args).output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(dest_str)
+}
+
+/// Seed a new worktree with files matching `.worktreeinclude` (gitignore
+/// syntax — gitignored files that should still be copied so the worktree can
+/// run, e.g. `.env`).
+pub fn copy_worktree_includes(project_path: &str, wt_path: &str) -> Result<()> {
+    let include = Path::new(project_path).join(".worktreeinclude");
+    if !include.exists() {
+        return Ok(());
+    }
+    let out = Command::new("git")
+        .args([
+            "-C",
+            project_path,
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-from=.worktreeinclude",
+            "-z",
+        ])
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git ls-files failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let src_root = Path::new(project_path);
+    let dst_root = Path::new(wt_path);
+    for rel in out.stdout.split(|&b| b == 0) {
+        let Ok(rel) = std::str::from_utf8(rel) else { continue };
+        if rel.is_empty() {
+            continue;
+        }
+        let dst = dst_root.join(rel);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::copy(src_root.join(rel), &dst).ok();
     }
     Ok(())
 }
