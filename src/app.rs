@@ -205,6 +205,10 @@ impl App {
         };
     }
 
+    pub fn focus_pane(&mut self, pane: Pane) {
+        self.focus = pane;
+    }
+
     pub fn start_add(&mut self) {
         match self.focus {
             Pane::Projects => {
@@ -317,6 +321,44 @@ impl App {
         }
     }
 
+    /// Compute the index at which a newly spawned session should be inserted
+    /// so the sessions list stays grouped by project, and worktrees within a
+    /// project follow the project's actual worktree order (rather than the
+    /// order sessions happened to be created in).
+    fn session_insert_index(&self, s: &Session) -> usize {
+        let proj_path = self
+            .store
+            .projects
+            .iter()
+            .find(|p| p.name == s.project)
+            .map(|p| p.path.clone());
+        let wt_order: Vec<String> = match proj_path {
+            Some(p) => git::list_worktrees(&p).into_iter().map(|w| w.path).collect(),
+            None => Vec::new(),
+        };
+        let new_pos = wt_order.iter().position(|p| p == &s.wt_path);
+
+        let proj_block: Vec<usize> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.project == s.project)
+            .map(|(i, _)| i)
+            .collect();
+        if proj_block.is_empty() {
+            return self.sessions.len();
+        }
+        if let Some(new_pos) = new_pos {
+            for &i in &proj_block {
+                let other_pos = wt_order.iter().position(|p| p == &self.sessions[i].wt_path);
+                if other_pos.map_or(false, |o| o > new_pos) {
+                    return i;
+                }
+            }
+        }
+        proj_block.last().unwrap() + 1
+    }
+
     /// Spawn an agent in a new embedded PTY session and focus it.
     pub fn spawn_session(
         &mut self,
@@ -329,8 +371,9 @@ impl App {
     ) {
         match Session::spawn(label.clone(), project, wt_path, agent, &args, cwd) {
             Ok(s) => {
-                self.sessions.push(s);
-                self.active_session = Some(self.sessions.len() - 1);
+                let at = self.session_insert_index(&s);
+                self.sessions.insert(at, s);
+                self.active_session = Some(at);
                 self.ui_mode = UiMode::Agent;
                 self.leader_pending = false;
                 self.status = format!("started {label}");
@@ -366,7 +409,10 @@ impl App {
         let Some(i) = self.active_session else { return };
         let Some(s) = self.sessions.get(i) else { return };
         let wt_path = s.wt_path.clone();
-        self.launch_agent(Agent::Terminal, wt_path);
+        let project = s.project.clone();
+        let label = path_basename(&wt_path);
+        let args = Agent::Terminal.launch_args();
+        self.spawn_session(label, project, wt_path.clone(), Agent::Terminal, args, &wt_path);
     }
 
     pub fn active_session_mut(&mut self) -> Option<&mut Session> {

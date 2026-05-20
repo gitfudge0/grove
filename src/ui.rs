@@ -19,7 +19,7 @@ fn base_style() -> Style {
 /// layout split in `render`; the event loop uses it to size the active PTY.
 pub fn agent_pane_inner(frame: Rect) -> Rect {
     let v = Layout::vertical([
-        Constraint::Length(5),
+        Constraint::Length(3),
         Constraint::Min(3),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -44,7 +44,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let vchunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),
+            Constraint::Length(3),
             Constraint::Min(3),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -57,7 +57,7 @@ pub fn render(f: &mut Frame, app: &App) {
         render_empty(f, vchunks[1]);
     } else {
         let constraints = match app.ui_mode {
-            UiMode::Browser => [Constraint::Percentage(35), Constraint::Percentage(65)],
+            UiMode::Browser => [Constraint::Percentage(28), Constraint::Percentage(72)],
             UiMode::Agent => [Constraint::Length(30), Constraint::Min(10)],
         };
         let hchunks = Layout::default()
@@ -136,7 +136,7 @@ fn render_agent_picker(f: &mut Frame, app: &App, sel: usize, area: Rect) {
     };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "↵ launch   d toggle default   esc cancel",
+            "j/k move   ↵ launch   space default   esc cancel",
             Style::default().fg(theme::COMMENT),
         )))
         .style(base_style()),
@@ -152,18 +152,18 @@ fn active_style(focused: bool) -> Style {
     }
 }
 
-const BANNER: [&str; 5] = [
-    "   ____                       ",
-    "  / ___|_ __ _____   _____    ",
-    " | |  _| '__/ _ \\ \\ / / _ \\ ",
-    " | |_| | | | (_) \\ V /  __/  ",
-    "  \\____|_|  \\___/ \\_/ \\___| ",
+const BANNER: [&str; 3] = [
+    "┌─┐┬─┐┌─┐┬  ┬┌─┐",
+    "│ ┬├┬┘│ │└┐┌┘├┤ ",
+    "└─┘┴└─└─┘ └┘ └─┘",
 ];
 
 fn render_banner(f: &mut Frame, app: &App, area: Rect) {
+    let _ = app;
+    let banner_w: u16 = 18;
     let hchunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(34), Constraint::Min(10)])
+        .constraints([Constraint::Length(banner_w), Constraint::Min(10)])
         .split(area);
 
     let banner_lines: Vec<Line> = BANNER
@@ -176,35 +176,18 @@ fn render_banner(f: &mut Frame, app: &App, area: Rect) {
     );
 
     let version = env!("CARGO_PKG_VERSION");
-    let projects = app.store.projects.len();
-    let worktrees = app.worktree_count;
-    let default_agent = app
-        .store
-        .default_agent
-        .map(|a| a.label().to_string())
-        .unwrap_or_else(|| "—".into());
 
     let key = Style::default().fg(theme::COMMENT);
-    let val = Style::default().fg(theme::FG).add_modifier(Modifier::BOLD);
     let accent = Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD);
 
     let info = vec![
+        Line::from(""),
         Line::from(vec![
             Span::styled("Grove", accent),
             Span::raw("  "),
             Span::styled(format!("v{}", version), Style::default().fg(theme::YELLOW)),
             Span::raw("  "),
             Span::styled("· worktree launchpad for ai agents", key),
-        ]),
-        Line::from(vec![
-            Span::styled("projects ", key),
-            Span::styled(format!("{:>3}", projects), val),
-            Span::raw("  "),
-            Span::styled("worktrees ", key),
-            Span::styled(format!("{:>3}", worktrees), val),
-            Span::raw("  "),
-            Span::styled("default agent ", key),
-            Span::styled(default_agent, val),
         ]),
         Line::from(vec![
             Span::styled("press ", key),
@@ -251,27 +234,41 @@ fn render_empty(f: &mut Frame, area: Rect) {
 fn render_projects(f: &mut Frame, app: &App, area: Rect) {
     let focused = app.focus == Pane::Projects;
     let items: Vec<ListItem> = {
-        app.store
+        let running_by_project: Vec<usize> = app
+            .store
             .projects
             .iter()
             .map(|p| {
-                let running = app
-                    .sessions
+                app.sessions
                     .iter()
                     .filter(|s| s.project == p.name && s.status() == SessionStatus::Running)
-                    .count();
-                let mut spans = vec![
-                    Span::styled(p.name.clone(), Style::default().fg(theme::FG).add_modifier(Modifier::BOLD)),
+                    .count()
+            })
+            .collect();
+        let count_width = running_by_project
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .to_string()
+            .len()
+            .max(1);
+
+        app.store
+            .projects
+            .iter()
+            .zip(running_by_project)
+            .map(|(p, running)| {
+                let count_style = if running > 0 {
+                    Style::default().fg(theme::GREEN).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme::COMMENT)
+                };
+                let spans = vec![
+                    Span::styled(format!("{running:>count_width$}"), count_style),
                     Span::raw("  "),
-                    Span::styled(p.path.clone(), Style::default().fg(theme::COMMENT)),
+                    Span::styled(p.name.clone(), Style::default().fg(theme::FG).add_modifier(Modifier::BOLD)),
                 ];
-                if running > 0 {
-                    spans.push(Span::raw("  "));
-                    spans.push(Span::styled(
-                        format!("●{running}"),
-                        Style::default().fg(theme::GREEN).add_modifier(Modifier::BOLD),
-                    ));
-                }
                 ListItem::new(Line::from(spans))
             })
             .collect()
@@ -561,13 +558,15 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
             ("<leader>C", " pick  "),
             ("<leader>t", " term  "),
             ("<leader>x", " close  "),
+            ("<leader>q", " quit  "),
             ("<leader>?", " help"),
         ],
         UiMode::Browser => &[
-            ("tab", " switch  "),
+            ("h/l", " pane  "),
             ("a", " add  "),
             ("d", " del  "),
             ("↵", " open  "),
+            ("P", " pick  "),
             ("Ctrl-g", " session  "),
             ("r", " refresh  "),
             ("?", " help  "),
@@ -734,9 +733,9 @@ fn render_help(f: &mut Frame, area: Rect) {
             Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
         )),
         Line::from("j/k or ↑/↓     move"),
-        Line::from("tab / h / l    switch pane"),
+        Line::from("h / l / ← / →  focus projects / worktrees   tab toggles"),
         Line::from("enter          focus worktrees / open session (uses default)"),
-        Line::from("shift+enter    open worktree, always show session picker"),
+        Line::from("P              open worktree, always show session picker"),
         Line::from("a / d          add / delete   r  refresh"),
         Line::from("Ctrl-g         jump to active session"),
         Line::from("q / esc        quit"),
@@ -752,6 +751,8 @@ fn render_help(f: &mut Frame, area: Rect) {
         Line::from("<leader>C         new session, pick agent"),
         Line::from("<leader>t         new terminal for this worktree"),
         Line::from("<leader>x         kill current session"),
+        Line::from("<leader>q         quit grove"),
+        Line::from("<leader>?         help"),
         Line::from("<leader><leader>  send a literal Ctrl-g"),
         Line::from(""),
         Line::from(Span::styled(

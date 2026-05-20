@@ -212,6 +212,7 @@ fn handle_agent_key(app: &mut App, key: KeyEvent) {
             KeyCode::Char('C') => app.new_session_for_active_pick(),
             KeyCode::Char('t') => app.new_terminal_for_active(),
             KeyCode::Char('x') => app.kill_active_session(),
+            KeyCode::Char('q') => app.should_quit = true,
             KeyCode::Char('?') => app.modal = Modal::Help,
             KeyCode::Char(c @ '1'..='9') => {
                 app.session_select(c as usize - '1' as usize);
@@ -267,14 +268,17 @@ fn handle_browser_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.submit_confirm(false)?,
             _ => {}
         },
-        Modal::Message(_) | Modal::Help => {
-            app.modal = Modal::None;
-        }
+        Modal::Message(_) | Modal::Help => match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => {
+                app.modal = Modal::None;
+            }
+            _ => {}
+        },
         Modal::AgentPicker { .. } => match key.code {
             KeyCode::Esc => app.modal = Modal::None,
             KeyCode::Char('j') | KeyCode::Down => app.picker_move(1),
             KeyCode::Char('k') | KeyCode::Up => app.picker_move(-1),
-            KeyCode::Char('d') | KeyCode::Char('s') => app.picker_toggle_default()?,
+            KeyCode::Char(' ') => app.picker_toggle_default()?,
             KeyCode::Enter => app.picker_submit(),
             _ => {}
         },
@@ -286,14 +290,26 @@ fn handle_browser_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.should_quit = true
             }
-            KeyCode::Char('j') | KeyCode::Down => app.move_down(),
-            KeyCode::Char('k') | KeyCode::Up => app.move_up(),
-            KeyCode::Tab | KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Left
-            | KeyCode::Right => app.toggle_focus(),
+            KeyCode::Char('j') | KeyCode::Down
+                if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                app.move_down()
+            }
+            KeyCode::Char('k') | KeyCode::Up
+                if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                app.move_up()
+            }
+            KeyCode::Tab => app.toggle_focus(),
+            KeyCode::Char('h') | KeyCode::Left => app.focus_pane(app::Pane::Projects),
+            KeyCode::Char('l') | KeyCode::Right => app.focus_pane(app::Pane::Worktrees),
             KeyCode::Char('a') => app.start_add(),
             KeyCode::Char('d') => app.start_delete(),
             KeyCode::Char('r') => app.refresh_worktrees(),
             KeyCode::Char('?') => app.modal = Modal::Help,
+            KeyCode::Char('P') if matches!(app.focus, app::Pane::Worktrees) => {
+                app.open_worktree(true);
+            }
             KeyCode::Enter => {
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
                 if shift && matches!(app.focus, app::Pane::Worktrees) {
