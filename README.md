@@ -46,6 +46,8 @@ Agents run as managed sessions rather than replacing Grove. From the browser, pr
 - `<leader>C` — new session, pick an agent
 - `<leader>t` — open a plain terminal for this worktree
 - `<leader>x` — kill the current session
+- `<leader>q` — quit grove
+- `<leader>?` — show help
 - `<leader><leader>` — send a literal `Ctrl-g` to the agent
 
 Projects and worktrees with running sessions are marked with a green ● count in the browser.
