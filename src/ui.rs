@@ -58,7 +58,9 @@ pub fn render(f: &mut Frame, app: &App) {
     } else {
         let constraints = match app.ui_mode {
             UiMode::Browser => [Constraint::Percentage(28), Constraint::Percentage(72)],
-            UiMode::Agent => [Constraint::Length(30), Constraint::Min(10)],
+            UiMode::Agent | UiMode::SessionList => {
+                [Constraint::Length(30), Constraint::Min(10)]
+            }
         };
         let hchunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -70,7 +72,7 @@ pub fn render(f: &mut Frame, app: &App) {
                 render_projects(f, app, hchunks[0]);
                 render_worktrees(f, app, hchunks[1]);
             }
-            UiMode::Agent => {
+            UiMode::Agent | UiMode::SessionList => {
                 render_session_list(f, app, hchunks[0]);
                 render_agent(f, app, hchunks[1]);
             }
@@ -387,11 +389,12 @@ fn render_worktrees(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
+    let focused = app.ui_mode == UiMode::SessionList;
     let block = Block::default()
         .title(" Sessions ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(active_style(false))
+        .border_style(active_style(focused))
         .style(base_style());
 
     if app.sessions.is_empty() {
@@ -487,20 +490,32 @@ fn render_agent(f: &mut Frame, app: &App, area: Rect) {
     let Some(idx) = app.active_session else { return };
     let Some(session) = app.sessions.get(idx) else { return };
 
+    let focused = app.ui_mode == UiMode::Agent;
     let (title, border) = match session.status() {
-        SessionStatus::Running => (
-            format!(" {} · {} ", session.project, session.label),
-            Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
-        ),
-        SessionStatus::Exited(code) => (
-            format!(
-                " {} · {} — exited ({}) · Ctrl-g x to close ",
-                session.project,
-                session.label,
-                code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
-            ),
-            Style::default().fg(theme::RED).add_modifier(Modifier::BOLD),
-        ),
+        SessionStatus::Running => {
+            let style = if focused {
+                Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::COMMENT)
+            };
+            (format!(" {} · {} ", session.project, session.label), style)
+        }
+        SessionStatus::Exited(code) => {
+            let style = if focused {
+                Style::default().fg(theme::RED).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::COMMENT)
+            };
+            (
+                format!(
+                    " {} · {} — exited ({}) · Ctrl-g for sidebar ",
+                    session.project,
+                    session.label,
+                    code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
+                ),
+                style,
+            )
+        }
     };
 
     let block = Block::default()
@@ -550,16 +565,19 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     let pairs: &[(&str, &str)] = match app.ui_mode {
         UiMode::Agent => &[
-            ("Ctrl-g", " leader  "),
-            ("<leader>g", " main  "),
-            ("<leader>n/p", " cycle  "),
-            ("<leader>1-9", " jump  "),
-            ("<leader>c", " new  "),
-            ("<leader>C", " pick  "),
-            ("<leader>t", " term  "),
-            ("<leader>x", " close  "),
-            ("<leader>q", " quit  "),
-            ("<leader>?", " help"),
+            ("Ctrl-g", " sidebar  "),
+            ("(all other keys forwarded to the agent)", ""),
+        ],
+        UiMode::SessionList => &[
+            ("Ctrl-g/↵", " session  "),
+            ("j/k", " cycle  "),
+            ("1-9", " jump  "),
+            ("x", " kill  "),
+            ("c/C", " new  "),
+            ("t", " term  "),
+            ("esc", " browser  "),
+            ("?", " help  "),
+            ("q", " quit"),
         ],
         UiMode::Browser => &[
             ("h/l", " pane  "),
@@ -737,23 +755,27 @@ fn render_help(f: &mut Frame, area: Rect) {
         Line::from("enter          focus worktrees / open session (uses default)"),
         Line::from("P              open worktree, always show session picker"),
         Line::from("a / d          add / delete   r  refresh"),
-        Line::from("Ctrl-g         jump to active session"),
+        Line::from("Ctrl-g         jump to active session pane"),
         Line::from("q / esc        quit"),
         Line::from(""),
         Line::from(Span::styled(
-            "Session pane (Ctrl-g is the leader)",
+            "Sessions sidebar",
             Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
         )),
-        Line::from("<leader>g / esc   back to browser"),
-        Line::from("<leader>n / p     next / prev session"),
-        Line::from("<leader>1-9       jump to session N"),
-        Line::from("<leader>c         new session (default agent)"),
-        Line::from("<leader>C         new session, pick agent"),
-        Line::from("<leader>t         new terminal for this worktree"),
-        Line::from("<leader>x         kill current session"),
-        Line::from("<leader>q         quit grove"),
-        Line::from("<leader>?         help"),
-        Line::from("<leader><leader>  send a literal Ctrl-g"),
+        Line::from("Ctrl-g / ↵     focus the session pane"),
+        Line::from("esc            back to projects browser"),
+        Line::from("j / k          next / prev session"),
+        Line::from("1-9            jump to session N"),
+        Line::from("x              kill active session"),
+        Line::from("c / C          new session for active (default / pick)"),
+        Line::from("t              new terminal for active session's worktree"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Session pane",
+            Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
+        )),
+        Line::from("Ctrl-g         move focus to the Sessions sidebar"),
+        Line::from("(all other keys are forwarded to the agent)"),
         Line::from(""),
         Line::from(Span::styled(
             "press any key to close",
