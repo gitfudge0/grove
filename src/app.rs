@@ -591,14 +591,18 @@ impl App {
                     return Ok(());
                 }
                 let Some(p) = self.selected_project().cloned() else { return Ok(()); };
-                self.spawn_session(
-                    value.clone(),
-                    p.name.clone(),
-                    p.path.clone(),
-                    Agent::Claude,
-                    vec!["--worktree".into(), value],
-                    &p.path,
-                );
+                let wt_path = match git::add_worktree(&p.path, &p.name, &value) {
+                    Ok(path) => path,
+                    Err(e) => {
+                        self.modal = Modal::Message(format!("add worktree failed: {e}"));
+                        return Ok(());
+                    }
+                };
+                if let Err(e) = git::copy_worktree_includes(&p.path, &wt_path) {
+                    self.status = format!("worktreeinclude: {e}");
+                }
+                self.refresh_worktrees();
+                self.launch_or_pick(p.name.clone(), wt_path);
             }
         }
         Ok(())
