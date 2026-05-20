@@ -18,6 +18,8 @@ pub enum UiMode {
     Browser,
     /// An agent session pane has the keyboard; keys are forwarded to the PTY.
     Agent,
+    /// Inside the session view, but focus is on the Sessions sidebar (not the PTY).
+    SessionList,
 }
 
 /// A text selection over the active agent pane. Coordinates are pane-relative
@@ -95,8 +97,6 @@ pub struct App {
     pub sessions: Vec<Session>,
     pub active_session: Option<usize>,
     pub ui_mode: UiMode,
-    /// Set when the leader key (Ctrl-g) was just pressed in Agent mode.
-    pub leader_pending: bool,
     /// Active mouse text selection over the agent pane, if any.
     pub selection: Option<Selection>,
     /// Total worktrees across all projects, cached so the renderer doesn't
@@ -119,7 +119,6 @@ impl App {
             sessions: discover_sessions(),
             active_session: None,
             ui_mode: UiMode::Browser,
-            leader_pending: false,
             selection: None,
             worktree_count: 0,
         };
@@ -375,7 +374,6 @@ impl App {
                 self.sessions.insert(at, s);
                 self.active_session = Some(at);
                 self.ui_mode = UiMode::Agent;
-                self.leader_pending = false;
                 self.status = format!("started {label}");
             }
             Err(e) => {
@@ -384,8 +382,7 @@ impl App {
         }
     }
 
-    /// Spawn an additional session for the active session's worktree. Used by
-    /// the `^g c` leader binding while inside the sessions page.
+    /// Spawn an additional session for the active session's worktree.
     pub fn new_session_for_active(&mut self) {
         let Some(i) = self.active_session else { return };
         let Some(s) = self.sessions.get(i) else { return };
@@ -395,7 +392,7 @@ impl App {
     }
 
     /// Open the agent picker for the active session's worktree, ignoring any
-    /// configured default. Bound to `^g C`.
+    /// configured default.
     pub fn new_session_for_active_pick(&mut self) {
         let Some(i) = self.active_session else { return };
         let Some(s) = self.sessions.get(i) else { return };
@@ -404,7 +401,6 @@ impl App {
     }
 
     /// Open a plain terminal session for the active session's worktree.
-    /// Bound to `^g t`.
     pub fn new_terminal_for_active(&mut self) {
         let Some(i) = self.active_session else { return };
         let Some(s) = self.sessions.get(i) else { return };
@@ -421,13 +417,17 @@ impl App {
 
     pub fn enter_browser(&mut self) {
         self.ui_mode = UiMode::Browser;
-        self.leader_pending = false;
     }
 
     pub fn focus_active_session(&mut self) {
         if self.active_session.is_some() {
             self.ui_mode = UiMode::Agent;
-            self.leader_pending = false;
+        }
+    }
+
+    pub fn enter_session_list(&mut self) {
+        if self.active_session.is_some() {
+            self.ui_mode = UiMode::SessionList;
         }
     }
 

@@ -88,8 +88,12 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
         if event::poll(Duration::from_millis(40))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if app.ui_mode == UiMode::Agent && matches!(app.modal, Modal::None) {
-                        handle_agent_key(app, key);
+                    if matches!(app.modal, Modal::None) {
+                        match app.ui_mode {
+                            UiMode::Agent => handle_agent_key(app, key),
+                            UiMode::SessionList => handle_session_list_key(app, key),
+                            UiMode::Browser => handle_browser_key(app, key)?,
+                        }
                     } else {
                         handle_browser_key(app, key)?;
                     }
@@ -195,41 +199,14 @@ fn handle_mouse(app: &mut App, size: ratatui::layout::Size, me: MouseEvent) -> b
     }
 }
 
-/// Agent mode: Ctrl-g is the leader; everything else is forwarded to the PTY.
+/// Agent mode: Ctrl-g moves focus into the Sessions sidebar; everything else
+/// is forwarded to the PTY.
 fn handle_agent_key(app: &mut App, key: KeyEvent) {
     // Typing dismisses any lingering copy highlight, like a real terminal.
     app.selection = None;
-    let is_leader = key.code == KeyCode::Char('g')
-        && key.modifiers.contains(KeyModifiers::CONTROL);
 
-    if app.leader_pending {
-        app.leader_pending = false;
-        match key.code {
-            KeyCode::Char('g') | KeyCode::Esc => app.enter_browser(),
-            KeyCode::Char('n') => app.session_cycle(1),
-            KeyCode::Char('p') => app.session_cycle(-1),
-            KeyCode::Char('c') => app.new_session_for_active(),
-            KeyCode::Char('C') => app.new_session_for_active_pick(),
-            KeyCode::Char('t') => app.new_terminal_for_active(),
-            KeyCode::Char('x') => app.kill_active_session(),
-            KeyCode::Char('q') => app.should_quit = true,
-            KeyCode::Char('?') => app.modal = Modal::Help,
-            KeyCode::Char(c @ '1'..='9') => {
-                app.session_select(c as usize - '1' as usize);
-            }
-            // Ctrl-g Ctrl-g sends a literal Ctrl-g to the agent.
-            _ if is_leader => {
-                if let Some(s) = app.active_session_mut() {
-                    s.send(&[0x07]);
-                }
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    if is_leader {
-        app.leader_pending = true;
+    if key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        app.enter_session_list();
         return;
     }
 
@@ -237,6 +214,30 @@ fn handle_agent_key(app: &mut App, key: KeyEvent) {
         if let Some(s) = app.active_session_mut() {
             s.send(&bytes);
         }
+    }
+}
+
+/// Sessions-sidebar mode: keys navigate / manage sessions, the highlighted
+/// session's PTY is still rendered on the right but doesn't receive input.
+fn handle_session_list_key(app: &mut App, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char('g') if ctrl => app.focus_active_session(),
+        KeyCode::Enter => app.focus_active_session(),
+        KeyCode::Esc => app.enter_browser(),
+        KeyCode::Char('j') | KeyCode::Down => app.session_cycle(1),
+        KeyCode::Char('k') | KeyCode::Up => app.session_cycle(-1),
+        KeyCode::Char('n') => app.session_cycle(1),
+        KeyCode::Char('p') => app.session_cycle(-1),
+        KeyCode::Char(ch @ '1'..='9') => app.session_select(ch as usize - '1' as usize),
+        KeyCode::Char('x') => app.kill_active_session(),
+        KeyCode::Char('c') if ctrl => app.should_quit = true,
+        KeyCode::Char('c') => app.new_session_for_active(),
+        KeyCode::Char('C') => app.new_session_for_active_pick(),
+        KeyCode::Char('t') => app.new_terminal_for_active(),
+        KeyCode::Char('?') => app.modal = Modal::Help,
+        KeyCode::Char('q') => app.should_quit = true,
+        _ => {}
     }
 }
 
