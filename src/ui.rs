@@ -87,15 +87,21 @@ pub fn render(f: &mut Frame, app: &App) {
         Modal::Confirm { prompt, .. } => render_confirm(f, prompt, size),
         Modal::Message(msg) => render_message(f, msg, size),
         Modal::Help => render_help(f, size),
-        Modal::AgentPicker { sel, .. } => render_agent_picker(f, app, *sel, size),
+        Modal::AgentPicker { project, wt_path, sel } => render_agent_picker(f, app, project, wt_path, *sel, size),
     }
 }
 
-fn render_agent_picker(f: &mut Frame, app: &App, sel: usize, area: Rect) {
+fn render_agent_picker(f: &mut Frame, app: &App, project: &str, wt_path: &str, sel: usize, area: Rect) {
     let r = centered(area, 60, 10);
     f.render_widget(Clear, r);
+    let wt_name = crate::app::path_basename(wt_path);
+    let title = if project.is_empty() {
+        format!(" Start session · {} ", wt_name)
+    } else {
+        format!(" Start session · {} / {} ", project, wt_name)
+    };
     let block = Block::default()
-        .title(" Start session ")
+        .title(title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::MAGENTA))

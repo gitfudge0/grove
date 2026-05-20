@@ -65,6 +65,7 @@ pub enum Modal {
     Message(String),
     Help,
     AgentPicker {
+        project: String,
         wt_path: String,
         sel: usize,
     },
@@ -277,7 +278,7 @@ impl App {
             .map(|p| p.name.clone())
             .unwrap_or_default();
         if force_pick {
-            self.modal = Modal::AgentPicker { wt_path: wt.path, sel: self.picker_sel() };
+            self.modal = Modal::AgentPicker { project, wt_path: wt.path, sel: self.picker_sel() };
             return;
         }
         // An existing session for this worktree: jump into it rather than
@@ -316,7 +317,7 @@ impl App {
             let args = agent.launch_args();
             self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path);
         } else {
-            self.modal = Modal::AgentPicker { wt_path, sel: self.picker_sel() };
+            self.modal = Modal::AgentPicker { project, wt_path, sel: self.picker_sel() };
         }
     }
 
@@ -397,7 +398,8 @@ impl App {
         let Some(i) = self.active_session else { return };
         let Some(s) = self.sessions.get(i) else { return };
         let wt_path = s.wt_path.clone();
-        self.modal = Modal::AgentPicker { wt_path, sel: self.picker_sel() };
+        let project = s.project.clone();
+        self.modal = Modal::AgentPicker { project, wt_path, sel: self.picker_sel() };
     }
 
     /// Open a plain terminal session for the active session's worktree.
@@ -489,7 +491,7 @@ impl App {
 
     pub fn picker_submit(&mut self) {
         let modal = std::mem::replace(&mut self.modal, Modal::None);
-        let Modal::AgentPicker { wt_path, sel } = modal else { return };
+        let Modal::AgentPicker { wt_path, sel, .. } = modal else { return };
         self.launch_agent(Agent::ALL[sel], wt_path);
     }
 
