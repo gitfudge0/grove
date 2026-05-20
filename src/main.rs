@@ -1,20 +1,22 @@
 mod agent;
 mod app;
+mod clipboard;
 mod git;
 mod launch;
 mod session;
 mod session_meta;
 mod storage;
-mod theme;
 mod tmux;
+mod theme;
 mod ui;
 
 use anyhow::Result;
-use app::{App, Modal, UiMode};
+use app::{App, Modal, Selection, UiMode};
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
+        KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
+        PopKeyboardEnhancementFlags,
         PushKeyboardEnhancementFlags,
     },
     execute,
@@ -108,28 +110,95 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
     }
 }
 
-/// Route a mouse event. Only wheel scrolls over the active agent pane are
-/// acted on; returns whether a redraw is needed.
+/// Route a mouse event over the active agent pane: wheel scrolls the
+/// scrollback, and left-button drag selects text to copy. Returns whether a
+/// redraw is needed.
 fn handle_mouse(app: &mut App, size: ratatui::layout::Size, me: MouseEvent) -> bool {
-    let up = match me.kind {
-        MouseEventKind::ScrollUp => true,
-        MouseEventKind::ScrollDown => false,
-        _ => return false,
-    };
     if app.ui_mode != UiMode::Agent || !matches!(app.modal, Modal::None) {
         return false;
     }
     let pane = ui::agent_pane_inner(Rect::new(0, 0, size.width, size.height));
-    if !pane.contains(Position::new(me.column, me.row)) {
-        return false;
+    let in_pane = pane.contains(Position::new(me.column, me.row));
+
+    // Clamp a possibly out-of-bounds pointer to the nearest pane cell so a
+    // drag that strays past the edge still extends the selection.
+    let rel = |col: u16, row: u16| -> (u16, u16) {
+        let c = col.clamp(pane.x, pane.x + pane.width.saturating_sub(1)) - pane.x;
+        let r = row.clamp(pane.y, pane.y + pane.height.saturating_sub(1)) - pane.y;
+        (c, r)
+    };
+
+    match me.kind {
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            if !in_pane {
+                return false;
+            }
+            let up = me.kind == MouseEventKind::ScrollUp;
+            let Some(s) = app.active_session_mut() else { return false };
+            s.scroll(up, me.column - pane.x, me.row - pane.y);
+            true
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            if !in_pane {
+                app.selection = None;
+                return false;
+            }
+            let p = rel(me.column, me.row);
+            app.selection = Some(Selection {
+                anchor: p,
+                head: p,
+                dragging: true,
+            });
+            true
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            let Some(sel) = app.selection.as_mut() else { return false };
+            if !sel.dragging {
+                return false;
+            }
+            sel.head = rel(me.column, me.row);
+            true
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            let Some(mut sel) = app.selection else { return false };
+            if !sel.dragging {
+                return false;
+            }
+            sel.dragging = false;
+
+            if sel.is_empty() {
+                // A bare click: forward it to the inner app if it wants the
+                // mouse, so clickable agent UIs still work.
+                let (c, r) = sel.anchor;
+                app.selection = None;
+                if let Some(s) = app.active_session_mut() {
+                    if s.wants_mouse() {
+                        s.forward_click(c, r);
+                    }
+                }
+                return true;
+            }
+
+            let (start, end) = sel.normalized();
+            let text = app
+                .active_session_mut()
+                .and_then(|s| s.selection_text(start, end));
+            if let Some(text) = text {
+                let n = text.len();
+                clipboard::copy(&text);
+                app.status = format!("Copied {} bytes to clipboard", n);
+            }
+            app.selection = Some(sel);
+            true
+        }
+        _ => false,
     }
-    let Some(s) = app.active_session_mut() else { return false };
-    s.scroll(up, me.column - pane.x, me.row - pane.y);
-    true
 }
 
 /// Agent mode: Ctrl-g is the leader; everything else is forwarded to the PTY.
 fn handle_agent_key(app: &mut App, key: KeyEvent) {
+    // Typing dismisses any lingering copy highlight, like a real terminal.
+    app.selection = None;
     let is_leader = key.code == KeyCode::Char('g')
         && key.modifiers.contains(KeyModifiers::CONTROL);
 

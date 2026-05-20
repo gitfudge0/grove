@@ -20,6 +20,33 @@ pub enum UiMode {
     Agent,
 }
 
+/// A text selection over the active agent pane. Coordinates are pane-relative
+/// and 0-based (`(col, row)`), matching the visible vt100 screen.
+#[derive(Clone, Copy)]
+pub struct Selection {
+    pub anchor: (u16, u16),
+    pub head: (u16, u16),
+    /// Still being dragged (mouse button held).
+    pub dragging: bool,
+}
+
+impl Selection {
+    /// Returns `(start, end)` ordered top-to-bottom, left-to-right.
+    pub fn normalized(&self) -> ((u16, u16), (u16, u16)) {
+        let (a, h) = (self.anchor, self.head);
+        if (a.1, a.0) <= (h.1, h.0) {
+            (a, h)
+        } else {
+            (h, a)
+        }
+    }
+
+    /// True when the selection covers no cells (a bare click).
+    pub fn is_empty(&self) -> bool {
+        self.anchor == self.head
+    }
+}
+
 #[derive(Clone)]
 pub enum Modal {
     None,
@@ -70,6 +97,8 @@ pub struct App {
     pub ui_mode: UiMode,
     /// Set when the leader key (Ctrl-g) was just pressed in Agent mode.
     pub leader_pending: bool,
+    /// Active mouse text selection over the agent pane, if any.
+    pub selection: Option<Selection>,
     /// Total worktrees across all projects, cached so the renderer doesn't
     /// shell out to `git` for every project on every frame.
     pub worktree_count: usize,
@@ -91,6 +120,7 @@ impl App {
             active_session: None,
             ui_mode: UiMode::Browser,
             leader_pending: false,
+            selection: None,
             worktree_count: 0,
         };
         app.refresh_worktrees();

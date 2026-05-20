@@ -227,24 +227,49 @@ impl Session {
 
         // Forward a wheel event the way the inner app expects to receive it.
         let cb: u32 = if up { 64 } else { 65 };
-        let bytes = match encoding {
-            MouseProtocolEncoding::Sgr => {
-                format!("\x1b[<{};{};{}M", cb, col + 1, row + 1).into_bytes()
+        self.send(&encode_mouse(encoding, cb, col, row, true));
+    }
+
+    /// Extract the text logically between two pane-relative cells (inclusive
+    /// of the cell under `end`). Returns `None` if the selection is empty.
+    pub fn selection_text(&self, start: (u16, u16), end: (u16, u16)) -> Option<String> {
+        let p = self.parser.lock().ok()?;
+        let screen = p.screen();
+        let (_, cols) = screen.size();
+        let end_col = end.0.saturating_add(1).min(cols);
+        let raw = screen.contents_between(start.1, start.0, end.1, end_col);
+        let mut out = String::with_capacity(raw.len());
+        for line in raw.split('\n') {
+            if !out.is_empty() {
+                out.push('\n');
             }
-            // Default / Utf8: classic X10 packet, one printable byte each.
-            _ => {
-                let enc = |v: u32| -> u8 { (32 + v).min(255) as u8 };
-                vec![
-                    0x1b,
-                    b'[',
-                    b'M',
-                    enc(cb),
-                    enc(col as u32 + 1),
-                    enc(row as u32 + 1),
-                ]
-            }
+            out.push_str(line.trim_end());
+        }
+        let end = out.trim_end_matches('\n').len();
+        out.truncate(end);
+        if out.is_empty() { None } else { Some(out) }
+    }
+
+    /// True if the inner app has asked to receive mouse events.
+    pub fn wants_mouse(&self) -> bool {
+        self.parser
+            .lock()
+            .map(|p| p.screen().mouse_protocol_mode() != MouseProtocolMode::None)
+            .unwrap_or(false)
+    }
+
+    /// Forward a left-button press+release at a pane-relative cell to the inner
+    /// app, encoded the way it requested. Used for bare clicks (no drag) so
+    /// agents with clickable UI still work while drag-to-select is always on.
+    pub fn forward_click(&mut self, col: u16, row: u16) {
+        let encoding = match self.parser.lock() {
+            Ok(p) => p.screen().mouse_protocol_encoding(),
+            Err(_) => return,
         };
-        self.send(&bytes);
+        let mut bytes = encode_mouse(encoding, 0, col, row, true);
+        bytes.extend(encode_mouse(encoding, 0, col, row, false));
+        let _ = self.writer.write_all(&bytes);
+        let _ = self.writer.flush();
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -271,6 +296,42 @@ impl Session {
     pub fn kill(&mut self) {
         if let Ok(mut c) = self.child.lock() {
             let _ = c.kill();
+        }
+    }
+}
+
+/// Encode a single mouse report (`cb` = button/wheel code) at a pane-relative
+/// 0-based cell, in whichever protocol the inner app negotiated. `press` picks
+/// the press vs. release form (SGR final byte `M`/`m`; X10 release uses button
+/// code 3).
+fn encode_mouse(
+    encoding: MouseProtocolEncoding,
+    cb: u32,
+    col: u16,
+    row: u16,
+    press: bool,
+) -> Vec<u8> {
+    match encoding {
+        MouseProtocolEncoding::Sgr => format!(
+            "\x1b[<{};{};{}{}",
+            cb,
+            col + 1,
+            row + 1,
+            if press { 'M' } else { 'm' }
+        )
+        .into_bytes(),
+        // Default / Utf8: classic X10 packet, one printable byte each.
+        _ => {
+            let enc = |v: u32| -> u8 { (32 + v).min(255) as u8 };
+            let button = if press { cb } else { 3 };
+            vec![
+                0x1b,
+                b'[',
+                b'M',
+                enc(button),
+                enc(col as u32 + 1),
+                enc(row as u32 + 1),
+            ]
         }
     }
 }
