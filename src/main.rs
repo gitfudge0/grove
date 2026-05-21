@@ -14,7 +14,8 @@ use anyhow::Result;
 use app::{App, Modal, Selection, UiMode};
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+        EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
         KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
         PopKeyboardEnhancementFlags,
         PushKeyboardEnhancementFlags,
@@ -42,6 +43,7 @@ fn main() -> Result<()> {
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
     execute!(stdout(), EnableMouseCapture)?;
+    execute!(stdout(), EnableBracketedPaste)?;
     let kbd_enhanced = execute!(
         stdout(),
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
@@ -56,7 +58,7 @@ fn main() -> Result<()> {
         let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     }
     disable_raw_mode()?;
-    execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(stdout(), DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     res?;
@@ -97,6 +99,10 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
                     } else {
                         handle_browser_key(app, key)?;
                     }
+                    needs_draw = true;
+                }
+                Event::Paste(text) => {
+                    handle_paste(app, text);
                     needs_draw = true;
                 }
                 Event::Mouse(me) => {
@@ -323,6 +329,32 @@ fn handle_browser_key(app: &mut App, key: KeyEvent) -> Result<()> {
         },
     }
     Ok(())
+}
+
+/// Route a paste event. In the agent pane we forward it to the PTY wrapped
+/// in bracketed-paste markers so the inner CLI inserts it as a single block
+/// instead of treating embedded newlines as submits. In the worktree-input
+/// modal we splice the text into the input buffer (single-line, so newlines
+/// are stripped). Other modes ignore pastes.
+fn handle_paste(app: &mut App, text: String) {
+    if matches!(app.modal, Modal::Input { .. }) {
+        let cleaned: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+        app.input_buffer_edit(|b| b.push_str(&cleaned));
+        return;
+    }
+    if !matches!(app.modal, Modal::None) {
+        return;
+    }
+    if !matches!(app.ui_mode, UiMode::Agent) {
+        return;
+    }
+    let Some(s) = app.active_session_mut() else { return };
+    let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
+    let mut bytes = Vec::with_capacity(normalized.len() + 12);
+    bytes.extend_from_slice(b"\x1b[200~");
+    bytes.extend_from_slice(normalized.as_bytes());
+    bytes.extend_from_slice(b"\x1b[201~");
+    s.send(&bytes);
 }
 
 /// Encode a key event into the byte sequence a PTY application expects.
