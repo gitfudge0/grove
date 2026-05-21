@@ -334,6 +334,20 @@ impl App {
         self.launch_or_pick(project, wt.path);
     }
 
+    /// Open a plain terminal session in the currently selected browser
+    /// worktree. Mirrors `new_terminal_for_active` but sourced from the
+    /// browser selection rather than the active session.
+    pub fn open_worktree_terminal(&mut self) {
+        let Some(wt) = self.worktrees.get(self.wt_idx).cloned() else { return };
+        let project = self
+            .selected_project()
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        let label = path_basename(&wt.path);
+        let args = Agent::Terminal.launch_args();
+        self.spawn_session(label, project, wt.path.clone(), Agent::Terminal, args, &wt.path);
+    }
+
     pub fn launch_agent(&mut self, agent: Agent, cwd: String) {
         let project = self
             .selected_project()
