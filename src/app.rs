@@ -65,7 +65,9 @@ pub enum Modal {
         dir_sel: usize,
     },
     Confirm {
+        title: String,
         prompt: String,
+        destructive: bool,
         kind: ConfirmKind,
     },
     Message(String),
@@ -255,7 +257,9 @@ impl App {
             Pane::Projects => {
                 if let Some(p) = self.selected_project() {
                     self.modal = Modal::Confirm {
-                        prompt: format!("Remove project '{}' from manager? (files untouched)", p.name),
+                        title: "Remove project?".into(),
+                        prompt: format!("'{}' will be unregistered. Files on disk stay put.", p.name),
+                        destructive: true,
                         kind: ConfirmKind::RemoveProject(self.proj_idx),
                     };
                 }
@@ -269,7 +273,9 @@ impl App {
                     }
                     let path = wt.path.clone();
                     self.modal = Modal::Confirm {
-                        prompt: format!("git worktree remove --force {}?", path),
+                        title: "Remove worktree?".into(),
+                        prompt: format!("git worktree remove --force {}", path),
+                        destructive: true,
                         kind: ConfirmKind::RemoveWorktree(path),
                     };
                 }
@@ -594,12 +600,16 @@ impl App {
 
                 if needs_init {
                     self.modal = Modal::Confirm {
-                        prompt: format!("'{path}' is not a git repo. Run `git init`?"),
+                        title: "Initialize git repo?".into(),
+                        prompt: format!("'{path}' is not a git repo. Run `git init`."),
+                        destructive: false,
                         kind: ConfirmKind::InitRepo { path, name: value },
                     };
                 } else if needs_include {
                     self.modal = Modal::Confirm {
-                        prompt: "Generate .worktreeinclude with Claude (haiku)?".into(),
+                        title: "Generate .worktreeinclude?".into(),
+                        prompt: "Use Claude (haiku) to draft a .worktreeinclude for this repo.".into(),
+                        destructive: false,
                         kind: ConfirmKind::GenerateInclude { path },
                     };
                 }
@@ -662,7 +672,9 @@ impl App {
                     !std::path::Path::new(&path).join(".worktreeinclude").exists();
                 if needs_include {
                     self.modal = Modal::Confirm {
-                        prompt: "Generate .worktreeinclude with Claude (haiku)?".into(),
+                        title: "Generate .worktreeinclude?".into(),
+                        prompt: "Use Claude (haiku) to draft a .worktreeinclude for this repo.".into(),
+                        destructive: false,
                         kind: ConfirmKind::GenerateInclude { path },
                     };
                 }
