@@ -85,7 +85,9 @@ pub fn render(f: &mut Frame, app: &App) {
     match &app.modal {
         Modal::None => {}
         Modal::Input { title, buffer, kind, dir_sel } => render_input(f, title, buffer, kind, *dir_sel, size),
-        Modal::Confirm { prompt, .. } => render_confirm(f, prompt, size),
+        Modal::Confirm { title, prompt, destructive, .. } => {
+            render_confirm(f, title, prompt, *destructive, size)
+        }
         Modal::Message(msg) => render_message(f, msg, size),
         Modal::Help => render_help(f, size),
         Modal::AgentPicker { project, wt_path, sel } => render_agent_picker(f, app, project, wt_path, *sel, size),
@@ -93,63 +95,80 @@ pub fn render(f: &mut Frame, app: &App) {
 }
 
 fn render_agent_picker(f: &mut Frame, app: &App, project: &str, wt_path: &str, sel: usize, area: Rect) {
-    let r = centered(area, 60, 10);
-    f.render_widget(Clear, r);
     let wt_name = crate::app::path_basename(wt_path);
     let title = if project.is_empty() {
         format!(" Start session · {} ", wt_name)
     } else {
         format!(" Start session · {} / {} ", project, wt_name)
     };
+    // Size to fit all agents + chrome (top pad, list, hint).
+    let body_rows = Agent::ALL.len() as u16;
+    let h = body_rows + 5;
+    let r = centered(area, 64, h);
+    f.render_widget(Clear, r);
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::MAGENTA))
         .style(base_style());
-
-    let items: Vec<ListItem> = Agent::ALL
-        .iter()
-        .enumerate()
-        .map(|(i, a)| {
-            let is_default = app.store.default_agent == Some(*a);
-            let marker = if is_default { " ★ default" } else { "" };
-            let prefix = if i == sel { "▶ " } else { "  " };
-            let style = if i == sel {
-                Style::default().fg(theme::FG).bg(theme::BLUE).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme::FG)
-            };
-            ListItem::new(Line::from(vec![
-                Span::raw(prefix),
-                Span::styled(a.label(), style),
-                Span::styled(marker, Style::default().fg(theme::YELLOW)),
-            ]))
-        })
-        .collect();
-
     f.render_widget(block, r);
+
     let inner = Rect {
         x: r.x + 2,
         y: r.y + 1,
         width: r.width.saturating_sub(4),
         height: r.height.saturating_sub(2),
     };
-    f.render_widget(List::new(items).style(base_style()), inner);
+    let layout = Layout::vertical([
+        Constraint::Length(1), // top pad
+        Constraint::Min(1),    // list
+        Constraint::Length(1), // hint
+    ])
+    .split(inner);
 
-    let hint = Rect {
-        x: inner.x,
-        y: inner.y + inner.height.saturating_sub(1),
-        width: inner.width,
-        height: 1,
-    };
+    let items: Vec<ListItem> = Agent::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let is_default = app.store.default_agent == Some(*a);
+            let prefix = if i == sel { "▸ " } else { "  " };
+            let label_style = if i == sel {
+                Style::default().fg(theme::FG).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::FG)
+            };
+            let mut spans = vec![
+                Span::styled(prefix, Style::default().fg(theme::MAGENTA)),
+                Span::styled(a.label().to_string(), label_style),
+            ];
+            if is_default {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    "default",
+                    Style::default().fg(theme::YELLOW).add_modifier(Modifier::ITALIC),
+                ));
+            }
+            let line = Line::from(spans);
+            if i == sel {
+                ListItem::new(line).style(Style::default().bg(theme::BG_HIGHLIGHT))
+            } else {
+                ListItem::new(line)
+            }
+        })
+        .collect();
+
+    f.render_widget(List::new(items).style(base_style()), layout[1]);
+
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "j/k move   ↵ launch   space default   esc cancel",
-            Style::default().fg(theme::COMMENT),
-        )))
+        Paragraph::new(hint_line(&[
+            ("↑↓", "move"),
+            ("↵", "launch"),
+            ("space", "set default"),
+            ("esc", "cancel"),
+        ]))
         .style(base_style()),
-        hint,
+        layout[2],
     );
 }
 
@@ -701,12 +720,32 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     Rect { x, y, width: w, height: h }
 }
 
+/// Build a footer hint line: `key  verb   key  verb`.
+/// Keys render in FG_DARK, verbs in COMMENT, separated by three spaces.
+fn hint_line(pairs: &[(&str, &str)]) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(pairs.len() * 4);
+    for (i, (key, verb)) in pairs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("   ", Style::default().fg(theme::COMMENT)));
+        }
+        spans.push(Span::styled(
+            key.to_string(),
+            Style::default().fg(theme::FG_DARK).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            verb.to_string(),
+            Style::default().fg(theme::COMMENT),
+        ));
+    }
+    Line::from(spans)
+}
+
 fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_sel: usize, area: Rect) {
     let show_dirs = matches!(kind, InputKind::AddProjectPath);
-    let height = if show_dirs { 16 } else { 5 };
+    let height = if show_dirs { 18 } else { 7 };
     let r = centered(area, 70, height);
     f.render_widget(Clear, r);
-    f.render_widget(Block::default().style(base_style()), r);
     let block = Block::default()
         .title(format!(" {} ", title))
         .borders(Borders::ALL)
@@ -716,31 +755,60 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
     f.render_widget(block, r);
 
     let inner = Rect {
-        x: r.x + 1,
+        x: r.x + 2,
         y: r.y + 1,
-        width: r.width.saturating_sub(2),
+        width: r.width.saturating_sub(4),
         height: r.height.saturating_sub(2),
     };
 
-    let input_area = Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 };
-    let text = format!("{}_", buffer);
+    // Vertical rhythm: top pad, input row, gap, (optional list), hint row.
+    let layout = if show_dirs {
+        Layout::vertical([
+            Constraint::Length(1), // top pad
+            Constraint::Length(1), // input
+            Constraint::Length(1), // divider/label
+            Constraint::Min(1),    // dir list
+            Constraint::Length(1), // hint
+        ])
+        .split(inner)
+    } else {
+        Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner)
+    };
+
+    // Input line with a real caret (reverse block at end of buffer).
+    let input_row = layout[1];
+    let input_line = Line::from(vec![
+        Span::styled(buffer.to_string(), Style::default().fg(theme::FG)),
+        Span::styled(" ", Style::default().bg(theme::FG).fg(theme::BG)),
+    ]);
     f.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: false }).style(base_style()),
-        input_area,
+        Paragraph::new(input_line).style(base_style()),
+        input_row,
     );
 
-    if show_dirs && inner.height > 2 {
-        let list_area = Rect {
-            x: inner.x,
-            y: inner.y + 2,
-            width: inner.width,
-            height: inner.height - 2,
-        };
+    if show_dirs {
+        let label_row = layout[2];
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "matches",
+                Style::default().fg(theme::COMMENT).add_modifier(Modifier::ITALIC),
+            ))
+            .style(base_style()),
+            label_row,
+        );
+
+        let list_area = layout[3];
         let entries = crate::app::list_dirs(buffer);
         if entries.is_empty() {
             f.render_widget(
                 Paragraph::new(Span::styled(
-                    "(no matches)",
+                    "no matches",
                     Style::default().fg(theme::COMMENT).add_modifier(Modifier::ITALIC),
                 ))
                 .style(base_style()),
@@ -754,63 +822,113 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
             let list = List::new(items)
                 .style(base_style())
                 .highlight_style(
-                    Style::default().bg(theme::BLUE).fg(theme::FG).add_modifier(Modifier::BOLD),
+                    Style::default().bg(theme::BG_HIGHLIGHT).fg(theme::FG).add_modifier(Modifier::BOLD),
                 );
             let mut state = ListState::default();
             state.select(Some(dir_sel));
             f.render_stateful_widget(list, list_area, &mut state);
         }
+
+        let hint_row = layout[4];
+        f.render_widget(
+            Paragraph::new(hint_line(&[
+                ("↵", "submit"),
+                ("↑↓", "pick"),
+                ("esc", "cancel"),
+            ]))
+            .style(base_style()),
+            hint_row,
+        );
+    } else {
+        let hint_row = layout[3];
+        f.render_widget(
+            Paragraph::new(hint_line(&[("↵", "submit"), ("esc", "cancel")]))
+                .style(base_style()),
+            hint_row,
+        );
     }
 }
 
-fn render_confirm(f: &mut Frame, prompt: &str, area: Rect) {
-    let r = centered(area, 70, 6);
+fn render_confirm(f: &mut Frame, title: &str, prompt: &str, destructive: bool, area: Rect) {
+    let border = if destructive { theme::RED } else { theme::MAGENTA };
+    // Size to content: width tracks the longer of title or prompt.
+    let content_w = prompt.chars().count().max(title.chars().count() + 2);
+    let w = (content_w as u16 + 6).clamp(44, 72);
+    let r = centered(area, w, 7);
     f.render_widget(Clear, r);
     let block = Block::default()
-        .title(" Confirm ")
+        .title(format!(" {} ", title))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::RED))
+        .border_style(Style::default().fg(border))
         .style(base_style());
-    let lines = vec![
-        Line::from(prompt.to_string()),
-        Line::from(""),
-        Line::from(Span::styled(
-            "y = yes    n / esc = no",
-            Style::default().fg(theme::COMMENT),
-        )),
-    ];
+    f.render_widget(block, r);
+
+    let inner = Rect {
+        x: r.x + 2,
+        y: r.y + 1,
+        width: r.width.saturating_sub(4),
+        height: r.height.saturating_sub(2),
+    };
+    let layout = Layout::vertical([
+        Constraint::Length(1), // top pad
+        Constraint::Min(1),    // prompt
+        Constraint::Length(1), // hint
+    ])
+    .split(inner);
+
     f.render_widget(
-        Paragraph::new(lines).block(block).wrap(Wrap { trim: false }).style(base_style()),
-        r,
+        Paragraph::new(prompt.to_string())
+            .wrap(Wrap { trim: false })
+            .style(Style::default().bg(theme::BG).fg(theme::FG)),
+        layout[1],
+    );
+    let verb = if destructive { "delete" } else { "confirm" };
+    f.render_widget(
+        Paragraph::new(hint_line(&[("y", verb), ("n / esc", "cancel")])).style(base_style()),
+        layout[2],
     );
 }
 
 fn render_message(f: &mut Frame, msg: &str, area: Rect) {
-    let r = centered(area, 70, 6);
+    let w = (msg.chars().count() as u16 + 6).clamp(40, 72);
+    let r = centered(area, w, 7);
     f.render_widget(Clear, r);
     let block = Block::default()
         .title(" Notice ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::YELLOW))
+        .border_style(Style::default().fg(theme::COMMENT))
         .style(base_style());
-    let lines = vec![
-        Line::from(msg.to_string()),
-        Line::from(""),
-        Line::from(Span::styled(
-            "press any key",
-            Style::default().fg(theme::COMMENT),
-        )),
-    ];
+    f.render_widget(block, r);
+
+    let inner = Rect {
+        x: r.x + 2,
+        y: r.y + 1,
+        width: r.width.saturating_sub(4),
+        height: r.height.saturating_sub(2),
+    };
+    let layout = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
     f.render_widget(
-        Paragraph::new(lines).block(block).wrap(Wrap { trim: false }).style(base_style()),
-        r,
+        Paragraph::new(msg.to_string())
+            .wrap(Wrap { trim: false })
+            .style(base_style()),
+        layout[1],
+    );
+    f.render_widget(
+        Paragraph::new(hint_line(&[("↵ / esc", "dismiss")])).style(base_style()),
+        layout[2],
     );
 }
 
 fn render_help(f: &mut Frame, area: Rect) {
-    let r = centered(area, 64, 24);
+    let r = centered(area, 68, 26);
     f.render_widget(Clear, r);
     let block = Block::default()
         .title(" Help ")
@@ -818,45 +936,84 @@ fn render_help(f: &mut Frame, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::CYAN))
         .style(base_style());
-    let lines = vec![
+    f.render_widget(block, r);
+
+    let inner = Rect {
+        x: r.x + 2,
+        y: r.y + 1,
+        width: r.width.saturating_sub(4),
+        height: r.height.saturating_sub(2),
+    };
+    let layout = Layout::vertical([
+        Constraint::Length(1), // top pad
+        Constraint::Min(1),    // body
+        Constraint::Length(1), // hint
+    ])
+    .split(inner);
+
+    let body = layout[1];
+    let cols = Layout::horizontal([Constraint::Length(16), Constraint::Min(10)]).split(body);
+    let keys_col = cols[0];
+    let verbs_col = cols[1];
+
+    let section = |s: &'static str| {
         Line::from(Span::styled(
-            "Browser",
+            s,
             Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
-        )),
-        Line::from("j/k or ↑/↓     move"),
-        Line::from("h / l / ← / →  focus projects / worktrees   tab toggles"),
-        Line::from("enter          focus worktrees / open session (uses default)"),
-        Line::from("P              open worktree, always show session picker"),
-        Line::from("a / d          add / delete   r  refresh"),
-        Line::from("Ctrl-g         jump to active session pane"),
-        Line::from("q / esc        quit"),
-        Line::from(""),
+        ))
+    };
+    let key = |s: &'static str| {
         Line::from(Span::styled(
-            "Sessions sidebar",
-            Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
-        )),
-        Line::from("Ctrl-g / ↵     focus the session pane"),
-        Line::from("esc            back to projects browser"),
-        Line::from("j / k          next / prev session"),
-        Line::from("1-9            jump to session N"),
-        Line::from("x              kill active session"),
-        Line::from("c / C          new session for active (default / pick)"),
-        Line::from("t              new terminal for active session's worktree"),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Session pane",
-            Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
-        )),
-        Line::from("Ctrl-g         move focus to the Sessions sidebar"),
-        Line::from("(all other keys are forwarded to the agent)"),
-        Line::from(""),
-        Line::from(Span::styled(
-            "press any key to close",
-            Style::default().fg(theme::COMMENT),
-        )),
+            s,
+            Style::default().fg(theme::FG_DARK).add_modifier(Modifier::BOLD),
+        ))
+    };
+    let verb = |s: &'static str| Line::from(Span::styled(s, Style::default().fg(theme::FG)));
+    let blank = || Line::from("");
+
+    let entries: Vec<(Line<'static>, Line<'static>)> = vec![
+        (section("Browser"), Line::from("")),
+        (key("j k  ↑ ↓"), verb("move")),
+        (key("h l  ← →"), verb("switch projects ↔ worktrees")),
+        (key("tab"), verb("toggle panes")),
+        (key("↵"), verb("open session (default agent)")),
+        (key("P"), verb("open with agent picker")),
+        (key("a  d"), verb("add  delete")),
+        (key("r"), verb("refresh")),
+        (key("Ctrl-g"), verb("jump to active session")),
+        (key("q  esc"), verb("quit")),
+        (blank(), blank()),
+        (section("Sessions sidebar"), Line::from("")),
+        (key("Ctrl-g  ↵"), verb("focus session PTY")),
+        (key("esc"), verb("back to browser")),
+        (key("j  k"), verb("prev  next session")),
+        (key("1–9"), verb("jump to session N")),
+        (key("x"), verb("kill active session")),
+        (key("c  C"), verb("new session (default  pick)")),
+        (key("t"), verb("new terminal in worktree")),
+        (blank(), blank()),
+        (section("Session pane"), Line::from("")),
+        (key("Ctrl-g"), verb("focus sidebar")),
+        (
+            Line::from(Span::styled(
+                "(other keys)",
+                Style::default().fg(theme::COMMENT).add_modifier(Modifier::ITALIC),
+            )),
+            Line::from(Span::styled(
+                "forwarded to agent",
+                Style::default().fg(theme::COMMENT),
+            )),
+        ),
     ];
+
+    let (keys_lines, verbs_lines): (Vec<Line<'static>>, Vec<Line<'static>>) =
+        entries.into_iter().unzip();
+
+    f.render_widget(Paragraph::new(keys_lines).style(base_style()), keys_col);
+    f.render_widget(Paragraph::new(verbs_lines).style(base_style()), verbs_col);
+
     f.render_widget(
-        Paragraph::new(lines).block(block).alignment(Alignment::Left).style(base_style()),
-        r,
+        Paragraph::new(hint_line(&[("↵ / esc", "close")])).style(base_style()),
+        layout[2],
     );
 }
