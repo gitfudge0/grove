@@ -58,7 +58,38 @@ pub fn list_worktrees(project_path: &str) -> Vec<Worktree> {
     if result.len() > 1 {
         result[1..].sort_by(|a, b| b.mtime.cmp(&a.mtime));
     }
+    // Guarantee the project root is always present at the top, even if git
+    // emitted nothing (not a repo / fresh init with no HEAD) or somehow didn't
+    // include it. The root is the user's default landing spot.
+    let has_root = result.iter().any(|w| w.path == project_path);
+    if !has_root {
+        let branch = current_branch(project_path);
+        result.insert(
+            0,
+            Worktree {
+                path: project_path.to_string(),
+                branch: if branch.is_empty() { "—".into() } else { branch },
+                mtime: worktree_mtime(project_path),
+                is_main: true,
+            },
+        );
+    }
     result
+}
+
+/// Branch checked out at `wt_path`, or `(detached)` if HEAD is detached.
+/// Single fast shell-out — safe to call at session spawn but not per render.
+pub fn current_branch(wt_path: &str) -> String {
+    let out = Command::new("git")
+        .args(["-C", wt_path, "branch", "--show-current"])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() { "(detached)".into() } else { s }
+        }
+        _ => String::new(),
+    }
 }
 
 fn worktree_mtime(path: &str) -> Option<SystemTime> {

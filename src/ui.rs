@@ -25,7 +25,7 @@ pub fn agent_pane_inner(frame: Rect) -> Rect {
         Constraint::Length(1),
     ])
     .split(frame);
-    let h = Layout::horizontal([Constraint::Length(30), Constraint::Min(10)]).split(v[1]);
+    let h = Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)]).split(v[1]);
     let a = h[1];
     Rect {
         x: a.x + 1,
@@ -57,9 +57,9 @@ pub fn render(f: &mut Frame, app: &App) {
         render_empty(f, vchunks[1]);
     } else {
         let constraints = match app.ui_mode {
-            UiMode::Browser => [Constraint::Percentage(28), Constraint::Percentage(72)],
+            UiMode::Browser => [Constraint::Percentage(30), Constraint::Percentage(70)],
             UiMode::Agent | UiMode::SessionList => {
-                [Constraint::Length(30), Constraint::Min(10)]
+                [Constraint::Percentage(30), Constraint::Percentage(70)]
             }
         };
         let hchunks = Layout::default()
@@ -462,16 +462,57 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
                     SessionStatus::Running => ("●", Style::default().fg(theme::GREEN)),
                     SessionStatus::Exited(_) => ("○", Style::default().fg(theme::FG_DARK)),
                 };
-                items.push(ListItem::new(Line::from(vec![
+                let idx_str = format!("{} ", i + 1);
+                let mut header_spans = vec![
                     Span::styled(child, Style::default().fg(theme::COMMENT)),
-                    Span::styled(format!("{} ", i + 1), Style::default().fg(theme::COMMENT)),
+                    Span::styled(idx_str.clone(), Style::default().fg(theme::COMMENT)),
                     Span::styled(dot, dot_style),
                     Span::raw(" "),
                     Span::styled(
                         s.agent.label(),
                         Style::default().fg(theme::FG).add_modifier(Modifier::BOLD),
                     ),
-                ])));
+                ];
+                if !s.branch.is_empty() {
+                    let branch_str = format!("[{}]", s.branch);
+                    // List inner width = area.width - 2 (borders) - 2 (highlight symbol).
+                    let usable = area.width.saturating_sub(4) as usize;
+                    let used = child.chars().count()
+                        + idx_str.chars().count()
+                        + 2  // dot + space
+                        + s.agent.label().chars().count();
+                    let pad = usable
+                        .saturating_sub(used)
+                        .saturating_sub(branch_str.chars().count())
+                        .max(1);
+                    header_spans.push(Span::raw(" ".repeat(pad)));
+                    header_spans.push(Span::styled(
+                        branch_str,
+                        Style::default().fg(theme::CYAN),
+                    ));
+                }
+                let header = Line::from(header_spans);
+                let subtitle = s.current_title().filter(|t| {
+                    !t.eq_ignore_ascii_case(&s.label)
+                        && !t.eq_ignore_ascii_case(s.agent.label())
+                });
+                let lines = match subtitle {
+                    Some(t) => vec![
+                        header,
+                        Line::from(vec![
+                            Span::styled(child, Style::default().fg(theme::COMMENT)),
+                            Span::raw("     "),
+                            Span::styled(
+                                t,
+                                Style::default()
+                                    .fg(theme::FG_DARK)
+                                    .add_modifier(Modifier::DIM),
+                            ),
+                        ]),
+                    ],
+                    None => vec![header],
+                };
+                items.push(ListItem::new(lines));
             }
         }
     }
@@ -504,7 +545,15 @@ fn render_agent(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(theme::COMMENT)
             };
-            (format!(" {} · {} ", session.project, session.label), style)
+            let osc = session.current_title().filter(|t| {
+                !t.eq_ignore_ascii_case(&session.label)
+                    && !t.eq_ignore_ascii_case(session.agent.label())
+            });
+            let t = match osc {
+                Some(osc) => format!(" {} · {} ({}) ", session.project, session.label, osc),
+                None => format!(" {} · {} ", session.project, session.label),
+            };
+            (t, style)
         }
         SessionStatus::Exited(code) => {
             let style = if focused {
