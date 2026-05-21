@@ -15,6 +15,8 @@ pub struct Store {
     pub projects: Vec<Project>,
     #[serde(default)]
     pub default_agent: Option<Agent>,
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 pub fn config_path() -> Result<PathBuf> {

@@ -248,6 +248,7 @@ fn handle_session_list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('c') => app.new_session_for_active(),
         KeyCode::Char('C') => app.new_session_for_active_pick(),
         KeyCode::Char('t') => app.new_terminal_for_active(),
+        KeyCode::Char('T') => app.open_theme_picker(),
         KeyCode::Char('?') => app.modal = Modal::Help,
         KeyCode::Char('q') => app.should_quit = true,
         _ => {}
@@ -296,6 +297,16 @@ fn handle_browser_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Enter => app.picker_submit(),
             _ => {}
         },
+        Modal::ThemePicker { .. } => match key.code {
+            KeyCode::Esc => app.theme_picker_cancel(),
+            KeyCode::Char('j') | KeyCode::Down => app.theme_picker_move(1),
+            KeyCode::Char('k') | KeyCode::Up => app.theme_picker_move(-1),
+            KeyCode::Char('h') | KeyCode::Left
+            | KeyCode::Char('l') | KeyCode::Right
+            | KeyCode::Tab | KeyCode::BackTab => app.theme_picker_switch_tab(),
+            KeyCode::Enter => app.theme_picker_submit()?,
+            _ => {}
+        },
         Modal::None => match key.code {
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.focus_active_session();
@@ -321,6 +332,7 @@ fn handle_browser_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Char('d') => app.start_delete(),
             KeyCode::Char('r') => app.refresh_worktrees(),
             KeyCode::Char('?') => app.modal = Modal::Help,
+            KeyCode::Char('T') => app.open_theme_picker(),
             KeyCode::Char('P') if matches!(app.focus, app::Pane::Worktrees) => {
                 app.open_worktree(true);
             }
