@@ -12,7 +12,7 @@ use ratatui::{
 };
 
 fn base_style() -> Style {
-    Style::default().bg(theme::BG).fg(theme::FG)
+    Style::default().bg(theme::current().bg).fg(theme::current().fg)
 }
 
 /// Inner rect of the agent pane for a given full-frame area. Mirrors the
@@ -91,7 +91,100 @@ pub fn render(f: &mut Frame, app: &App) {
         Modal::Message(msg) => render_message(f, msg, size),
         Modal::Help => render_help(f, size),
         Modal::AgentPicker { project, wt_path, sel } => render_agent_picker(f, app, project, wt_path, *sel, size),
+        Modal::ThemePicker { sel_dark, sel_light, tab, .. } => {
+            let sel = match tab {
+                theme::ThemeKind::Dark => *sel_dark,
+                theme::ThemeKind::Light => *sel_light,
+            };
+            render_theme_picker(f, sel, *tab, size);
+        }
     }
+}
+
+fn render_theme_picker(f: &mut Frame, sel: usize, tab: theme::ThemeKind, area: Rect) {
+    let t = theme::current();
+    let themes = theme::themes_of(tab);
+    // Cap modal height; the inner list scrolls when needed.
+    let h = (themes.len() as u16 + 6).min(22);
+    let r = centered(area, 48, h);
+    f.render_widget(Clear, r);
+    let block = Block::default()
+        .title(" Theme ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.magenta))
+        .style(base_style());
+    f.render_widget(block, r);
+
+    let inner = Rect {
+        x: r.x + 2,
+        y: r.y + 1,
+        width: r.width.saturating_sub(4),
+        height: r.height.saturating_sub(2),
+    };
+    let layout = Layout::vertical([
+        Constraint::Length(1), // tabs
+        Constraint::Length(1), // spacer
+        Constraint::Min(1),    // list
+        Constraint::Length(1), // hint
+    ])
+    .split(inner);
+
+    let tab_span = |label: &'static str, active: bool| {
+        if active {
+            Span::styled(
+                format!(" {} ", label),
+                Style::default().bg(t.magenta).fg(t.bg).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(
+                format!(" {} ", label),
+                Style::default().fg(t.fg_dark),
+            )
+        }
+    };
+    let tabs = Line::from(vec![
+        tab_span("Dark", tab == theme::ThemeKind::Dark),
+        Span::raw("  "),
+        tab_span("Light", tab == theme::ThemeKind::Light),
+    ]);
+    f.render_widget(Paragraph::new(tabs).style(base_style()), layout[0]);
+
+    let items: Vec<ListItem> = themes
+        .iter()
+        .enumerate()
+        .map(|(i, th)| {
+            let prefix = if i == sel { "▸ " } else { "  " };
+            let mut label_style = Style::default().fg(t.fg);
+            if i == sel {
+                label_style = label_style.add_modifier(Modifier::BOLD);
+            }
+            let line = Line::from(vec![
+                Span::styled(prefix, Style::default().fg(t.magenta)),
+                Span::styled(th.name.to_string(), label_style),
+            ]);
+            if i == sel {
+                ListItem::new(line).style(Style::default().bg(t.bg_highlight))
+            } else {
+                ListItem::new(line)
+            }
+        })
+        .collect();
+
+    let mut state = ListState::default();
+    state.select(Some(sel));
+    f.render_stateful_widget(List::new(items).style(base_style()), layout[2], &mut state);
+
+    f.render_widget(
+        Paragraph::new(hint_line(&[
+            ("↑↓", "preview"),
+            ("h/l", "tab"),
+            ("↵", "apply"),
+            ("esc", "cancel"),
+        ]))
+        .style(base_style()),
+        layout[3],
+    );
 }
 
 fn render_agent_picker(f: &mut Frame, app: &App, project: &str, wt_path: &str, sel: usize, area: Rect) {
@@ -110,7 +203,7 @@ fn render_agent_picker(f: &mut Frame, app: &App, project: &str, wt_path: &str, s
         .title(title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::MAGENTA))
+        .border_style(Style::default().fg(theme::current().magenta))
         .style(base_style());
     f.render_widget(block, r);
 
@@ -134,24 +227,24 @@ fn render_agent_picker(f: &mut Frame, app: &App, project: &str, wt_path: &str, s
             let is_default = app.store.default_agent == Some(*a);
             let prefix = if i == sel { "▸ " } else { "  " };
             let label_style = if i == sel {
-                Style::default().fg(theme::FG).add_modifier(Modifier::BOLD)
+                Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(theme::FG)
+                Style::default().fg(theme::current().fg)
             };
             let mut spans = vec![
-                Span::styled(prefix, Style::default().fg(theme::MAGENTA)),
+                Span::styled(prefix, Style::default().fg(theme::current().magenta)),
                 Span::styled(a.label().to_string(), label_style),
             ];
             if is_default {
                 spans.push(Span::raw("  "));
                 spans.push(Span::styled(
                     "default",
-                    Style::default().fg(theme::YELLOW).add_modifier(Modifier::ITALIC),
+                    Style::default().fg(theme::current().yellow).add_modifier(Modifier::ITALIC),
                 ));
             }
             let line = Line::from(spans);
             if i == sel {
-                ListItem::new(line).style(Style::default().bg(theme::BG_HIGHLIGHT))
+                ListItem::new(line).style(Style::default().bg(theme::current().bg_highlight))
             } else {
                 ListItem::new(line)
             }
@@ -174,9 +267,9 @@ fn render_agent_picker(f: &mut Frame, app: &App, project: &str, wt_path: &str, s
 
 fn active_style(focused: bool) -> Style {
     if focused {
-        Style::default().bg(theme::BG).fg(theme::CYAN).add_modifier(Modifier::BOLD)
+        Style::default().bg(theme::current().bg).fg(theme::current().cyan).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().bg(theme::BG).fg(theme::COMMENT)
+        Style::default().bg(theme::current().bg).fg(theme::current().comment)
     }
 }
 
@@ -196,7 +289,7 @@ fn render_banner(f: &mut Frame, app: &App, area: Rect) {
 
     let banner_lines: Vec<Line> = BANNER
         .iter()
-        .map(|l| Line::from(Span::styled(*l, Style::default().fg(theme::GREEN).add_modifier(Modifier::BOLD))))
+        .map(|l| Line::from(Span::styled(*l, Style::default().fg(theme::current().green).add_modifier(Modifier::BOLD))))
         .collect();
     f.render_widget(
         Paragraph::new(banner_lines).style(base_style()),
@@ -205,15 +298,15 @@ fn render_banner(f: &mut Frame, app: &App, area: Rect) {
 
     let version = env!("CARGO_PKG_VERSION");
 
-    let key = Style::default().fg(theme::COMMENT);
-    let accent = Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD);
+    let key = Style::default().fg(theme::current().comment);
+    let accent = Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD);
 
     let info = vec![
         Line::from(""),
         Line::from(vec![
             Span::styled("Grove", accent),
             Span::raw("  "),
-            Span::styled(format!("v{}", version), Style::default().fg(theme::YELLOW)),
+            Span::styled(format!("v{}", version), Style::default().fg(theme::current().yellow)),
             Span::raw("  "),
             Span::styled("· worktree launchpad for ai agents", key),
         ]),
@@ -234,22 +327,22 @@ fn render_empty(f: &mut Frame, area: Rect) {
         .title(" grove ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::CYAN))
+        .border_style(Style::default().fg(theme::current().cyan))
         .style(base_style());
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
             "No projects yet.",
-            Style::default().fg(theme::FG).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![
             Span::raw("Press "),
-            Span::styled("a", Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD)),
+            Span::styled("a", Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD)),
             Span::raw(" to add a project, "),
-            Span::styled("?", Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD)),
+            Span::styled("?", Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD)),
             Span::raw(" for help, "),
-            Span::styled("q", Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD)),
+            Span::styled("q", Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD)),
             Span::raw(" to quit."),
         ]),
     ];
@@ -288,14 +381,14 @@ fn render_projects(f: &mut Frame, app: &App, area: Rect) {
             .zip(running_by_project)
             .map(|(p, running)| {
                 let count_style = if running > 0 {
-                    Style::default().fg(theme::GREEN).add_modifier(Modifier::BOLD)
+                    Style::default().fg(theme::current().green).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(theme::COMMENT)
+                    Style::default().fg(theme::current().comment)
                 };
                 let spans = vec![
                     Span::styled(format!("{running:>count_width$}"), count_style),
                     Span::raw("  "),
-                    Span::styled(p.name.clone(), Style::default().fg(theme::FG).add_modifier(Modifier::BOLD)),
+                    Span::styled(p.name.clone(), Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD)),
                 ];
                 ListItem::new(Line::from(spans))
             })
@@ -314,8 +407,8 @@ fn render_projects(f: &mut Frame, app: &App, area: Rect) {
         .style(base_style())
         .highlight_style(
             Style::default()
-                .bg(if focused { theme::BLUE } else { theme::BG_HIGHLIGHT })
-                .fg(theme::FG)
+                .bg(if focused { theme::current().blue } else { theme::current().bg_highlight })
+                .fg(theme::current().fg)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol(if app.store.projects.is_empty() { "  " } else { "▶ " });
@@ -345,7 +438,7 @@ fn render_worktrees(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = if let Some(msg) = placeholder {
         vec![ListItem::new(Line::from(Span::styled(
             msg,
-            Style::default().fg(theme::FG_DARK).add_modifier(Modifier::ITALIC),
+            Style::default().fg(theme::current().fg_dark).add_modifier(Modifier::ITALIC),
         )))]
     } else { app
         .worktrees
@@ -354,22 +447,22 @@ fn render_worktrees(f: &mut Frame, app: &App, area: Rect) {
             let short = crate::app::path_basename(&w.path);
             let age = w.mtime.map(format_age).unwrap_or_else(|| "—".into());
             let mut spans = vec![
-                Span::styled(short, Style::default().fg(theme::FG).add_modifier(Modifier::BOLD)),
+                Span::styled(short, Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD)),
                 Span::raw("  "),
                 Span::styled(
                     format!("[{}]", w.branch),
-                    Style::default().fg(theme::YELLOW),
+                    Style::default().fg(theme::current().yellow),
                 ),
                 Span::raw("  "),
-                Span::styled(format!("{:>5} ago", age), Style::default().fg(theme::GREEN)),
+                Span::styled(format!("{:>5} ago", age), Style::default().fg(theme::current().green)),
                 Span::raw("  "),
-                Span::styled(w.path.clone(), Style::default().fg(theme::COMMENT)),
+                Span::styled(w.path.clone(), Style::default().fg(theme::current().comment)),
             ];
             if w.is_main {
                 spans.push(Span::raw("  "));
                 spans.push(Span::styled(
                     "● main checkout",
-                    Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
+                    Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD),
                 ));
             }
             let running = app
@@ -381,7 +474,7 @@ fn render_worktrees(f: &mut Frame, app: &App, area: Rect) {
                 spans.push(Span::raw("  "));
                 spans.push(Span::styled(
                     format!("●{running}"),
-                    Style::default().fg(theme::GREEN).add_modifier(Modifier::BOLD),
+                    Style::default().fg(theme::current().green).add_modifier(Modifier::BOLD),
                 ));
             }
             ListItem::new(Line::from(spans))
@@ -401,8 +494,8 @@ fn render_worktrees(f: &mut Frame, app: &App, area: Rect) {
         .style(base_style())
         .highlight_style(
             Style::default()
-                .bg(if focused { theme::BLUE } else { theme::BG_HIGHLIGHT })
-                .fg(theme::FG)
+                .bg(if focused { theme::current().blue } else { theme::current().bg_highlight })
+                .fg(theme::current().fg)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol(if placeholder.is_some() { "  " } else { "▶ " });
@@ -426,7 +519,7 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
     if app.sessions.is_empty() {
         let items = vec![ListItem::new(Line::from(Span::styled(
             "no sessions",
-            Style::default().fg(theme::FG_DARK).add_modifier(Modifier::ITALIC),
+            Style::default().fg(theme::current().fg_dark).add_modifier(Modifier::ITALIC),
         )))];
         let list = List::new(items).block(block).style(base_style()).highlight_symbol("  ");
         f.render_stateful_widget(list, area, &mut ListState::default());
@@ -449,7 +542,7 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
     for proj in projects {
         items.push(ListItem::new(Line::from(Span::styled(
             proj.to_string(),
-            Style::default().fg(theme::FG).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD),
         ))));
 
         // Worktree paths for this project, in first-seen order.
@@ -464,10 +557,10 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
             let last_wt = wi + 1 == wts.len();
             let (branch, child) = if last_wt { ("└ ", "   ") } else { ("├ ", "│  ") };
             items.push(ListItem::new(Line::from(vec![
-                Span::styled(branch, Style::default().fg(theme::COMMENT)),
+                Span::styled(branch, Style::default().fg(theme::current().comment)),
                 Span::styled(
                     crate::app::path_basename(wt),
-                    Style::default().fg(theme::CYAN),
+                    Style::default().fg(theme::current().cyan),
                 ),
             ])));
 
@@ -479,18 +572,18 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
                     sel_display = Some(items.len());
                 }
                 let (dot, dot_style) = match s.status() {
-                    SessionStatus::Running => ("●", Style::default().fg(theme::GREEN)),
-                    SessionStatus::Exited(_) => ("○", Style::default().fg(theme::FG_DARK)),
+                    SessionStatus::Running => ("●", Style::default().fg(theme::current().green)),
+                    SessionStatus::Exited(_) => ("○", Style::default().fg(theme::current().fg_dark)),
                 };
                 let idx_str = format!("{} ", i + 1);
                 let mut header_spans = vec![
-                    Span::styled(child, Style::default().fg(theme::COMMENT)),
-                    Span::styled(idx_str.clone(), Style::default().fg(theme::COMMENT)),
+                    Span::styled(child, Style::default().fg(theme::current().comment)),
+                    Span::styled(idx_str.clone(), Style::default().fg(theme::current().comment)),
                     Span::styled(dot, dot_style),
                     Span::raw(" "),
                     Span::styled(
                         s.agent.label(),
-                        Style::default().fg(theme::FG).add_modifier(Modifier::BOLD),
+                        Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD),
                     ),
                 ];
                 if !s.branch.is_empty() {
@@ -508,7 +601,7 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
                     header_spans.push(Span::raw(" ".repeat(pad)));
                     header_spans.push(Span::styled(
                         branch_str,
-                        Style::default().fg(theme::CYAN),
+                        Style::default().fg(theme::current().cyan),
                     ));
                 }
                 let header = Line::from(header_spans);
@@ -520,12 +613,12 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
                     Some(t) => vec![
                         header,
                         Line::from(vec![
-                            Span::styled(child, Style::default().fg(theme::COMMENT)),
+                            Span::styled(child, Style::default().fg(theme::current().comment)),
                             Span::raw("     "),
                             Span::styled(
                                 t,
                                 Style::default()
-                                    .fg(theme::FG_DARK)
+                                    .fg(theme::current().fg_dark)
                                     .add_modifier(Modifier::DIM),
                             ),
                         ]),
@@ -542,8 +635,8 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
         .style(base_style())
         .highlight_style(
             Style::default()
-                .bg(theme::BLUE)
-                .fg(theme::FG)
+                .bg(theme::current().blue)
+                .fg(theme::current().fg)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▶ ");
@@ -561,9 +654,9 @@ fn render_agent(f: &mut Frame, app: &App, area: Rect) {
     let (title, border) = match session.status() {
         SessionStatus::Running => {
             let style = if focused {
-                Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD)
+                Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(theme::COMMENT)
+                Style::default().fg(theme::current().comment)
             };
             let osc = session.current_title().filter(|t| {
                 !t.eq_ignore_ascii_case(&session.label)
@@ -577,9 +670,9 @@ fn render_agent(f: &mut Frame, app: &App, area: Rect) {
         }
         SessionStatus::Exited(code) => {
             let style = if focused {
-                Style::default().fg(theme::RED).add_modifier(Modifier::BOLD)
+                Style::default().fg(theme::current().red).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(theme::COMMENT)
+                Style::default().fg(theme::current().comment)
             };
             (
                 format!(
@@ -644,13 +737,13 @@ fn render_toast(f: &mut Frame, app: &App, area: Rect) {
     let r = Rect { x, y, width: w, height: 1 };
     f.render_widget(Clear, r);
     let p = Paragraph::new(msg)
-        .style(Style::default().bg(theme::BG).fg(theme::GREEN).add_modifier(Modifier::BOLD));
+        .style(Style::default().bg(theme::current().bg).fg(theme::current().green).add_modifier(Modifier::BOLD));
     f.render_widget(p, r);
 }
 
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let p = Paragraph::new(app.status.clone())
-        .style(Style::default().bg(theme::BG).fg(theme::GREEN));
+        .style(Style::default().bg(theme::current().bg).fg(theme::current().green));
     f.render_widget(p, area);
 }
 
@@ -683,8 +776,8 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
             ("q", " quit"),
         ],
     };
-    let key = Style::default().fg(theme::CYAN);
-    let dim = Style::default().fg(theme::FG_DARK);
+    let key = Style::default().fg(theme::current().cyan);
+    let dim = Style::default().fg(theme::current().fg_dark);
     let spans: Vec<Span> = pairs
         .iter()
         .flat_map(|(k, d)| [Span::styled(*k, key), Span::styled(*d, dim)])
@@ -726,16 +819,16 @@ fn hint_line(pairs: &[(&str, &str)]) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(pairs.len() * 4);
     for (i, (key, verb)) in pairs.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled("   ", Style::default().fg(theme::COMMENT)));
+            spans.push(Span::styled("   ", Style::default().fg(theme::current().comment)));
         }
         spans.push(Span::styled(
             key.to_string(),
-            Style::default().fg(theme::FG_DARK).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::current().fg_dark).add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
             verb.to_string(),
-            Style::default().fg(theme::COMMENT),
+            Style::default().fg(theme::current().comment),
         ));
     }
     Line::from(spans)
@@ -750,7 +843,7 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
         .title(format!(" {} ", title))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::MAGENTA))
+        .border_style(Style::default().fg(theme::current().magenta))
         .style(base_style());
     f.render_widget(block, r);
 
@@ -784,8 +877,8 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
     // Input line with a real caret (reverse block at end of buffer).
     let input_row = layout[1];
     let input_line = Line::from(vec![
-        Span::styled(buffer.to_string(), Style::default().fg(theme::FG)),
-        Span::styled(" ", Style::default().bg(theme::FG).fg(theme::BG)),
+        Span::styled(buffer.to_string(), Style::default().fg(theme::current().fg)),
+        Span::styled(" ", Style::default().bg(theme::current().fg).fg(theme::current().bg)),
     ]);
     f.render_widget(
         Paragraph::new(input_line).style(base_style()),
@@ -797,7 +890,7 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
         f.render_widget(
             Paragraph::new(Span::styled(
                 "matches",
-                Style::default().fg(theme::COMMENT).add_modifier(Modifier::ITALIC),
+                Style::default().fg(theme::current().comment).add_modifier(Modifier::ITALIC),
             ))
             .style(base_style()),
             label_row,
@@ -809,7 +902,7 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
             f.render_widget(
                 Paragraph::new(Span::styled(
                     "no matches",
-                    Style::default().fg(theme::COMMENT).add_modifier(Modifier::ITALIC),
+                    Style::default().fg(theme::current().comment).add_modifier(Modifier::ITALIC),
                 ))
                 .style(base_style()),
                 list_area,
@@ -817,12 +910,12 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
         } else {
             let items: Vec<ListItem> = entries
                 .into_iter()
-                .map(|s| ListItem::new(Span::styled(s, Style::default().fg(theme::CYAN))))
+                .map(|s| ListItem::new(Span::styled(s, Style::default().fg(theme::current().cyan))))
                 .collect();
             let list = List::new(items)
                 .style(base_style())
                 .highlight_style(
-                    Style::default().bg(theme::BG_HIGHLIGHT).fg(theme::FG).add_modifier(Modifier::BOLD),
+                    Style::default().bg(theme::current().bg_highlight).fg(theme::current().fg).add_modifier(Modifier::BOLD),
                 );
             let mut state = ListState::default();
             state.select(Some(dir_sel));
@@ -850,7 +943,7 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
 }
 
 fn render_confirm(f: &mut Frame, title: &str, prompt: &str, destructive: bool, area: Rect) {
-    let border = if destructive { theme::RED } else { theme::MAGENTA };
+    let border = if destructive { theme::current().red } else { theme::current().magenta };
     // Size to content: width tracks the longer of title or prompt.
     let content_w = prompt.chars().count().max(title.chars().count() + 2);
     let w = (content_w as u16 + 6).clamp(44, 72);
@@ -880,7 +973,7 @@ fn render_confirm(f: &mut Frame, title: &str, prompt: &str, destructive: bool, a
     f.render_widget(
         Paragraph::new(prompt.to_string())
             .wrap(Wrap { trim: false })
-            .style(Style::default().bg(theme::BG).fg(theme::FG)),
+            .style(Style::default().bg(theme::current().bg).fg(theme::current().fg)),
         layout[1],
     );
     let verb = if destructive { "delete" } else { "confirm" };
@@ -898,7 +991,7 @@ fn render_message(f: &mut Frame, msg: &str, area: Rect) {
         .title(" Notice ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::COMMENT))
+        .border_style(Style::default().fg(theme::current().comment))
         .style(base_style());
     f.render_widget(block, r);
 
@@ -934,7 +1027,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         .title(" Help ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::CYAN))
+        .border_style(Style::default().fg(theme::current().cyan))
         .style(base_style());
     f.render_widget(block, r);
 
@@ -959,16 +1052,16 @@ fn render_help(f: &mut Frame, area: Rect) {
     let section = |s: &'static str| {
         Line::from(Span::styled(
             s,
-            Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD),
         ))
     };
     let key = |s: &'static str| {
         Line::from(Span::styled(
             s,
-            Style::default().fg(theme::FG_DARK).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::current().fg_dark).add_modifier(Modifier::BOLD),
         ))
     };
-    let verb = |s: &'static str| Line::from(Span::styled(s, Style::default().fg(theme::FG)));
+    let verb = |s: &'static str| Line::from(Span::styled(s, Style::default().fg(theme::current().fg)));
     let blank = || Line::from("");
 
     let entries: Vec<(Line<'static>, Line<'static>)> = vec![
@@ -981,6 +1074,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         (key("a  d"), verb("add  delete")),
         (key("r"), verb("refresh")),
         (key("Ctrl-g"), verb("jump to active session")),
+        (key("T"), verb("theme picker")),
         (key("q  esc"), verb("quit")),
         (blank(), blank()),
         (section("Sessions sidebar"), Line::from("")),
@@ -997,11 +1091,11 @@ fn render_help(f: &mut Frame, area: Rect) {
         (
             Line::from(Span::styled(
                 "(other keys)",
-                Style::default().fg(theme::COMMENT).add_modifier(Modifier::ITALIC),
+                Style::default().fg(theme::current().comment).add_modifier(Modifier::ITALIC),
             )),
             Line::from(Span::styled(
                 "forwarded to agent",
-                Style::default().fg(theme::COMMENT),
+                Style::default().fg(theme::current().comment),
             )),
         ),
     ];

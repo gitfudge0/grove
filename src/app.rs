@@ -3,9 +3,15 @@ use crate::git::{self, Worktree};
 use crate::launch;
 use crate::session::Session;
 use crate::storage::{self, Project, Store};
+use crate::theme;
 use crate::tmux;
 use anyhow::Result;
 use std::time::{Duration, Instant};
+
+pub fn cycle(cur: usize, delta: i32, len: usize) -> usize {
+    if len == 0 { return 0 }
+    (cur as i32 + delta).rem_euclid(len as i32) as usize
+}
 
 pub struct Toast {
     pub message: String,
@@ -77,6 +83,12 @@ pub enum Modal {
         wt_path: String,
         sel: usize,
     },
+    ThemePicker {
+        sel_dark: usize,
+        sel_light: usize,
+        tab: crate::theme::ThemeKind,
+        original: crate::theme::Theme,
+    },
 }
 
 #[derive(Clone)]
@@ -127,6 +139,9 @@ impl App {
 impl App {
     pub fn new() -> Result<Self> {
         let store = storage::load()?;
+        if let Some(name) = store.theme.as_deref() {
+            theme::set_by_name(name);
+        }
         let mut app = App {
             store,
             worktrees: vec![],
@@ -458,12 +473,8 @@ impl App {
     }
 
     pub fn session_cycle(&mut self, delta: i32) {
-        if self.sessions.is_empty() {
-            return;
-        }
-        let len = self.sessions.len() as i32;
-        let cur = self.active_session.unwrap_or(0) as i32;
-        let next = (cur + delta).rem_euclid(len) as usize;
+        if self.sessions.is_empty() { return }
+        let next = cycle(self.active_session.unwrap_or(0), delta, self.sessions.len());
         self.active_session = Some(next);
     }
 
@@ -493,9 +504,7 @@ impl App {
 
     pub fn picker_move(&mut self, delta: i32) {
         if let Modal::AgentPicker { sel, .. } = &mut self.modal {
-            let len = Agent::ALL.len() as i32;
-            let next = (*sel as i32 + delta).rem_euclid(len);
-            *sel = next as usize;
+            *sel = cycle(*sel, delta, Agent::ALL.len());
         }
     }
 
@@ -519,13 +528,77 @@ impl App {
         self.launch_agent(Agent::ALL[sel], wt_path);
     }
 
+    pub fn open_theme_picker(&mut self) {
+        let original = theme::current();
+        let tab = original.kind;
+        let sel = theme::themes_of(tab)
+            .iter()
+            .position(|t| t.name == original.name)
+            .unwrap_or(0);
+        let (sel_dark, sel_light) = match tab {
+            theme::ThemeKind::Dark => (sel, 0),
+            theme::ThemeKind::Light => (0, sel),
+        };
+        self.modal = Modal::ThemePicker { sel_dark, sel_light, tab, original };
+    }
+
+    pub fn theme_picker_move(&mut self, delta: i32) {
+        let Modal::ThemePicker { sel_dark, sel_light, tab, .. } = &mut self.modal else { return };
+        let themes = theme::themes_of(*tab);
+        if themes.is_empty() { return }
+        let sel = match tab {
+            theme::ThemeKind::Dark => sel_dark,
+            theme::ThemeKind::Light => sel_light,
+        };
+        *sel = cycle(*sel, delta, themes.len());
+        theme::set(themes[*sel]);
+    }
+
+    pub fn theme_picker_switch_tab(&mut self) {
+        let Modal::ThemePicker { sel_dark, sel_light, tab, .. } = &mut self.modal else { return };
+        *tab = match *tab {
+            theme::ThemeKind::Dark => theme::ThemeKind::Light,
+            theme::ThemeKind::Light => theme::ThemeKind::Dark,
+        };
+        let themes = theme::themes_of(*tab);
+        let sel = match tab {
+            theme::ThemeKind::Dark => *sel_dark,
+            theme::ThemeKind::Light => *sel_light,
+        };
+        if let Some(t) = themes.get(sel) {
+            theme::set(*t);
+        }
+    }
+
+    pub fn theme_picker_submit(&mut self) -> Result<()> {
+        let modal = std::mem::replace(&mut self.modal, Modal::None);
+        let Modal::ThemePicker { sel_dark, sel_light, tab, .. } = modal else { return Ok(()) };
+        let themes = theme::themes_of(tab);
+        let sel = match tab {
+            theme::ThemeKind::Dark => sel_dark,
+            theme::ThemeKind::Light => sel_light,
+        };
+        let Some(chosen) = themes.get(sel).copied() else { return Ok(()) };
+        theme::set(chosen);
+        self.store.theme = Some(chosen.name.to_string());
+        storage::save(&self.store)?;
+        self.status = format!("theme: {}", chosen.name);
+        Ok(())
+    }
+
+    pub fn theme_picker_cancel(&mut self) {
+        let modal = std::mem::replace(&mut self.modal, Modal::None);
+        if let Modal::ThemePicker { original, .. } = modal {
+            theme::set(original);
+        }
+    }
+
     pub fn input_dir_move(&mut self, delta: i32) {
         let Modal::Input { buffer, kind, dir_sel, .. } = &mut self.modal else { return };
         if !matches!(kind, InputKind::AddProjectPath) { return }
         let entries = list_dirs(buffer);
         if entries.is_empty() { *dir_sel = 0; return }
-        let len = entries.len() as i32;
-        *dir_sel = (*dir_sel as i32 + delta).rem_euclid(len) as usize;
+        *dir_sel = cycle(*dir_sel, delta, entries.len());
     }
 
     pub fn input_dir_pick(&mut self) {
