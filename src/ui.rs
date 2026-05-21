@@ -509,20 +509,47 @@ fn render_worktrees(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
     let focused = app.ui_mode == UiMode::SessionList;
+    let running = app
+        .sessions
+        .iter()
+        .filter(|s| s.status() == SessionStatus::Running)
+        .count();
+    let title = if app.sessions.is_empty() {
+        " Sessions ".to_string()
+    } else {
+        format!(" Sessions · {} ", running)
+    };
     let block = Block::default()
-        .title(" Sessions ")
+        .title(title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(active_style(focused))
         .style(base_style());
 
     if app.sessions.is_empty() {
-        let items = vec![ListItem::new(Line::from(Span::styled(
-            "no sessions",
-            Style::default().fg(theme::current().fg_dark).add_modifier(Modifier::ITALIC),
-        )))];
-        let list = List::new(items).block(block).style(base_style()).highlight_symbol("  ");
-        f.render_stateful_widget(list, area, &mut ListState::default());
+        f.render_widget(block.clone(), area);
+        let inner = block.inner(area);
+        let layout = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "no sessions yet",
+                Style::default().fg(theme::current().fg_dark).add_modifier(Modifier::ITALIC),
+            ))
+            .alignment(Alignment::Center)
+            .style(base_style()),
+            layout[1],
+        );
+        f.render_widget(
+            Paragraph::new(hint_line(&[("esc", "browser"), ("?", "help")]))
+                .alignment(Alignment::Center)
+                .style(base_style()),
+            layout[2],
+        );
         return;
     }
 
@@ -539,7 +566,10 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    for proj in projects {
+    for (pi, proj) in projects.iter().enumerate() {
+        if pi > 0 {
+            items.push(ListItem::new(Line::from("")));
+        }
         items.push(ListItem::new(Line::from(Span::styled(
             proj.to_string(),
             Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD),
@@ -548,7 +578,7 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
         // Worktree paths for this project, in first-seen order.
         let mut wts: Vec<&str> = Vec::new();
         for s in &app.sessions {
-            if s.project == proj && !wts.contains(&s.wt_path.as_str()) {
+            if s.project == *proj && !wts.contains(&s.wt_path.as_str()) {
                 wts.push(&s.wt_path);
             }
         }
@@ -565,7 +595,7 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
             ])));
 
             for (i, s) in app.sessions.iter().enumerate() {
-                if s.project != proj || s.wt_path != **wt {
+                if s.project != *proj || s.wt_path != **wt {
                     continue;
                 }
                 if app.active_session == Some(i) {
@@ -573,7 +603,12 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
                 }
                 let (dot, dot_style) = match s.status() {
                     SessionStatus::Running => ("●", Style::default().fg(theme::current().green)),
-                    SessionStatus::Exited(_) => ("○", Style::default().fg(theme::current().fg_dark)),
+                    SessionStatus::Exited(Some(c)) if c != 0 => {
+                        ("○", Style::default().fg(theme::current().red))
+                    }
+                    SessionStatus::Exited(_) => {
+                        ("○", Style::default().fg(theme::current().fg_dark))
+                    }
                 };
                 let idx_str = format!("{} ", i + 1);
                 let mut header_spans = vec![
@@ -588,8 +623,8 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
                 ];
                 if !s.branch.is_empty() {
                     let branch_str = format!("[{}]", s.branch);
-                    // List inner width = area.width - 2 (borders) - 2 (highlight symbol).
-                    let usable = area.width.saturating_sub(4) as usize;
+                    // List inner width = area.width - 2 (borders). No highlight symbol.
+                    let usable = area.width.saturating_sub(2) as usize;
                     let used = child.chars().count()
                         + idx_str.chars().count()
                         + 2  // dot + space
@@ -615,12 +650,7 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
                         Line::from(vec![
                             Span::styled(child, Style::default().fg(theme::current().comment)),
                             Span::raw("     "),
-                            Span::styled(
-                                t,
-                                Style::default()
-                                    .fg(theme::current().fg_dark)
-                                    .add_modifier(Modifier::DIM),
-                            ),
+                            Span::styled(t, Style::default().fg(theme::current().fg_dark)),
                         ]),
                     ],
                     None => vec![header],
@@ -635,11 +665,11 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
         .style(base_style())
         .highlight_style(
             Style::default()
-                .bg(theme::current().blue)
+                .bg(if focused { theme::current().blue } else { theme::current().bg_highlight })
                 .fg(theme::current().fg)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("▶ ");
+        .highlight_symbol("");
 
     let mut state = ListState::default();
     state.select(sel_display);
@@ -651,6 +681,7 @@ fn render_agent(f: &mut Frame, app: &App, area: Rect) {
     let Some(session) = app.sessions.get(idx) else { return };
 
     let focused = app.ui_mode == UiMode::Agent;
+    let title_budget = area.width.saturating_sub(4) as usize;
     let (title, border) = match session.status() {
         SessionStatus::Running => {
             let style = if focused {
@@ -662,27 +693,42 @@ fn render_agent(f: &mut Frame, app: &App, area: Rect) {
                 !t.eq_ignore_ascii_case(&session.label)
                     && !t.eq_ignore_ascii_case(session.agent.label())
             });
-            let t = match osc {
+            let base = match &osc {
                 Some(osc) => format!(" {} · {} ({}) ", session.project, session.label, osc),
                 None => format!(" {} · {} ", session.project, session.label),
+            };
+            let t = if base.chars().count() > title_budget {
+                let short = format!(" {} · {} ", session.project, session.label);
+                if short.chars().count() > title_budget {
+                    truncate_title(&short, title_budget)
+                } else {
+                    short
+                }
+            } else {
+                base
             };
             (t, style)
         }
         SessionStatus::Exited(code) => {
-            let style = if focused {
-                Style::default().fg(theme::current().red).add_modifier(Modifier::BOLD)
+            let failed = matches!(code, Some(c) if c != 0);
+            let style = if failed {
+                if focused {
+                    Style::default().fg(theme::current().red).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme::current().red)
+                }
+            } else if focused {
+                Style::default().fg(theme::current().fg_dark).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme::current().comment)
             };
-            (
-                format!(
-                    " {} · {} — exited ({}) · Ctrl-g for sidebar ",
-                    session.project,
-                    session.label,
-                    code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
-                ),
-                style,
-            )
+            let raw = format!(
+                " {} · {} — exited ({}) ",
+                session.project,
+                session.label,
+                code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
+            );
+            (truncate_title(&raw, title_budget), style)
         }
     };
 
@@ -750,39 +796,59 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     let pairs: &[(&str, &str)] = match app.ui_mode {
         UiMode::Agent => &[
-            ("Ctrl-g", " sidebar  "),
-            ("(all other keys forwarded to the agent)", ""),
+            ("Ctrl-g", "sidebar"),
+            ("(other keys forwarded to agent)", ""),
         ],
         UiMode::SessionList => &[
-            ("Ctrl-g/↵", " session  "),
-            ("j/k", " cycle  "),
-            ("1-9", " jump  "),
-            ("x", " kill  "),
-            ("c/C", " new  "),
-            ("t", " term  "),
-            ("esc", " browser  "),
-            ("?", " help  "),
-            ("q", " quit"),
+            ("Ctrl-g/↵", "session"),
+            ("j/k", "cycle"),
+            ("1-9", "jump"),
+            ("x", "kill"),
+            ("c/C", "new"),
+            ("t", "term"),
+            ("esc", "browser"),
+            ("?", "help"),
+            ("q", "quit"),
         ],
         UiMode::Browser => &[
-            ("h/l", " pane  "),
-            ("a", " add  "),
-            ("d", " del  "),
-            ("↵", " open  "),
-            ("P", " pick  "),
-            ("Ctrl-g", " session  "),
-            ("r", " refresh  "),
-            ("?", " help  "),
-            ("q", " quit"),
+            ("h/l", "pane"),
+            ("a", "add"),
+            ("d", "del"),
+            ("↵", "open"),
+            ("P", "pick"),
+            ("Ctrl-g", "session"),
+            ("T", "theme"),
+            ("r", "refresh"),
+            ("?", "help"),
+            ("q", "quit"),
         ],
     };
-    let key = Style::default().fg(theme::current().cyan);
-    let dim = Style::default().fg(theme::current().fg_dark);
-    let spans: Vec<Span> = pairs
-        .iter()
-        .flat_map(|(k, d)| [Span::styled(*k, key), Span::styled(*d, dim)])
-        .collect();
-    f.render_widget(Paragraph::new(Line::from(spans)).style(base_style()), area);
+    f.render_widget(Paragraph::new(hint_line(pairs)).style(base_style()), area);
+}
+
+fn truncate_title(s: &str, budget: usize) -> String {
+    if budget < 4 {
+        return String::new();
+    }
+    let count = s.chars().count();
+    if count <= budget {
+        return s.to_string();
+    }
+    let keep = budget.saturating_sub(2); // leading space + ellipsis
+    let mut out = String::with_capacity(keep + 2);
+    out.push(' ');
+    for (i, ch) in s.chars().enumerate() {
+        if i == 0 {
+            continue; // skip the leading space we already added
+        }
+        if out.chars().count() >= keep {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push('…');
+    out.push(' ');
+    out
 }
 
 fn format_age(t: std::time::SystemTime) -> String {
