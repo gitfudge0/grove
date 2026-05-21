@@ -125,6 +125,9 @@ pub struct App {
     /// Total worktrees across all projects, cached so the renderer doesn't
     /// shell out to `git` for every project on every frame.
     pub worktree_count: usize,
+    /// Zen mode: when false, the top banner and the sessions sidebar are
+    /// hidden on the session page so the PTY can use the full frame.
+    pub chrome_visible: bool,
 }
 
 impl App {
@@ -157,6 +160,7 @@ impl App {
             selection: None,
             toast: None,
             worktree_count: 0,
+            chrome_visible: true,
         };
         app.refresh_worktrees();
         Ok(app)

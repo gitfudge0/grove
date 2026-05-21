@@ -70,7 +70,10 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
     loop {
         if app.active_session.is_some() {
             let size = terminal.size()?;
-            let inner = ui::agent_pane_inner(Rect::new(0, 0, size.width, size.height));
+            let inner = ui::agent_pane_inner(
+                Rect::new(0, 0, size.width, size.height),
+                app,
+            );
             if let Some(s) = app.active_session_mut() {
                 s.resize(inner.height, inner.width);
             }
@@ -134,7 +137,7 @@ fn handle_mouse(app: &mut App, size: ratatui::layout::Size, me: MouseEvent) -> b
     if app.ui_mode != UiMode::Agent || !matches!(app.modal, Modal::None) {
         return false;
     }
-    let pane = ui::agent_pane_inner(Rect::new(0, 0, size.width, size.height));
+    let pane = ui::agent_pane_inner(Rect::new(0, 0, size.width, size.height), app);
     let in_pane = pane.contains(Position::new(me.column, me.row));
 
     // Clamp a possibly out-of-bounds pointer to the nearest pane cell so a
@@ -212,13 +215,31 @@ fn handle_mouse(app: &mut App, size: ratatui::layout::Size, me: MouseEvent) -> b
     }
 }
 
-/// Agent mode: Ctrl-g moves focus into the Sessions sidebar; everything else
-/// is forwarded to the PTY.
+/// True for Ctrl-Shift-G, accepting both terminal encodings (Ctrl+'G' with
+/// or without an explicit SHIFT modifier, and Ctrl+Shift+'g').
+fn is_ctrl_shift_g(key: &KeyEvent) -> bool {
+    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return false;
+    }
+    match key.code {
+        KeyCode::Char('G') => true,
+        KeyCode::Char('g') => key.modifiers.contains(KeyModifiers::SHIFT),
+        _ => false,
+    }
+}
+
+/// Agent mode: Ctrl-g focuses the sidebar; Ctrl-Shift-g toggles zen mode.
 fn handle_agent_key(app: &mut App, key: KeyEvent) {
     // Typing dismisses any lingering copy highlight, like a real terminal.
     app.selection = None;
 
+    if is_ctrl_shift_g(&key) {
+        app.chrome_visible = !app.chrome_visible;
+        return;
+    }
+
     if key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        app.chrome_visible = true;
         app.enter_session_list();
         return;
     }
@@ -233,6 +254,13 @@ fn handle_agent_key(app: &mut App, key: KeyEvent) {
 /// Sessions-sidebar mode: keys navigate / manage sessions, the highlighted
 /// session's PTY is still rendered on the right but doesn't receive input.
 fn handle_session_list_key(app: &mut App, key: KeyEvent) {
+    if is_ctrl_shift_g(&key) {
+        app.chrome_visible = !app.chrome_visible;
+        if !app.chrome_visible {
+            app.focus_active_session();
+        }
+        return;
+    }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Char('g') if ctrl => app.focus_active_session(),

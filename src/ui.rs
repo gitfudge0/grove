@@ -15,18 +15,30 @@ fn base_style() -> Style {
     Style::default().bg(theme::current().bg).fg(theme::current().fg)
 }
 
+fn chrome_visible(app: &App) -> bool {
+    let on_session_page = matches!(app.ui_mode, UiMode::Agent | UiMode::SessionList);
+    !on_session_page || app.chrome_visible
+}
+
 /// Inner rect of the agent pane for a given full-frame area. Mirrors the
 /// layout split in `render`; the event loop uses it to size the active PTY.
-pub fn agent_pane_inner(frame: Rect) -> Rect {
+pub fn agent_pane_inner(frame: Rect, app: &App) -> Rect {
+    let chrome = chrome_visible(app);
+    let banner_h = if chrome { 3 } else { 0 };
     let v = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(banner_h),
         Constraint::Min(3),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
     .split(frame);
-    let h = Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)]).split(v[1]);
-    let a = h[1];
+    let a = if chrome {
+        let h = Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
+            .split(v[1]);
+        h[1]
+    } else {
+        v[1]
+    };
     Rect {
         x: a.x + 1,
         y: a.y + 1,
@@ -41,40 +53,46 @@ pub fn render(f: &mut Frame, app: &App) {
     // Paint background across the whole frame.
     f.render_widget(Block::default().style(base_style()), size);
 
+    let chrome = chrome_visible(app);
+    let banner_h: u16 = if chrome { 3 } else { 0 };
+
     let vchunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(banner_h),
             Constraint::Min(3),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(size);
 
-    render_banner(f, app, vchunks[0]);
+    if chrome {
+        render_banner(f, app, vchunks[0]);
+    }
 
     if app.store.projects.is_empty() {
         render_empty(f, vchunks[1]);
     } else {
-        let constraints = match app.ui_mode {
-            UiMode::Browser => [Constraint::Percentage(30), Constraint::Percentage(70)],
-            UiMode::Agent | UiMode::SessionList => {
-                [Constraint::Percentage(30), Constraint::Percentage(70)]
-            }
-        };
-        let hchunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(constraints)
-            .split(vchunks[1]);
-
         match app.ui_mode {
             UiMode::Browser => {
+                let hchunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+                    .split(vchunks[1]);
                 render_projects(f, app, hchunks[0]);
                 render_worktrees(f, app, hchunks[1]);
             }
             UiMode::Agent | UiMode::SessionList => {
-                render_session_list(f, app, hchunks[0]);
-                render_agent(f, app, hchunks[1]);
+                if chrome {
+                    let hchunks = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+                        .split(vchunks[1]);
+                    render_session_list(f, app, hchunks[0]);
+                    render_agent(f, app, hchunks[1]);
+                } else {
+                    render_agent(f, app, vchunks[1]);
+                }
             }
         }
     }
@@ -794,13 +812,21 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
+    let zen = matches!(app.ui_mode, UiMode::Agent) && !app.chrome_visible;
     let pairs: &[(&str, &str)] = match app.ui_mode {
+        UiMode::Agent if zen => &[
+            ("zen", ""),
+            ("Ctrl-G", "exit zen"),
+            ("(other keys forwarded to agent)", ""),
+        ],
         UiMode::Agent => &[
             ("Ctrl-g", "sidebar"),
+            ("Ctrl-G", "zen"),
             ("(other keys forwarded to agent)", ""),
         ],
         UiMode::SessionList => &[
             ("Ctrl-g/↵", "session"),
+            ("Ctrl-G", "zen"),
             ("j/k", "cycle"),
             ("1-9", "jump"),
             ("x", "kill"),
@@ -1145,6 +1171,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         (blank(), blank()),
         (section("Sessions sidebar"), Line::from("")),
         (key("Ctrl-g  ↵"), verb("focus session PTY")),
+        (key("Ctrl-G"), verb("toggle zen (hide chrome)")),
         (key("esc"), verb("back to browser")),
         (key("j  k"), verb("prev  next session")),
         (key("1–9"), verb("jump to session N")),
@@ -1154,6 +1181,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         (blank(), blank()),
         (section("Session pane"), Line::from("")),
         (key("Ctrl-g"), verb("focus sidebar")),
+        (key("Ctrl-G"), verb("toggle zen (hide chrome)")),
         (
             Line::from(Span::styled(
                 "(other keys)",
