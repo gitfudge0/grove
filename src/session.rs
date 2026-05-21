@@ -27,6 +27,7 @@ pub struct Session {
     pub project: String,
     #[allow(dead_code)]
     pub wt_path: String,
+    pub branch: String,
     pub agent: Agent,
     /// Backing tmux session name. The agent process runs inside this session;
     /// grove embeds a `tmux attach-client` to it.
@@ -152,10 +153,12 @@ impl Session {
             });
         }
 
+        let branch = crate::git::current_branch(&wt_path);
         Ok(Session {
             label,
             project,
             wt_path,
+            branch,
             agent,
             tmux_name,
             parser,
@@ -248,6 +251,14 @@ impl Session {
         let end = out.trim_end_matches('\n').len();
         out.truncate(end);
         if out.is_empty() { None } else { Some(out) }
+    }
+
+    /// The current OSC 0/1/2 window title emitted by the inner app, if any.
+    /// vt100 already tracks this from the PTY byte stream; we just read it.
+    pub fn current_title(&self) -> Option<String> {
+        let p = self.parser.lock().ok()?;
+        let t = p.screen().title().trim().to_string();
+        if t.is_empty() { None } else { Some(t) }
     }
 
     /// True if the inner app has asked to receive mouse events.
