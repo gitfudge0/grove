@@ -80,6 +80,7 @@ pub fn render(f: &mut Frame, app: &App) {
     }
     render_status(f, app, vchunks[2]);
     render_footer(f, app, vchunks[3]);
+    render_toast(f, app, size);
 
     match &app.modal {
         Modal::None => {}
@@ -609,6 +610,23 @@ fn render_agent(f: &mut Frame, app: &App, area: Rect) {
             }
         }
     }
+}
+
+fn render_toast(f: &mut Frame, app: &App, area: Rect) {
+    let Some(toast) = &app.toast else { return };
+    if toast.expires_at <= std::time::Instant::now() {
+        return;
+    }
+    let msg = format!(" {} ", toast.message);
+    let w = (msg.chars().count() as u16).min(area.width.saturating_sub(2));
+    if w == 0 { return; }
+    let x = area.x + area.width.saturating_sub(w + 1);
+    let y = area.y;
+    let r = Rect { x, y, width: w, height: 1 };
+    f.render_widget(Clear, r);
+    let p = Paragraph::new(msg)
+        .style(Style::default().bg(theme::BG).fg(theme::GREEN).add_modifier(Modifier::BOLD));
+    f.render_widget(p, r);
 }
 
 fn render_status(f: &mut Frame, app: &App, area: Rect) {

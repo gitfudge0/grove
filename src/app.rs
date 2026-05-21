@@ -5,6 +5,12 @@ use crate::session::Session;
 use crate::storage::{self, Project, Store};
 use crate::tmux;
 use anyhow::Result;
+use std::time::{Duration, Instant};
+
+pub struct Toast {
+    pub message: String,
+    pub expires_at: Instant,
+}
 
 #[derive(Copy, Clone, PartialEq)]
 pub enum Pane {
@@ -100,9 +106,20 @@ pub struct App {
     pub ui_mode: UiMode,
     /// Active mouse text selection over the agent pane, if any.
     pub selection: Option<Selection>,
+    /// Transient top-right notification (e.g. copy confirmation).
+    pub toast: Option<Toast>,
     /// Total worktrees across all projects, cached so the renderer doesn't
     /// shell out to `git` for every project on every frame.
     pub worktree_count: usize,
+}
+
+impl App {
+    pub fn set_toast(&mut self, message: impl Into<String>) {
+        self.toast = Some(Toast {
+            message: message.into(),
+            expires_at: Instant::now() + Duration::from_millis(1800),
+        });
+    }
 }
 
 impl App {
@@ -121,6 +138,7 @@ impl App {
             active_session: None,
             ui_mode: UiMode::Browser,
             selection: None,
+            toast: None,
             worktree_count: 0,
         };
         app.refresh_worktrees();

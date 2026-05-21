@@ -82,6 +82,13 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
             .sessions
             .iter()
             .any(|s| s.dirty.swap(false, Ordering::Relaxed));
+        if let Some(t) = &app.toast {
+            if t.expires_at <= std::time::Instant::now() {
+                app.toast = None;
+                needs_draw = true;
+            }
+        }
+
         if needs_draw || session_dirty {
             terminal.draw(|f| ui::render(f, app))?;
         }
@@ -196,9 +203,9 @@ fn handle_mouse(app: &mut App, size: ratatui::layout::Size, me: MouseEvent) -> b
             if let Some(text) = text {
                 let n = text.len();
                 clipboard::copy(&text);
-                app.status = format!("Copied {} bytes to clipboard", n);
+                app.set_toast(format!("Copied {} bytes", n));
             }
-            app.selection = Some(sel);
+            app.selection = None;
             true
         }
         _ => false,
