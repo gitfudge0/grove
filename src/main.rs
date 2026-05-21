@@ -361,8 +361,14 @@ fn handle_browser_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Char('r') => app.refresh_worktrees(),
             KeyCode::Char('?') => app.modal = Modal::Help,
             KeyCode::Char('T') => app.open_theme_picker(),
-            KeyCode::Char('P') if matches!(app.focus, app::Pane::Worktrees) => {
+            KeyCode::Char('c') if matches!(app.focus, app::Pane::Worktrees) => {
+                app.open_worktree(false);
+            }
+            KeyCode::Char('C') if matches!(app.focus, app::Pane::Worktrees) => {
                 app.open_worktree(true);
+            }
+            KeyCode::Char('t') if matches!(app.focus, app::Pane::Worktrees) => {
+                app.open_worktree_terminal();
             }
             KeyCode::Enter => {
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
