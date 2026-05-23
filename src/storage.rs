@@ -17,6 +17,9 @@ pub struct Store {
     pub default_agent: Option<Agent>,
     #[serde(default)]
     pub theme: Option<String>,
+    /// None means the user has not made the one-time tmux/native choice yet.
+    #[serde(default)]
+    pub tmux_enabled: Option<bool>,
 }
 
 pub fn config_path() -> Result<PathBuf> {

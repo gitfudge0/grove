@@ -21,6 +21,12 @@ pub enum SessionStatus {
     Exited(Option<i32>),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionBackend {
+    Native,
+    Tmux { name: String },
+}
+
 /// An agent process running inside an embedded pseudo-terminal.
 pub struct Session {
     pub label: String,
@@ -29,9 +35,7 @@ pub struct Session {
     pub wt_path: String,
     pub branch: String,
     pub agent: Agent,
-    /// Backing tmux session name. The agent process runs inside this session;
-    /// grove embeds a `tmux attach-client` to it.
-    pub tmux_name: String,
+    pub backend: SessionBackend,
     pub parser: Arc<Mutex<vt100::Parser>>,
     pub dirty: Arc<AtomicBool>,
     pub status: Arc<Mutex<SessionStatus>>,
@@ -44,6 +48,22 @@ pub struct Session {
 
 impl Session {
     pub fn spawn(
+        label: String,
+        project: String,
+        wt_path: String,
+        agent: Agent,
+        args: &[String],
+        cwd: &str,
+        use_tmux: bool,
+    ) -> Result<Self> {
+        if use_tmux {
+            Self::spawn_tmux(label, project, wt_path, agent, args, cwd)
+        } else {
+            Self::spawn_native(label, project, wt_path, agent, args, cwd)
+        }
+    }
+
+    fn spawn_tmux(
         label: String,
         project: String,
         wt_path: String,
@@ -70,12 +90,39 @@ impl Session {
             },
         );
 
-        Self::attach(label, project, wt_path, agent, tmux_name, rows, cols)
+        Self::attach_tmux(label, project, wt_path, agent, tmux_name, rows, cols)
+    }
+
+    fn spawn_native(
+        label: String,
+        project: String,
+        wt_path: String,
+        agent: Agent,
+        args: &[String],
+        cwd: &str,
+    ) -> Result<Self> {
+        let mut cmd = CommandBuilder::new(agent.program());
+        for a in args {
+            cmd.arg(a);
+        }
+        cmd.cwd(cwd);
+        cmd.env("TERM", "xterm-256color");
+
+        Self::launch_pty(
+            label,
+            project,
+            wt_path,
+            agent,
+            SessionBackend::Native,
+            cmd,
+            INIT_ROWS,
+            INIT_COLS,
+        )
     }
 
     /// Re-attach to an existing tmux session previously created by grove.
     pub fn attach_existing(d: tmux::DiscoveredSession) -> Result<Self> {
-        Self::attach(
+        Self::attach_tmux(
             d.label,
             d.project,
             d.wt_path,
@@ -86,12 +133,42 @@ impl Session {
         )
     }
 
-    fn attach(
+    fn attach_tmux(
         label: String,
         project: String,
         wt_path: String,
         agent: Agent,
         tmux_name: String,
+        rows: u16,
+        cols: u16,
+    ) -> Result<Self> {
+        let mut cmd = CommandBuilder::new("tmux");
+        cmd.arg("-L");
+        cmd.arg(tmux::SOCKET);
+        cmd.arg("attach-session");
+        cmd.arg("-t");
+        cmd.arg(format!("={}", tmux_name));
+        cmd.env("TERM", "xterm-256color");
+
+        Self::launch_pty(
+            label,
+            project,
+            wt_path,
+            agent,
+            SessionBackend::Tmux { name: tmux_name },
+            cmd,
+            rows,
+            cols,
+        )
+    }
+
+    fn launch_pty(
+        label: String,
+        project: String,
+        wt_path: String,
+        agent: Agent,
+        backend: SessionBackend,
+        cmd: CommandBuilder,
         rows: u16,
         cols: u16,
     ) -> Result<Self> {
@@ -102,14 +179,6 @@ impl Session {
             pixel_width: 0,
             pixel_height: 0,
         })?;
-
-        let mut cmd = CommandBuilder::new("tmux");
-        cmd.arg("-L");
-        cmd.arg(tmux::SOCKET);
-        cmd.arg("attach-session");
-        cmd.arg("-t");
-        cmd.arg(format!("={}", tmux_name));
-        cmd.env("TERM", "xterm-256color");
 
         let child = pair.slave.spawn_command(cmd)?;
         // Slave is held by the child; drop our handle so EOF propagates on exit.
@@ -160,7 +229,7 @@ impl Session {
             wt_path,
             branch,
             agent,
-            tmux_name,
+            backend,
             parser,
             dirty,
             status,
@@ -172,11 +241,27 @@ impl Session {
         })
     }
 
-    /// Destroy the backing tmux session. Use this when the user explicitly
-    /// kills a session — otherwise we only detach (the server keeps it alive).
-    pub fn kill_persistent(&mut self) {
-        tmux::kill_session(&self.tmux_name);
-        session_meta::delete(&self.tmux_name);
+    pub fn tmux_name(&self) -> Option<&str> {
+        match &self.backend {
+            SessionBackend::Tmux { name } => Some(name.as_str()),
+            SessionBackend::Native => None,
+        }
+    }
+
+    /// Explicit user kill. Tmux sessions destroy their persistent backing
+    /// session; native sessions kill the direct child process.
+    pub fn kill(&mut self) {
+        match &self.backend {
+            SessionBackend::Tmux { name } => {
+                tmux::kill_session(name);
+                session_meta::delete(name);
+            }
+            SessionBackend::Native => {
+                if let Ok(mut c) = self.child.lock() {
+                    let _ = c.kill();
+                }
+            }
+        }
     }
 
     pub fn status(&self) -> SessionStatus {
@@ -303,12 +388,6 @@ impl Session {
         self.dirty.store(true, Ordering::Relaxed);
     }
 
-    #[allow(dead_code)]
-    pub fn kill(&mut self) {
-        if let Ok(mut c) = self.child.lock() {
-            let _ = c.kill();
-        }
-    }
 }
 
 /// Encode a single mouse report (`cb` = button/wheel code) at a pane-relative

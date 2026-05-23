@@ -34,10 +34,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    if !tmux::available() {
-        eprintln!("grove requires tmux on PATH (used for persistent agent sessions).");
-        std::process::exit(1);
-    }
     let mut app = App::new()?;
 
     enable_raw_mode()?;
@@ -317,6 +313,28 @@ fn handle_browser_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             _ => {}
         },
+        Modal::TmuxSetup => match key.code {
+            KeyCode::Char('c') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                clipboard::copy(app::TMUX_SETUP_SNIPPET);
+                app.set_toast("Copied tmux config snippet");
+            }
+            KeyCode::Char('t') | KeyCode::Char(' ') => {
+                app.toggle_tmux_enabled()?;
+            }
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                app.modal = Modal::None;
+            }
+            _ => {}
+        },
+        Modal::TmuxChoice => match key.code {
+            KeyCode::Char('t') | KeyCode::Char('y') | KeyCode::Enter => {
+                app.choose_tmux_enabled(true)?;
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
+                app.choose_tmux_enabled(false)?;
+            }
+            _ => {}
+        },
         Modal::AgentPicker { .. } => match key.code {
             KeyCode::Esc => app.modal = Modal::None,
             KeyCode::Char('j') | KeyCode::Down => app.picker_move(1),
@@ -361,6 +379,7 @@ fn handle_browser_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Char('r') => app.refresh_worktrees(),
             KeyCode::Char('?') => app.modal = Modal::Help,
             KeyCode::Char('T') => app.open_theme_picker(),
+            KeyCode::Char('m') => app.modal = Modal::TmuxSetup,
             KeyCode::Char('c') if matches!(app.focus, app::Pane::Worktrees) => {
                 app.open_worktree(false);
             }

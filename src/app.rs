@@ -6,6 +6,7 @@ use crate::storage::{self, Project, Store};
 use crate::theme;
 use crate::tmux;
 use anyhow::Result;
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 pub fn cycle(cur: usize, delta: i32, len: usize) -> usize {
@@ -32,6 +33,24 @@ pub enum UiMode {
     Agent,
     /// Inside the session view, but focus is on the Sessions sidebar (not the PTY).
     SessionList,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectiveBackend {
+    Native,
+    Tmux,
+}
+
+pub fn effective_backend_for(tmux_available: bool, tmux_enabled: Option<bool>) -> EffectiveBackend {
+    if tmux_available && tmux_enabled == Some(true) {
+        EffectiveBackend::Tmux
+    } else {
+        EffectiveBackend::Native
+    }
+}
+
+pub fn needs_tmux_choice(tmux_available: bool, tmux_enabled: Option<bool>) -> bool {
+    tmux_available && tmux_enabled.is_none()
 }
 
 /// A text selection over the active agent pane. Coordinates are pane-relative
@@ -78,6 +97,8 @@ pub enum Modal {
     },
     Message(String),
     Help,
+    TmuxSetup,
+    TmuxChoice,
     AgentPicker {
         project: String,
         wt_path: String,
@@ -91,6 +112,19 @@ pub enum Modal {
     },
 }
 
+pub const TMUX_SETUP_SNIPPET: &str = r#"# Use Ctrl-a as the tmux prefix instead of Ctrl-b.
+unbind C-b
+set -g prefix C-a
+bind C-a send-prefix
+
+# Basic defaults.
+set -g mouse on
+set -g history-limit 10000
+set -g renumber-windows on
+set -g base-index 1
+setw -g pane-base-index 1
+"#;
+
 #[derive(Clone)]
 pub enum InputKind {
     AddProjectPath,
@@ -103,6 +137,7 @@ pub enum ConfirmKind {
     RemoveProject(usize),
     RemoveWorktree(String), // wt path
     InitRepo { path: String, name: String },
+    InitAndAddWorktree { name: String },
     GenerateInclude { path: String },
 }
 
@@ -128,6 +163,8 @@ pub struct App {
     /// Zen mode: when false, the top banner and the sessions sidebar are
     /// hidden on the session page so the PTY can use the full frame.
     pub chrome_visible: bool,
+    /// Whether tmux was available on PATH when Grove started.
+    pub tmux_available: bool,
 }
 
 impl App {
@@ -142,6 +179,19 @@ impl App {
 impl App {
     pub fn new() -> Result<Self> {
         let store = storage::load()?;
+        let tmux_available = tmux::available();
+        let initial_modal = if needs_tmux_choice(tmux_available, store.tmux_enabled) {
+            Modal::TmuxChoice
+        } else {
+            Modal::None
+        };
+        // Existing tmux sessions keep their backend even when the saved
+        // preference now chooses native sessions for new launches.
+        let sessions = if tmux_available {
+            discover_sessions()
+        } else {
+            Vec::new()
+        };
         if let Some(name) = store.theme.as_deref() {
             theme::set_by_name(name);
         }
@@ -151,19 +201,77 @@ impl App {
             focus: Pane::Projects,
             proj_idx: 0,
             wt_idx: 0,
-            modal: Modal::None,
+            modal: initial_modal,
             status: String::new(),
             should_quit: false,
-            sessions: discover_sessions(),
+            sessions,
             active_session: None,
             ui_mode: UiMode::Browser,
             selection: None,
             toast: None,
             worktree_count: 0,
             chrome_visible: true,
+            tmux_available,
         };
         app.refresh_worktrees();
         Ok(app)
+    }
+
+    pub fn effective_backend(&self) -> EffectiveBackend {
+        effective_backend_for(self.tmux_available, self.store.tmux_enabled)
+    }
+
+    pub fn use_tmux(&self) -> bool {
+        self.effective_backend() == EffectiveBackend::Tmux
+    }
+
+    pub fn set_tmux_enabled(&mut self, enabled: bool) -> Result<()> {
+        if enabled && !self.tmux_available {
+            self.status = "tmux not found; using native sessions".into();
+            self.set_toast("tmux not found");
+            return Ok(());
+        }
+        self.store.tmux_enabled = Some(enabled);
+        storage::save(&self.store)?;
+        if enabled {
+            self.discover_tmux_sessions();
+            self.status = "tmux enabled for new sessions".into();
+        } else {
+            self.status = "tmux disabled for new sessions".into();
+        }
+        Ok(())
+    }
+
+    pub fn choose_tmux_enabled(&mut self, enabled: bool) -> Result<()> {
+        self.set_tmux_enabled(enabled)?;
+        self.modal = Modal::None;
+        Ok(())
+    }
+
+    pub fn toggle_tmux_enabled(&mut self) -> Result<()> {
+        self.set_tmux_enabled(!self.use_tmux())
+    }
+
+    fn discover_tmux_sessions(&mut self) {
+        if !self.tmux_available {
+            return;
+        }
+        let known: HashSet<String> = self
+            .sessions
+            .iter()
+            .filter_map(|s| s.tmux_name().map(str::to_string))
+            .collect();
+        let discovered: Vec<Session> = discover_sessions()
+            .into_iter()
+            .filter(|s| s.tmux_name().map_or(true, |name| !known.contains(name)))
+            .collect();
+        for s in discovered {
+            let at = self.session_insert_index(&s);
+            if self.active_session.map_or(false, |i| at <= i) {
+                self.active_session = self.active_session.map(|i| i + 1);
+            }
+            self.sessions.insert(at, s);
+        }
     }
 
     /// Recompute the cross-project worktree total. Call after any change that
@@ -426,7 +534,15 @@ impl App {
         args: Vec<String>,
         cwd: &str,
     ) {
-        match Session::spawn(label.clone(), project, wt_path, agent, &args, cwd) {
+        match Session::spawn(
+            label.clone(),
+            project,
+            wt_path,
+            agent,
+            &args,
+            cwd,
+            self.use_tmux(),
+        ) {
             Ok(s) => {
                 let at = self.session_insert_index(&s);
                 self.sessions.insert(at, s);
@@ -438,6 +554,21 @@ impl App {
                 self.modal = Modal::Message(format!("failed to start agent: {e}"));
             }
         }
+    }
+
+    fn create_worktree(&mut self, p: &Project, name: &str) {
+        let wt_path = match git::add_worktree(&p.path, &p.name, name) {
+            Ok(path) => path,
+            Err(e) => {
+                self.modal = Modal::Message(format!("add worktree failed: {e}"));
+                return;
+            }
+        };
+        if let Err(e) = git::copy_worktree_includes(&p.path, &wt_path) {
+            self.status = format!("worktreeinclude: {e}");
+        }
+        self.refresh_worktrees();
+        self.launch_or_pick(p.name.clone(), wt_path);
     }
 
     /// Spawn an additional session for the active session's worktree.
@@ -508,9 +639,7 @@ impl App {
         if i >= self.sessions.len() {
             return;
         }
-        // Tear down the persistent tmux session before dropping our handle;
-        // otherwise the agent would simply detach and reappear next launch.
-        self.sessions[i].kill_persistent();
+        self.sessions[i].kill();
         self.sessions.remove(i);
         if self.sessions.is_empty() {
             self.active_session = None;
@@ -712,18 +841,19 @@ impl App {
                     return Ok(());
                 }
                 let Some(p) = self.selected_project().cloned() else { return Ok(()); };
-                let wt_path = match git::add_worktree(&p.path, &p.name, &value) {
-                    Ok(path) => path,
-                    Err(e) => {
-                        self.modal = Modal::Message(format!("add worktree failed: {e}"));
-                        return Ok(());
-                    }
-                };
-                if let Err(e) = git::copy_worktree_includes(&p.path, &wt_path) {
-                    self.status = format!("worktreeinclude: {e}");
+                if !std::path::Path::new(&p.path).join(".git").exists() {
+                    self.modal = Modal::Confirm {
+                        title: "Initialize git repo?".into(),
+                        prompt: format!(
+                            "'{}' is not a git repo. Run `git init`, then create worktree '{}'.",
+                            p.path, value
+                        ),
+                        destructive: false,
+                        kind: ConfirmKind::InitAndAddWorktree { name: value },
+                    };
+                    return Ok(());
                 }
-                self.refresh_worktrees();
-                self.launch_or_pick(p.name.clone(), wt_path);
+                self.create_worktree(&p, &value);
             }
         }
         Ok(())
@@ -756,6 +886,14 @@ impl App {
                     }
                     self.refresh_worktrees();
                 }
+            }
+            ConfirmKind::InitAndAddWorktree { name } => {
+                let Some(p) = self.selected_project().cloned() else { return Ok(()); };
+                if let Err(e) = git::init_if_needed(&p.path) {
+                    self.modal = Modal::Message(format!("git init failed: {e}"));
+                    return Ok(());
+                }
+                self.create_worktree(&p, &name);
             }
             ConfirmKind::InitRepo { path, name } => {
                 git::init_if_needed(&path)?;
@@ -857,4 +995,31 @@ fn shellexpand_tilde(s: &str) -> String {
         }
     }
     s.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{effective_backend_for, needs_tmux_choice, EffectiveBackend};
+
+    #[test]
+    fn tmux_unavailable_uses_native_for_any_preference() {
+        assert_eq!(effective_backend_for(false, None), EffectiveBackend::Native);
+        assert_eq!(effective_backend_for(false, Some(true)), EffectiveBackend::Native);
+        assert_eq!(effective_backend_for(false, Some(false)), EffectiveBackend::Native);
+    }
+
+    #[test]
+    fn tmux_available_uses_saved_preference() {
+        assert_eq!(effective_backend_for(true, Some(true)), EffectiveBackend::Tmux);
+        assert_eq!(effective_backend_for(true, Some(false)), EffectiveBackend::Native);
+    }
+
+    #[test]
+    fn tmux_available_without_preference_requires_choice() {
+        assert_eq!(effective_backend_for(true, None), EffectiveBackend::Native);
+        assert!(needs_tmux_choice(true, None));
+        assert!(!needs_tmux_choice(true, Some(true)));
+        assert!(!needs_tmux_choice(true, Some(false)));
+        assert!(!needs_tmux_choice(false, None));
+    }
 }
