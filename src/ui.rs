@@ -108,6 +108,8 @@ pub fn render(f: &mut Frame, app: &App) {
         }
         Modal::Message(msg) => render_message(f, msg, size),
         Modal::Help => render_help(f, size),
+        Modal::TmuxSetup => render_tmux_setup(f, app, size),
+        Modal::TmuxChoice => render_tmux_choice(f, size),
         Modal::AgentPicker { project, wt_path, sel } => render_agent_picker(f, app, project, wt_path, *sel, size),
         Modal::ThemePicker { sel_dark, sel_light, tab, .. } => {
             let sel = match tab {
@@ -127,7 +129,7 @@ fn render_theme_picker(f: &mut Frame, sel: usize, tab: theme::ThemeKind, area: R
     let r = centered(area, 48, h);
     f.render_widget(Clear, r);
     let block = Block::default()
-        .title(" Theme ")
+        .title(popup_title(" Theme ", t.magenta))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(t.magenta))
@@ -144,6 +146,7 @@ fn render_theme_picker(f: &mut Frame, sel: usize, tab: theme::ThemeKind, area: R
         Constraint::Length(1), // tabs
         Constraint::Length(1), // spacer
         Constraint::Min(1),    // list
+        Constraint::Length(1), // hint separator
         Constraint::Length(1), // hint
     ])
     .split(inner);
@@ -151,19 +154,16 @@ fn render_theme_picker(f: &mut Frame, sel: usize, tab: theme::ThemeKind, area: R
     let tab_span = |label: &'static str, active: bool| {
         if active {
             Span::styled(
-                format!(" {} ", label),
-                Style::default().bg(t.magenta).fg(t.bg).add_modifier(Modifier::BOLD),
+                label.to_string(),
+                Style::default().fg(t.magenta).add_modifier(Modifier::BOLD),
             )
         } else {
-            Span::styled(
-                format!(" {} ", label),
-                Style::default().fg(t.fg_dark),
-            )
+            Span::styled(label.to_string(), Style::default().fg(t.comment))
         }
     };
     let tabs = Line::from(vec![
         tab_span("Dark", tab == theme::ThemeKind::Dark),
-        Span::raw("  "),
+        Span::raw("   "),
         tab_span("Light", tab == theme::ThemeKind::Light),
     ]);
     f.render_widget(Paragraph::new(tabs).style(base_style()), layout[0]);
@@ -172,15 +172,12 @@ fn render_theme_picker(f: &mut Frame, sel: usize, tab: theme::ThemeKind, area: R
         .iter()
         .enumerate()
         .map(|(i, th)| {
-            let prefix = if i == sel { "▸ " } else { "  " };
-            let mut label_style = Style::default().fg(t.fg);
-            if i == sel {
-                label_style = label_style.add_modifier(Modifier::BOLD);
-            }
-            let line = Line::from(vec![
-                Span::styled(prefix, Style::default().fg(t.magenta)),
-                Span::styled(th.name.to_string(), label_style),
-            ]);
+            let label_style = if i == sel {
+                Style::default().fg(t.fg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.fg)
+            };
+            let line = Line::from(Span::styled(th.name.to_string(), label_style));
             if i == sel {
                 ListItem::new(line).style(Style::default().bg(t.bg_highlight))
             } else {
@@ -201,7 +198,7 @@ fn render_theme_picker(f: &mut Frame, sel: usize, tab: theme::ThemeKind, area: R
             ("esc", "cancel"),
         ]))
         .style(base_style()),
-        layout[3],
+        layout[4],
     );
 }
 
@@ -218,7 +215,7 @@ fn render_agent_picker(f: &mut Frame, app: &App, project: &str, wt_path: &str, s
     let r = centered(area, 64, h);
     f.render_widget(Clear, r);
     let block = Block::default()
-        .title(title)
+        .title(popup_title(&title, theme::current().magenta))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::current().magenta))
@@ -234,6 +231,7 @@ fn render_agent_picker(f: &mut Frame, app: &App, project: &str, wt_path: &str, s
     let layout = Layout::vertical([
         Constraint::Length(1), // top pad
         Constraint::Min(1),    // list
+        Constraint::Length(1), // hint separator
         Constraint::Length(1), // hint
     ])
     .split(inner);
@@ -243,21 +241,17 @@ fn render_agent_picker(f: &mut Frame, app: &App, project: &str, wt_path: &str, s
         .enumerate()
         .map(|(i, a)| {
             let is_default = app.store.default_agent == Some(*a);
-            let prefix = if i == sel { "▸ " } else { "  " };
             let label_style = if i == sel {
                 Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme::current().fg)
             };
-            let mut spans = vec![
-                Span::styled(prefix, Style::default().fg(theme::current().magenta)),
-                Span::styled(a.label().to_string(), label_style),
-            ];
+            let mut spans = vec![Span::styled(a.label().to_string(), label_style)];
             if is_default {
                 spans.push(Span::raw("  "));
                 spans.push(Span::styled(
                     "default",
-                    Style::default().fg(theme::current().yellow).add_modifier(Modifier::ITALIC),
+                    Style::default().fg(theme::current().comment),
                 ));
             }
             let line = Line::from(spans);
@@ -279,7 +273,7 @@ fn render_agent_picker(f: &mut Frame, app: &App, project: &str, wt_path: &str, s
             ("esc", "cancel"),
         ]))
         .style(base_style()),
-        layout[2],
+        layout[3],
     );
 }
 
@@ -298,7 +292,6 @@ const BANNER: [&str; 3] = [
 ];
 
 fn render_banner(f: &mut Frame, app: &App, area: Rect) {
-    let _ = app;
     let banner_w: u16 = 18;
     let hchunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -319,6 +312,26 @@ fn render_banner(f: &mut Frame, app: &App, area: Rect) {
     let key = Style::default().fg(theme::current().comment);
     let accent = Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD);
 
+    let backend_line = if !app.tmux_available {
+        Line::from(vec![
+            Span::styled("tmux recommended: ", Style::default().fg(theme::current().yellow).add_modifier(Modifier::BOLD)),
+            Span::styled("native sessions will not persist", key),
+        ])
+    } else if !app.use_tmux() {
+        Line::from(vec![
+            Span::styled("native sessions", Style::default().fg(theme::current().yellow)),
+            Span::styled("  · press ", key),
+            Span::styled("m", accent),
+            Span::styled(" to enable tmux", key),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("press ", key),
+            Span::styled("?", accent),
+            Span::styled(" for help", key),
+        ])
+    };
+
     let info = vec![
         Line::from(""),
         Line::from(vec![
@@ -328,11 +341,7 @@ fn render_banner(f: &mut Frame, app: &App, area: Rect) {
             Span::raw("  "),
             Span::styled("· worktree launchpad for ai agents", key),
         ]),
-        Line::from(vec![
-            Span::styled("press ", key),
-            Span::styled("?", accent),
-            Span::styled(" for help", key),
-        ]),
+        backend_line,
     ];
     f.render_widget(
         Paragraph::new(info).style(base_style()),
@@ -846,6 +855,7 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
             ("t", "term"),
             ("Ctrl-g", "session"),
             ("T", "theme"),
+            ("m", "tmux"),
             ("r", "refresh"),
             ("?", "help"),
             ("q", "quit"),
@@ -909,6 +919,13 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 
 /// Build a footer hint line: `key  verb   key  verb`.
 /// Keys render in FG_DARK, verbs in COMMENT, separated by three spaces.
+fn popup_title(text: &str, color: ratatui::style::Color) -> Line<'static> {
+    Line::from(Span::styled(
+        text.to_string(),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    ))
+}
+
 fn hint_line(pairs: &[(&str, &str)]) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(pairs.len() * 4);
     for (i, (key, verb)) in pairs.iter().enumerate() {
@@ -934,7 +951,7 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
     let r = centered(area, 70, height);
     f.render_widget(Clear, r);
     let block = Block::default()
-        .title(format!(" {} ", title))
+        .title(popup_title(&format!(" {} ", title), theme::current().magenta))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::current().magenta))
@@ -955,6 +972,7 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
             Constraint::Length(1), // input
             Constraint::Length(1), // divider/label
             Constraint::Min(1),    // dir list
+            Constraint::Length(1), // hint separator
             Constraint::Length(1), // hint
         ])
         .split(inner)
@@ -963,6 +981,7 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(1),
+            Constraint::Length(1), // hint separator
             Constraint::Length(1),
         ])
         .split(inner)
@@ -1016,7 +1035,7 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
             f.render_stateful_widget(list, list_area, &mut state);
         }
 
-        let hint_row = layout[4];
+        let hint_row = layout[5];
         f.render_widget(
             Paragraph::new(hint_line(&[
                 ("↵", "submit"),
@@ -1027,7 +1046,7 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
             hint_row,
         );
     } else {
-        let hint_row = layout[3];
+        let hint_row = layout[4];
         f.render_widget(
             Paragraph::new(hint_line(&[("↵", "submit"), ("esc", "cancel")]))
                 .style(base_style()),
@@ -1041,10 +1060,17 @@ fn render_confirm(f: &mut Frame, title: &str, prompt: &str, destructive: bool, a
     // Size to content: width tracks the longer of title or prompt.
     let content_w = prompt.chars().count().max(title.chars().count() + 2);
     let w = (content_w as u16 + 6).clamp(44, 72);
-    let r = centered(area, w, 7);
+    let inner_w = (w - 4) as usize;
+    let prompt_lines = prompt
+        .chars()
+        .count()
+        .div_ceil(inner_w.max(1))
+        .max(1) as u16;
+    let h = confirm_height(prompt_lines);
+    let r = centered(area, w, h);
     f.render_widget(Clear, r);
     let block = Block::default()
-        .title(format!(" {} ", title))
+        .title(popup_title(&format!(" {} ", title), border))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border))
@@ -1060,6 +1086,7 @@ fn render_confirm(f: &mut Frame, title: &str, prompt: &str, destructive: bool, a
     let layout = Layout::vertical([
         Constraint::Length(1), // top pad
         Constraint::Min(1),    // prompt
+        Constraint::Length(1), // hint separator
         Constraint::Length(1), // hint
     ])
     .split(inner);
@@ -1073,8 +1100,12 @@ fn render_confirm(f: &mut Frame, title: &str, prompt: &str, destructive: bool, a
     let verb = if destructive { "delete" } else { "confirm" };
     f.render_widget(
         Paragraph::new(hint_line(&[("y", verb), ("n / esc", "cancel")])).style(base_style()),
-        layout[2],
+        layout[3],
     );
+}
+
+fn confirm_height(prompt_lines: u16) -> u16 {
+    (prompt_lines + 5).clamp(6, 10)
 }
 
 fn render_message(f: &mut Frame, msg: &str, area: Rect) {
@@ -1082,7 +1113,7 @@ fn render_message(f: &mut Frame, msg: &str, area: Rect) {
     let r = centered(area, w, 7);
     f.render_widget(Clear, r);
     let block = Block::default()
-        .title(" Notice ")
+        .title(popup_title(" Notice ", theme::current().comment))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::current().comment))
@@ -1098,6 +1129,7 @@ fn render_message(f: &mut Frame, msg: &str, area: Rect) {
     let layout = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
+        Constraint::Length(1), // hint separator
         Constraint::Length(1),
     ])
     .split(inner);
@@ -1110,7 +1142,145 @@ fn render_message(f: &mut Frame, msg: &str, area: Rect) {
     );
     f.render_widget(
         Paragraph::new(hint_line(&[("↵ / esc", "dismiss")])).style(base_style()),
-        layout[2],
+        layout[3],
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::confirm_height;
+
+    #[test]
+    fn confirm_height_reserves_rows_for_prompt() {
+        assert_eq!(confirm_height(1), 6);
+        assert_eq!(confirm_height(2), 7);
+        assert_eq!(confirm_height(5), 10);
+    }
+}
+
+fn render_tmux_setup(f: &mut Frame, app: &App, area: Rect) {
+    let r = centered(area, 78, 22);
+    f.render_widget(Clear, r);
+    let block = Block::default()
+        .title(popup_title(" Tmux setup ", theme::current().cyan))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::current().cyan))
+        .style(base_style());
+    f.render_widget(block, r);
+
+    let inner = Rect {
+        x: r.x + 2,
+        y: r.y + 1,
+        width: r.width.saturating_sub(4),
+        height: r.height.saturating_sub(2),
+    };
+    let layout = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    let state = if !app.tmux_available {
+        "tmux not found: using native sessions"
+    } else if app.use_tmux() {
+        "tmux enabled: sessions persist across Grove restarts"
+    } else {
+        "tmux disabled: using native sessions"
+    };
+    f.render_widget(
+        Paragraph::new(state)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(theme::current().yellow)),
+        layout[0],
+    );
+
+    f.render_widget(
+        Paragraph::new("Grove recommends this config for a smoother tmux experience. It is optional; copy it into your tmux config if you want it.")
+            .wrap(Wrap { trim: false })
+            .style(base_style()),
+        layout[1],
+    );
+
+    let code_lines = crate::app::TMUX_SETUP_SNIPPET
+        .lines()
+        .map(|line| {
+            Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(theme::current().fg_dark),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let code = Paragraph::new(code_lines).style(
+        Style::default()
+            .bg(theme::current().bg_highlight)
+            .fg(theme::current().fg_dark),
+    );
+    f.render_widget(code, layout[3]);
+
+    let hints = if app.tmux_available {
+        hint_line(&[("t / space", "toggle tmux"), ("c", "copy"), ("↵ / esc / q", "close")])
+    } else {
+        hint_line(&[("c", "copy"), ("↵ / esc / q", "close")])
+    };
+    f.render_widget(
+        Paragraph::new(hints).style(base_style()),
+        layout[5],
+    );
+}
+
+fn render_tmux_choice(f: &mut Frame, area: Rect) {
+    let r = centered(area, 68, 12);
+    f.render_widget(Clear, r);
+    let block = Block::default()
+        .title(popup_title(" Session backend ", theme::current().cyan))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::current().cyan))
+        .style(base_style());
+    f.render_widget(block, r);
+
+    let inner = Rect {
+        x: r.x + 2,
+        y: r.y + 1,
+        width: r.width.saturating_sub(4),
+        height: r.height.saturating_sub(2),
+    };
+    let layout = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    f.render_widget(
+        Paragraph::new("Use tmux for Grove sessions?")
+            .style(Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD)),
+        layout[0],
+    );
+    f.render_widget(
+        Paragraph::new("Tmux sessions persist across Grove restarts and can be rediscovered later.")
+            .wrap(Wrap { trim: false })
+            .style(base_style()),
+        layout[1],
+    );
+    f.render_widget(
+        Paragraph::new("Native sessions need no tmux dependency, but they end when Grove exits.")
+            .wrap(Wrap { trim: false })
+            .style(base_style()),
+        layout[3],
+    );
+    f.render_widget(
+        Paragraph::new(hint_line(&[("↵ / t / y", "enable tmux"), ("n / esc", "use native")]))
+            .style(base_style()),
+        layout[5],
     );
 }
 
@@ -1118,7 +1288,7 @@ fn render_help(f: &mut Frame, area: Rect) {
     let r = centered(area, 68, 26);
     f.render_widget(Clear, r);
     let block = Block::default()
-        .title(" Help ")
+        .title(popup_title(" Help ", theme::current().cyan))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::current().cyan))
@@ -1134,6 +1304,7 @@ fn render_help(f: &mut Frame, area: Rect) {
     let layout = Layout::vertical([
         Constraint::Length(1), // top pad
         Constraint::Min(1),    // body
+        Constraint::Length(1), // hint separator
         Constraint::Length(1), // hint
     ])
     .split(inner);
@@ -1168,6 +1339,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         (key("t"), verb("new terminal in worktree")),
         (key("a  d"), verb("add  delete")),
         (key("r"), verb("refresh")),
+        (key("m"), verb("tmux setup")),
         (key("Ctrl-g"), verb("jump to active session")),
         (key("T"), verb("theme picker")),
         (key("q  esc"), verb("quit")),
@@ -1205,6 +1377,6 @@ fn render_help(f: &mut Frame, area: Rect) {
 
     f.render_widget(
         Paragraph::new(hint_line(&[("↵ / esc", "close")])).style(base_style()),
-        layout[2],
+        layout[3],
     );
 }
