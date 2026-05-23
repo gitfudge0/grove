@@ -54,7 +54,7 @@ In the Sessions sidebar:
 - `j` / `k` — next / previous session (updates the right pane live)   `1`–`9` — jump to session N
 - `Ctrl-g` / `enter` — focus the session's PTY
 - `esc` — back to the projects browser
-- `x` — kill the active session (worktree stays)
+- `d` — kill the active session (worktree stays)
 - `c` / `C` — new session for the active worktree (default / pick)
 - `t` — new terminal for the active session's worktree
 
