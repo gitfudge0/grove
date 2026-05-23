@@ -271,7 +271,7 @@ fn handle_session_list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('n') => app.session_cycle(1),
         KeyCode::Char('p') => app.session_cycle(-1),
         KeyCode::Char(ch @ '1'..='9') => app.session_select(ch as usize - '1' as usize),
-        KeyCode::Char('x') => app.kill_active_session(),
+        KeyCode::Char('d') => app.kill_active_session(),
         KeyCode::Char('c') if ctrl => app.should_quit = true,
         KeyCode::Char('c') => app.new_session_for_active(),
         KeyCode::Char('C') => app.new_session_for_active_pick(),
