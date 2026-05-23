@@ -36,6 +36,17 @@ use std::time::Duration;
 fn main() -> Result<()> {
     let mut app = App::new()?;
 
+    // Ask the OS to keep the display awake while grove is running. If the
+    // request fails (e.g. headless SSH with no session bus), silently fall
+    // back to normal idle behavior.
+    let _awake = keepawake::Builder::default()
+        .display(true)
+        .reason("grove is running")
+        .app_name("grove")
+        .app_reverse_domain("dev.grove")
+        .create()
+        .ok();
+
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
     execute!(stdout(), EnableMouseCapture)?;
