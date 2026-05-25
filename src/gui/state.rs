@@ -38,6 +38,10 @@ pub struct Grove {
     /// Used to compute cursor blink state: visible when `blink_tick % 30 < 15`
     /// (≈ 500 ms on / 500 ms off).
     pub blink_tick: u32,
+    /// Session index awaiting kill confirmation. When set, that session's
+    /// close button shows a red tick — clicking it confirms the kill, clicking
+    /// anywhere else clears this back to `None`.
+    pub pending_kill: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +98,7 @@ pub enum Msg {
     CloseAgentMenu,
     SelectSession(usize),
     KillSession(usize),
+    RequestKillSession(usize),
     KeyPress(Key, Modifiers),
     PtyMouseDown(f32, f32),
     PtyMouseDrag(f32, f32),
@@ -121,7 +126,6 @@ pub enum Msg {
     ThemePickerSelect(usize),
     ThemePickerSubmit,
     ThemePickerCancel,
-    NoOp,
 }
 
 #[derive(Clone, Copy)]

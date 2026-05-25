@@ -29,6 +29,16 @@ pub fn theme_picker_scrollable_id() -> scrollable::Id {
 }
 use std::sync::Arc;
 
+fn session_context_title(s: &Session) -> Option<String> {
+    s.current_title()
+        .filter(|t| !t.eq_ignore_ascii_case(&s.label) && !t.eq_ignore_ascii_case(s.agent.label()))
+}
+
+fn is_in_progress_title(title: &str) -> bool {
+    let lower = title.to_ascii_lowercase();
+    lower.contains("in progress") || lower.contains("in-progress") || lower.contains("in_progress")
+}
+
 impl Grove {
     pub fn view(&self) -> Element<'_, Msg> {
         let body = column![
@@ -61,15 +71,10 @@ impl Grove {
 
     // ── appbar ────────────────────────────────────────────────────────────
     fn appbar(&self) -> Element<'_, Msg> {
-        let brand = row![
-            text("grove").font(MONO_BOLD).size(14).color(c::MAGENTA()),
-            text("worktree launchpad for ai agents")
-                .size(11)
-                .color(c::FG_MUTE()),
-        ]
-        .spacing(8)
-        .padding(Padding::from([0, 16]))
-        .align_y(iced::Alignment::Center);
+        let brand = row![text("grove").font(MONO_BOLD).size(14).color(c::MAGENTA()),]
+            .spacing(8)
+            .padding(Padding::from([0, 16]))
+            .align_y(iced::Alignment::Center);
 
         let seg = container(
             row![
@@ -87,14 +92,10 @@ impl Grove {
             ..Default::default()
         });
 
-        let right = row![
-            seg,
-            icon_btn("cog", Msg::OpenThemePicker),
-            icon_btn("help", Msg::NoOp),
-        ]
-        .spacing(4)
-        .padding(Padding::from([0, 16]))
-        .align_y(iced::Alignment::Center);
+        let right = row![seg, icon_btn("cog", Msg::OpenThemePicker),]
+            .spacing(4)
+            .padding(Padding::from([0, 16]))
+            .align_y(iced::Alignment::Center);
 
         let inner = row![
             container(brand).width(RAIL_W),
@@ -214,7 +215,8 @@ impl Grove {
                 for (si, s) in self.app.sessions.iter().enumerate() {
                     if s.wt_path == w.path {
                         let active = self.app.active_session == Some(si);
-                        col = col.push(session_row(si, s, active));
+                        let pending_kill = self.pending_kill == Some(si);
+                        col = col.push(session_row(si, s, active, pending_kill));
                     }
                 }
             }
@@ -300,34 +302,65 @@ impl Grove {
         } else {
             (c::FG_MUTE(), "exited")
         };
+        let context = session_context_title(s);
+        let show_progress = running
+            && context
+                .as_deref()
+                .map(is_in_progress_title)
+                .unwrap_or(false);
+        let sess_text = |content: String, color: Color| {
+            text(content)
+                .font(MONO_FONT)
+                .size(12)
+                .line_height(1.0)
+                .height(18)
+                .align_y(iced::alignment::Vertical::Center)
+                .color(color)
+        };
+
+        let status: Element<'_, Msg> =
+            row![dot(dot_color), sess_text(label.to_string(), dot_color),]
+                .spacing(6)
+                .align_y(iced::Alignment::Center)
+                .into();
+
+        let mut identity = row![
+            sess_text(s.agent.label().to_string(), c::MAGENTA()),
+            sess_text("·".to_string(), c::FG_MUTE()),
+            sess_text(s.project.clone(), c::BLUE()),
+            sess_text("/".to_string(), c::FG_MUTE()),
+            sess_text(s.label.clone(), c::FG()),
+            sess_text(format!("[{}]", s.branch), c::FG_MUTE()),
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+
+        if let Some(title) = context {
+            let session_context: Element<'_, Msg> = if show_progress {
+                let phase = ((self.blink_tick / 5) % 3) as usize;
+                let step_dot = |i| dot(if i == phase { c::GREEN() } else { c::FG_MUTE() });
+                row![
+                    step_dot(0),
+                    step_dot(1),
+                    step_dot(2),
+                    sess_text("in progress".to_string(), c::GREEN()),
+                ]
+                .spacing(4)
+                .align_y(iced::Alignment::Center)
+                .into()
+            } else {
+                sess_text(title, c::FG_MUTE()).into()
+            };
+            identity = identity
+                .push(sess_text("·".to_string(), c::FG_MUTE()))
+                .push(session_context);
+        }
 
         let bar = row![
-            dot(dot_color),
-            text(label).size(11).color(dot_color),
+            status,
             vline(),
-            text(s.agent.label())
-                .font(MONO_FONT)
-                .size(12)
-                .color(c::MAGENTA()),
-            text("·").color(c::FG_MUTE()),
-            text(s.project.clone())
-                .font(MONO_FONT)
-                .size(12)
-                .color(c::BLUE()),
-            text("/").color(c::FG_MUTE()),
-            text(s.label.clone())
-                .font(MONO_FONT)
-                .size(12)
-                .color(c::FG()),
-            text(format!("[{}]", s.branch))
-                .font(MONO_FONT)
-                .size(12)
-                .color(c::FG_MUTE()),
-            Space::with_width(Length::Fill),
-            text(s.wt_path.clone())
-                .font(MONO_FONT)
-                .size(12)
-                .color(c::FG_MUTE()),
+            container(identity).width(Length::Fill).clip(true),
+            sess_text(s.wt_path.clone(), c::FG_MUTE()),
             vline(),
             tool_btn(
                 "trash",

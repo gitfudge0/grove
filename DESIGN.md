@@ -53,14 +53,14 @@ typography:
     micro:   { size: 11,   weight: 400, family: sans, use: "section headers, status segments, action-pill labels" }
     small:   { size: 11.5, weight: 400, family: sans/mono, use: "branch tags, captions, tool-button labels" }
     body:    { size: 12,   weight: 400, family: sans/mono, use: "row labels (sans), identifiers in session bar (mono)" }
-    row:     { size: 13,   weight: 400, family: sans, use: "project / worktree primary names" }
+    row:     { size: 13,   weight: 400, family: sans/mono, use: "project / worktree primary names, modal titles, text input content" }
     brand:   { size: 14,   weight: 600, family: mono, use: "grove wordmark only" }
 
 rounded:
   none: "0"
   # GUI
-  small: "4px"   # action pills, action-mini, tool buttons, badges
-  control: "5px" # segmented controls, inputs, icon buttons, add-project button
+  small: "4px"   # action mini, icon buttons, input fields, add-project button, agent menu, modal list container
+  modal: "6px"   # modal panels, segmented control container wrapper
   row: "0px"     # list rows are full-width strips — rounding is forbidden
 
 spacing:
@@ -74,6 +74,7 @@ spacing:
   status: 26
   session-bar: 36
   list-row: 28
+  subtitle-row: 14
   action-btn: 22
   icon-btn: 28
   sidebar: 320
@@ -110,7 +111,7 @@ components:
     textColor: "{gui-colors.fg}"
   gui-icon-btn:
     size: "28×28"
-    radius: "{rounded.control}"
+    radius: "{rounded.small}"
     border: "none"
     hoverBackground: "{gui-colors.bg-hover}"
   gui-action-mini:
@@ -131,10 +132,15 @@ components:
     hoverBackground: "{gui-colors.bg-hover}"
   gui-seg-btn:
     height: 24
-    radius: "{rounded.control}"
-    border: "1px {gui-colors.border} (shared)"
+    containerRadius: "{rounded.modal}"
+    containerBorder: "1px {gui-colors.border}"
     activeBackground: "{gui-colors.bg-hl}"
     hoverBackground: "{gui-colors.bg-hover}"
+  gui-modal-panel:
+    radius: "{rounded.modal}"
+    border: "1px accent-color"
+    background: "{gui-colors.bg}"
+    padding: "[16, 20]"
 ---
 
 # Design System: Grove
@@ -286,18 +292,18 @@ The GUI is not a redesign. It is the same product — a worktree launchpad with 
 
 The reflexes this rejects are the same three from the TUI, plus one more specific to desktop chrome: **the Electron-app-shell reflex** — title-bar gradients, sidebar avatars, "command palette" search bars that dominate the appbar, settings gear opening a 600px modal of tabs. Grove's GUI is a thin window around the same two panes, the same status row, and a PTY canvas where the body used to be.
 
-The GUI runs only against the `tokyonight` palette today. The theme module remains the single binding layer; when more themes are added to the GUI, they bind to the same eleven semantic roles plus the **six GUI-only neutral surface tokens** introduced below.
+The GUI runs only against the `tokyonight` palette today. The theme module remains the single binding layer; when more themes are added to the GUI, they bind to the same eleven semantic roles plus the **seven GUI-only neutral surface tokens** introduced below.
 
 **Key characteristics:**
 - Three-row window grid: appbar (44px), main (sidebar 320px + workspace), status (26px). Fixed heights; content adapts.
 - Two fonts: a proportional UI font (Inter / system sans) for chrome, the user's monospace for identifiers, paths, and the PTY. No third font.
-- Density is high but not terminal-tight. Row height is **28px**, gutters are **8px–14px**, padding inside chrome rows is **12–18px**.
-- Borders are 1px hairlines; corners are 4–5px. There are no shadows, no gradients, no blurs.
+- Density is high but not terminal-tight. Row height is **28px**, gutters are **8px–16px**, padding inside chrome rows is **12–16px**.
+- Borders are 1px hairlines; corners are **4px** (controls) or **6px** (containers and modals). There are no shadows, no gradients, no blurs.
 - Focus is signaled by border color shift, selection by `bg_hl`, hover by `bg_hover`. Three states, three roles — that is the entire interaction vocabulary.
 
-## 8. Colors: Eleven Roles + Six Surface Tokens
+## 8. Colors: Eleven Roles + Seven Surface Tokens
 
-The eleven semantic roles from §2 carry over unchanged. They mean exactly the same thing. The GUI cannot use 8-color ANSI fallback, so it adds six **surface tokens** that the TUI gets for free from terminal cell composition: hover backgrounds, hairline borders, and a darker bg for inset chrome bars.
+The eleven semantic roles from §2 carry over unchanged. They mean exactly the same thing. The GUI cannot use 8-color ANSI fallback, so it adds seven **surface tokens** that the TUI gets for free from terminal cell composition: hover backgrounds, hairline borders, and a darker bg for inset chrome bars.
 
 These tokens are **not** new colors. They are tinted-neutral derivatives of `bg`, all on the same hue axis. Adding a twelfth *hue* is still banned (§2, The Eleven-Slot Rule). Adding lightness steps on the existing neutral axis is what desktop chrome physically requires.
 
@@ -310,8 +316,10 @@ These tokens are **not** new colors. They are tinted-neutral derivatives of `bg`
 | `bg_strip` | `oklch(0.155 0.018 270)` | App bar, status bar, session bar. Inset chrome. |
 | `bg_hover` | `oklch(0.235 0.025 270)` | Pointer-hover on any clickable row, button, or icon. |
 | `bg_hl` | `oklch(0.275 0.045 270)` | Selection. Same role as TUI `bg_highlight`. |
-| `border` | `oklch(0.28 0.020 270)` | Hairline borders: appbar bottom, button outlines, segmented control. |
-| `border_soft` | `oklch(0.235 0.018 270)` | Internal dividers between sidebar sections. Lower contrast than `border`. |
+| `border` | `oklch(0.28 0.020 270)` | Hairline borders: appbar bottom, button outlines, segmented control container. |
+| `border_soft` | `oklch(0.235 0.018 270)` | Internal dividers: sidebar-to-add-project, sessbar bottom. Lower contrast than `border`. |
+
+In practice `bg_hover` is synthesized as `mix(bg, bg_hl, 0.55)` — slightly closer to the selected state than a strict midpoint — making hover feel responsive. All tokens are recomputed from the live palette on every frame; theme swaps take effect without any re-initialization.
 
 Foreground roles split into three steps to mirror the TUI's `fg` / `fg_dark` / `comment`:
 
@@ -325,9 +333,9 @@ Accent roles (`blue`, `cyan`, `magenta`, `green`, `yellow`, `red`) bind to the s
 
 ### Named rules (GUI-specific)
 
-**The Three-Surface Rule.** Every region of the window has exactly one background: `bg`, `bg_rail`, or `bg_strip`. There is no fourth surface tier. Nested cards, raised panels, and floating toolbars are violations.
+**The Three-Surface Rule.** Every region of the window has exactly one background: `bg`, `bg_rail`, or `bg_strip`. There is no fourth surface tier. Nested cards, raised panels, and floating toolbars are violations. Modals use `bg` — they are not a fourth tier, they are a floating rect on the same canvas.
 
-**The Tinted-Neutral Rule.** All six surface tokens share the same hue (270° in tokyonight). When porting to a new theme, the *one* hue axis the theme uses for its neutral ramp is the hue all six tokens share. Drift between tokens (e.g., a warmer `bg_strip` than `bg`) is a bug.
+**The Tinted-Neutral Rule.** All seven surface tokens share the same hue (270° in tokyonight). When porting to a new theme, the *one* hue axis the theme uses for its neutral ramp is the hue all seven tokens share. Drift between tokens (e.g., a warmer `bg_strip` than `bg`) is a bug.
 
 **The Hairline Rule.** Borders are always 1px. The focus state of an input thickens *color* (`border` → `cyan`), never *width*. 2px borders are reserved for nothing — they don't exist in Grove GUI.
 
@@ -346,8 +354,8 @@ The TUI's typographic axis is degenerate (one cell, one weight, color carries hi
 | caption | 10.5 | 400 | mono | kbd badges (when shown), inline counts |
 | micro | 11 | 400 | sans | section headers (`projects`), status segments, action-pill labels |
 | small | 11.5 | 400 | sans/mono | branch tags, captions, tool-button labels |
-| body | 12 / 12.5 | 400 | sans/mono | row labels (sans), identifiers in session bar (mono) |
-| row | 13 | 400 | sans | project / worktree primary names |
+| body | 12 | 400 | sans/mono | row labels (sans), identifiers in session bar (mono) |
+| row | 13 | 400 | sans/mono | project / worktree primary names (sans), modal titles and text input content (mono) |
 | brand | 14 | 600 | mono | `grove` wordmark in the appbar; nowhere else |
 
 There is no `h1` / `h2` / `h3`. The window has one brand mark and one row of section headers. Nesting beyond that is content, not chrome — content typography lives inside the PTY and is the user's terminal font, untouched.
@@ -363,18 +371,27 @@ There is no `h1` / `h2` / `h3`. The window has one brand mark and one row of sec
 ## 10. Elevation, Radius, Spacing
 
 ### Elevation
-There is none. Identical to §4. The GUI's mouse hover does not "lift" anything — it only fills `bg_hover`. Shadows are banned. Blurs are banned. Translucent overlays are banned. A modal, when it exists, is an opaque centered rect with the same `bg` and a 1px `border` ring. No backdrop scrim above 20% opacity; preferably no scrim at all.
+There is none. Identical to §4. The GUI's mouse hover does not "lift" anything — it only fills `bg_hover`. Shadows are banned. Blurs are banned. Translucent overlays are banned. A modal, when it exists, is an opaque centered rect with `bg` fill and a 1px accent-colored border. The modal scrim is `rgba(0, 0, 0, 0.16)` — near-transparent, providing just enough darkening to signal "something is on top" without a heavy veil.
 
 ### Radius
-- **4px**: action pills, action-mini buttons, tool buttons, badges. The default for any clickable rectangle smaller than a row.
-- **5px**: segmented controls, input fields, icon buttons (28×28), the "add project" full-width button. The default for control-sized rectangles.
-- **0px**: rows (project/worktree/session list rows are full-width strips; rounding them looks like a card).
-- **No other radius values exist.**
+- **4px**: action mini buttons (22×22), icon buttons (28×28), input fields, add-project button, agent menu panel, modal list containers. The default for any clickable or inset rectangle.
+- **6px**: modal panels, segmented control container wrapper. Used where the boundary is a prominent chrome container rather than an individual control. The individual `seg_button` elements inside the container carry no radius of their own.
+- **0px**: rows. Project/worktree/session list rows are full-width strips; rounding them looks like a card.
+- **No other radius values exist.** The split-start compound button applies left-only or right-only 4px radius to its outer segments — this is still 4px, applied directionally.
 
 ### Spacing scale (px)
 `4 · 6 · 8 · 10 · 12 · 14 · 16 · 18 · 22 · 28`. These are the only values that may appear in `Padding`, `Space::with_width`, or `spacing()` calls. A `padding: 7` in a PR is a review reject.
 
-Vertical chrome heights are **fixed**: appbar 44, status 26, session bar 36, list row 28, action buttons 22, icon buttons 28. These are constants in `src/gui.rs` — never inline.
+Vertical chrome heights are **fixed** and defined as constants in `src/gui/metrics.rs`:
+
+| Constant | Value | Surface |
+|---|---|---|
+| `APPBAR_H` | 44px | Top chrome bar |
+| `STATUS_H` | 26px | Bottom status bar |
+| `SESSBAR_H` | 36px | Per-session bar above PTY |
+| `ROW_H` | 28px | Every sidebar list row |
+| `SUBTITLE_H` | 14px | Session row subtitle line (terminal title) |
+| `RAIL_W` | 320px | Sidebar width |
 
 ### Named rules
 
@@ -390,83 +407,128 @@ Vertical chrome heights are **fixed**: appbar 44, status 26, session bar 36, lis
 
 ### App bar
 - Background `bg_strip`, bottom border `border` 1px.
-- Three columns: brand block (width = sidebar width = 320px), flexible middle (currently empty; reserved for future search), right cluster.
-- Brand: `grove` (mono / 14 / 600 / `magenta`) + tagline `worktree launchpad for ai agents` (sans / 11.5 / `fg_mute`). The tagline truncates; it never wraps.
-- Right cluster: segmented control (`native` / `tmux`) + icon buttons (`cog`, `help`). Gap 4px. Padding 12px.
+- Three columns: brand block (container width = `RAIL_W` = 320px), flexible middle (empty; reserved for future search), right cluster.
+- Brand: `grove` (mono / 14 / 600 / `magenta`).
+- Right cluster: segmented control container + icon button (`cog`). Spacing 4px. Padding `[0, 16]`.
+- Segmented control: the two `seg_button` pills (`native` / `tmux`) are wrapped in a `container` with 1px `border` and **6px radius**. The pills themselves carry no individual border or radius. Active pill fills `bg_hl`; hovered fills `bg_hover`.
 
 ### Sidebar (rail)
 - Width fixed at **320px**. Background `bg_rail`.
-- Header strip (36px) with section label `projects` (sans / 11 / `fg_mute`) and a `+` icon button.
-- Divider `border_soft` 1px.
-- Scrollable tree: projects → worktrees → sessions. Indentation is via leading `Space` widths (12 / 28 / 16), not via nested containers.
-- Footer: full-width `+ add project` button, 28px tall, 5px radius, 1px `border`, label `fg_dim`. The only full-width button in the app.
+- Scrollable tree area: padding top 8px, bottom 12px.
+- Divider `border_soft` 1px separates the scrollable tree from the add-project button.
+- Footer: full-width `+ add project` button, 28px tall, **4px radius**, 1px `border`, label 12pt `fg_dim`. Wrapped in a container with `[12, 12]` padding. The only full-width button in the app.
 
 ### List row (project / worktree / session)
-- Height **28px**. Padding handled by leading spaces; never by `Padding` on the row itself.
+- Height **28px** (session rows may be **42px** when showing a subtitle — see Session row below). Padding is handled by leading `Space` widths; never by `Padding` on the row itself.
 - Hover background: `bg_hover`. Selected background: `bg_hl`. Default: transparent over the rail.
-- **Project row:** chevron (10px, `fg_mute`) + name (sans / 13 / `fg`) + flex spacer + `●N` count chip (`green` when N>0, `fg_mute` otherwise).
-- **Worktree row:** 28px indent + chevron + name (sans / 13 / `fg_dim`, 112px clipped) + branch tag (mono / 11 / `fg_mute`, 118px fixed, clipped — the "right-edge alignment rule") + flex + `start` action pill + `term` action-mini + `more` action-mini.
-- **Session row:** 28px indent + colored `●` (green=running, `fg_mute`=exited) + agent label (mono / 12 / `cyan` when active, `fg` when inactive, 64px column) + `·` separator + session label (mono / 11 / `fg_mute`, clipped) + flex + `close` action-mini.
+
+**Project row:** left-pad 12px + chevron (10px, `fg_mute`, in a 14px container) + name (sans / 13 / `fg`, clipped) + 22×22 `+` icon button (12px icon, `fg_mute`, adds worktree on press) + flex spacer + `● N` count (mono / 11 / `green` when N>0, `fg_mute` otherwise). The `+` and count are right-aligned with 8px right-pad. The project row itself is not a single clickable button — the name area and the `+` button are siblings to avoid nested-button event collisions.
+
+**Worktree row:** left-pad 28px + chevron (10px, `fg_mute`, 14px container) + name (sans / 13 / `fg_dim`, clipped) optionally followed by ` · branch` (mono / 11 / `fg_mute`) when branch differs from name + flex + split-start compound button (right-pad 8px). The branch suffix is inline, not a separate fixed-width column. Active worktree row has `bg_hl` painted on both the left button and the outer container. Split into sibling row elements (not nested buttons) to work around an iced 0.13 event propagation limitation.
+
+**Split-start compound button:** a three-segment row that replaces the separate action-pill + action-mini pattern. Segments: `play` icon (9px, `green`) in a 28×22 container (left radius 4px); `term` icon (12px, `fg_mute`) in a 28×22 container (no radius); `more` icon (12px, `fg_mute`) in a 22×22 container (right radius 4px). All three share the same 1px `border` style. On hover: background shifts to `bg_hover`, text/icon to `fg`. Each segment fires a distinct message (`StartSession`, `StartTerminal`, `ToggleAgentMenu`).
+
+**Session row:** left-pad 16px + 28px indent spacer + `dot` (7×7, green=running, `fg_mute`=exited) + meta cluster + `close` action-mini (right-pad 8px). Spacing 8px. The meta cluster is a clipped row: agent label (mono / 12 / `cyan` when active, `fg` when inactive) + `·` separator (11pt, `fg_mute`) + session label (mono / 11 / `fg_mute`). No fixed-width column for agent — it flows inline.
+
+**Session row subtitle:** when the session's current terminal title differs from both the session label and the agent name, a second line is appended below the main row. Height grows from `ROW_H` (28px) to `ROW_H + SUBTITLE_H` (42px). Subtitle: mono / 11 / `fg_mute`, left-pad 48px, clipped, no wrapping. The agent menu position calculator accounts for this variable height.
+
+**Add-worktree row:** appears at the bottom of each expanded project's worktree list. Left-pad 16px + 28px spacer + `+ new worktree` (sans / 12 / `fg_mute`). No border, no radius (explicitly `Radius::from(0.0)`). Fires `AddWorktree` on press.
 
 ### Buttons
 There are **four** button shapes and no others:
 
 | Shape | Size | Background | Border | Use |
 |---|---|---|---|---|
-| **icon-btn** | 28×28 | none → `bg_hover` on hover | none | Appbar gear/help, sidebar `+` |
-| **action-mini** | 22×22 | none → `bg_hover` on hover | none | Row-level secondary actions (`term`, `more`, `close`) |
-| **action-pill** | auto×22 | `bg` → `bg_hover` on hover | 1px `border`, 4px radius | Row-level primary action (`start`) |
-| **tool-btn** | auto×22 | none → `bg_hover` on hover | none | Session-bar actions (`split`, `rename`, `kill`) |
-| **seg-btn** | auto×24 | active = `bg_hl`, hover = `bg_hover` | shared `border` 1px, 5px radius | Mode toggle (`native` / `tmux`) |
+| **icon-btn** | 28×28 | none → `bg_hover` on hover | none (radius 4px, transparent) | Appbar `cog`, project-row `+` |
+| **action-mini** | 22×22 | none → `bg_hover` on hover | none (radius 4px, transparent) | Row-level secondary actions (`close`); chevron row `+` |
+| **split-start** | compound×22 | `bg` → `bg_hover` on hover | 1px `border`, directional 4px radius | Worktree row actions (`play` / `term` / `more`) |
+| **tool-btn** | auto×22 | none → `bg_hover` on hover | none (radius 4px, transparent) | Session-bar actions |
+| **seg-btn** | auto×24 | active = `bg_hl`, hover = `bg_hover` | container: 1px `border`, 6px radius | Mode toggle (`native` / `tmux`) |
 
 **Destructive variant.** A `kill` or `trash` tool-btn shifts its label and icon to `red` *only on hover*. At rest it is `fg_dim` like any other tool button. This keeps `red` reserved for confirmed intent, not idle threat.
 
+### Agent menu overlay
+- **Trigger:** the `more` segment of a worktree row's split-start button.
+- **Shape:** a 120px-wide popover panel positioned via pixel-offset stacking. Background `bg`, 1px `border`, 4px radius, top/bottom padding 3px.
+- **Items:** 24px tall, mono / 11 / `fg_dim`. On hover: `bg_hover` background, `fg` text. Available agents: `Codex`, `OpenCode`.
+- **Destructive item:** for non-main worktrees only, a `delete` item appears below a `border` divider. Text is `red` at rest (not just on hover) — the only exception to the at-rest `fg_dim` rule. This signals that delete is categorically different from launching a session.
+- **Dismissal:** clicking anywhere outside the menu fires `CloseAgentMenu` via an invisible full-size backdrop button stacked beneath the menu.
+- **Position:** computed by walking the tree in render order and accumulating row heights (including `SUBTITLE_H` for sessions that have one). Appears flush right inside the sidebar with 8px right margin.
+
 ### Session bar
 - Height **36px**, background `bg_strip`, bottom border `border_soft` 1px.
-- Left cluster: running `●` + state label (`running` green / `exited` `fg_mute`) + `|` divider + agent (mono / 12 / `magenta`) + `·` + project (mono / 12 / `blue`) + `/` + label (mono / 12 / `fg`) + `[branch]` (mono / 12 / `fg_mute`).
-- Right cluster: cwd path (mono / 12 / `fg_mute`, right-aligned, truncates left) + `|` + tool-btns `split`, `rename`, `kill`.
-- The 10px spacing between left-cluster segments is the only place gaps reach 10px — the rhythm signals "structured identifier" the way breadcrumbs do.
+- Left cluster (spacing 12px, padding `[0, 16]`): running `●` + state label (`running` green / `exited` `fg_mute`) + `vline` + agent (mono / 12 / `magenta`) + `·` (`fg_mute`) + project (mono / 12 / `blue`) + `/` (`fg_mute`) + session label (mono / 12 / `fg`) + `[branch]` (mono / 12 / `fg_mute`) + flex spacer + cwd path (mono / 12 / `fg_mute`, truncates naturally) + `vline` + `kill` tool-btn.
+- **Current tool buttons:** only `kill` (trash icon, danger=true). The `split` and `rename` icons are defined in the sprite but not yet wired in the session bar.
+- Spacing between all segments is 12px. The `vline` (1×18px, `border` color) is the visual separator between identity and action clusters.
 
 ### PTY canvas
-- Background `bg`. Padding 14px top/bottom, 18px left/right.
-- The PTY is the **only** part of the GUI that owns its own type, color, and grid (cell metrics 7.6 × 17px, font 12.5pt mono). Chrome does not impose styling on PTY contents.
-- ANSI indices 0–15 bind back to the eleven semantic roles via `ansi_idx()` — the ANSI 8-color palette inside the PTY is a *projection* of the same role contract, not a separate system.
+- Background `bg`. Padding **12px top/bottom, 16px left/right** around the scrollable canvas container.
+- The PTY is the **only** part of the GUI that owns its own type, color, and grid. Cell metrics: `CELL_W = 7.6px`, `CELL_H = 17.0px`, font `12.5pt mono`. Chrome does not impose styling on PTY contents.
+- ANSI indices 0–15 bind back to palette tokens via `ansi_idx()`. Index 0 (ANSI black) maps to `bg_strip` — the darkest surface — so terminal "black" backgrounds blend with the chrome rather than creating a hard-cut rectangle.
+- PTY dimensions (`cols`, `rows`) are computed from window size by subtracting fixed chrome heights and the container padding (36px horizontal, 28px vertical) then dividing by cell metrics. Minimum: 10 cols, 4 rows.
+- **Selection overlay:** a `rgba(0.40, 0.50, 0.78, 0.35)` blue-lavender rectangle drawn per selected cell range. This color is hardcoded in `pty.rs` and does not respond to theme swaps — a known limitation.
+- **Cursor:** full `CELL_W × CELL_H` filled rectangle in `fg`. Blinks at ~500ms on / 500ms off (`blink_tick % 16 < 8` at ~60ms tick interval). Hidden when the terminal sets hide-cursor mode.
 
 ### Status bar
-- Height **26px**, background `bg_strip`. Padding 14px horizontal.
-- Left: `● {n} running` (green dot + `fg_dim` count) · `backend {value}` · `theme {name}`. Pairs are `fg_mute` label + `fg_dim` value, separated by 6px; pair-groups are separated by 14px.
-- Right: `v{version}` in `fg_dim`. Always visible. The only place a version number appears in the chrome.
-- Toast: when present, sits in the middle, `green` text, 11px. It does not have a background, a border, a dismiss button, or a timer animation. It replaces itself or disappears; that is all.
+- Height **26px**, background `bg_strip`. Padding `[0, 16]`.
+- Left cluster (pair-group spacing 16px, within-pair spacing 6px): `●` dot (green if N>0, `fg_mute` otherwise) + `N running` (11pt, `fg_dim`) — `backend` label (`fg_mute`) + value (`fg_dim`) — `theme` label (`fg_mute`) + value (`fg_dim`).
+- Center: toast message when present — 11pt `green`. Sits after a fixed 24px spacer from the left cluster, then right-aligned via `Space::Fill`. No background, no border, no timer animation. Appears and disappears in a single frame.
+- Right: `v{version}` (11pt, `fg_dim`). Always visible. The only place a version number appears in the chrome.
 
 ### Dot glyph (`●`)
-- 7×7px circle (radius 3.5px). Always green when "running," always `fg_mute` when "exited" or "idle," never any other color.
+- 7×7px circle (radius 3.5px). Always `green` when "running," always `fg_mute` when "exited" or "idle," never any other color.
 - This is the *only* shape primitive Grove draws by hand. Every other surface is a rectangle.
 
 ### Icons
-- All chrome icons are 16×16 viewBox SVGs from the inline sprite in `svg_for()`. Stroke = `currentColor`, width 1.6px, round caps & joins. Fills are forbidden except where a glyph is intrinsically a fill (the `play` triangle, the dots in `more`).
-- Sizes used: **9** (inside action-pill before a label), **10** (chevrons in tree), **12** (action-mini, tool-btn), **15** (icon-btn).
+- All chrome icons are 16×16 viewBox SVGs from the inline sprite in `svg_for()` (`src/gui/icons.rs`). Stroke = `currentColor`, width 1.6px, round caps & joins. Fills are forbidden except where a glyph is intrinsically a fill (the `play` triangle, the dots in `more`).
+- Sizes used: **9** (play icon inside split-start left segment), **10** (chevrons in tree), **12** (action-mini, tool-btn, project-row `+`), **15** (icon-btn).
+- **Current sprite:** `plus`, `close`, `play`, `chev-down`, `chev-right`, `cog`, `search`, `term`, `more`, `split`, `edit`, `trash`. Of these, `split` and `edit` are defined but not yet wired to any button in the current UI — they are reserved for future session-bar actions.
 - The icon set is closed. Adding a new icon means adding a new entry to `svg_for()` and justifying it in review. No external icon library is depended on.
+
+### Modals
+- **Panel chrome:** background `bg`, 1px border in accent color, **6px radius**, padding `[16, 20]` (top/bottom 16, left/right 20). Centered in the window via a full-size `container` with `center_x` / `center_y`.
+- **Scrim:** `rgba(0, 0, 0, 0.16)` — a near-transparent black overlay on the full window, below the panel. Below the 20% ceiling from §10.
+- **Title:** 13pt in the accent color. The accent color varies by modal type (see table below).
+- **Body text:** 13pt `fg_dim`, word-wrapped.
+- **Action buttons:** `modal_action` shape — 12pt text, `[6, 12]` padding, 4px radius, 1px `border`. Primary button: `bg_hl` at rest → `bg_hover` on hover, `fg` text. Secondary: `bg` at rest → `bg_hover` on hover, `fg_dim` text.
+
+Modal type summary:
+
+| Modal | Width | Height | Accent | Title |
+|---|---|---|---|---|
+| Input (text only) | 480 | 180 | `magenta` | prompt string |
+| Input (path with dir picker) | 640 | 192 + (1–6 matches × 28px) | `magenta` | prompt string |
+| Confirm (normal) | 480 | 180 | `magenta` | action name |
+| Confirm (destructive) | 480 | 180 | `red` | action name |
+| Message / Notice | 480 | 180 | `cyan` | "notice" |
+| Tmux choice | 480 | 180 | `cyan` | "session backend" |
+| Theme picker | 460 | 140 + (up to 12 themes × 28px) | `magenta` | "theme" |
+
+**Input modal:** text field is 36px tall, `bg_strip` background, 1px `border`, 4px radius, 13pt mono text, 12px horizontal padding. Cursor is a 7×15px `cyan` rectangle — custom-drawn, not iced's `text_input`. The path variant shows a `matches` section below the field with up to 6 directory rows (`modal_dir_row`, 28px, mono 12pt `cyan` at rest / `fg` when active or hovered).
+
+**Theme picker modal:** two tab pills (`Dark` / `Light`) above a scrollable list container (`bg_strip` background, 1px `border`, 4px radius). List rows are 28px, 12pt text, `fg` when selected / `fg_dim` otherwise. Tab pills: 11pt, `bg_hl` when active (`magenta` text) / `bg_hover` when hovered (`fg_mute` text), 3px radius (internal detail; not a new radius in the system — these are non-interactive-looking small pills inside a modal).
 
 ## 12. Do's and Don'ts (GUI-specific addenda)
 
 These are *in addition to* §6. The TUI rules still apply to the GUI surface; the items below cover what the TUI rules can't reach.
 
 ### Do:
-- **Do** keep every clickable rectangle on the radius pair `4 / 5px`. Pills/buttons at 4, controls/inputs/icon-btns at 5.
+- **Do** keep every interactive rectangle on the radius pair **4px** (controls) or **6px** (container wrappers and modal panels). 4px for anything you click directly; 6px for the housing around a group of controls.
 - **Do** use mono for every identifier, even when it sits next to sans labels. The contrast is the hierarchy.
 - **Do** render hover as a `bg_hover` fill only. Never as a border thicken, never as a color shift on the text alone, never as a transform.
 - **Do** keep the sidebar at exactly 320px. It is not a draggable splitter; resizing it is a future feature, not a today freedom.
 - **Do** add new icons by extending `svg_for()` with a 16×16 stroked path that matches the sprite's stroke-width and line caps.
+- **Do** account for `SUBTITLE_H` when computing pixel offsets in the tree (e.g., agent menu positioning). Session rows are not always 28px.
 
 ### Don't:
 - **Don't** introduce a fourth surface (`bg`, `bg_rail`, `bg_strip` are the only three). Floating panels, popovers with a different fill, and "card" backgrounds are all bans.
-- **Don't** use a shadow, gradient, blur, or any translucent overlay. Anywhere. The Flat-Forever Rule is absolute.
+- **Don't** use a shadow, gradient, blur, or any translucent overlay above 20% opacity. Anywhere. The Flat-Forever Rule is absolute.
 - **Don't** add a third font family. Inter and the user's mono are the whole type system. Display fonts, icon fonts, and serif accents are bans.
 - **Don't** add a font size outside the six-step scale. If a designer needs a 12.75px label, they are smoothing over a layout problem with type — fix the layout.
-- **Don't** use color on hover to indicate intent (e.g., turning a save icon green on hover). Hover is `bg_hover` plus a foreground promotion from `fg_dim` to `fg`. That is the entire hover vocabulary.
+- **Don't** use color on hover to indicate intent (e.g., turning a save icon green on hover). Hover is `bg_hover` plus a foreground promotion from `fg_dim` to `fg`. The one exception is the destructive tool-btn (`kill`), which shifts to `red` on hover — this is intentional and bounded to danger actions only.
 - **Don't** ship a clickable element without a hover state and a discernible default-vs-hovered contrast. Every interactive rectangle must answer "can I click this?" within 100ms of cursor entry.
-- **Don't** animate the appearance/disappearance of UI elements. Tree expansion is an instant re-layout. Toasts appear and disappear in a single frame.
+- **Don't** animate the appearance/disappearance of UI elements. Tree expansion is an instant re-layout. Toasts appear and disappear in a single frame. The agent menu opens and closes with no transition.
 - **Don't** add a scrollbar style. The host platform's native scrollbar is the right answer; restyling it is decoration.
 - **Don't** introduce a window-level title bar, traffic-light glyphs, or a custom close button. The OS owns window chrome; Grove owns the appbar inside it.
 - **Don't** add a settings modal. Configuration lives in keystrokes (`native`/`tmux` toggle is already in the appbar) and, when truly needed, in the user's config file — not in a tabbed dialog.
-
+- **Don't** add a radius value that isn't 0, 4, or 6px. The three-value radius vocabulary is intentional. Directional radii (left-only, right-only) still use 4px on the active corners.

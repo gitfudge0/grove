@@ -4,7 +4,7 @@ use super::icons::icon;
 use super::metrics::{MONO_FONT, ROW_H, SUBTITLE_H};
 use super::palette as c;
 use super::state::Msg;
-use super::widgets::{action_mini, clickable_row, split_start_button};
+use super::widgets::{action_mini, action_mini_danger, clickable_row, split_start_button};
 use crate::session::{Session, SessionStatus};
 use iced::border::Radius;
 use iced::widget::{button, column, container, row, text, Space};
@@ -213,7 +213,12 @@ pub fn worktree_row<'a>(
         .into()
 }
 
-pub fn session_row<'a>(idx: usize, s: &Session, active: bool) -> Element<'a, Msg> {
+pub fn session_row<'a>(
+    idx: usize,
+    s: &Session,
+    active: bool,
+    pending_kill: bool,
+) -> Element<'a, Msg> {
     let running = matches!(*s.status.lock().unwrap(), SessionStatus::Running);
     let dot_color = if running { c::GREEN() } else { c::FG_MUTE() };
     let agent_color = if active { c::CYAN() } else { c::FG() };
@@ -242,11 +247,17 @@ pub fn session_row<'a>(idx: usize, s: &Session, active: bool) -> Element<'a, Msg
     .clip(true)
     .into();
 
+    let close_btn: Element<'a, Msg> = if pending_kill {
+        action_mini_danger("check", Msg::KillSession(idx))
+    } else {
+        action_mini("close", Msg::RequestKillSession(idx))
+    };
+
     let main_row: Element<'a, Msg> = row![
         Space::with_width(28),
         super::widgets::dot(dot_color),
         meta,
-        action_mini("close", Msg::KillSession(idx)),
+        close_btn,
     ]
     .spacing(8)
     .align_y(iced::Alignment::Center)

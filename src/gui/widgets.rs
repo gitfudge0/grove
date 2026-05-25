@@ -286,14 +286,23 @@ fn agent_menu<'a>(proj: usize, wt: usize, is_main: bool) -> Element<'a, Msg> {
 }
 
 pub fn action_mini<'a>(icon_name: &'static str, msg: Msg) -> Element<'a, Msg> {
+    action_mini_styled(icon_name, msg, false)
+}
+
+pub fn action_mini_danger<'a>(icon_name: &'static str, msg: Msg) -> Element<'a, Msg> {
+    action_mini_styled(icon_name, msg, true)
+}
+
+fn action_mini_styled<'a>(icon_name: &'static str, msg: Msg, danger: bool) -> Element<'a, Msg> {
+    let base_color = if danger { c::RED() } else { c::FG_MUTE() };
     button(
-        container(icon(icon_name, 12.0, c::FG_MUTE()))
+        container(icon(icon_name, 12.0, base_color))
             .center_x(22)
             .center_y(22),
     )
     .on_press(msg)
     .padding(0)
-    .style(|_, status| {
+    .style(move |_, status| {
         let hovered = matches!(status, button::Status::Hovered);
         button::Style {
             background: if hovered {
@@ -301,7 +310,13 @@ pub fn action_mini<'a>(icon_name: &'static str, msg: Msg) -> Element<'a, Msg> {
             } else {
                 None
             },
-            text_color: if hovered { c::FG() } else { c::FG_MUTE() },
+            text_color: if danger {
+                c::RED()
+            } else if hovered {
+                c::FG()
+            } else {
+                c::FG_MUTE()
+            },
             border: Border {
                 color: Color::TRANSPARENT,
                 width: 0.0,
@@ -324,7 +339,13 @@ pub fn tool_btn<'a>(
         container(
             row![
                 icon(icon_name, 12.0, c::FG_DIM()),
-                text(label_owned).size(11).color(c::FG_DIM()),
+                text(label_owned)
+                    .font(MONO_FONT)
+                    .size(12)
+                    .line_height(1.0)
+                    .height(18)
+                    .align_y(iced::alignment::Vertical::Center)
+                    .color(c::FG_DIM()),
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center),

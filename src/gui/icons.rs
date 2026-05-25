@@ -18,14 +18,12 @@ fn svg_for(name: &str) -> String {
     let inner = match name {
         "plus" => r#"<path d="M8 3v10M3 8h10"/>"#,
         "close" => r#"<path d="M4 4l8 8M12 4l-8 8"/>"#,
+        "check" => r#"<path d="M3 8l4 4 6-7"/>"#,
         "play" => r#"<path d="M5 3.5l7 4.5-7 4.5z" fill="currentColor"/>"#,
         "chev-down" => r#"<path d="M4 6l4 4 4-4"/>"#,
         "chev-right" => r#"<path d="M6 4l4 4-4 4"/>"#,
         "cog" => {
             r#"<circle cx="8" cy="8" r="2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/>"#
-        }
-        "help" => {
-            r#"<circle cx="8" cy="8" r="6.2"/><path d="M6 6.2c0-1.1 0.9-2 2-2s2 0.9 2 2c0 1.1-2 1.4-2 2.6M8 11.6v0.2"/>"#
         }
         "search" => r#"<circle cx="7" cy="7" r="4.5"/><path d="M10.4 10.4l3 3"/>"#,
         "term" => {

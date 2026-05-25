@@ -77,8 +77,6 @@ pub fn render_banner(f: &mut Frame, app: &App, area: Rect) {
                 format!("v{}", version),
                 Style::default().fg(theme::current().yellow),
             ),
-            Span::raw("  "),
-            Span::styled("· worktree launchpad for ai agents", key),
         ]),
         backend_line,
     ];

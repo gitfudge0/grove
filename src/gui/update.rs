@@ -33,6 +33,7 @@ impl Grove {
             open_agent_menu: None,
             pty_selection: None,
             blink_tick: 0,
+            pending_kill: None,
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -92,6 +93,7 @@ impl Grove {
             }
             Msg::ProjectClicked(i) => {
                 self.open_agent_menu = None;
+                self.pending_kill = None;
                 if self.collapsed.contains(&i) {
                     self.collapsed.remove(&i);
                 } else {
@@ -102,6 +104,7 @@ impl Grove {
             }
             Msg::WorktreeClicked { proj, wt } => {
                 self.open_agent_menu = None;
+                self.pending_kill = None;
                 self.switch_active_project(proj);
                 self.app.wt_idx = wt;
             }
@@ -125,12 +128,18 @@ impl Grove {
             }
             Msg::SelectSession(i) => {
                 self.open_agent_menu = None;
+                self.pending_kill = None;
                 if i < self.app.sessions.len() {
                     self.app.active_session = Some(i);
                     self.app.sessions[i].resize(self.pty_rows, self.pty_cols);
                 }
             }
+            Msg::RequestKillSession(i) => {
+                self.open_agent_menu = None;
+                self.pending_kill = Some(i);
+            }
             Msg::KillSession(i) => {
+                self.pending_kill = None;
                 if i < self.app.sessions.len() {
                     let key = Arc::as_ptr(&self.app.sessions[i].dirty) as usize;
                     self.pty_cache.borrow_mut().remove(&key);
@@ -153,6 +162,7 @@ impl Grove {
                 }
             }
             Msg::PtyMouseDown(x, y) => {
+                self.pending_kill = None;
                 let cell = pixel_to_cell(x, y);
                 self.pty_selection = Some((cell, cell));
             }
@@ -224,7 +234,6 @@ impl Grove {
             }
             Msg::ThemePickerSubmit => self.theme_picker_submit(),
             Msg::ThemePickerCancel => self.app.theme_picker_cancel(),
-            Msg::NoOp => {}
         }
         Task::none()
     }
