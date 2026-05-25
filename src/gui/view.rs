@@ -12,6 +12,7 @@ use super::widgets::{
     divider_h, divider_v, dot, empty_workspace, icon_btn, modal_action, modal_dir_row, modal_panel,
     seg_button, sidebar_agent_menu_overlay, tool_btn, vline,
 };
+use crate::agent::Agent;
 use crate::app::{InputKind, Modal};
 use crate::git::Worktree;
 use crate::session::{Session, SessionStatus};
@@ -556,6 +557,11 @@ impl Grove {
             } => self.confirm_modal(title, prompt, *destructive),
             Modal::Message(message) => self.message_modal(message),
             Modal::TmuxChoice => self.tmux_choice_modal(),
+            Modal::AgentPicker {
+                project,
+                wt_path,
+                sel,
+            } => self.agent_picker_modal(project, wt_path, *sel),
             Modal::ThemePicker {
                 sel_dark,
                 sel_light,
@@ -742,6 +748,96 @@ impl Grove {
         .spacing(12);
 
         modal_panel(body.into(), 480.0, 180.0, c::CYAN())
+    }
+
+    fn agent_picker_modal<'a>(
+        &'a self,
+        project: &'a str,
+        wt_path: &'a str,
+        sel: usize,
+    ) -> Element<'a, Msg> {
+        let wt_name = crate::app::path_basename(wt_path);
+        let title = if project.is_empty() {
+            format!("start session / {wt_name}")
+        } else {
+            format!("start session / {project} / {wt_name}")
+        };
+
+        let mut list = Column::new().spacing(0);
+        for (i, agent) in Agent::ALL.iter().enumerate() {
+            let active = i == sel;
+            let is_default = self.app.store.default_agent == Some(*agent);
+            let label = row![
+                text(agent.label().to_string()).size(12).color(if active {
+                    c::FG()
+                } else {
+                    c::FG_DIM()
+                }),
+                Space::with_width(Length::Fill),
+                text(if is_default { "default" } else { "" })
+                    .size(11)
+                    .color(c::FG_MUTE()),
+            ]
+            .align_y(iced::Alignment::Center);
+
+            list = list.push(
+                button(
+                    container(label)
+                        .width(Length::Fill)
+                        .center_y(ROW_H)
+                        .padding(Padding::from([0, 10])),
+                )
+                .on_press(Msg::AgentPickerSelect(i))
+                .width(Length::Fill)
+                .padding(0)
+                .style(move |_, status| {
+                    let hovered = matches!(status, button::Status::Hovered);
+                    button::Style {
+                        background: if active {
+                            Some(Background::Color(c::BG_HL()))
+                        } else if hovered {
+                            Some(Background::Color(c::BG_HOVER()))
+                        } else {
+                            None
+                        },
+                        text_color: if active { c::FG() } else { c::FG_DIM() },
+                        border: Border::default(),
+                        shadow: Shadow::default(),
+                    }
+                }),
+            );
+        }
+
+        let list_h = (Agent::ALL.len() as f32) * ROW_H;
+        let list_box = container(list)
+            .width(Length::Fill)
+            .height(Length::Fixed(list_h))
+            .style(|_| container::Style {
+                background: Some(Background::Color(c::BG_STRIP())),
+                border: Border {
+                    color: c::BORDER(),
+                    width: 1.0,
+                    radius: Radius::from(4.0),
+                },
+                ..Default::default()
+            });
+
+        let body = column![
+            text(title).size(13).color(c::MAGENTA()),
+            list_box,
+            Space::with_height(4),
+            row![
+                modal_action("default", false, Msg::AgentPickerToggleDefault),
+                Space::with_width(Length::Fill),
+                modal_action("cancel", false, Msg::ModalCancel),
+                modal_action("launch", true, Msg::AgentPickerSubmit),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(12);
+
+        modal_panel(body.into(), 500.0, 150.0 + list_h, c::MAGENTA())
     }
 
     fn theme_picker_modal(

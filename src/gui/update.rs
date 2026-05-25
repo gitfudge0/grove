@@ -9,6 +9,7 @@ use crate::app::{App, InputKind, Modal, Pane};
 use crate::session::Session;
 use iced::keyboard::{key::Named, Key, Modifiers};
 use iced::{event, keyboard, Event, Subscription, Task};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -91,6 +92,9 @@ impl Grove {
                     self.app.modal = Modal::Message(format!("tmux setup failed: {e}"));
                 }
             }
+            Msg::AgentPickerSelect(i) => self.agent_picker_select(i),
+            Msg::AgentPickerToggleDefault => self.agent_picker_toggle_default(),
+            Msg::AgentPickerSubmit => self.submit_agent_picker(),
             Msg::ProjectClicked(i) => {
                 self.open_agent_menu = None;
                 self.pending_kill = None;
@@ -225,7 +229,7 @@ impl Grove {
                 return self.scroll_theme_picker_to_selection();
             }
             Msg::ThemePickerSwitchTab => {
-                self.app.theme_picker_switch_tab();
+                self.theme_picker_switch_tab();
                 return self.scroll_theme_picker_to_selection();
             }
             Msg::ThemePickerSelect(i) => {
@@ -233,7 +237,7 @@ impl Grove {
                 return self.scroll_theme_picker_to_selection();
             }
             Msg::ThemePickerSubmit => self.theme_picker_submit(),
-            Msg::ThemePickerCancel => self.app.theme_picker_cancel(),
+            Msg::ThemePickerCancel => self.theme_picker_cancel(),
         }
         Task::none()
     }
@@ -288,12 +292,58 @@ impl Grove {
             crate::theme::ThemeKind::Light => *sel_light = index,
         }
         crate::theme::set(themes[index]);
+        self.invalidate_pty_render_cache();
+    }
+
+    fn theme_picker_move(&mut self, delta: i32) {
+        self.app.theme_picker_move(delta);
+        self.invalidate_pty_render_cache();
+    }
+
+    fn theme_picker_switch_tab(&mut self) {
+        self.app.theme_picker_switch_tab();
+        self.invalidate_pty_render_cache();
     }
 
     fn theme_picker_submit(&mut self) {
         if let Err(e) = self.app.theme_picker_submit() {
             self.app.modal = crate::app::Modal::Message(format!("theme failed: {e}"));
         }
+        self.invalidate_pty_render_cache();
+    }
+
+    fn theme_picker_cancel(&mut self) {
+        self.app.theme_picker_cancel();
+        self.invalidate_pty_render_cache();
+    }
+
+    fn invalidate_pty_render_cache(&mut self) {
+        self.pty_cache.borrow_mut().clear();
+        for s in &self.app.sessions {
+            s.dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn agent_picker_select(&mut self, index: usize) {
+        if index >= Agent::ALL.len() {
+            return;
+        }
+        if let Modal::AgentPicker { sel, .. } = &mut self.app.modal {
+            *sel = index;
+        }
+    }
+
+    fn agent_picker_toggle_default(&mut self) {
+        if let Err(e) = self.app.picker_toggle_default() {
+            self.app.modal = Modal::Message(format!("default agent failed: {e}"));
+        }
+    }
+
+    fn submit_agent_picker(&mut self) {
+        let before = self.session_keys();
+        self.app.picker_submit();
+        self.resize_new_sessions(&before);
+        self.rebuild_wt_cache();
     }
 
     fn handle_key(&mut self, key: Key, mods: Modifiers) {
@@ -374,15 +424,28 @@ impl Grove {
                 _ => {}
             },
             Modal::ThemePicker { .. } => match key {
-                Key::Named(Named::Escape) => self.app.theme_picker_cancel(),
+                Key::Named(Named::Escape) => self.theme_picker_cancel(),
                 Key::Named(Named::Enter) => self.theme_picker_submit(),
-                Key::Named(Named::ArrowDown) => self.app.theme_picker_move(1),
-                Key::Named(Named::ArrowUp) => self.app.theme_picker_move(-1),
-                Key::Named(Named::Tab) => self.app.theme_picker_switch_tab(),
+                Key::Named(Named::ArrowDown) => self.theme_picker_move(1),
+                Key::Named(Named::ArrowUp) => self.theme_picker_move(-1),
+                Key::Named(Named::Tab) => self.theme_picker_switch_tab(),
                 Key::Character(s) => match s.as_str() {
-                    "j" | "J" => self.app.theme_picker_move(1),
-                    "k" | "K" => self.app.theme_picker_move(-1),
-                    "h" | "H" | "l" | "L" => self.app.theme_picker_switch_tab(),
+                    "j" | "J" => self.theme_picker_move(1),
+                    "k" | "K" => self.theme_picker_move(-1),
+                    "h" | "H" | "l" | "L" => self.theme_picker_switch_tab(),
+                    _ => {}
+                },
+                _ => {}
+            },
+            Modal::AgentPicker { .. } => match key {
+                Key::Named(Named::Escape) => self.cancel_modal(),
+                Key::Named(Named::Enter) => self.submit_agent_picker(),
+                Key::Named(Named::ArrowDown) => self.app.picker_move(1),
+                Key::Named(Named::ArrowUp) => self.app.picker_move(-1),
+                Key::Named(Named::Space) => self.agent_picker_toggle_default(),
+                Key::Character(s) => match s.as_str() {
+                    "j" | "J" => self.app.picker_move(1),
+                    "k" | "K" => self.app.picker_move(-1),
                     _ => {}
                 },
                 _ => {}
@@ -408,20 +471,20 @@ impl Grove {
     }
 
     fn submit_modal_input(&mut self) {
-        let before = self.app.sessions.len();
+        let before = self.session_keys();
         if let Err(e) = self.app.submit_input() {
             self.app.modal = Modal::Message(format!("input failed: {e}"));
         }
-        self.resize_new_sessions(before);
+        self.resize_new_sessions(&before);
         self.rebuild_wt_cache();
     }
 
     fn submit_modal_confirm(&mut self, yes: bool) {
-        let before = self.app.sessions.len();
+        let before = self.session_keys();
         if let Err(e) = self.app.submit_confirm(yes) {
             self.app.modal = Modal::Message(format!("action failed: {e}"));
         }
-        self.resize_new_sessions(before);
+        self.resize_new_sessions(&before);
         self.rebuild_wt_cache();
     }
 
@@ -429,14 +492,21 @@ impl Grove {
     /// viewport. Sessions created indirectly (e.g. auto-spawned when a new
     /// worktree is added) otherwise stay at the 80x24 PTY default and don't
     /// fill the workspace width.
-    fn resize_new_sessions(&mut self, before: usize) {
-        let after = self.app.sessions.len();
-        if after <= before {
-            return;
+    fn resize_new_sessions(&mut self, before: &[usize]) {
+        for s in &mut self.app.sessions {
+            let key = Arc::as_ptr(&s.dirty) as usize;
+            if !before.contains(&key) {
+                s.resize(self.pty_rows, self.pty_cols);
+            }
         }
-        for s in &mut self.app.sessions[before..after] {
-            s.resize(self.pty_rows, self.pty_cols);
-        }
+    }
+
+    fn session_keys(&self) -> Vec<usize> {
+        self.app
+            .sessions
+            .iter()
+            .map(|s| Arc::as_ptr(&s.dirty) as usize)
+            .collect()
     }
 
     fn cancel_modal(&mut self) {

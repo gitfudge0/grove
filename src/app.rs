@@ -479,16 +479,6 @@ impl App {
         );
     }
 
-    pub fn launch_agent(&mut self, agent: Agent, cwd: String) {
-        let project = self
-            .selected_project()
-            .map(|p| p.name.clone())
-            .unwrap_or_default();
-        let label = path_basename(&cwd);
-        let args = agent.launch_args();
-        self.spawn_session(label, project, cwd.clone(), agent, args, &cwd);
-    }
-
     /// Index of the default agent in the picker, or 0 if none is set.
     fn picker_sel(&self) -> usize {
         self.store
@@ -746,10 +736,18 @@ impl App {
 
     pub fn picker_submit(&mut self) {
         let modal = std::mem::replace(&mut self.modal, Modal::None);
-        let Modal::AgentPicker { wt_path, sel, .. } = modal else {
+        let Modal::AgentPicker {
+            project,
+            wt_path,
+            sel,
+        } = modal
+        else {
             return;
         };
-        self.launch_agent(Agent::ALL[sel], wt_path);
+        let agent = Agent::ALL[sel];
+        let label = path_basename(&wt_path);
+        let args = agent.launch_args();
+        self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path);
     }
 
     pub fn open_theme_picker(&mut self) {
