@@ -1,0 +1,674 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>grove — gui mockup</title>
+<style>
+  /* ────────────────────────────────────────────────────────────────────
+     tokyonight role bindings (mirrors src/theme.rs).
+     restrained palette: tinted neutrals carry the surface; accents are
+     reserved for semantic state — green=running, red=destructive,
+     cyan=active selection, blue=identifier, magenta=agent meta.
+     ──────────────────────────────────────────────────────────────────── */
+  :root {
+    --bg:           oklch(0.20 0.020 270);     /* canvas */
+    --bg-rail:      oklch(0.17 0.022 270);     /* sidebar */
+    --bg-strip:     oklch(0.155 0.018 270);    /* top app bar, bottom status */
+    --bg-hover:     oklch(0.235 0.025 270);
+    --bg-hl:        oklch(0.275 0.045 270);    /* active selection */
+    --border:       oklch(0.28 0.020 270);
+    --border-soft:  oklch(0.235 0.018 270);
+
+    --fg:           oklch(0.86 0.04 265);
+    --fg-dim:       oklch(0.72 0.035 262);
+    --fg-mute:      oklch(0.55 0.028 264);
+
+    --blue:    oklch(0.74 0.13 252);
+    --cyan:    oklch(0.82 0.13 220);
+    --magenta: oklch(0.74 0.14 305);
+    --green:   oklch(0.78 0.16 142);
+    --yellow:  oklch(0.80 0.13 80);
+    --red:     oklch(0.72 0.17 18);
+
+    --ui:   "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, "JetBrains Mono", "IBM Plex Mono", Menlo, monospace;
+
+    --row-h: 28px;
+    --rail-w: 320px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: oklch(0.13 0.012 270);
+    color: var(--fg); font-family: var(--ui); font-size: 13px;
+    font-feature-settings: "ss01", "cv11"; -webkit-font-smoothing: antialiased; }
+
+  button { font: inherit; color: inherit; background: transparent; border: 0; padding: 0; cursor: pointer; }
+  input  { font: inherit; color: inherit; background: transparent; border: 0; outline: 0; }
+  ::selection { background: var(--bg-hl); }
+
+  .window {
+    display: grid;
+    grid-template-rows: 44px 1fr 26px;
+    height: 100vh;
+    background: var(--bg);
+    border: 1px solid var(--border);
+  }
+
+  /* ─── app bar ─────────────────────────────────────────────────────── */
+  .appbar {
+    display: grid;
+    grid-template-columns: var(--rail-w) 1fr auto;
+    align-items: center;
+    background: var(--bg-strip);
+    border-bottom: 1px solid var(--border);
+  }
+  .brand {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 0 16px;
+  }
+  .brand .mark {
+    font-family: var(--mono); font-weight: 600; font-size: 14px;
+    color: var(--magenta); letter-spacing: 0.5px;
+  }
+  .brand .tag {
+    color: var(--fg-mute); font-size: 11.5px;
+  }
+  .search {
+    display: flex; align-items: center; gap: 10px;
+    height: 28px; padding: 0 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    margin: 0 18px;
+    max-width: 380px;
+  }
+  .search:focus-within { border-color: var(--cyan); }
+  .search input { width: 100%; font-size: 12.5px; color: var(--fg); }
+  .search input::placeholder { color: var(--fg-mute); }
+  .search .kbd {
+    font-family: var(--mono); font-size: 10.5px; color: var(--fg-mute);
+    border: 1px solid var(--border); padding: 1px 5px; border-radius: 3px;
+  }
+  .appbar-right { display: flex; align-items: center; gap: 4px; padding: 0 12px; }
+
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    overflow: hidden;
+    margin-right: 10px;
+  }
+  .seg button {
+    padding: 4px 10px; font-size: 12px; color: var(--fg-dim);
+    border-right: 1px solid var(--border);
+  }
+  .seg button:last-child { border-right: 0; }
+  .seg button.active { background: var(--bg-hl); color: var(--fg); }
+  .seg button:hover:not(.active) { background: var(--bg-hover); color: var(--fg); }
+
+  .icon-btn {
+    width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 5px; color: var(--fg-dim);
+  }
+  .icon-btn:hover { background: var(--bg-hover); color: var(--fg); }
+  .icon-btn svg { width: 15px; height: 15px; stroke: currentColor; fill: none;
+    stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ─── main grid: sidebar | workspace ──────────────────────────────── */
+  .main { display: grid; grid-template-columns: var(--rail-w) 1fr; min-height: 0; }
+
+  /* ─── sidebar ─────────────────────────────────────────────────────── */
+  .sidebar {
+    background: var(--bg-rail);
+    border-right: 1px solid var(--border);
+    display: grid;
+    grid-template-rows: 36px 1fr auto;
+    min-height: 0;
+  }
+  .rail-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 12px 0 16px;
+    border-bottom: 1px solid var(--border-soft);
+    color: var(--fg-mute);
+    font-size: 11px; letter-spacing: 0.8px; text-transform: uppercase;
+  }
+  .rail-head .actions { display: inline-flex; gap: 2px; }
+
+  .tree { overflow: auto; padding: 6px 0 14px; }
+
+  .row {
+    display: grid;
+    grid-template-columns: 14px 1fr auto;
+    column-gap: 8px;
+    align-items: center;
+    height: var(--row-h);
+    padding: 0 8px 0 12px;
+    cursor: default;
+    color: var(--fg-dim);
+    position: relative;
+  }
+  .row:hover { background: var(--bg-hover); color: var(--fg); }
+  .row.active { background: var(--bg-hl); color: var(--fg); }
+  .row .twist {
+    color: var(--fg-mute); font-size: 9px; line-height: 1; text-align: center;
+    transition: transform 120ms ease-out;
+  }
+  .row.open .twist { transform: rotate(90deg); }
+
+  .row.proj { font-weight: 500; color: var(--fg); }
+  .row.proj .name { color: var(--fg); }
+  .row.proj .count {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-family: var(--mono); font-size: 11px; color: var(--green);
+  }
+
+  .row.wt    { padding-left: 28px; }
+  .row.wt .name { color: var(--fg-dim); }
+  .row.wt .branch {
+    font-family: var(--mono); font-size: 10.5px; color: var(--fg-mute);
+    margin-left: 6px;
+  }
+  .row.wt .hover-actions {
+    display: none;
+    align-items: center; gap: 2px;
+  }
+  .row.wt:hover .hover-actions,
+  .row.wt.open .hover-actions { display: inline-flex; }
+
+  .row.sess { padding-left: 44px; }
+  .row.sess .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--green); margin-left: 3px;
+  }
+  .row.sess.idle .dot { background: var(--fg-mute); }
+  .row.sess.error .dot { background: var(--red); }
+  .row.sess .agent {
+    color: var(--fg);
+    font-family: var(--mono); font-size: 12px;
+  }
+  .row.sess.active { background: var(--bg-hl); }
+  .row.sess.active .agent { color: var(--cyan); }
+  .row.sess .meta {
+    font-size: 11px; color: var(--fg-mute);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .row.sess .close {
+    display: none;
+    width: 16px; height: 16px; border-radius: 3px; color: var(--fg-mute);
+    align-items: center; justify-content: center;
+  }
+  .row.sess:hover .close { display: inline-flex; }
+  .row.sess .close:hover { background: var(--red); color: var(--bg); }
+  .row.sess .close svg { width: 9px; height: 9px; stroke: currentColor; fill: none;
+    stroke-width: 1.8; stroke-linecap: round; }
+
+  .mini {
+    width: 22px; height: 22px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 4px; color: var(--fg-mute);
+  }
+  .mini:hover { background: oklch(0.32 0.04 270); color: var(--fg); }
+  .mini.primary:hover { background: var(--bg); color: var(--green); }
+  .mini svg { width: 13px; height: 13px; stroke: currentColor; fill: none;
+    stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
+  .split-btn {
+    display: inline-flex;
+    align-items: stretch;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    height: 22px;
+  }
+  .split-btn > button {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 0 8px;
+    font-size: 11px; color: var(--fg-dim);
+    background: var(--bg);
+  }
+  .split-btn > button:hover { background: var(--bg-hover); color: var(--fg); }
+  .split-btn .label { display: inline-flex; align-items: center; gap: 5px; }
+  .split-btn .label svg { width: 9px; height: 9px; }
+  .split-btn .label .play { color: var(--green); }
+  .split-btn .pick {
+    border-left: 1px solid var(--border);
+    padding: 0 6px;
+  }
+  .split-btn .pick svg { width: 8px; height: 8px; }
+
+  .new-project {
+    border-top: 1px solid var(--border-soft);
+    padding: 10px 12px;
+    display: flex; gap: 8px;
+  }
+  .new-project button {
+    flex: 1;
+    height: 28px;
+    border: 1px dashed var(--border);
+    border-radius: 5px;
+    color: var(--fg-dim);
+    font-size: 12px;
+  }
+  .new-project button:hover { color: var(--fg); border-color: var(--fg-mute); background: var(--bg-hover); }
+
+  /* ─── workspace: session header + pty ─────────────────────────────── */
+  .workspace {
+    display: grid;
+    grid-template-rows: 1fr;
+    min-height: 0;
+    background: var(--bg);
+  }
+
+  /* ─── session header above pty ────────────────────────────────────── */
+  .session {
+    display: grid;
+    grid-template-rows: 48px 1fr;
+    min-height: 0;
+  }
+  .sess-bar {
+    display: flex; align-items: center; gap: 14px;
+    padding: 0 18px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-strip);
+    color: var(--fg-mute);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .sess-bar .status-pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--ui); font-size: 11px;
+    color: var(--green);
+  }
+  .sess-bar .status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+  .sess-bar .vline {
+    width: 1px; height: 18px; background: var(--border);
+  }
+  .sess-bar .crumb-proj { color: var(--blue); }
+  .sess-bar .crumb-wt   { color: var(--fg); }
+  .sess-bar .branch     { color: var(--fg-mute); }
+  .sess-bar .agent      { color: var(--magenta); }
+  .sess-bar .glyph      { color: var(--border); }
+  .sess-bar .grow       { flex: 1; }
+  .sess-bar .path       { color: var(--fg-mute); }
+  .sess-bar .tools      { display: inline-flex; gap: 2px; }
+  .sess-bar .tools button {
+    height: 22px; padding: 0 8px;
+    display: inline-flex; align-items: center; gap: 5px;
+    color: var(--fg-dim); border-radius: 4px;
+    font-size: 11.5px;
+  }
+  .sess-bar .tools button:hover { background: var(--bg-hover); color: var(--fg); }
+  .sess-bar .tools button.danger:hover { color: var(--red); }
+  .sess-bar .tools svg { width: 12px; height: 12px; stroke: currentColor; fill: none;
+    stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+  .pty-frame {
+    margin: 0;
+    overflow: hidden;
+    display: grid; grid-template-rows: 1fr;
+    background: var(--bg);
+  }
+  .pty {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.5;
+    color: var(--fg); white-space: pre;
+    overflow: auto; padding: 14px 18px;
+  }
+  .pty .c   { color: var(--fg-mute); }
+  .pty .b   { color: var(--blue); }
+  .pty .cy  { color: var(--cyan); }
+  .pty .m   { color: var(--magenta); }
+  .pty .g   { color: var(--green); }
+  .pty .y   { color: var(--yellow); }
+  .pty .r   { color: var(--red); }
+  .pty .fd  { color: var(--fg-dim); }
+  .pty .cur { background: var(--fg); color: var(--bg); }
+  .pty .ok  { color: var(--green); }
+  .pty .prompt { color: var(--green); font-weight: 600; }
+  .pty .user   { color: var(--cyan); font-weight: 600; }
+
+  /* ─── status bar ──────────────────────────────────────────────────── */
+  .status {
+    display: flex; align-items: center;
+    background: var(--bg-strip);
+    border-top: 1px solid var(--border);
+    padding: 0 14px;
+    color: var(--fg-mute);
+    font-size: 11px;
+  }
+  .status .group { display: inline-flex; align-items: center; gap: 14px; }
+  .status .grow { flex: 1; }
+  .status .item { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .status .item:hover { color: var(--fg); }
+  .status .label { color: var(--fg-mute); }
+  .status .value { color: var(--fg-dim); }
+  .status .running .dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--green);
+  }
+  .status .toast {
+    color: var(--green);
+    margin-left: 24px;
+  }
+
+  /* hover popovers on worktree rows: contextual suggestion / dropdown */
+  .more-menu {
+    position: absolute;
+    right: 6px; top: 28px;
+    background: var(--bg-rail);
+    border: 1px solid var(--border-strong, var(--border));
+    border-radius: 6px;
+    padding: 4px;
+    box-shadow: 0 8px 24px oklch(0.05 0.02 270 / 0.45);
+    z-index: 5;
+    min-width: 180px;
+    display: none;
+  }
+  .row.wt.menu-open .more-menu { display: block; }
+  .more-menu button {
+    display: flex; align-items: center; gap: 8px;
+    width: 100%;
+    padding: 6px 10px;
+    color: var(--fg-dim);
+    font-size: 12px;
+    border-radius: 4px;
+  }
+  .more-menu button:hover { background: var(--bg-hover); color: var(--fg); }
+  .more-menu button.danger { color: var(--red); }
+  .more-menu .shortcut { margin-left: auto; color: var(--fg-mute);
+    font-family: var(--mono); font-size: 10.5px; }
+  .more-menu hr { border: 0; border-top: 1px solid var(--border-soft); margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<!-- ───────────────────────────────────────────────────────────────────────
+     re-usable svg icon defs
+     ─────────────────────────────────────────────────────────────────────── -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
+    <symbol id="i-close" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+    <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.5l7 4.5-7 4.5z" fill="currentColor"/></symbol>
+    <symbol id="i-chev-down" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></symbol>
+    <symbol id="i-chev-right" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4"/></symbol>
+    <symbol id="i-cog" viewBox="0 0 16 16">
+      <circle cx="8" cy="8" r="2"/>
+      <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/>
+    </symbol>
+    <symbol id="i-help" viewBox="0 0 16 16">
+      <circle cx="8" cy="8" r="6.2"/>
+      <path d="M6 6.2c0-1.1 0.9-2 2-2s2 0.9 2 2c0 1.1-2 1.4-2 2.6M8 11.6v0.2"/>
+    </symbol>
+    <symbol id="i-search" viewBox="0 0 16 16">
+      <circle cx="7" cy="7" r="4.5"/><path d="M10.4 10.4l3 3"/>
+    </symbol>
+    <symbol id="i-term" viewBox="0 0 16 16">
+      <rect x="1.5" y="3" width="13" height="10" rx="1.5"/>
+      <path d="M4.5 7l2 1.5-2 1.5M8 10h3.5"/>
+    </symbol>
+    <symbol id="i-folder" viewBox="0 0 16 16">
+      <path d="M1.5 5V12.5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V6.5a1 1 0 0 0-1-1H7.5L6 4H2.5a1 1 0 0 0-1 1z"/>
+    </symbol>
+    <symbol id="i-trash" viewBox="0 0 16 16">
+      <path d="M3 4.5h10M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M4.5 4.5l.5 8a1 1 0 0 0 1 .9h4a1 1 0 0 0 1-.9l.5-8"/>
+    </symbol>
+    <symbol id="i-edit" viewBox="0 0 16 16">
+      <path d="M11.5 2.5l2 2L6 12l-2.5.5L4 10z"/>
+    </symbol>
+    <symbol id="i-copy" viewBox="0 0 16 16">
+      <rect x="4" y="4" width="9" height="9" rx="1.2"/>
+      <path d="M11.5 4V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v7.5a1 1 0 0 0 1 1h1"/>
+    </symbol>
+    <symbol id="i-more" viewBox="0 0 16 16">
+      <circle cx="3.5" cy="8" r="1.2" fill="currentColor"/>
+      <circle cx="8"   cy="8" r="1.2" fill="currentColor"/>
+      <circle cx="12.5" cy="8" r="1.2" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-split" viewBox="0 0 16 16">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="1.2"/>
+      <path d="M8 2.5v11"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="window">
+
+  <!-- ─── app bar ──────────────────────────────────────────────────── -->
+  <div class="appbar">
+    <div class="brand">
+      <span class="mark">grove</span>
+      <span class="tag">worktree launchpad for ai agents</span>
+    </div>
+
+    <div class="search">
+      <svg width="13" height="13" style="color:var(--fg-mute)"><use href="#i-search"/></svg>
+      <input type="text" placeholder="filter projects, worktrees, sessions" />
+      <span class="kbd">⌘K</span>
+    </div>
+
+    <div class="appbar-right">
+      <div class="seg" role="tablist" title="session backend">
+        <button class="active">native</button>
+        <button>tmux</button>
+      </div>
+      <button class="icon-btn" title="preferences"><svg><use href="#i-cog"/></svg></button>
+      <button class="icon-btn" title="shortcuts and help"><svg><use href="#i-help"/></svg></button>
+    </div>
+  </div>
+
+  <!-- ─── main: sidebar | workspace ────────────────────────────────── -->
+  <div class="main">
+
+    <!-- ─── sidebar (projects + worktrees + sessions) ─────────────── -->
+    <aside class="sidebar">
+      <div class="rail-head">
+        <span>projects</span>
+        <span class="actions">
+          <button class="icon-btn" title="add project"><svg><use href="#i-plus"/></svg></button>
+        </span>
+      </div>
+
+      <div class="tree">
+
+        <!-- collapsed project -->
+        <div class="row proj">
+          <span class="twist">▶</span>
+          <span class="name">audora</span>
+          <span class="count">●1</span>
+        </div>
+
+        <!-- expanded project: grove -->
+        <div class="row proj open">
+          <span class="twist">▶</span>
+          <span class="name">grove</span>
+          <span class="count">●3</span>
+        </div>
+
+        <!-- worktree row: with hover actions and an open submenu state shown -->
+        <div class="row wt open">
+          <span class="twist">▶</span>
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            <span class="name">grove</span><span class="branch">main</span>
+          </span>
+          <span class="hover-actions">
+            <span class="split-btn" title="start session in this worktree">
+              <button class="label"><svg class="play"><use href="#i-play"/></svg>start</button>
+              <button class="pick" title="pick agent"><svg><use href="#i-chev-down"/></svg></button>
+            </span>
+            <button class="mini" title="open terminal"><svg><use href="#i-term"/></svg></button>
+            <button class="mini" title="more actions"><svg><use href="#i-more"/></svg></button>
+          </span>
+        </div>
+
+        <div class="row sess active">
+          <span></span>
+          <span style="display:inline-flex;align-items:baseline;gap:8px;overflow:hidden">
+            <span class="dot"></span>
+            <span class="agent">claude</span>
+            <span class="meta">understand grove functionality</span>
+          </span>
+          <button class="close" title="kill session"><svg><use href="#i-close"/></svg></button>
+        </div>
+        <div class="row sess">
+          <span></span>
+          <span style="display:inline-flex;align-items:baseline;gap:8px;overflow:hidden">
+            <span class="dot"></span>
+            <span class="agent">codex</span>
+            <span class="meta">refactor session manager</span>
+          </span>
+          <button class="close"><svg><use href="#i-close"/></svg></button>
+        </div>
+        <div class="row sess idle">
+          <span></span>
+          <span style="display:inline-flex;align-items:baseline;gap:8px;overflow:hidden">
+            <span class="dot"></span>
+            <span class="agent">terminal</span>
+            <span class="meta">~/dev/gitfudge0/grove</span>
+          </span>
+          <button class="close"><svg><use href="#i-close"/></svg></button>
+        </div>
+
+        <!-- another worktree under grove, with menu shown to demonstrate the popover -->
+        <div class="row wt menu-open">
+          <span class="twist">▶</span>
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            <span class="name">hero-redesign</span><span class="branch">hero-redesign</span>
+          </span>
+          <span class="hover-actions">
+            <span class="split-btn">
+              <button class="label"><svg class="play"><use href="#i-play"/></svg>start</button>
+              <button class="pick"><svg><use href="#i-chev-down"/></svg></button>
+            </span>
+            <button class="mini" title="open terminal"><svg><use href="#i-term"/></svg></button>
+            <button class="mini" title="more actions"><svg><use href="#i-more"/></svg></button>
+          </span>
+
+          <div class="more-menu" role="menu">
+            <button><svg width="13" height="13"><use href="#i-folder"/></svg>reveal in finder<span class="shortcut">⌘O</span></button>
+            <button><svg width="13" height="13"><use href="#i-copy"/></svg>copy path<span class="shortcut">⌘C</span></button>
+            <button><svg width="13" height="13"><use href="#i-edit"/></svg>rename worktree…</button>
+            <hr/>
+            <button class="danger"><svg width="13" height="13"><use href="#i-trash"/></svg>delete worktree…<span class="shortcut">⌫</span></button>
+          </div>
+        </div>
+
+        <!-- expanded project: portfolio -->
+        <div class="row proj open">
+          <span class="twist">▶</span>
+          <span class="name">portfolio</span>
+          <span class="count">●2</span>
+        </div>
+        <div class="row wt">
+          <span class="twist">▶</span>
+          <span><span class="name">portfolio</span><span class="branch">main</span></span>
+          <span class="hover-actions"></span>
+        </div>
+        <div class="row wt open">
+          <span class="twist">▶</span>
+          <span><span class="name">hero-redesign</span><span class="branch">hero-redesign</span></span>
+          <span class="hover-actions">
+            <span class="split-btn">
+              <button class="label"><svg class="play"><use href="#i-play"/></svg>start</button>
+              <button class="pick"><svg><use href="#i-chev-down"/></svg></button>
+            </span>
+            <button class="mini"><svg><use href="#i-term"/></svg></button>
+            <button class="mini"><svg><use href="#i-more"/></svg></button>
+          </span>
+        </div>
+        <div class="row sess idle">
+          <span></span>
+          <span style="display:inline-flex;align-items:baseline;gap:8px;overflow:hidden">
+            <span class="dot"></span>
+            <span class="agent">terminal</span>
+            <span class="meta">page.tsx</span>
+          </span>
+          <button class="close"><svg><use href="#i-close"/></svg></button>
+        </div>
+
+        <!-- collapsed project -->
+        <div class="row proj">
+          <span class="twist">▶</span>
+          <span class="name">debbie-android</span>
+          <span class="count">●1</span>
+        </div>
+      </div>
+
+      <div class="new-project">
+        <button>+ add project</button>
+      </div>
+    </aside>
+
+    <!-- ─── workspace ────────────────────────────────────────────── -->
+    <section class="workspace">
+      <div class="session">
+        <div class="sess-bar">
+          <span class="status-pill" title="session running">
+            <span class="dot"></span>running
+          </span>
+          <span class="vline"></span>
+          <span class="agent">claude code</span>
+          <span class="glyph">·</span>
+          <span class="crumb-proj">grove</span>
+          <span class="glyph">/</span>
+          <span class="crumb-wt">grove</span>
+          <span class="branch">[main]</span>
+          <span class="grow"></span>
+          <span class="path">~/dev/gitfudge0/grove</span>
+          <span class="vline"></span>
+          <span class="tools">
+            <button title="split right"><svg><use href="#i-split"/></svg>split</button>
+            <button title="rename session"><svg><use href="#i-edit"/></svg>rename</button>
+            <button class="danger" title="kill session"><svg><use href="#i-trash"/></svg>kill</button>
+          </span>
+        </div>
+
+        <div class="pty-frame">
+<div class="pty"><span class="c">────────────────────────────────────────────────────────────────────────</span>
+  <span class="m">✻ claude code</span> <span class="c">v2.1.15d   ~/dev/gitfudge0/grove</span>
+
+<span class="user">&gt;</span> what does grove do?
+  <span class="c">read 1 file</span>
+
+  <span class="ok">●</span> grove manages git worktrees per project and runs ai coding
+    agents inside them via embedded pty sessions. you browse projects
+    and worktrees in the left rail, click a worktree to start a session,
+    and switch between live sessions with the tabs above. sessions
+    persist across grove restarts when the tmux backend is enabled;
+    native sessions live for the lifetime of the process.
+
+  <span class="c">cooked for 4s</span>
+
+  <span class="ok">●</span> <span class="fd">how is claude doing this session?</span> <span class="c">(optional)</span>
+    <span class="cy">[1] bad</span>   <span class="cy">[2] fine</span>   <span class="cy">[3] good</span>   <span class="c">·</span>   <span class="cy">[dismiss]</span>
+
+<span class="user">&gt;</span> show me the keybindings<span class="cur"> </span>
+</div>
+        </div>
+      </div>
+
+    </section>
+  </div>
+
+  <!-- ─── status bar ──────────────────────────────────────────────── -->
+  <div class="status">
+    <div class="group">
+      <span class="item running" title="7 sessions active">
+        <span class="dot"></span><span class="value">7 running</span>
+      </span>
+      <span class="item" title="change backend">
+        <span class="label">backend</span><span class="value">native</span>
+      </span>
+      <span class="item" title="change theme">
+        <span class="label">theme</span><span class="value">tokyonight</span>
+      </span>
+      <span class="toast">started terminal · portfolio/hero-redesign</span>
+    </div>
+    <div class="grow"></div>
+    <div class="group">
+      <span class="item" title="grove v0.5.0"><span class="value">v0.5.0</span></span>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
