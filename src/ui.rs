@@ -2,7 +2,6 @@ use crate::agent::Agent;
 use crate::app::{App, InputKind, Modal, Pane, UiMode};
 use crate::session::SessionStatus;
 use crate::theme;
-use tui_term::widget::PseudoTerminal;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -10,9 +9,12 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
+use tui_term::widget::PseudoTerminal;
 
 fn base_style() -> Style {
-    Style::default().bg(theme::current().bg).fg(theme::current().fg)
+    Style::default()
+        .bg(theme::current().bg)
+        .fg(theme::current().fg)
 }
 
 fn chrome_visible(app: &App) -> bool {
@@ -102,16 +104,33 @@ pub fn render(f: &mut Frame, app: &App) {
 
     match &app.modal {
         Modal::None => {}
-        Modal::Input { title, buffer, kind, dir_sel } => render_input(f, title, buffer, kind, *dir_sel, size),
-        Modal::Confirm { title, prompt, destructive, .. } => {
-            render_confirm(f, title, prompt, *destructive, size)
-        }
+        Modal::Input {
+            title,
+            buffer,
+            kind,
+            dir_sel,
+        } => render_input(f, title, buffer, kind, *dir_sel, size),
+        Modal::Confirm {
+            title,
+            prompt,
+            destructive,
+            ..
+        } => render_confirm(f, title, prompt, *destructive, size),
         Modal::Message(msg) => render_message(f, msg, size),
         Modal::Help => render_help(f, size),
         Modal::TmuxSetup => render_tmux_setup(f, app, size),
         Modal::TmuxChoice => render_tmux_choice(f, size),
-        Modal::AgentPicker { project, wt_path, sel } => render_agent_picker(f, app, project, wt_path, *sel, size),
-        Modal::ThemePicker { sel_dark, sel_light, tab, .. } => {
+        Modal::AgentPicker {
+            project,
+            wt_path,
+            sel,
+        } => render_agent_picker(f, app, project, wt_path, *sel, size),
+        Modal::ThemePicker {
+            sel_dark,
+            sel_light,
+            tab,
+            ..
+        } => {
             let sel = match tab {
                 theme::ThemeKind::Dark => *sel_dark,
                 theme::ThemeKind::Light => *sel_light,
@@ -202,7 +221,14 @@ fn render_theme_picker(f: &mut Frame, sel: usize, tab: theme::ThemeKind, area: R
     );
 }
 
-fn render_agent_picker(f: &mut Frame, app: &App, project: &str, wt_path: &str, sel: usize, area: Rect) {
+fn render_agent_picker(
+    f: &mut Frame,
+    app: &App,
+    project: &str,
+    wt_path: &str,
+    sel: usize,
+    area: Rect,
+) {
     let wt_name = crate::app::path_basename(wt_path);
     let title = if project.is_empty() {
         format!(" Start session · {} ", wt_name)
@@ -242,7 +268,9 @@ fn render_agent_picker(f: &mut Frame, app: &App, project: &str, wt_path: &str, s
         .map(|(i, a)| {
             let is_default = app.store.default_agent == Some(*a);
             let label_style = if i == sel {
-                Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme::current().fg)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme::current().fg)
             };
@@ -279,17 +307,18 @@ fn render_agent_picker(f: &mut Frame, app: &App, project: &str, wt_path: &str, s
 
 fn active_style(focused: bool) -> Style {
     if focused {
-        Style::default().bg(theme::current().bg).fg(theme::current().cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .bg(theme::current().bg)
+            .fg(theme::current().cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().bg(theme::current().bg).fg(theme::current().comment)
+        Style::default()
+            .bg(theme::current().bg)
+            .fg(theme::current().comment)
     }
 }
 
-const BANNER: [&str; 3] = [
-    "┌─┐┬─┐┌─┐┬  ┬┌─┐",
-    "│ ┬├┬┘│ │└┐┌┘├┤ ",
-    "└─┘┴└─└─┘ └┘ └─┘",
-];
+const BANNER: [&str; 3] = ["┌─┐┬─┐┌─┐┬  ┬┌─┐", "│ ┬├┬┘│ │└┐┌┘├┤ ", "└─┘┴└─└─┘ └┘ └─┘"];
 
 fn render_banner(f: &mut Frame, app: &App, area: Rect) {
     let banner_w: u16 = 18;
@@ -300,26 +329,40 @@ fn render_banner(f: &mut Frame, app: &App, area: Rect) {
 
     let banner_lines: Vec<Line> = BANNER
         .iter()
-        .map(|l| Line::from(Span::styled(*l, Style::default().fg(theme::current().green).add_modifier(Modifier::BOLD))))
+        .map(|l| {
+            Line::from(Span::styled(
+                *l,
+                Style::default()
+                    .fg(theme::current().green)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        })
         .collect();
-    f.render_widget(
-        Paragraph::new(banner_lines).style(base_style()),
-        hchunks[0],
-    );
+    f.render_widget(Paragraph::new(banner_lines).style(base_style()), hchunks[0]);
 
     let version = env!("CARGO_PKG_VERSION");
 
     let key = Style::default().fg(theme::current().comment);
-    let accent = Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD);
+    let accent = Style::default()
+        .fg(theme::current().cyan)
+        .add_modifier(Modifier::BOLD);
 
     let backend_line = if !app.tmux_available {
         Line::from(vec![
-            Span::styled("tmux recommended: ", Style::default().fg(theme::current().yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "tmux recommended: ",
+                Style::default()
+                    .fg(theme::current().yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("native sessions will not persist", key),
         ])
     } else if !app.use_tmux() {
         Line::from(vec![
-            Span::styled("native sessions", Style::default().fg(theme::current().yellow)),
+            Span::styled(
+                "native sessions",
+                Style::default().fg(theme::current().yellow),
+            ),
             Span::styled("  · press ", key),
             Span::styled("m", accent),
             Span::styled(" to enable tmux", key),
@@ -337,16 +380,16 @@ fn render_banner(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("Grove", accent),
             Span::raw("  "),
-            Span::styled(format!("v{}", version), Style::default().fg(theme::current().yellow)),
+            Span::styled(
+                format!("v{}", version),
+                Style::default().fg(theme::current().yellow),
+            ),
             Span::raw("  "),
             Span::styled("· worktree launchpad for ai agents", key),
         ]),
         backend_line,
     ];
-    f.render_widget(
-        Paragraph::new(info).style(base_style()),
-        hchunks[1],
-    );
+    f.render_widget(Paragraph::new(info).style(base_style()), hchunks[1]);
 }
 
 fn render_empty(f: &mut Frame, area: Rect) {
@@ -360,21 +403,41 @@ fn render_empty(f: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             "No projects yet.",
-            Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::current().fg)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![
             Span::raw("Press "),
-            Span::styled("a", Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "a",
+                Style::default()
+                    .fg(theme::current().cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" to add a project, "),
-            Span::styled("?", Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "?",
+                Style::default()
+                    .fg(theme::current().cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" for help, "),
-            Span::styled("q", Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "q",
+                Style::default()
+                    .fg(theme::current().cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" to quit."),
         ]),
     ];
     f.render_widget(
-        Paragraph::new(lines).block(block).alignment(Alignment::Center).style(base_style()),
+        Paragraph::new(lines)
+            .block(block)
+            .alignment(Alignment::Center)
+            .style(base_style()),
         area,
     );
 }
@@ -408,14 +471,21 @@ fn render_projects(f: &mut Frame, app: &App, area: Rect) {
             .zip(running_by_project)
             .map(|(p, running)| {
                 let count_style = if running > 0 {
-                    Style::default().fg(theme::current().green).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(theme::current().green)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(theme::current().comment)
                 };
                 let spans = vec![
                     Span::styled(format!("{running:>count_width$}"), count_style),
                     Span::raw("  "),
-                    Span::styled(p.name.clone(), Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        p.name.clone(),
+                        Style::default()
+                            .fg(theme::current().fg)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 ];
                 ListItem::new(Line::from(spans))
             })
@@ -434,11 +504,19 @@ fn render_projects(f: &mut Frame, app: &App, area: Rect) {
         .style(base_style())
         .highlight_style(
             Style::default()
-                .bg(if focused { theme::current().blue } else { theme::current().bg_highlight })
+                .bg(if focused {
+                    theme::current().blue
+                } else {
+                    theme::current().bg_highlight
+                })
                 .fg(theme::current().fg)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol(if app.store.projects.is_empty() { "  " } else { "▶ " });
+        .highlight_symbol(if app.store.projects.is_empty() {
+            "  "
+        } else {
+            "▶ "
+        });
 
     let mut state = ListState::default();
     if !app.store.projects.is_empty() {
@@ -465,48 +543,65 @@ fn render_worktrees(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = if let Some(msg) = placeholder {
         vec![ListItem::new(Line::from(Span::styled(
             msg,
-            Style::default().fg(theme::current().fg_dark).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(theme::current().fg_dark)
+                .add_modifier(Modifier::ITALIC),
         )))]
-    } else { app
-        .worktrees
-        .iter()
-        .map(|w| {
-            let short = crate::app::path_basename(&w.path);
-            let age = w.mtime.map(format_age).unwrap_or_else(|| "—".into());
-            let mut spans = vec![
-                Span::styled(short, Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD)),
-                Span::raw("  "),
-                Span::styled(
-                    format!("[{}]", w.branch),
-                    Style::default().fg(theme::current().yellow),
-                ),
-                Span::raw("  "),
-                Span::styled(format!("{:>5} ago", age), Style::default().fg(theme::current().green)),
-                Span::raw("  "),
-                Span::styled(w.path.clone(), Style::default().fg(theme::current().comment)),
-            ];
-            if w.is_main {
-                spans.push(Span::raw("  "));
-                spans.push(Span::styled(
-                    "● main checkout",
-                    Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD),
-                ));
-            }
-            let running = app
-                .sessions
-                .iter()
-                .filter(|s| s.wt_path == w.path && s.status() == SessionStatus::Running)
-                .count();
-            if running > 0 {
-                spans.push(Span::raw("  "));
-                spans.push(Span::styled(
-                    format!("●{running}"),
-                    Style::default().fg(theme::current().green).add_modifier(Modifier::BOLD),
-                ));
-            }
-            ListItem::new(Line::from(spans))
-        })
-        .collect()
+    } else {
+        app.worktrees
+            .iter()
+            .map(|w| {
+                let short = crate::app::path_basename(&w.path);
+                let age = w.mtime.map(format_age).unwrap_or_else(|| "—".into());
+                let mut spans = vec![
+                    Span::styled(
+                        short,
+                        Style::default()
+                            .fg(theme::current().fg)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(
+                        format!("[{}]", w.branch),
+                        Style::default().fg(theme::current().yellow),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(
+                        format!("{:>5} ago", age),
+                        Style::default().fg(theme::current().green),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(
+                        w.path.clone(),
+                        Style::default().fg(theme::current().comment),
+                    ),
+                ];
+                if w.is_main {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        "● main checkout",
+                        Style::default()
+                            .fg(theme::current().cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+                let running = app
+                    .sessions
+                    .iter()
+                    .filter(|s| s.wt_path == w.path && s.status() == SessionStatus::Running)
+                    .count();
+                if running > 0 {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        format!("●{running}"),
+                        Style::default()
+                            .fg(theme::current().green)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+                ListItem::new(Line::from(spans))
+            })
+            .collect()
     };
 
     let block = Block::default()
@@ -521,7 +616,11 @@ fn render_worktrees(f: &mut Frame, app: &App, area: Rect) {
         .style(base_style())
         .highlight_style(
             Style::default()
-                .bg(if focused { theme::current().blue } else { theme::current().bg_highlight })
+                .bg(if focused {
+                    theme::current().blue
+                } else {
+                    theme::current().bg_highlight
+                })
                 .fg(theme::current().fg)
                 .add_modifier(Modifier::BOLD),
         )
@@ -565,7 +664,9 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(
             Paragraph::new(Span::styled(
                 "no sessions yet",
-                Style::default().fg(theme::current().fg_dark).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(theme::current().fg_dark)
+                    .add_modifier(Modifier::ITALIC),
             ))
             .alignment(Alignment::Center)
             .style(base_style()),
@@ -599,7 +700,9 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
         }
         items.push(ListItem::new(Line::from(Span::styled(
             proj.to_string(),
-            Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::current().fg)
+                .add_modifier(Modifier::BOLD),
         ))));
 
         // Worktree paths for this project, in first-seen order.
@@ -612,7 +715,11 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
 
         for (wi, wt) in wts.iter().enumerate() {
             let last_wt = wi + 1 == wts.len();
-            let (branch, child) = if last_wt { ("└ ", "   ") } else { ("├ ", "│  ") };
+            let (branch, child) = if last_wt {
+                ("└ ", "   ")
+            } else {
+                ("├ ", "│  ")
+            };
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(branch, Style::default().fg(theme::current().comment)),
                 Span::styled(
@@ -640,12 +747,17 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
                 let idx_str = format!("{} ", i + 1);
                 let mut header_spans = vec![
                     Span::styled(child, Style::default().fg(theme::current().comment)),
-                    Span::styled(idx_str.clone(), Style::default().fg(theme::current().comment)),
+                    Span::styled(
+                        idx_str.clone(),
+                        Style::default().fg(theme::current().comment),
+                    ),
                     Span::styled(dot, dot_style),
                     Span::raw(" "),
                     Span::styled(
                         s.agent.label(),
-                        Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(theme::current().fg)
+                            .add_modifier(Modifier::BOLD),
                     ),
                 ];
                 if !s.branch.is_empty() {
@@ -668,8 +780,7 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
                 }
                 let header = Line::from(header_spans);
                 let subtitle = s.current_title().filter(|t| {
-                    !t.eq_ignore_ascii_case(&s.label)
-                        && !t.eq_ignore_ascii_case(s.agent.label())
+                    !t.eq_ignore_ascii_case(&s.label) && !t.eq_ignore_ascii_case(s.agent.label())
                 });
                 let lines = match subtitle {
                     Some(t) => vec![
@@ -692,7 +803,11 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
         .style(base_style())
         .highlight_style(
             Style::default()
-                .bg(if focused { theme::current().blue } else { theme::current().bg_highlight })
+                .bg(if focused {
+                    theme::current().blue
+                } else {
+                    theme::current().bg_highlight
+                })
                 .fg(theme::current().fg)
                 .add_modifier(Modifier::BOLD),
         )
@@ -704,15 +819,21 @@ fn render_session_list(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_agent(f: &mut Frame, app: &App, area: Rect) {
-    let Some(idx) = app.active_session else { return };
-    let Some(session) = app.sessions.get(idx) else { return };
+    let Some(idx) = app.active_session else {
+        return;
+    };
+    let Some(session) = app.sessions.get(idx) else {
+        return;
+    };
 
     let focused = app.ui_mode == UiMode::Agent;
     let title_budget = area.width.saturating_sub(4) as usize;
     let (title, border) = match session.status() {
         SessionStatus::Running => {
             let style = if focused {
-                Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme::current().cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme::current().comment)
             };
@@ -740,12 +861,16 @@ fn render_agent(f: &mut Frame, app: &App, area: Rect) {
             let failed = matches!(code, Some(c) if c != 0);
             let style = if failed {
                 if focused {
-                    Style::default().fg(theme::current().red).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(theme::current().red)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(theme::current().red)
                 }
             } else if focused {
-                Style::default().fg(theme::current().fg_dark).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme::current().fg_dark)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme::current().comment)
             };
@@ -804,19 +929,33 @@ fn render_toast(f: &mut Frame, app: &App, area: Rect) {
     }
     let msg = format!(" {} ", toast.message);
     let w = (msg.chars().count() as u16).min(area.width.saturating_sub(2));
-    if w == 0 { return; }
+    if w == 0 {
+        return;
+    }
     let x = area.x + area.width.saturating_sub(w + 1);
     let y = area.y;
-    let r = Rect { x, y, width: w, height: 1 };
+    let r = Rect {
+        x,
+        y,
+        width: w,
+        height: 1,
+    };
     f.render_widget(Clear, r);
-    let p = Paragraph::new(msg)
-        .style(Style::default().bg(theme::current().bg).fg(theme::current().green).add_modifier(Modifier::BOLD));
+    let p = Paragraph::new(msg).style(
+        Style::default()
+            .bg(theme::current().bg)
+            .fg(theme::current().green)
+            .add_modifier(Modifier::BOLD),
+    );
     f.render_widget(p, r);
 }
 
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
-    let p = Paragraph::new(app.status.clone())
-        .style(Style::default().bg(theme::current().bg).fg(theme::current().green));
+    let p = Paragraph::new(app.status.clone()).style(
+        Style::default()
+            .bg(theme::current().bg)
+            .fg(theme::current().green),
+    );
     f.render_widget(p, area);
 }
 
@@ -914,7 +1053,12 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let h = height.min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
-    Rect { x, y, width: w, height: h }
+    Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    }
 }
 
 /// Build a footer hint line: `key  verb   key  verb`.
@@ -930,11 +1074,16 @@ fn hint_line(pairs: &[(&str, &str)]) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(pairs.len() * 4);
     for (i, (key, verb)) in pairs.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled("   ", Style::default().fg(theme::current().comment)));
+            spans.push(Span::styled(
+                "   ",
+                Style::default().fg(theme::current().comment),
+            ));
         }
         spans.push(Span::styled(
             key.to_string(),
-            Style::default().fg(theme::current().fg_dark).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::current().fg_dark)
+                .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
@@ -945,13 +1094,23 @@ fn hint_line(pairs: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
-fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_sel: usize, area: Rect) {
+fn render_input(
+    f: &mut Frame,
+    title: &str,
+    buffer: &str,
+    kind: &InputKind,
+    dir_sel: usize,
+    area: Rect,
+) {
     let show_dirs = matches!(kind, InputKind::AddProjectPath);
     let height = if show_dirs { 18 } else { 7 };
     let r = centered(area, 70, height);
     f.render_widget(Clear, r);
     let block = Block::default()
-        .title(popup_title(&format!(" {} ", title), theme::current().magenta))
+        .title(popup_title(
+            &format!(" {} ", title),
+            theme::current().magenta,
+        ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::current().magenta))
@@ -991,19 +1150,23 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
     let input_row = layout[1];
     let input_line = Line::from(vec![
         Span::styled(buffer.to_string(), Style::default().fg(theme::current().fg)),
-        Span::styled(" ", Style::default().bg(theme::current().fg).fg(theme::current().bg)),
+        Span::styled(
+            " ",
+            Style::default()
+                .bg(theme::current().fg)
+                .fg(theme::current().bg),
+        ),
     ]);
-    f.render_widget(
-        Paragraph::new(input_line).style(base_style()),
-        input_row,
-    );
+    f.render_widget(Paragraph::new(input_line).style(base_style()), input_row);
 
     if show_dirs {
         let label_row = layout[2];
         f.render_widget(
             Paragraph::new(Span::styled(
                 "matches",
-                Style::default().fg(theme::current().comment).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(theme::current().comment)
+                    .add_modifier(Modifier::ITALIC),
             ))
             .style(base_style()),
             label_row,
@@ -1015,7 +1178,9 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
             f.render_widget(
                 Paragraph::new(Span::styled(
                     "no matches",
-                    Style::default().fg(theme::current().comment).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(theme::current().comment)
+                        .add_modifier(Modifier::ITALIC),
                 ))
                 .style(base_style()),
                 list_area,
@@ -1025,11 +1190,12 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
                 .into_iter()
                 .map(|s| ListItem::new(Span::styled(s, Style::default().fg(theme::current().cyan))))
                 .collect();
-            let list = List::new(items)
-                .style(base_style())
-                .highlight_style(
-                    Style::default().bg(theme::current().bg_highlight).fg(theme::current().fg).add_modifier(Modifier::BOLD),
-                );
+            let list = List::new(items).style(base_style()).highlight_style(
+                Style::default()
+                    .bg(theme::current().bg_highlight)
+                    .fg(theme::current().fg)
+                    .add_modifier(Modifier::BOLD),
+            );
             let mut state = ListState::default();
             state.select(Some(dir_sel));
             f.render_stateful_widget(list, list_area, &mut state);
@@ -1048,24 +1214,23 @@ fn render_input(f: &mut Frame, title: &str, buffer: &str, kind: &InputKind, dir_
     } else {
         let hint_row = layout[4];
         f.render_widget(
-            Paragraph::new(hint_line(&[("↵", "submit"), ("esc", "cancel")]))
-                .style(base_style()),
+            Paragraph::new(hint_line(&[("↵", "submit"), ("esc", "cancel")])).style(base_style()),
             hint_row,
         );
     }
 }
 
 fn render_confirm(f: &mut Frame, title: &str, prompt: &str, destructive: bool, area: Rect) {
-    let border = if destructive { theme::current().red } else { theme::current().magenta };
+    let border = if destructive {
+        theme::current().red
+    } else {
+        theme::current().magenta
+    };
     // Size to content: width tracks the longer of title or prompt.
     let content_w = prompt.chars().count().max(title.chars().count() + 2);
     let w = (content_w as u16 + 6).clamp(44, 72);
     let inner_w = (w - 4) as usize;
-    let prompt_lines = prompt
-        .chars()
-        .count()
-        .div_ceil(inner_w.max(1))
-        .max(1) as u16;
+    let prompt_lines = prompt.chars().count().div_ceil(inner_w.max(1)).max(1) as u16;
     let h = confirm_height(prompt_lines);
     let r = centered(area, w, h);
     f.render_widget(Clear, r);
@@ -1094,7 +1259,11 @@ fn render_confirm(f: &mut Frame, title: &str, prompt: &str, destructive: bool, a
     f.render_widget(
         Paragraph::new(prompt.to_string())
             .wrap(Wrap { trim: false })
-            .style(Style::default().bg(theme::current().bg).fg(theme::current().fg)),
+            .style(
+                Style::default()
+                    .bg(theme::current().bg)
+                    .fg(theme::current().fg),
+            ),
         layout[1],
     );
     let verb = if destructive { "delete" } else { "confirm" };
@@ -1223,14 +1392,15 @@ fn render_tmux_setup(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(code, layout[3]);
 
     let hints = if app.tmux_available {
-        hint_line(&[("t / space", "toggle tmux"), ("c", "copy"), ("↵ / esc / q", "close")])
+        hint_line(&[
+            ("t / space", "toggle tmux"),
+            ("c", "copy"),
+            ("↵ / esc / q", "close"),
+        ])
     } else {
         hint_line(&[("c", "copy"), ("↵ / esc / q", "close")])
     };
-    f.render_widget(
-        Paragraph::new(hints).style(base_style()),
-        layout[5],
-    );
+    f.render_widget(Paragraph::new(hints).style(base_style()), layout[5]);
 }
 
 fn render_tmux_choice(f: &mut Frame, area: Rect) {
@@ -1261,14 +1431,19 @@ fn render_tmux_choice(f: &mut Frame, area: Rect) {
     .split(inner);
 
     f.render_widget(
-        Paragraph::new("Use tmux for Grove sessions?")
-            .style(Style::default().fg(theme::current().fg).add_modifier(Modifier::BOLD)),
+        Paragraph::new("Use tmux for Grove sessions?").style(
+            Style::default()
+                .fg(theme::current().fg)
+                .add_modifier(Modifier::BOLD),
+        ),
         layout[0],
     );
     f.render_widget(
-        Paragraph::new("Tmux sessions persist across Grove restarts and can be rediscovered later.")
-            .wrap(Wrap { trim: false })
-            .style(base_style()),
+        Paragraph::new(
+            "Tmux sessions persist across Grove restarts and can be rediscovered later.",
+        )
+        .wrap(Wrap { trim: false })
+        .style(base_style()),
         layout[1],
     );
     f.render_widget(
@@ -1278,8 +1453,11 @@ fn render_tmux_choice(f: &mut Frame, area: Rect) {
         layout[3],
     );
     f.render_widget(
-        Paragraph::new(hint_line(&[("↵ / t / y", "enable tmux"), ("n / esc", "use native")]))
-            .style(base_style()),
+        Paragraph::new(hint_line(&[
+            ("↵ / t / y", "enable tmux"),
+            ("n / esc", "use native"),
+        ]))
+        .style(base_style()),
         layout[5],
     );
 }
@@ -1317,16 +1495,21 @@ fn render_help(f: &mut Frame, area: Rect) {
     let section = |s: &'static str| {
         Line::from(Span::styled(
             s,
-            Style::default().fg(theme::current().cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::current().cyan)
+                .add_modifier(Modifier::BOLD),
         ))
     };
     let key = |s: &'static str| {
         Line::from(Span::styled(
             s,
-            Style::default().fg(theme::current().fg_dark).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::current().fg_dark)
+                .add_modifier(Modifier::BOLD),
         ))
     };
-    let verb = |s: &'static str| Line::from(Span::styled(s, Style::default().fg(theme::current().fg)));
+    let verb =
+        |s: &'static str| Line::from(Span::styled(s, Style::default().fg(theme::current().fg)));
     let blank = || Line::from("");
 
     let entries: Vec<(Line<'static>, Line<'static>)> = vec![
@@ -1360,7 +1543,9 @@ fn render_help(f: &mut Frame, area: Rect) {
         (
             Line::from(Span::styled(
                 "(other keys)",
-                Style::default().fg(theme::current().comment).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(theme::current().comment)
+                    .add_modifier(Modifier::ITALIC),
             )),
             Line::from(Span::styled(
                 "forwarded to agent",

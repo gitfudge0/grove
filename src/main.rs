@@ -7,24 +7,22 @@ mod launch;
 mod session;
 mod session_meta;
 mod storage;
-mod tmux;
 mod theme;
+mod tmux;
 mod ui;
 
 use anyhow::Result;
 use app::{App, Modal, Selection, UiMode};
+use crossterm::event::MouseEvent;
 use crossterm::{
     event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
-        EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
-        PopKeyboardEnhancementFlags,
-        PushKeyboardEnhancementFlags,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        MouseButton, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use crossterm::event::MouseEvent;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Position, Rect},
@@ -72,7 +70,12 @@ fn main() -> Result<()> {
         let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     }
     disable_raw_mode()?;
-    execute!(stdout(), DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(
+        stdout(),
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     res?;
@@ -84,10 +87,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
     loop {
         if app.active_session.is_some() {
             let size = terminal.size()?;
-            let inner = ui::agent_pane_inner(
-                Rect::new(0, 0, size.width, size.height),
-                app,
-            );
+            let inner = ui::agent_pane_inner(Rect::new(0, 0, size.width, size.height), app);
             if let Some(s) = app.active_session_mut() {
                 s.resize(inner.height, inner.width);
             }
@@ -168,7 +168,9 @@ fn handle_mouse(app: &mut App, size: ratatui::layout::Size, me: MouseEvent) -> b
                 return false;
             }
             let up = me.kind == MouseEventKind::ScrollUp;
-            let Some(s) = app.active_session_mut() else { return false };
+            let Some(s) = app.active_session_mut() else {
+                return false;
+            };
             s.scroll(up, me.column - pane.x, me.row - pane.y);
             true
         }
@@ -186,7 +188,9 @@ fn handle_mouse(app: &mut App, size: ratatui::layout::Size, me: MouseEvent) -> b
             true
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            let Some(sel) = app.selection.as_mut() else { return false };
+            let Some(sel) = app.selection.as_mut() else {
+                return false;
+            };
             if !sel.dragging {
                 return false;
             }
@@ -194,7 +198,9 @@ fn handle_mouse(app: &mut App, size: ratatui::layout::Size, me: MouseEvent) -> b
             true
         }
         MouseEventKind::Up(MouseButton::Left) => {
-            let Some(mut sel) = app.selection else { return false };
+            let Some(mut sel) = app.selection else {
+                return false;
+            };
             if !sel.dragging {
                 return false;
             }
@@ -365,9 +371,12 @@ fn handle_browser_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Esc => app.theme_picker_cancel(),
             KeyCode::Char('j') | KeyCode::Down => app.theme_picker_move(1),
             KeyCode::Char('k') | KeyCode::Up => app.theme_picker_move(-1),
-            KeyCode::Char('h') | KeyCode::Left
-            | KeyCode::Char('l') | KeyCode::Right
-            | KeyCode::Tab | KeyCode::BackTab => app.theme_picker_switch_tab(),
+            KeyCode::Char('h')
+            | KeyCode::Left
+            | KeyCode::Char('l')
+            | KeyCode::Right
+            | KeyCode::Tab
+            | KeyCode::BackTab => app.theme_picker_switch_tab(),
             KeyCode::Enter => app.theme_picker_submit()?,
             _ => {}
         },
@@ -384,9 +393,7 @@ fn handle_browser_key(app: &mut App, key: KeyEvent) -> Result<()> {
             {
                 app.move_down()
             }
-            KeyCode::Char('k') | KeyCode::Up
-                if !key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
+            KeyCode::Char('k') | KeyCode::Up if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.move_up()
             }
             KeyCode::Tab => app.toggle_focus(),
@@ -438,7 +445,9 @@ fn handle_paste(app: &mut App, text: String) {
     if !matches!(app.ui_mode, UiMode::Agent) {
         return;
     }
-    let Some(s) = app.active_session_mut() else { return };
+    let Some(s) = app.active_session_mut() else {
+        return;
+    };
     let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
     let mut bytes = Vec::with_capacity(normalized.len() + 12);
     bytes.extend_from_slice(b"\x1b[200~");

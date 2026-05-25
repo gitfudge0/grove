@@ -166,12 +166,20 @@ pub fn short_hash(s: &str) -> String {
 /// Build a unique grove session name. `n` disambiguates multiple sessions
 /// against the same (wt, agent).
 pub fn make_name(wt_path: &str, agent: Agent, n: u32) -> String {
-    format!("{}{}__{}__{}", NAME_PREFIX, short_hash(wt_path), agent.label(), n)
+    format!(
+        "{}{}__{}__{}",
+        NAME_PREFIX,
+        short_hash(wt_path),
+        agent.label(),
+        n
+    )
 }
 
 /// Pick the smallest `n` such that `make_name(...)` isn't taken yet.
 pub fn next_free_n(wt_path: &str, agent: Agent) -> u32 {
-    (0u32..).find(|n| !has_session(&make_name(wt_path, agent, *n))).unwrap_or(0)
+    (0u32..)
+        .find(|n| !has_session(&make_name(wt_path, agent, *n)))
+        .unwrap_or(0)
 }
 
 /// Anchor a target so tmux treats it as a session-exact match, not a prefix.

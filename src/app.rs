@@ -10,7 +10,9 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 pub fn cycle(cur: usize, delta: i32, len: usize) -> usize {
-    if len == 0 { return 0 }
+    if len == 0 {
+        return 0;
+    }
     (cur as i32 + delta).rem_euclid(len as i32) as usize
 }
 
@@ -290,7 +292,10 @@ impl App {
                 if i == proj_idx {
                     selected
                 } else {
-                    git::list_worktrees(&p.path).iter().filter(|w| !w.is_main).count()
+                    git::list_worktrees(&p.path)
+                        .iter()
+                        .filter(|w| !w.is_main)
+                        .count()
                 }
             })
             .sum();
@@ -385,7 +390,10 @@ impl App {
                 if let Some(p) = self.selected_project() {
                     self.modal = Modal::Confirm {
                         title: "Remove project?".into(),
-                        prompt: format!("'{}' will be unregistered. Files on disk stay put.", p.name),
+                        prompt: format!(
+                            "'{}' will be unregistered. Files on disk stay put.",
+                            p.name
+                        ),
                         destructive: true,
                         kind: ConfirmKind::RemoveProject(self.proj_idx),
                     };
@@ -423,13 +431,19 @@ impl App {
     }
 
     pub fn open_worktree(&mut self, force_pick: bool) {
-        let Some(wt) = self.worktrees.get(self.wt_idx).cloned() else { return };
+        let Some(wt) = self.worktrees.get(self.wt_idx).cloned() else {
+            return;
+        };
         let project = self
             .selected_project()
             .map(|p| p.name.clone())
             .unwrap_or_default();
         if force_pick {
-            self.modal = Modal::AgentPicker { project, wt_path: wt.path, sel: self.picker_sel() };
+            self.modal = Modal::AgentPicker {
+                project,
+                wt_path: wt.path,
+                sel: self.picker_sel(),
+            };
             return;
         }
         // An existing session for this worktree: jump into it rather than
@@ -446,14 +460,23 @@ impl App {
     /// worktree. Mirrors `new_terminal_for_active` but sourced from the
     /// browser selection rather than the active session.
     pub fn open_worktree_terminal(&mut self) {
-        let Some(wt) = self.worktrees.get(self.wt_idx).cloned() else { return };
+        let Some(wt) = self.worktrees.get(self.wt_idx).cloned() else {
+            return;
+        };
         let project = self
             .selected_project()
             .map(|p| p.name.clone())
             .unwrap_or_default();
         let label = path_basename(&wt.path);
         let args = Agent::Terminal.launch_args();
-        self.spawn_session(label, project, wt.path.clone(), Agent::Terminal, args, &wt.path);
+        self.spawn_session(
+            label,
+            project,
+            wt.path.clone(),
+            Agent::Terminal,
+            args,
+            &wt.path,
+        );
     }
 
     pub fn launch_agent(&mut self, agent: Agent, cwd: String) {
@@ -482,7 +505,11 @@ impl App {
             let args = agent.launch_args();
             self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path);
         } else {
-            self.modal = Modal::AgentPicker { project, wt_path, sel: self.picker_sel() };
+            self.modal = Modal::AgentPicker {
+                project,
+                wt_path,
+                sel: self.picker_sel(),
+            };
         }
     }
 
@@ -498,7 +525,10 @@ impl App {
             .find(|p| p.name == s.project)
             .map(|p| p.path.clone());
         let wt_order: Vec<String> = match proj_path {
-            Some(p) => git::list_worktrees(&p).into_iter().map(|w| w.path).collect(),
+            Some(p) => git::list_worktrees(&p)
+                .into_iter()
+                .map(|w| w.path)
+                .collect(),
             None => Vec::new(),
         };
         let new_pos = wt_order.iter().position(|p| p == &s.wt_path);
@@ -574,7 +604,9 @@ impl App {
     /// Spawn an additional session for the active session's worktree.
     pub fn new_session_for_active(&mut self) {
         let Some(i) = self.active_session else { return };
-        let Some(s) = self.sessions.get(i) else { return };
+        let Some(s) = self.sessions.get(i) else {
+            return;
+        };
         let wt_path = s.wt_path.clone();
         let project = s.project.clone();
         self.launch_or_pick(project, wt_path);
@@ -584,25 +616,41 @@ impl App {
     /// configured default.
     pub fn new_session_for_active_pick(&mut self) {
         let Some(i) = self.active_session else { return };
-        let Some(s) = self.sessions.get(i) else { return };
+        let Some(s) = self.sessions.get(i) else {
+            return;
+        };
         let wt_path = s.wt_path.clone();
         let project = s.project.clone();
-        self.modal = Modal::AgentPicker { project, wt_path, sel: self.picker_sel() };
+        self.modal = Modal::AgentPicker {
+            project,
+            wt_path,
+            sel: self.picker_sel(),
+        };
     }
 
     /// Open a plain terminal session for the active session's worktree.
     pub fn new_terminal_for_active(&mut self) {
         let Some(i) = self.active_session else { return };
-        let Some(s) = self.sessions.get(i) else { return };
+        let Some(s) = self.sessions.get(i) else {
+            return;
+        };
         let wt_path = s.wt_path.clone();
         let project = s.project.clone();
         let label = path_basename(&wt_path);
         let args = Agent::Terminal.launch_args();
-        self.spawn_session(label, project, wt_path.clone(), Agent::Terminal, args, &wt_path);
+        self.spawn_session(
+            label,
+            project,
+            wt_path.clone(),
+            Agent::Terminal,
+            args,
+            &wt_path,
+        );
     }
 
     pub fn active_session_mut(&mut self) -> Option<&mut Session> {
-        self.active_session.and_then(move |i| self.sessions.get_mut(i))
+        self.active_session
+            .and_then(move |i| self.sessions.get_mut(i))
     }
 
     pub fn enter_browser(&mut self) {
@@ -622,7 +670,9 @@ impl App {
     }
 
     pub fn session_cycle(&mut self, delta: i32) {
-        if self.sessions.is_empty() { return }
+        if self.sessions.is_empty() {
+            return;
+        }
         let next = cycle(self.active_session.unwrap_or(0), delta, self.sessions.len());
         self.active_session = Some(next);
     }
@@ -631,6 +681,29 @@ impl App {
         if idx < self.sessions.len() {
             self.active_session = Some(idx);
             self.focus_active_session();
+        }
+    }
+
+    /// Kill any sessions whose worktree path matches `wt_path` and remove them
+    /// from the sessions list. Adjusts `active_session` so it still points at a
+    /// valid session (or `None` when the list is empty).
+    pub fn kill_sessions_for_wt(&mut self, wt_path: &str) {
+        let mut i = 0;
+        while i < self.sessions.len() {
+            if self.sessions[i].wt_path == wt_path {
+                self.sessions[i].kill();
+                self.sessions.remove(i);
+                match self.active_session {
+                    Some(a) if a == i => self.active_session = None,
+                    Some(a) if a > i => self.active_session = Some(a - 1),
+                    _ => {}
+                }
+            } else {
+                i += 1;
+            }
+        }
+        if self.sessions.is_empty() {
+            self.active_session = None;
         }
     }
 
@@ -656,7 +729,9 @@ impl App {
     }
 
     pub fn picker_toggle_default(&mut self) -> Result<()> {
-        let Modal::AgentPicker { sel, .. } = &self.modal else { return Ok(()) };
+        let Modal::AgentPicker { sel, .. } = &self.modal else {
+            return Ok(());
+        };
         let agent = Agent::ALL[*sel];
         if self.store.default_agent == Some(agent) {
             self.store.default_agent = None;
@@ -671,7 +746,9 @@ impl App {
 
     pub fn picker_submit(&mut self) {
         let modal = std::mem::replace(&mut self.modal, Modal::None);
-        let Modal::AgentPicker { wt_path, sel, .. } = modal else { return };
+        let Modal::AgentPicker { wt_path, sel, .. } = modal else {
+            return;
+        };
         self.launch_agent(Agent::ALL[sel], wt_path);
     }
 
@@ -686,13 +763,28 @@ impl App {
             theme::ThemeKind::Dark => (sel, 0),
             theme::ThemeKind::Light => (0, sel),
         };
-        self.modal = Modal::ThemePicker { sel_dark, sel_light, tab, original };
+        self.modal = Modal::ThemePicker {
+            sel_dark,
+            sel_light,
+            tab,
+            original,
+        };
     }
 
     pub fn theme_picker_move(&mut self, delta: i32) {
-        let Modal::ThemePicker { sel_dark, sel_light, tab, .. } = &mut self.modal else { return };
+        let Modal::ThemePicker {
+            sel_dark,
+            sel_light,
+            tab,
+            ..
+        } = &mut self.modal
+        else {
+            return;
+        };
         let themes = theme::themes_of(*tab);
-        if themes.is_empty() { return }
+        if themes.is_empty() {
+            return;
+        }
         let sel = match tab {
             theme::ThemeKind::Dark => sel_dark,
             theme::ThemeKind::Light => sel_light,
@@ -702,7 +794,15 @@ impl App {
     }
 
     pub fn theme_picker_switch_tab(&mut self) {
-        let Modal::ThemePicker { sel_dark, sel_light, tab, .. } = &mut self.modal else { return };
+        let Modal::ThemePicker {
+            sel_dark,
+            sel_light,
+            tab,
+            ..
+        } = &mut self.modal
+        else {
+            return;
+        };
         *tab = match *tab {
             theme::ThemeKind::Dark => theme::ThemeKind::Light,
             theme::ThemeKind::Light => theme::ThemeKind::Dark,
@@ -719,13 +819,23 @@ impl App {
 
     pub fn theme_picker_submit(&mut self) -> Result<()> {
         let modal = std::mem::replace(&mut self.modal, Modal::None);
-        let Modal::ThemePicker { sel_dark, sel_light, tab, .. } = modal else { return Ok(()) };
+        let Modal::ThemePicker {
+            sel_dark,
+            sel_light,
+            tab,
+            ..
+        } = modal
+        else {
+            return Ok(());
+        };
         let themes = theme::themes_of(tab);
         let sel = match tab {
             theme::ThemeKind::Dark => sel_dark,
             theme::ThemeKind::Light => sel_light,
         };
-        let Some(chosen) = themes.get(sel).copied() else { return Ok(()) };
+        let Some(chosen) = themes.get(sel).copied() else {
+            return Ok(());
+        };
         theme::set(chosen);
         self.store.theme = Some(chosen.name.to_string());
         storage::save(&self.store)?;
@@ -741,16 +851,39 @@ impl App {
     }
 
     pub fn input_dir_move(&mut self, delta: i32) {
-        let Modal::Input { buffer, kind, dir_sel, .. } = &mut self.modal else { return };
-        if !matches!(kind, InputKind::AddProjectPath) { return }
+        let Modal::Input {
+            buffer,
+            kind,
+            dir_sel,
+            ..
+        } = &mut self.modal
+        else {
+            return;
+        };
+        if !matches!(kind, InputKind::AddProjectPath) {
+            return;
+        }
         let entries = list_dirs(buffer);
-        if entries.is_empty() { *dir_sel = 0; return }
+        if entries.is_empty() {
+            *dir_sel = 0;
+            return;
+        }
         *dir_sel = cycle(*dir_sel, delta, entries.len());
     }
 
     pub fn input_dir_pick(&mut self) {
-        let Modal::Input { buffer, kind, dir_sel, .. } = &mut self.modal else { return };
-        if !matches!(kind, InputKind::AddProjectPath) { return }
+        let Modal::Input {
+            buffer,
+            kind,
+            dir_sel,
+            ..
+        } = &mut self.modal
+        else {
+            return;
+        };
+        if !matches!(kind, InputKind::AddProjectPath) {
+            return;
+        }
         let entries = list_dirs(buffer);
         if let Some(pick) = entries.get(*dir_sel) {
             *buffer = format!("{}/", pick);
@@ -759,14 +892,22 @@ impl App {
     }
 
     pub fn input_buffer_edit<F: FnOnce(&mut String)>(&mut self, f: F) {
-        if let Modal::Input { buffer, dir_sel, .. } = &mut self.modal {
+        if let Modal::Input {
+            buffer, dir_sel, ..
+        } = &mut self.modal
+        {
             f(buffer);
             *dir_sel = 0;
         }
     }
 
     pub fn submit_input(&mut self) -> Result<()> {
-        if let Modal::Input { buffer, kind: InputKind::AddProjectPath, .. } = &self.modal {
+        if let Modal::Input {
+            buffer,
+            kind: InputKind::AddProjectPath,
+            ..
+        } = &self.modal
+        {
             let expanded = shellexpand_tilde(buffer.trim());
             let is_dir = std::path::PathBuf::from(&expanded).is_dir();
             if !is_dir {
@@ -777,7 +918,9 @@ impl App {
             }
         }
         let modal = std::mem::replace(&mut self.modal, Modal::None);
-        let Modal::Input { buffer, kind, .. } = modal else { return Ok(()); };
+        let Modal::Input { buffer, kind, .. } = modal else {
+            return Ok(());
+        };
         let value = buffer.trim().to_string();
         if value.is_empty() {
             return Ok(());
@@ -786,9 +929,7 @@ impl App {
             InputKind::AddProjectPath => {
                 let path = shellexpand_tilde(&value);
                 let pb = std::path::PathBuf::from(&path);
-                let abs = std::fs::canonicalize(&pb)?
-                    .to_string_lossy()
-                    .to_string();
+                let abs = std::fs::canonicalize(&pb)?.to_string_lossy().to_string();
                 let default_name = pb
                     .file_name()
                     .and_then(|s| s.to_str())
@@ -815,8 +956,9 @@ impl App {
                 self.status = format!("added {value}");
 
                 let needs_init = !std::path::Path::new(&path).join(".git").exists();
-                let needs_include =
-                    !std::path::Path::new(&path).join(".worktreeinclude").exists();
+                let needs_include = !std::path::Path::new(&path)
+                    .join(".worktreeinclude")
+                    .exists();
 
                 if needs_init {
                     self.modal = Modal::Confirm {
@@ -828,7 +970,8 @@ impl App {
                 } else if needs_include {
                     self.modal = Modal::Confirm {
                         title: "Generate .worktreeinclude?".into(),
-                        prompt: "Use Claude (haiku) to draft a .worktreeinclude for this repo.".into(),
+                        prompt: "Use Claude (haiku) to draft a .worktreeinclude for this repo."
+                            .into(),
                         destructive: false,
                         kind: ConfirmKind::GenerateInclude { path },
                     };
@@ -840,7 +983,9 @@ impl App {
                     self.modal = Modal::Message("name cannot contain '/'".into());
                     return Ok(());
                 }
-                let Some(p) = self.selected_project().cloned() else { return Ok(()); };
+                let Some(p) = self.selected_project().cloned() else {
+                    return Ok(());
+                };
                 if !std::path::Path::new(&p.path).join(".git").exists() {
                     self.modal = Modal::Confirm {
                         title: "Initialize git repo?".into(),
@@ -861,7 +1006,9 @@ impl App {
 
     pub fn submit_confirm(&mut self, yes: bool) -> Result<()> {
         let modal = std::mem::replace(&mut self.modal, Modal::None);
-        let Modal::Confirm { kind, .. } = modal else { return Ok(()); };
+        let Modal::Confirm { kind, .. } = modal else {
+            return Ok(());
+        };
         if !yes {
             return Ok(());
         }
@@ -879,6 +1026,7 @@ impl App {
             }
             ConfirmKind::RemoveWorktree(path) => {
                 if let Some(p) = self.selected_project().cloned() {
+                    self.kill_sessions_for_wt(&path);
                     if let Err(e) = git::remove_worktree(&p.path, &path) {
                         self.status = format!("err: {e}");
                     } else {
@@ -888,7 +1036,9 @@ impl App {
                 }
             }
             ConfirmKind::InitAndAddWorktree { name } => {
-                let Some(p) = self.selected_project().cloned() else { return Ok(()); };
+                let Some(p) = self.selected_project().cloned() else {
+                    return Ok(());
+                };
                 if let Err(e) = git::init_if_needed(&p.path) {
                     self.modal = Modal::Message(format!("git init failed: {e}"));
                     return Ok(());
@@ -897,12 +1047,14 @@ impl App {
             }
             ConfirmKind::InitRepo { path, name } => {
                 git::init_if_needed(&path)?;
-                let needs_include =
-                    !std::path::Path::new(&path).join(".worktreeinclude").exists();
+                let needs_include = !std::path::Path::new(&path)
+                    .join(".worktreeinclude")
+                    .exists();
                 if needs_include {
                     self.modal = Modal::Confirm {
                         title: "Generate .worktreeinclude?".into(),
-                        prompt: "Use Claude (haiku) to draft a .worktreeinclude for this repo.".into(),
+                        prompt: "Use Claude (haiku) to draft a .worktreeinclude for this repo."
+                            .into(),
                         destructive: false,
                         kind: ConfirmKind::GenerateInclude { path },
                     };
@@ -962,15 +1114,31 @@ pub fn list_dirs(buffer: &str) -> Vec<String> {
     let (dir, prefix) = if expanded.is_empty() {
         (std::path::PathBuf::from("."), String::new())
     } else if expanded.ends_with('/') {
-        (std::path::PathBuf::from(expanded.trim_end_matches('/')), String::new())
+        (
+            std::path::PathBuf::from(expanded.trim_end_matches('/')),
+            String::new(),
+        )
     } else {
         let pb = std::path::PathBuf::from(&expanded);
-        let parent = pb.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
-        let name = pb.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
-        let parent = if parent.as_os_str().is_empty() { std::path::PathBuf::from(".") } else { parent };
+        let parent = pb
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let name = pb
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        let parent = if parent.as_os_str().is_empty() {
+            std::path::PathBuf::from(".")
+        } else {
+            parent
+        };
         (parent, name)
     };
-    let Ok(rd) = std::fs::read_dir(&dir) else { return vec![]; };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return vec![];
+    };
     let mut out: Vec<String> = rd
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
@@ -1004,14 +1172,26 @@ mod tests {
     #[test]
     fn tmux_unavailable_uses_native_for_any_preference() {
         assert_eq!(effective_backend_for(false, None), EffectiveBackend::Native);
-        assert_eq!(effective_backend_for(false, Some(true)), EffectiveBackend::Native);
-        assert_eq!(effective_backend_for(false, Some(false)), EffectiveBackend::Native);
+        assert_eq!(
+            effective_backend_for(false, Some(true)),
+            EffectiveBackend::Native
+        );
+        assert_eq!(
+            effective_backend_for(false, Some(false)),
+            EffectiveBackend::Native
+        );
     }
 
     #[test]
     fn tmux_available_uses_saved_preference() {
-        assert_eq!(effective_backend_for(true, Some(true)), EffectiveBackend::Tmux);
-        assert_eq!(effective_backend_for(true, Some(false)), EffectiveBackend::Native);
+        assert_eq!(
+            effective_backend_for(true, Some(true)),
+            EffectiveBackend::Tmux
+        );
+        assert_eq!(
+            effective_backend_for(true, Some(false)),
+            EffectiveBackend::Native
+        );
     }
 
     #[test]
