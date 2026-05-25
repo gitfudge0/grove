@@ -1,0 +1,428 @@
+//! `Grove` lifecycle: construction, subscriptions, and all `Msg` handling.
+
+use super::keys::key_to_bytes;
+use super::metrics::compute_pty_dims;
+use super::pty::normalize_selection;
+use super::state::{Grove, Msg, PtyCell};
+use crate::agent::Agent;
+use crate::app::{App, InputKind, Modal, Pane};
+use crate::session::Session;
+use iced::keyboard::{key::Named, Key, Modifiers};
+use iced::{event, keyboard, Event, Subscription, Task};
+use std::sync::Arc;
+use std::time::Duration;
+
+impl Grove {
+    pub fn new() -> Self {
+        // Compute initial PTY dimensions from the default window size (1280×800).
+        // Corrected on the first `WindowResized` event after startup.
+        let (pty_rows, pty_cols) = compute_pty_dims(1280.0, 800.0);
+        let mut app = App::new().expect("init app");
+        // Resize any sessions discovered from a previous grove run so tmux
+        // reports the correct terminal size immediately.
+        for s in &mut app.sessions {
+            s.resize(pty_rows, pty_cols);
+        }
+        let mut g = Self {
+            app,
+            collapsed: Default::default(),
+            wt_cache: Default::default(),
+            pty_cache: Default::default(),
+            pty_rows,
+            pty_cols,
+            open_agent_menu: None,
+            pty_selection: None,
+        };
+        // Prime the per-project worktree cache so `view()` never has to shell
+        // out to `git worktree list` (it runs on every 33ms tick).
+        let n = g.app.store.projects.len();
+        for i in 0..n {
+            g.ensure_wt_cached(i);
+        }
+        g
+    }
+
+    pub fn subscription(&self) -> Subscription<Msg> {
+        let tick = iced::time::every(Duration::from_millis(60)).map(|_| Msg::Tick);
+        // Only forward un-captured keys; widgets (search input) handle their own first.
+        let keys = event::listen_with(|ev, status, _| {
+            if status == event::Status::Captured {
+                return None;
+            }
+            match ev {
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    modified_key,
+                    modifiers,
+                    ..
+                }) => Some(Msg::KeyPress(modified_key, modifiers)),
+                _ => None,
+            }
+        });
+        let resize = iced::window::resize_events().map(|(_id, size)| Msg::WindowResized(size));
+        Subscription::batch([tick, keys, resize])
+    }
+
+    pub fn update(&mut self, msg: Msg) -> Task<Msg> {
+        match msg {
+            Msg::Tick => {
+                // No-op: `dirty` flags are consumed lazily by `pty()` when
+                // it rebuilds a session's cached snapshot.
+            }
+            Msg::WindowResized(size) => {
+                let (rows, cols) = compute_pty_dims(size.width, size.height);
+                self.pty_rows = rows;
+                self.pty_cols = cols;
+                if let Some(s) = self.app.active_session_mut() {
+                    s.resize(rows, cols);
+                }
+            }
+            Msg::BackendNative => {
+                let _ = self.app.set_tmux_enabled(false);
+            }
+            Msg::BackendTmux => {
+                let _ = self.app.set_tmux_enabled(true);
+            }
+            Msg::ChooseTmux(enabled) => {
+                if let Err(e) = self.app.choose_tmux_enabled(enabled) {
+                    self.app.modal = Modal::Message(format!("tmux setup failed: {e}"));
+                }
+            }
+            Msg::ProjectClicked(i) => {
+                self.open_agent_menu = None;
+                if self.collapsed.contains(&i) {
+                    self.collapsed.remove(&i);
+                } else {
+                    self.collapsed.insert(i);
+                }
+                self.switch_active_project(i);
+                self.ensure_wt_cached(i);
+            }
+            Msg::WorktreeClicked { proj, wt } => {
+                self.open_agent_menu = None;
+                self.switch_active_project(proj);
+                self.app.wt_idx = wt;
+            }
+            Msg::StartSession { proj, wt, agent } => {
+                self.open_agent_menu = None;
+                self.spawn(proj, wt, agent);
+            }
+            Msg::StartTerminal { proj, wt } => {
+                self.open_agent_menu = None;
+                self.spawn(proj, wt, Agent::Terminal);
+            }
+            Msg::ToggleAgentMenu { proj, wt } => {
+                self.open_agent_menu = if self.open_agent_menu == Some((proj, wt)) {
+                    None
+                } else {
+                    Some((proj, wt))
+                };
+            }
+            Msg::SelectSession(i) => {
+                self.open_agent_menu = None;
+                if i < self.app.sessions.len() {
+                    self.app.active_session = Some(i);
+                    self.app.sessions[i].resize(self.pty_rows, self.pty_cols);
+                }
+            }
+            Msg::KillSession(i) => {
+                if i < self.app.sessions.len() {
+                    let key = Arc::as_ptr(&self.app.sessions[i].dirty) as usize;
+                    self.pty_cache.borrow_mut().remove(&key);
+                    self.app.sessions[i].kill();
+                    self.app.sessions.remove(i);
+                    if let Some(a) = self.app.active_session {
+                        if a == i {
+                            self.app.active_session = None;
+                        } else if a > i {
+                            self.app.active_session = Some(a - 1);
+                        }
+                    }
+                }
+            }
+            Msg::KeyPress(key, mods) => self.handle_key(key, mods),
+            Msg::PtyMouseDown(x, y) => {
+                let cell = pixel_to_cell(x, y);
+                self.pty_selection = Some((cell, cell));
+            }
+            Msg::PtyMouseDrag(x, y) => {
+                let cell = pixel_to_cell(x, y);
+                if let Some((a, _)) = self.pty_selection {
+                    self.pty_selection = Some((a, cell));
+                }
+            }
+            Msg::PtyMouseUp => {
+                if let Some((a, h)) = self.pty_selection {
+                    if a == h {
+                        self.pty_selection = None;
+                    }
+                }
+            }
+            Msg::AddProject => {
+                self.open_agent_menu = None;
+                self.app.focus_pane(Pane::Projects);
+                self.app.start_add();
+            }
+            Msg::AddWorktree { proj } => {
+                self.open_agent_menu = None;
+                self.switch_active_project(proj);
+                self.app.focus_pane(Pane::Worktrees);
+                self.app.start_add();
+            }
+            Msg::DeleteWorktree { proj, wt } => {
+                self.open_agent_menu = None;
+                self.switch_active_project(proj);
+                self.app.wt_idx = wt;
+                self.app.focus_pane(Pane::Worktrees);
+                self.app.start_delete();
+            }
+            Msg::ModalSubmit => self.submit_modal_input(),
+            Msg::ModalCancel => self.cancel_modal(),
+            Msg::ModalConfirm(yes) => self.submit_modal_confirm(yes),
+            Msg::ModalPickDir(path) => {
+                if let Modal::Input {
+                    buffer,
+                    kind,
+                    dir_sel,
+                    ..
+                } = &mut self.app.modal
+                {
+                    if matches!(kind, InputKind::AddProjectPath) {
+                        *buffer = format!("{path}/");
+                        *dir_sel = 0;
+                    }
+                }
+            }
+            Msg::NoOp => {}
+        }
+        Task::none()
+    }
+
+    fn handle_key(&mut self, key: Key, mods: Modifiers) {
+        if !matches!(self.app.modal, Modal::None) {
+            self.handle_modal_key(key, mods);
+            return;
+        }
+        // Ctrl+Shift+C copies the current PTY selection (if any) and does
+        // NOT forward to the agent — standard terminal copy shortcut.
+        if mods.control() && mods.shift() {
+            if let Key::Character(s) = &key {
+                if s.eq_ignore_ascii_case("c") {
+                    if let Some(text) = self.selection_text() {
+                        crate::clipboard::copy(&text);
+                    }
+                    return;
+                }
+            }
+        }
+        if let Some(bytes) = key_to_bytes(&key, mods) {
+            if let Some(i) = self.app.active_session {
+                if let Some(s) = self.app.sessions.get_mut(i) {
+                    s.send(&bytes);
+                }
+            }
+            self.pty_selection = None;
+        }
+    }
+
+    fn handle_modal_key(&mut self, key: Key, mods: Modifiers) {
+        match &self.app.modal {
+            Modal::Input { .. } => match key {
+                Key::Named(Named::Escape) => self.cancel_modal(),
+                Key::Named(Named::Enter) => self.submit_modal_input(),
+                Key::Named(Named::ArrowDown) => self.app.input_dir_move(1),
+                Key::Named(Named::ArrowUp) => self.app.input_dir_move(-1),
+                Key::Named(Named::Tab) | Key::Named(Named::ArrowRight) => self.app.input_dir_pick(),
+                Key::Named(Named::Backspace) => self.app.input_buffer_edit(|b| {
+                    b.pop();
+                }),
+                Key::Named(Named::Space) if !mods.control() && !mods.alt() => {
+                    self.app.input_buffer_edit(|b| b.push(' '));
+                }
+                Key::Character(s) => {
+                    if mods.control() {
+                        match s.as_str() {
+                            "u" | "U" => self.app.input_buffer_edit(|b| b.clear()),
+                            "c" | "C" => self.cancel_modal(),
+                            _ => {}
+                        }
+                    } else if !mods.alt() {
+                        self.app.input_buffer_edit(|b| b.push_str(&s));
+                    }
+                }
+                _ => {}
+            },
+            Modal::Confirm { .. } => match key {
+                Key::Named(Named::Escape) => self.submit_modal_confirm(false),
+                Key::Named(Named::Enter) => self.submit_modal_confirm(true),
+                Key::Character(s) => match s.as_str() {
+                    "y" | "Y" => self.submit_modal_confirm(true),
+                    "n" | "N" => self.submit_modal_confirm(false),
+                    _ => {}
+                },
+                _ => {}
+            },
+            Modal::Message(_) => match key {
+                Key::Named(Named::Escape) | Key::Named(Named::Enter) => self.cancel_modal(),
+                Key::Character(s) if matches!(s.as_str(), "q" | "Q") => self.cancel_modal(),
+                _ => {}
+            },
+            Modal::TmuxChoice => match key {
+                Key::Named(Named::Enter) => self.choose_tmux(true),
+                Key::Named(Named::Escape) => self.choose_tmux(false),
+                Key::Character(s) => match s.as_str() {
+                    "t" | "T" | "y" | "Y" => self.choose_tmux(true),
+                    "n" | "N" => self.choose_tmux(false),
+                    _ => {}
+                },
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn choose_tmux(&mut self, enabled: bool) {
+        if let Err(e) = self.app.choose_tmux_enabled(enabled) {
+            self.app.modal = Modal::Message(format!("tmux setup failed: {e}"));
+        }
+    }
+
+    fn submit_modal_input(&mut self) {
+        if let Err(e) = self.app.submit_input() {
+            self.app.modal = Modal::Message(format!("input failed: {e}"));
+        }
+        self.rebuild_wt_cache();
+    }
+
+    fn submit_modal_confirm(&mut self, yes: bool) {
+        if let Err(e) = self.app.submit_confirm(yes) {
+            self.app.modal = Modal::Message(format!("action failed: {e}"));
+        }
+        self.rebuild_wt_cache();
+    }
+
+    fn cancel_modal(&mut self) {
+        self.app.modal = Modal::None;
+    }
+
+    /// Switch the active project, saving the outgoing project's worktrees
+    /// into `wt_cache` first so `tree_view` can still render its children
+    /// while a different project is active.
+    pub(super) fn switch_active_project(&mut self, new_proj: usize) {
+        if self.app.proj_idx != new_proj {
+            let old = self.app.proj_idx;
+            let wts = self.app.worktrees.clone();
+            self.wt_cache.insert(old, wts);
+            self.app.proj_idx = new_proj;
+            self.app.refresh_worktrees();
+            self.wt_cache.remove(&new_proj);
+        }
+    }
+
+    pub(super) fn ensure_wt_cached(&mut self, proj: usize) {
+        if proj == self.app.proj_idx || self.wt_cache.contains_key(&proj) {
+            return;
+        }
+        if let Some(p) = self.app.store.projects.get(proj) {
+            let wts = crate::git::list_worktrees(&p.path);
+            self.wt_cache.insert(proj, wts);
+        }
+    }
+
+    fn rebuild_wt_cache(&mut self) {
+        self.wt_cache.clear();
+        let n = self.app.store.projects.len();
+        if self.app.proj_idx >= n {
+            self.app.proj_idx = n.saturating_sub(1);
+        }
+        self.app.refresh_worktrees();
+        for i in 0..n {
+            self.ensure_wt_cached(i);
+        }
+    }
+
+    fn spawn(&mut self, proj: usize, wt: usize, agent: Agent) {
+        self.switch_active_project(proj);
+        self.app.wt_idx = wt;
+        let pname = match self.app.store.projects.get(proj) {
+            Some(p) => p.name.clone(),
+            None => return,
+        };
+        let Some(w) = self.app.worktrees.get(wt).cloned() else {
+            return;
+        };
+        let label = if w.is_main {
+            pname.clone()
+        } else {
+            crate::app::path_basename(&w.path)
+        };
+        let args = agent.launch_args();
+        let use_tmux = self.app.use_tmux();
+        match Session::spawn(
+            label,
+            pname,
+            w.path.clone(),
+            agent,
+            &args,
+            &w.path,
+            use_tmux,
+        ) {
+            Ok(mut s) => {
+                s.resize(self.pty_rows, self.pty_cols);
+                self.app.sessions.push(s);
+                self.app.active_session = Some(self.app.sessions.len() - 1);
+            }
+            Err(e) => {
+                self.app.status = format!("failed to start session: {e}");
+            }
+        }
+    }
+
+    /// Extract text inside the current PTY selection from the cached styled
+    /// rows of the active session.
+    pub(super) fn selection_text(&self) -> Option<String> {
+        let (a, h) = self.pty_selection?;
+        let i = self.app.active_session?;
+        let s = self.app.sessions.get(i)?;
+        let key = Arc::as_ptr(&s.dirty) as usize;
+        let map = self.pty_cache.borrow();
+        let entry = map.get(&key)?;
+        let rows = &entry.rows;
+        if rows.is_empty() {
+            return None;
+        }
+        let (r1, c1, r2, c2) = normalize_selection(a, h);
+        let r1 = r1.min(rows.len() - 1);
+        let r2 = r2.min(rows.len() - 1);
+        let mut out = String::new();
+        for r in r1..=r2 {
+            let row = &rows[r];
+            let row_text: String = row.iter().flat_map(|run| run.text.chars()).collect();
+            let row_len = row_text.chars().count();
+            let start = if r == r1 { c1 } else { 0 };
+            let end = if r == r2 { c2.min(row_len) } else { row_len };
+            let slice: String = row_text
+                .chars()
+                .skip(start)
+                .take(end.saturating_sub(start))
+                .collect();
+            out.push_str(slice.trim_end());
+            if r < r2 {
+                out.push('\n');
+            }
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    }
+}
+
+fn pixel_to_cell(x: f32, y: f32) -> PtyCell {
+    use super::metrics::{CELL_H, CELL_W};
+    PtyCell {
+        row: (y / CELL_H).max(0.0) as usize,
+        col: (x / CELL_W).max(0.0) as usize,
+    }
+}
+
