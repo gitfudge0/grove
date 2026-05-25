@@ -23,5 +23,8 @@ pub fn copy(text: &str) {
     }
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::style::Print(format!("\x1b]52;c;{}\x07", b64)));
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::style::Print(format!("\x1b]52;c;{}\x07", b64))
+    );
 }

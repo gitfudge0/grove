@@ -3,8 +3,8 @@ use crate::session_meta::{self, SessionMeta};
 use crate::tmux;
 use anyhow::Result;
 use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
-use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 use std::io::{Read, Write};
+use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
 /// Initial PTY size; the event loop resizes it to the real pane on first draw.
 const INIT_ROWS: u16 = 24;
@@ -123,13 +123,7 @@ impl Session {
     /// Re-attach to an existing tmux session previously created by grove.
     pub fn attach_existing(d: tmux::DiscoveredSession) -> Result<Self> {
         Self::attach_tmux(
-            d.label,
-            d.project,
-            d.wt_path,
-            d.agent,
-            d.name,
-            INIT_ROWS,
-            INIT_COLS,
+            d.label, d.project, d.wt_path, d.agent, d.name, INIT_ROWS, INIT_COLS,
         )
     }
 
@@ -142,6 +136,8 @@ impl Session {
         rows: u16,
         cols: u16,
     ) -> Result<Self> {
+        tmux::configure_embedded_session(&tmux_name);
+
         let mut cmd = CommandBuilder::new("tmux");
         cmd.arg("-L");
         cmd.arg(tmux::SOCKET);
@@ -265,7 +261,10 @@ impl Session {
     }
 
     pub fn status(&self) -> SessionStatus {
-        self.status.lock().map(|s| *s).unwrap_or(SessionStatus::Running)
+        self.status
+            .lock()
+            .map(|s| *s)
+            .unwrap_or(SessionStatus::Running)
     }
 
     #[allow(dead_code)]
@@ -335,7 +334,11 @@ impl Session {
         }
         let end = out.trim_end_matches('\n').len();
         out.truncate(end);
-        if out.is_empty() { None } else { Some(out) }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
     }
 
     /// The current OSC 0/1/2 window title emitted by the inner app, if any.
@@ -343,7 +346,11 @@ impl Session {
     pub fn current_title(&self) -> Option<String> {
         let p = self.parser.lock().ok()?;
         let t = p.screen().title().trim().to_string();
-        if t.is_empty() { None } else { Some(t) }
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
     }
 
     /// True if the inner app has asked to receive mouse events.
@@ -387,7 +394,6 @@ impl Session {
         }
         self.dirty.store(true, Ordering::Relaxed);
     }
-
 }
 
 /// Encode a single mouse report (`cb` = button/wheel code) at a pane-relative

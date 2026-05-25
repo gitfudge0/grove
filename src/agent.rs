@@ -9,8 +9,12 @@ pub enum Agent {
 }
 
 impl Agent {
-    pub const ALL: [Agent; 4] =
-        [Agent::Claude, Agent::Codex, Agent::OpenCode, Agent::Terminal];
+    pub const ALL: [Agent; 4] = [
+        Agent::Claude,
+        Agent::Codex,
+        Agent::OpenCode,
+        Agent::Terminal,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -27,9 +31,7 @@ impl Agent {
             Agent::Codex => "codex".into(),
             Agent::OpenCode => "opencode".into(),
             // The user's login shell, falling back to a POSIX shell.
-            Agent::Terminal => {
-                std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
-            }
+            Agent::Terminal => std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()),
         }
     }
 

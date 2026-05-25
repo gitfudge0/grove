@@ -17,7 +17,10 @@ pub fn run_inline<F: FnOnce() -> Result<()>>(f: F) -> Result<()> {
 }
 
 pub fn run_claude_inline(cwd: &str, args: &[&str]) -> Result<()> {
-    let status = Command::new("claude").args(args).current_dir(cwd).status()?;
+    let status = Command::new("claude")
+        .args(args)
+        .current_dir(cwd)
+        .status()?;
     if !status.success() {
         anyhow::bail!("claude exited with {:?}", status.code());
     }

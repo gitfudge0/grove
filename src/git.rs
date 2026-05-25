@@ -68,7 +68,11 @@ pub fn list_worktrees(project_path: &str) -> Vec<Worktree> {
             0,
             Worktree {
                 path: project_path.to_string(),
-                branch: if branch.is_empty() { "—".into() } else { branch },
+                branch: if branch.is_empty() {
+                    "—".into()
+                } else {
+                    branch
+                },
                 mtime: worktree_mtime(project_path),
                 is_main: true,
             },
@@ -86,7 +90,11 @@ pub fn current_branch(wt_path: &str) -> String {
     match out {
         Ok(o) if o.status.success() => {
             let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() { "(detached)".into() } else { s }
+            if s.is_empty() {
+                "(detached)".into()
+            } else {
+                s
+            }
         }
         _ => String::new(),
     }
@@ -132,8 +140,7 @@ pub fn worktrees_root() -> Result<PathBuf> {
 pub fn add_worktree(project_path: &str, project_name: &str, name: &str) -> Result<String> {
     let dest = worktrees_root()?.join(project_name).join(name);
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let dest_str = dest.to_string_lossy().to_string();
 
@@ -196,7 +203,9 @@ pub fn copy_worktree_includes(project_path: &str, wt_path: &str) -> Result<()> {
     let src_root = Path::new(project_path);
     let dst_root = Path::new(wt_path);
     for rel in out.stdout.split(|&b| b == 0) {
-        let Ok(rel) = std::str::from_utf8(rel) else { continue };
+        let Ok(rel) = std::str::from_utf8(rel) else {
+            continue;
+        };
         if rel.is_empty() {
             continue;
         }

@@ -44,10 +44,14 @@ pub fn delete(name: &str) {
 /// Remove sidecar files whose tmux session no longer exists.
 pub fn prune(live: &[String]) {
     let Ok(dir) = sessions_dir() else { return };
-    let Ok(rd) = std::fs::read_dir(&dir) else { return };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return;
+    };
     for entry in rd.flatten() {
         let path = entry.path();
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }

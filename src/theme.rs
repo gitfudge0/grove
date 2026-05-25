@@ -669,7 +669,11 @@ pub fn set(theme: Theme) {
 }
 
 pub fn themes_of(kind: ThemeKind) -> Vec<Theme> {
-    let mut v: Vec<Theme> = BUILTINS.iter().copied().filter(|t| t.kind == kind).collect();
+    let mut v: Vec<Theme> = BUILTINS
+        .iter()
+        .copied()
+        .filter(|t| t.kind == kind)
+        .collect();
     v.sort_by_key(|t| t.name);
     v
 }
