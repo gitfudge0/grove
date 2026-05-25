@@ -34,6 +34,10 @@ pub struct Grove {
     /// Mouse-drag selection in the active session's PTY, in (row, col) cells.
     /// Un-normalized so we know which end is moving.
     pub pty_selection: Option<(PtyCell, PtyCell)>,
+    /// Monotonically incrementing counter driven by `Msg::Tick` (~30 Hz).
+    /// Used to compute cursor blink state: visible when `blink_tick % 30 < 15`
+    /// (≈ 500 ms on / 500 ms off).
+    pub blink_tick: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +54,9 @@ pub struct PtyCacheEntry {
     /// Iced canvas cache. The PTY draw skips entirely while warm — we
     /// `clear()` it only when `dirty` flips.
     pub cache: Arc<canvas::Cache>,
+    /// Current cursor position (row, col) as reported by vt100. `None` when
+    /// the running program has hidden the cursor (e.g. vim, htop).
+    pub cursor_pos: Option<(u16, u16)>,
 }
 
 #[derive(Clone)]
@@ -71,12 +78,14 @@ pub enum Msg {
     StartSession { proj: usize, wt: usize, agent: Agent },
     StartTerminal { proj: usize, wt: usize },
     ToggleAgentMenu { proj: usize, wt: usize },
+    CloseAgentMenu,
     SelectSession(usize),
     KillSession(usize),
     KeyPress(Key, Modifiers),
     PtyMouseDown(f32, f32),
     PtyMouseDrag(f32, f32),
     PtyMouseUp,
+    PtyScroll { up: bool, x: f32, y: f32 },
     AddProject,
     AddWorktree { proj: usize },
     DeleteWorktree { proj: usize, wt: usize },
@@ -85,6 +94,11 @@ pub enum Msg {
     ModalConfirm(bool),
     ModalPickDir(String),
     ChooseTmux(bool),
+    OpenThemePicker,
+    ThemePickerSwitchTab,
+    ThemePickerSelect(usize),
+    ThemePickerSubmit,
+    ThemePickerCancel,
     NoOp,
 }
 

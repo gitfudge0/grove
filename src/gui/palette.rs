@@ -1,22 +1,121 @@
-//! Color tokens, converted from the mockup's oklch palette.
+//! GUI color tokens, derived live from the active [`crate::theme`].
+//!
+//! The TUI exposes a flat `Theme` with `bg / bg_highlight / fg / fg_dark /
+//! comment` plus six accents. The GUI uses a richer surface vocabulary
+//! (rail, strip, hover, two border weights), so the missing tokens are
+//! synthesized by blending the base theme colors at fixed ratios.
+//!
+//! All accessors read [`crate::theme::current()`] on each call, so swapping
+//! themes at runtime takes effect on the next frame.
 
-#![allow(dead_code)]
+#![allow(non_snake_case, dead_code)]
 
+use crate::theme;
 use iced::Color;
+use ratatui::style::Color as RColor;
 
-pub const BG: Color = Color::from_rgb(0.110, 0.115, 0.150);
-pub const BG_RAIL: Color = Color::from_rgb(0.090, 0.095, 0.130);
-pub const BG_STRIP: Color = Color::from_rgb(0.075, 0.080, 0.115);
-pub const BG_HOVER: Color = Color::from_rgb(0.140, 0.150, 0.190);
-pub const BG_HL: Color = Color::from_rgb(0.180, 0.190, 0.260);
-pub const BORDER: Color = Color::from_rgb(0.190, 0.195, 0.230);
-pub const BORDER_SOFT: Color = Color::from_rgb(0.145, 0.150, 0.185);
-pub const FG: Color = Color::from_rgb(0.785, 0.805, 0.870);
-pub const FG_DIM: Color = Color::from_rgb(0.650, 0.670, 0.745);
-pub const FG_MUTE: Color = Color::from_rgb(0.460, 0.480, 0.560);
-pub const BLUE: Color = Color::from_rgb(0.478, 0.635, 0.969);
-pub const CYAN: Color = Color::from_rgb(0.490, 0.812, 1.000);
-pub const MAGENTA: Color = Color::from_rgb(0.733, 0.604, 0.969);
-pub const GREEN: Color = Color::from_rgb(0.620, 0.808, 0.416);
-pub const YELLOW: Color = Color::from_rgb(0.878, 0.686, 0.408);
-pub const RED: Color = Color::from_rgb(0.969, 0.463, 0.557);
+fn ic(c: RColor) -> Color {
+    match c {
+        RColor::Rgb(r, g, b) => {
+            Color::from_rgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
+        }
+        _ => Color::from_rgb(1.0, 0.0, 1.0),
+    }
+}
+
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    Color::from_rgb(
+        a.r + (b.r - a.r) * t,
+        a.g + (b.g - a.g) * t,
+        a.b + (b.b - a.b) * t,
+    )
+}
+
+fn is_dark() -> bool {
+    matches!(theme::current().kind, theme::ThemeKind::Dark)
+}
+
+fn base_bg() -> Color {
+    ic(theme::current().bg)
+}
+fn base_fg() -> Color {
+    ic(theme::current().fg)
+}
+
+// ── surfaces ─────────────────────────────────────────────────────────────
+
+pub fn BG() -> Color {
+    base_bg()
+}
+
+/// Rail / sidebar — slightly darker than BG on dark themes, slightly
+/// off-white on light themes.
+pub fn BG_RAIL() -> Color {
+    let bg = base_bg();
+    if is_dark() {
+        mix(bg, Color::BLACK, 0.18)
+    } else {
+        mix(bg, Color::BLACK, 0.04)
+    }
+}
+
+/// Outer strip / chrome edge — darker than rail.
+pub fn BG_STRIP() -> Color {
+    let bg = base_bg();
+    if is_dark() {
+        mix(bg, Color::BLACK, 0.32)
+    } else {
+        mix(bg, Color::BLACK, 0.08)
+    }
+}
+
+/// Hover surface — partway between bg and bg_highlight.
+pub fn BG_HOVER() -> Color {
+    mix(base_bg(), ic(theme::current().bg_highlight), 0.55)
+}
+
+/// Active / selected row.
+pub fn BG_HL() -> Color {
+    ic(theme::current().bg_highlight)
+}
+
+pub fn BORDER() -> Color {
+    mix(base_bg(), base_fg(), 0.16)
+}
+pub fn BORDER_SOFT() -> Color {
+    mix(base_bg(), base_fg(), 0.07)
+}
+
+// ── text ─────────────────────────────────────────────────────────────────
+
+pub fn FG() -> Color {
+    base_fg()
+}
+pub fn FG_DIM() -> Color {
+    ic(theme::current().fg_dark)
+}
+pub fn FG_MUTE() -> Color {
+    ic(theme::current().comment)
+}
+
+// ── accents ──────────────────────────────────────────────────────────────
+
+pub fn BLUE() -> Color {
+    ic(theme::current().blue)
+}
+pub fn CYAN() -> Color {
+    ic(theme::current().cyan)
+}
+pub fn MAGENTA() -> Color {
+    ic(theme::current().magenta)
+}
+pub fn GREEN() -> Color {
+    ic(theme::current().green)
+}
+pub fn YELLOW() -> Color {
+    ic(theme::current().yellow)
+}
+pub fn RED() -> Color {
+    ic(theme::current().red)
+}

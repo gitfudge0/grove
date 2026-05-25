@@ -26,10 +26,10 @@ pub fn rebuild_row_runs(screen: &vt100::Screen, row: u16, cols: u16) -> Vec<Styl
                 if cell.inverse() {
                     std::mem::swap(&mut fg, &mut bg);
                     if fg.is_none() {
-                        fg = Some(c::BG);
+                        fg = Some(c::BG());
                     }
                     if bg.is_none() {
-                        bg = Some(c::FG);
+                        bg = Some(c::FG());
                     }
                 }
                 (ch, fg, bg, cell.bold())
@@ -69,6 +69,11 @@ pub struct PtyProgram {
     pub rows: Arc<Vec<Vec<StyledRun>>>,
     pub cache: Arc<canvas::Cache>,
     pub selection: Option<(PtyCell, PtyCell)>,
+    /// Terminal cursor position (row, col). `None` when the running program
+    /// has hidden the cursor (e.g. vim, htop manage their own cursor).
+    pub cursor: Option<(u16, u16)>,
+    /// Whether the cursor should be visible in this frame (drives blinking).
+    pub cursor_visible: bool,
 }
 
 #[derive(Default)]
@@ -122,6 +127,26 @@ impl canvas::Program<Msg> for PtyProgram {
                 state.dragging = false;
                 (canvas::event::Status::Captured, Some(Msg::PtyMouseUp))
             }
+            canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                if let Some(p) = cursor.position_in(bounds) {
+                    let dy = match delta {
+                        mouse::ScrollDelta::Lines { y, .. } => y,
+                        mouse::ScrollDelta::Pixels { y, .. } => y,
+                    };
+                    if dy.abs() < f32::EPSILON {
+                        return (canvas::event::Status::Ignored, None);
+                    }
+                    return (
+                        canvas::event::Status::Captured,
+                        Some(Msg::PtyScroll {
+                            up: dy > 0.0,
+                            x: p.x,
+                            y: p.y,
+                        }),
+                    );
+                }
+                (canvas::event::Status::Ignored, None)
+            }
             _ => (canvas::event::Status::Ignored, None),
         }
     }
@@ -167,7 +192,7 @@ impl canvas::Program<Msg> for PtyProgram {
                         frame.fill_text(canvas::Text {
                             content: run.text.clone(),
                             position: Point::new(x, y),
-                            color: run.fg.unwrap_or(c::FG),
+                            color: run.fg.unwrap_or(c::FG()),
                             size: Pixels(FONT_SIZE),
                             line_height: iced::widget::text::LineHeight::Absolute(Pixels(CELL_H)),
                             font: if run.bold { bold_font } else { MONO_FONT },
@@ -190,6 +215,19 @@ impl canvas::Program<Msg> for PtyProgram {
             let mut overlay = Frame::new(renderer, bounds.size());
             paint_selection(&mut overlay, a, h, rows, cols);
             out.push(overlay.into_geometry());
+        }
+        if self.cursor_visible {
+            if let Some((crow, ccol)) = self.cursor {
+                let mut cursor_frame = Frame::new(renderer, bounds.size());
+                let x = ccol as f32 * CELL_W;
+                let y = crow as f32 * CELL_H;
+                cursor_frame.fill_rectangle(
+                    Point::new(x, y),
+                    Size::new(CELL_W, CELL_H),
+                    c::FG(),
+                );
+                out.push(cursor_frame.into_geometry());
+            }
         }
         out
     }
@@ -255,15 +293,15 @@ fn vt_color_opt(c: vt100::Color) -> Option<Color> {
 
 fn ansi_idx(i: u8) -> Color {
     match i {
-        0 => c::BG_STRIP,
-        1 | 9 => c::RED,
-        2 | 10 => c::GREEN,
-        3 | 11 => c::YELLOW,
-        4 | 12 => c::BLUE,
-        5 | 13 => c::MAGENTA,
-        6 | 14 => c::CYAN,
-        7 | 15 => c::FG,
-        8 => c::FG_MUTE,
+        0 => c::BG_STRIP(),
+        1 | 9 => c::RED(),
+        2 | 10 => c::GREEN(),
+        3 | 11 => c::YELLOW(),
+        4 | 12 => c::BLUE(),
+        5 | 13 => c::MAGENTA(),
+        6 | 14 => c::CYAN(),
+        7 | 15 => c::FG(),
+        8 => c::FG_MUTE(),
         16..=231 => {
             // 6×6×6 cube
             let n = i - 16;

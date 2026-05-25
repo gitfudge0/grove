@@ -32,6 +32,7 @@ impl Grove {
             pty_cols,
             open_agent_menu: None,
             pty_selection: None,
+            blink_tick: 0,
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -65,7 +66,9 @@ impl Grove {
     pub fn update(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
             Msg::Tick => {
-                // No-op: `dirty` flags are consumed lazily by `pty()` when
+                // Advance the blink counter (~30 Hz at 60 ms tick interval).
+                self.blink_tick = self.blink_tick.wrapping_add(1);
+                // `dirty` flags are consumed lazily by `pty()` when
                 // it rebuilds a session's cached snapshot.
             }
             Msg::WindowResized(size) => {
@@ -110,6 +113,9 @@ impl Grove {
                 self.open_agent_menu = None;
                 self.spawn(proj, wt, Agent::Terminal);
             }
+            Msg::CloseAgentMenu => {
+                self.open_agent_menu = None;
+            }
             Msg::ToggleAgentMenu { proj, wt } => {
                 self.open_agent_menu = if self.open_agent_menu == Some((proj, wt)) {
                     None
@@ -139,7 +145,13 @@ impl Grove {
                     }
                 }
             }
-            Msg::KeyPress(key, mods) => self.handle_key(key, mods),
+            Msg::KeyPress(key, mods) => {
+                let was_theme_picker = matches!(self.app.modal, Modal::ThemePicker { .. });
+                self.handle_key(key, mods);
+                if was_theme_picker && matches!(self.app.modal, Modal::ThemePicker { .. }) {
+                    return self.scroll_theme_picker_to_selection();
+                }
+            }
             Msg::PtyMouseDown(x, y) => {
                 let cell = pixel_to_cell(x, y);
                 self.pty_selection = Some((cell, cell));
@@ -148,6 +160,12 @@ impl Grove {
                 let cell = pixel_to_cell(x, y);
                 if let Some((a, _)) = self.pty_selection {
                     self.pty_selection = Some((a, cell));
+                }
+            }
+            Msg::PtyScroll { up, x, y } => {
+                let cell = pixel_to_cell(x, y);
+                if let Some(s) = self.app.active_session_mut() {
+                    s.scroll(up, cell.col as u16, cell.row as u16);
                 }
             }
             Msg::PtyMouseUp => {
@@ -192,9 +210,81 @@ impl Grove {
                     }
                 }
             }
+            Msg::OpenThemePicker => {
+                self.app.open_theme_picker();
+                return self.scroll_theme_picker_to_selection();
+            }
+            Msg::ThemePickerSwitchTab => {
+                self.app.theme_picker_switch_tab();
+                return self.scroll_theme_picker_to_selection();
+            }
+            Msg::ThemePickerSelect(i) => {
+                self.theme_picker_select(i);
+                return self.scroll_theme_picker_to_selection();
+            }
+            Msg::ThemePickerSubmit => self.theme_picker_submit(),
+            Msg::ThemePickerCancel => self.app.theme_picker_cancel(),
             Msg::NoOp => {}
         }
         Task::none()
+    }
+
+    fn scroll_theme_picker_to_selection(&self) -> Task<Msg> {
+        use crate::app::Modal;
+        use super::metrics::ROW_H;
+        use iced::widget::scrollable::{self, AbsoluteOffset};
+        let Modal::ThemePicker {
+            sel_dark,
+            sel_light,
+            tab,
+            ..
+        } = &self.app.modal
+        else {
+            return Task::none();
+        };
+        let sel = match tab {
+            crate::theme::ThemeKind::Dark => *sel_dark,
+            crate::theme::ThemeKind::Light => *sel_light,
+        };
+        let total = crate::theme::themes_of(*tab).len();
+        let viewport_rows = total.min(12) as f32;
+        let viewport_h = viewport_rows * ROW_H;
+        let sel_y = sel as f32 * ROW_H;
+        // Center the selection in the viewport, clamped to valid range.
+        let max_y = (total as f32 * ROW_H - viewport_h).max(0.0);
+        let y = (sel_y - (viewport_h - ROW_H) / 2.0).clamp(0.0, max_y);
+        scrollable::scroll_to(
+            super::view::theme_picker_scrollable_id(),
+            AbsoluteOffset { x: 0.0, y },
+        )
+    }
+
+    fn theme_picker_select(&mut self, index: usize) {
+        use crate::app::Modal;
+        let Modal::ThemePicker {
+            sel_dark,
+            sel_light,
+            tab,
+            ..
+        } = &mut self.app.modal
+        else {
+            return;
+        };
+        let themes = crate::theme::themes_of(*tab);
+        if index >= themes.len() {
+            return;
+        }
+        match tab {
+            crate::theme::ThemeKind::Dark => *sel_dark = index,
+            crate::theme::ThemeKind::Light => *sel_light = index,
+        }
+        crate::theme::set(themes[index]);
+    }
+
+    fn theme_picker_submit(&mut self) {
+        if let Err(e) = self.app.theme_picker_submit() {
+            self.app.modal = crate::app::Modal::Message(format!("theme failed: {e}"));
+        }
     }
 
     fn handle_key(&mut self, key: Key, mods: Modifiers) {
@@ -210,6 +300,14 @@ impl Grove {
                     if let Some(text) = self.selection_text() {
                         crate::clipboard::copy(&text);
                     }
+                    return;
+                }
+            }
+        }
+        if mods.control() && !mods.shift() && !mods.alt() {
+            if let Key::Character(s) = &key {
+                if s.eq_ignore_ascii_case("t") {
+                    self.app.open_theme_picker();
                     return;
                 }
             }
@@ -266,6 +364,20 @@ impl Grove {
                 Key::Character(s) if matches!(s.as_str(), "q" | "Q") => self.cancel_modal(),
                 _ => {}
             },
+            Modal::ThemePicker { .. } => match key {
+                Key::Named(Named::Escape) => self.app.theme_picker_cancel(),
+                Key::Named(Named::Enter) => self.theme_picker_submit(),
+                Key::Named(Named::ArrowDown) => self.app.theme_picker_move(1),
+                Key::Named(Named::ArrowUp) => self.app.theme_picker_move(-1),
+                Key::Named(Named::Tab) => self.app.theme_picker_switch_tab(),
+                Key::Character(s) => match s.as_str() {
+                    "j" | "J" => self.app.theme_picker_move(1),
+                    "k" | "K" => self.app.theme_picker_move(-1),
+                    "h" | "H" | "l" | "L" => self.app.theme_picker_switch_tab(),
+                    _ => {}
+                },
+                _ => {}
+            },
             Modal::TmuxChoice => match key {
                 Key::Named(Named::Enter) => self.choose_tmux(true),
                 Key::Named(Named::Escape) => self.choose_tmux(false),
@@ -287,17 +399,35 @@ impl Grove {
     }
 
     fn submit_modal_input(&mut self) {
+        let before = self.app.sessions.len();
         if let Err(e) = self.app.submit_input() {
             self.app.modal = Modal::Message(format!("input failed: {e}"));
         }
+        self.resize_new_sessions(before);
         self.rebuild_wt_cache();
     }
 
     fn submit_modal_confirm(&mut self, yes: bool) {
+        let before = self.app.sessions.len();
         if let Err(e) = self.app.submit_confirm(yes) {
             self.app.modal = Modal::Message(format!("action failed: {e}"));
         }
+        self.resize_new_sessions(before);
         self.rebuild_wt_cache();
+    }
+
+    /// Resize any sessions spawned during this update to the current PTY
+    /// viewport. Sessions created indirectly (e.g. auto-spawned when a new
+    /// worktree is added) otherwise stay at the 80x24 PTY default and don't
+    /// fill the workspace width.
+    fn resize_new_sessions(&mut self, before: usize) {
+        let after = self.app.sessions.len();
+        if after <= before {
+            return;
+        }
+        for s in &mut self.app.sessions[before..after] {
+            s.resize(self.pty_rows, self.pty_cols);
+        }
     }
 
     fn cancel_modal(&mut self) {

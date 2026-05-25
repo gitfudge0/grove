@@ -32,7 +32,7 @@ pub fn vline<'a>() -> Element<'a, Msg> {
         .width(1)
         .height(18)
         .style(|_| container::Style {
-            background: Some(Background::Color(c::BORDER)),
+            background: Some(Background::Color(c::BORDER())),
             ..Default::default()
         })
         .into()
@@ -63,18 +63,18 @@ pub fn divider_v<'a>(color: Color) -> Element<'a, Msg> {
 pub fn seg_button<'a>(label: &str, active: bool, msg: Msg) -> Element<'a, Msg> {
     button(text(label.to_string()).size(11))
         .on_press(msg)
-        .padding(Padding::from([4, 10]))
+        .padding(Padding::from([4, 12]))
         .style(move |_, status| {
             let hovered = matches!(status, button::Status::Hovered);
             button::Style {
                 background: if active {
-                    Some(Background::Color(c::BG_HL))
+                    Some(Background::Color(c::BG_HL()))
                 } else if hovered {
-                    Some(Background::Color(c::BG_HOVER))
+                    Some(Background::Color(c::BG_HOVER()))
                 } else {
                     None
                 },
-                text_color: if active { c::FG } else { c::FG_DIM },
+                text_color: if active { c::FG() } else { c::FG_DIM() },
                 border: Border::default(),
                 shadow: Shadow::default(),
             }
@@ -84,7 +84,7 @@ pub fn seg_button<'a>(label: &str, active: bool, msg: Msg) -> Element<'a, Msg> {
 
 pub fn icon_btn<'a>(name: &'static str, msg: Msg) -> Element<'a, Msg> {
     button(
-        container(icon(name, 15.0, c::FG_DIM))
+        container(icon(name, 15.0, c::FG_DIM()))
             .center_x(28)
             .center_y(28),
     )
@@ -94,15 +94,15 @@ pub fn icon_btn<'a>(name: &'static str, msg: Msg) -> Element<'a, Msg> {
         let hovered = matches!(status, button::Status::Hovered);
         button::Style {
             background: if hovered {
-                Some(Background::Color(c::BG_HOVER))
+                Some(Background::Color(c::BG_HOVER()))
             } else {
                 None
             },
-            text_color: c::FG_DIM,
+            text_color: c::FG_DIM(),
             border: Border {
                 color: Color::TRANSPARENT,
                 width: 0.0,
-                radius: Radius::from(5.0),
+                radius: Radius::from(4.0),
             },
             shadow: Shadow::default(),
         }
@@ -112,7 +112,7 @@ pub fn icon_btn<'a>(name: &'static str, msg: Msg) -> Element<'a, Msg> {
 
 pub fn split_start_button<'a>(proj: usize, wt: usize) -> Element<'a, Msg> {
     let launch = button(
-        container(icon("play", 9.0, c::GREEN))
+        container(icon("play", 9.0, c::GREEN()))
             .center_x(28)
             .center_y(22),
     )
@@ -125,7 +125,7 @@ pub fn split_start_button<'a>(proj: usize, wt: usize) -> Element<'a, Msg> {
     .style(split_start_style(SplitStartSegment::Left));
 
     let terminal = button(
-        container(icon("term", 12.0, c::FG_MUTE))
+        container(icon("term", 12.0, c::FG_MUTE()))
             .center_x(28)
             .center_y(22),
     )
@@ -134,7 +134,7 @@ pub fn split_start_button<'a>(proj: usize, wt: usize) -> Element<'a, Msg> {
     .style(split_start_style(SplitStartSegment::Middle));
 
     let menu = button(
-        container(icon("more", 12.0, c::FG_MUTE))
+        container(icon("more", 12.0, c::FG_MUTE()))
             .center_x(22)
             .center_y(22),
     )
@@ -148,34 +148,6 @@ pub fn split_start_button<'a>(proj: usize, wt: usize) -> Element<'a, Msg> {
         .into()
 }
 
-pub fn delete_worktree_button<'a>(proj: usize, wt: usize) -> Element<'a, Msg> {
-    button(
-        container(icon("trash", 11.0, c::RED))
-            .center_x(24)
-            .center_y(22),
-    )
-    .on_press(Msg::DeleteWorktree { proj, wt })
-    .padding(0)
-    .style(|_, status| {
-        let hovered = matches!(status, button::Status::Hovered);
-        button::Style {
-            background: Some(Background::Color(if hovered {
-                c::BG_HOVER
-            } else {
-                c::BG
-            })),
-            text_color: c::RED,
-            border: Border {
-                color: if hovered { c::RED } else { c::BORDER },
-                width: 1.0,
-                radius: Radius::from(4.0),
-            },
-            shadow: Shadow::default(),
-        }
-    })
-    .into()
-}
-
 fn split_start_style(
     segment: SplitStartSegment,
 ) -> impl Fn(&Theme, button::Status) -> button::Style {
@@ -187,10 +159,10 @@ fn split_start_style(
             SplitStartSegment::Right => Radius::default().right(4.0),
         };
         button::Style {
-            background: Some(Background::Color(if hovered { c::BG_HOVER } else { c::BG })),
-            text_color: if hovered { c::FG } else { c::FG_DIM },
+            background: Some(Background::Color(if hovered { c::BG_HOVER() } else { c::BG() })),
+            text_color: if hovered { c::FG() } else { c::FG_DIM() },
             border: Border {
-                color: c::BORDER,
+                color: c::BORDER(),
                 width: 1.0,
                 radius,
             },
@@ -199,63 +171,105 @@ fn split_start_style(
     }
 }
 
-pub fn sidebar_agent_menu_overlay<'a>(proj: usize, wt: usize, top: f32) -> Element<'a, Msg> {
-    container(
-        column![
-            Space::with_height(top),
-            row![Space::with_width(Length::Fill), agent_menu(proj, wt)].padding(Padding {
-                top: 0.0,
-                bottom: 0.0,
-                left: 0.0,
-                right: 8.0,
-            }),
-            Space::with_height(Length::Fill),
-        ]
-        .height(Length::Fill),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+pub fn sidebar_agent_menu_overlay<'a>(
+    proj: usize,
+    wt: usize,
+    top: f32,
+    is_main: bool,
+) -> Element<'a, Msg> {
+    let backdrop = button(Space::new(Length::Fill, Length::Fill))
+        .on_press(Msg::CloseAgentMenu)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(0)
+        .style(|_, _| button::Style {
+            background: None,
+            text_color: Color::TRANSPARENT,
+            border: Border::default(),
+            shadow: Shadow::default(),
+        });
+
+    let positioned = column![
+        Space::with_height(top),
+        row![Space::with_width(Length::Fill), agent_menu(proj, wt, is_main)].padding(Padding {
+            top: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+            right: 8.0,
+        }),
+        Space::with_height(Length::Fill),
+    ]
+    .height(Length::Fill);
+
+    iced::widget::stack![backdrop, positioned]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
-fn agent_menu<'a>(proj: usize, wt: usize) -> Element<'a, Msg> {
-    let item = |agent: Agent| {
+fn agent_menu<'a>(proj: usize, wt: usize, is_main: bool) -> Element<'a, Msg> {
+    let item = |label: String, msg: Msg, danger: bool| {
         button(
             container(
-                text(agent.label())
+                text(label)
                     .font(MONO_FONT)
                     .size(11)
-                    .color(c::FG_DIM),
+                    .color(if danger { c::RED() } else { c::FG_DIM() }),
             )
             .width(Length::Fill)
             .center_y(24)
             .padding(Padding::from([0, 8])),
         )
-        .on_press(Msg::StartSession { proj, wt, agent })
+        .on_press(msg)
         .width(Length::Fill)
         .padding(0)
-        .style(|_, status| {
+        .style(move |_, status| {
             let hovered = matches!(status, button::Status::Hovered);
             button::Style {
                 background: if hovered {
-                    Some(Background::Color(c::BG_HOVER))
+                    Some(Background::Color(c::BG_HOVER()))
                 } else {
                     None
                 },
-                text_color: if hovered { c::FG } else { c::FG_DIM },
+                text_color: if danger {
+                    c::RED()
+                } else if hovered {
+                    c::FG()
+                } else {
+                    c::FG_DIM()
+                },
                 border: Border::default(),
                 shadow: Shadow::default(),
             }
         })
     };
 
-    container(column![item(Agent::Codex), item(Agent::OpenCode)].spacing(0))
-        .width(96)
+    let agent_item = |agent: Agent| {
+        item(
+            agent.label().to_string(),
+            Msg::StartSession { proj, wt, agent },
+            false,
+        )
+    };
+
+    let mut items = column![agent_item(Agent::Codex), agent_item(Agent::OpenCode)].spacing(0);
+    if !is_main {
+        items = items
+            .push(container(divider_h(c::BORDER())).padding(Padding::from([3, 0])))
+            .push(item(
+                "delete".to_string(),
+                Msg::DeleteWorktree { proj, wt },
+                true,
+            ));
+    }
+
+    container(items)
+        .width(120)
         .padding(Padding::from([3, 0]))
         .style(|_| container::Style {
-            background: Some(Background::Color(c::BG)),
+            background: Some(Background::Color(c::BG())),
             border: Border {
-                color: c::BORDER,
+                color: c::BORDER(),
                 width: 1.0,
                 radius: Radius::from(4.0),
             },
@@ -266,7 +280,7 @@ fn agent_menu<'a>(proj: usize, wt: usize) -> Element<'a, Msg> {
 
 pub fn action_mini<'a>(icon_name: &'static str, msg: Msg) -> Element<'a, Msg> {
     button(
-        container(icon(icon_name, 12.0, c::FG_MUTE))
+        container(icon(icon_name, 12.0, c::FG_MUTE()))
             .center_x(22)
             .center_y(22),
     )
@@ -276,11 +290,11 @@ pub fn action_mini<'a>(icon_name: &'static str, msg: Msg) -> Element<'a, Msg> {
         let hovered = matches!(status, button::Status::Hovered);
         button::Style {
             background: if hovered {
-                Some(Background::Color(c::BG_HOVER))
+                Some(Background::Color(c::BG_HOVER()))
             } else {
                 None
             },
-            text_color: if hovered { c::FG } else { c::FG_MUTE },
+            text_color: if hovered { c::FG() } else { c::FG_MUTE() },
             border: Border {
                 color: Color::TRANSPARENT,
                 width: 0.0,
@@ -302,10 +316,10 @@ pub fn tool_btn<'a>(
     button(
         container(
             row![
-                icon(icon_name, 12.0, c::FG_DIM),
-                text(label_owned).size(11.5).color(c::FG_DIM),
+                icon(icon_name, 12.0, c::FG_DIM()),
+                text(label_owned).size(11).color(c::FG_DIM()),
             ]
-            .spacing(5)
+            .spacing(6)
             .align_y(iced::Alignment::Center),
         )
         .padding(Padding::from([0, 8]))
@@ -317,16 +331,16 @@ pub fn tool_btn<'a>(
         let hovered = matches!(status, button::Status::Hovered);
         let color = if hovered {
             if danger {
-                c::RED
+                c::RED()
             } else {
-                c::FG
+                c::FG()
             }
         } else {
-            c::FG_DIM
+            c::FG_DIM()
         };
         button::Style {
             background: if hovered {
-                Some(Background::Color(c::BG_HOVER))
+                Some(Background::Color(c::BG_HOVER()))
             } else {
                 None
             },
@@ -345,12 +359,12 @@ pub fn tool_btn<'a>(
 pub fn empty_workspace<'a>() -> Element<'a, Msg> {
     container(
         column![
-            text("no session selected").size(14).color(c::FG_DIM),
+            text("no session selected").size(14).color(c::FG_DIM()),
             text("click a worktree's start button to spawn an agent")
                 .size(12)
-                .color(c::FG_MUTE),
+                .color(c::FG_MUTE()),
         ]
-        .spacing(8)
+        .spacing(6)
         .align_x(iced::Alignment::Center),
     )
     .center_x(Length::Fill)
@@ -358,7 +372,7 @@ pub fn empty_workspace<'a>() -> Element<'a, Msg> {
     .width(Length::Fill)
     .height(Length::Fill)
     .style(|_| container::Style {
-        background: Some(Background::Color(c::BG)),
+        background: Some(Background::Color(c::BG())),
         ..Default::default()
     })
     .into()
@@ -373,14 +387,14 @@ pub fn modal_panel<'a>(
     container(content)
         .width(width)
         .height(height)
-        .padding(Padding::from([16, 18]))
+        .padding(Padding::from([16, 20]))
         .style(move |_| container::Style {
-            background: Some(Background::Color(c::BG)),
-            text_color: Some(c::FG),
+            background: Some(Background::Color(c::BG())),
+            text_color: Some(c::FG()),
             border: Border {
                 color: accent,
                 width: 1.0,
-                radius: Radius::from(5.0),
+                radius: Radius::from(6.0),
             },
             ..Default::default()
         })
@@ -388,51 +402,34 @@ pub fn modal_panel<'a>(
 }
 
 pub fn modal_action<'a>(label: &'static str, primary: bool, msg: Msg) -> Element<'a, Msg> {
-    button(text(label).size(11.5))
+    button(text(label).size(12))
         .on_press(msg)
         .padding(Padding::from([6, 12]))
         .style(move |_, status| {
             let hovered = matches!(status, button::Status::Hovered);
             let bg = if primary {
                 if hovered {
-                    c::BG_HOVER
+                    c::BG_HOVER()
                 } else {
-                    c::BG_HL
+                    c::BG_HL()
                 }
             } else if hovered {
-                c::BG_HOVER
+                c::BG_HOVER()
             } else {
-                c::BG
+                c::BG()
             };
             button::Style {
                 background: Some(Background::Color(bg)),
-                text_color: if primary { c::FG } else { c::FG_DIM },
+                text_color: if primary { c::FG() } else { c::FG_DIM() },
                 border: Border {
-                    color: c::BORDER,
+                    color: c::BORDER(),
                     width: 1.0,
-                    radius: Radius::from(5.0),
+                    radius: Radius::from(4.0),
                 },
                 shadow: Shadow::default(),
             }
         })
         .into()
-}
-
-pub fn modal_hints<'a>(pairs: &[(&'static str, &'static str)]) -> Element<'a, Msg> {
-    let mut hints = iced::widget::Row::new()
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
-    for (key, label) in pairs {
-        hints = hints.push(
-            row![
-                text(*key).font(MONO_FONT).size(11).color(c::YELLOW),
-                text(*label).size(11).color(c::FG_MUTE),
-            ]
-            .spacing(4)
-            .align_y(iced::Alignment::Center),
-        );
-    }
-    hints.into()
 }
 
 pub fn modal_dir_row<'a>(path: String, active: bool) -> Element<'a, Msg> {
@@ -442,7 +439,7 @@ pub fn modal_dir_row<'a>(path: String, active: bool) -> Element<'a, Msg> {
             text(path)
                 .font(MONO_FONT)
                 .size(12)
-                .color(if active { c::FG } else { c::CYAN })
+                .color(if active { c::FG() } else { c::CYAN() })
                 .wrapping(iced::widget::text::Wrapping::None),
         )
         .height(ROW_H)
@@ -458,13 +455,13 @@ pub fn modal_dir_row<'a>(path: String, active: bool) -> Element<'a, Msg> {
         let hovered = matches!(status, button::Status::Hovered);
         button::Style {
             background: if active {
-                Some(Background::Color(c::BG_HL))
+                Some(Background::Color(c::BG_HL()))
             } else if hovered {
-                Some(Background::Color(c::BG_HOVER))
+                Some(Background::Color(c::BG_HOVER()))
             } else {
                 None
             },
-            text_color: if active || hovered { c::FG } else { c::CYAN },
+            text_color: if active || hovered { c::FG() } else { c::CYAN() },
             border: Border::default(),
             shadow: Shadow::default(),
         }
@@ -479,7 +476,7 @@ pub fn clickable_row<'a>(
     on_press: Msg,
 ) -> Element<'a, Msg> {
     let bg = if active {
-        Some(Background::Color(c::BG_HL))
+        Some(Background::Color(c::BG_HL()))
     } else {
         None
     };
@@ -496,11 +493,11 @@ pub fn clickable_row<'a>(
         let hovered = matches!(status, button::Status::Hovered);
         button::Style {
             background: if hovered && !active {
-                Some(Background::Color(c::BG_HOVER))
+                Some(Background::Color(c::BG_HOVER()))
             } else {
                 bg
             },
-            text_color: if active || hovered { c::FG } else { c::FG_DIM },
+            text_color: if active || hovered { c::FG() } else { c::FG_DIM() },
             border: Border::default(),
             shadow: Shadow::default(),
         }

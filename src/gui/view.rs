@@ -10,7 +10,7 @@ use super::rows::{add_worktree_row, project_row, session_row, worktree_row};
 use super::state::{Grove, Msg, PtyCacheEntry};
 use super::widgets::{
     divider_h, divider_v, dot, empty_workspace, icon_btn, modal_action, modal_dir_row,
-    modal_hints, modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn, vline,
+    modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn, vline,
 };
 use crate::app::{InputKind, Modal};
 use crate::git::Worktree;
@@ -21,13 +21,19 @@ use iced::widget::{
 };
 use iced::{Background, Border, Color, Element, Length, Padding, Shadow};
 use std::sync::atomic::Ordering;
+
+/// Stable id for the theme-picker scrollable, used to scroll the active
+/// selection into view from `update`.
+pub fn theme_picker_scrollable_id() -> scrollable::Id {
+    scrollable::Id::new("theme-picker-list")
+}
 use std::sync::Arc;
 
 impl Grove {
     pub fn view(&self) -> Element<'_, Msg> {
         let body = column![
             self.appbar(),
-            row![self.sidebar(), divider_v(c::BORDER), self.workspace()]
+            row![self.sidebar(), divider_v(c::BORDER()), self.workspace()]
                 .height(Length::Fill)
                 .width(Length::Fill),
             self.statusbar(),
@@ -46,8 +52,8 @@ impl Grove {
 
         container(content)
             .style(|_| container::Style {
-                background: Some(Background::Color(c::BG)),
-                text_color: Some(c::FG),
+                background: Some(Background::Color(c::BG())),
+                text_color: Some(c::FG()),
                 ..Default::default()
             })
             .into()
@@ -56,10 +62,10 @@ impl Grove {
     // ── appbar ────────────────────────────────────────────────────────────
     fn appbar(&self) -> Element<'_, Msg> {
         let brand = row![
-            text("grove").font(MONO_BOLD).size(14.0).color(c::MAGENTA),
+            text("grove").font(MONO_BOLD).size(14).color(c::MAGENTA()),
             text("worktree launchpad for ai agents")
-                .size(11.5)
-                .color(c::FG_MUTE),
+                .size(11)
+                .color(c::FG_MUTE()),
         ]
         .spacing(8)
         .padding(Padding::from([0, 16]))
@@ -74,16 +80,20 @@ impl Grove {
         )
         .style(|_| container::Style {
             border: Border {
-                color: c::BORDER,
+                color: c::BORDER(),
                 width: 1.0,
-                radius: Radius::from(5.0),
+                radius: Radius::from(6.0),
             },
             ..Default::default()
         });
 
-        let right = row![seg, icon_btn("cog", Msg::NoOp), icon_btn("help", Msg::NoOp),]
+        let right = row![
+            seg,
+            icon_btn("cog", Msg::OpenThemePicker),
+            icon_btn("help", Msg::NoOp),
+        ]
             .spacing(4)
-            .padding(Padding::from([0, 12]))
+            .padding(Padding::from([0, 16]))
             .align_y(iced::Alignment::Center);
 
         let inner = row![
@@ -98,11 +108,11 @@ impl Grove {
             .height(APPBAR_H)
             .width(Length::Fill)
             .style(|_| container::Style {
-                background: Some(Background::Color(c::BG_STRIP)),
+                background: Some(Background::Color(c::BG_STRIP())),
                 ..Default::default()
             });
 
-        column![bar, divider_h(c::BORDER)].into()
+        column![bar, divider_h(c::BORDER())].into()
     }
 
     // ── sidebar ───────────────────────────────────────────────────────────
@@ -111,22 +121,25 @@ impl Grove {
         let tree_area = container(scrollable(tree).height(Length::Fill))
             .height(Length::Fill)
             .padding(Padding {
-                top: 6.0,
-                bottom: 14.0,
+                top: 8.0,
+                bottom: 12.0,
                 left: 0.0,
                 right: 0.0,
             });
         let tree_layer: Element<'_, Msg> = match self.open_agent_menu_top() {
-            Some((proj, wt, top)) => stack![tree_area, sidebar_agent_menu_overlay(proj, wt, top),]
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into(),
+            Some((proj, wt, top, is_main)) => stack![
+                tree_area,
+                sidebar_agent_menu_overlay(proj, wt, top, is_main),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
             None => tree_area.into(),
         };
 
         let add_proj = container(
             button(
-                container(text("+ add project").size(12).color(c::FG_DIM))
+                container(text("+ add project").size(12).color(c::FG_DIM()))
                     .center_x(Length::Fill)
                     .center_y(Length::Fill),
             )
@@ -135,30 +148,25 @@ impl Grove {
             .height(28.0)
             .style(|_, _| button::Style {
                 background: None,
-                text_color: c::FG_DIM,
+                text_color: c::FG_DIM(),
                 border: Border {
-                    color: c::BORDER,
+                    color: c::BORDER(),
                     width: 1.0,
-                    radius: Radius::from(5.0),
+                    radius: Radius::from(4.0),
                 },
                 shadow: Shadow::default(),
             }),
         )
-        .padding(Padding {
-            top: 10.0,
-            bottom: 10.0,
-            left: 12.0,
-            right: 12.0,
-        });
+        .padding(Padding::from([12, 12]));
 
         let stack_col =
-            column![tree_layer, divider_h(c::BORDER_SOFT), add_proj,].height(Length::Fill);
+            column![tree_layer, divider_h(c::BORDER_SOFT()), add_proj,].height(Length::Fill);
 
         container(stack_col)
             .width(RAIL_W)
             .height(Length::Fill)
             .style(|_| container::Style {
-                background: Some(Background::Color(c::BG_RAIL)),
+                background: Some(Background::Color(c::BG_RAIL())),
                 ..Default::default()
             })
             .into()
@@ -215,7 +223,7 @@ impl Grove {
 
     /// Find the y-pixel offset of the open agent menu, if any, so the overlay
     /// can be positioned. Walks the tree in the same order `tree_view` does.
-    fn open_agent_menu_top(&self) -> Option<(usize, usize, f32)> {
+    fn open_agent_menu_top(&self) -> Option<(usize, usize, f32, bool)> {
         let (open_proj, open_wt) = self.open_agent_menu?;
         let mut acc_y: f32 = 0.0;
 
@@ -240,7 +248,7 @@ impl Grove {
 
             for (wi, w) in wts.iter().enumerate() {
                 if pi == open_proj && wi == open_wt {
-                    return Some((pi, wi, 6.0 + acc_y + ROW_H));
+                    return Some((pi, wi, 6.0 + acc_y + ROW_H, w.is_main));
                 }
                 acc_y += ROW_H;
 
@@ -279,7 +287,7 @@ impl Grove {
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_| container::Style {
-                background: Some(Background::Color(c::BG)),
+                background: Some(Background::Color(c::BG())),
                 ..Default::default()
             })
             .into()
@@ -288,9 +296,9 @@ impl Grove {
     fn sess_bar(&self, s: &Session) -> Element<'_, Msg> {
         let running = matches!(*s.status.lock().unwrap(), SessionStatus::Running);
         let (dot_color, label) = if running {
-            (c::GREEN, "running")
+            (c::GREEN(), "running")
         } else {
-            (c::FG_MUTE, "exited")
+            (c::FG_MUTE(), "exited")
         };
 
         let bar = row![
@@ -300,26 +308,24 @@ impl Grove {
             text(s.agent.label())
                 .font(MONO_FONT)
                 .size(12)
-                .color(c::MAGENTA),
-            text("·").color(c::FG_MUTE),
+                .color(c::MAGENTA()),
+            text("·").color(c::FG_MUTE()),
             text(s.project.clone())
                 .font(MONO_FONT)
                 .size(12)
-                .color(c::BLUE),
-            text("/").color(c::FG_MUTE),
-            text(s.label.clone()).font(MONO_FONT).size(12).color(c::FG),
+                .color(c::BLUE()),
+            text("/").color(c::FG_MUTE()),
+            text(s.label.clone()).font(MONO_FONT).size(12).color(c::FG()),
             text(format!("[{}]", s.branch))
                 .font(MONO_FONT)
                 .size(12)
-                .color(c::FG_MUTE),
+                .color(c::FG_MUTE()),
             Space::with_width(Length::Fill),
             text(s.wt_path.clone())
                 .font(MONO_FONT)
                 .size(12)
-                .color(c::FG_MUTE),
+                .color(c::FG_MUTE()),
             vline(),
-            tool_btn("split", "split", false, Msg::NoOp),
-            tool_btn("edit", "rename", false, Msg::NoOp),
             tool_btn(
                 "trash",
                 "kill",
@@ -327,20 +333,20 @@ impl Grove {
                 Msg::KillSession(self.app.active_session.unwrap_or(0)),
             ),
         ]
-        .spacing(10)
+        .spacing(12)
         .align_y(iced::Alignment::Center)
         .height(Length::Fill)
-        .padding(Padding::from([0, 18]));
+        .padding(Padding::from([0, 16]));
 
         let bar_container = container(bar)
             .height(SESSBAR_H)
             .width(Length::Fill)
             .style(|_| container::Style {
-                background: Some(Background::Color(c::BG_STRIP)),
+                background: Some(Background::Color(c::BG_STRIP())),
                 ..Default::default()
             });
 
-        column![bar_container, divider_h(c::BORDER_SOFT)].into()
+        column![bar_container, divider_h(c::BORDER_SOFT())].into()
     }
 
     fn pty(&self, s: &Session) -> Element<'_, Msg> {
@@ -349,7 +355,7 @@ impl Grove {
         // to a session that produced output re-snaps the rows and clears the
         // canvas cache, then draws once.
         let key = Arc::as_ptr(&s.dirty) as usize;
-        let (rows, cache) = {
+        let (rows, cache, cursor_pos) = {
             let mut map = self.pty_cache.borrow_mut();
             let entry = map.entry(key);
             let needs_rebuild = match &entry {
@@ -364,6 +370,7 @@ impl Grove {
             let entry = entry.or_insert_with(|| PtyCacheEntry {
                 rows: Arc::new(Vec::new()),
                 cache: Arc::new(iced::widget::canvas::Cache::default()),
+                cursor_pos: None,
             });
             if needs_rebuild {
                 let parser = s.parser.lock().unwrap();
@@ -375,8 +382,13 @@ impl Grove {
                 }
                 entry.rows = Arc::new(new_rows);
                 entry.cache.clear();
+                entry.cursor_pos = if screen.hide_cursor() {
+                    None
+                } else {
+                    Some(screen.cursor_position())
+                };
             }
-            (Arc::clone(&entry.rows), Arc::clone(&entry.cache))
+            (Arc::clone(&entry.rows), Arc::clone(&entry.cache), entry.cursor_pos)
         };
 
         let rows_len = rows.len() as f32;
@@ -384,10 +396,15 @@ impl Grove {
             .first()
             .map(|r| r.iter().map(|run| run.text.chars().count()).sum::<usize>())
             .unwrap_or(0) as f32;
+        // Cursor blinks at ~500 ms on / 500 ms off (tick interval = 60 ms,
+        // so 8–9 ticks per half-period; use mod 16 with threshold 8).
+        let cursor_visible = self.blink_tick % 16 < 8;
         let program = PtyProgram {
             rows,
             cache,
             selection: self.pty_selection,
+            cursor: cursor_pos,
+            cursor_visible,
         };
         let body: Element<'_, Msg> = canvas_widget(program)
             .width(Length::Fixed((cols * CELL_W).max(CELL_W)))
@@ -395,11 +412,11 @@ impl Grove {
             .into();
 
         container(scrollable(body).width(Length::Fill).height(Length::Fill))
-            .padding(Padding::from([14, 18]))
+            .padding(Padding::from([12, 16]))
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_| container::Style {
-                background: Some(Background::Color(c::BG)),
+                background: Some(Background::Color(c::BG())),
                 ..Default::default()
             })
             .into()
@@ -423,33 +440,33 @@ impl Grove {
 
         let left = row![
             row![
-                dot(if running > 0 { c::GREEN } else { c::FG_MUTE }),
-                text(format!("{running} running")).size(11).color(c::FG_DIM),
+                dot(if running > 0 { c::GREEN() } else { c::FG_MUTE() }),
+                text(format!("{running} running")).size(11).color(c::FG_DIM()),
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center),
             row![
-                text("backend").size(11).color(c::FG_MUTE),
-                text(backend).size(11).color(c::FG_DIM),
+                text("backend").size(11).color(c::FG_MUTE()),
+                text(backend).size(11).color(c::FG_DIM()),
             ]
             .spacing(6),
             row![
-                text("theme").size(11).color(c::FG_MUTE),
-                text(theme_name).size(11).color(c::FG_DIM),
+                text("theme").size(11).color(c::FG_MUTE()),
+                text(theme_name).size(11).color(c::FG_DIM()),
             ]
             .spacing(6),
         ]
-        .spacing(14)
+        .spacing(16)
         .align_y(iced::Alignment::Center);
 
         let toast: Element<'_, Msg> = match &self.app.toast {
-            Some(t) => text(t.message.clone()).size(11).color(c::GREEN).into(),
+            Some(t) => text(t.message.clone()).size(11).color(c::GREEN()).into(),
             None => Space::with_width(0).into(),
         };
 
         let right = row![text(format!("v{}", env!("CARGO_PKG_VERSION")))
             .size(11)
-            .color(c::FG_DIM),];
+            .color(c::FG_DIM()),];
 
         let bar = row![
             left,
@@ -458,7 +475,7 @@ impl Grove {
             Space::with_width(Length::Fill),
             right,
         ]
-        .padding(Padding::from([0, 14]))
+        .padding(Padding::from([0, 16]))
         .align_y(iced::Alignment::Center)
         .height(Length::Fill);
 
@@ -466,7 +483,7 @@ impl Grove {
             .height(STATUS_H)
             .width(Length::Fill)
             .style(|_| container::Style {
-                background: Some(Background::Color(c::BG_STRIP)),
+                background: Some(Background::Color(c::BG_STRIP())),
                 ..Default::default()
             })
             .into()
@@ -489,6 +506,12 @@ impl Grove {
             } => self.confirm_modal(title, prompt, *destructive),
             Modal::Message(message) => self.message_modal(message),
             Modal::TmuxChoice => self.tmux_choice_modal(),
+            Modal::ThemePicker {
+                sel_dark,
+                sel_light,
+                tab,
+                ..
+            } => self.theme_picker_modal(*sel_dark, *sel_light, *tab),
             _ => Space::with_width(0).into(),
         };
 
@@ -523,9 +546,9 @@ impl Grove {
             0
         };
         let modal_h = if show_dirs {
-            188.0 + (visible_matches as f32 * ROW_H)
+            192.0 + (visible_matches as f32 * ROW_H)
         } else {
-            164.0
+            180.0
         };
         let modal_w = if show_dirs { 640.0 } else { 480.0 };
 
@@ -534,36 +557,36 @@ impl Grove {
                 text(buffer.to_string())
                     .font(MONO_FONT)
                     .size(13)
-                    .color(c::FG)
+                    .color(c::FG())
                     .wrapping(iced::widget::text::Wrapping::None),
                 container(Space::with_width(7))
                     .width(7)
                     .height(15)
                     .style(|_| container::Style {
-                        background: Some(Background::Color(c::CYAN)),
+                        background: Some(Background::Color(c::CYAN())),
                         ..Default::default()
                     }),
             ]
             .spacing(1)
             .align_y(iced::Alignment::Center),
         )
-        .height(34)
+        .height(36)
         .width(Length::Fill)
         .align_y(iced::Alignment::Center)
-        .padding(Padding::from([0, 10]))
+        .padding(Padding::from([0, 12]))
         .clip(true)
         .style(|_| container::Style {
-            background: Some(Background::Color(c::BG_STRIP)),
+            background: Some(Background::Color(c::BG_STRIP())),
             border: Border {
-                color: c::BORDER,
+                color: c::BORDER(),
                 width: 1.0,
-                radius: Radius::from(5.0),
+                radius: Radius::from(4.0),
             },
             ..Default::default()
         });
 
         let mut body =
-            column![text(title.to_string()).size(13).color(c::MAGENTA), input,].spacing(10);
+            column![text(title.to_string()).size(13).color(c::MAGENTA()), input,].spacing(12);
 
         if show_dirs {
             let mut matches_col = Column::new()
@@ -571,7 +594,7 @@ impl Grove {
                 .height(Length::Fixed(visible_matches as f32 * ROW_H));
             if entries.is_empty() {
                 matches_col = matches_col.push(
-                    container(text("no matches").size(12).color(c::FG_MUTE))
+                    container(text("no matches").size(12).color(c::FG_MUTE()))
                         .height(ROW_H)
                         .align_y(iced::Alignment::Center),
                 );
@@ -582,24 +605,12 @@ impl Grove {
             }
 
             body = body
-                .push(text("matches").size(11).color(c::FG_MUTE))
+                .push(text("matches").size(11).color(c::FG_MUTE()))
                 .push(matches_col);
         }
 
-        let hints = if show_dirs {
-            modal_hints(&[
-                ("enter", "submit"),
-                ("up/down", "pick"),
-                ("tab", "complete"),
-                ("esc", "cancel"),
-            ])
-        } else {
-            modal_hints(&[("enter", "submit"), ("esc", "cancel")])
-        };
-
-        body = body.push(Space::with_height(6)).push(
+        body = body.push(Space::with_height(8)).push(
             row![
-                hints,
                 Space::with_width(Length::Fill),
                 modal_action("cancel", false, Msg::ModalCancel),
                 modal_action("submit", true, Msg::ModalSubmit),
@@ -608,7 +619,7 @@ impl Grove {
             .align_y(iced::Alignment::Center),
         );
 
-        modal_panel(body.into(), modal_w, modal_h, c::MAGENTA)
+        modal_panel(body.into(), modal_w, modal_h, c::MAGENTA())
     }
 
     fn confirm_modal<'a>(
@@ -617,16 +628,15 @@ impl Grove {
         prompt: &'a str,
         destructive: bool,
     ) -> Element<'a, Msg> {
-        let accent = if destructive { c::RED } else { c::MAGENTA };
+        let accent = if destructive { c::RED() } else { c::MAGENTA() };
         let body = column![
-            text(title.to_string()).size(12).color(accent),
+            text(title.to_string()).size(13).color(accent),
             text(prompt.to_string())
                 .size(13)
-                .color(c::FG_DIM)
+                .color(c::FG_DIM())
                 .wrapping(iced::widget::text::Wrapping::Word),
-            Space::with_height(6),
+            Space::with_height(8),
             row![
-                text("Y confirm   N/Esc cancel").size(11).color(c::FG_MUTE),
                 Space::with_width(Length::Fill),
                 modal_action("cancel", false, Msg::ModalConfirm(false)),
                 modal_action(
@@ -640,19 +650,18 @@ impl Grove {
         ]
         .spacing(12);
 
-        modal_panel(body.into(), 520.0, 190.0, accent)
+        modal_panel(body.into(), 480.0, 180.0, accent)
     }
 
     fn message_modal<'a>(&'a self, message: &'a str) -> Element<'a, Msg> {
         let body = column![
-            text("notice").size(12).color(c::CYAN),
+            text("notice").size(13).color(c::CYAN()),
             text(message.to_string())
                 .size(13)
-                .color(c::FG_DIM)
+                .color(c::FG_DIM())
                 .wrapping(iced::widget::text::Wrapping::Word),
-            Space::with_height(6),
+            Space::with_height(8),
             row![
-                text("Enter/Esc close").size(11).color(c::FG_MUTE),
                 Space::with_width(Length::Fill),
                 modal_action("close", true, Msg::ModalCancel),
             ]
@@ -661,21 +670,18 @@ impl Grove {
         ]
         .spacing(12);
 
-        modal_panel(body.into(), 480.0, 170.0, c::CYAN)
+        modal_panel(body.into(), 480.0, 180.0, c::CYAN())
     }
 
     fn tmux_choice_modal(&self) -> Element<'_, Msg> {
         let body = column![
-            text("session backend").size(12).color(c::CYAN),
+            text("session backend").size(13).color(c::CYAN()),
             text("Use tmux for new sessions? Existing sessions keep their current backend.")
                 .size(13)
-                .color(c::FG_DIM)
+                .color(c::FG_DIM())
                 .wrapping(iced::widget::text::Wrapping::Word),
-            Space::with_height(6),
+            Space::with_height(8),
             row![
-                text("T/Enter tmux   N/Esc native")
-                    .size(11)
-                    .color(c::FG_MUTE),
                 Space::with_width(Length::Fill),
                 modal_action("native", false, Msg::ChooseTmux(false)),
                 modal_action("tmux", true, Msg::ChooseTmux(true)),
@@ -685,7 +691,128 @@ impl Grove {
         ]
         .spacing(12);
 
-        modal_panel(body.into(), 520.0, 180.0, c::CYAN)
+        modal_panel(body.into(), 480.0, 180.0, c::CYAN())
+    }
+
+    fn theme_picker_modal(
+        &self,
+        sel_dark: usize,
+        sel_light: usize,
+        tab: crate::theme::ThemeKind,
+    ) -> Element<'_, Msg> {
+        let themes = crate::theme::themes_of(tab);
+        let sel = match tab {
+            crate::theme::ThemeKind::Dark => sel_dark,
+            crate::theme::ThemeKind::Light => sel_light,
+        };
+
+        let tab_pill = |label: &'static str, active: bool, msg: Msg| -> Element<'_, Msg> {
+            button(text(label).size(11))
+                .on_press(msg)
+                .padding(Padding::from([4, 12]))
+                .style(move |_, status| {
+                    let hovered = matches!(status, button::Status::Hovered);
+                    button::Style {
+                        background: if active {
+                            Some(Background::Color(c::BG_HL()))
+                        } else if hovered {
+                            Some(Background::Color(c::BG_HOVER()))
+                        } else {
+                            None
+                        },
+                        text_color: if active { c::MAGENTA() } else { c::FG_MUTE() },
+                        border: Border {
+                            color: Color::TRANSPARENT,
+                            width: 0.0,
+                            radius: Radius::from(3.0),
+                        },
+                        shadow: Shadow::default(),
+                    }
+                })
+                .into()
+        };
+
+        let tabs = row![
+            tab_pill(
+                "Dark",
+                matches!(tab, crate::theme::ThemeKind::Dark),
+                Msg::ThemePickerSwitchTab,
+            ),
+            tab_pill(
+                "Light",
+                matches!(tab, crate::theme::ThemeKind::Light),
+                Msg::ThemePickerSwitchTab,
+            ),
+        ]
+        .spacing(6);
+
+        let mut list = Column::new().spacing(0);
+        for (i, th) in themes.iter().enumerate() {
+            let active = i == sel;
+            let name = th.name.to_string();
+            list = list.push(
+                button(
+                    container(text(name).size(12).color(if active {
+                        c::FG()
+                    } else {
+                        c::FG_DIM()
+                    }))
+                    .width(Length::Fill)
+                    .center_y(ROW_H)
+                    .padding(Padding::from([0, 10])),
+                )
+                .on_press(Msg::ThemePickerSelect(i))
+                .width(Length::Fill)
+                .padding(0)
+                .style(move |_, status| {
+                    let hovered = matches!(status, button::Status::Hovered);
+                    button::Style {
+                        background: if active {
+                            Some(Background::Color(c::BG_HL()))
+                        } else if hovered {
+                            Some(Background::Color(c::BG_HOVER()))
+                        } else {
+                            None
+                        },
+                        text_color: if active { c::FG() } else { c::FG_DIM() },
+                        border: Border::default(),
+                        shadow: Shadow::default(),
+                    }
+                }),
+            );
+        }
+
+        let list_h = (themes.len().min(12) as f32) * ROW_H;
+        let scroller = container(scrollable(list).id(theme_picker_scrollable_id()))
+            .width(Length::Fill)
+            .height(Length::Fixed(list_h))
+            .style(|_| container::Style {
+                background: Some(Background::Color(c::BG_STRIP())),
+                border: Border {
+                    color: c::BORDER(),
+                    width: 1.0,
+                    radius: Radius::from(4.0),
+                },
+                ..Default::default()
+            });
+
+        let body = column![
+            text("theme").size(13).color(c::MAGENTA()),
+            tabs,
+            scroller,
+            Space::with_height(4),
+            row![
+                Space::with_width(Length::Fill),
+                modal_action("cancel", false, Msg::ThemePickerCancel),
+                modal_action("apply", true, Msg::ThemePickerSubmit),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(12);
+
+        let modal_h = 140.0 + list_h;
+        modal_panel(body.into(), 460.0, modal_h, c::MAGENTA())
     }
 }
 

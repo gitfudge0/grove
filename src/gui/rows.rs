@@ -5,9 +5,7 @@ use super::icons::icon;
 use super::metrics::{MONO_FONT, ROW_H, SUBTITLE_H};
 use super::palette as c;
 use super::state::Msg;
-use super::widgets::{
-    action_mini, clickable_row, delete_worktree_button, split_start_button,
-};
+use super::widgets::{action_mini, clickable_row, split_start_button};
 use crate::session::{Session, SessionStatus};
 use iced::border::Radius;
 use iced::widget::{button, column, container, row, text, Space};
@@ -15,12 +13,12 @@ use iced::{Background, Border, Element, Length, Padding, Shadow};
 
 pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> Element<'a, Msg> {
     let twist = if expanded { "chev-down" } else { "chev-right" };
-    let count_color = if count > 0 { c::GREEN } else { c::FG_MUTE };
+    let count_color = if count > 0 { c::GREEN() } else { c::FG_MUTE() };
     let row_content = row![
-        container(icon(twist, 10.0, c::FG_MUTE))
+        container(icon(twist, 10.0, c::FG_MUTE()))
             .width(14)
             .center_y(Length::Fill),
-        text(name.to_string()).size(13).color(c::FG),
+        text(name.to_string()).size(13).color(c::FG()),
         text(format!("● {count}"))
             .font(MONO_FONT)
             .size(11)
@@ -45,7 +43,7 @@ pub fn worktree_row<'a>(
     name: &str,
     branch: &str,
     active: bool,
-    is_main: bool,
+    _is_main: bool,
 ) -> Element<'a, Msg> {
     // Split layout — action buttons are siblings of the left button, NOT
     // nested inside it. Nesting buttons inside a button causes both to fire
@@ -57,12 +55,12 @@ pub fn worktree_row<'a>(
         row![
             text(name.to_string())
                 .size(13)
-                .color(c::FG_DIM)
+                .color(c::FG_DIM())
                 .wrapping(iced::widget::text::Wrapping::None),
             text(format!(" · {branch}"))
                 .font(MONO_FONT)
                 .size(11)
-                .color(c::FG_MUTE)
+                .color(c::FG_MUTE())
                 .wrapping(iced::widget::text::Wrapping::None),
         ]
         .spacing(0)
@@ -71,13 +69,13 @@ pub fn worktree_row<'a>(
     } else {
         text(name.to_string())
             .size(13)
-            .color(c::FG_DIM)
+            .color(c::FG_DIM())
             .wrapping(iced::widget::text::Wrapping::None)
             .into()
     };
 
     let left_content = row![
-        container(icon("chev-right", 10.0, c::FG_MUTE))
+        container(icon("chev-right", 10.0, c::FG_MUTE()))
             .width(14)
             .center_y(Length::Fill),
         container(label).width(Length::Fill).clip(true),
@@ -92,7 +90,7 @@ pub fn worktree_row<'a>(
     });
 
     let bg_opt = if active {
-        Some(Background::Color(c::BG_HL))
+        Some(Background::Color(c::BG_HL()))
     } else {
         None
     };
@@ -109,23 +107,20 @@ pub fn worktree_row<'a>(
         let hovered = matches!(status, button::Status::Hovered);
         button::Style {
             background: if hovered && !active {
-                Some(Background::Color(c::BG_HOVER))
+                Some(Background::Color(c::BG_HOVER()))
             } else {
                 bg_opt
             },
-            text_color: if active || hovered { c::FG } else { c::FG_DIM },
+            text_color: if active || hovered { c::FG() } else { c::FG_DIM() },
             border: Border::default(),
             shadow: Shadow::default(),
         }
     });
 
-    let mut actions = row![split_start_button(proj, wt)]
+    let actions = row![split_start_button(proj, wt)]
         .spacing(6)
-        .align_y(iced::Alignment::Center);
-    if !is_main {
-        actions = actions.push(delete_worktree_button(proj, wt));
-    }
-    let actions = actions.padding(Padding {
+        .align_y(iced::Alignment::Center)
+        .padding(Padding {
         top: 0.0,
         bottom: 0.0,
         left: 0.0,
@@ -137,7 +132,7 @@ pub fn worktree_row<'a>(
         .width(Length::Fill)
         .style(move |_| container::Style {
             background: if active {
-                Some(Background::Color(c::BG_HL))
+                Some(Background::Color(c::BG_HL()))
             } else {
                 None
             },
@@ -149,7 +144,7 @@ pub fn worktree_row<'a>(
 pub fn add_worktree_row<'a>(proj: usize) -> Element<'a, Msg> {
     let content = row![
         Space::with_width(28),
-        text("+ new worktree").size(12).color(c::FG_MUTE),
+        text("+ new worktree").size(12).color(c::FG_MUTE()),
         Space::with_width(Length::Fill),
     ]
     .spacing(6)
@@ -173,11 +168,11 @@ pub fn add_worktree_row<'a>(proj: usize) -> Element<'a, Msg> {
         let hovered = matches!(status, button::Status::Hovered);
         button::Style {
             background: if hovered {
-                Some(Background::Color(c::BG_HOVER))
+                Some(Background::Color(c::BG_HOVER()))
             } else {
                 None
             },
-            text_color: if hovered { c::FG_DIM } else { c::FG_MUTE },
+            text_color: if hovered { c::FG() } else { c::FG_MUTE() },
             border: Border {
                 color: iced::Color::TRANSPARENT,
                 width: 0.0,
@@ -191,8 +186,8 @@ pub fn add_worktree_row<'a>(proj: usize) -> Element<'a, Msg> {
 
 pub fn session_row<'a>(idx: usize, s: &Session, active: bool) -> Element<'a, Msg> {
     let running = matches!(*s.status.lock().unwrap(), SessionStatus::Running);
-    let dot_color = if running { c::GREEN } else { c::FG_MUTE };
-    let agent_color = if active { c::CYAN } else { c::FG };
+    let dot_color = if running { c::GREEN() } else { c::FG_MUTE() };
+    let agent_color = if active { c::CYAN() } else { c::FG() };
 
     let subtitle = s
         .current_title()
@@ -204,11 +199,11 @@ pub fn session_row<'a>(idx: usize, s: &Session, active: bool) -> Element<'a, Msg
                 .font(MONO_FONT)
                 .size(12)
                 .color(agent_color),
-            text("·").size(11).color(c::FG_MUTE),
+            text("·").size(11).color(c::FG_MUTE()),
             text(s.label.clone())
                 .font(MONO_FONT)
                 .size(11)
-                .color(c::FG_MUTE)
+                .color(c::FG_MUTE())
                 .wrapping(iced::widget::text::Wrapping::None),
         ]
         .spacing(6)
@@ -246,14 +241,14 @@ pub fn session_row<'a>(idx: usize, s: &Session, active: bool) -> Element<'a, Msg
             container(
                 text(t)
                     .font(MONO_FONT)
-                    .size(10)
-                    .color(c::FG_MUTE)
+                    .size(11)
+                    .color(c::FG_MUTE())
                     .wrapping(iced::widget::text::Wrapping::None),
             )
             .padding(Padding {
                 top: 0.0,
                 bottom: 0.0,
-                left: 52.0,
+                left: 48.0,
                 right: 8.0,
             })
             .width(Length::Fill)

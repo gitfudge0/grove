@@ -29,7 +29,10 @@ use state::Grove;
 
 pub fn run() -> Result<()> {
     iced::application("grove", Grove::update, Grove::view)
-        .theme(|_| Theme::Dark)
+        .theme(|_| match crate::theme::current().kind {
+            crate::theme::ThemeKind::Light => Theme::Light,
+            crate::theme::ThemeKind::Dark => Theme::Dark,
+        })
         .subscription(Grove::subscription)
         .window_size(Size::new(1280.0, 800.0))
         .run_with(|| (Grove::new(), Task::none()))
