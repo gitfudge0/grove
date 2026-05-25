@@ -90,14 +90,35 @@ pub fn new_session(
     if !status.success() {
         return Err(anyhow!("tmux new-session failed"));
     }
+    configure_embedded_session(name);
+    Ok(())
+}
+
+/// Configure a grove-owned tmux session so its attached client behaves like a
+/// transparent embedded terminal.
+pub fn configure_embedded_session(name: &str) {
     // Hide the status bar and disable the prefix so the embedded view is just
     // the agent's screen, with no tmux keybindings stealing input.
-    for (key, value) in [("status", "off"), ("prefix", "None"), ("mouse", "off")] {
+    for (key, value) in [
+        ("status", "off"),
+        ("prefix", "None"),
+        ("mouse", "off"),
+        // The GUI reads session context from OSC window-title updates. Native
+        // sessions expose those directly; tmux needs to be told to forward the
+        // active pane title to the attached client.
+        ("set-titles", "on"),
+        ("set-titles-string", "#{pane_title}"),
+    ] {
         let mut c = tmux();
-        c.args(["set-option", "-t", &exact(name), key, value]);
+        c.args(["set-option", "-t", name, key, value]);
         let _ = run_silent(c);
     }
-    Ok(())
+
+    // Let agent CLIs update the tmux pane title from their own OSC title
+    // sequences. This is a window option, not a session option.
+    let mut c = tmux();
+    c.args(["set-window-option", "-t", name, "allow-rename", "on"]);
+    let _ = run_silent(c);
 }
 
 pub fn kill_session(name: &str) {

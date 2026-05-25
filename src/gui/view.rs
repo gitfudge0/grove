@@ -6,11 +6,11 @@ use super::metrics::{
 };
 use super::palette as c;
 use super::pty::{rebuild_row_runs, PtyProgram};
-use super::rows::{add_worktree_row, project_row, session_row, worktree_row};
+use super::rows::{project_row, session_row, worktree_row};
 use super::state::{Grove, Msg, PtyCacheEntry};
 use super::widgets::{
-    divider_h, divider_v, dot, empty_workspace, icon_btn, modal_action, modal_dir_row,
-    modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn, vline,
+    divider_h, divider_v, dot, empty_workspace, icon_btn, modal_action, modal_dir_row, modal_panel,
+    seg_button, sidebar_agent_menu_overlay, tool_btn, vline,
 };
 use crate::app::{InputKind, Modal};
 use crate::git::Worktree;
@@ -92,9 +92,9 @@ impl Grove {
             icon_btn("cog", Msg::OpenThemePicker),
             icon_btn("help", Msg::NoOp),
         ]
-            .spacing(4)
-            .padding(Padding::from([0, 16]))
-            .align_y(iced::Alignment::Center);
+        .spacing(4)
+        .padding(Padding::from([0, 16]))
+        .align_y(iced::Alignment::Center);
 
         let inner = row![
             container(brand).width(RAIL_W),
@@ -207,7 +207,9 @@ impl Grove {
                     crate::app::path_basename(&w.path)
                 };
                 let active_wt = pi == self.app.proj_idx && wi == self.app.wt_idx;
-                col = col.push(worktree_row(pi, wi, &wname, &w.branch, active_wt, w.is_main));
+                col = col.push(worktree_row(
+                    pi, wi, &wname, &w.branch, active_wt, w.is_main,
+                ));
 
                 for (si, s) in self.app.sessions.iter().enumerate() {
                     if s.wt_path == w.path {
@@ -216,7 +218,6 @@ impl Grove {
                     }
                 }
             }
-            col = col.push(add_worktree_row(pi));
         }
         col.into()
     }
@@ -265,7 +266,6 @@ impl Grove {
                     }
                 }
             }
-            acc_y += ROW_H; // "+ new worktree" row
         }
 
         None
@@ -315,7 +315,10 @@ impl Grove {
                 .size(12)
                 .color(c::BLUE()),
             text("/").color(c::FG_MUTE()),
-            text(s.label.clone()).font(MONO_FONT).size(12).color(c::FG()),
+            text(s.label.clone())
+                .font(MONO_FONT)
+                .size(12)
+                .color(c::FG()),
             text(format!("[{}]", s.branch))
                 .font(MONO_FONT)
                 .size(12)
@@ -388,7 +391,11 @@ impl Grove {
                     Some(screen.cursor_position())
                 };
             }
-            (Arc::clone(&entry.rows), Arc::clone(&entry.cache), entry.cursor_pos)
+            (
+                Arc::clone(&entry.rows),
+                Arc::clone(&entry.cache),
+                entry.cursor_pos,
+            )
         };
 
         let rows_len = rows.len() as f32;
@@ -430,7 +437,11 @@ impl Grove {
             .iter()
             .filter(|s| matches!(*s.status.lock().unwrap(), SessionStatus::Running))
             .count();
-        let backend = if self.app.use_tmux() { "tmux" } else { "native" };
+        let backend = if self.app.use_tmux() {
+            "tmux"
+        } else {
+            "native"
+        };
         let theme_name = self
             .app
             .store
@@ -440,8 +451,14 @@ impl Grove {
 
         let left = row![
             row![
-                dot(if running > 0 { c::GREEN() } else { c::FG_MUTE() }),
-                text(format!("{running} running")).size(11).color(c::FG_DIM()),
+                dot(if running > 0 {
+                    c::GREEN()
+                } else {
+                    c::FG_MUTE()
+                }),
+                text(format!("{running} running"))
+                    .size(11)
+                    .color(c::FG_DIM()),
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center),
@@ -815,4 +832,3 @@ impl Grove {
         modal_panel(body.into(), 460.0, modal_h, c::MAGENTA())
     }
 }
-

@@ -159,7 +159,11 @@ fn split_start_style(
             SplitStartSegment::Right => Radius::default().right(4.0),
         };
         button::Style {
-            background: Some(Background::Color(if hovered { c::BG_HOVER() } else { c::BG() })),
+            background: Some(Background::Color(if hovered {
+                c::BG_HOVER()
+            } else {
+                c::BG()
+            })),
             text_color: if hovered { c::FG() } else { c::FG_DIM() },
             border: Border {
                 color: c::BORDER(),
@@ -191,7 +195,11 @@ pub fn sidebar_agent_menu_overlay<'a>(
 
     let positioned = column![
         Space::with_height(top),
-        row![Space::with_width(Length::Fill), agent_menu(proj, wt, is_main)].padding(Padding {
+        row![
+            Space::with_width(Length::Fill),
+            agent_menu(proj, wt, is_main)
+        ]
+        .padding(Padding {
             top: 0.0,
             bottom: 0.0,
             left: 0.0,
@@ -210,12 +218,11 @@ pub fn sidebar_agent_menu_overlay<'a>(
 fn agent_menu<'a>(proj: usize, wt: usize, is_main: bool) -> Element<'a, Msg> {
     let item = |label: String, msg: Msg, danger: bool| {
         button(
-            container(
-                text(label)
-                    .font(MONO_FONT)
-                    .size(11)
-                    .color(if danger { c::RED() } else { c::FG_DIM() }),
-            )
+            container(text(label).font(MONO_FONT).size(11).color(if danger {
+                c::RED()
+            } else {
+                c::FG_DIM()
+            }))
             .width(Length::Fill)
             .center_y(24)
             .padding(Padding::from([0, 8])),
@@ -461,7 +468,11 @@ pub fn modal_dir_row<'a>(path: String, active: bool) -> Element<'a, Msg> {
             } else {
                 None
             },
-            text_color: if active || hovered { c::FG() } else { c::CYAN() },
+            text_color: if active || hovered {
+                c::FG()
+            } else {
+                c::CYAN()
+            },
             border: Border::default(),
             shadow: Shadow::default(),
         }
@@ -497,7 +508,11 @@ pub fn clickable_row<'a>(
             } else {
                 bg
             },
-            text_color: if active || hovered { c::FG() } else { c::FG_DIM() },
+            text_color: if active || hovered {
+                c::FG()
+            } else {
+                c::FG_DIM()
+            },
             border: Border::default(),
             shadow: Shadow::default(),
         }

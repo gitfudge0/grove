@@ -230,8 +230,8 @@ impl Grove {
     }
 
     fn scroll_theme_picker_to_selection(&self) -> Task<Msg> {
-        use crate::app::Modal;
         use super::metrics::ROW_H;
+        use crate::app::Modal;
         use iced::widget::scrollable::{self, AbsoluteOffset};
         let Modal::ThemePicker {
             sel_dark,
@@ -555,4 +555,3 @@ fn pixel_to_cell(x: f32, y: f32) -> PtyCell {
         col: (x / CELL_W).max(0.0) as usize,
     }
 }
-

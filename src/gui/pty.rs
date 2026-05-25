@@ -221,11 +221,7 @@ impl canvas::Program<Msg> for PtyProgram {
                 let mut cursor_frame = Frame::new(renderer, bounds.size());
                 let x = ccol as f32 * CELL_W;
                 let y = crow as f32 * CELL_H;
-                cursor_frame.fill_rectangle(
-                    Point::new(x, y),
-                    Size::new(CELL_W, CELL_H),
-                    c::FG(),
-                );
+                cursor_frame.fill_rectangle(Point::new(x, y), Size::new(CELL_W, CELL_H), c::FG());
                 out.push(cursor_frame.into_geometry());
             }
         }

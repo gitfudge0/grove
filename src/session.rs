@@ -136,6 +136,8 @@ impl Session {
         rows: u16,
         cols: u16,
     ) -> Result<Self> {
+        tmux::configure_embedded_session(&tmux_name);
+
         let mut cmd = CommandBuilder::new("tmux");
         cmd.arg("-L");
         cmd.arg(tmux::SOCKET);

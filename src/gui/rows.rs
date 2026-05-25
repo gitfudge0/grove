@@ -1,5 +1,4 @@
-//! Sidebar row builders — projects, worktrees, sessions, and the
-//! "+ new worktree" affordance.
+//! Sidebar row builders — projects, worktrees, and sessions.
 
 use super::icons::icon;
 use super::metrics::{MONO_FONT, ROW_H, SUBTITLE_H};
@@ -14,16 +13,18 @@ use iced::{Background, Border, Element, Length, Padding, Shadow};
 pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> Element<'a, Msg> {
     let twist = if expanded { "chev-down" } else { "chev-right" };
     let count_color = if count > 0 { c::GREEN() } else { c::FG_MUTE() };
-    let row_content = row![
+
+    let project_label = row![
         container(icon(twist, 10.0, c::FG_MUTE()))
             .width(14)
             .center_y(Length::Fill),
-        text(name.to_string()).size(13).color(c::FG()),
-        text(format!("● {count}"))
-            .font(MONO_FONT)
-            .size(11)
-            .color(count_color),
-        Space::with_width(Length::Fill),
+        container(
+            text(name.to_string())
+                .size(13)
+                .color(c::FG())
+                .wrapping(iced::widget::text::Wrapping::None),
+        )
+        .clip(true),
     ]
     .spacing(6)
     .align_y(iced::Alignment::Center)
@@ -31,10 +32,77 @@ pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> 
         top: 0.0,
         bottom: 0.0,
         left: 12.0,
+        right: 4.0,
+    });
+
+    let project_btn = button(
+        container(project_label)
+            .height(ROW_H)
+            .align_y(iced::Alignment::Center),
+    )
+    .on_press(Msg::ProjectClicked(idx))
+    .padding(0)
+    .style(|_, status| {
+        let hovered = matches!(status, button::Status::Hovered);
+        button::Style {
+            background: if hovered {
+                Some(Background::Color(c::BG_HOVER()))
+            } else {
+                None
+            },
+            text_color: if hovered { c::FG() } else { c::FG_DIM() },
+            border: Border::default(),
+            shadow: Shadow::default(),
+        }
+    });
+
+    let add_btn = button(
+        container(icon("plus", 12.0, c::FG_MUTE()))
+            .center_x(22)
+            .center_y(22),
+    )
+    .on_press(Msg::AddWorktree { proj: idx })
+    .padding(0)
+    .style(|_, status| {
+        let hovered = matches!(status, button::Status::Hovered);
+        button::Style {
+            background: if hovered {
+                Some(Background::Color(c::BG_HOVER()))
+            } else {
+                None
+            },
+            text_color: if hovered { c::FG() } else { c::FG_MUTE() },
+            border: Border {
+                color: iced::Color::TRANSPARENT,
+                width: 0.0,
+                radius: Radius::from(4.0),
+            },
+            shadow: Shadow::default(),
+        }
+    });
+
+    let row_content = row![
+        project_btn,
+        add_btn,
+        Space::with_width(Length::Fill),
+        text(format!("● {count}"))
+            .font(MONO_FONT)
+            .size(11)
+            .color(count_color),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center)
+    .padding(Padding {
+        top: 0.0,
+        bottom: 0.0,
+        left: 0.0,
         right: 8.0,
     });
 
-    clickable_row(row_content, ROW_H, false, Msg::ProjectClicked(idx))
+    container(row_content)
+        .height(ROW_H)
+        .width(Length::Fill)
+        .into()
 }
 
 pub fn worktree_row<'a>(
@@ -111,7 +179,11 @@ pub fn worktree_row<'a>(
             } else {
                 bg_opt
             },
-            text_color: if active || hovered { c::FG() } else { c::FG_DIM() },
+            text_color: if active || hovered {
+                c::FG()
+            } else {
+                c::FG_DIM()
+            },
             border: Border::default(),
             shadow: Shadow::default(),
         }
@@ -121,11 +193,11 @@ pub fn worktree_row<'a>(
         .spacing(6)
         .align_y(iced::Alignment::Center)
         .padding(Padding {
-        top: 0.0,
-        bottom: 0.0,
-        left: 0.0,
-        right: 8.0,
-    });
+            top: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+            right: 8.0,
+        });
 
     container(row![left_btn, actions].align_y(iced::Alignment::Center))
         .height(ROW_H)
@@ -139,49 +211,6 @@ pub fn worktree_row<'a>(
             ..Default::default()
         })
         .into()
-}
-
-pub fn add_worktree_row<'a>(proj: usize) -> Element<'a, Msg> {
-    let content = row![
-        Space::with_width(28),
-        text("+ new worktree").size(12).color(c::FG_MUTE()),
-        Space::with_width(Length::Fill),
-    ]
-    .spacing(6)
-    .align_y(iced::Alignment::Center)
-    .padding(Padding {
-        top: 0.0,
-        bottom: 0.0,
-        left: 16.0,
-        right: 8.0,
-    });
-    button(
-        container(content)
-            .height(ROW_H)
-            .width(Length::Fill)
-            .align_y(iced::Alignment::Center),
-    )
-    .on_press(Msg::AddWorktree { proj })
-    .width(Length::Fill)
-    .padding(0)
-    .style(|_, status| {
-        let hovered = matches!(status, button::Status::Hovered);
-        button::Style {
-            background: if hovered {
-                Some(Background::Color(c::BG_HOVER()))
-            } else {
-                None
-            },
-            text_color: if hovered { c::FG() } else { c::FG_MUTE() },
-            border: Border {
-                color: iced::Color::TRANSPARENT,
-                width: 0.0,
-                radius: Radius::from(0.0),
-            },
-            shadow: Shadow::default(),
-        }
-    })
-    .into()
 }
 
 pub fn session_row<'a>(idx: usize, s: &Session, active: bool) -> Element<'a, Msg> {
