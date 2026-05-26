@@ -61,15 +61,12 @@ pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> 
     } else {
         c::FG_MUTE()
     };
-    let rail_color = if has_sessions {
-        let m = c::MAGENTA();
-        Color {
-            a: 0.55,
-            ..m
-        }
-    } else {
-        Color::TRANSPARENT
-    };
+    let rail_color = Color::TRANSPARENT;
+
+    let inline_count = text(format!("•{count}"))
+        .font(UI_FONT)
+        .size(11)
+        .color(count_color);
 
     let project_label = row![
         container(icon(twist, 10.0, c::FG_MUTE()))
@@ -83,6 +80,7 @@ pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> 
                 .wrapping(iced::widget::text::Wrapping::None),
         )
         .clip(true),
+        inline_count,
     ]
     .spacing(8)
     .align_y(iced::Alignment::Center)
@@ -107,11 +105,6 @@ pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> 
         border: Border::default(),
         shadow: Shadow::default(),
     });
-
-    let count_chip = text(format!("●{count}"))
-        .font(UI_FONT)
-        .size(11)
-        .color(count_color);
 
     let add_btn = button(
         container(icon("plus", 12.0, c::FG_MUTE()))
@@ -138,7 +131,7 @@ pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> 
         }
     });
 
-    let right = row![count_chip, add_btn]
+    let right = row![add_btn]
         .spacing(6)
         .align_y(iced::Alignment::Center)
         .padding(Padding {
@@ -148,13 +141,10 @@ pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> 
             right: 8.0,
         });
 
-    container(
-        row![left_rail(rail_color), project_btn, right]
-            .align_y(iced::Alignment::Center),
-    )
-    .height(ROW_H)
-    .width(Length::Fill)
-    .into()
+    container(row![left_rail(rail_color), project_btn, right].align_y(iced::Alignment::Center))
+        .height(ROW_H)
+        .width(Length::Fill)
+        .into()
 }
 
 pub fn worktree_row<'a>(
@@ -305,15 +295,14 @@ pub fn session_row<'a>(
     .spacing(6)
     .align_y(iced::Alignment::Center);
     if let Some(ctx) = context.as_deref() {
-        meta_row = meta_row
-            .push(text("·").size(11).color(c::FG_MUTE()))
-            .push(
-                text(ctx.to_string())
-                    .font(UI_FONT)
-                    .size(11)
-                    .color(c::FG_MUTE())
-                    .wrapping(iced::widget::text::Wrapping::None),
-            );
+        let truncated = truncate_ellipsis(ctx, 28);
+        meta_row = meta_row.push(text("·").size(11).color(c::FG_MUTE())).push(
+            text(truncated)
+                .font(UI_FONT)
+                .size(11)
+                .color(c::FG_MUTE())
+                .wrapping(iced::widget::text::Wrapping::None),
+        );
     }
 
     let meta: Element<'a, Msg> = container(meta_row).width(Length::Fill).clip(true).into();
@@ -353,13 +342,40 @@ fn session_context(s: &Session, wt_name: &str) -> Option<String> {
         }
         out = remove_all_ci(&out, needle);
     }
-    let cleaned = out
+    let cleaned: String = out
+        .chars()
+        .filter(|c| {
+            // Drop anything the UI font likely can't render: emoji, symbols,
+            // box-drawing, private-use, etc. Keep ASCII plus common Latin
+            // punctuation/letters.
+            *c == ' '
+                || *c == '·'
+                || (*c >= '\u{0020}' && *c <= '\u{007E}')
+                || (*c >= '\u{00A0}' && *c <= '\u{024F}')
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let cleaned = cleaned
         .trim_matches(|c: char| c.is_whitespace() || matches!(c, '·' | '-' | ':' | '|' | '/'))
         .to_string();
     if cleaned.is_empty() {
         None
     } else {
         Some(cleaned)
+    }
+}
+
+fn truncate_ellipsis(s: &str, max_chars: usize) -> String {
+    let count = s.chars().count();
+    if count <= max_chars {
+        s.to_string()
+    } else {
+        let take = max_chars.saturating_sub(1);
+        let mut out: String = s.chars().take(take).collect();
+        out.push('…');
+        out
     }
 }
 

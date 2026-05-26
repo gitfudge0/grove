@@ -34,6 +34,11 @@ pub fn run() -> Result<()> {
             crate::theme::ThemeKind::Dark => Theme::Dark,
         })
         .subscription(Grove::subscription)
+        .font(metrics::PLEX_SANS_REGULAR)
+        .font(metrics::PLEX_SANS_BOLD)
+        .font(metrics::PLEX_MONO_REGULAR)
+        .font(metrics::PLEX_MONO_BOLD)
+        .default_font(metrics::UI_FONT)
         .window_size(Size::new(1280.0, 800.0))
         .run_with(|| (Grove::new(), Task::none()))
         .map_err(|e| anyhow::anyhow!(e))

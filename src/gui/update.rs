@@ -134,13 +134,6 @@ impl Grove {
             Msg::CloseAgentMenu => {
                 self.open_agent_menu = None;
             }
-            Msg::ToggleAgentMenu { proj, wt } => {
-                self.open_agent_menu = if self.open_agent_menu == Some((proj, wt)) {
-                    None
-                } else {
-                    Some((proj, wt))
-                };
-            }
             Msg::SelectSession(i) => {
                 self.open_agent_menu = None;
                 self.pending_kill = None;

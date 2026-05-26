@@ -164,11 +164,7 @@ impl canvas::Program<Msg> for PtyProgram {
                         state.scroll_accum -= step.copysign(state.scroll_accum);
                         (
                             canvas::event::Status::Captured,
-                            Some(Msg::PtyScroll {
-                                up,
-                                x: p.x,
-                                y: p.y,
-                            }),
+                            Some(Msg::PtyScroll { up, x: p.x, y: p.y }),
                         )
                     }
                 }

@@ -98,10 +98,6 @@ pub enum Msg {
         proj: usize,
         wt: usize,
     },
-    ToggleAgentMenu {
-        proj: usize,
-        wt: usize,
-    },
     CloseAgentMenu,
     SelectSession(usize),
     KillSession(usize),
@@ -137,4 +133,3 @@ pub enum Msg {
     ThemePickerSubmit,
     ThemePickerCancel,
 }
-
