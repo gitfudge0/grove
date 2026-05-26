@@ -1,17 +1,17 @@
 //! `Grove::view` and the chrome it composes (appbar, sidebar, workspace,
 //! statusbar, modal layer). Pure rendering — no state mutation.
 
+use super::icons::icon;
 use super::metrics::{
     APPBAR_H, CELL_H, CELL_W, RAIL_W, ROW_H, SESSBAR_H, STATUS_H, UI_BOLD, UI_FONT,
 };
 use super::palette as c;
 use super::pty::{rebuild_row_runs, PtyProgram};
-use super::icons::icon;
 use super::rows::{project_row, session_row, worktree_row};
 use super::state::{Grove, Msg, PtyCacheEntry};
 use super::widgets::{
-    divider_h, divider_v, dot, empty_workspace, icon_btn, modal_action, modal_dir_row, modal_panel,
-    seg_button, sidebar_agent_menu_overlay, tool_btn, vline,
+    control_btn, divider_h, divider_v, dot, empty_workspace, icon_btn, modal_action, modal_dir_row,
+    modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn, vline, SegSide,
 };
 use crate::agent::Agent;
 use crate::app::{InputKind, Modal};
@@ -49,15 +49,21 @@ fn is_in_progress_title(title: &str) -> bool {
 
 impl Grove {
     pub fn view(&self) -> Element<'_, Msg> {
-        let body = column![
-            self.appbar(),
-            row![self.sidebar(), divider_v(c::BORDER()), self.workspace()]
+        let body = if self.app.chrome_visible {
+            column![
+                self.appbar(),
+                row![self.sidebar(), divider_v(c::BORDER()), self.workspace()]
+                    .height(Length::Fill)
+                    .width(Length::Fill),
+                self.statusbar(),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill)
+        } else {
+            column![self.workspace()]
+                .width(Length::Fill)
                 .height(Length::Fill)
-                .width(Length::Fill),
-            self.statusbar(),
-        ]
-        .width(Length::Fill)
-        .height(Length::Fill);
+        };
 
         let content: Element<'_, Msg> = if matches!(self.app.modal, Modal::None) {
             body.into()
@@ -86,8 +92,18 @@ impl Grove {
 
         let seg = container(
             row![
-                seg_button("native", !self.app.use_tmux(), Msg::BackendNative),
-                seg_button("tmux", self.app.use_tmux(), Msg::BackendTmux),
+                seg_button(
+                    "native",
+                    !self.app.use_tmux(),
+                    SegSide::Left,
+                    Msg::BackendNative
+                ),
+                seg_button(
+                    "tmux",
+                    self.app.use_tmux(),
+                    SegSide::Right,
+                    Msg::BackendTmux
+                ),
             ]
             .spacing(0),
         )
@@ -100,10 +116,16 @@ impl Grove {
             ..Default::default()
         });
 
-        let right = row![seg, icon_btn("cog", Msg::OpenThemePicker),]
-            .spacing(4)
-            .padding(Padding::from([0, 16]))
-            .align_y(iced::Alignment::Center);
+        let right = row![
+            seg,
+            control_btn("-".to_string(), Msg::ZoomOut),
+            control_btn(format!("{:.0}%", self.ui_zoom * 100.0), Msg::ZoomReset),
+            control_btn("+".to_string(), Msg::ZoomIn),
+            icon_btn("cog", Msg::OpenThemePicker),
+        ]
+        .spacing(4)
+        .padding(Padding::from([0, 16]))
+        .align_y(iced::Alignment::Center);
 
         let inner = row![
             container(brand).width(RAIL_W),
@@ -189,8 +211,12 @@ impl Grove {
     }
 
     fn tree_head(&self) -> Element<'_, Msg> {
-        let collapsed = self.is_collapsed_to_active_chain();
-        let glyph = if collapsed { "expand-all" } else { "collapse-all" };
+        let collapsed = self.is_collapsed_to_sessionful_worktrees();
+        let glyph = if collapsed {
+            "expand-all"
+        } else {
+            "collapse-all"
+        };
         let toggle = button(
             container(icon(glyph, 13.0, c::FG_MUTE()))
                 .center_x(22)
@@ -216,10 +242,7 @@ impl Grove {
             }
         });
 
-        let label = text("WORKSPACE")
-            .font(UI_BOLD)
-            .size(10)
-            .color(c::FG_MUTE());
+        let label = text("WORKSPACE").font(UI_BOLD).size(10).color(c::FG_MUTE());
 
         container(
             row![
@@ -452,6 +475,16 @@ impl Grove {
             container(identity).width(Length::Fill).clip(true),
             sess_text(s.wt_path.clone(), c::FG_MUTE()),
             vline(),
+            tool_btn(
+                "zen",
+                if self.app.chrome_visible {
+                    "zen"
+                } else {
+                    "exit zen"
+                },
+                false,
+                Msg::ToggleZen,
+            ),
             tool_btn(
                 "trash",
                 "kill",

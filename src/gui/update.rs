@@ -1,7 +1,9 @@
 //! `Grove` lifecycle: construction, subscriptions, and all `Msg` handling.
 
 use super::keys::key_to_bytes;
-use super::metrics::compute_pty_dims;
+use super::metrics::{
+    compute_pty_dims, pty_metrics, PTY_ZOOM_DEFAULT, PTY_ZOOM_MAX, PTY_ZOOM_MIN, PTY_ZOOM_STEP,
+};
 use super::pty::normalize_selection;
 use super::state::{Grove, Msg, PtyCell};
 use crate::agent::Agent;
@@ -17,7 +19,10 @@ impl Grove {
     pub fn new() -> Self {
         // Compute initial PTY dimensions from the default window size (1280×800).
         // Corrected on the first `WindowResized` event after startup.
-        let (pty_rows, pty_cols) = compute_pty_dims(1280.0, 800.0);
+        let window_size = iced::Size::new(1280.0, 800.0);
+        let ui_zoom = PTY_ZOOM_DEFAULT;
+        let (pty_rows, pty_cols) =
+            compute_pty_dims(window_size.width, window_size.height, ui_zoom, true);
         let mut app = App::new().expect("init app");
         // Resize any sessions discovered from a previous grove run so tmux
         // reports the correct terminal size immediately.
@@ -32,6 +37,8 @@ impl Grove {
             pty_cache: Default::default(),
             pty_rows,
             pty_cols,
+            ui_zoom,
+            window_size,
             open_agent_menu: None,
             pty_selection: None,
             blink_tick: 0,
@@ -76,12 +83,8 @@ impl Grove {
                 // it rebuilds a session's cached snapshot.
             }
             Msg::WindowResized(size) => {
-                let (rows, cols) = compute_pty_dims(size.width, size.height);
-                self.pty_rows = rows;
-                self.pty_cols = cols;
-                if let Some(s) = self.app.active_session_mut() {
-                    s.resize(rows, cols);
-                }
+                self.window_size = size;
+                self.refresh_pty_viewport();
             }
             Msg::BackendNative => {
                 let _ = self.app.set_tmux_enabled(false);
@@ -100,33 +103,23 @@ impl Grove {
             Msg::ToggleCollapseAll => {
                 self.open_agent_menu = None;
                 self.pending_kill = None;
-                if self.is_collapsed_to_active_chain() {
+                if self.is_collapsed_to_sessionful_worktrees() {
                     // Expand everything.
                     self.collapsed.clear();
                     self.collapsed_wt.clear();
                 } else {
-                    // Collapse everything except the chain leading to the
-                    // currently active worktree.
-                    let active_proj = self.app.proj_idx;
-                    let active_wt = self.app.wt_idx;
-                    let has_active = self.app.store.projects.get(active_proj).is_some();
+                    // Collapse everything except worktrees that already have
+                    // at least one session running in them.
                     self.collapsed.clear();
                     self.collapsed_wt.clear();
                     for pi in 0..self.app.store.projects.len() {
-                        if !has_active || pi != active_proj {
+                        let has_sessions = self.project_has_sessionful_worktree(pi);
+                        if !has_sessions {
                             self.collapsed.insert(pi);
                         }
-                    }
-                    if has_active {
-                        let wt_count = self
-                            .wt_cache
-                            .get(&active_proj)
-                            .map(|v| v.len())
-                            .unwrap_or(0)
-                            .max(self.app.worktrees.len());
-                        for wi in 0..wt_count {
-                            if wi != active_wt {
-                                self.collapsed_wt.insert((active_proj, wi));
+                        for wi in 0..self.worktrees_for_project(pi).len() {
+                            if !self.worktree_has_sessions(pi, wi) {
+                                self.collapsed_wt.insert((pi, wi));
                             }
                         }
                     }
@@ -221,6 +214,13 @@ impl Grove {
                     s.scroll(up, cell.col as u16, cell.row as u16);
                 }
             }
+            Msg::ToggleZen => {
+                self.app.chrome_visible = !self.app.chrome_visible;
+                self.refresh_pty_viewport();
+            }
+            Msg::ZoomIn => self.adjust_ui_zoom(PTY_ZOOM_STEP),
+            Msg::ZoomOut => self.adjust_ui_zoom(-PTY_ZOOM_STEP),
+            Msg::ZoomReset => self.set_ui_zoom(PTY_ZOOM_DEFAULT),
             Msg::PtyMouseUp => {
                 if let Some((a, h)) = self.pty_selection {
                     if a == h {
@@ -363,6 +363,35 @@ impl Grove {
         }
     }
 
+    fn refresh_pty_viewport(&mut self) {
+        let (rows, cols) = compute_pty_dims(
+            self.window_size.width,
+            self.window_size.height,
+            self.ui_zoom,
+            self.app.chrome_visible,
+        );
+        self.pty_rows = rows;
+        self.pty_cols = cols;
+        for s in &mut self.app.sessions {
+            s.resize(rows, cols);
+        }
+        self.invalidate_pty_render_cache();
+    }
+
+    fn adjust_ui_zoom(&mut self, delta: f32) {
+        self.set_ui_zoom(self.ui_zoom + delta);
+    }
+
+    fn set_ui_zoom(&mut self, zoom: f32) {
+        let clamped = zoom.clamp(PTY_ZOOM_MIN, PTY_ZOOM_MAX);
+        let snapped = ((clamped * 10.0).round() / 10.0).clamp(PTY_ZOOM_MIN, PTY_ZOOM_MAX);
+        if (snapped - self.ui_zoom).abs() < f32::EPSILON {
+            return;
+        }
+        self.ui_zoom = snapped;
+        self.refresh_pty_viewport();
+    }
+
     fn agent_picker_select(&mut self, index: usize) {
         if index >= Agent::ALL.len() {
             return;
@@ -389,6 +418,21 @@ impl Grove {
         if !matches!(self.app.modal, Modal::None) {
             self.handle_modal_key(key, mods);
             return;
+        }
+        if mods.control() {
+            if let Key::Character(s) = &key {
+                let ctrl_shift_g = s == "G" || (mods.shift() && s.eq_ignore_ascii_case("g"));
+                if ctrl_shift_g {
+                    self.app.chrome_visible = !self.app.chrome_visible;
+                    self.refresh_pty_viewport();
+                    return;
+                }
+                if s.eq_ignore_ascii_case("g") && !mods.shift() && !mods.alt() {
+                    self.app.chrome_visible = true;
+                    self.refresh_pty_viewport();
+                    return;
+                }
+            }
         }
         // Ctrl+Shift+C copies the current PTY selection (if any) and does
         // NOT forward to the agent — standard terminal copy shortcut.
@@ -566,35 +610,49 @@ impl Grove {
         }
     }
 
-    /// True when every project other than the active one is collapsed, and
-    /// every worktree under the active project other than the active worktree
-    /// is collapsed. Drives the sidebar's expand/collapse toggle icon.
-    pub(super) fn is_collapsed_to_active_chain(&self) -> bool {
+    fn worktrees_for_project(&self, proj: usize) -> &[crate::git::Worktree] {
+        if proj == self.app.proj_idx {
+            &self.app.worktrees
+        } else {
+            self.wt_cache
+                .get(&proj)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[])
+        }
+    }
+
+    fn worktree_has_sessions(&self, proj: usize, wt: usize) -> bool {
+        let Some(worktree) = self.worktrees_for_project(proj).get(wt) else {
+            return false;
+        };
+        self.app.sessions.iter().any(|s| s.wt_path == worktree.path)
+    }
+
+    fn project_has_sessionful_worktree(&self, proj: usize) -> bool {
+        self.worktrees_for_project(proj)
+            .iter()
+            .any(|w| self.app.sessions.iter().any(|s| s.wt_path == w.path))
+    }
+
+    /// True when every project without sessionful worktrees is collapsed, and
+    /// every worktree without sessions is collapsed. Drives the sidebar's
+    /// expand/collapse toggle icon.
+    pub(super) fn is_collapsed_to_sessionful_worktrees(&self) -> bool {
         let n_proj = self.app.store.projects.len();
         if n_proj == 0 {
             return false;
         }
-        let active_proj = self.app.proj_idx;
-        let has_active = self.app.store.projects.get(active_proj).is_some();
         for pi in 0..n_proj {
-            let should_be_collapsed = !has_active || pi != active_proj;
+            let should_be_collapsed = !self.project_has_sessionful_worktree(pi);
             if should_be_collapsed && !self.collapsed.contains(&pi) {
                 return false;
             }
             if !should_be_collapsed && self.collapsed.contains(&pi) {
                 return false;
             }
-        }
-        if has_active {
-            let wt_count = self
-                .wt_cache
-                .get(&active_proj)
-                .map(|v| v.len())
-                .unwrap_or(self.app.worktrees.len());
-            let active_wt = self.app.wt_idx;
-            for wi in 0..wt_count {
-                let should_be_collapsed = wi != active_wt;
-                let is_collapsed = self.collapsed_wt.contains(&(active_proj, wi));
+            for (wi, _) in self.worktrees_for_project(pi).iter().enumerate() {
+                let should_be_collapsed = !self.worktree_has_sessions(pi, wi);
+                let is_collapsed = self.collapsed_wt.contains(&(pi, wi));
                 if should_be_collapsed != is_collapsed {
                     return false;
                 }
@@ -704,9 +762,9 @@ impl Grove {
 }
 
 fn pixel_to_cell(x: f32, y: f32) -> PtyCell {
-    use super::metrics::{CELL_H, CELL_W};
+    let metrics = pty_metrics(1.0);
     PtyCell {
-        row: (y / CELL_H).max(0.0) as usize,
-        col: (x / CELL_W).max(0.0) as usize,
+        row: (y / metrics.cell_h).max(0.0) as usize,
+        col: (x / metrics.cell_w).max(0.0) as usize,
     }
 }

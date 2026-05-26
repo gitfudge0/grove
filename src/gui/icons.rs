@@ -17,6 +17,7 @@ pub fn icon<'a>(name: &str, size: f32, color: Color) -> Element<'a, Msg> {
 fn svg_for(name: &str) -> String {
     let inner = match name {
         "plus" => r#"<path d="M8 3v10M3 8h10"/>"#,
+        "minus" => r#"<path d="M3 8h10"/>"#,
         "close" => r#"<path d="M4 4l8 8M12 4l-8 8"/>"#,
         "check" => r#"<path d="M3 8l4 4 6-7"/>"#,
         "play" => r#"<path d="M4.5 3.5l8 4.5-8 4.5z" fill="currentColor" stroke="none"/>"#,
@@ -43,6 +44,7 @@ fn svg_for(name: &str) -> String {
         "split" => {
             r#"<rect x="1.5" y="2.5" width="13" height="11" rx="1.2"/><path d="M8 2.5v11"/>"#
         }
+        "zen" => r#"<path d="M5 2.5H2.5V5M11 2.5h2.5V5M5 13.5H2.5V11M11 13.5h2.5V11"/>"#,
         "edit" => r#"<path d="M11.5 2.5l2 2L6 12l-2.5.5L4 10z"/>"#,
         "trash" => {
             r#"<path d="M3 4.5h10M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M4.5 4.5l.5 8a1 1 0 0 0 1 .9h4a1 1 0 0 0 1-.9l.5-8"/>"#

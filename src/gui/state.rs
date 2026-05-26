@@ -32,6 +32,12 @@ pub struct Grove {
     /// `WindowResized` event and applied to sessions on spawn / select.
     pub pty_rows: u16,
     pub pty_cols: u16,
+    /// Per-window GUI zoom multiplier. Applied as the iced application scale
+    /// factor and reused when deriving PTY rows/cols from the visible area.
+    pub ui_zoom: f32,
+    /// Last known window size so zoom changes can recompute PTY dimensions
+    /// without waiting for another resize event.
+    pub window_size: Size,
     /// Worktree whose split-start agent menu is open.
     pub open_agent_menu: Option<(usize, usize)>,
     /// Mouse-drag selection in the active session's PTY, in (row, col) cells.
@@ -85,8 +91,8 @@ pub enum Msg {
     BackendTmux,
     ProjectClicked(usize),
     /// Toggle button in the sidebar tree header. Collapses everything except
-    /// the chain to the active worktree, or — if already in that state —
-    /// expands every project and worktree.
+    /// worktrees that currently contain sessions, or — if already in that
+    /// state — expands every project and worktree.
     ToggleCollapseAll,
     WorktreeClicked {
         proj: usize,
@@ -115,6 +121,10 @@ pub enum Msg {
         x: f32,
         y: f32,
     },
+    ToggleZen,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
     AddProject,
     AddWorktree {
         proj: usize,

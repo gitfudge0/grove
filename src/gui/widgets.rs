@@ -75,12 +75,31 @@ pub fn divider_v<'a>(color: Color) -> Element<'a, Msg> {
         .into()
 }
 
-pub fn seg_button<'a>(label: &str, active: bool, msg: Msg) -> Element<'a, Msg> {
+pub enum SegSide {
+    Left,
+    Right,
+}
+
+pub fn seg_button<'a>(label: &str, active: bool, side: SegSide, msg: Msg) -> Element<'a, Msg> {
     button(text(label.to_string()).size(11))
         .on_press(msg)
         .padding(Padding::from([4, 12]))
         .style(move |_, status| {
             let hovered = matches!(status, button::Status::Hovered);
+            let radius = match side {
+                SegSide::Left => Radius {
+                    top_left: 5.0,
+                    top_right: 0.0,
+                    bottom_right: 0.0,
+                    bottom_left: 5.0,
+                },
+                SegSide::Right => Radius {
+                    top_left: 0.0,
+                    top_right: 5.0,
+                    bottom_right: 5.0,
+                    bottom_left: 0.0,
+                },
+            };
             button::Style {
                 background: if active {
                     Some(Background::Color(c::BG_HL()))
@@ -90,7 +109,10 @@ pub fn seg_button<'a>(label: &str, active: bool, msg: Msg) -> Element<'a, Msg> {
                     None
                 },
                 text_color: if active { c::FG() } else { c::FG_DIM() },
-                border: Border::default(),
+                border: Border {
+                    radius,
+                    ..Border::default()
+                },
                 shadow: Shadow::default(),
             }
         })
@@ -376,7 +398,9 @@ pub fn tool_btn<'a>(
     button(
         container(
             row![
-                icon(icon_name, 12.0, c::FG_DIM()),
+                container(icon(icon_name, 12.0, c::FG_DIM()))
+                    .height(18)
+                    .align_y(iced::Alignment::Center),
                 text(label_owned)
                     .font(UI_FONT)
                     .size(12)
@@ -411,6 +435,42 @@ pub fn tool_btn<'a>(
                 None
             },
             text_color: color,
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: Radius::from(4.0),
+            },
+            shadow: Shadow::default(),
+        }
+    })
+    .into()
+}
+
+pub fn control_btn<'a>(label: String, msg: Msg) -> Element<'a, Msg> {
+    button(
+        container(
+            text(label)
+                .font(UI_FONT)
+                .size(12)
+                .line_height(1.0)
+                .height(18)
+                .align_y(iced::alignment::Vertical::Center)
+                .color(c::FG_DIM()),
+        )
+        .padding(Padding::from([0, 8]))
+        .center_y(22),
+    )
+    .on_press(msg)
+    .padding(0)
+    .style(|_, status| {
+        let hovered = matches!(status, button::Status::Hovered);
+        button::Style {
+            background: if hovered {
+                Some(Background::Color(c::BG_HOVER()))
+            } else {
+                None
+            },
+            text_color: if hovered { c::FG() } else { c::FG_DIM() },
             border: Border {
                 color: Color::TRANSPARENT,
                 width: 0.0,

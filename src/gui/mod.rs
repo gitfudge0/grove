@@ -33,6 +33,7 @@ pub fn run() -> Result<()> {
             crate::theme::ThemeKind::Light => Theme::Light,
             crate::theme::ThemeKind::Dark => Theme::Dark,
         })
+        .scale_factor(|state| state.ui_zoom as f64)
         .subscription(Grove::subscription)
         .font(metrics::PLEX_SANS_REGULAR)
         .font(metrics::PLEX_SANS_BOLD)
