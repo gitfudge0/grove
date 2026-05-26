@@ -342,12 +342,18 @@ fn session_context(s: &Session, wt_name: &str) -> Option<String> {
         }
         out = remove_all_ci(&out, needle);
     }
-    let cleaned: String = out
+    sanitize_ui_text(&out)
+}
+
+/// Strip characters the UI font (IBM Plex Sans) can't render — emoji, box
+/// drawing, private-use, etc. — and collapse the resulting whitespace. Used
+/// by both the sidebar session row and the workspace session bar so that
+/// OSC titles emitted by agents (which often include emoji prefixes) never
+/// produce tofu boxes.
+pub fn sanitize_ui_text(raw: &str) -> Option<String> {
+    let cleaned: String = raw
         .chars()
         .filter(|c| {
-            // Drop anything the UI font likely can't render: emoji, symbols,
-            // box-drawing, private-use, etc. Keep ASCII plus common Latin
-            // punctuation/letters.
             *c == ' '
                 || *c == '·'
                 || (*c >= '\u{0020}' && *c <= '\u{007E}')

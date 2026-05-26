@@ -6,6 +6,7 @@ use super::metrics::{
 };
 use super::palette as c;
 use super::pty::{rebuild_row_runs, PtyProgram};
+use super::icons::icon;
 use super::rows::{project_row, session_row, worktree_row};
 use super::state::{Grove, Msg, PtyCacheEntry};
 use super::widgets::{
@@ -31,8 +32,14 @@ pub fn theme_picker_scrollable_id() -> scrollable::Id {
 use std::sync::Arc;
 
 fn session_context_title(s: &Session) -> Option<String> {
-    s.current_title()
-        .filter(|t| !t.eq_ignore_ascii_case(&s.label) && !t.eq_ignore_ascii_case(s.agent.label()))
+    let raw = s.current_title()?;
+    if raw.eq_ignore_ascii_case(&s.label) || raw.eq_ignore_ascii_case(s.agent.label()) {
+        return None;
+    }
+    // OSC titles often start with emoji or box-drawing characters that the UI
+    // font (IBM Plex Sans) can't render — strip them so the sess_bar never
+    // shows a tofu box. The sidebar applies the same filter.
+    super::rows::sanitize_ui_text(&raw)
 }
 
 fn is_in_progress_title(title: &str) -> bool {
@@ -119,6 +126,7 @@ impl Grove {
 
     // ── sidebar ───────────────────────────────────────────────────────────
     fn sidebar(&self) -> Element<'_, Msg> {
+        let tree_head = self.tree_head();
         let tree = self.tree_view();
         let tree_area = container(scrollable(tree).height(Length::Fill))
             .height(Length::Fill)
@@ -161,8 +169,14 @@ impl Grove {
         )
         .padding(Padding::from([12, 12]));
 
-        let stack_col =
-            column![tree_layer, divider_h(c::BORDER_SOFT()), add_proj,].height(Length::Fill);
+        let stack_col = column![
+            tree_head,
+            divider_h(c::BORDER_SOFT()),
+            tree_layer,
+            divider_h(c::BORDER_SOFT()),
+            add_proj,
+        ]
+        .height(Length::Fill);
 
         container(stack_col)
             .width(RAIL_W)
@@ -172,6 +186,63 @@ impl Grove {
                 ..Default::default()
             })
             .into()
+    }
+
+    fn tree_head(&self) -> Element<'_, Msg> {
+        let collapsed = self.is_collapsed_to_active_chain();
+        let glyph = if collapsed { "expand-all" } else { "collapse-all" };
+        let toggle = button(
+            container(icon(glyph, 13.0, c::FG_MUTE()))
+                .center_x(22)
+                .center_y(22),
+        )
+        .on_press(Msg::ToggleCollapseAll)
+        .padding(0)
+        .style(|_, status| {
+            let hovered = matches!(status, button::Status::Hovered);
+            button::Style {
+                background: if hovered {
+                    Some(Background::Color(c::BG_HOVER()))
+                } else {
+                    None
+                },
+                text_color: if hovered { c::FG() } else { c::FG_MUTE() },
+                border: Border {
+                    color: Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: Radius::from(4.0),
+                },
+                shadow: Shadow::default(),
+            }
+        });
+
+        let label = text("WORKSPACE")
+            .font(UI_BOLD)
+            .size(10)
+            .color(c::FG_MUTE());
+
+        container(
+            row![
+                container(label)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_y(iced::Alignment::Center),
+                container(toggle)
+                    .height(Length::Fill)
+                    .align_y(iced::Alignment::Center),
+            ]
+            .align_y(iced::Alignment::Center)
+            .height(Length::Fill)
+            .padding(Padding {
+                top: 0.0,
+                bottom: 0.0,
+                left: 14.0,
+                right: 8.0,
+            }),
+        )
+        .height(SESSBAR_H)
+        .width(Length::Fill)
+        .into()
     }
 
     fn tree_view(&self) -> Element<'_, Msg> {

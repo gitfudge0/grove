@@ -97,6 +97,41 @@ impl Grove {
             Msg::AgentPickerSelect(i) => self.agent_picker_select(i),
             Msg::AgentPickerToggleDefault => self.agent_picker_toggle_default(),
             Msg::AgentPickerSubmit => self.submit_agent_picker(),
+            Msg::ToggleCollapseAll => {
+                self.open_agent_menu = None;
+                self.pending_kill = None;
+                if self.is_collapsed_to_active_chain() {
+                    // Expand everything.
+                    self.collapsed.clear();
+                    self.collapsed_wt.clear();
+                } else {
+                    // Collapse everything except the chain leading to the
+                    // currently active worktree.
+                    let active_proj = self.app.proj_idx;
+                    let active_wt = self.app.wt_idx;
+                    let has_active = self.app.store.projects.get(active_proj).is_some();
+                    self.collapsed.clear();
+                    self.collapsed_wt.clear();
+                    for pi in 0..self.app.store.projects.len() {
+                        if !has_active || pi != active_proj {
+                            self.collapsed.insert(pi);
+                        }
+                    }
+                    if has_active {
+                        let wt_count = self
+                            .wt_cache
+                            .get(&active_proj)
+                            .map(|v| v.len())
+                            .unwrap_or(0)
+                            .max(self.app.worktrees.len());
+                        for wi in 0..wt_count {
+                            if wi != active_wt {
+                                self.collapsed_wt.insert((active_proj, wi));
+                            }
+                        }
+                    }
+                }
+            }
             Msg::ProjectClicked(i) => {
                 self.open_agent_menu = None;
                 self.pending_kill = None;
@@ -529,6 +564,43 @@ impl Grove {
             self.app.refresh_worktrees();
             self.wt_cache.remove(&new_proj);
         }
+    }
+
+    /// True when every project other than the active one is collapsed, and
+    /// every worktree under the active project other than the active worktree
+    /// is collapsed. Drives the sidebar's expand/collapse toggle icon.
+    pub(super) fn is_collapsed_to_active_chain(&self) -> bool {
+        let n_proj = self.app.store.projects.len();
+        if n_proj == 0 {
+            return false;
+        }
+        let active_proj = self.app.proj_idx;
+        let has_active = self.app.store.projects.get(active_proj).is_some();
+        for pi in 0..n_proj {
+            let should_be_collapsed = !has_active || pi != active_proj;
+            if should_be_collapsed && !self.collapsed.contains(&pi) {
+                return false;
+            }
+            if !should_be_collapsed && self.collapsed.contains(&pi) {
+                return false;
+            }
+        }
+        if has_active {
+            let wt_count = self
+                .wt_cache
+                .get(&active_proj)
+                .map(|v| v.len())
+                .unwrap_or(self.app.worktrees.len());
+            let active_wt = self.app.wt_idx;
+            for wi in 0..wt_count {
+                let should_be_collapsed = wi != active_wt;
+                let is_collapsed = self.collapsed_wt.contains(&(active_proj, wi));
+                if should_be_collapsed != is_collapsed {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     pub(super) fn ensure_wt_cached(&mut self, proj: usize) {

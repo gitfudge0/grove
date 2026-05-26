@@ -84,6 +84,10 @@ pub enum Msg {
     BackendNative,
     BackendTmux,
     ProjectClicked(usize),
+    /// Toggle button in the sidebar tree header. Collapses everything except
+    /// the chain to the active worktree, or — if already in that state —
+    /// expands every project and worktree.
+    ToggleCollapseAll,
     WorktreeClicked {
         proj: usize,
         wt: usize,

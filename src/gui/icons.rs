@@ -22,6 +22,14 @@ fn svg_for(name: &str) -> String {
         "play" => r#"<path d="M4.5 3.5l8 4.5-8 4.5z" fill="currentColor" stroke="none"/>"#,
         "chev-down" => r#"<path d="M4 6l4 4 4-4"/>"#,
         "chev-right" => r#"<path d="M6 4l4 4-4 4"/>"#,
+        // Two stacked open chevrons + label hatches — "everything is open".
+        "expand-all" => {
+            r#"<path d="M3 4l2 2 2-2"/><path d="M3 10l2 2 2-2"/><path d="M9 5h4M9 11h4"/>"#
+        }
+        // Two stacked closed chevrons + label hatches — "everything is closed".
+        "collapse-all" => {
+            r#"<path d="M4 3l2 2-2 2"/><path d="M4 9l2 2-2 2"/><path d="M9 5h4M9 11h4"/>"#
+        }
         "cog" => {
             r#"<circle cx="8" cy="8" r="2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/>"#
         }
