@@ -147,6 +147,9 @@ impl Grove {
                 } else {
                     self.collapsed_wt.insert(key);
                 }
+                // Keep the workspace in sync: switch to the first session
+                // belonging to this worktree, or clear if there are none.
+                self.sync_session_to_wt(proj, wt);
             }
             Msg::HoverWorktree(target) => {
                 self.hovered_wt = target;
@@ -168,6 +171,11 @@ impl Grove {
                 if i < self.app.sessions.len() {
                     self.app.active_session = Some(i);
                     self.app.sessions[i].resize(self.pty_rows, self.pty_cols);
+                    // Keep the sidebar worktree highlight in sync with the
+                    // session that is now visible in the workspace.
+                    let proj_name = self.app.sessions[i].project.clone();
+                    let wt_path = self.app.sessions[i].wt_path.clone();
+                    self.sync_wt_to_session(&proj_name, &wt_path);
                 }
             }
             Msg::RequestKillSession(i) => {
@@ -608,6 +616,57 @@ impl Grove {
             self.app.refresh_worktrees();
             self.wt_cache.remove(&new_proj);
         }
+    }
+
+    /// Sync the worktree highlight (`proj_idx` / `wt_idx`) to whichever
+    /// project+worktree owns the given session path.  Called after
+    /// `active_session` changes so the sidebar cyan-rail always agrees with
+    /// what is displayed in the workspace.
+    fn sync_wt_to_session(&mut self, proj_name: &str, wt_path: &str) {
+        let proj_idx = self
+            .app
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == proj_name);
+        if let Some(pi) = proj_idx {
+            self.switch_active_project(pi);
+            if let Some(wi) = self.app.worktrees.iter().position(|w| w.path == wt_path) {
+                self.app.wt_idx = wi;
+            }
+        }
+    }
+
+    /// Sync `active_session` to the first session that lives inside the
+    /// worktree identified by `(proj, wt)`.  If the currently-active session
+    /// already belongs to that worktree it is left unchanged; if there are no
+    /// sessions in that worktree `active_session` is cleared to `None`.
+    /// Called after `wt_idx` changes so the workspace stays in sync with the
+    /// sidebar highlight.
+    fn sync_session_to_wt(&mut self, proj: usize, wt: usize) {
+        // Grab the worktree path without holding a borrow into self.
+        let wt_path = self
+            .worktrees_for_project(proj)
+            .get(wt)
+            .map(|w| w.path.clone());
+        let Some(path) = wt_path else { return };
+
+        // If the active session is already in this worktree, do nothing.
+        let already_here = self
+            .app
+            .active_session
+            .and_then(|i| self.app.sessions.get(i))
+            .map(|s| s.wt_path == path)
+            .unwrap_or(false);
+        if already_here {
+            return;
+        }
+
+        self.app.active_session = self
+            .app
+            .sessions
+            .iter()
+            .position(|s| s.wt_path == path);
     }
 
     fn worktrees_for_project(&self, proj: usize) -> &[crate::git::Worktree] {
