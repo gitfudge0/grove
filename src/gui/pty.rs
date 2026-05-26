@@ -79,6 +79,11 @@ pub struct PtyProgram {
 #[derive(Default)]
 pub struct PtyProgramState {
     dragging: bool,
+    /// Accumulated sub-pixel scroll delta from trackpad smooth-scroll. We
+    /// only emit a wheel event each time this crosses `CELL_H`, so tmux (and
+    /// other inner apps that opt into mouse reporting) don't get flooded
+    /// with hundreds of wheel notches per gesture.
+    scroll_accum: f32,
 }
 
 impl canvas::Program<Msg> for PtyProgram {
@@ -128,24 +133,45 @@ impl canvas::Program<Msg> for PtyProgram {
                 (canvas::event::Status::Captured, Some(Msg::PtyMouseUp))
             }
             canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                if let Some(p) = cursor.position_in(bounds) {
-                    let dy = match delta {
-                        mouse::ScrollDelta::Lines { y, .. } => y,
-                        mouse::ScrollDelta::Pixels { y, .. } => y,
-                    };
-                    if dy.abs() < f32::EPSILON {
-                        return (canvas::event::Status::Ignored, None);
+                let Some(p) = cursor.position_in(bounds) else {
+                    return (canvas::event::Status::Ignored, None);
+                };
+                match delta {
+                    mouse::ScrollDelta::Lines { y, .. } => {
+                        state.scroll_accum = 0.0;
+                        if y.abs() < 1.0 {
+                            return (canvas::event::Status::Captured, None);
+                        }
+                        (
+                            canvas::event::Status::Captured,
+                            Some(Msg::PtyScroll {
+                                up: y > 0.0,
+                                x: p.x,
+                                y: p.y,
+                            }),
+                        )
                     }
-                    return (
-                        canvas::event::Status::Captured,
-                        Some(Msg::PtyScroll {
-                            up: dy > 0.0,
-                            x: p.x,
-                            y: p.y,
-                        }),
-                    );
+                    mouse::ScrollDelta::Pixels { y, .. } => {
+                        if (state.scroll_accum > 0.0) != (y > 0.0) {
+                            state.scroll_accum = 0.0;
+                        }
+                        state.scroll_accum += y;
+                        let step = CELL_H;
+                        if state.scroll_accum.abs() < step {
+                            return (canvas::event::Status::Captured, None);
+                        }
+                        let up = state.scroll_accum > 0.0;
+                        state.scroll_accum -= step.copysign(state.scroll_accum);
+                        (
+                            canvas::event::Status::Captured,
+                            Some(Msg::PtyScroll {
+                                up,
+                                x: p.x,
+                                y: p.y,
+                            }),
+                        )
+                    }
                 }
-                (canvas::event::Status::Ignored, None)
             }
             _ => (canvas::event::Status::Ignored, None),
         }

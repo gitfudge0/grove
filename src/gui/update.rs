@@ -27,6 +27,7 @@ impl Grove {
         let mut g = Self {
             app,
             collapsed: Default::default(),
+            collapsed_wt: Default::default(),
             wt_cache: Default::default(),
             pty_cache: Default::default(),
             pty_rows,
@@ -35,6 +36,7 @@ impl Grove {
             pty_selection: None,
             blink_tick: 0,
             pending_kill: None,
+            hovered_wt: None,
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -111,6 +113,15 @@ impl Grove {
                 self.pending_kill = None;
                 self.switch_active_project(proj);
                 self.app.wt_idx = wt;
+                let key = (proj, wt);
+                if self.collapsed_wt.contains(&key) {
+                    self.collapsed_wt.remove(&key);
+                } else {
+                    self.collapsed_wt.insert(key);
+                }
+            }
+            Msg::HoverWorktree(target) => {
+                self.hovered_wt = target;
             }
             Msg::StartSession { proj, wt, agent } => {
                 self.open_agent_menu = None;

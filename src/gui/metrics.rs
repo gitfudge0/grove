@@ -3,7 +3,6 @@
 use iced::Font;
 
 pub const ROW_H: f32 = 28.0;
-pub const SUBTITLE_H: f32 = 14.0;
 pub const RAIL_W: f32 = 320.0;
 pub const APPBAR_H: f32 = 44.0;
 pub const STATUS_H: f32 = 26.0;
@@ -17,9 +16,15 @@ pub const CELL_H: f32 = 17.0;
 pub const FONT_SIZE: f32 = 12.5;
 
 pub const MONO_FONT: Font = Font::MONOSPACE;
-pub const MONO_BOLD: Font = Font {
+
+/// Sole UI font used throughout the chrome (sidebar, appbar, modals,
+/// session bar). Anything that renders code, paths, or PTY output uses
+/// `MONO_FONT` instead — this keeps the application visually consistent
+/// while preserving readability for monospace-sensitive content.
+pub const UI_FONT: Font = Font::DEFAULT;
+pub const UI_BOLD: Font = Font {
     weight: iced::font::Weight::Bold,
-    ..Font::MONOSPACE
+    ..Font::DEFAULT
 };
 
 /// PTY dimensions derived from window pixel size. Subtracts the fixed chrome

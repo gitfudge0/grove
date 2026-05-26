@@ -15,6 +15,9 @@ use std::sync::Arc;
 pub struct Grove {
     pub app: App,
     pub collapsed: HashSet<usize>,
+    /// Worktrees whose session children are hidden. Independent of the
+    /// project-level `collapsed`.
+    pub collapsed_wt: HashSet<(usize, usize)>,
     /// Cache of worktrees per project index. Refilled on project expand /
     /// session spawn/kill — never inside `view()`, since `git worktree list`
     /// is a subprocess and `view()` runs on every 33ms tick.
@@ -42,6 +45,9 @@ pub struct Grove {
     /// close button shows a red tick — clicking it confirms the kill, clicking
     /// anywhere else clears this back to `None`.
     pub pending_kill: Option<usize>,
+    /// Worktree currently under the mouse — drives reveal of the per-row
+    /// action buttons (play / terminal / more). `None` when no row is hovered.
+    pub hovered_wt: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +88,7 @@ pub enum Msg {
         proj: usize,
         wt: usize,
     },
+    HoverWorktree(Option<(usize, usize)>),
     StartSession {
         proj: usize,
         wt: usize,
@@ -131,9 +138,3 @@ pub enum Msg {
     ThemePickerCancel,
 }
 
-#[derive(Clone, Copy)]
-pub enum SplitStartSegment {
-    Left,
-    Middle,
-    Right,
-}

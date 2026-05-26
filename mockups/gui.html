@@ -2,26 +2,23 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>grove — gui mockup</title>
+<title>grove — sidebar hierarchy explorations</title>
 <style>
-  /* ────────────────────────────────────────────────────────────────────
-     tokyonight role bindings (mirrors src/theme.rs).
-     restrained palette: tinted neutrals carry the surface; accents are
-     reserved for semantic state — green=running, red=destructive,
-     cyan=active selection, blue=identifier, magenta=agent meta.
-     ──────────────────────────────────────────────────────────────────── */
   :root {
-    --bg:           oklch(0.20 0.020 270);     /* canvas */
-    --bg-rail:      oklch(0.17 0.022 270);     /* sidebar */
-    --bg-strip:     oklch(0.155 0.018 270);    /* top app bar, bottom status */
+    --bg:           oklch(0.20 0.020 270);
+    --bg-rail:      oklch(0.17 0.022 270);
+    --bg-strip:     oklch(0.155 0.018 270);
+    --bg-sunken:    oklch(0.145 0.020 270);
     --bg-hover:     oklch(0.235 0.025 270);
-    --bg-hl:        oklch(0.275 0.045 270);    /* active selection */
+    --bg-hl:        oklch(0.275 0.045 270);
     --border:       oklch(0.28 0.020 270);
     --border-soft:  oklch(0.235 0.018 270);
+    --border-faint: oklch(0.21 0.018 270);
 
     --fg:           oklch(0.86 0.04 265);
     --fg-dim:       oklch(0.72 0.035 262);
     --fg-mute:      oklch(0.55 0.028 264);
+    --fg-faint:     oklch(0.42 0.022 264);
 
     --blue:    oklch(0.74 0.13 252);
     --cyan:    oklch(0.82 0.13 220);
@@ -38,625 +35,694 @@
   }
 
   *, *::before, *::after { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: oklch(0.13 0.012 270);
+  html, body { margin: 0; min-height: 100%; background: oklch(0.12 0.012 270);
     color: var(--fg); font-family: var(--ui); font-size: 13px;
     font-feature-settings: "ss01", "cv11"; -webkit-font-smoothing: antialiased; }
-
   button { font: inherit; color: inherit; background: transparent; border: 0; padding: 0; cursor: pointer; }
-  input  { font: inherit; color: inherit; background: transparent; border: 0; outline: 0; }
   ::selection { background: var(--bg-hl); }
 
-  .window {
+  /* page chrome ─────────────────────────────────────────────────────── */
+  .page {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 32px 24px 64px;
+  }
+  .page h1 {
+    font-size: 14px; font-weight: 600; letter-spacing: 0.4px;
+    color: var(--fg); margin: 0 0 4px;
+  }
+  .page p.lede {
+    color: var(--fg-mute); font-size: 12px; margin: 0 0 28px; max-width: 720px;
+  }
+  .grid {
     display: grid;
-    grid-template-rows: 44px 1fr 26px;
-    height: 100vh;
+    grid-template-columns: repeat(3, var(--rail-w));
+    gap: 20px;
+    align-items: start;
+  }
+  .card {
     background: var(--bg);
     border: 1px solid var(--border);
-  }
-
-  /* ─── app bar ─────────────────────────────────────────────────────── */
-  .appbar {
-    display: grid;
-    grid-template-columns: var(--rail-w) 1fr auto;
-    align-items: center;
-    background: var(--bg-strip);
-    border-bottom: 1px solid var(--border);
-  }
-  .brand {
-    display: flex; align-items: baseline; gap: 8px;
-    padding: 0 16px;
-  }
-  .brand .mark {
-    font-family: var(--mono); font-weight: 600; font-size: 14px;
-    color: var(--magenta); letter-spacing: 0.5px;
-  }
-  .brand .tag {
-    color: var(--fg-mute); font-size: 11.5px;
-  }
-  .search {
-    display: flex; align-items: center; gap: 10px;
-    height: 28px; padding: 0 10px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    margin: 0 18px;
-    max-width: 380px;
-  }
-  .search:focus-within { border-color: var(--cyan); }
-  .search input { width: 100%; font-size: 12.5px; color: var(--fg); }
-  .search input::placeholder { color: var(--fg-mute); }
-  .appbar-right { display: flex; align-items: center; gap: 4px; padding: 0 12px; }
-
-  .seg {
-    display: inline-flex;
-    border: 1px solid var(--border);
-    border-radius: 5px;
+    border-radius: 8px;
     overflow: hidden;
-    margin-right: 10px;
   }
-  .seg button {
-    padding: 4px 10px; font-size: 12px; color: var(--fg-dim);
-    border-right: 1px solid var(--border);
-  }
-  .seg button:last-child { border-right: 0; }
-  .seg button.active { background: var(--bg-hl); color: var(--fg); }
-  .seg button:hover:not(.active) { background: var(--bg-hover); color: var(--fg); }
-
-  .icon-btn {
-    width: 28px; height: 28px;
-    display: inline-flex; align-items: center; justify-content: center;
-    border-radius: 5px; color: var(--fg-dim);
-  }
-  .icon-btn:hover { background: var(--bg-hover); color: var(--fg); }
-  .icon-btn svg { width: 15px; height: 15px; stroke: currentColor; fill: none;
-    stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-
-  /* ─── main grid: sidebar | workspace ──────────────────────────────── */
-  .main { display: grid; grid-template-columns: var(--rail-w) 1fr; min-height: 0; }
-
-  /* ─── sidebar ─────────────────────────────────────────────────────── */
-  .sidebar {
-    background: var(--bg-rail);
-    border-right: 1px solid var(--border);
-    display: grid;
-    grid-template-rows: 36px 1fr auto;
-    min-height: 0;
-  }
-  .rail-head {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0 12px 0 16px;
+  .card-head {
+    padding: 10px 14px;
     border-bottom: 1px solid var(--border-soft);
-    color: var(--fg-mute);
-    font-size: 11px; letter-spacing: 0.8px; text-transform: uppercase;
+    background: var(--bg-strip);
+    display: flex; align-items: center; justify-content: space-between;
   }
-  .rail-head .actions { display: inline-flex; gap: 2px; }
+  .card-head .title { font-size: 12px; color: var(--fg); font-weight: 600; letter-spacing: 0.3px; }
+  .card-head .tag {
+    font-family: var(--mono); font-size: 10.5px;
+    color: var(--fg-mute);
+    padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border);
+  }
+  .card-head .tag.primary { color: var(--magenta); border-color: var(--magenta); }
+  .card-body { background: var(--bg-rail); min-height: 560px; }
+  .card-notes {
+    border-top: 1px solid var(--border-soft);
+    padding: 10px 14px;
+    color: var(--fg-mute); font-size: 11.5px; line-height: 1.55;
+    background: var(--bg-strip);
+  }
+  .card-notes b { color: var(--fg-dim); font-weight: 600; }
+  .card-notes ul { margin: 6px 0 0; padding-left: 16px; }
+  .card-notes li { margin-bottom: 2px; }
 
-  .tree { overflow: auto; padding: 6px 0 14px; }
+  /* shared sidebar primitives ──────────────────────────────────────── */
+  .tree { padding: 6px 0 14px; }
 
-  .row {
+  /* a row baseline used by all variants */
+  .r {
     display: grid;
-    grid-template-columns: 14px 1fr auto;
-    column-gap: 8px;
+    grid-template-columns: auto 1fr auto;
     align-items: center;
+    column-gap: 8px;
     height: var(--row-h);
-    padding: 0 8px 0 12px;
-    cursor: default;
+    padding: 0 8px;
     color: var(--fg-dim);
     position: relative;
   }
-  .row:hover { background: var(--bg-hover); color: var(--fg); }
-  .row.active { background: var(--bg-hl); color: var(--fg); }
-  .row .twist {
-    color: var(--fg-mute); font-size: 9px; line-height: 1; text-align: center;
-    transition: transform 120ms ease-out;
+  .r .twist {
+    width: 14px;
+    color: var(--fg-faint); font-size: 9px; line-height: 1; text-align: center;
   }
-  .row.open .twist { transform: rotate(90deg); }
-
-  .row.proj { font-weight: 500; color: var(--fg); }
-  .row.proj .name { color: var(--fg); }
-  .row.proj .count {
-    display: inline-flex; align-items: center; gap: 4px;
-    font-family: var(--mono); font-size: 11px; color: var(--green);
+  .r .twist.open { color: var(--fg-mute); }
+  .r .ico {
+    width: 14px; display: inline-flex; align-items: center; justify-content: center;
+    color: var(--fg-faint);
   }
-
-  .row.wt    { padding-left: 28px; }
-  .row.wt .name { color: var(--fg-dim); }
-  .row.wt .branch {
-    font-family: var(--mono); font-size: 10.5px; color: var(--fg-mute);
-    margin-left: 6px;
-  }
-  .row.wt .hover-actions {
-    display: none;
-    align-items: center; gap: 2px;
-  }
-  .row.wt:hover .hover-actions,
-  .row.wt.open .hover-actions { display: inline-flex; }
-
-  .row.sess { padding-left: 44px; }
-  .row.sess .dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--green); margin-left: 3px;
-  }
-  .row.sess.idle .dot { background: var(--fg-mute); }
-  .row.sess.error .dot { background: var(--red); }
-  .row.sess .agent {
-    color: var(--fg);
-    font-family: var(--mono); font-size: 12px;
-  }
-  .row.sess.active { background: var(--bg-hl); }
-  .row.sess.active .agent { color: var(--cyan); }
-  .row.sess .meta {
-    font-size: 11px; color: var(--fg-mute);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .row.sess .close {
-    display: none;
-    width: 16px; height: 16px; border-radius: 3px; color: var(--fg-mute);
-    align-items: center; justify-content: center;
-  }
-  .row.sess:hover .close { display: inline-flex; }
-  .row.sess .close:hover { background: var(--red); color: var(--bg); }
-  .row.sess .close svg { width: 9px; height: 9px; stroke: currentColor; fill: none;
-    stroke-width: 1.8; stroke-linecap: round; }
-
+  .actions { display: inline-flex; gap: 2px; opacity: 0; transition: opacity 80ms ease; }
+  .r:hover .actions { opacity: 1; }
   .mini {
     width: 22px; height: 22px;
     display: inline-flex; align-items: center; justify-content: center;
     border-radius: 4px; color: var(--fg-mute);
+    border: 1px solid transparent;
   }
-  .mini:hover { background: oklch(0.32 0.04 270); color: var(--fg); }
-  .mini.primary:hover { background: var(--bg); color: var(--green); }
-  .mini svg { width: 13px; height: 13px; stroke: currentColor; fill: none;
-    stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .mini:hover { background: var(--bg-hover); color: var(--fg); border-color: var(--border-soft); }
+  .mini svg { width: 12px; height: 12px; stroke: currentColor; fill: none;
+    stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .play-fill { fill: var(--green); stroke: none; }
 
-  .split-btn {
-    display: inline-flex;
-    align-items: stretch;
-    border: 1px solid var(--border);
-    border-radius: 4px;
+  /* count chips on project rows */
+  .count {
+    font-family: var(--mono); font-size: 10.5px;
+    display: inline-flex; align-items: center; gap: 4px;
+    color: var(--fg-mute);
+  }
+  .count .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-faint); }
+  .count.has .dot { background: var(--green); }
+  .count.has { color: var(--green); }
+
+  /* worktree branch chip */
+  .branch {
+    font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint);
+    padding: 1px 6px; border-radius: 3px;
+    background: var(--border-faint);
+    white-space: nowrap;
+  }
+  .branch.subtle { background: transparent; padding: 0; color: var(--fg-mute); }
+  .name {
+    color: var(--fg-dim); font-size: 12.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .r.active .name, .r:hover .name { color: var(--fg); }
+
+  /* session bits */
+  .agent { font-family: var(--mono); font-size: 11.5px; color: var(--fg); }
+  .r.active .agent { color: var(--cyan); }
+  .label { font-family: var(--mono); font-size: 11px; color: var(--fg-mute);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sub {
+    grid-column: 2 / 3;
+    font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint);
+    margin-top: -4px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* ──────────────────────────────────────────────────────────────────
+     VARIANT A — Section headers + guide lines
+     Projects render as muted small-caps section labels. No row chrome,
+     no count badge competing with the name. Children sit under a 1px
+     vertical guide. Maximum hierarchy via typography + indentation.
+     ────────────────────────────────────────────────────────────────── */
+  .v-a .proj-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 12px 6px 16px;
+    color: var(--fg-mute);
+    font-size: 10.5px; font-weight: 600;
+    letter-spacing: 1.2px; text-transform: uppercase;
+    cursor: pointer;
+  }
+  .v-a .proj-head:first-child { padding-top: 8px; }
+  .v-a .proj-head:hover { color: var(--fg-dim); }
+  .v-a .proj-head .lhs { display: inline-flex; align-items: center; gap: 8px; }
+  .v-a .proj-head .twist { color: var(--fg-faint); }
+  .v-a .proj-head .add {
+    color: var(--fg-faint); padding: 2px 6px; border-radius: 4px;
+    font-size: 11px; letter-spacing: 0;
+  }
+  .v-a .proj-head .add:hover { color: var(--fg); background: var(--bg-hover); }
+  .v-a .proj-head .count { letter-spacing: 0; font-size: 10.5px; }
+  .v-a .children {
+    position: relative;
+    padding: 2px 0 8px;
+    margin-left: 22px;
+    border-left: 1px solid var(--border-soft);
+  }
+  .v-a .r.wt {
+    grid-template-columns: 14px 1fr auto auto;
+    column-gap: 8px;
+    padding-left: 14px;
+  }
+  .v-a .r.wt.active::before {
+    content: ""; position: absolute; left: -1px; top: 4px; bottom: 4px;
+    width: 2px; background: var(--cyan); border-radius: 1px;
+  }
+  .v-a .r.wt .branch { margin-left: 4px; }
+  .v-a .r.sess {
+    grid-template-columns: 14px 1fr auto;
+    padding-left: 36px;
+  }
+  .v-a .r.sess .agent-dot {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--green); justify-self: center;
+  }
+  .v-a .r.sess.idle .agent-dot { background: var(--fg-faint); }
+  .v-a .r.sess.active { background: linear-gradient(to right, oklch(0.21 0.04 220 / 0.35), transparent 70%); }
+
+  /* ──────────────────────────────────────────────────────────────────
+     VARIANT B — Grouped cards with subtle elevation
+     Each project is its own surface (slightly lighter background, top
+     border, internal padding). Branches sit directly beneath project
+     name with comma-separated meta. Sessions render inline as chips.
+     ────────────────────────────────────────────────────────────────── */
+  .v-b .tree { padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+  .v-b .project {
+    background: var(--bg-sunken);
+    border: 1px solid var(--border-faint);
+    border-radius: 6px;
     overflow: hidden;
-    height: 22px;
   }
-  .split-btn > button {
-    display: inline-flex; align-items: center; gap: 5px;
-    padding: 0 8px;
-    font-size: 11px; color: var(--fg-dim);
-    background: var(--bg);
+  .v-b .project.expanded { background: var(--bg); }
+  .v-b .p-head {
+    display: grid;
+    grid-template-columns: 14px 1fr auto auto;
+    column-gap: 8px; align-items: center;
+    padding: 8px 10px;
+    cursor: pointer;
   }
-  .split-btn > button:hover { background: var(--bg-hover); color: var(--fg); }
-  .split-btn .label { display: inline-flex; align-items: center; gap: 5px; }
-  .split-btn .label svg { width: 9px; height: 9px; }
-  .split-btn .label .play { color: var(--green); }
-  .split-btn .pick {
-    border-left: 1px solid var(--border);
-    padding: 0 6px;
+  .v-b .p-head .twist { color: var(--fg-faint); font-size: 9px; }
+  .v-b .p-head .name {
+    color: var(--fg); font-weight: 600; font-size: 12.5px; letter-spacing: 0.2px;
   }
-  .split-btn .pick svg { width: 8px; height: 8px; }
+  .v-b .p-head .count { color: var(--fg-mute); }
+  .v-b .p-head .count.has { color: var(--green); }
+  .v-b .p-head .add { color: var(--fg-faint); padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+  .v-b .p-head .add:hover { color: var(--fg); background: var(--bg-hover); }
+  .v-b .p-body { padding: 4px 6px 6px; border-top: 1px solid var(--border-soft); }
+  .v-b .r.wt {
+    grid-template-columns: 14px 1fr auto auto;
+    padding-left: 8px;
+    border-radius: 4px;
+  }
+  .v-b .r.wt:hover { background: var(--bg-hover); }
+  .v-b .r.wt.active { background: var(--bg-hl); }
+  .v-b .r.wt.active .name { color: var(--fg); }
+  .v-b .r.wt .branch { background: oklch(0.23 0.025 270); }
+  .v-b .r.sess {
+    grid-template-columns: 1fr auto;
+    padding: 4px 8px 4px 36px;
+    height: auto; min-height: 22px;
+    border-left: 2px solid var(--border-faint);
+    margin-left: 14px;
+  }
+  .v-b .r.sess.active { border-left-color: var(--cyan); }
+  .v-b .r.sess .label { font-size: 10.5px; }
+  .v-b .r.sess .sub { font-size: 10px; color: var(--fg-faint); }
+  .v-b .agent-line { display: inline-flex; align-items: baseline; gap: 6px; overflow: hidden; }
 
-  .new-project {
+  /* ──────────────────────────────────────────────────────────────────
+     VARIANT C — Compact tree with strong typographic anchors
+     Closest to current implementation but disciplined. Project headers
+     are mixed-case bold with a colored leading bar. Worktrees nest with
+     a hairline guide. Sessions sit on a deeper indent with no dot —
+     status is communicated by agent-name color only.
+     ────────────────────────────────────────────────────────────────── */
+  .v-c .proj-head {
+    display: grid;
+    grid-template-columns: 14px 1fr auto auto;
+    column-gap: 8px; align-items: center;
+    padding: 6px 10px 6px 14px;
+    cursor: pointer;
+    position: relative;
+  }
+  .v-c .proj-head + .proj-head, .v-c .group + .proj-head { margin-top: 10px; }
+  .v-c .proj-head .bar {
+    position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px;
+    background: transparent;
+  }
+  .v-c .proj-head.has .bar { background: var(--magenta); opacity: 0.55; }
+  .v-c .proj-head .name {
+    color: var(--fg); font-weight: 600; font-size: 12px;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+  }
+  .v-c .proj-head .twist { color: var(--fg-mute); }
+  .v-c .proj-head .count { color: var(--fg-mute); }
+  .v-c .proj-head .count.has { color: var(--green); }
+  .v-c .group { padding-bottom: 6px; }
+  .v-c .group .guide {
+    position: relative;
+    padding-left: 0;
+  }
+  .v-c .r.wt {
+    grid-template-columns: 14px 1fr auto auto;
+    padding-left: 28px;
+    column-gap: 8px;
+  }
+  .v-c .r.wt.active { background: var(--bg-hl); }
+  .v-c .r.wt.active::before {
+    content: ""; position: absolute; left: 0; top: 4px; bottom: 4px;
+    width: 2px; background: var(--cyan); border-radius: 1px;
+  }
+  .v-c .r.sess {
+    grid-template-columns: 1fr auto;
+    padding-left: 72px;
+  }
+  .v-c .r.sess.idle .agent { color: var(--fg-mute); }
+  .v-c .r.sess.active .agent { color: var(--cyan); }
+  .v-c .r.sess .row-inner {
+    display: inline-flex; align-items: baseline; gap: 8px; overflow: hidden;
+  }
+  .v-c .r.sess .sep { color: var(--fg-faint); }
+  .v-c .r.sess .label { color: var(--fg-mute); }
+
+  /* small "add project" footer shared */
+  .add-project {
     border-top: 1px solid var(--border-soft);
     padding: 10px 12px;
-    display: flex; gap: 8px;
   }
-  .new-project button {
-    flex: 1;
-    height: 28px;
+  .add-project button {
+    width: 100%; height: 28px;
     border: 1px dashed var(--border);
-    border-radius: 5px;
-    color: var(--fg-dim);
-    font-size: 12px;
-  }
-  .new-project button:hover { color: var(--fg); border-color: var(--fg-mute); background: var(--bg-hover); }
-
-  /* ─── workspace: session header + pty ─────────────────────────────── */
-  .workspace {
-    display: grid;
-    grid-template-rows: 1fr;
-    min-height: 0;
-    background: var(--bg);
-  }
-
-  /* ─── session header above pty ────────────────────────────────────── */
-  .session {
-    display: grid;
-    grid-template-rows: 48px 1fr;
-    min-height: 0;
-  }
-  .sess-bar {
-    display: flex; align-items: center; gap: 14px;
-    padding: 0 18px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-strip);
-    color: var(--fg-mute);
-    font-family: var(--mono);
-    font-size: 12px;
-  }
-  .sess-bar .status-pill {
-    display: inline-flex; align-items: center; gap: 7px;
-    font-family: var(--ui); font-size: 11px;
-    color: var(--green);
-  }
-  .sess-bar .status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
-  .sess-bar .vline {
-    width: 1px; height: 18px; background: var(--border);
-  }
-  .sess-bar .crumb-proj { color: var(--blue); }
-  .sess-bar .crumb-wt   { color: var(--fg); }
-  .sess-bar .branch     { color: var(--fg-mute); }
-  .sess-bar .agent      { color: var(--magenta); }
-  .sess-bar .glyph      { color: var(--border); }
-  .sess-bar .grow       { flex: 1; }
-  .sess-bar .path       { color: var(--fg-mute); }
-  .sess-bar .tools      { display: inline-flex; gap: 2px; }
-  .sess-bar .tools button {
-    height: 22px; padding: 0 8px;
-    display: inline-flex; align-items: center; gap: 5px;
-    color: var(--fg-dim); border-radius: 4px;
-    font-size: 11.5px;
-  }
-  .sess-bar .tools button:hover { background: var(--bg-hover); color: var(--fg); }
-  .sess-bar .tools button.danger:hover { color: var(--red); }
-  .sess-bar .tools svg { width: 12px; height: 12px; stroke: currentColor; fill: none;
-    stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-
-  .pty-frame {
-    margin: 0;
-    overflow: hidden;
-    display: grid; grid-template-rows: 1fr;
-    background: var(--bg);
-  }
-  .pty {
-    font-family: var(--mono); font-size: 12.5px; line-height: 1.5;
-    color: var(--fg); white-space: pre;
-    overflow: auto; padding: 14px 18px;
-  }
-  .pty .c   { color: var(--fg-mute); }
-  .pty .b   { color: var(--blue); }
-  .pty .cy  { color: var(--cyan); }
-  .pty .m   { color: var(--magenta); }
-  .pty .g   { color: var(--green); }
-  .pty .y   { color: var(--yellow); }
-  .pty .r   { color: var(--red); }
-  .pty .fd  { color: var(--fg-dim); }
-  .pty .cur { background: var(--fg); color: var(--bg); }
-  .pty .ok  { color: var(--green); }
-  .pty .prompt { color: var(--green); font-weight: 600; }
-  .pty .user   { color: var(--cyan); font-weight: 600; }
-
-  /* ─── status bar ──────────────────────────────────────────────────── */
-  .status {
-    display: flex; align-items: center;
-    background: var(--bg-strip);
-    border-top: 1px solid var(--border);
-    padding: 0 14px;
-    color: var(--fg-mute);
-    font-size: 11px;
-  }
-  .status .group { display: inline-flex; align-items: center; gap: 14px; }
-  .status .grow { flex: 1; }
-  .status .item { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
-  .status .item:hover { color: var(--fg); }
-  .status .label { color: var(--fg-mute); }
-  .status .value { color: var(--fg-dim); }
-  .status .running .dot {
-    width: 7px; height: 7px; border-radius: 50%; background: var(--green);
-  }
-  .status .toast {
-    color: var(--green);
-    margin-left: 24px;
-  }
-
-  /* hover popovers on worktree rows: contextual suggestion / dropdown */
-  .more-menu {
-    position: absolute;
-    right: 6px; top: 28px;
-    background: var(--bg-rail);
-    border: 1px solid var(--border-strong, var(--border));
-    border-radius: 6px;
-    padding: 4px;
-    box-shadow: 0 8px 24px oklch(0.05 0.02 270 / 0.45);
-    z-index: 5;
-    min-width: 180px;
-    display: none;
-  }
-  .row.wt.menu-open .more-menu { display: block; }
-  .more-menu button {
-    display: flex; align-items: center; gap: 8px;
-    width: 100%;
-    padding: 6px 10px;
-    color: var(--fg-dim);
-    font-size: 12px;
     border-radius: 4px;
+    color: var(--fg-dim); font-size: 12px;
   }
-  .more-menu button:hover { background: var(--bg-hover); color: var(--fg); }
-  .more-menu button.danger { color: var(--red); }
-  .more-menu .shortcut { margin-left: auto; color: var(--fg-mute);
-    font-family: var(--mono); font-size: 10.5px; }
-  .more-menu hr { border: 0; border-top: 1px solid var(--border-soft); margin: 4px 0; }
+  .add-project button:hover { color: var(--fg); background: var(--bg-hover); border-color: var(--fg-mute); }
 </style>
 </head>
 <body>
 
-<!-- ───────────────────────────────────────────────────────────────────────
-     re-usable svg icon defs
-     ─────────────────────────────────────────────────────────────────────── -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
-    <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
-    <symbol id="i-close" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
-    <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.5l7 4.5-7 4.5z" fill="currentColor"/></symbol>
+    <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.5l7 4.5-7 4.5z" class="play-fill"/></symbol>
     <symbol id="i-chev-down" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></symbol>
-    <symbol id="i-chev-right" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4"/></symbol>
-    <symbol id="i-cog" viewBox="0 0 16 16">
-      <circle cx="8" cy="8" r="2"/>
-      <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/>
-    </symbol>
-    <symbol id="i-search" viewBox="0 0 16 16">
-      <circle cx="7" cy="7" r="4.5"/><path d="M10.4 10.4l3 3"/>
-    </symbol>
     <symbol id="i-term" viewBox="0 0 16 16">
       <rect x="1.5" y="3" width="13" height="10" rx="1.5"/>
       <path d="M4.5 7l2 1.5-2 1.5M8 10h3.5"/>
-    </symbol>
-    <symbol id="i-folder" viewBox="0 0 16 16">
-      <path d="M1.5 5V12.5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V6.5a1 1 0 0 0-1-1H7.5L6 4H2.5a1 1 0 0 0-1 1z"/>
-    </symbol>
-    <symbol id="i-trash" viewBox="0 0 16 16">
-      <path d="M3 4.5h10M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M4.5 4.5l.5 8a1 1 0 0 0 1 .9h4a1 1 0 0 0 1-.9l.5-8"/>
-    </symbol>
-    <symbol id="i-edit" viewBox="0 0 16 16">
-      <path d="M11.5 2.5l2 2L6 12l-2.5.5L4 10z"/>
-    </symbol>
-    <symbol id="i-copy" viewBox="0 0 16 16">
-      <rect x="4" y="4" width="9" height="9" rx="1.2"/>
-      <path d="M11.5 4V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v7.5a1 1 0 0 0 1 1h1"/>
     </symbol>
     <symbol id="i-more" viewBox="0 0 16 16">
       <circle cx="3.5" cy="8" r="1.2" fill="currentColor"/>
       <circle cx="8"   cy="8" r="1.2" fill="currentColor"/>
       <circle cx="12.5" cy="8" r="1.2" fill="currentColor"/>
     </symbol>
-    <symbol id="i-split" viewBox="0 0 16 16">
-      <rect x="1.5" y="2.5" width="13" height="11" rx="1.2"/>
-      <path d="M8 2.5v11"/>
-    </symbol>
+    <symbol id="i-close" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
   </defs>
 </svg>
 
-<div class="window">
+<div class="page">
+  <h1>grove · sidebar — Variant C states</h1>
+  <p class="lede">
+    All renderable states of the anchored-tree sidebar: project (collapsed / expanded / empty / has-sessions),
+    worktree (default / branched / active / hovered), session (running / idle / active / terminal / claude).
+  </p>
 
-  <!-- ─── app bar ──────────────────────────────────────────────────── -->
-  <div class="appbar">
-    <div class="brand">
-      <span class="mark">grove</span>
-    </div>
+  <div class="grid">
 
-    <div class="search">
-      <svg width="13" height="13" style="color:var(--fg-mute)"><use href="#i-search"/></svg>
-      <input type="text" placeholder="filter projects, worktrees, sessions" />
-    </div>
-
-    <div class="appbar-right">
-      <div class="seg" role="tablist" title="session backend">
-        <button class="active">native</button>
-        <button>tmux</button>
+    <!-- 1 · Default mixed state -->
+    <div class="card v-c">
+      <div class="card-head">
+        <span class="title">1 · Mixed — typical session</span>
+        <span class="tag primary">default</span>
       </div>
-      <button class="icon-btn" title="preferences"><svg><use href="#i-cog"/></svg></button>
-    </div>
-  </div>
+      <div class="card-body" style="width: var(--rail-w);">
+        <div class="tree">
 
-  <!-- ─── main: sidebar | workspace ────────────────────────────────── -->
-  <div class="main">
+          <div class="proj-head has">
+            <span class="bar"></span>
+            <span class="twist">▾</span>
+            <span class="name">careconvoy-ai-web</span>
+            <span class="count has">●1</span>
+            <span class="add" style="color:var(--fg-faint);font-size:14px;padding:0 4px">＋</span>
+          </div>
+          <div class="group">
+            <div class="r wt">
+              <span class="twist">▸</span>
+              <span class="name">careconvoy-ai-web</span>
+              <span class="branch subtle">main</span>
+              <span></span>
+            </div>
+            <div class="r sess">
+              <span class="row-inner">
+                <span class="agent">terminal</span>
+                <span class="sep">·</span>
+                <span class="label">CC_AI_R2</span>
+              </span>
+              <span></span>
+            </div>
+            <div class="r wt">
+              <span class="twist">▸</span>
+              <span class="name">t3code-69bc9fb2</span>
+              <span class="branch">t3code/ava-…</span>
+              <span></span>
+            </div>
+          </div>
 
-    <!-- ─── sidebar (projects + worktrees + sessions) ─────────────── -->
-    <aside class="sidebar">
-      <div class="rail-head">
-        <span>projects</span>
-        <span class="actions">
-          <button class="icon-btn" title="add project"><svg><use href="#i-plus"/></svg></button>
-        </span>
-      </div>
+          <div class="proj-head has">
+            <span class="bar"></span>
+            <span class="twist">▾</span>
+            <span class="name">grove</span>
+            <span class="count has">●1</span>
+            <span class="add" style="color:var(--fg-faint);font-size:14px;padding:0 4px">＋</span>
+          </div>
+          <div class="group">
+            <div class="r wt active">
+              <span class="twist">▾</span>
+              <span class="name">grove</span>
+              <span class="branch subtle">main</span>
+              <span></span>
+            </div>
+            <div class="r sess active">
+              <span class="row-inner">
+                <span class="agent">claude</span>
+                <span class="sep">·</span>
+                <span class="label">Claude Code</span>
+              </span>
+              <span></span>
+            </div>
+          </div>
 
-      <div class="tree">
-
-        <!-- collapsed project -->
-        <div class="row proj">
-          <span class="twist">▶</span>
-          <span class="name">audora</span>
-          <span class="count">●1</span>
-        </div>
-
-        <!-- expanded project: grove -->
-        <div class="row proj open">
-          <span class="twist">▶</span>
-          <span class="name">grove</span>
-          <span class="count">●3</span>
-        </div>
-
-        <!-- worktree row: with hover actions and an open submenu state shown -->
-        <div class="row wt open">
-          <span class="twist">▶</span>
-          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-            <span class="name">grove</span><span class="branch">main</span>
-          </span>
-          <span class="hover-actions">
-            <span class="split-btn" title="start session in this worktree">
-              <button class="label"><svg class="play"><use href="#i-play"/></svg>start</button>
-              <button class="pick" title="pick agent"><svg><use href="#i-chev-down"/></svg></button>
-            </span>
-            <button class="mini" title="open terminal"><svg><use href="#i-term"/></svg></button>
-            <button class="mini" title="more actions"><svg><use href="#i-more"/></svg></button>
-          </span>
-        </div>
-
-        <div class="row sess active">
-          <span></span>
-          <span style="display:inline-flex;align-items:baseline;gap:8px;overflow:hidden">
-            <span class="dot"></span>
-            <span class="agent">claude</span>
-            <span class="meta">understand grove functionality</span>
-          </span>
-          <button class="close" title="kill session"><svg><use href="#i-close"/></svg></button>
-        </div>
-        <div class="row sess">
-          <span></span>
-          <span style="display:inline-flex;align-items:baseline;gap:8px;overflow:hidden">
-            <span class="dot"></span>
-            <span class="agent">codex</span>
-            <span class="meta">refactor session manager</span>
-          </span>
-          <button class="close"><svg><use href="#i-close"/></svg></button>
-        </div>
-        <div class="row sess idle">
-          <span></span>
-          <span style="display:inline-flex;align-items:baseline;gap:8px;overflow:hidden">
-            <span class="dot"></span>
-            <span class="agent">terminal</span>
-            <span class="meta">~/dev/gitfudge0/grove</span>
-          </span>
-          <button class="close"><svg><use href="#i-close"/></svg></button>
-        </div>
-
-        <!-- another worktree under grove, with menu shown to demonstrate the popover -->
-        <div class="row wt menu-open">
-          <span class="twist">▶</span>
-          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-            <span class="name">hero-redesign</span><span class="branch">hero-redesign</span>
-          </span>
-          <span class="hover-actions">
-            <span class="split-btn">
-              <button class="label"><svg class="play"><use href="#i-play"/></svg>start</button>
-              <button class="pick"><svg><use href="#i-chev-down"/></svg></button>
-            </span>
-            <button class="mini" title="open terminal"><svg><use href="#i-term"/></svg></button>
-            <button class="mini" title="more actions"><svg><use href="#i-more"/></svg></button>
-          </span>
-
-          <div class="more-menu" role="menu">
-            <button><svg width="13" height="13"><use href="#i-folder"/></svg>reveal in finder<span class="shortcut">⌘O</span></button>
-            <button><svg width="13" height="13"><use href="#i-copy"/></svg>copy path<span class="shortcut">⌘C</span></button>
-            <button><svg width="13" height="13"><use href="#i-edit"/></svg>rename worktree…</button>
-            <hr/>
-            <button class="danger"><svg width="13" height="13"><use href="#i-trash"/></svg>delete worktree…<span class="shortcut">⌫</span></button>
+          <div class="proj-head">
+            <span class="bar"></span>
+            <span class="twist">▸</span>
+            <span class="name">yobiken</span>
+            <span class="count">●0</span>
+            <span class="add" style="color:var(--fg-faint);font-size:14px;padding:0 4px">＋</span>
           </div>
         </div>
+      </div>
+      <div class="card-notes">
+        <b>Three indent stops:</b> project (flush) → worktree (28px) → session (72px). No tree lines; active worktree gets the cyan rail and selected session glows on hover-bg.
+      </div>
+    </div>
 
-        <!-- expanded project: portfolio -->
-        <div class="row proj open">
-          <span class="twist">▶</span>
-          <span class="name">portfolio</span>
-          <span class="count">●2</span>
-        </div>
-        <div class="row wt">
-          <span class="twist">▶</span>
-          <span><span class="name">portfolio</span><span class="branch">main</span></span>
-          <span class="hover-actions"></span>
-        </div>
-        <div class="row wt open">
-          <span class="twist">▶</span>
-          <span><span class="name">hero-redesign</span><span class="branch">hero-redesign</span></span>
-          <span class="hover-actions">
-            <span class="split-btn">
-              <button class="label"><svg class="play"><use href="#i-play"/></svg>start</button>
-              <button class="pick"><svg><use href="#i-chev-down"/></svg></button>
-            </span>
-            <button class="mini"><svg><use href="#i-term"/></svg></button>
-            <button class="mini"><svg><use href="#i-more"/></svg></button>
-          </span>
-        </div>
-        <div class="row sess idle">
-          <span></span>
-          <span style="display:inline-flex;align-items:baseline;gap:8px;overflow:hidden">
-            <span class="dot"></span>
-            <span class="agent">terminal</span>
-            <span class="meta">page.tsx</span>
-          </span>
-          <button class="close"><svg><use href="#i-close"/></svg></button>
-        </div>
+    <!-- 2 · Project states -->
+    <div class="card v-c">
+      <div class="card-head">
+        <span class="title">2 · Project states</span>
+        <span class="tag">project</span>
+      </div>
+      <div class="card-body" style="width: var(--rail-w);">
+        <div class="tree">
 
-        <!-- collapsed project -->
-        <div class="row proj">
-          <span class="twist">▶</span>
-          <span class="name">debbie-android</span>
-          <span class="count">●1</span>
+          <div class="proj-head">
+            <span class="bar"></span>
+            <span class="twist">▸</span>
+            <span class="name">collapsed-empty</span>
+            <span class="count">●0</span>
+            <span class="add" style="color:var(--fg-faint);font-size:14px;padding:0 4px">＋</span>
+          </div>
+
+          <div class="proj-head has">
+            <span class="bar"></span>
+            <span class="twist">▸</span>
+            <span class="name">collapsed-has-sessions</span>
+            <span class="count has">●3</span>
+            <span class="add" style="color:var(--fg-faint);font-size:14px;padding:0 4px">＋</span>
+          </div>
+
+          <div class="proj-head">
+            <span class="bar"></span>
+            <span class="twist">▾</span>
+            <span class="name">expanded-empty</span>
+            <span class="count">●0</span>
+            <span class="add" style="color:var(--fg-faint);font-size:14px;padding:0 4px">＋</span>
+          </div>
+          <div class="group">
+            <div class="r wt" style="color:var(--fg-faint);font-style:italic">
+              <span></span>
+              <span class="name" style="color:var(--fg-faint)">no worktrees yet</span>
+              <span></span>
+              <span></span>
+            </div>
+          </div>
+
+          <div class="proj-head has">
+            <span class="bar"></span>
+            <span class="twist">▾</span>
+            <span class="name">expanded-active</span>
+            <span class="count has">●2</span>
+            <span class="add" style="color:var(--fg-faint);font-size:14px;padding:0 4px">＋</span>
+          </div>
+          <div class="group">
+            <div class="r wt">
+              <span class="twist">▸</span>
+              <span class="name">main</span>
+              <span class="branch subtle">main</span>
+              <span></span>
+            </div>
+            <div class="r wt">
+              <span class="twist">▸</span>
+              <span class="name">feature-x</span>
+              <span class="branch">AVA-301</span>
+              <span></span>
+            </div>
+          </div>
+
         </div>
       </div>
-
-      <div class="new-project">
-        <button>+ add project</button>
+      <div class="card-notes">
+        Magenta bar appears only on projects with running sessions (<b>.has</b>). Twist toggles ▸/▾. Count chip greens when non-zero.
       </div>
-    </aside>
+    </div>
 
-    <!-- ─── workspace ────────────────────────────────────────────── -->
-    <section class="workspace">
-      <div class="session">
-        <div class="sess-bar">
-          <span class="status-pill" title="session running">
-            <span class="dot"></span>running
-          </span>
-          <span class="vline"></span>
-          <span class="agent">claude code</span>
-          <span class="glyph">·</span>
-          <span class="crumb-proj">grove</span>
-          <span class="glyph">/</span>
-          <span class="crumb-wt">grove</span>
-          <span class="branch">[main]</span>
-          <span class="grow"></span>
-          <span class="path">~/dev/gitfudge0/grove</span>
-          <span class="vline"></span>
-          <span class="tools">
-            <button title="split right"><svg><use href="#i-split"/></svg>split</button>
-            <button title="rename session"><svg><use href="#i-edit"/></svg>rename</button>
-            <button class="danger" title="kill session"><svg><use href="#i-trash"/></svg>kill</button>
-          </span>
-        </div>
+    <!-- 3 · Worktree states -->
+    <div class="card v-c">
+      <div class="card-head">
+        <span class="title">3 · Worktree states</span>
+        <span class="tag">worktree</span>
+      </div>
+      <div class="card-body" style="width: var(--rail-w);">
+        <div class="tree">
 
-        <div class="pty-frame">
-<div class="pty"><span class="c">────────────────────────────────────────────────────────────────────────</span>
-  <span class="m">✻ claude code</span> <span class="c">v2.1.15d   ~/dev/gitfudge0/grove</span>
+          <div class="proj-head has">
+            <span class="bar"></span>
+            <span class="twist">▾</span>
+            <span class="name">demo-project</span>
+            <span class="count has">●5</span>
+            <span class="add" style="color:var(--fg-faint);font-size:14px;padding:0 4px">＋</span>
+          </div>
+          <div class="group">
 
-<span class="user">&gt;</span> what does grove do?
-  <span class="c">read 1 file</span>
+            <div class="r wt">
+              <span class="twist">▸</span>
+              <span class="name">main</span>
+              <span class="branch subtle">main</span>
+              <span></span>
+            </div>
 
-  <span class="ok">●</span> grove manages git worktrees per project and runs ai coding
-    agents inside them via embedded pty sessions. you browse projects
-    and worktrees in the left rail, click a worktree to start a session,
-    and switch between live sessions with the tabs above. sessions
-    persist across grove restarts when the tmux backend is enabled;
-    native sessions live for the lifetime of the process.
+            <div class="r wt">
+              <span class="twist">▸</span>
+              <span class="name">feature-branch</span>
+              <span class="branch">AVA-122</span>
+              <span></span>
+            </div>
 
-  <span class="c">cooked for 4s</span>
+            <div class="r wt">
+              <span class="twist">▸</span>
+              <span class="name">long-branch-name-that-truncates</span>
+              <span class="branch">t3code/ava-…</span>
+              <span></span>
+            </div>
 
-  <span class="ok">●</span> <span class="fd">how is claude doing this session?</span> <span class="c">(optional)</span>
-    <span class="cy">[1] bad</span>   <span class="cy">[2] fine</span>   <span class="cy">[3] good</span>   <span class="c">·</span>   <span class="cy">[dismiss]</span>
+            <div class="r wt" style="background:var(--bg-hover)">
+              <span class="twist">▸</span>
+              <span class="name">hovered</span>
+              <span class="branch">hover</span>
+              <span class="actions" style="opacity:1"><span class="mini"><svg><use href="#i-play"/></svg></span><span class="mini"><svg><use href="#i-term"/></svg></span><span class="mini"><svg><use href="#i-more"/></svg></span></span>
+            </div>
 
-<span class="user">&gt;</span> show me the keybindings<span class="cur"> </span>
-</div>
+            <div class="r wt active">
+              <span class="twist">▾</span>
+              <span class="name">active-selected</span>
+              <span class="branch subtle">main</span>
+              <span></span>
+            </div>
+
+            <div class="r wt">
+              <span class="twist">▸</span>
+              <span class="name">no-sessions</span>
+              <span></span>
+              <span></span>
+            </div>
+
+          </div>
         </div>
       </div>
+      <div class="card-notes">
+        Default / branch-chip / truncated / hovered (action icons revealed) / active-selected (cyan rail + bg-hl) / no-sessions (no branch chip).
+      </div>
+    </div>
 
-    </section>
+    <!-- 4 · Session states -->
+    <div class="card v-c">
+      <div class="card-head">
+        <span class="title">4 · Session states</span>
+        <span class="tag">session</span>
+      </div>
+      <div class="card-body" style="width: var(--rail-w);">
+        <div class="tree">
+
+          <div class="proj-head has">
+            <span class="bar"></span>
+            <span class="twist">▾</span>
+            <span class="name">demo-project</span>
+            <span class="count has">●6</span>
+            <span class="add" style="color:var(--fg-faint);font-size:14px;padding:0 4px">＋</span>
+          </div>
+          <div class="group">
+
+            <div class="r wt">
+              <span class="twist">▾</span>
+              <span class="name">demo-worktree</span>
+              <span class="branch subtle">main</span>
+              <span></span>
+            </div>
+
+            <div class="r sess">
+              <span class="row-inner">
+                <span class="agent">claude</span>
+                <span class="sep">·</span>
+                <span class="label">Running task</span>
+              </span>
+              <span></span>
+            </div>
+
+            <div class="r sess idle">
+              <span class="row-inner">
+                <span class="agent">claude</span>
+                <span class="sep">·</span>
+                <span class="label">Idle session</span>
+              </span>
+              <span></span>
+            </div>
+
+            <div class="r sess">
+              <span class="row-inner">
+                <span class="agent">terminal</span>
+                <span class="sep">·</span>
+                <span class="label">CC_AI_R2 · Digvijays-MBP</span>
+              </span>
+              <span></span>
+            </div>
+
+            <div class="r sess active">
+              <span class="row-inner">
+                <span class="agent">claude</span>
+                <span class="sep">·</span>
+                <span class="label">Active / selected</span>
+              </span>
+              <span></span>
+            </div>
+
+            <div class="r sess" style="background:var(--bg-hover)">
+              <span class="row-inner">
+                <span class="agent">terminal</span>
+                <span class="sep">·</span>
+                <span class="label">Hovered</span>
+              </span>
+              <button class="mini" style="opacity:1"><svg><use href="#i-close"/></svg></button>
+            </div>
+
+            <div class="r sess">
+              <span class="row-inner" style="overflow:hidden">
+                <span class="agent">claude</span>
+                <span class="sep">·</span>
+                <span class="label">A very long session label that will get truncated nicely</span>
+              </span>
+              <span></span>
+            </div>
+
+          </div>
+        </div>
+      </div>
+      <div class="card-notes">
+        Agent label color = state. <b>Running</b> = fg. <b>Idle</b> = fg-mute. <b>Active</b> = cyan. Hover reveals close button. Long labels truncate.
+      </div>
+    </div>
+
+    <!-- 5 · Edge cases -->
+    <div class="card v-c">
+      <div class="card-head">
+        <span class="title">5 · Edge cases</span>
+        <span class="tag">edge</span>
+      </div>
+      <div class="card-body" style="width: var(--rail-w);">
+        <div class="tree">
+
+          <div class="proj-head">
+            <span class="bar"></span>
+            <span class="twist">▸</span>
+            <span class="name">a-very-long-project-name-truncating</span>
+            <span class="count">●0</span>
+            <span class="add" style="color:var(--fg-faint);font-size:14px;padding:0 4px">＋</span>
+          </div>
+
+          <div class="proj-head has">
+            <span class="bar"></span>
+            <span class="twist">▾</span>
+            <span class="name">many-sessions</span>
+            <span class="count has">●12</span>
+            <span class="add" style="color:var(--fg-faint);font-size:14px;padding:0 4px">＋</span>
+          </div>
+          <div class="group">
+            <div class="r wt">
+              <span class="twist">▾</span>
+              <span class="name">main</span>
+              <span class="branch subtle">main</span>
+              <span></span>
+            </div>
+            <div class="r sess"><span class="row-inner"><span class="agent">claude</span><span class="sep">·</span><span class="label">task 1</span></span><span></span></div>
+            <div class="r sess"><span class="row-inner"><span class="agent">claude</span><span class="sep">·</span><span class="label">task 2</span></span><span></span></div>
+            <div class="r sess"><span class="row-inner"><span class="agent">terminal</span><span class="sep">·</span><span class="label">shell</span></span><span></span></div>
+            <div class="r sess idle"><span class="row-inner"><span class="agent">claude</span><span class="sep">·</span><span class="label">stale task</span></span><span></span></div>
+            <div class="r sess"><span class="row-inner"><span class="agent">terminal</span><span class="sep">·</span><span class="label">shell 2</span></span><span></span></div>
+          </div>
+
+          <div class="proj-head">
+            <span class="bar"></span>
+            <span class="twist">▸</span>
+            <span class="name">empty</span>
+            <span class="count">●0</span>
+            <span class="add" style="color:var(--fg-faint);font-size:14px;padding:0 4px">＋</span>
+          </div>
+
+        </div>
+      </div>
+      <div class="card-notes">
+        Long names truncate at the project row. Stack of many sessions stays scannable because of the deep session indent (72px).
+      </div>
+    </div>
+
+
   </div>
 
-  <!-- ─── status bar ──────────────────────────────────────────────── -->
-  <div class="status">
-    <div class="group">
-      <span class="item running" title="7 sessions active">
-        <span class="dot"></span><span class="value">7 running</span>
-      </span>
-      <span class="item" title="change backend">
-        <span class="label">backend</span><span class="value">native</span>
-      </span>
-      <span class="item" title="change theme">
-        <span class="label">theme</span><span class="value">tokyonight</span>
-      </span>
-      <span class="toast">started terminal · portfolio/hero-redesign</span>
-    </div>
-    <div class="grow"></div>
-    <div class="group">
-      <span class="item" title="grove v0.5.0"><span class="value">v0.5.0</span></span>
-    </div>
-  </div>
+  <p style="margin-top:32px;color:var(--fg-mute);font-size:12px">
+    Variant C state catalogue. Tell me which state needs more love and I'll iterate.
+  </p>
 </div>
 
 </body>

@@ -3,13 +3,28 @@
 //! data they need and return an `Element<Msg>`.
 
 use super::icons::icon;
-use super::metrics::{MONO_FONT, ROW_H};
+use super::metrics::{ROW_H, UI_FONT};
 use super::palette as c;
-use super::state::{Msg, SplitStartSegment};
+use super::state::Msg;
 use crate::agent::Agent;
 use iced::border::Radius;
 use iced::widget::{button, column, container, row, text, Space};
-use iced::{Background, Border, Color, Element, Length, Padding, Shadow, Theme};
+use iced::{Background, Border, Color, Element, Length, Padding, Shadow};
+
+/// Shorten `s` to at most `max` chars by collapsing the middle with `…`.
+/// Returns the original string unchanged if it already fits.
+pub fn truncate_middle(s: &str, max: usize) -> String {
+    let len = s.chars().count();
+    if len <= max || max < 2 {
+        return s.to_string();
+    }
+    let keep = max.saturating_sub(1);
+    let head = (keep + 1) / 2;
+    let tail = keep - head;
+    let prefix: String = s.chars().take(head).collect();
+    let suffix: String = s.chars().skip(len - tail).collect();
+    format!("{prefix}…{suffix}")
+}
 
 pub fn dot<'a>(color: Color) -> Element<'a, Msg> {
     container(Space::with_width(7))
@@ -110,69 +125,92 @@ pub fn icon_btn<'a>(name: &'static str, msg: Msg) -> Element<'a, Msg> {
     .into()
 }
 
-pub fn split_start_button<'a>(proj: usize, wt: usize) -> Element<'a, Msg> {
-    let launch = button(
-        container(icon("play", 9.0, c::GREEN()))
-            .center_x(28)
-            .center_y(22),
-    )
-    .on_press(Msg::StartSession {
-        proj,
-        wt,
-        agent: Agent::Claude,
-    })
-    .padding(0)
-    .style(split_start_style(SplitStartSegment::Left));
+pub fn split_start_button<'a>(proj: usize, wt: usize, is_main: bool) -> Element<'a, Msg> {
+    let claude = mini_action_btn(
+        "claude",
+        12.0,
+        c::FG_MUTE(),
+        Msg::StartSession {
+            proj,
+            wt,
+            agent: Agent::Claude,
+        },
+    );
+    let codex = mini_action_btn(
+        "codex",
+        12.0,
+        c::FG_MUTE(),
+        Msg::StartSession {
+            proj,
+            wt,
+            agent: Agent::Codex,
+        },
+    );
+    let opencode = mini_action_btn(
+        "opencode",
+        12.0,
+        c::FG_MUTE(),
+        Msg::StartSession {
+            proj,
+            wt,
+            agent: Agent::OpenCode,
+        },
+    );
+    let terminal = mini_action_btn("term", 12.0, c::FG_MUTE(), Msg::StartTerminal { proj, wt });
 
-    let terminal = button(
-        container(icon("term", 12.0, c::FG_MUTE()))
-            .center_x(28)
-            .center_y(22),
-    )
-    .on_press(Msg::StartTerminal { proj, wt })
-    .padding(0)
-    .style(split_start_style(SplitStartSegment::Middle));
+    let mut r = row![claude, codex, opencode, terminal]
+        .spacing(2)
+        .align_y(iced::Alignment::Center);
+    // The main worktree is the repository checkout itself — deleting it via
+    // `git worktree remove` would fail, so the trash icon is suppressed there.
+    if !is_main {
+        r = r.push(mini_action_btn(
+            "trash",
+            12.0,
+            c::FG_MUTE(),
+            Msg::DeleteWorktree { proj, wt },
+        ));
+    }
+    r.into()
+}
 
-    let menu = button(
-        container(icon("more", 12.0, c::FG_MUTE()))
+/// One of the three per-worktree action chips — transparent at rest, subtle
+/// pill on hover. Matches `.mini` in the mockup.
+fn mini_action_btn<'a>(
+    icon_name: &'static str,
+    icon_size: f32,
+    rest_color: Color,
+    msg: Msg,
+) -> Element<'a, Msg> {
+    button(
+        container(icon(icon_name, icon_size, rest_color))
             .center_x(22)
             .center_y(22),
     )
-    .on_press(Msg::ToggleAgentMenu { proj, wt })
+    .on_press(msg)
     .padding(0)
-    .style(split_start_style(SplitStartSegment::Right));
-
-    row![launch, terminal, menu]
-        .spacing(0)
-        .align_y(iced::Alignment::Center)
-        .into()
-}
-
-fn split_start_style(
-    segment: SplitStartSegment,
-) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_, status| {
+    .style(move |_, status| {
         let hovered = matches!(status, button::Status::Hovered);
-        let radius = match segment {
-            SplitStartSegment::Left => Radius::default().left(4.0),
-            SplitStartSegment::Middle => Radius::default(),
-            SplitStartSegment::Right => Radius::default().right(4.0),
-        };
         button::Style {
-            background: Some(Background::Color(if hovered {
-                c::BG_HOVER()
+            background: if hovered {
+                Some(Background::Color(c::BG_HOVER()))
             } else {
-                c::BG()
-            })),
-            text_color: if hovered { c::FG() } else { c::FG_DIM() },
+                None
+            },
+            text_color: if hovered { c::FG() } else { rest_color },
             border: Border {
-                color: c::BORDER(),
+                color: if hovered {
+                    c::BORDER_SOFT()
+                } else {
+                    Color::TRANSPARENT
+                },
                 width: 1.0,
-                radius,
+                radius: Radius::from(4.0),
             },
             shadow: Shadow::default(),
         }
-    }
+    })
+    .into()
 }
 
 pub fn sidebar_agent_menu_overlay<'a>(
@@ -218,7 +256,7 @@ pub fn sidebar_agent_menu_overlay<'a>(
 fn agent_menu<'a>(proj: usize, wt: usize, is_main: bool) -> Element<'a, Msg> {
     let item = |label: String, msg: Msg, danger: bool| {
         button(
-            container(text(label).font(MONO_FONT).size(11).color(if danger {
+            container(text(label).font(UI_FONT).size(11).color(if danger {
                 c::RED()
             } else {
                 c::FG_DIM()
@@ -340,7 +378,7 @@ pub fn tool_btn<'a>(
             row![
                 icon(icon_name, 12.0, c::FG_DIM()),
                 text(label_owned)
-                    .font(MONO_FONT)
+                    .font(UI_FONT)
                     .size(12)
                     .line_height(1.0)
                     .height(18)
@@ -465,7 +503,7 @@ pub fn modal_dir_row<'a>(path: String, active: bool) -> Element<'a, Msg> {
     button(
         container(
             text(path)
-                .font(MONO_FONT)
+                .font(UI_FONT)
                 .size(12)
                 .color(if active { c::FG() } else { c::CYAN() })
                 .wrapping(iced::widget::text::Wrapping::None),

@@ -2,7 +2,7 @@
 //! statusbar, modal layer). Pure rendering — no state mutation.
 
 use super::metrics::{
-    APPBAR_H, CELL_H, CELL_W, MONO_BOLD, MONO_FONT, RAIL_W, ROW_H, SESSBAR_H, STATUS_H, SUBTITLE_H,
+    APPBAR_H, CELL_H, CELL_W, RAIL_W, ROW_H, SESSBAR_H, STATUS_H, UI_BOLD, UI_FONT,
 };
 use super::palette as c;
 use super::pty::{rebuild_row_runs, PtyProgram};
@@ -72,7 +72,7 @@ impl Grove {
 
     // ── appbar ────────────────────────────────────────────────────────────
     fn appbar(&self) -> Element<'_, Msg> {
-        let brand = row![text("grove").font(MONO_BOLD).size(14).color(c::MAGENTA()),]
+        let brand = row![text("grove").font(UI_BOLD).size(14).color(c::MAGENTA()),]
             .spacing(8)
             .padding(Padding::from([0, 16]))
             .align_y(iced::Alignment::Center);
@@ -209,15 +209,32 @@ impl Grove {
                     crate::app::path_basename(&w.path)
                 };
                 let active_wt = pi == self.app.proj_idx && wi == self.app.wt_idx;
-                col = col.push(worktree_row(
-                    pi, wi, &wname, &w.branch, active_wt, w.is_main,
-                ));
+                let hovered = self.hovered_wt == Some((pi, wi));
+                let wt_expanded = !self.collapsed_wt.contains(&(pi, wi));
+                let wt_el = worktree_row(
+                    pi,
+                    wi,
+                    &wname,
+                    &w.branch,
+                    active_wt,
+                    w.is_main,
+                    hovered,
+                    wt_expanded,
+                );
+                col = col.push(
+                    iced::widget::mouse_area(wt_el)
+                        .on_enter(Msg::HoverWorktree(Some((pi, wi))))
+                        .on_exit(Msg::HoverWorktree(None)),
+                );
 
+                if !wt_expanded {
+                    continue;
+                }
                 for (si, s) in self.app.sessions.iter().enumerate() {
                     if s.wt_path == w.path {
                         let active = self.app.active_session == Some(si);
                         let pending_kill = self.pending_kill == Some(si);
-                        col = col.push(session_row(si, s, active, pending_kill));
+                        col = col.push(session_row(si, s, &wname, active, pending_kill));
                     }
                 }
             }
@@ -251,21 +268,24 @@ impl Grove {
             };
 
             for (wi, w) in wts.iter().enumerate() {
+                let wname = if w.is_main {
+                    pname.to_string()
+                } else {
+                    crate::app::path_basename(&w.path)
+                };
+                let show_branch = !w.is_main && w.branch != wname && !w.branch.is_empty();
+                let wt_h = if show_branch { ROW_H + 14.0 } else { ROW_H };
                 if pi == open_proj && wi == open_wt {
-                    return Some((pi, wi, 6.0 + acc_y + ROW_H, w.is_main));
+                    return Some((pi, wi, 6.0 + acc_y + wt_h, w.is_main));
                 }
-                acc_y += ROW_H;
+                acc_y += wt_h;
 
+                if self.collapsed_wt.contains(&(pi, wi)) {
+                    continue;
+                }
                 for s in &self.app.sessions {
                     if s.project == pname && s.wt_path == w.path {
-                        let has_sub = s
-                            .current_title()
-                            .filter(|t| {
-                                !t.eq_ignore_ascii_case(&s.label)
-                                    && !t.eq_ignore_ascii_case(s.agent.label())
-                            })
-                            .is_some();
-                        acc_y += ROW_H + if has_sub { SUBTITLE_H } else { 0.0 };
+                        acc_y += ROW_H;
                     }
                 }
             }
@@ -311,7 +331,7 @@ impl Grove {
                 .unwrap_or(false);
         let sess_text = |content: String, color: Color| {
             text(content)
-                .font(MONO_FONT)
+                .font(UI_FONT)
                 .size(12)
                 .line_height(1.0)
                 .height(18)
@@ -326,17 +346,15 @@ impl Grove {
                 .into();
 
         let mut identity = row![
-            sess_text(s.agent.label().to_string(), c::MAGENTA()),
-            sess_text("·".to_string(), c::FG_MUTE()),
-            sess_text(s.project.clone(), c::BLUE()),
-            sess_text("/".to_string(), c::FG_MUTE()),
             sess_text(s.label.clone(), c::FG()),
-            sess_text(format!("[{}]", s.branch), c::FG_MUTE()),
+            sess_text("·".to_string(), c::FG_MUTE()),
+            sess_text(s.branch.clone(), c::FG_MUTE()),
         ]
         .spacing(6)
         .align_y(iced::Alignment::Center);
 
         if let Some(title) = context {
+            let title = crate::gui::widgets::truncate_middle(&title, 80);
             let session_context: Element<'_, Msg> = if show_progress {
                 let phase = ((self.blink_tick / 5) % 3) as usize;
                 let step_dot = |i| dot(if i == phase { c::GREEN() } else { c::FG_MUTE() });
@@ -611,7 +629,7 @@ impl Grove {
         let input = container(
             row![
                 text(buffer.to_string())
-                    .font(MONO_FONT)
+                    .font(UI_FONT)
                     .size(13)
                     .color(c::FG())
                     .wrapping(iced::widget::text::Wrapping::None),
