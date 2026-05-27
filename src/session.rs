@@ -14,6 +14,7 @@ const SCROLL_STEP: usize = 3;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum SessionStatus {
@@ -39,6 +40,7 @@ pub struct Session {
     pub parser: Arc<Mutex<vt100::Parser>>,
     pub dirty: Arc<AtomicBool>,
     pub status: Arc<Mutex<SessionStatus>>,
+    pub last_output_at: Arc<Mutex<Instant>>,
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
@@ -186,12 +188,14 @@ impl Session {
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 5000)));
         let dirty = Arc::new(AtomicBool::new(true));
         let status = Arc::new(Mutex::new(SessionStatus::Running));
+        let last_output_at = Arc::new(Mutex::new(Instant::now()));
         let child = Arc::new(Mutex::new(child));
 
         {
             let parser = parser.clone();
             let dirty = dirty.clone();
             let status = status.clone();
+            let last_output_at = last_output_at.clone();
             let child = child.clone();
             thread::spawn(move || {
                 let mut buf = [0u8; 8192];
@@ -201,6 +205,9 @@ impl Session {
                         Ok(n) => {
                             if let Ok(mut p) = parser.lock() {
                                 p.process(&buf[..n]);
+                            }
+                            if let Ok(mut t) = last_output_at.lock() {
+                                *t = Instant::now();
                             }
                             dirty.store(true, Ordering::Relaxed);
                         }
@@ -229,6 +236,7 @@ impl Session {
             parser,
             dirty,
             status,
+            last_output_at,
             writer,
             master: pair.master,
             child,
@@ -297,8 +305,12 @@ impl Session {
         if p.screen().mouse_protocol_mode() == MouseProtocolMode::None {
             // App doesn't want the mouse — drive our own scrollback view.
             let cur = p.screen().scrollback();
+            // vt100 0.15.2 panics in `visible_rows` if scrollback offset
+            // exceeds the live row count (`rows_len - offset` underflows).
+            // Cap at rows-1 so there's always at least one live row visible.
+            let max_offset = usize::from(self.rows).saturating_sub(1);
             let next = if up {
-                cur + SCROLL_STEP
+                (cur + SCROLL_STEP).min(max_offset)
             } else {
                 cur.saturating_sub(SCROLL_STEP)
             };
@@ -390,6 +402,12 @@ impl Session {
             pixel_height: 0,
         });
         if let Ok(mut p) = self.parser.lock() {
+            // vt100 0.15.2 doesn't clamp the scrollback offset on resize, so
+            // shrinking below the current offset overflows `rows_len -
+            // scrollback_offset` in `visible_rows`. Snap to live first.
+            if p.screen().scrollback() != 0 {
+                p.set_scrollback(0);
+            }
             p.set_size(rows, cols);
         }
         self.dirty.store(true, Ordering::Relaxed);

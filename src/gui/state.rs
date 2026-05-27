@@ -10,7 +10,6 @@ use iced::{Color, Size};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
 
 /// Which top-level rendering the sidebar uses. `Tree` is the original
 /// project → worktree → session hierarchy; `Activity` is a flat list of
@@ -70,13 +69,6 @@ pub struct Grove {
     /// User-toggled expansion of the `worktrees · no sessions` activity-view
     /// group. `None` means "use default" (expanded iff non-empty).
     pub activity_no_sessions_expanded: Option<bool>,
-    /// Best-effort "last activity" timestamp per session, keyed by the same
-    /// stable pointer used elsewhere (`Arc::as_ptr(&s.dirty)`). Updated from
-    /// `Msg::Tick` whenever a session's dirty flag is set.
-    // TODO: replace with a proper per-session `last_output_at` field on
-    // `Session` written by the PTY reader thread — current signal misses
-    // activity that happens between ticks.
-    pub last_activity: HashMap<usize, Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

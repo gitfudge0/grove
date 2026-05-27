@@ -569,15 +569,19 @@ pub fn session_activity_row_idle<'a>(
     )
 }
 
-/// Activity-stream row for a worktree that has no sessions. Reuses the same
-/// two-line layout but with a mono "project / worktree" label and a
-/// "no sessions" subtitle. Click sends `WorktreeClicked` so the user can
-/// jump there.
-pub fn worktree_no_sessions_row<'a>(
+/// Activity-stream row representing a worktree itself: shows
+/// `project / worktree` with a session-count subtitle. On hover the
+/// new-session action chips appear inline next to the count so the
+/// affordance lives next to the label rather than floating at the row's
+/// right edge.
+pub fn worktree_activity_row<'a>(
     proj: usize,
     wt: usize,
     project: &str,
     worktree: &str,
+    is_main: bool,
+    session_count: usize,
+    hovered: bool,
 ) -> Element<'a, Msg> {
     let label = format!("{project} / {worktree}");
 
@@ -587,18 +591,62 @@ pub fn worktree_no_sessions_row<'a>(
         .color(c::FG_DIM())
         .wrapping(iced::widget::text::Wrapping::None);
 
-    let sub = text("no sessions".to_string())
+    let count_label = match session_count {
+        0 => "no sessions".to_string(),
+        1 => "1 session".to_string(),
+        n => format!("{n} sessions"),
+    };
+    let count_text = text(count_label)
         .font(UI_FONT)
         .size(10)
         .color(c::FG_MUTE())
         .wrapping(iced::widget::text::Wrapping::None);
 
-    let body = column![top, sub].spacing(0);
+    let h = ROW_H + SUBTITLE_H;
+
+    // Sub line: always shows the session count. On hover, the action chips
+    // appear inline immediately to the right of the count text — sized to
+    // match it so the row stays visually compact.
+    let mut sub_row = row![count_text]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+    if hovered {
+        sub_row = sub_row.push(super::widgets::split_start_button_flat(
+            proj, wt, is_main, 10.0,
+        ));
+    }
+    let sub_line: Element<'a, Msg> = sub_row.into();
+
+    let body = column![top, sub_line].spacing(0);
+
+    let label_btn = button(body)
+        .on_press(Msg::WorktreeClicked { proj, wt })
+        .padding(0)
+        .style(move |_, _status| button::Style {
+            background: None,
+            text_color: c::FG_DIM(),
+            border: Border::default(),
+            shadow: Shadow::default(),
+        });
+
+    // A transparent click target that fills the remainder of the row so
+    // clicking anywhere not occupied by an action chip still jumps to the
+    // worktree.
+    let fill_click = button(Space::with_width(Length::Fill).height(h))
+        .on_press(Msg::WorktreeClicked { proj, wt })
+        .padding(0)
+        .width(Length::Fill)
+        .style(|_, _| button::Style {
+            background: None,
+            text_color: c::FG_DIM(),
+            border: Border::default(),
+            shadow: Shadow::default(),
+        });
 
     let inner = row![
         container(state_dot(&ActivityState::Exited)).width(14).center_y(Length::Fill),
-        container(body).width(Length::Fill).clip(true),
-        Space::with_width(Length::Fixed(0.0)),
+        label_btn,
+        fill_click,
     ]
     .spacing(8)
     .align_y(iced::Alignment::Center)
@@ -609,39 +657,25 @@ pub fn worktree_no_sessions_row<'a>(
         right: 12.0,
     });
 
-    let h = ROW_H + SUBTITLE_H;
     container(
         row![
             container(Space::with_height(Length::Fill))
                 .width(2.0)
                 .height(Length::Fill),
-            button(
-                container(inner)
-                    .height(h)
-                    .width(Length::Fill)
-                    .align_y(iced::Alignment::Center),
-            )
-            .on_press(Msg::WorktreeClicked { proj, wt })
-            .width(Length::Fill)
-            .padding(0)
-            .style(|_, status| {
-                let hovered = matches!(status, button::Status::Hovered);
-                button::Style {
-                    background: if hovered {
-                        Some(Background::Color(c::BG_HOVER()))
-                    } else {
-                        None
-                    },
-                    text_color: c::FG_DIM(),
-                    border: Border::default(),
-                    shadow: Shadow::default(),
-                }
-            }),
+            container(inner).width(Length::Fill),
         ]
         .align_y(iced::Alignment::Center),
     )
     .height(h)
     .width(Length::Fill)
+    .style(move |_| container::Style {
+        background: if hovered {
+            Some(Background::Color(c::BG_HOVER()))
+        } else {
+            None
+        },
+        ..Default::default()
+    })
     .into()
 }
 

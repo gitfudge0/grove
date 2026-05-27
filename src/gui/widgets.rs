@@ -148,52 +148,108 @@ pub fn icon_btn<'a>(name: &'static str, msg: Msg) -> Element<'a, Msg> {
 }
 
 pub fn split_start_button<'a>(proj: usize, wt: usize, is_main: bool) -> Element<'a, Msg> {
-    let claude = mini_action_btn(
+    split_start_button_sized(proj, wt, is_main, 12.0)
+}
+
+pub fn split_start_button_sized<'a>(
+    proj: usize,
+    wt: usize,
+    is_main: bool,
+    icon_size: f32,
+) -> Element<'a, Msg> {
+    split_start_button_inner(proj, wt, is_main, icon_size, false)
+}
+
+/// Flat variant: no per-chip background or border on hover (just an icon
+/// color shift) and a tight padding-only hit box so the row doesn't grow
+/// vertically when the chips appear.
+pub fn split_start_button_flat<'a>(
+    proj: usize,
+    wt: usize,
+    is_main: bool,
+    icon_size: f32,
+) -> Element<'a, Msg> {
+    split_start_button_inner(proj, wt, is_main, icon_size, true)
+}
+
+fn split_start_button_inner<'a>(
+    proj: usize,
+    wt: usize,
+    is_main: bool,
+    icon_size: f32,
+    flat: bool,
+) -> Element<'a, Msg> {
+    let make = |name, msg| {
+        if flat {
+            flat_action_btn(name, icon_size, c::FG_MUTE(), msg)
+        } else {
+            mini_action_btn(name, icon_size, c::FG_MUTE(), msg)
+        }
+    };
+    let claude = make(
         "claude",
-        12.0,
-        c::FG_MUTE(),
         Msg::StartSession {
             proj,
             wt,
             agent: Agent::Claude,
         },
     );
-    let codex = mini_action_btn(
+    let codex = make(
         "codex",
-        12.0,
-        c::FG_MUTE(),
         Msg::StartSession {
             proj,
             wt,
             agent: Agent::Codex,
         },
     );
-    let opencode = mini_action_btn(
+    let opencode = make(
         "opencode",
-        12.0,
-        c::FG_MUTE(),
         Msg::StartSession {
             proj,
             wt,
             agent: Agent::OpenCode,
         },
     );
-    let terminal = mini_action_btn("term", 12.0, c::FG_MUTE(), Msg::StartTerminal { proj, wt });
+    let terminal = make("term", Msg::StartTerminal { proj, wt });
 
     let mut r = row![claude, codex, opencode, terminal]
-        .spacing(2)
+        .spacing(if flat { 6 } else { 2 })
         .align_y(iced::Alignment::Center);
     // The main worktree is the repository checkout itself — deleting it via
     // `git worktree remove` would fail, so the trash icon is suppressed there.
     if !is_main {
-        r = r.push(mini_action_btn(
-            "trash",
-            12.0,
-            c::FG_MUTE(),
-            Msg::DeleteWorktree { proj, wt },
-        ));
+        r = r.push(make("trash", Msg::DeleteWorktree { proj, wt }));
     }
     r.into()
+}
+
+/// Flat icon chip: transparent at rest and on hover (no box), only the
+/// icon color brightens. Used inside dense subtitle rows where a hover
+/// pill would push surrounding text around.
+fn flat_action_btn<'a>(
+    icon_name: &'static str,
+    icon_size: f32,
+    rest_color: Color,
+    msg: Msg,
+) -> Element<'a, Msg> {
+    button(icon(icon_name, icon_size, rest_color))
+        .on_press(msg)
+        .padding(Padding {
+            top: 0.0,
+            bottom: 0.0,
+            left: 2.0,
+            right: 2.0,
+        })
+        .style(move |_, status| {
+            let hovered = matches!(status, button::Status::Hovered);
+            button::Style {
+                background: None,
+                text_color: if hovered { c::FG() } else { rest_color },
+                border: Border::default(),
+                shadow: Shadow::default(),
+            }
+        })
+        .into()
 }
 
 /// One of the three per-worktree action chips — transparent at rest, subtle

@@ -64,8 +64,12 @@ pub const PLEX_MONO_BOLD: &[u8] = include_bytes!("../../assets/fonts/IBMPlexMono
 /// PTY dimensions derived from window pixel size. Subtracts the visible chrome
 /// (rail, dividers, appbar, statusbar, sessbar, container padding) and divides
 /// by the cell metrics.
-pub fn compute_pty_dims(win_w: f32, win_h: f32, zoom: f32, chrome_visible: bool) -> (u16, u16) {
-    let metrics = pty_metrics(zoom);
+pub fn compute_pty_dims(win_w: f32, win_h: f32, _zoom: f32, chrome_visible: bool) -> (u16, u16) {
+    // iced's `scale_factor` (set from `ui_zoom`) already scales the whole
+    // logical layout uniformly — chrome, PTY canvas, and padding all grow
+    // together. The resize events we receive are already in logical units, so
+    // chrome/cell sizing here must stay at the same 1.0 scale; multiplying by
+    // zoom double-counts and steals usable PTY rows/cols.
     let visible_w = if chrome_visible {
         RAIL_W + SIDEBAR_DIVIDER_W
     } else {
@@ -76,10 +80,10 @@ pub fn compute_pty_dims(win_w: f32, win_h: f32, zoom: f32, chrome_visible: bool)
     } else {
         0.0
     };
-    let usable_w = win_w - zoom * (visible_w + PTY_PAD_W);
-    let usable_h = win_h - zoom * (visible_h + SESSBAR_H + PTY_PAD_H);
-    let cols = (usable_w / metrics.cell_w).max(10.0) as u16;
-    let rows = (usable_h / metrics.cell_h).max(4.0) as u16;
+    let usable_w = win_w - (visible_w + PTY_PAD_W);
+    let usable_h = win_h - (visible_h + SESSBAR_H + PTY_PAD_H);
+    let cols = (usable_w / CELL_W).max(10.0) as u16;
+    let rows = (usable_h / CELL_H).max(4.0) as u16;
     (rows, cols)
 }
 
@@ -91,18 +95,23 @@ mod tests {
     };
 
     #[test]
-    fn compute_pty_dims_scales_chrome_with_zoom() {
+    fn compute_pty_dims_ignores_zoom_for_logical_layout() {
+        // iced applies the scale factor to the entire logical layout, so PTY
+        // dims must be derived at scale 1.0 regardless of zoom.
         let win_w = 1280.0;
         let win_h = 800.0;
-        let zoom = 1.5;
 
-        let usable_w = win_w - zoom * (RAIL_W + SIDEBAR_DIVIDER_W + PTY_PAD_W);
-        let usable_h = win_h - zoom * (APPBAR_H + STATUS_H + SESSBAR_H + PTY_PAD_H);
-        let expected_cols = (usable_w / (CELL_W * zoom)).max(10.0) as u16;
-        let expected_rows = (usable_h / (CELL_H * zoom)).max(4.0) as u16;
+        let usable_w = win_w - (RAIL_W + SIDEBAR_DIVIDER_W + PTY_PAD_W);
+        let usable_h = win_h - (APPBAR_H + STATUS_H + SESSBAR_H + PTY_PAD_H);
+        let expected_cols = (usable_w / CELL_W).max(10.0) as u16;
+        let expected_rows = (usable_h / CELL_H).max(4.0) as u16;
 
         assert_eq!(
-            compute_pty_dims(win_w, win_h, zoom, true),
+            compute_pty_dims(win_w, win_h, 1.5, true),
+            (expected_rows, expected_cols)
+        );
+        assert_eq!(
+            compute_pty_dims(win_w, win_h, 1.0, true),
             (expected_rows, expected_cols)
         );
     }

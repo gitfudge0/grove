@@ -20,10 +20,14 @@ impl Grove {
         // Compute initial PTY dimensions from the default window size (1280×800).
         // Corrected on the first `WindowResized` event after startup.
         let window_size = iced::Size::new(1280.0, 800.0);
-        let ui_zoom = PTY_ZOOM_DEFAULT;
+        let mut app = App::new().expect("init app");
+        let ui_zoom = app
+            .store
+            .ui_zoom
+            .unwrap_or(PTY_ZOOM_DEFAULT)
+            .clamp(PTY_ZOOM_MIN, PTY_ZOOM_MAX);
         let (pty_rows, pty_cols) =
             compute_pty_dims(window_size.width, window_size.height, ui_zoom, true);
-        let mut app = App::new().expect("init app");
         // Resize any sessions discovered from a previous grove run so tmux
         // reports the correct terminal size immediately.
         for s in &mut app.sessions {
@@ -44,15 +48,26 @@ impl Grove {
             blink_tick: 0,
             pending_kill: None,
             hovered_wt: None,
-            sidebar_view: SidebarView::Tree,
+            sidebar_view: SidebarView::Activity,
             activity_no_sessions_expanded: None,
-            last_activity: Default::default(),
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
         let n = g.app.store.projects.len();
         for i in 0..n {
             g.ensure_wt_cached(i);
+        }
+        // Default tree state: collapse projects/worktrees with no live sessions,
+        // matching the "collapse all" toggle's terminal state.
+        for pi in 0..n {
+            if !g.project_has_sessionful_worktree(pi) {
+                g.collapsed.insert(pi);
+            }
+            for wi in 0..g.worktrees_for_project(pi).len() {
+                if !g.worktree_has_sessions(pi, wi) {
+                    g.collapsed_wt.insert((pi, wi));
+                }
+            }
         }
         g
     }
@@ -82,21 +97,6 @@ impl Grove {
             Msg::Tick => {
                 // Advance the blink counter (~30 Hz at 60 ms tick interval).
                 self.blink_tick = self.blink_tick.wrapping_add(1);
-                // `dirty` flags are consumed lazily by `pty()` when
-                // it rebuilds a session's cached snapshot.
-                // Record a best-effort "last activity" timestamp per session so
-                // the activity-stream view can show relative-time labels.
-                // TODO: better to stamp this from the PTY reader thread itself.
-                let now = std::time::Instant::now();
-                for s in &self.app.sessions {
-                    if s.dirty.load(Ordering::Relaxed) {
-                        let key = Arc::as_ptr(&s.dirty) as usize;
-                        self.last_activity.insert(key, now);
-                    } else {
-                        let key = Arc::as_ptr(&s.dirty) as usize;
-                        self.last_activity.entry(key).or_insert(now);
-                    }
-                }
             }
             Msg::SidebarSetView(v) => {
                 self.sidebar_view = v;
@@ -421,6 +421,8 @@ impl Grove {
         }
         self.ui_zoom = snapped;
         self.refresh_pty_viewport();
+        self.app.store.ui_zoom = Some(snapped);
+        let _ = crate::storage::save(&self.app.store);
     }
 
     fn agent_picker_select(&mut self, index: usize) {
@@ -457,6 +459,22 @@ impl Grove {
                 if let Some(text) = self.selection_text() {
                     crate::clipboard::copy(&text);
                 }
+                return;
+            }
+            if is_paste_shortcut(mods, s) {
+                if let Some(text) = crate::clipboard::paste() {
+                    if let Some(i) = self.app.active_session {
+                        if let Some(sess) = self.app.sessions.get_mut(i) {
+                            let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
+                            let mut bytes = Vec::with_capacity(normalized.len() + 12);
+                            bytes.extend_from_slice(b"\x1b[200~");
+                            bytes.extend_from_slice(normalized.as_bytes());
+                            bytes.extend_from_slice(b"\x1b[201~");
+                            sess.send(&bytes);
+                        }
+                    }
+                }
+                self.pty_selection = None;
                 return;
             }
         }

@@ -9,7 +9,7 @@ use super::palette as c;
 use super::pty::{rebuild_row_runs, PtyProgram};
 use super::rows::{
     activity_group_header, project_row, session_activity_row, session_activity_row_idle,
-    session_row, worktree_no_sessions_row, worktree_row,
+    session_row, worktree_activity_row, worktree_row,
 };
 use super::state::{Grove, Msg, PtyCacheEntry, SidebarView};
 use super::widgets::{
@@ -389,17 +389,41 @@ impl Grove {
         const IDLE_AFTER: std::time::Duration = std::time::Duration::from_secs(45);
         let now = std::time::Instant::now();
 
+        // Pre-compute lookups used by both the grouping pass and the row
+        // renderer below — folded once per frame instead of O(N) per row.
+        let project_idx: std::collections::HashMap<&str, usize> = self
+            .app
+            .store
+            .projects
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.name.as_str(), i))
+            .collect();
+        let wt_paths_with_sessions: std::collections::HashSet<&str> =
+            self.app.sessions.iter().map(|s| s.wt_path.as_str()).collect();
+        let mut session_count_by_wt: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for s in &self.app.sessions {
+            *session_count_by_wt.entry(s.wt_path.as_str()).or_insert(0) += 1;
+        }
+        // Resolved worktree display name per session, indexed by session index.
+        let session_wnames: Vec<String> = self
+            .app
+            .sessions
+            .iter()
+            .map(|s| self.resolve_session_wname(s, &project_idx))
+            .collect();
+
         let mut running: Vec<usize> = Vec::new();
         let mut idle: Vec<usize> = Vec::new();
         let mut exited: Vec<usize> = Vec::new();
         for (i, s) in self.app.sessions.iter().enumerate() {
-            let status = *s.status.lock().unwrap();
-            let key = std::sync::Arc::as_ptr(&s.dirty) as usize;
-            let last = self.last_activity.get(&key).copied();
-            let age = last.map(|t| now.saturating_duration_since(t));
+            let status = *s.status.lock().unwrap_or_else(|e| e.into_inner());
+            let t = *s.last_output_at.lock().unwrap_or_else(|e| e.into_inner());
+            let age = now.saturating_duration_since(t);
             match status {
                 crate::session::SessionStatus::Running => {
-                    if age.map(|d| d >= IDLE_AFTER).unwrap_or(false) {
+                    if age >= IDLE_AFTER {
                         idle.push(i);
                     } else {
                         running.push(i);
@@ -410,18 +434,24 @@ impl Grove {
         }
         // Exited sessions live under "idle" — they're not running, not "live".
         idle.extend(exited);
-        // Sort each section by most recent activity.
-        let sort_by_age = |v: &mut Vec<usize>, sessions: &[crate::session::Session]| {
-            v.sort_by_key(|i| {
-                let key = std::sync::Arc::as_ptr(&sessions[*i].dirty) as usize;
-                std::cmp::Reverse(self.last_activity.get(&key).copied().unwrap_or(now))
-            });
-        };
-        sort_by_age(&mut running, &self.app.sessions);
-        sort_by_age(&mut idle, &self.app.sessions);
+        // Running sessions sort by creation order (newest first) — sorting by
+        // `last_output_at` made the list reorder on every PTY read, since a
+        // live agent updates its timestamp many times per second.
+        // Why: idle/exited timestamps are frozen by definition, so sorting
+        // those by recency is stable; running ones aren't.
+        running.sort_by_key(|i| std::cmp::Reverse(*i));
+        idle.sort_by_key(|i| {
+            let t = *self.app.sessions[*i]
+                .last_output_at
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            std::cmp::Reverse(t)
+        });
 
-        // Worktrees with no sessions, listed `project / worktree`.
-        let mut no_sessions: Vec<(usize, usize, String, String)> = Vec::new();
+        // All worktrees across all projects, listed `project / worktree`.
+        // The row shows the session count and lets the user spawn new
+        // sessions inline regardless of whether sessions already exist.
+        let mut worktree_rows: Vec<(usize, usize, String, String, bool, usize)> = Vec::new();
         for (pi, p) in self.app.store.projects.iter().enumerate() {
             let wts: &[Worktree] = if pi == self.app.proj_idx {
                 &self.app.worktrees
@@ -429,22 +459,20 @@ impl Grove {
                 self.wt_cache.get(&pi).map(|v| v.as_slice()).unwrap_or(&[])
             };
             for (wi, w) in wts.iter().enumerate() {
-                let has = self.app.sessions.iter().any(|s| s.wt_path == w.path);
-                if has {
-                    continue;
-                }
                 let wname = if w.is_main {
                     p.name.clone()
                 } else {
                     crate::app::path_basename(&w.path)
                 };
-                no_sessions.push((pi, wi, p.name.clone(), wname));
+                let count = session_count_by_wt.get(w.path.as_str()).copied().unwrap_or(0);
+                worktree_rows.push((pi, wi, p.name.clone(), wname, w.is_main, count));
             }
         }
+        let _ = wt_paths_with_sessions; // retained above for symmetry; not used now
 
         let no_sessions_expanded = self
             .activity_no_sessions_expanded
-            .unwrap_or(!no_sessions.is_empty());
+            .unwrap_or(!worktree_rows.is_empty());
 
         let mut col: Column<'_, Msg> = Column::new().spacing(0);
 
@@ -453,7 +481,7 @@ impl Grove {
             col = col.push(self.activity_empty_hint("no live sessions"));
         }
         for si in running {
-            col = col.push(self.activity_row_for(si, false));
+            col = col.push(self.activity_row_for(si, false, &session_wnames[si], now));
         }
 
         col = col.push(activity_group_header("idle", idle.len(), true, None));
@@ -461,64 +489,77 @@ impl Grove {
             col = col.push(self.activity_empty_hint("nothing paused"));
         }
         for si in idle {
-            col = col.push(self.activity_row_for(si, true));
+            col = col.push(self.activity_row_for(si, true, &session_wnames[si], now));
         }
 
         col = col.push(activity_group_header(
-            "worktrees · no sessions",
-            no_sessions.len(),
+            "worktrees",
+            worktree_rows.len(),
             no_sessions_expanded,
             Some(Msg::ToggleActivityNoSessionsGroup),
         ));
         if no_sessions_expanded {
-            for (pi, wi, pname, wname) in no_sessions {
-                col = col.push(worktree_no_sessions_row(pi, wi, &pname, &wname));
+            for (pi, wi, pname, wname, is_main, count) in worktree_rows {
+                let hovered = self.hovered_wt == Some((pi, wi));
+                let row_el =
+                    worktree_activity_row(pi, wi, &pname, &wname, is_main, count, hovered);
+                col = col.push(
+                    iced::widget::mouse_area(row_el)
+                        .on_enter(Msg::HoverWorktree(Some((pi, wi))))
+                        .on_exit(Msg::HoverWorktree(None)),
+                );
             }
         }
 
         col.into()
     }
 
-    fn activity_row_for(&self, si: usize, force_idle: bool) -> Element<'_, Msg> {
+    fn activity_row_for(
+        &self,
+        si: usize,
+        force_idle: bool,
+        wname: &str,
+        now: std::time::Instant,
+    ) -> Element<'_, Msg> {
         let s = &self.app.sessions[si];
         let active = self.app.active_session == Some(si);
         let pending_kill = self.pending_kill == Some(si);
-        let key = std::sync::Arc::as_ptr(&s.dirty) as usize;
-        let last = self
-            .last_activity
-            .get(&key)
-            .map(|t| std::time::Instant::now().saturating_duration_since(*t));
-        // Find worktree folder name for the session.
-        let wname = self
-            .app
-            .store
-            .projects
-            .iter()
-            .enumerate()
-            .find(|(_, p)| p.name == s.project)
-            .map(|(pi, p)| {
-                let wts: &[Worktree] = if pi == self.app.proj_idx {
-                    &self.app.worktrees
-                } else {
-                    self.wt_cache.get(&pi).map(|v| v.as_slice()).unwrap_or(&[])
-                };
-                wts.iter()
-                    .find(|w| w.path == s.wt_path)
-                    .map(|w| {
-                        if w.is_main {
-                            p.name.clone()
-                        } else {
-                            crate::app::path_basename(&w.path)
-                        }
-                    })
-                    .unwrap_or_else(|| crate::app::path_basename(&s.wt_path))
-            })
-            .unwrap_or_else(|| crate::app::path_basename(&s.wt_path));
+        let t = *s.last_output_at.lock().unwrap_or_else(|e| e.into_inner());
+        let last = Some(now.saturating_duration_since(t));
         if force_idle {
-            session_activity_row_idle(si, s, &s.project, &wname, active, pending_kill, last)
+            session_activity_row_idle(si, s, &s.project, wname, active, pending_kill, last)
         } else {
-            session_activity_row(si, s, &s.project, &wname, active, pending_kill, last)
+            session_activity_row(si, s, &s.project, wname, active, pending_kill, last)
         }
+    }
+
+    /// Resolve a session's worktree display name using a pre-built project
+    /// name → index map, so we avoid a linear scan over `store.projects` per
+    /// session row in `activity_view`.
+    fn resolve_session_wname(
+        &self,
+        s: &Session,
+        project_idx: &std::collections::HashMap<&str, usize>,
+    ) -> String {
+        let Some(&pi) = project_idx.get(s.project.as_str()) else {
+            return crate::app::path_basename(&s.wt_path);
+        };
+        let wts: &[Worktree] = if pi == self.app.proj_idx {
+            &self.app.worktrees
+        } else {
+            self.wt_cache.get(&pi).map(|v| v.as_slice()).unwrap_or(&[])
+        };
+        let pname = &self.app.store.projects[pi].name;
+        wts.iter()
+            .find(|w| w.path == s.wt_path)
+            .map(|w| {
+                if w.is_main {
+                    pname.clone()
+                } else {
+                    crate::app::path_basename(&w.path)
+                }
+            })
+            .unwrap_or_else(|| crate::app::path_basename(&s.wt_path))
     }
 
     fn activity_empty_hint<'a>(&self, label: &'a str) -> Element<'a, Msg> {

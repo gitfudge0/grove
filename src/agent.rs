@@ -27,11 +27,20 @@ impl Agent {
 
     pub fn program(self) -> String {
         match self {
-            Agent::Claude => "claude".into(),
-            Agent::Codex => "codex".into(),
-            Agent::OpenCode => "opencode".into(),
+            Agent::Claude | Agent::Codex | Agent::OpenCode => self.binary_name().into(),
             // The user's login shell, falling back to a POSIX shell.
             Agent::Terminal => std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()),
+        }
+    }
+
+    /// Executable name to look up on `$PATH`. `Terminal` has no static name
+    /// (resolved at runtime via `$SHELL`) so callers must guard against it.
+    fn binary_name(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Codex => "codex",
+            Agent::OpenCode => "opencode",
+            Agent::Terminal => "",
         }
     }
 
@@ -56,7 +65,7 @@ impl Agent {
         match self {
             Agent::Terminal => true,
             Agent::Claude | Agent::Codex | Agent::OpenCode => {
-                let name = self.label(); // label() == binary name for all non-Terminal variants
+                let name = self.binary_name();
                 std::env::var_os("PATH")
                     .is_some_and(|paths| {
                         std::env::split_paths(&paths)

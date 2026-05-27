@@ -20,6 +20,8 @@ pub struct Store {
     /// None means the user has not made the one-time tmux/native choice yet.
     #[serde(default)]
     pub tmux_enabled: Option<bool>,
+    #[serde(default)]
+    pub ui_zoom: Option<f32>,
 }
 
 pub fn config_path() -> Result<PathBuf> {
