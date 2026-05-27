@@ -427,39 +427,14 @@ impl Grove {
             self.handle_modal_key(key, mods);
             return;
         }
-        if mods.control() {
-            if let Key::Character(s) = &key {
-                let ctrl_shift_g = s == "G" || (mods.shift() && s.eq_ignore_ascii_case("g"));
-                if ctrl_shift_g {
-                    self.app.chrome_visible = !self.app.chrome_visible;
-                    self.refresh_pty_viewport();
-                    return;
+        // Copy PTY selection with the OS copy shortcut.
+        // macOS: Cmd+C  |  others: Ctrl+Shift+C
+        if let Key::Character(s) = &key {
+            if is_copy_shortcut(mods, s) {
+                if let Some(text) = self.selection_text() {
+                    crate::clipboard::copy(&text);
                 }
-                if s.eq_ignore_ascii_case("g") && !mods.shift() && !mods.alt() {
-                    self.app.chrome_visible = true;
-                    self.refresh_pty_viewport();
-                    return;
-                }
-            }
-        }
-        // Ctrl+Shift+C copies the current PTY selection (if any) and does
-        // NOT forward to the agent — standard terminal copy shortcut.
-        if mods.control() && mods.shift() {
-            if let Key::Character(s) = &key {
-                if s.eq_ignore_ascii_case("c") {
-                    if let Some(text) = self.selection_text() {
-                        crate::clipboard::copy(&text);
-                    }
-                    return;
-                }
-            }
-        }
-        if mods.control() && !mods.shift() && !mods.alt() {
-            if let Key::Character(s) = &key {
-                if s.eq_ignore_ascii_case("t") {
-                    self.app.open_theme_picker();
-                    return;
-                }
+                return;
             }
         }
         if let Some(bytes) = key_to_bytes(&key, mods) {
@@ -492,6 +467,10 @@ impl Grove {
                             "u" | "U" => self.app.input_buffer_edit(|b| b.clear()),
                             "c" | "C" => self.cancel_modal(),
                             _ => {}
+                        }
+                    } else if is_paste_shortcut(mods, &s) {
+                        if let Some(text) = crate::clipboard::paste() {
+                            self.app.input_buffer_edit(|b| b.push_str(&text));
                         }
                     } else if !mods.alt() {
                         self.app.input_buffer_edit(|b| b.push_str(&s));
@@ -826,4 +805,30 @@ fn pixel_to_cell(x: f32, y: f32) -> PtyCell {
         row: (y / metrics.cell_h).max(0.0) as usize,
         col: (x / metrics.cell_w).max(0.0) as usize,
     }
+}
+
+/// Returns true when the key event matches the OS copy shortcut.
+/// macOS: Cmd+C (logo, no ctrl, no shift)
+/// Others: Ctrl+Shift+C
+fn is_copy_shortcut(mods: Modifiers, s: &str) -> bool {
+    if !s.eq_ignore_ascii_case("c") {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    return mods.logo() && !mods.control();
+    #[cfg(not(target_os = "macos"))]
+    return mods.control() && mods.shift();
+}
+
+/// Returns true when the key event matches the OS paste shortcut.
+/// macOS: Cmd+V (logo, no ctrl)
+/// Others: Ctrl+V (no shift)
+fn is_paste_shortcut(mods: Modifiers, s: &str) -> bool {
+    if !s.eq_ignore_ascii_case("v") {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    return mods.logo() && !mods.control();
+    #[cfg(not(target_os = "macos"))]
+    return mods.control() && !mods.shift();
 }

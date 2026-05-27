@@ -1,9 +1,11 @@
-//! Copying selected text out of grove. We write to two places so a copy
-//! works whether grove runs locally or over SSH:
+//! Clipboard integration for grove.
 //!
-//! * the OS clipboard via `arboard` (best-effort; fails on headless boxes), and
-//! * the host terminal's clipboard via an OSC 52 escape sequence, which
-//!   survives SSH/tmux as long as the outer terminal allows it.
+//! `copy` writes to two backends so it works locally and over SSH:
+//! * the OS clipboard via `arboard`, and
+//! * the host terminal via an OSC 52 escape sequence (survives SSH/tmux).
+//!
+//! `paste` reads from the OS clipboard only (arboard); OSC 52 read support
+//! is terminal-dependent and not universally available.
 
 use base64::Engine;
 use std::sync::{Mutex, OnceLock};
@@ -27,4 +29,12 @@ pub fn copy(text: &str) {
         std::io::stdout(),
         crossterm::style::Print(format!("\x1b]52;c;{}\x07", b64))
     );
+}
+
+/// Read text from the OS clipboard. Returns `None` if the clipboard is
+/// unavailable, empty, or does not contain text.
+pub fn paste() -> Option<String> {
+    let mut guard = clipboard().lock().ok()?;
+    let cb = guard.as_mut()?;
+    cb.get_text().ok().filter(|s| !s.is_empty())
 }
