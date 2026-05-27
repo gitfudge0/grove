@@ -167,6 +167,12 @@ pub struct App {
     pub chrome_visible: bool,
     /// Whether tmux was available on PATH when Grove started.
     pub tmux_available: bool,
+    /// Agents whose binaries were found on PATH and are executable.
+    /// Ordered to match `Agent::ALL`; `sel` in `Modal::AgentPicker` indexes
+    /// into this slice. Always contains at least `Terminal`.
+    /// Re-scanned each time the picker is opened so newly-installed tools
+    /// appear without restarting Grove.
+    pub(crate) available_agents: Vec<Agent>,
 }
 
 impl App {
@@ -175,6 +181,16 @@ impl App {
             message: message.into(),
             expires_at: Instant::now() + Duration::from_millis(1800),
         });
+    }
+
+    /// Re-scan PATH and update `available_agents`. Called before opening the
+    /// agent picker so that tools installed while Grove is running are visible.
+    pub(crate) fn refresh_available_agents(&mut self) {
+        self.available_agents = Agent::ALL
+            .iter()
+            .copied()
+            .filter(|a| a.available())
+            .collect();
     }
 }
 
@@ -214,6 +230,7 @@ impl App {
             worktree_count: 0,
             chrome_visible: true,
             tmux_available,
+            available_agents: Agent::ALL.iter().copied().filter(|a| a.available()).collect(),
         };
         app.refresh_worktrees();
         Ok(app)
@@ -439,6 +456,7 @@ impl App {
             .map(|p| p.name.clone())
             .unwrap_or_default();
         if force_pick {
+            self.refresh_available_agents();
             self.modal = Modal::AgentPicker {
                 project,
                 wt_path: wt.path,
@@ -483,18 +501,26 @@ impl App {
     fn picker_sel(&self) -> usize {
         self.store
             .default_agent
-            .and_then(|a| Agent::ALL.iter().position(|x| *x == a))
+            .and_then(|a| self.available_agents.iter().position(|&x| x == a))
             .unwrap_or(0)
     }
 
     /// Launch the default agent for `wt_path`, or open the picker if no
-    /// default is configured.
+    /// default is configured or the saved default is no longer available.
     fn launch_or_pick(&mut self, project: String, wt_path: String) {
-        if let Some(agent) = self.store.default_agent {
+        self.refresh_available_agents();
+        let default = self.store.default_agent
+            .filter(|a| self.available_agents.contains(a));
+        if let Some(agent) = default {
             let label = path_basename(&wt_path);
             let args = agent.launch_args();
             self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path);
         } else {
+            if let Some(saved) = self.store.default_agent {
+                if !self.available_agents.contains(&saved) {
+                    self.set_toast(format!("{} not found; pick an agent", saved.label()));
+                }
+            }
             self.modal = Modal::AgentPicker {
                 project,
                 wt_path,
@@ -611,6 +637,7 @@ impl App {
         };
         let wt_path = s.wt_path.clone();
         let project = s.project.clone();
+        self.refresh_available_agents();
         self.modal = Modal::AgentPicker {
             project,
             wt_path,
@@ -714,7 +741,7 @@ impl App {
 
     pub fn picker_move(&mut self, delta: i32) {
         if let Modal::AgentPicker { sel, .. } = &mut self.modal {
-            *sel = cycle(*sel, delta, Agent::ALL.len());
+            *sel = cycle(*sel, delta, self.available_agents.len());
         }
     }
 
@@ -722,7 +749,9 @@ impl App {
         let Modal::AgentPicker { sel, .. } = &self.modal else {
             return Ok(());
         };
-        let agent = Agent::ALL[*sel];
+        let Some(agent) = self.available_agents.get(*sel).copied() else {
+            return Ok(());
+        };
         if self.store.default_agent == Some(agent) {
             self.store.default_agent = None;
             self.status = format!("cleared default agent ({})", agent.label());
@@ -744,7 +773,9 @@ impl App {
         else {
             return;
         };
-        let agent = Agent::ALL[sel];
+        let Some(agent) = self.available_agents.get(sel).copied() else {
+            return;
+        };
         let label = path_basename(&wt_path);
         let args = agent.launch_args();
         self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path);

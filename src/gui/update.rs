@@ -401,7 +401,7 @@ impl Grove {
     }
 
     fn agent_picker_select(&mut self, index: usize) {
-        if index >= Agent::ALL.len() {
+        if index >= self.app.available_agents.len() {
             return;
         }
         if let Modal::AgentPicker { sel, .. } = &mut self.app.modal {

@@ -130,7 +130,15 @@ fn render_modal(f: &mut Frame, app: &App, size: Rect) {
             project,
             wt_path,
             sel,
-        } => modals::render_agent_picker(f, app, project, wt_path, *sel, size),
+        } => modals::render_agent_picker(
+            f,
+            &app.available_agents,
+            app.store.default_agent,
+            project,
+            wt_path,
+            *sel,
+            size,
+        ),
         Modal::ThemePicker {
             sel_dark,
             sel_light,

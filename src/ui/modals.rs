@@ -342,7 +342,8 @@ pub fn render_tmux_choice(f: &mut Frame, area: Rect) {
 
 pub fn render_agent_picker(
     f: &mut Frame,
-    app: &App,
+    agents: &[Agent],
+    default_agent: Option<Agent>,
     project: &str,
     wt_path: &str,
     sel: usize,
@@ -354,8 +355,8 @@ pub fn render_agent_picker(
     } else {
         format!(" Start session · {} / {} ", project, wt_name)
     };
-    let body_rows = Agent::ALL.len() as u16;
-    let h = body_rows + 5;
+    let body_rows = (agents.len().min(u16::MAX as usize)) as u16;
+    let h = (body_rows + 5).max(6);
     let r = centered(area, 64, h);
     f.render_widget(Clear, r);
     let block = Block::default()
@@ -375,11 +376,11 @@ pub fn render_agent_picker(
     ])
     .split(inner);
 
-    let items: Vec<ListItem> = Agent::ALL
+    let items: Vec<ListItem> = agents
         .iter()
         .enumerate()
         .map(|(i, a)| {
-            let is_default = app.store.default_agent == Some(*a);
+            let is_default = default_agent == Some(*a);
             let label_style = if i == sel {
                 Style::default()
                     .fg(theme::current().fg)

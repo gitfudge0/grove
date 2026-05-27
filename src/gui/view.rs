@@ -13,7 +13,6 @@ use super::widgets::{
     control_btn, divider_h, divider_v, dot, empty_workspace, icon_btn, modal_action, modal_dir_row,
     modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn, vline, SegSide,
 };
-use crate::agent::Agent;
 use crate::app::{InputKind, Modal};
 use crate::git::Worktree;
 use crate::session::{Session, SessionStatus};
@@ -886,7 +885,7 @@ impl Grove {
         };
 
         let mut list = Column::new().spacing(0);
-        for (i, agent) in Agent::ALL.iter().enumerate() {
+        for (i, agent) in self.app.available_agents.iter().enumerate() {
             let active = i == sel;
             let is_default = self.app.store.default_agent == Some(*agent);
             let label = row![
@@ -930,7 +929,7 @@ impl Grove {
             );
         }
 
-        let list_h = (Agent::ALL.len() as f32) * ROW_H;
+        let list_h = (self.app.available_agents.len() as f32) * ROW_H;
         let list_box = container(list)
             .width(Length::Fill)
             .height(Length::Fixed(list_h))
