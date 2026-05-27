@@ -314,10 +314,13 @@ pub fn session_row<'a>(
     // pixels.
     let context = session_context(s, wt_name);
 
-    let mut meta_row = row![text(s.agent.label())
-        .font(UI_FONT)
-        .size(12)
-        .color(agent_color),]
+    let mut meta_row = row![
+        icon(s.agent.icon_name(), 12.0, agent_color),
+        text(s.agent.label())
+            .font(UI_FONT)
+            .size(12)
+            .color(agent_color),
+    ]
     .spacing(6)
     .align_y(iced::Alignment::Center);
     if let Some(ctx) = context.as_deref() {
@@ -707,7 +710,7 @@ pub fn worktree_activity_row<'a>(
 #[allow(clippy::too_many_arguments)]
 fn activity_row_inner<'a>(
     session_idx: Option<usize>,
-    _session: Option<&Session>,
+    session: Option<&Session>,
     state: ActivityState,
     agent_label: &str,
     sess_label: Option<&str>,
@@ -725,13 +728,17 @@ fn activity_row_inner<'a>(
     };
     let agent_color = if active { c::CYAN() } else { agent_color };
 
-    let mut top_row = row![text(agent_label.to_string())
-        .font(UI_FONT)
-        .size(12)
-        .color(agent_color)
-        .wrapping(iced::widget::text::Wrapping::None),]
-    .spacing(8)
-    .align_y(iced::Alignment::Center);
+    let mut top_row = row![].spacing(6).align_y(iced::Alignment::Center);
+    if let Some(s) = session {
+        top_row = top_row.push(icon(s.agent.icon_name(), 12.0, agent_color));
+    }
+    top_row = top_row.push(
+        text(agent_label.to_string())
+            .font(UI_FONT)
+            .size(12)
+            .color(agent_color)
+            .wrapping(iced::widget::text::Wrapping::None),
+    );
     if let Some(lbl) = sess_label {
         if !lbl.is_empty() && !lbl.eq_ignore_ascii_case(agent_label) {
             top_row = top_row.push(

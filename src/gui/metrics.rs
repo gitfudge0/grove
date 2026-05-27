@@ -14,11 +14,11 @@ pub const SIDEBAR_DIVIDER_W: f32 = 1.0;
 pub const PTY_PAD_W: f32 = 36.0;
 pub const PTY_PAD_H: f32 = 28.0;
 
-/// Hardcoded cell metrics for IBM Plex Mono at 12.5pt. iced doesn't give
-/// us a cheap way to measure glyphs from outside a frame, so these are pinned
-/// — the canvas just maps (row, col) → pixel position. Re-tune if the font
-/// size or family changes.
-pub const CELL_W: f32 = 7.6;
+/// Hardcoded cell metrics for IBM Plex Mono at 12.5pt. IBM Plex Mono uses a
+/// 600-unit advance on a 1000-unit em, which gives a 7.5px cell at this size.
+/// The canvas maps (row, col) directly to pixels, so this must stay aligned
+/// with the bundled font or the cursor drifts across long rows.
+pub const CELL_W: f32 = 7.5;
 pub const CELL_H: f32 = 17.0;
 pub const FONT_SIZE: f32 = 12.5;
 
@@ -90,9 +90,21 @@ pub fn compute_pty_dims(win_w: f32, win_h: f32, _zoom: f32, chrome_visible: bool
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_pty_dims, APPBAR_H, CELL_H, CELL_W, PTY_PAD_H, PTY_PAD_W, RAIL_W, SESSBAR_H,
-        SIDEBAR_DIVIDER_W, STATUS_H,
+        compute_pty_dims, APPBAR_H, CELL_H, CELL_W, FONT_SIZE, PLEX_MONO_REGULAR, PTY_PAD_H,
+        PTY_PAD_W, RAIL_W, SESSBAR_H, SIDEBAR_DIVIDER_W, STATUS_H,
     };
+
+    #[test]
+    fn cell_width_matches_bundled_mono_advance() {
+        let units_per_em = u16_at(
+            PLEX_MONO_REGULAR,
+            table_offset(PLEX_MONO_REGULAR, b"head") + 18,
+        );
+        let advance = u16_at(PLEX_MONO_REGULAR, table_offset(PLEX_MONO_REGULAR, b"hmtx"));
+        let expected = advance as f32 / units_per_em as f32 * FONT_SIZE;
+
+        assert!((CELL_W - expected).abs() < 0.001);
+    }
 
     #[test]
     fn compute_pty_dims_ignores_zoom_for_logical_layout() {
@@ -128,5 +140,24 @@ mod tests {
 
         assert!(zen.0 > visible.0);
         assert!(zen.1 > visible.1);
+    }
+
+    fn table_offset(ttf: &[u8], tag: &[u8; 4]) -> usize {
+        let table_count = u16_at(ttf, 4) as usize;
+        for i in 0..table_count {
+            let offset = 12 + i * 16;
+            if &ttf[offset..offset + 4] == tag {
+                return u32_at(ttf, offset + 8) as usize;
+            }
+        }
+        panic!("missing font table {}", std::str::from_utf8(tag).unwrap());
+    }
+
+    fn u16_at(bytes: &[u8], offset: usize) -> u16 {
+        u16::from_be_bytes(bytes[offset..offset + 2].try_into().unwrap())
+    }
+
+    fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap())
     }
 }

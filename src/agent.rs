@@ -25,6 +25,17 @@ impl Agent {
         }
     }
 
+    /// Name of the inline SVG sprite (see `gui::icons`) representing this
+    /// agent. `Terminal` reuses the generic terminal glyph.
+    pub fn icon_name(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Codex => "codex",
+            Agent::OpenCode => "opencode",
+            Agent::Terminal => "term",
+        }
+    }
+
     pub fn program(self) -> String {
         match self {
             Agent::Claude | Agent::Codex | Agent::OpenCode => self.binary_name().into(),

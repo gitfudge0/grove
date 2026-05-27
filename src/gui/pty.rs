@@ -220,7 +220,7 @@ impl canvas::Program<Msg> for PtyProgram {
                             font: if run.bold { bold_font } else { MONO_FONT },
                             horizontal_alignment: iced::alignment::Horizontal::Left,
                             vertical_alignment: iced::alignment::Vertical::Top,
-                            shaping: iced::widget::text::Shaping::Advanced,
+                            shaping: iced::widget::text::Shaping::Basic,
                         });
                         col_i += n;
                     }

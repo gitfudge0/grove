@@ -1101,28 +1101,39 @@ impl Grove {
         errors: &'a [String],
     ) -> Element<'a, Msg> {
         use iced::widget::checkbox;
+        use iced::widget::checkbox::{Status as CheckboxStatus, Style as CheckboxStyle};
         use iced::widget::progress_bar;
+        use iced::widget::progress_bar::Style as ProgressStyle;
 
         let accent = c::RED();
         let total = worktrees.len();
-        let prompt = format!(
-            "'{name}' will be unregistered from grove. Files on disk stay put unless you check the box below."
-        );
+        let prompt = if total == 0 {
+            format!("'{name}' will be unregistered from grove. Files on disk stay put.")
+        } else {
+            format!(
+                "'{name}' will be unregistered from grove. Non-main worktrees stay on disk unless you opt in below."
+            )
+        };
+        let session_note = "Running sessions for this project will be stopped.";
 
         let mut body = column![
-            text("Remove project?").size(13).color(accent),
+            text("remove project").size(13).color(accent),
             text(prompt)
                 .size(13)
                 .color(c::FG_DIM())
                 .wrapping(iced::widget::text::Wrapping::Word),
+            text(session_note)
+                .size(12)
+                .color(c::FG_MUTE())
+                .wrapping(iced::widget::text::Wrapping::Word),
         ]
-        .spacing(12);
+        .spacing(10);
 
         if total > 0 {
             let label = if total == 1 {
-                "Also delete 1 worktree on disk".to_string()
+                "Delete 1 non-main worktree from disk".to_string()
             } else {
-                format!("Also delete {total} worktrees on disk")
+                format!("Delete {total} non-main worktrees from disk")
             };
             let cb = checkbox(label, also_remove)
                 .on_toggle_maybe(if in_progress {
@@ -1131,8 +1142,40 @@ impl Grove {
                     Some(Msg::ToggleRemoveWorktrees)
                 })
                 .size(14)
-                .text_size(12);
-            body = body.push(cb);
+                .spacing(8)
+                .text_size(12)
+                .font(UI_FONT)
+                .style(|_, status| {
+                    let (checked, disabled, hovered) = match status {
+                        CheckboxStatus::Active { is_checked } => (is_checked, false, false),
+                        CheckboxStatus::Hovered { is_checked } => (is_checked, false, true),
+                        CheckboxStatus::Disabled { is_checked } => (is_checked, true, false),
+                    };
+                    let border_color = if checked {
+                        c::RED()
+                    } else if hovered {
+                        c::FG_DIM()
+                    } else {
+                        c::BORDER()
+                    };
+                    CheckboxStyle {
+                        background: Background::Color(if checked {
+                            c::BG_HL()
+                        } else if hovered {
+                            c::BG_HOVER()
+                        } else {
+                            c::BG()
+                        }),
+                        icon_color: if disabled { c::FG_MUTE() } else { c::RED() },
+                        border: Border {
+                            color: border_color,
+                            width: 1.0,
+                            radius: Radius::from(4.0),
+                        },
+                        text_color: Some(if disabled { c::FG_MUTE() } else { c::FG_DIM() }),
+                    }
+                });
+            body = body.push(Space::with_height(2)).push(cb);
         }
 
         if in_progress {
@@ -1154,7 +1197,17 @@ impl Grove {
                         .color(c::FG_MUTE())
                         .wrapping(iced::widget::text::Wrapping::None),
                 )
-                .push(progress_bar(0.0..=1.0, frac).height(6.0));
+                .push(progress_bar(0.0..=1.0, frac).height(6.0).style(|_| {
+                    ProgressStyle {
+                        background: Background::Color(c::BG_STRIP()),
+                        bar: Background::Color(c::RED()),
+                        border: Border {
+                            color: c::BORDER(),
+                            width: 1.0,
+                            radius: Radius::from(4.0),
+                        },
+                    }
+                }));
         } else {
             body = body.push(Space::with_height(8)).push(
                 row![
@@ -1177,7 +1230,7 @@ impl Grove {
             );
         }
 
-        let h = if total > 0 { 240.0 } else { 200.0 };
+        let h = if total > 0 { 230.0 } else { 190.0 };
         modal_panel(body.into(), 520.0, h, accent)
     }
 

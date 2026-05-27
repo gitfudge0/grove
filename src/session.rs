@@ -11,6 +11,8 @@ const INIT_ROWS: u16 = 24;
 const INIT_COLS: u16 = 80;
 /// Lines moved per wheel notch when scrolling grove's own scrollback buffer.
 const SCROLL_STEP: usize = 3;
+/// Max scrollback lines retained by the vt100 parser per session.
+const SCROLLBACK_LINES: usize = 5000;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -185,7 +187,7 @@ impl Session {
         let writer = pair.master.take_writer()?;
         let mut reader = pair.master.try_clone_reader()?;
 
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 5000)));
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK_LINES)));
         let dirty = Arc::new(AtomicBool::new(true));
         let status = Arc::new(Mutex::new(SessionStatus::Running));
         let last_output_at = Arc::new(Mutex::new(Instant::now()));
@@ -305,18 +307,21 @@ impl Session {
         if p.screen().mouse_protocol_mode() == MouseProtocolMode::None {
             // App doesn't want the mouse — drive our own scrollback view.
             let cur = p.screen().scrollback();
-            // vt100 0.15.2 panics in `visible_rows` if scrollback offset
-            // exceeds the live row count (`rows_len - offset` underflows).
-            // Cap at rows-1 so there's always at least one live row visible.
-            let max_offset = usize::from(self.rows).saturating_sub(1);
-            let next = if up {
-                (cur + SCROLL_STEP).min(max_offset)
+            // Cap at the configured scrollback size. vt100 0.15.2's
+            // `set_scrollback` clamps to the actually-filled scrollback
+            // internally, so reading `scrollback()` back gives the effective
+            // offset (and avoids the `rows_len - offset` underflow in
+            // `visible_rows` when the buffer isn't full yet).
+            let target = if up {
+                (cur + SCROLL_STEP).min(SCROLLBACK_LINES)
             } else {
                 cur.saturating_sub(SCROLL_STEP)
             };
-            if next != cur {
-                p.set_scrollback(next);
-                self.dirty.store(true, Ordering::Relaxed);
+            if target != cur {
+                p.set_scrollback(target);
+                if p.screen().scrollback() != cur {
+                    self.dirty.store(true, Ordering::Relaxed);
+                }
             }
             return;
         }
