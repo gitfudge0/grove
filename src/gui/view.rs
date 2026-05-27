@@ -917,6 +917,24 @@ impl Grove {
                 destructive,
                 ..
             } => self.confirm_modal(title, prompt, *destructive),
+            Modal::RemoveProject {
+                name,
+                worktrees,
+                also_remove_worktrees,
+                in_progress,
+                done,
+                current,
+                errors,
+                ..
+            } => self.remove_project_modal(
+                name,
+                worktrees,
+                *also_remove_worktrees,
+                *in_progress,
+                *done,
+                current,
+                errors,
+            ),
             Modal::Message(message) => self.message_modal(message),
             Modal::TmuxChoice => self.tmux_choice_modal(),
             Modal::AgentPicker {
@@ -1069,6 +1087,98 @@ impl Grove {
         .spacing(12);
 
         modal_panel(body.into(), 480.0, 180.0, accent)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn remove_project_modal<'a>(
+        &'a self,
+        name: &'a str,
+        worktrees: &'a [String],
+        also_remove: bool,
+        in_progress: bool,
+        done: usize,
+        current: &'a str,
+        errors: &'a [String],
+    ) -> Element<'a, Msg> {
+        use iced::widget::checkbox;
+        use iced::widget::progress_bar;
+
+        let accent = c::RED();
+        let total = worktrees.len();
+        let prompt = format!(
+            "'{name}' will be unregistered from grove. Files on disk stay put unless you check the box below."
+        );
+
+        let mut body = column![
+            text("Remove project?").size(13).color(accent),
+            text(prompt)
+                .size(13)
+                .color(c::FG_DIM())
+                .wrapping(iced::widget::text::Wrapping::Word),
+        ]
+        .spacing(12);
+
+        if total > 0 {
+            let label = if total == 1 {
+                "Also delete 1 worktree on disk".to_string()
+            } else {
+                format!("Also delete {total} worktrees on disk")
+            };
+            let cb = checkbox(label, also_remove)
+                .on_toggle_maybe(if in_progress {
+                    None
+                } else {
+                    Some(Msg::ToggleRemoveWorktrees)
+                })
+                .size(14)
+                .text_size(12);
+            body = body.push(cb);
+        }
+
+        if in_progress {
+            let frac = if total == 0 {
+                1.0
+            } else {
+                (done as f32 / total as f32).clamp(0.0, 1.0)
+            };
+            let status = if done >= total {
+                "finishing…".to_string()
+            } else {
+                format!("Removing {} of {}: {}", done + 1, total, current)
+            };
+            body = body
+                .push(Space::with_height(4))
+                .push(
+                    text(status)
+                        .size(11)
+                        .color(c::FG_MUTE())
+                        .wrapping(iced::widget::text::Wrapping::None),
+                )
+                .push(progress_bar(0.0..=1.0, frac).height(6.0));
+        } else {
+            body = body.push(Space::with_height(8)).push(
+                row![
+                    Space::with_width(Length::Fill),
+                    modal_action("cancel", false, Msg::ModalCancel),
+                    modal_action("remove", true, Msg::ConfirmRemoveProject),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            );
+        }
+
+        if !errors.is_empty() {
+            let summary = format!("{} worktree(s) failed to remove", errors.len());
+            body = body.push(
+                text(summary)
+                    .size(11)
+                    .color(c::RED())
+                    .wrapping(iced::widget::text::Wrapping::Word),
+            );
+        }
+
+        let h = if total > 0 { 240.0 } else { 200.0 };
+        modal_panel(body.into(), 520.0, h, accent)
     }
 
     fn message_modal<'a>(&'a self, message: &'a str) -> Element<'a, Msg> {

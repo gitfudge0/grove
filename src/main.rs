@@ -380,6 +380,8 @@ fn handle_browser_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Enter => app.theme_picker_submit()?,
             _ => {}
         },
+        // GUI-only — never opened from the TUI codepath.
+        Modal::RemoveProject { .. } => {}
         Modal::None => match key.code {
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.focus_active_session();

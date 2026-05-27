@@ -151,5 +151,7 @@ fn render_modal(f: &mut Frame, app: &App, size: Rect) {
             };
             modals::render_theme_picker(f, sel, *tab, size);
         }
+        // GUI-only — never opened from the TUI codepath.
+        Modal::RemoveProject { .. } => {}
     }
 }

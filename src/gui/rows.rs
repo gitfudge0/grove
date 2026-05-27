@@ -132,7 +132,32 @@ pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> 
         }
     });
 
-    let right = row![add_btn]
+    let remove_btn = button(
+        container(icon("trash", 12.0, c::FG_MUTE()))
+            .center_x(22)
+            .center_y(22),
+    )
+    .on_press(Msg::RemoveProject { proj: idx })
+    .padding(0)
+    .style(|_, status| {
+        let hovered = matches!(status, button::Status::Hovered);
+        button::Style {
+            background: if hovered {
+                Some(Background::Color(c::BG_HOVER()))
+            } else {
+                None
+            },
+            text_color: if hovered { c::RED() } else { c::FG_MUTE() },
+            border: Border {
+                color: iced::Color::TRANSPARENT,
+                width: 0.0,
+                radius: Radius::from(4.0),
+            },
+            shadow: Shadow::default(),
+        }
+    });
+
+    let right = row![add_btn, remove_btn]
         .spacing(6)
         .align_y(iced::Alignment::Center)
         .padding(Padding {

@@ -97,6 +97,21 @@ pub enum Modal {
         destructive: bool,
         kind: ConfirmKind,
     },
+    /// Two-stage project removal: confirmation (with an optional checkbox to
+    /// also delete worktrees on disk) followed by a progress view while the
+    /// worktrees are torn down.
+    RemoveProject {
+        idx: usize,
+        name: String,
+        project_path: String,
+        /// Non-main worktree paths discovered when the modal opened.
+        worktrees: Vec<String>,
+        also_remove_worktrees: bool,
+        in_progress: bool,
+        done: usize,
+        current: String,
+        errors: Vec<String>,
+    },
     Message(String),
     Help,
     TmuxSetup,
@@ -699,6 +714,71 @@ impl App {
             self.active_session = Some(idx);
             self.focus_active_session();
         }
+    }
+
+    /// Open the project-removal modal for the project at `idx`. Discovers
+    /// the project's non-main worktrees up front so the modal can show
+    /// "Also delete N worktrees on disk" without re-shelling-out per frame.
+    pub fn open_remove_project_modal(&mut self, idx: usize) {
+        let Some(p) = self.store.projects.get(idx).cloned() else {
+            return;
+        };
+        let worktrees: Vec<String> = git::list_worktrees(&p.path)
+            .into_iter()
+            .filter(|w| !w.is_main)
+            .map(|w| w.path)
+            .collect();
+        self.modal = Modal::RemoveProject {
+            idx,
+            name: p.name,
+            project_path: p.path,
+            worktrees,
+            also_remove_worktrees: false,
+            in_progress: false,
+            done: 0,
+            current: String::new(),
+            errors: Vec::new(),
+        };
+    }
+
+    /// Kill any sessions belonging to the named project. Used when removing
+    /// a project so its sessions don't linger in the sidebar as orphans.
+    pub fn kill_sessions_for_project(&mut self, project: &str) {
+        let mut i = 0;
+        while i < self.sessions.len() {
+            if self.sessions[i].project == project {
+                self.sessions[i].kill();
+                self.sessions.remove(i);
+                match self.active_session {
+                    Some(a) if a == i => self.active_session = None,
+                    Some(a) if a > i => self.active_session = Some(a - 1),
+                    _ => {}
+                }
+            } else {
+                i += 1;
+            }
+        }
+        if self.sessions.is_empty() {
+            self.active_session = None;
+        }
+    }
+
+    /// Finalize project removal after any worktree teardown has completed.
+    /// Kills lingering sessions, drops the project from the store, and
+    /// persists. Returns a status string for the caller to display.
+    pub fn finalize_remove_project(&mut self, idx: usize) -> Result<String> {
+        if idx >= self.store.projects.len() {
+            return Ok(String::new());
+        }
+        let name = self.store.projects[idx].name.clone();
+        self.kill_sessions_for_project(&name);
+        let removed = self.store.projects.remove(idx);
+        storage::save(&self.store)?;
+        if self.proj_idx >= self.store.projects.len() {
+            self.proj_idx = self.store.projects.len().saturating_sub(1);
+        }
+        self.refresh_worktrees();
+        Ok(format!("removed project {}", removed.name))
     }
 
     /// Kill any sessions whose worktree path matches `wt_path` and remove them

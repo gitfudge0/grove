@@ -277,6 +277,34 @@ impl Grove {
                 self.app.focus_pane(Pane::Worktrees);
                 self.app.start_delete();
             }
+            Msg::RemoveProject { proj } => {
+                self.open_agent_menu = None;
+                self.switch_active_project(proj);
+                self.app.focus_pane(Pane::Projects);
+                self.app.open_remove_project_modal(proj);
+            }
+            Msg::ToggleRemoveWorktrees(v) => {
+                if let Modal::RemoveProject {
+                    also_remove_worktrees,
+                    in_progress,
+                    ..
+                } = &mut self.app.modal
+                {
+                    if !*in_progress {
+                        *also_remove_worktrees = v;
+                    }
+                }
+            }
+            Msg::ConfirmRemoveProject => {
+                return self.kick_off_remove_project();
+            }
+            Msg::WorktreeRemovedStep {
+                path,
+                error,
+                remaining,
+            } => {
+                return self.advance_remove_project(path, error, remaining);
+            }
             Msg::ModalSubmit => self.submit_modal_input(),
             Msg::ModalCancel => self.cancel_modal(),
             Msg::ModalConfirm(yes) => self.submit_modal_confirm(yes),
@@ -624,6 +652,113 @@ impl Grove {
         self.app.modal = Modal::None;
     }
 
+    /// Begin executing a confirmed remove-project action. If the user opted
+    /// to delete worktrees on disk, kick off the recursive teardown task;
+    /// otherwise finalize inline and close the modal.
+    fn kick_off_remove_project(&mut self) -> Task<Msg> {
+        let (idx, also, project_path, mut queue) = match &self.app.modal {
+            Modal::RemoveProject {
+                idx,
+                also_remove_worktrees,
+                project_path,
+                worktrees,
+                in_progress,
+                ..
+            } if !*in_progress => (
+                *idx,
+                *also_remove_worktrees,
+                project_path.clone(),
+                worktrees.clone(),
+            ),
+            _ => return Task::none(),
+        };
+
+        if !also || queue.is_empty() {
+            match self.app.finalize_remove_project(idx) {
+                Ok(msg) if !msg.is_empty() => self.app.status = msg,
+                Err(e) => self.app.status = format!("err: {e}"),
+                _ => {}
+            }
+            self.app.modal = Modal::None;
+            self.rebuild_wt_cache();
+            return Task::none();
+        }
+
+        // Kill any sessions tied to these worktrees up front so the
+        // PTY handles are released before `git worktree remove --force`
+        // touches the filesystem.
+        for wt in &queue {
+            self.app.kill_sessions_for_wt(wt);
+        }
+
+        if let Modal::RemoveProject {
+            in_progress,
+            done,
+            current,
+            errors,
+            ..
+        } = &mut self.app.modal
+        {
+            *in_progress = true;
+            *done = 0;
+            *errors = Vec::new();
+            *current = queue.first().cloned().unwrap_or_default();
+        }
+
+        let first = queue.remove(0);
+        remove_worktree_task(project_path, first, queue)
+    }
+
+    /// Process the result of one worktree removal and either dispatch the
+    /// next one or finalize the project removal when the queue is empty.
+    fn advance_remove_project(
+        &mut self,
+        path: String,
+        error: Option<String>,
+        remaining: Vec<String>,
+    ) -> Task<Msg> {
+        let (idx, project_path) = match &mut self.app.modal {
+            Modal::RemoveProject {
+                idx,
+                project_path,
+                done,
+                current,
+                errors,
+                ..
+            } => {
+                *done += 1;
+                if let Some(e) = error {
+                    errors.push(format!("{path}: {e}"));
+                }
+                *current = remaining.first().cloned().unwrap_or_default();
+                (*idx, project_path.clone())
+            }
+            _ => return Task::none(),
+        };
+
+        if let Some(next) = remaining.first().cloned() {
+            let rest: Vec<String> = remaining.into_iter().skip(1).collect();
+            return remove_worktree_task(project_path, next, rest);
+        }
+
+        // Done — finalize.
+        let errors = match &self.app.modal {
+            Modal::RemoveProject { errors, .. } => errors.clone(),
+            _ => Vec::new(),
+        };
+        match self.app.finalize_remove_project(idx) {
+            Ok(msg) if !msg.is_empty() => self.app.status = msg,
+            Err(e) => self.app.status = format!("err: {e}"),
+            _ => {}
+        }
+        if !errors.is_empty() {
+            self.app.status = format!("{} ({} worktree errors)", self.app.status, errors.len());
+        }
+        self.app.modal = Modal::None;
+        self.rebuild_wt_cache();
+        Task::none()
+    }
+
     /// Switch the active project, saving the outgoing project's worktrees
     /// into `wt_cache` first so `tree_view` can still render its children
     /// while a different project is active.
@@ -838,6 +973,29 @@ impl Grove {
             Some(out)
         }
     }
+}
+
+/// Spawn a tokio blocking task that runs `git worktree remove --force` for
+/// `path` inside `project_path`, then emits `Msg::WorktreeRemovedStep` with
+/// the outcome and the still-unprocessed `remaining` queue.
+fn remove_worktree_task(
+    project_path: String,
+    path: String,
+    remaining: Vec<String>,
+) -> Task<Msg> {
+    Task::perform(
+        async move {
+            // `git worktree remove` is a short subprocess; run it inline on
+            // the iced/tokio executor. The UI thread keeps rendering.
+            let res = crate::git::remove_worktree(&project_path, &path);
+            (path, res, remaining)
+        },
+        |(path, res, remaining)| Msg::WorktreeRemovedStep {
+            path,
+            error: res.err().map(|e| e.to_string()),
+            remaining,
+        },
+    )
 }
 
 fn pixel_to_cell(x: f32, y: f32) -> PtyCell {

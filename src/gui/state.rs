@@ -153,6 +153,23 @@ pub enum Msg {
         proj: usize,
         wt: usize,
     },
+    /// Open the remove-project confirmation modal for the given project row.
+    RemoveProject {
+        proj: usize,
+    },
+    /// Toggle the "also delete worktrees on disk" checkbox in the
+    /// remove-project modal.
+    ToggleRemoveWorktrees(bool),
+    /// User confirmed the remove-project modal; kicks off async teardown
+    /// when worktrees are slated for removal, otherwise finalizes inline.
+    ConfirmRemoveProject,
+    /// One worktree finished removing (or errored). Carries the per-worktree
+    /// outcome plus the remaining queue so the handler can advance.
+    WorktreeRemovedStep {
+        path: String,
+        error: Option<String>,
+        remaining: Vec<String>,
+    },
     ModalSubmit,
     ModalCancel,
     ModalConfirm(bool),
