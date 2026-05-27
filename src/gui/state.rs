@@ -10,6 +10,16 @@ use iced::{Color, Size};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
+
+/// Which top-level rendering the sidebar uses. `Tree` is the original
+/// project → worktree → session hierarchy; `Activity` is a flat list of
+/// every session across every worktree, grouped by liveness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidebarView {
+    Tree,
+    Activity,
+}
 
 /// Top-level iced application state.
 pub struct Grove {
@@ -54,6 +64,19 @@ pub struct Grove {
     /// Worktree currently under the mouse — drives reveal of the per-row
     /// action buttons (play / terminal / more). `None` when no row is hovered.
     pub hovered_wt: Option<(usize, usize)>,
+    /// Selected sidebar rendering mode (tree vs activity stream). In-memory
+    /// only — no persisted prefs pattern exists for transient view state.
+    pub sidebar_view: SidebarView,
+    /// User-toggled expansion of the `worktrees · no sessions` activity-view
+    /// group. `None` means "use default" (expanded iff non-empty).
+    pub activity_no_sessions_expanded: Option<bool>,
+    /// Best-effort "last activity" timestamp per session, keyed by the same
+    /// stable pointer used elsewhere (`Arc::as_ptr(&s.dirty)`). Updated from
+    /// `Msg::Tick` whenever a session's dirty flag is set.
+    // TODO: replace with a proper per-session `last_output_at` field on
+    // `Session` written by the PTY reader thread — current signal misses
+    // activity that happens between ticks.
+    pub last_activity: HashMap<usize, Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +117,11 @@ pub enum Msg {
     /// worktrees that currently contain sessions, or — if already in that
     /// state — expands every project and worktree.
     ToggleCollapseAll,
+    /// Switch the sidebar between the tree view and the activity stream.
+    SidebarSetView(SidebarView),
+    /// Toggle the collapsed-state of the `worktrees · no sessions` group in
+    /// activity view.
+    ToggleActivityNoSessionsGroup,
     WorktreeClicked {
         proj: usize,
         wt: usize,

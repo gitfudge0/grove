@@ -1,7 +1,7 @@
 //! Sidebar row builders — projects, worktrees, and sessions.
 
 use super::icons::icon;
-use super::metrics::{ROW_H, UI_BOLD, UI_FONT};
+use super::metrics::{ROW_H, SUBTITLE_H, UI_BOLD, UI_FONT};
 use super::palette as c;
 use super::state::Msg;
 use super::widgets::{action_mini, action_mini_danger, clickable_row, split_start_button};
@@ -9,6 +9,7 @@ use crate::session::{Session, SessionStatus};
 use iced::border::Radius;
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Background, Border, Color, Element, Length, Padding, Shadow};
+use std::time::Duration;
 
 /// 2px colored stripe used as a left rail (magenta on busy projects,
 /// cyan on the active worktree). Pass `Color::TRANSPARENT` for "no rail".
@@ -382,6 +383,405 @@ fn truncate_ellipsis(s: &str, max_chars: usize) -> String {
         let mut out: String = s.chars().take(take).collect();
         out.push('…');
         out
+    }
+}
+
+// ── activity-stream rows ────────────────────────────────────────────────
+
+/// Small 7×7 state dot. Three flavors:
+/// - `Running`: solid green.
+/// - `Idle`: faint (FG_MUTE) solid dot.
+/// - `Exited`: hollow ring drawn with a transparent fill and a `FG_MUTE`
+///   border.
+pub enum ActivityState {
+    Running,
+    Idle,
+    Exited,
+}
+
+fn state_dot<'a>(state: &ActivityState) -> Element<'a, Msg> {
+    let (bg, border_color, border_w) = match state {
+        ActivityState::Running => (Some(Background::Color(c::GREEN())), c::GREEN(), 0.0),
+        ActivityState::Idle => (Some(Background::Color(c::FG_MUTE())), c::FG_MUTE(), 0.0),
+        ActivityState::Exited => (None, c::FG_MUTE(), 1.0),
+    };
+    container(Space::with_width(7))
+        .width(7)
+        .height(7)
+        .style(move |_| container::Style {
+            background: bg,
+            border: Border {
+                color: border_color,
+                width: border_w,
+                radius: Radius::from(3.5),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Group header row used between activity-stream sections: mono uppercase
+/// label, dim count, and a 1px BORDER_SOFT rule extending to the right.
+pub fn activity_group_header<'a>(
+    label: &str,
+    count: usize,
+    expanded: bool,
+    on_toggle: Option<Msg>,
+) -> Element<'a, Msg> {
+    let chev = if expanded { "chev-down" } else { "chev-right" };
+    let chev_el: Element<'a, Msg> = if on_toggle.is_some() {
+        container(icon(chev, 9.0, c::FG_MUTE())).width(12).into()
+    } else {
+        Space::with_width(Length::Fixed(0.0)).into()
+    };
+
+    let rule: Element<'a, Msg> = container(Space::with_height(1.0))
+        .height(1.0)
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Background::Color(c::BORDER_SOFT())),
+            ..Default::default()
+        })
+        .into();
+
+    let inner = row![
+        chev_el,
+        text(label.to_uppercase())
+            .font(UI_BOLD)
+            .size(10)
+            .color(c::FG_MUTE())
+            .wrapping(iced::widget::text::Wrapping::None),
+        text(format!("{count}"))
+            .font(UI_FONT)
+            .size(10)
+            .color(c::FG_MUTE()),
+        container(rule).width(Length::Fill).padding(Padding {
+            top: 0.0,
+            bottom: 0.0,
+            left: 6.0,
+            right: 0.0,
+        }),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center)
+    .padding(Padding {
+        top: 0.0,
+        bottom: 0.0,
+        left: 12.0,
+        right: 12.0,
+    });
+
+    let h = 26.0;
+    let body: Element<'a, Msg> = container(inner)
+        .height(h)
+        .width(Length::Fill)
+        .align_y(iced::Alignment::Center)
+        .into();
+
+    if let Some(msg) = on_toggle {
+        button(body)
+            .on_press(msg)
+            .width(Length::Fill)
+            .padding(0)
+            .style(|_, status| {
+                let hovered = matches!(status, button::Status::Hovered);
+                button::Style {
+                    background: if hovered {
+                        Some(Background::Color(c::BG_HOVER()))
+                    } else {
+                        None
+                    },
+                    text_color: c::FG_MUTE(),
+                    border: Border::default(),
+                    shadow: Shadow::default(),
+                }
+            })
+            .into()
+    } else {
+        body
+    }
+}
+
+/// Render a session as a two-line activity row: agent + label up top,
+/// `project / worktree · branch` subtitle below, relative time on the right.
+/// Active state paints `bg_hl` plus a 2px cyan left-rail.
+pub fn session_activity_row<'a>(
+    idx: usize,
+    s: &Session,
+    project: &str,
+    worktree: &str,
+    active: bool,
+    pending_kill: bool,
+    last_activity: Option<Duration>,
+) -> Element<'a, Msg> {
+    let status = *s.status.lock().unwrap();
+    let state = match status {
+        SessionStatus::Running => ActivityState::Running,
+        SessionStatus::Exited(_) => ActivityState::Exited,
+    };
+    // Idle = running but no recent dirty signal. The activity-stream view
+    // separates the lists; this only affects the dot shade if the caller
+    // overrides via `state`.
+    activity_row_inner(
+        Some(idx),
+        Some(s),
+        state,
+        s.agent.label(),
+        Some(&s.label),
+        project,
+        worktree,
+        Some(&s.branch),
+        active,
+        pending_kill,
+        last_activity,
+    )
+}
+
+/// Variant of `session_activity_row` that forces the "idle" dot — used when
+/// the activity-stream grouping logic decides a Running session should appear
+/// under the `idle` heading.
+pub fn session_activity_row_idle<'a>(
+    idx: usize,
+    s: &Session,
+    project: &str,
+    worktree: &str,
+    active: bool,
+    pending_kill: bool,
+    last_activity: Option<Duration>,
+) -> Element<'a, Msg> {
+    let status = *s.status.lock().unwrap();
+    let state = match status {
+        SessionStatus::Running => ActivityState::Idle,
+        SessionStatus::Exited(_) => ActivityState::Exited,
+    };
+    activity_row_inner(
+        Some(idx),
+        Some(s),
+        state,
+        s.agent.label(),
+        Some(&s.label),
+        project,
+        worktree,
+        Some(&s.branch),
+        active,
+        pending_kill,
+        last_activity,
+    )
+}
+
+/// Activity-stream row for a worktree that has no sessions. Reuses the same
+/// two-line layout but with a mono "project / worktree" label and a
+/// "no sessions" subtitle. Click sends `WorktreeClicked` so the user can
+/// jump there.
+pub fn worktree_no_sessions_row<'a>(
+    proj: usize,
+    wt: usize,
+    project: &str,
+    worktree: &str,
+) -> Element<'a, Msg> {
+    let label = format!("{project} / {worktree}");
+
+    let top = text(label)
+        .font(UI_FONT)
+        .size(12)
+        .color(c::FG_DIM())
+        .wrapping(iced::widget::text::Wrapping::None);
+
+    let sub = text("no sessions".to_string())
+        .font(UI_FONT)
+        .size(10)
+        .color(c::FG_MUTE())
+        .wrapping(iced::widget::text::Wrapping::None);
+
+    let body = column![top, sub].spacing(0);
+
+    let inner = row![
+        container(state_dot(&ActivityState::Exited)).width(14).center_y(Length::Fill),
+        container(body).width(Length::Fill).clip(true),
+        Space::with_width(Length::Fixed(0.0)),
+    ]
+    .spacing(8)
+    .align_y(iced::Alignment::Center)
+    .padding(Padding {
+        top: 4.0,
+        bottom: 4.0,
+        left: 12.0,
+        right: 12.0,
+    });
+
+    let h = ROW_H + SUBTITLE_H;
+    container(
+        row![
+            container(Space::with_height(Length::Fill))
+                .width(2.0)
+                .height(Length::Fill),
+            button(
+                container(inner)
+                    .height(h)
+                    .width(Length::Fill)
+                    .align_y(iced::Alignment::Center),
+            )
+            .on_press(Msg::WorktreeClicked { proj, wt })
+            .width(Length::Fill)
+            .padding(0)
+            .style(|_, status| {
+                let hovered = matches!(status, button::Status::Hovered);
+                button::Style {
+                    background: if hovered {
+                        Some(Background::Color(c::BG_HOVER()))
+                    } else {
+                        None
+                    },
+                    text_color: c::FG_DIM(),
+                    border: Border::default(),
+                    shadow: Shadow::default(),
+                }
+            }),
+        ]
+        .align_y(iced::Alignment::Center),
+    )
+    .height(h)
+    .width(Length::Fill)
+    .into()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn activity_row_inner<'a>(
+    session_idx: Option<usize>,
+    _session: Option<&Session>,
+    state: ActivityState,
+    agent_label: &str,
+    sess_label: Option<&str>,
+    project: &str,
+    worktree: &str,
+    branch: Option<&str>,
+    active: bool,
+    pending_kill: bool,
+    last_activity: Option<Duration>,
+) -> Element<'a, Msg> {
+    let agent_color = match state {
+        ActivityState::Running => c::FG(),
+        ActivityState::Idle => c::FG_DIM(),
+        ActivityState::Exited => c::FG_MUTE(),
+    };
+    let agent_color = if active { c::CYAN() } else { agent_color };
+
+    let mut top_row = row![text(agent_label.to_string())
+        .font(UI_FONT)
+        .size(12)
+        .color(agent_color)
+        .wrapping(iced::widget::text::Wrapping::None),]
+    .spacing(8)
+    .align_y(iced::Alignment::Center);
+    if let Some(lbl) = sess_label {
+        if !lbl.is_empty() && !lbl.eq_ignore_ascii_case(agent_label) {
+            top_row = top_row.push(
+                text(lbl.to_string())
+                    .font(UI_FONT)
+                    .size(11)
+                    .color(c::FG_DIM())
+                    .wrapping(iced::widget::text::Wrapping::None),
+            );
+        }
+    }
+
+    // Subtitle: mono "project / worktree" plus optional " · branch" when
+    // the branch isn't redundant with the worktree folder name.
+    let mut subtitle = format!("{project} / {worktree}");
+    if let Some(b) = branch {
+        if !b.is_empty() && b != worktree {
+            subtitle.push_str(" · ");
+            subtitle.push_str(b);
+        }
+    }
+
+    let sub = text(subtitle)
+        .font(UI_FONT)
+        .size(10)
+        .color(c::FG_MUTE())
+        .wrapping(iced::widget::text::Wrapping::None);
+
+    let body = column![container(top_row).clip(true), container(sub).clip(true)].spacing(0);
+
+    let time_label = last_activity.map(format_relative).unwrap_or_default();
+    let time_el: Element<'a, Msg> = text(time_label)
+        .font(UI_FONT)
+        .size(10)
+        .color(c::FG_MUTE())
+        .into();
+
+    let close_btn: Element<'a, Msg> = match session_idx {
+        Some(i) if pending_kill => action_mini_danger("check", Msg::KillSession(i)),
+        Some(i) => action_mini("close", Msg::RequestKillSession(i)),
+        None => Space::with_width(Length::Fixed(0.0)).into(),
+    };
+
+    let inner = row![
+        container(state_dot(&state)).width(14).center_y(Length::Fill),
+        container(body).width(Length::Fill).clip(true),
+        time_el,
+        close_btn,
+    ]
+    .spacing(8)
+    .align_y(iced::Alignment::Center)
+    .padding(Padding {
+        top: 4.0,
+        bottom: 4.0,
+        left: 12.0,
+        right: 12.0,
+    });
+
+    let h = ROW_H + SUBTITLE_H;
+    let rail_color = if active {
+        c::CYAN()
+    } else {
+        Color::TRANSPARENT
+    };
+
+    let row_btn: Element<'a, Msg> = if let Some(i) = session_idx {
+        clickable_row(inner, h, active, Msg::SelectSession(i))
+    } else {
+        container(inner).height(h).width(Length::Fill).into()
+    };
+
+    container(
+        row![
+            container(Space::with_height(Length::Fill))
+                .width(2.0)
+                .height(Length::Fill)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(rail_color)),
+                    ..Default::default()
+                }),
+            row_btn,
+        ]
+        .align_y(iced::Alignment::Center),
+    )
+    .height(h)
+    .width(Length::Fill)
+    .style(move |_| container::Style {
+        background: if active {
+            Some(Background::Color(c::BG_HL()))
+        } else {
+            None
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+/// Format a Duration into the short relative-time labels the activity stream
+/// uses: `now`, `2m`, `1h`, `3h`, `2d`.
+fn format_relative(d: Duration) -> String {
+    let s = d.as_secs();
+    if s < 30 {
+        "now".to_string()
+    } else if s < 60 * 60 {
+        format!("{}m", (s / 60).max(1))
+    } else if s < 60 * 60 * 24 {
+        format!("{}h", s / 3600)
+    } else {
+        format!("{}d", s / 86_400)
     }
 }
 

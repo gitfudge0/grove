@@ -5,7 +5,7 @@ use super::metrics::{
     compute_pty_dims, pty_metrics, PTY_ZOOM_DEFAULT, PTY_ZOOM_MAX, PTY_ZOOM_MIN, PTY_ZOOM_STEP,
 };
 use super::pty::normalize_selection;
-use super::state::{Grove, Msg, PtyCell};
+use super::state::{Grove, Msg, PtyCell, SidebarView};
 use crate::agent::Agent;
 use crate::app::{App, InputKind, Modal, Pane};
 use crate::session::Session;
@@ -44,6 +44,9 @@ impl Grove {
             blink_tick: 0,
             pending_kill: None,
             hovered_wt: None,
+            sidebar_view: SidebarView::Tree,
+            activity_no_sessions_expanded: None,
+            last_activity: Default::default(),
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -81,6 +84,26 @@ impl Grove {
                 self.blink_tick = self.blink_tick.wrapping_add(1);
                 // `dirty` flags are consumed lazily by `pty()` when
                 // it rebuilds a session's cached snapshot.
+                // Record a best-effort "last activity" timestamp per session so
+                // the activity-stream view can show relative-time labels.
+                // TODO: better to stamp this from the PTY reader thread itself.
+                let now = std::time::Instant::now();
+                for s in &self.app.sessions {
+                    if s.dirty.load(Ordering::Relaxed) {
+                        let key = Arc::as_ptr(&s.dirty) as usize;
+                        self.last_activity.insert(key, now);
+                    } else {
+                        let key = Arc::as_ptr(&s.dirty) as usize;
+                        self.last_activity.entry(key).or_insert(now);
+                    }
+                }
+            }
+            Msg::SidebarSetView(v) => {
+                self.sidebar_view = v;
+            }
+            Msg::ToggleActivityNoSessionsGroup => {
+                let cur = self.activity_no_sessions_expanded.unwrap_or(false);
+                self.activity_no_sessions_expanded = Some(!cur);
             }
             Msg::WindowResized(size) => {
                 self.window_size = size;

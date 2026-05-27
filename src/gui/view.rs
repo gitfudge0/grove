@@ -7,8 +7,11 @@ use super::metrics::{
 };
 use super::palette as c;
 use super::pty::{rebuild_row_runs, PtyProgram};
-use super::rows::{project_row, session_row, worktree_row};
-use super::state::{Grove, Msg, PtyCacheEntry};
+use super::rows::{
+    activity_group_header, project_row, session_activity_row, session_activity_row_idle,
+    session_row, worktree_no_sessions_row, worktree_row,
+};
+use super::state::{Grove, Msg, PtyCacheEntry, SidebarView};
 use super::widgets::{
     control_btn, divider_h, divider_v, dot, empty_workspace, icon_btn, modal_action, modal_dir_row,
     modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn, vline, SegSide,
@@ -148,8 +151,11 @@ impl Grove {
     // ── sidebar ───────────────────────────────────────────────────────────
     fn sidebar(&self) -> Element<'_, Msg> {
         let tree_head = self.tree_head();
-        let tree = self.tree_view();
-        let tree_area = container(scrollable(tree).height(Length::Fill))
+        let content: Element<'_, Msg> = match self.sidebar_view {
+            SidebarView::Tree => self.tree_view(),
+            SidebarView::Activity => self.activity_view(),
+        };
+        let tree_area = container(scrollable(content).height(Length::Fill))
             .height(Length::Fill)
             .padding(Padding {
                 top: 8.0,
@@ -157,7 +163,12 @@ impl Grove {
                 left: 0.0,
                 right: 0.0,
             });
-        let tree_layer: Element<'_, Msg> = match self.open_agent_menu_top() {
+        let agent_menu_top = if matches!(self.sidebar_view, SidebarView::Tree) {
+            self.open_agent_menu_top()
+        } else {
+            None
+        };
+        let tree_layer: Element<'_, Msg> = match agent_menu_top {
             Some((proj, wt, top, is_main)) => stack![
                 tree_area,
                 sidebar_agent_menu_overlay(proj, wt, top, is_main),
@@ -241,17 +252,51 @@ impl Grove {
             }
         });
 
-        let label = text("WORKSPACE").font(UI_BOLD).size(10).color(c::FG_MUTE());
+        let activity_active = matches!(self.sidebar_view, SidebarView::Activity);
+        let tree_active = !activity_active;
+        let pillset = container(
+            row![
+                seg_button(
+                    "activity",
+                    activity_active,
+                    SegSide::Left,
+                    Msg::SidebarSetView(SidebarView::Activity),
+                ),
+                seg_button(
+                    "tree",
+                    tree_active,
+                    SegSide::Right,
+                    Msg::SidebarSetView(SidebarView::Tree),
+                ),
+            ]
+            .spacing(0),
+        )
+        .style(|_| container::Style {
+            border: Border {
+                color: c::BORDER(),
+                width: 1.0,
+                radius: Radius::from(6.0),
+            },
+            ..Default::default()
+        });
+
+        // The collapse-all toggle only belongs to tree mode.
+        let right_tools: Element<'_, Msg> = if tree_active {
+            container(toggle)
+                .height(Length::Fill)
+                .align_y(iced::Alignment::Center)
+                .into()
+        } else {
+            Space::with_width(Length::Fixed(0.0)).into()
+        };
 
         container(
             row![
-                container(label)
-                    .width(Length::Fill)
+                container(pillset)
                     .height(Length::Fill)
                     .align_y(iced::Alignment::Center),
-                container(toggle)
-                    .height(Length::Fill)
-                    .align_y(iced::Alignment::Center),
+                Space::with_width(Length::Fill),
+                right_tools,
             ]
             .align_y(iced::Alignment::Center)
             .height(Length::Fill)
@@ -333,6 +378,161 @@ impl Grove {
             }
         }
         col.into()
+    }
+
+    /// Flat activity-stream rendering of every session across every project /
+    /// worktree, grouped by liveness (`running` / `idle` / `worktrees · no
+    /// sessions`).
+    fn activity_view(&self) -> Element<'_, Msg> {
+        // Idle threshold: a running session whose dirty flag hasn't lit up in
+        // this window is considered idle. ~45s feels right for "paused".
+        const IDLE_AFTER: std::time::Duration = std::time::Duration::from_secs(45);
+        let now = std::time::Instant::now();
+
+        let mut running: Vec<usize> = Vec::new();
+        let mut idle: Vec<usize> = Vec::new();
+        let mut exited: Vec<usize> = Vec::new();
+        for (i, s) in self.app.sessions.iter().enumerate() {
+            let status = *s.status.lock().unwrap();
+            let key = std::sync::Arc::as_ptr(&s.dirty) as usize;
+            let last = self.last_activity.get(&key).copied();
+            let age = last.map(|t| now.saturating_duration_since(t));
+            match status {
+                crate::session::SessionStatus::Running => {
+                    if age.map(|d| d >= IDLE_AFTER).unwrap_or(false) {
+                        idle.push(i);
+                    } else {
+                        running.push(i);
+                    }
+                }
+                crate::session::SessionStatus::Exited(_) => exited.push(i),
+            }
+        }
+        // Exited sessions live under "idle" — they're not running, not "live".
+        idle.extend(exited);
+        // Sort each section by most recent activity.
+        let sort_by_age = |v: &mut Vec<usize>, sessions: &[crate::session::Session]| {
+            v.sort_by_key(|i| {
+                let key = std::sync::Arc::as_ptr(&sessions[*i].dirty) as usize;
+                std::cmp::Reverse(self.last_activity.get(&key).copied().unwrap_or(now))
+            });
+        };
+        sort_by_age(&mut running, &self.app.sessions);
+        sort_by_age(&mut idle, &self.app.sessions);
+
+        // Worktrees with no sessions, listed `project / worktree`.
+        let mut no_sessions: Vec<(usize, usize, String, String)> = Vec::new();
+        for (pi, p) in self.app.store.projects.iter().enumerate() {
+            let wts: &[Worktree] = if pi == self.app.proj_idx {
+                &self.app.worktrees
+            } else {
+                self.wt_cache.get(&pi).map(|v| v.as_slice()).unwrap_or(&[])
+            };
+            for (wi, w) in wts.iter().enumerate() {
+                let has = self.app.sessions.iter().any(|s| s.wt_path == w.path);
+                if has {
+                    continue;
+                }
+                let wname = if w.is_main {
+                    p.name.clone()
+                } else {
+                    crate::app::path_basename(&w.path)
+                };
+                no_sessions.push((pi, wi, p.name.clone(), wname));
+            }
+        }
+
+        let no_sessions_expanded = self
+            .activity_no_sessions_expanded
+            .unwrap_or(!no_sessions.is_empty());
+
+        let mut col: Column<'_, Msg> = Column::new().spacing(0);
+
+        col = col.push(activity_group_header("running", running.len(), true, None));
+        if running.is_empty() {
+            col = col.push(self.activity_empty_hint("no live sessions"));
+        }
+        for si in running {
+            col = col.push(self.activity_row_for(si, false));
+        }
+
+        col = col.push(activity_group_header("idle", idle.len(), true, None));
+        if idle.is_empty() {
+            col = col.push(self.activity_empty_hint("nothing paused"));
+        }
+        for si in idle {
+            col = col.push(self.activity_row_for(si, true));
+        }
+
+        col = col.push(activity_group_header(
+            "worktrees · no sessions",
+            no_sessions.len(),
+            no_sessions_expanded,
+            Some(Msg::ToggleActivityNoSessionsGroup),
+        ));
+        if no_sessions_expanded {
+            for (pi, wi, pname, wname) in no_sessions {
+                col = col.push(worktree_no_sessions_row(pi, wi, &pname, &wname));
+            }
+        }
+
+        col.into()
+    }
+
+    fn activity_row_for(&self, si: usize, force_idle: bool) -> Element<'_, Msg> {
+        let s = &self.app.sessions[si];
+        let active = self.app.active_session == Some(si);
+        let pending_kill = self.pending_kill == Some(si);
+        let key = std::sync::Arc::as_ptr(&s.dirty) as usize;
+        let last = self
+            .last_activity
+            .get(&key)
+            .map(|t| std::time::Instant::now().saturating_duration_since(*t));
+        // Find worktree folder name for the session.
+        let wname = self
+            .app
+            .store
+            .projects
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.name == s.project)
+            .map(|(pi, p)| {
+                let wts: &[Worktree] = if pi == self.app.proj_idx {
+                    &self.app.worktrees
+                } else {
+                    self.wt_cache.get(&pi).map(|v| v.as_slice()).unwrap_or(&[])
+                };
+                wts.iter()
+                    .find(|w| w.path == s.wt_path)
+                    .map(|w| {
+                        if w.is_main {
+                            p.name.clone()
+                        } else {
+                            crate::app::path_basename(&w.path)
+                        }
+                    })
+                    .unwrap_or_else(|| crate::app::path_basename(&s.wt_path))
+            })
+            .unwrap_or_else(|| crate::app::path_basename(&s.wt_path));
+        if force_idle {
+            session_activity_row_idle(si, s, &s.project, &wname, active, pending_kill, last)
+        } else {
+            session_activity_row(si, s, &s.project, &wname, active, pending_kill, last)
+        }
+    }
+
+    fn activity_empty_hint<'a>(&self, label: &'a str) -> Element<'a, Msg> {
+        container(
+            text(label.to_string())
+                .font(UI_FONT)
+                .size(11)
+                .color(c::FG_MUTE()),
+        )
+        .height(ROW_H)
+        .width(Length::Fill)
+        .align_y(iced::Alignment::Center)
+        .padding(Padding::from([0, 18]))
+        .into()
     }
 
     /// Find the y-pixel offset of the open agent menu, if any, so the overlay

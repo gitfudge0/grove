@@ -3,6 +3,9 @@
 use iced::Font;
 
 pub const ROW_H: f32 = 28.0;
+/// Extra height appended to `ROW_H` for sidebar rows that render a second
+/// (subtitle) line — used by the activity-stream view's session rows.
+pub const SUBTITLE_H: f32 = 16.0;
 pub const RAIL_W: f32 = 320.0;
 pub const APPBAR_H: f32 = 44.0;
 pub const STATUS_H: f32 = 26.0;
