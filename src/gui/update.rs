@@ -48,6 +48,7 @@ impl Grove {
             blink_tick: 0,
             pending_kill: None,
             hovered_wt: None,
+            hovered_activity_row: None,
             sidebar_view: SidebarView::Activity,
             activity_no_sessions_expanded: None,
         };
@@ -106,7 +107,8 @@ impl Grove {
                 self.activity_no_sessions_expanded = Some(!cur);
             }
             Msg::WindowResized(size) => {
-                self.window_size = size;
+                self.window_size =
+                    iced::Size::new(size.width * self.ui_zoom, size.height * self.ui_zoom);
                 self.refresh_pty_viewport();
             }
             Msg::BackendNative => {
@@ -176,6 +178,9 @@ impl Grove {
             }
             Msg::HoverWorktree(target) => {
                 self.hovered_wt = target;
+            }
+            Msg::HoverActivityRow(target) => {
+                self.hovered_activity_row = target;
             }
             Msg::StartSession { proj, wt, agent } => {
                 self.open_agent_menu = None;

@@ -481,7 +481,7 @@ impl Grove {
             col = col.push(self.activity_empty_hint("no live sessions"));
         }
         for si in running {
-            col = col.push(self.activity_row_for(si, false, &session_wnames[si], now));
+            col = col.push(self.activity_row_wrapped(si, false, &session_wnames[si], now, &project_idx));
         }
 
         col = col.push(activity_group_header("idle", idle.len(), true, None));
@@ -489,7 +489,7 @@ impl Grove {
             col = col.push(self.activity_empty_hint("nothing paused"));
         }
         for si in idle {
-            col = col.push(self.activity_row_for(si, true, &session_wnames[si], now));
+            col = col.push(self.activity_row_wrapped(si, true, &session_wnames[si], now, &project_idx));
         }
 
         col = col.push(activity_group_header(
@@ -514,23 +514,52 @@ impl Grove {
         col.into()
     }
 
-    fn activity_row_for(
-        &self,
+    /// Build one activity-stream session row and wrap it in a `mouse_area` so
+    /// hovering reveals the inline spawn chips (mirrors how `tree_view` wraps
+    /// worktree rows for `HoverWorktree`).
+    fn activity_row_wrapped<'a>(
+        &'a self,
         si: usize,
         force_idle: bool,
         wname: &str,
         now: std::time::Instant,
-    ) -> Element<'_, Msg> {
+        project_idx: &std::collections::HashMap<&str, usize>,
+    ) -> Element<'a, Msg> {
         let s = &self.app.sessions[si];
         let active = self.app.active_session == Some(si);
         let pending_kill = self.pending_kill == Some(si);
         let t = *s.last_output_at.lock().unwrap_or_else(|e| e.into_inner());
         let last = Some(now.saturating_duration_since(t));
-        if force_idle {
-            session_activity_row_idle(si, s, &s.project, wname, active, pending_kill, last)
+        let hovered = self.hovered_activity_row == Some(si);
+        let coords = self.resolve_session_wt_coords(s, project_idx);
+        let row_el = if force_idle {
+            session_activity_row_idle(si, s, &s.project, wname, active, pending_kill, last, hovered, coords)
         } else {
-            session_activity_row(si, s, &s.project, wname, active, pending_kill, last)
-        }
+            session_activity_row(si, s, &s.project, wname, active, pending_kill, last, hovered, coords)
+        };
+        iced::widget::mouse_area(row_el)
+            .on_enter(Msg::HoverActivityRow(Some(si)))
+            .on_exit(Msg::HoverActivityRow(None))
+            .into()
+    }
+
+    /// Resolve a session's `(project, worktree)` indices for the spawn chips.
+    /// Returns `None` when the worktree list for that project isn't cached
+    /// (e.g. a collapsed, never-expanded project) — the row then falls back to
+    /// showing the relative time with no spawn affordance.
+    fn resolve_session_wt_coords(
+        &self,
+        s: &Session,
+        project_idx: &std::collections::HashMap<&str, usize>,
+    ) -> Option<(usize, usize)> {
+        let &pi = project_idx.get(s.project.as_str())?;
+        let wts: &[Worktree] = if pi == self.app.proj_idx {
+            &self.app.worktrees
+        } else {
+            self.wt_cache.get(&pi).map(|v| v.as_slice())?
+        };
+        let wi = wts.iter().position(|w| w.path == s.wt_path)?;
+        Some((pi, wi))
     }
 
     /// Resolve a session's worktree display name using a pre-built project

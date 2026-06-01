@@ -44,8 +44,8 @@ pub struct Grove {
     /// Per-window GUI zoom multiplier. Applied as the iced application scale
     /// factor and reused when deriving PTY rows/cols from the visible area.
     pub ui_zoom: f32,
-    /// Last known window size so zoom changes can recompute PTY dimensions
-    /// without waiting for another resize event.
+    /// Last known window size in unzoomed units so zoom changes can recompute
+    /// PTY dimensions without waiting for another resize event.
     pub window_size: Size,
     /// Worktree whose split-start agent menu is open.
     pub open_agent_menu: Option<(usize, usize)>,
@@ -63,6 +63,10 @@ pub struct Grove {
     /// Worktree currently under the mouse — drives reveal of the per-row
     /// action buttons (play / terminal / more). `None` when no row is hovered.
     pub hovered_wt: Option<(usize, usize)>,
+    /// Session-index of the activity-stream row currently under the mouse.
+    /// Drives the hover-reveal of the inline spawn chips on session rows in
+    /// the activity view. `None` when no session row is hovered.
+    pub hovered_activity_row: Option<usize>,
     /// Selected sidebar rendering mode (tree vs activity stream). In-memory
     /// only — no persisted prefs pattern exists for transient view state.
     pub sidebar_view: SidebarView,
@@ -119,6 +123,8 @@ pub enum Msg {
         wt: usize,
     },
     HoverWorktree(Option<(usize, usize)>),
+    /// Mouse entered/left an activity-stream session row (by session index).
+    HoverActivityRow(Option<usize>),
     StartSession {
         proj: usize,
         wt: usize,

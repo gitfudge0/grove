@@ -61,15 +61,18 @@ pub const PLEX_SANS_BOLD: &[u8] = include_bytes!("../../assets/fonts/IBMPlexSans
 pub const PLEX_MONO_REGULAR: &[u8] = include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf");
 pub const PLEX_MONO_BOLD: &[u8] = include_bytes!("../../assets/fonts/IBMPlexMono-Bold.ttf");
 
-/// PTY dimensions derived from window pixel size. Subtracts the visible chrome
+/// PTY dimensions derived from unzoomed window size. Subtracts the visible chrome
 /// (rail, dividers, appbar, statusbar, sessbar, container padding) and divides
-/// by the cell metrics.
-pub fn compute_pty_dims(win_w: f32, win_h: f32, _zoom: f32, chrome_visible: bool) -> (u16, u16) {
-    // iced's `scale_factor` (set from `ui_zoom`) already scales the whole
-    // logical layout uniformly — chrome, PTY canvas, and padding all grow
-    // together. The resize events we receive are already in logical units, so
-    // chrome/cell sizing here must stay at the same 1.0 scale; multiplying by
-    // zoom double-counts and steals usable PTY rows/cols.
+/// by the cell metrics that iced lays out in logical pixels.
+pub fn compute_pty_dims(win_w: f32, win_h: f32, zoom: f32, chrome_visible: bool) -> (u16, u16) {
+    // `ui_zoom` is applied as iced's application scale factor, which reduces
+    // the logical viewport available to layout. The terminal grid must be
+    // computed against that zoomed viewport; otherwise the same number of
+    // cells render into a larger canvas and the PTY scrollable starts showing
+    // layout scrollbars.
+    let zoom = zoom.max(0.1);
+    let logical_w = win_w / zoom;
+    let logical_h = win_h / zoom;
     let visible_w = if chrome_visible {
         RAIL_W + SIDEBAR_DIVIDER_W
     } else {
@@ -80,8 +83,8 @@ pub fn compute_pty_dims(win_w: f32, win_h: f32, _zoom: f32, chrome_visible: bool
     } else {
         0.0
     };
-    let usable_w = win_w - (visible_w + PTY_PAD_W);
-    let usable_h = win_h - (visible_h + SESSBAR_H + PTY_PAD_H);
+    let usable_w = logical_w - (visible_w + PTY_PAD_W);
+    let usable_h = logical_h - (visible_h + SESSBAR_H + PTY_PAD_H);
     let cols = (usable_w / CELL_W).max(10.0) as u16;
     let rows = (usable_h / CELL_H).max(4.0) as u16;
     (rows, cols)
@@ -107,25 +110,46 @@ mod tests {
     }
 
     #[test]
-    fn compute_pty_dims_ignores_zoom_for_logical_layout() {
-        // iced applies the scale factor to the entire logical layout, so PTY
-        // dims must be derived at scale 1.0 regardless of zoom.
+    fn compute_pty_dims_scales_terminal_grid_with_zoom() {
         let win_w = 1280.0;
         let win_h = 800.0;
 
         let usable_w = win_w - (RAIL_W + SIDEBAR_DIVIDER_W + PTY_PAD_W);
         let usable_h = win_h - (APPBAR_H + STATUS_H + SESSBAR_H + PTY_PAD_H);
-        let expected_cols = (usable_w / CELL_W).max(10.0) as u16;
-        let expected_rows = (usable_h / CELL_H).max(4.0) as u16;
+        let expected_cols_1x = (usable_w / CELL_W).max(10.0) as u16;
+        let expected_rows_1x = (usable_h / CELL_H).max(4.0) as u16;
+        let usable_w_15x = (win_w / 1.5) - (RAIL_W + SIDEBAR_DIVIDER_W + PTY_PAD_W);
+        let usable_h_15x = (win_h / 1.5) - (APPBAR_H + STATUS_H + SESSBAR_H + PTY_PAD_H);
+        let expected_cols_15x = (usable_w_15x / CELL_W).max(10.0) as u16;
+        let expected_rows_15x = (usable_h_15x / CELL_H).max(4.0) as u16;
 
         assert_eq!(
-            compute_pty_dims(win_w, win_h, 1.5, true),
-            (expected_rows, expected_cols)
+            compute_pty_dims(win_w, win_h, 1.0, true),
+            (expected_rows_1x, expected_cols_1x)
         );
         assert_eq!(
-            compute_pty_dims(win_w, win_h, 1.0, true),
-            (expected_rows, expected_cols)
+            compute_pty_dims(win_w, win_h, 1.5, true),
+            (expected_rows_15x, expected_cols_15x)
         );
+        assert!(expected_rows_15x < expected_rows_1x);
+        assert!(expected_cols_15x < expected_cols_1x);
+    }
+
+    #[test]
+    fn compute_pty_dims_keeps_grid_inside_zoomed_viewport() {
+        let win_w = 1280.0;
+        let win_h = 800.0;
+
+        for zoom in [1.0, 1.5, 2.0] {
+            let (rows, cols) = compute_pty_dims(win_w, win_h, zoom, true);
+            let logical_w = win_w / zoom;
+            let logical_h = win_h / zoom;
+            let usable_w = logical_w - (RAIL_W + SIDEBAR_DIVIDER_W + PTY_PAD_W);
+            let usable_h = logical_h - (APPBAR_H + STATUS_H + SESSBAR_H + PTY_PAD_H);
+
+            assert!((cols as f32) * CELL_W <= usable_w);
+            assert!((rows as f32) * CELL_H <= usable_h);
+        }
     }
 
     #[test]

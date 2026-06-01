@@ -157,7 +157,7 @@ pub fn split_start_button_sized<'a>(
     is_main: bool,
     icon_size: f32,
 ) -> Element<'a, Msg> {
-    split_start_button_inner(proj, wt, is_main, icon_size, false)
+    split_start_button_inner(proj, wt, is_main, icon_size, false, true)
 }
 
 /// Flat variant: no per-chip background or border on hover (just an icon
@@ -169,7 +169,19 @@ pub fn split_start_button_flat<'a>(
     is_main: bool,
     icon_size: f32,
 ) -> Element<'a, Msg> {
-    split_start_button_inner(proj, wt, is_main, icon_size, true)
+    split_start_button_inner(proj, wt, is_main, icon_size, true, true)
+}
+
+/// Flat spawn chips for an activity-stream session row: same agent / terminal
+/// launchers as `split_start_button_flat`, but the destructive delete-worktree
+/// chip is never shown. Deleting a worktree from a row that still has a live
+/// session is the wrong gesture; that action belongs to the worktree row.
+pub fn session_spawn_chips_flat<'a>(
+    proj: usize,
+    wt: usize,
+    icon_size: f32,
+) -> Element<'a, Msg> {
+    split_start_button_inner(proj, wt, false, icon_size, true, false)
 }
 
 fn split_start_button_inner<'a>(
@@ -178,6 +190,7 @@ fn split_start_button_inner<'a>(
     is_main: bool,
     icon_size: f32,
     flat: bool,
+    allow_delete: bool,
 ) -> Element<'a, Msg> {
     let make = |name, msg| {
         if flat {
@@ -217,7 +230,8 @@ fn split_start_button_inner<'a>(
         .align_y(iced::Alignment::Center);
     // The main worktree is the repository checkout itself — deleting it via
     // `git worktree remove` would fail, so the trash icon is suppressed there.
-    if !is_main {
+    // Session-row spawn chips suppress it unconditionally via `allow_delete`.
+    if allow_delete && !is_main {
         r = r.push(make("trash", Msg::DeleteWorktree { proj, wt }));
     }
     r.into()

@@ -401,6 +401,29 @@
   .smeta .sl { color: var(--fg-faint); }
   .stime { font-family: ui-monospace, monospace; font-size: 10.5px; color: var(--fg-mute); margin-top: 9px; white-space: nowrap; }
 
+  /* right cluster of an activity session row: time + spawn chips + close.
+     chips and close hover-reveal; time hides on hover to cede the space. */
+  /* at rest only the time shows, so the label keeps full width; on hover the
+     time yields and the spawn chips + close take its place (no reserved gap). */
+  .sright { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; }
+  .sright .stime { margin-top: 0; }
+  .srow .start-split { display: none; }
+  .srow:hover .start-split,
+  .srow.hovering .start-split { display: inline-flex; }
+  .srow .sclose-mini {
+    display: none;
+    width: 22px; height: 22px;
+    align-items: center; justify-content: center;
+    border-radius: 4px; color: var(--fg-mute);
+  }
+  .srow:hover .sclose-mini,
+  .srow.hovering .sclose-mini { display: inline-flex; }
+  .srow .sclose-mini:hover { background: var(--bg-hover); color: var(--fg); }
+  .srow .sclose-mini svg { width: 12px; height: 12px; stroke: currentColor; fill: none;
+    stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .srow:hover .stime,
+  .srow.hovering .stime { display: none; }
+
   /* Layout B: quiet headers */
   .qh { padding: 4px 0 8px; }
   .qh-section + .qh-section { margin-top: 2px; }
@@ -628,16 +651,30 @@
               <div class="sline"><span class="agent">claude</span><span class="label">polish sidebar</span></div>
               <div class="smeta"><span class="proj">grove</span><span class="sl">/</span>main</div>
             </div>
-            <div class="stime">now</div>
+            <div class="sright">
+              <div class="stime">now</div>
+              <span class="start-split" title="start a session in grove / main">
+                <span class="seg" title="Start agent here"><svg width="11" height="11"><use href="#i-play"/></svg></span>
+                <span class="seg" title="Pick agent"><svg width="10" height="10"><use href="#i-caret"/></svg></span>
+              </span>
+              <button class="sclose-mini" title="Close session"><svg><use href="#i-close"/></svg></button>
+            </div>
           </div>
 
-          <div class="srow">
+          <div class="srow hovering">
             <span class="sdot"></span>
             <div class="sbody">
               <div class="sline"><span class="agent">claude</span><span class="label">migrate auth</span></div>
               <div class="smeta"><span class="proj">careconvoy</span><span class="sl">/</span>main</div>
             </div>
-            <div class="stime">2m</div>
+            <div class="sright">
+              <div class="stime">2m</div>
+              <span class="start-split" title="start a session in careconvoy / main">
+                <span class="seg" title="Start agent here"><svg width="11" height="11"><use href="#i-play"/></svg></span>
+                <span class="seg" title="Pick agent"><svg width="10" height="10"><use href="#i-caret"/></svg></span>
+              </span>
+              <button class="sclose-mini" title="Close session"><svg><use href="#i-close"/></svg></button>
+            </div>
           </div>
 
           <div class="stream-group">
@@ -652,7 +689,14 @@
               <div class="sline"><span class="agent">claude</span><span class="label">paused</span></div>
               <div class="smeta"><span class="proj">grove</span><span class="sl">/</span>sidebar <span class="sl">·</span> redesign/sidebar</div>
             </div>
-            <div class="stime">12m</div>
+            <div class="sright">
+              <div class="stime">12m</div>
+              <span class="start-split" title="start a session in grove / sidebar">
+                <span class="seg" title="Start agent here"><svg width="11" height="11"><use href="#i-play"/></svg></span>
+                <span class="seg" title="Pick agent"><svg width="10" height="10"><use href="#i-caret"/></svg></span>
+              </span>
+              <button class="sclose-mini" title="Close session"><svg><use href="#i-close"/></svg></button>
+            </div>
           </div>
 
           <div class="srow idle">
@@ -661,7 +705,14 @@
               <div class="sline"><span class="agent">terminal</span></div>
               <div class="smeta"><span class="proj">careconvoy</span><span class="sl">/</span>t3code <span class="sl">·</span> t3code/ava-301</div>
             </div>
-            <div class="stime">1h</div>
+            <div class="sright">
+              <div class="stime">1h</div>
+              <span class="start-split" title="start a session in careconvoy / t3code">
+                <span class="seg" title="Start agent here"><svg width="11" height="11"><use href="#i-play"/></svg></span>
+                <span class="seg" title="Pick agent"><svg width="10" height="10"><use href="#i-caret"/></svg></span>
+              </span>
+              <button class="sclose-mini" title="Close session"><svg><use href="#i-close"/></svg></button>
+            </div>
           </div>
 
           <div class="srow idle">
@@ -670,7 +721,14 @@
               <div class="sline"><span class="agent">codex</span><span class="label">tests green</span></div>
               <div class="smeta"><span class="proj">grove</span><span class="sl">/</span>main</div>
             </div>
-            <div class="stime">3h</div>
+            <div class="sright">
+              <div class="stime">3h</div>
+              <span class="start-split" title="start a session in grove / main">
+                <span class="seg" title="Start agent here"><svg width="11" height="11"><use href="#i-play"/></svg></span>
+                <span class="seg" title="Pick agent"><svg width="10" height="10"><use href="#i-caret"/></svg></span>
+              </span>
+              <button class="sclose-mini" title="Close session"><svg><use href="#i-close"/></svg></button>
+            </div>
           </div>
 
           <div class="stream-group">
@@ -695,9 +753,9 @@
       <div class="card-notes">
         <b>What changed.</b> No tree. The sidebar is one flat list grouped by activity state (<i>running</i> / <i>idle</i> / <i>worktrees with no sessions</i>). Each row reads top-down: agent + label, then a mono subline locating it in <code>project / worktree · branch</code>. Recency lives on the right.
         <br><br>
-        <b>What's gone.</b> Chevrons, project-row chrome, worktree split-start buttons, the add-worktree footer row. A single <code>+</code> in the toolbar opens a menu for <i>new session</i> (in current worktree), <i>new worktree</i> (project picker), <i>new project</i>. The <i>tree</i> pill in the toolbar returns layout B when needed.
+        <b>Spawn from the row you're on.</b> Hovering any session reveals a <code>start-split</code> at the right edge (<i>second row, shown open</i>): <svg width="9" height="9" style="vertical-align:-1px;stroke:var(--green);fill:var(--green)"><use href="#i-play"/></svg> starts another agent <i>in that session's worktree</i>, the caret picks which agent. You don't go hunting for the worktree in the bottom group — you act on the session already in front of you. The relative time yields to the chips on hover; the <code>×</code> close sits to their right.
         <br><br>
-        <b>Tradeoff.</b> Honest about the job: 90% of sidebar interactions are "jump to a session." Worktrees with no sessions get a grouped bottom section rather than the equal billing they have today.
+        <b>Worktrees with no sessions</b> get the same hover affordance from their grouped bottom section, so "start a session here" is one gesture wherever a worktree appears. The toolbar <code>+</code> stays for the cold-start cases: new worktree (project picker), new project.
       </div>
     </div>
 

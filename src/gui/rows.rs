@@ -533,6 +533,7 @@ pub fn activity_group_header<'a>(
 /// Render a session as a two-line activity row: agent + label up top,
 /// `project / worktree · branch` subtitle below, relative time on the right.
 /// Active state paints `bg_hl` plus a 2px cyan left-rail.
+#[allow(clippy::too_many_arguments)]
 pub fn session_activity_row<'a>(
     idx: usize,
     s: &Session,
@@ -541,6 +542,8 @@ pub fn session_activity_row<'a>(
     active: bool,
     pending_kill: bool,
     last_activity: Option<Duration>,
+    hovered: bool,
+    spawn_coords: Option<(usize, usize)>,
 ) -> Element<'a, Msg> {
     let status = *s.status.lock().unwrap();
     let state = match status {
@@ -555,19 +558,21 @@ pub fn session_activity_row<'a>(
         Some(s),
         state,
         s.agent.label(),
-        Some(&s.label),
         project,
         worktree,
         Some(&s.branch),
         active,
         pending_kill,
         last_activity,
+        hovered,
+        spawn_coords,
     )
 }
 
 /// Variant of `session_activity_row` that forces the "idle" dot — used when
 /// the activity-stream grouping logic decides a Running session should appear
 /// under the `idle` heading.
+#[allow(clippy::too_many_arguments)]
 pub fn session_activity_row_idle<'a>(
     idx: usize,
     s: &Session,
@@ -576,6 +581,8 @@ pub fn session_activity_row_idle<'a>(
     active: bool,
     pending_kill: bool,
     last_activity: Option<Duration>,
+    hovered: bool,
+    spawn_coords: Option<(usize, usize)>,
 ) -> Element<'a, Msg> {
     let status = *s.status.lock().unwrap();
     let state = match status {
@@ -587,21 +594,21 @@ pub fn session_activity_row_idle<'a>(
         Some(s),
         state,
         s.agent.label(),
-        Some(&s.label),
         project,
         worktree,
         Some(&s.branch),
         active,
         pending_kill,
         last_activity,
+        hovered,
+        spawn_coords,
     )
 }
 
 /// Activity-stream row representing a worktree itself: shows
 /// `project / worktree` with a session-count subtitle. On hover the
-/// new-session action chips appear inline next to the count so the
-/// affordance lives next to the label rather than floating at the row's
-/// right edge.
+/// new-session action chips appear at the row's right edge; the label fills
+/// the remaining width and clips, so a long name never wraps to a second line.
 pub fn worktree_activity_row<'a>(
     proj: usize,
     wt: usize,
@@ -632,23 +639,19 @@ pub fn worktree_activity_row<'a>(
 
     let h = ROW_H + SUBTITLE_H;
 
-    // Sub line: always shows the session count. On hover, the action chips
-    // appear inline immediately to the right of the count text — sized to
-    // match it so the row stays visually compact.
-    let mut sub_row = row![count_text]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
-    if hovered {
-        sub_row = sub_row.push(super::widgets::split_start_button_flat(
-            proj, wt, is_main, 10.0,
-        ));
-    }
-    let sub_line: Element<'a, Msg> = sub_row.into();
+    // The label fills the row and clips, so a long `project / worktree` name
+    // never reflows onto a second line. The session-count subtitle sits below.
+    let body = column![
+        container(top).width(Length::Fill).clip(true),
+        container(count_text).width(Length::Fill).clip(true),
+    ]
+    .spacing(0);
 
-    let body = column![top, sub_line].spacing(0);
-
+    // The clickable label is itself the fill target — clicking anywhere left of
+    // the (right-edge) chips jumps to the worktree.
     let label_btn = button(body)
         .on_press(Msg::WorktreeClicked { proj, wt })
+        .width(Length::Fill)
         .padding(0)
         .style(move |_, _status| button::Style {
             background: None,
@@ -657,24 +660,19 @@ pub fn worktree_activity_row<'a>(
             shadow: Shadow::default(),
         });
 
-    // A transparent click target that fills the remainder of the row so
-    // clicking anywhere not occupied by an action chip still jumps to the
-    // worktree.
-    let fill_click = button(Space::with_width(Length::Fill).height(h))
-        .on_press(Msg::WorktreeClicked { proj, wt })
-        .padding(0)
-        .width(Length::Fill)
-        .style(|_, _| button::Style {
-            background: None,
-            text_color: c::FG_DIM(),
-            border: Border::default(),
-            shadow: Shadow::default(),
-        });
+    // On hover the spawn chips occupy a fixed slot at the row's right edge
+    // (matching the session rows) rather than growing inline next to the count,
+    // which previously pushed long labels into a second line.
+    let right_chips: Element<'a, Msg> = if hovered {
+        super::widgets::split_start_button_flat(proj, wt, is_main, 10.0)
+    } else {
+        Space::with_width(Length::Fixed(0.0)).into()
+    };
 
     let inner = row![
         container(state_dot(&ActivityState::Exited)).width(14).center_y(Length::Fill),
         label_btn,
-        fill_click,
+        right_chips,
     ]
     .spacing(8)
     .align_y(iced::Alignment::Center)
@@ -713,13 +711,14 @@ fn activity_row_inner<'a>(
     session: Option<&Session>,
     state: ActivityState,
     agent_label: &str,
-    sess_label: Option<&str>,
     project: &str,
     worktree: &str,
     branch: Option<&str>,
     active: bool,
     pending_kill: bool,
     last_activity: Option<Duration>,
+    hovered: bool,
+    spawn_coords: Option<(usize, usize)>,
 ) -> Element<'a, Msg> {
     let agent_color = match state {
         ActivityState::Running => c::FG(),
@@ -728,6 +727,9 @@ fn activity_row_inner<'a>(
     };
     let agent_color = if active { c::CYAN() } else { agent_color };
 
+    // Line 1 is just the agent: the session label is almost always the branch,
+    // which already appears in the `project / worktree · branch` subtitle, so
+    // repeating it here is noise and steals width from the hover spawn chips.
     let mut top_row = row![].spacing(6).align_y(iced::Alignment::Center);
     if let Some(s) = session {
         top_row = top_row.push(icon(s.agent.icon_name(), 12.0, agent_color));
@@ -739,17 +741,6 @@ fn activity_row_inner<'a>(
             .color(agent_color)
             .wrapping(iced::widget::text::Wrapping::None),
     );
-    if let Some(lbl) = sess_label {
-        if !lbl.is_empty() && !lbl.eq_ignore_ascii_case(agent_label) {
-            top_row = top_row.push(
-                text(lbl.to_string())
-                    .font(UI_FONT)
-                    .size(11)
-                    .color(c::FG_DIM())
-                    .wrapping(iced::widget::text::Wrapping::None),
-            );
-        }
-    }
 
     // Subtitle: mono "project / worktree" plus optional " · branch" when
     // the branch isn't redundant with the worktree folder name.
@@ -776,6 +767,15 @@ fn activity_row_inner<'a>(
         .color(c::FG_MUTE())
         .into();
 
+    // On hover, the relative time yields its slot to the inline spawn chips —
+    // "start another agent in this session's worktree" (play / agent picker /
+    // terminal), the same control the worktree rows reveal. Off-hover the time
+    // shows, so the row keeps full label width at rest.
+    let right_el: Element<'a, Msg> = match (hovered, spawn_coords) {
+        (true, Some((pi, wi))) => super::widgets::session_spawn_chips_flat(pi, wi, 10.0),
+        _ => time_el,
+    };
+
     let close_btn: Element<'a, Msg> = match session_idx {
         Some(i) if pending_kill => action_mini_danger("check", Msg::KillSession(i)),
         Some(i) => action_mini("close", Msg::RequestKillSession(i)),
@@ -785,7 +785,7 @@ fn activity_row_inner<'a>(
     let inner = row![
         container(state_dot(&state)).width(14).center_y(Length::Fill),
         container(body).width(Length::Fill).clip(true),
-        time_el,
+        right_el,
         close_btn,
     ]
     .spacing(8)
