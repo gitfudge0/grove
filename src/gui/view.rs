@@ -11,7 +11,7 @@ use super::rows::{
     activity_group_header, project_row, session_activity_row, session_activity_row_idle,
     session_row, worktree_activity_row, worktree_row,
 };
-use super::state::{Grove, Msg, PtyCacheEntry, SidebarView};
+use super::state::{Grove, Msg, PtyCacheEntry, PtyCell, SidebarView};
 use super::widgets::{
     control_btn, divider_h, divider_v, dot, empty_workspace, icon_btn, modal_action, modal_dir_row,
     modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn, vline, SegSide,
@@ -831,10 +831,32 @@ impl Grove {
         // Cursor blinks at ~500 ms on / 500 ms off (tick interval = 60 ms,
         // so 8–9 ticks per half-period; use mod 16 with threshold 8).
         let cursor_visible = self.blink_tick % 16 < 8;
+        // Translate the scrollback-stable selection into the current viewport.
+        // Each endpoint clamps to the visible window; a selection entirely off
+        // one edge isn't painted.
+        let selection = self.pty_selection.and_then(|(a, b)| {
+            let (h, sb) = {
+                let p = s.parser.lock().ok()?;
+                (p.screen().size().0 as isize, p.screen().scrollback() as isize)
+            };
+            if h == 0 {
+                return None;
+            }
+            let to_vr = |c: &super::state::AbsCell| (h - 1) - (c.a_row as isize - sb);
+            let (ra, rb) = (to_vr(&a), to_vr(&b));
+            if (ra < 0 && rb < 0) || (ra > h - 1 && rb > h - 1) {
+                return None;
+            }
+            let cell = |c: &super::state::AbsCell, r: isize| PtyCell {
+                row: r.clamp(0, h - 1) as usize,
+                col: c.col,
+            };
+            Some((cell(&a, ra), cell(&b, rb)))
+        });
         let program = PtyProgram {
             rows,
             cache,
-            selection: self.pty_selection,
+            selection,
             cursor: cursor_pos,
             cursor_visible,
         };

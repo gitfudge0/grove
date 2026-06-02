@@ -19,6 +19,7 @@ grove is a terminal-native TUI that manages git worktrees across projects and ru
 
 - [why grove](#why-grove)
 - [install](#install)
+  - [desktop app](#desktop-app)
 - [quickstart](#quickstart)
 - [sessions](#sessions)
 - [keybindings](#keybindings)
@@ -55,7 +56,26 @@ cd grove
 ./install.sh
 ```
 
-the `grove` binary is installed to `$CARGO_HOME/bin` (default `~/.cargo/bin`). make sure that directory is on your `PATH`.
+the `grove` binary is installed to `$CARGO_HOME/bin` (default `~/.cargo/bin`). make sure that directory is on your `PATH`. running `grove` launches the desktop GUI; `grove tui` launches the terminal UI.
+
+### desktop app
+
+to install grove as a clickable native app — in Launchpad/Spotlight on macOS, or the application menu on linux — build a bundle instead of (or in addition to) the binary:
+
+```sh
+git clone https://github.com/gitfudge0/grove.git
+cd grove
+./package.sh
+```
+
+`package.sh` builds a release bundle with [`cargo-bundle`] (installing it on first run) and installs it:
+
+- **macOS** — copies `Grove.app` to `/Applications` (or `~/Applications`). launch it from Spotlight or Launchpad.
+- **linux** — installs the generated `.deb` via `dpkg`, or falls back to a binary plus a `grove.desktop` launcher and icon under `~/.local`. launch "Grove" from your application menu.
+
+when launched from a GUI (no terminal), grove recovers your login `PATH` from your shell on startup, so it can still find `claude`, `git`, and your agents. set `GROVE_FORCE_LOGIN_PATH=1` to force this even from a terminal.
+
+[`cargo-bundle`]: https://github.com/burtonageo/cargo-bundle
 
 ## quickstart
 

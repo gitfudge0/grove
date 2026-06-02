@@ -1,0 +1,82 @@
+name: Release bundles
+
+# Build native bundles and attach them to the GitHub Release whenever a release
+# is drafted (or published). Drafting a new release in the GitHub UI is enough
+# to kick this off; the job uploads the artifacts back onto that same release.
+on:
+  release:
+    types: [created, edited, prereleased, released, published]
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    name: Bundle (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos
+            runner: macos-latest
+          - os: linux
+            runner: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-cargo-
+
+      - name: Install Linux build deps
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          # GUI (iced) + bundling prerequisites.
+          sudo apt-get install -y \
+            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
+            librsvg2-dev libssl-dev pkg-config dpkg
+
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle --locked || cargo install cargo-bundle
+
+      - name: Build release bundle
+        run: cargo bundle --release
+
+      - name: Package artifacts
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+          OUT="dist"
+          mkdir -p "$OUT"
+
+          if [ "${{ matrix.os }}" = "macos" ]; then
+            APP="$(find target/release/bundle/osx -maxdepth 1 -name '*.app' | head -n1)"
+            [ -n "$APP" ] || { echo "no .app produced" >&2; exit 1; }
+            # Wrap the .app in a .dmg for distribution.
+            DMG="$OUT/Grove-${VERSION}-macos.dmg"
+            hdiutil create -volname "Grove" -srcfolder "$APP" -ov -format UDZO "$DMG"
+            echo "Built $DMG"
+          else
+            DEB="$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' | head -n1)"
+            [ -n "$DEB" ] || { echo "no .deb produced" >&2; exit 1; }
+            cp "$DEB" "$OUT/Grove-${VERSION}-linux-amd64.deb"
+            echo "Built $OUT/Grove-${VERSION}-linux-amd64.deb"
+          fi
+
+      - name: Upload bundles to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

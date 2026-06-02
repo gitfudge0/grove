@@ -1,12 +1,25 @@
 [package]
 name = "grove"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "Grove — a worktree launchpad for AI coding agents"
 
 [[bin]]
 name = "grove"
 path = "src/main.rs"
+
+[package.metadata.bundle]
+name = "Grove"
+identifier = "dev.grove.Grove"
+icon = [
+    "assets/icon/32x32.png",
+    "assets/icon/128x128.png",
+    "assets/icon/128x128@2x.png",
+    "assets/icon/512x512.png",
+]
+category = "Developer Tool"
+short_description = "A worktree launchpad for AI coding agents"
+copyright = "Copyright (c) 2026 Grove"
 
 [dependencies]
 ratatui = "0.29"

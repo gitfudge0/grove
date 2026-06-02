@@ -4,8 +4,7 @@ use super::keys::key_to_bytes;
 use super::metrics::{
     compute_pty_dims, pty_metrics, PTY_ZOOM_DEFAULT, PTY_ZOOM_MAX, PTY_ZOOM_MIN, PTY_ZOOM_STEP,
 };
-use super::pty::normalize_selection;
-use super::state::{Grove, Msg, PtyCell, SidebarView};
+use super::state::{AbsCell, Grove, Msg, PtyCell, PtyDrag, SidebarView};
 use crate::agent::Agent;
 use crate::app::{App, InputKind, Modal, Pane};
 use crate::session::Session;
@@ -45,6 +44,7 @@ impl Grove {
             window_size,
             open_agent_menu: None,
             pty_selection: None,
+            pty_drag: None,
             blink_tick: 0,
             pending_kill: None,
             hovered_wt: None,
@@ -98,6 +98,7 @@ impl Grove {
             Msg::Tick => {
                 // Advance the blink counter (~30 Hz at 60 ms tick interval).
                 self.blink_tick = self.blink_tick.wrapping_add(1);
+                self.tick_drag_autoscroll();
             }
             Msg::SidebarSetView(v) => {
                 self.sidebar_view = v;
@@ -235,12 +236,22 @@ impl Grove {
             }
             Msg::PtyMouseDown(x, y) => {
                 self.pending_kill = None;
-                let cell = pixel_to_cell(x, y);
-                self.pty_selection = Some((cell, cell));
+                if let (Some(cell), Some((h, _))) = (self.pixel_to_abs(x, y), self.pty_view_geom())
+                {
+                    self.pty_selection = Some((cell, cell));
+                    self.pty_drag = Some(PtyDrag {
+                        last_x: x,
+                        last_y: y,
+                        view_h_px: h as f32 * pty_metrics(1.0).cell_h,
+                    });
+                }
             }
             Msg::PtyMouseDrag(x, y) => {
-                let cell = pixel_to_cell(x, y);
-                if let Some((a, _)) = self.pty_selection {
+                if let Some(d) = self.pty_drag.as_mut() {
+                    d.last_x = x;
+                    d.last_y = y;
+                }
+                if let (Some(cell), Some((a, _))) = (self.pixel_to_abs(x, y), self.pty_selection) {
                     self.pty_selection = Some((a, cell));
                 }
             }
@@ -258,6 +269,7 @@ impl Grove {
             Msg::ZoomOut => self.adjust_ui_zoom(-PTY_ZOOM_STEP),
             Msg::ZoomReset => self.set_ui_zoom(PTY_ZOOM_DEFAULT),
             Msg::PtyMouseUp => {
+                self.pty_drag = None;
                 if let Some((a, h)) = self.pty_selection {
                     if a == h {
                         self.pty_selection = None;
@@ -939,43 +951,68 @@ impl Grove {
         }
     }
 
-    /// Extract text inside the current PTY selection from the cached styled
-    /// rows of the active session.
+    /// Extract text inside the current PTY selection. The selection is stored
+    /// in scrollback-stable absolute rows, so this may span content that is not
+    /// currently visible — extraction walks the session's scrollback to read it.
     pub(super) fn selection_text(&self) -> Option<String> {
         let (a, h) = self.pty_selection?;
         let i = self.app.active_session?;
         let s = self.app.sessions.get(i)?;
-        let key = Arc::as_ptr(&s.dirty) as usize;
-        let map = self.pty_cache.borrow();
-        let entry = map.get(&key)?;
-        let rows = &entry.rows;
-        if rows.is_empty() {
+        s.selection_text_abs((a.a_row, a.col), (h.a_row, h.col))
+    }
+
+    /// Visible grid height (rows) and current scrollback offset of the active
+    /// session, used to convert between viewport and absolute selection rows.
+    fn pty_view_geom(&self) -> Option<(usize, usize)> {
+        let i = self.app.active_session?;
+        let s = self.app.sessions.get(i)?;
+        let p = s.parser.lock().ok()?;
+        let (h, _) = p.screen().size();
+        Some((h as usize, p.screen().scrollback()))
+    }
+
+    /// Convert unzoomed canvas pixels to an absolute selection cell, clamping
+    /// the row into the currently-visible window `[S, S + h - 1]`.
+    fn pixel_to_abs(&self, x: f32, y: f32) -> Option<AbsCell> {
+        let (h, sb) = self.pty_view_geom()?;
+        if h == 0 {
             return None;
         }
-        let (r1, c1, r2, c2) = normalize_selection(a, h);
-        let r1 = r1.min(rows.len() - 1);
-        let r2 = r2.min(rows.len() - 1);
-        let mut out = String::new();
-        for r in r1..=r2 {
-            let row = &rows[r];
-            let row_text: String = row.iter().flat_map(|run| run.text.chars()).collect();
-            let row_len = row_text.chars().count();
-            let start = if r == r1 { c1 } else { 0 };
-            let end = if r == r2 { c2.min(row_len) } else { row_len };
-            let slice: String = row_text
-                .chars()
-                .skip(start)
-                .take(end.saturating_sub(start))
-                .collect();
-            out.push_str(slice.trim_end());
-            if r < r2 {
-                out.push('\n');
-            }
-        }
-        if out.is_empty() {
-            None
+        let m = pty_metrics(1.0);
+        let r = ((y / m.cell_h).max(0.0) as usize).min(h - 1);
+        let col = (x / m.cell_w).max(0.0) as usize;
+        Some(AbsCell {
+            a_row: sb + (h - 1 - r),
+            col,
+        })
+    }
+
+    /// Called each `Msg::Tick`. While a selection drag is held with the cursor
+    /// in the top/bottom edge zone, scroll grove's scrollback one step in that
+    /// direction and extend the selection head over the revealed line.
+    fn tick_drag_autoscroll(&mut self) {
+        let Some(d) = self.pty_drag else { return };
+        let margin = pty_metrics(1.0).cell_h;
+        let up = if d.last_y <= margin {
+            true
+        } else if d.last_y >= d.view_h_px - margin {
+            false
         } else {
-            Some(out)
+            return;
+        };
+        // Drive grove's own scrollback (no-op if the inner app grabs the mouse).
+        let before = self.pty_view_geom().map(|(_, s)| s);
+        if let Some(s) = self.app.active_session_mut() {
+            s.scroll(up, 0, 0);
+        }
+        // Only extend if the scroll actually moved the view.
+        if self.pty_view_geom().map(|(_, s)| s) == before {
+            return;
+        }
+        if let (Some(cell), Some((anchor, _))) =
+            (self.pixel_to_abs(d.last_x, d.last_y), self.pty_selection)
+        {
+            self.pty_selection = Some((anchor, cell));
         }
     }
 }

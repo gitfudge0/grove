@@ -49,9 +49,15 @@ pub struct Grove {
     pub window_size: Size,
     /// Worktree whose split-start agent menu is open.
     pub open_agent_menu: Option<(usize, usize)>,
-    /// Mouse-drag selection in the active session's PTY, in (row, col) cells.
-    /// Un-normalized so we know which end is moving.
-    pub pty_selection: Option<(PtyCell, PtyCell)>,
+    /// Mouse-drag selection in the active session's PTY, stored in
+    /// scrollback-stable absolute cells (see [`AbsCell`]) so it survives
+    /// auto-scrolling and can span more than one viewport. Un-normalized so we
+    /// know which end (`.0` anchor / `.1` head) is moving.
+    pub pty_selection: Option<(AbsCell, AbsCell)>,
+    /// Active selection drag, if the left button is held over the PTY. Drives
+    /// the tick-based edge auto-scroll: while set, `Msg::Tick` checks whether
+    /// `last_y` sits in the top/bottom edge zone and scrolls + extends.
+    pub pty_drag: Option<PtyDrag>,
     /// Monotonically incrementing counter driven by `Msg::Tick` (~30 Hz).
     /// Used to compute cursor blink state: visible when `blink_tick % 30 < 15`
     /// (≈ 500 ms on / 500 ms off).
@@ -79,6 +85,30 @@ pub struct Grove {
 pub struct PtyCell {
     pub row: usize,
     pub col: usize,
+}
+
+/// A selection endpoint in scrollback-stable coordinates. `a_row` is the line's
+/// distance above the live bottom: for visible grid height `h` and scrollback
+/// offset `S`, viewport row `r` maps to `a_row = S + (h - 1 - r)` and back via
+/// `r = (h - 1) - (a_row - S)`. Larger `a_row` = older content. Storing rows
+/// this way keeps the selection pinned to its content as the view scrolls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AbsCell {
+    pub a_row: usize,
+    pub col: usize,
+}
+
+/// Transient state for an in-progress selection drag over the PTY canvas.
+#[derive(Clone, Copy, Debug)]
+pub struct PtyDrag {
+    /// Last drag cursor y, in unzoomed canvas pixels (clamped to `[0, view_h_px]`
+    /// by the canvas program). Used to detect the edge zones.
+    pub last_y: f32,
+    /// Last drag cursor x, in unzoomed canvas pixels. Used to recompute the
+    /// selection column when auto-scroll extends the head.
+    pub last_x: f32,
+    /// Visible canvas height in unzoomed pixels (`h * CELL_H`).
+    pub view_h_px: f32,
 }
 
 pub struct PtyCacheEntry {

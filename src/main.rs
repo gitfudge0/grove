@@ -1,6 +1,7 @@
 mod agent;
 mod app;
 mod clipboard;
+mod env_path;
 mod git;
 mod gui;
 mod launch;
@@ -33,12 +34,16 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    // `grove gui` launches the iced gui; everything else is the TUI.
+    // `grove` launches the iced gui by default; `grove tui` launches the TUI.
+    // `grove gui` is kept as an explicit alias for the gui.
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("gui") {
-        return gui::run();
+    match args.first().map(String::as_str) {
+        Some("tui") => run_tui(),
+        _ => gui::run(),
     }
+}
 
+fn run_tui() -> Result<()> {
     let mut app = App::new()?;
 
     // Ask the OS to keep the display awake while grove is running. If the

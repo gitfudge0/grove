@@ -131,10 +131,12 @@ pub fn remove_worktree(project_path: &str, wt_path: &str) -> Result<()> {
 }
 
 pub fn worktrees_root() -> Result<PathBuf> {
-    let base = dirs::state_dir()
-        .or_else(dirs::data_dir)
-        .context("no state/data dir")?;
-    Ok(base.join("grove").join("worktrees"))
+    // Worktrees always live under `~/.config/grove/worktrees` on both macOS and
+    // Linux. We intentionally do not use `dirs::config_dir()` here because on
+    // macOS that resolves to `~/Library/Application Support` — we want the
+    // identical `~/.config` location on every platform.
+    let home = dirs::home_dir().context("no home dir")?;
+    Ok(home.join(".config").join("grove").join("worktrees"))
 }
 
 pub fn add_worktree(project_path: &str, project_name: &str, name: &str) -> Result<String> {

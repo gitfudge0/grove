@@ -342,15 +342,82 @@ impl Session {
         let (_, cols) = screen.size();
         let end_col = end.0.saturating_add(1).min(cols);
         let raw = screen.contents_between(start.1, start.0, end.1, end_col);
-        let mut out = String::with_capacity(raw.len());
-        for line in raw.split('\n') {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(line.trim_end());
+        clean_selection(raw)
+    }
+
+    /// Extract the selected text between two endpoints given in scrollback-
+    /// stable absolute coordinates (`(a_row, col)`, where larger `a_row` is
+    /// older — see `gui::state::AbsCell`). The selection may extend beyond the
+    /// currently-visible viewport: when both endpoints are on screen we read it
+    /// in one pass (preserving soft-wrapped-line joining); otherwise we walk the
+    /// scrollback row by row, restoring the original offset afterwards.
+    pub fn selection_text_abs(&self, p1: (usize, usize), p2: (usize, usize)) -> Option<String> {
+        let mut parser = self.parser.lock().ok()?;
+        let (h, cols) = parser.screen().size();
+        let h = h as usize;
+        if h == 0 {
+            return None;
         }
-        let end = out.trim_end_matches('\n').len();
-        out.truncate(end);
+        let s = parser.screen().scrollback();
+        // Viewport row for an absolute row at the current offset (may be
+        // outside `[0, h-1]` when the row is scrolled off screen).
+        let vr = |a: usize| -> isize { (h as isize - 1) - (a as isize - s as isize) };
+        let (r1, r2) = (vr(p1.0), vr(p2.0));
+        // Order endpoints by (viewport row, col) for the fast path.
+        let (top, bot) = if (r1, p1.1) <= (r2, p2.1) {
+            ((r1, p1.1), (r2, p2.1))
+        } else {
+            ((r2, p2.1), (r1, p1.1))
+        };
+
+        if top.0 >= 0 && bot.0 <= h as isize - 1 {
+            // Fully visible — single multi-row read, as before.
+            let sc = top.1 as u16;
+            let ec = (bot.1 as u16).saturating_add(1).min(cols);
+            let raw = parser
+                .screen()
+                .contents_between(top.0 as u16, sc, bot.0 as u16, ec);
+            return clean_selection(raw);
+        }
+
+        // Off-screen: walk the scrollback. Order endpoints by absolute row
+        // (older/top first); on a row tie the smaller column starts.
+        let (a_top, c_top, a_bot, c_bot) =
+            if (p1.0, std::cmp::Reverse(p1.1)) >= (p2.0, std::cmp::Reverse(p2.1)) {
+                (p1.0, p1.1, p2.0, p2.1)
+            } else {
+                (p2.0, p2.1, p1.0, p1.1)
+            };
+        let orig = s;
+        let mut lines: Vec<String> = Vec::new();
+        let mut a = a_top;
+        loop {
+            // Bring absolute row `a` to the bottom visible row (vr = h-1).
+            // `set_scrollback` clamps to the filled buffer; if `a` is older
+            // than the oldest retained line it lands `delta` rows above bottom.
+            parser.set_scrollback(a);
+            let actual = parser.screen().scrollback();
+            let delta = a.saturating_sub(actual);
+            if delta < h {
+                let vrow = (h - 1 - delta) as u16;
+                let sc = if a == a_top { c_top as u16 } else { 0 };
+                let ec = if a == a_bot {
+                    (c_bot as u16).saturating_add(1).min(cols)
+                } else {
+                    cols
+                };
+                let raw = parser.screen().contents_between(vrow, sc, vrow, ec);
+                lines.push(raw.trim_end().to_string());
+            }
+            if a == a_bot {
+                break;
+            }
+            a -= 1;
+        }
+        parser.set_scrollback(orig);
+        drop(parser);
+        let out = lines.join("\n");
+        let out = out.trim_end_matches('\n').to_string();
         if out.is_empty() {
             None
         } else {
@@ -416,6 +483,26 @@ impl Session {
             p.set_size(rows, cols);
         }
         self.dirty.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Normalize raw `contents_between` output for the clipboard: trim trailing
+/// whitespace on each line and drop trailing blank lines. Returns `None` when
+/// the result is empty.
+fn clean_selection(raw: String) -> Option<String> {
+    let mut out = String::with_capacity(raw.len());
+    for line in raw.split('\n') {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line.trim_end());
+    }
+    let end = out.trim_end_matches('\n').len();
+    out.truncate(end);
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
     }
 }
 

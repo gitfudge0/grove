@@ -28,6 +28,10 @@ use iced::{Size, Task, Theme};
 use state::Grove;
 
 pub fn run() -> Result<()> {
+    // When launched from Finder/Launchpad/.desktop the process inherits a
+    // minimal PATH; recover the user's login PATH before spawning any PTYs.
+    crate::env_path::ensure_login_path();
+
     iced::application("grove", Grove::update, Grove::view)
         .theme(|_| match crate::theme::current().kind {
             crate::theme::ThemeKind::Light => Theme::Light,
