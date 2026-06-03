@@ -18,6 +18,10 @@ use std::sync::Arc;
 pub enum SidebarView {
     Tree,
     Activity,
+    /// A single persistent local shell rooted at `~`. Not tied to any
+    /// worktree, never appears in the session lists, and can't be killed —
+    /// only restarted (always back at `~`) if its shell exits.
+    Terminal,
 }
 
 /// Top-level iced application state.
@@ -143,8 +147,17 @@ pub enum Msg {
     /// worktrees that currently contain sessions, or — if already in that
     /// state — expands every project and worktree.
     ToggleCollapseAll,
-    /// Switch the sidebar between the tree view and the activity stream.
+    /// Switch the sidebar between the tree view, the activity stream, and the
+    /// persistent home terminal.
     SidebarSetView(SidebarView),
+    /// Relaunch the active home terminal's shell at `~` (e.g. after it exited).
+    RestartHomeTerminal,
+    /// Spawn an additional home terminal and focus it.
+    NewHomeTerminal,
+    /// Focus the home terminal at this index.
+    SelectHomeTerminal(usize),
+    /// Close the home terminal at this index.
+    CloseHomeTerminal(usize),
     /// Toggle the collapsed-state of the `worktrees · no sessions` group in
     /// activity view.
     ToggleActivityNoSessionsGroup,

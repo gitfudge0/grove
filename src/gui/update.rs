@@ -102,6 +102,35 @@ impl Grove {
             }
             Msg::SidebarSetView(v) => {
                 self.sidebar_view = v;
+                if matches!(v, SidebarView::Terminal) {
+                    self.app.ensure_home_terminal(self.pty_rows, self.pty_cols);
+                    self.invalidate_pty_render_cache();
+                }
+            }
+            Msg::RestartHomeTerminal => {
+                self.app.restart_active_terminal(self.pty_rows, self.pty_cols);
+                self.invalidate_pty_render_cache();
+            }
+            Msg::NewHomeTerminal => {
+                self.app.new_home_terminal(self.pty_rows, self.pty_cols);
+                self.pty_selection = None;
+                self.invalidate_pty_render_cache();
+            }
+            Msg::SelectHomeTerminal(i) => {
+                if i < self.app.home_terminals.len() {
+                    self.app.active_terminal = Some(i);
+                    self.app.home_terminals[i].resize(self.pty_rows, self.pty_cols);
+                    self.pty_selection = None;
+                    // Symmetry with new/close/restart: don't rely on `resize`
+                    // happening to dirty the target to surface the right frame.
+                    self.invalidate_pty_render_cache();
+                }
+            }
+            Msg::CloseHomeTerminal(i) => {
+                self.app
+                    .close_home_terminal(i, self.pty_rows, self.pty_cols);
+                self.pty_selection = None;
+                self.invalidate_pty_render_cache();
             }
             Msg::ToggleActivityNoSessionsGroup => {
                 let cur = self.activity_no_sessions_expanded.unwrap_or(false);
@@ -257,7 +286,7 @@ impl Grove {
             }
             Msg::PtyScroll { up, x, y } => {
                 let cell = pixel_to_cell(x, y);
-                if let Some(s) = self.app.active_session_mut() {
+                if let Some(s) = self.focused_session_mut() {
                     s.scroll(up, cell.col as u16, cell.row as u16);
                 }
             }
@@ -451,6 +480,9 @@ impl Grove {
         for s in &mut self.app.sessions {
             s.resize(rows, cols);
         }
+        for s in &mut self.app.home_terminals {
+            s.resize(rows, cols);
+        }
         self.invalidate_pty_render_cache();
     }
 
@@ -508,15 +540,13 @@ impl Grove {
             }
             if is_paste_shortcut(mods, s) {
                 if let Some(text) = crate::clipboard::paste() {
-                    if let Some(i) = self.app.active_session {
-                        if let Some(sess) = self.app.sessions.get_mut(i) {
-                            let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
-                            let mut bytes = Vec::with_capacity(normalized.len() + 12);
-                            bytes.extend_from_slice(b"\x1b[200~");
-                            bytes.extend_from_slice(normalized.as_bytes());
-                            bytes.extend_from_slice(b"\x1b[201~");
-                            sess.send(&bytes);
-                        }
+                    if let Some(sess) = self.focused_session_mut() {
+                        let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
+                        let mut bytes = Vec::with_capacity(normalized.len() + 12);
+                        bytes.extend_from_slice(b"\x1b[200~");
+                        bytes.extend_from_slice(normalized.as_bytes());
+                        bytes.extend_from_slice(b"\x1b[201~");
+                        sess.send(&bytes);
                     }
                 }
                 self.pty_selection = None;
@@ -524,10 +554,8 @@ impl Grove {
             }
         }
         if let Some(bytes) = key_to_bytes(&key, mods) {
-            if let Some(i) = self.app.active_session {
-                if let Some(s) = self.app.sessions.get_mut(i) {
-                    s.send(&bytes);
-                }
+            if let Some(s) = self.focused_session_mut() {
+                s.send(&bytes);
             }
             self.pty_selection = None;
         }
@@ -954,18 +982,44 @@ impl Grove {
     /// Extract text inside the current PTY selection. The selection is stored
     /// in scrollback-stable absolute rows, so this may span content that is not
     /// currently visible — extraction walks the session's scrollback to read it.
+    /// Whether the persistent home-terminal tab is the active sidebar view.
+    pub(super) fn terminal_tab(&self) -> bool {
+        matches!(self.sidebar_view, SidebarView::Terminal)
+    }
+
+    /// The session the workspace PTY is currently showing — and that keystrokes,
+    /// scrolling, and selection target. The home terminal when the terminal tab
+    /// is active, otherwise the active worktree session.
+    pub(super) fn focused_session(&self) -> Option<&Session> {
+        if self.terminal_tab() {
+            self.app.active_home_terminal()
+        } else {
+            self.app.active_session.and_then(|i| self.app.sessions.get(i))
+        }
+    }
+
+    pub(super) fn focused_session_mut(&mut self) -> Option<&mut Session> {
+        if self.terminal_tab() {
+            self.app
+                .active_terminal
+                .and_then(move |i| self.app.home_terminals.get_mut(i))
+        } else {
+            self.app
+                .active_session
+                .and_then(move |i| self.app.sessions.get_mut(i))
+        }
+    }
+
     pub(super) fn selection_text(&self) -> Option<String> {
         let (a, h) = self.pty_selection?;
-        let i = self.app.active_session?;
-        let s = self.app.sessions.get(i)?;
+        let s = self.focused_session()?;
         s.selection_text_abs((a.a_row, a.col), (h.a_row, h.col))
     }
 
-    /// Visible grid height (rows) and current scrollback offset of the active
+    /// Visible grid height (rows) and current scrollback offset of the focused
     /// session, used to convert between viewport and absolute selection rows.
     fn pty_view_geom(&self) -> Option<(usize, usize)> {
-        let i = self.app.active_session?;
-        let s = self.app.sessions.get(i)?;
+        let s = self.focused_session()?;
         let p = s.parser.lock().ok()?;
         let (h, _) = p.screen().size();
         Some((h as usize, p.screen().scrollback()))
@@ -1002,7 +1056,7 @@ impl Grove {
         };
         // Drive grove's own scrollback (no-op if the inner app grabs the mouse).
         let before = self.pty_view_geom().map(|(_, s)| s);
-        if let Some(s) = self.app.active_session_mut() {
+        if let Some(s) = self.focused_session_mut() {
             s.scroll(up, 0, 0);
         }
         // Only extend if the scroll actually moved the view.

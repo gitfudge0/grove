@@ -262,11 +262,24 @@ impl Session {
                 tmux::kill_session(name);
                 session_meta::delete(name);
             }
-            SessionBackend::Native => {
-                if let Ok(mut c) = self.child.lock() {
-                    let _ = c.kill();
+            SessionBackend::Native => Self::kill_native(&self.child),
+        }
+    }
+
+    /// Kill a native session's process tree. portable-pty makes the child a
+    /// session leader (`setsid`), so its pid is also its process-group id;
+    /// signalling the whole group on unix reaps any foreground job the shell
+    /// launched (vim, ssh, top, …) instead of orphaning it. Falls back to
+    /// killing just the child elsewhere.
+    fn kill_native(child: &Arc<Mutex<Box<dyn Child + Send + Sync>>>) {
+        if let Ok(mut c) = child.lock() {
+            #[cfg(unix)]
+            if let Some(pid) = c.process_id() {
+                unsafe {
+                    libc::killpg(pid as libc::pid_t, libc::SIGKILL);
                 }
             }
+            let _ = c.kill();
         }
     }
 
@@ -544,8 +557,16 @@ fn encode_mouse(
 
 impl Drop for Session {
     fn drop(&mut self) {
-        if let Ok(mut c) = self.child.lock() {
-            let _ = c.kill();
+        match &self.backend {
+            // Native: reap the whole process group (see `kill_native`).
+            SessionBackend::Native => Self::kill_native(&self.child),
+            // Tmux: only our attach client is a child of grove; the backing
+            // tmux session is meant to survive, so just drop the client.
+            SessionBackend::Tmux { .. } => {
+                if let Ok(mut c) = self.child.lock() {
+                    let _ = c.kill();
+                }
+            }
         }
     }
 }

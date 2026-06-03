@@ -356,6 +356,70 @@ pub fn session_row<'a>(
     clickable_row(main_row, ROW_H, active, Msg::SelectSession(idx))
 }
 
+/// One row in the terminal tab's sidebar list. Shows the terminal's label and
+/// its contextual title (the shell's OSC window title); highlights the active
+/// terminal and reveals a close button when `show_close` is set.
+pub fn terminal_row<'a>(
+    idx: usize,
+    s: &Session,
+    active: bool,
+    show_close: bool,
+) -> Element<'a, Msg> {
+    let running = matches!(*s.status.lock().unwrap(), SessionStatus::Running);
+    let name_color = if active {
+        c::CYAN()
+    } else if running {
+        c::FG()
+    } else {
+        c::FG_MUTE()
+    };
+
+    // No synthetic "terminal N" name — just the icon and the shell's own
+    // contextual title (cwd / running command), falling back to "~" so a
+    // title-less shell still reads as the home terminal.
+    let ctx = terminal_context(s).unwrap_or_else(|| "~".to_string());
+    let meta_row = row![
+        icon("term", 12.0, name_color),
+        text(truncate_ellipsis(&ctx, 28))
+            .font(UI_FONT)
+            .size(12)
+            .color(name_color)
+            .wrapping(iced::widget::text::Wrapping::None),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+
+    let meta: Element<'a, Msg> = container(meta_row).width(Length::Fill).clip(true).into();
+
+    let close_btn: Element<'a, Msg> = if show_close {
+        action_mini("close", Msg::CloseHomeTerminal(idx))
+    } else {
+        Space::with_width(Length::Fixed(0.0)).into()
+    };
+
+    let main_row: Element<'a, Msg> = row![meta, close_btn]
+        .spacing(8)
+        .align_y(iced::Alignment::Center)
+        .padding(Padding {
+            top: 0.0,
+            bottom: 0.0,
+            left: 16.0,
+            right: 8.0,
+        })
+        .into();
+
+    clickable_row(main_row, ROW_H, active, Msg::SelectHomeTerminal(idx))
+}
+
+/// Contextual title for a home terminal: its OSC window title (typically the
+/// current directory or running command), with the redundant terminal label
+/// stripped and unrenderable characters removed.
+pub fn terminal_context(s: &Session) -> Option<String> {
+    let raw = s.current_title()?;
+    let out = remove_all_ci(&raw, &s.label);
+    sanitize_ui_text(&out)
+}
+
 /// Derive the short "context" string shown next to the agent name.
 /// Prefers the OSC title (e.g. `Review pull`) but strips the worktree
 /// name, the agent label, and the session label when they appear, so the

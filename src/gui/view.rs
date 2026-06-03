@@ -154,6 +154,7 @@ impl Grove {
         let content: Element<'_, Msg> = match self.sidebar_view {
             SidebarView::Tree => self.tree_view(),
             SidebarView::Activity => self.activity_view(),
+            SidebarView::Terminal => self.terminal_sidebar(),
         };
         let tree_area = container(scrollable(content).height(Length::Fill))
             .height(Length::Fill)
@@ -201,12 +202,19 @@ impl Grove {
         )
         .padding(Padding::from([12, 12]));
 
+        // The footer is view-specific: project-oriented views get "+ add
+        // project"; the terminal tab gets "+ new terminal".
+        let footer: Element<'_, Msg> = if matches!(self.sidebar_view, SidebarView::Terminal) {
+            self.new_terminal_button()
+        } else {
+            add_proj.into()
+        };
         let stack_col = column![
             tree_head,
             divider_h(c::BORDER_SOFT()),
             tree_layer,
             divider_h(c::BORDER_SOFT()),
-            add_proj,
+            footer,
         ]
         .height(Length::Fill);
 
@@ -253,7 +261,8 @@ impl Grove {
         });
 
         let activity_active = matches!(self.sidebar_view, SidebarView::Activity);
-        let tree_active = !activity_active;
+        let tree_active = matches!(self.sidebar_view, SidebarView::Tree);
+        let terminal_active = matches!(self.sidebar_view, SidebarView::Terminal);
         let pillset = container(
             row![
                 seg_button(
@@ -265,8 +274,14 @@ impl Grove {
                 seg_button(
                     "tree",
                     tree_active,
-                    SegSide::Right,
+                    SegSide::Middle,
                     Msg::SidebarSetView(SidebarView::Tree),
+                ),
+                seg_button(
+                    "terminal",
+                    terminal_active,
+                    SegSide::Right,
+                    Msg::SidebarSetView(SidebarView::Terminal),
                 ),
             ]
             .spacing(0),
@@ -659,6 +674,9 @@ impl Grove {
 
     // ── workspace ─────────────────────────────────────────────────────────
     fn workspace(&self) -> Element<'_, Msg> {
+        if self.terminal_tab() {
+            return self.terminal_workspace();
+        }
         let inner: Element<'_, Msg> = match self.app.active_session {
             Some(i) if i < self.app.sessions.len() => column![
                 self.sess_bar(&self.app.sessions[i]),
@@ -677,6 +695,125 @@ impl Grove {
                 ..Default::default()
             })
             .into()
+    }
+
+    /// Workspace for the persistent home-terminal tab: a status bar with a
+    /// restart control above the home shell's PTY. Shows a spawn-failure hint
+    /// if the shell could never be started.
+    fn terminal_workspace(&self) -> Element<'_, Msg> {
+        let inner: Element<'_, Msg> = match self.app.active_home_terminal() {
+            Some(s) => column![self.home_terminal_bar(s), self.pty(s)]
+                .height(Length::Fill)
+                .into(),
+            None => empty_workspace(),
+        };
+
+        container(inner)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(c::BG())),
+                ..Default::default()
+            })
+            .into()
+    }
+
+    /// Status bar for the home terminal. Unlike `sess_bar` there is no kill
+    /// action — the terminal is permanent — only a restart that relaunches the
+    /// shell at `~`. When the shell has exited the restart button is the
+    /// affordance the user reaches for.
+    fn home_terminal_bar(&self, s: &Session) -> Element<'_, Msg> {
+        let running = matches!(*s.status.lock().unwrap(), SessionStatus::Running);
+        let (dot_color, label) = if running {
+            (c::GREEN(), "running")
+        } else {
+            (c::FG_MUTE(), "exited")
+        };
+        let bar_text = |content: String, color: Color| {
+            text(content)
+                .font(UI_FONT)
+                .size(12)
+                .line_height(1.0)
+                .height(18)
+                .align_y(iced::alignment::Vertical::Center)
+                .color(color)
+        };
+
+        let status: Element<'_, Msg> =
+            row![dot(dot_color), bar_text(label.to_string(), dot_color)]
+                .spacing(6)
+                .align_y(iced::Alignment::Center)
+                .into();
+
+        let ctx = crate::gui::rows::terminal_context(s).unwrap_or_else(|| "~".to_string());
+        let ctx = crate::gui::widgets::truncate_middle(&ctx, 80);
+        let identity = row![bar_text(ctx, c::FG())]
+            .spacing(6)
+            .align_y(iced::Alignment::Center);
+
+        let bar = row![
+            status,
+            vline(),
+            container(identity).width(Length::Fill).clip(true),
+            bar_text("~".to_string(), c::FG_MUTE()),
+            vline(),
+            tool_btn("restart", "restart", false, Msg::RestartHomeTerminal),
+        ]
+        .spacing(12)
+        .align_y(iced::Alignment::Center)
+        .height(Length::Fill)
+        .padding(Padding::from([0, 16]));
+
+        let bar_container = container(bar)
+            .height(SESSBAR_H)
+            .width(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(c::BG_STRIP())),
+                ..Default::default()
+            });
+
+        column![bar_container, divider_h(c::BORDER_SOFT())].into()
+    }
+
+    /// Sidebar body for the terminal tab — one row per home terminal, showing
+    /// its label and contextual title (the shell's OSC window title, e.g. the
+    /// current directory or running command). The active terminal is
+    /// highlighted; the close affordance is hidden when only one remains so the
+    /// tab always keeps a shell.
+    fn terminal_sidebar(&self) -> Element<'_, Msg> {
+        let mut col: Column<'_, Msg> = Column::new();
+        let show_close = self.app.home_terminals.len() > 1;
+        for (i, s) in self.app.home_terminals.iter().enumerate() {
+            let active = self.app.active_terminal == Some(i);
+            col = col.push(crate::gui::rows::terminal_row(i, s, active, show_close));
+        }
+        col.into()
+    }
+
+    /// "+ new terminal" footer button for the terminal tab.
+    fn new_terminal_button(&self) -> Element<'_, Msg> {
+        container(
+            button(
+                container(text("+ new terminal").size(12).color(c::FG_DIM()))
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill),
+            )
+            .on_press(Msg::NewHomeTerminal)
+            .width(Length::Fill)
+            .height(28.0)
+            .style(|_, _| button::Style {
+                background: None,
+                text_color: c::FG_DIM(),
+                border: Border {
+                    color: c::BORDER(),
+                    width: 1.0,
+                    radius: Radius::from(4.0),
+                },
+                shadow: Shadow::default(),
+            }),
+        )
+        .padding(Padding::from([12, 12]))
+        .into()
     }
 
     fn sess_bar(&self, s: &Session) -> Element<'_, Msg> {
@@ -782,6 +919,10 @@ impl Grove {
         // session returns the cached geometry with zero draw work; switching
         // to a session that produced output re-snaps the rows and clears the
         // canvas cache, then draws once.
+        // The `dirty` Arc's address is the cache key. A dropped session can
+        // free that address and a newly spawned one reuse it — safe only
+        // because every session add/remove (incl. home-terminal new/close/
+        // restart) fully clears this cache, so no stale entry can alias.
         let key = Arc::as_ptr(&s.dirty) as usize;
         let (rows, cache, cursor_pos) = {
             let mut map = self.pty_cache.borrow_mut();

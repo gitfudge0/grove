@@ -1595,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "grove"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1604,6 +1604,7 @@ dependencies = [
  "dirs 5.0.1",
  "iced",
  "keepawake",
+ "libc",
  "portable-pty",
  "ratatui",
  "serde",

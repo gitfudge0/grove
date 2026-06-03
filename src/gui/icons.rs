@@ -45,6 +45,8 @@ fn svg_for(name: &str) -> String {
             r#"<rect x="1.5" y="2.5" width="13" height="11" rx="1.2"/><path d="M8 2.5v11"/>"#
         }
         "zen" => r#"<path d="M5 2.5H2.5V5M11 2.5h2.5V5M5 13.5H2.5V11M11 13.5h2.5V11"/>"#,
+        // Circular arrow — restart / relaunch.
+        "restart" => r#"<path d="M13 8a5 5 0 1 1-1.7-3.75M13 2.5V5h-2.5"/>"#,
         "edit" => r#"<path d="M11.5 2.5l2 2L6 12l-2.5.5L4 10z"/>"#,
         "trash" => {
             r#"<path d="M3 4.5h10M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M4.5 4.5l.5 8a1 1 0 0 0 1 .9h4a1 1 0 0 0 1-.9l.5-8"/>"#

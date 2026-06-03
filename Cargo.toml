@@ -1,6 +1,6 @@
 [package]
 name = "grove"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 description = "Grove — a worktree launchpad for AI coding agents"
 
@@ -35,3 +35,6 @@ arboard = "3"
 base64 = "0.22"
 keepawake = "0.6.0"
 iced = { version = "0.13", features = ["tokio", "advanced", "svg", "canvas"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

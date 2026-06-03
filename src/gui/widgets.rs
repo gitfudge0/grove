@@ -77,6 +77,7 @@ pub fn divider_v<'a>(color: Color) -> Element<'a, Msg> {
 
 pub enum SegSide {
     Left,
+    Middle,
     Right,
 }
 
@@ -93,6 +94,7 @@ pub fn seg_button<'a>(label: &str, active: bool, side: SegSide, msg: Msg) -> Ele
                     bottom_right: 0.0,
                     bottom_left: 5.0,
                 },
+                SegSide::Middle => Radius::from(0.0),
                 SegSide::Right => Radius {
                     top_left: 0.0,
                     top_right: 5.0,

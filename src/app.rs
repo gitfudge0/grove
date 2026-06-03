@@ -169,6 +169,21 @@ pub struct App {
     pub should_quit: bool,
     pub sessions: Vec<Session>,
     pub active_session: Option<usize>,
+    /// The shells behind the `terminal` tab, each rooted at `~`. The first is
+    /// spawned lazily when the tab is first opened; the user can add more.
+    /// These live outside `sessions` so they never show up in the tree /
+    /// activity lists and aren't reachable by the session-cycling or kill
+    /// machinery. Always non-empty while the terminal tab is in use (closing
+    /// the last one immediately respawns a fresh shell).
+    pub home_terminals: Vec<Session>,
+    /// Index into `home_terminals` of the terminal the tab is showing.
+    pub active_terminal: Option<usize>,
+    /// Monotonic counter behind each terminal's internal label (`terminal 1`,
+    /// `terminal 2`, …). The label isn't shown in the UI — rows display only
+    /// the icon and the shell's contextual title — but it stays stable and
+    /// unique per terminal so it can be stripped from that title and preserved
+    /// across a restart.
+    pub home_terminal_seq: usize,
     pub ui_mode: UiMode,
     /// Active mouse text selection over the agent pane, if any.
     pub selection: Option<Selection>,
@@ -239,6 +254,9 @@ impl App {
             should_quit: false,
             sessions,
             active_session: None,
+            home_terminals: Vec::new(),
+            active_terminal: None,
+            home_terminal_seq: 0,
             ui_mode: UiMode::Browser,
             selection: None,
             toast: None,
@@ -683,6 +701,116 @@ impl App {
     pub fn active_session_mut(&mut self) -> Option<&mut Session> {
         self.active_session
             .and_then(move |i| self.sessions.get_mut(i))
+    }
+
+    /// Absolute path of the home directory, falling back to `/` if it can't be
+    /// resolved. Used as the home terminal's working directory.
+    fn home_dir() -> String {
+        dirs::home_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".into())
+    }
+
+    /// The home terminal the tab is currently showing, if any.
+    pub fn active_home_terminal(&self) -> Option<&Session> {
+        self.active_terminal.and_then(|i| self.home_terminals.get(i))
+    }
+
+    /// Ensure at least one home terminal exists (spawning the first on demand),
+    /// resize them all to the current pane, and make sure something is selected.
+    pub fn ensure_home_terminal(&mut self, rows: u16, cols: u16) {
+        if self.home_terminals.is_empty() {
+            self.spawn_home_terminal(rows, cols);
+        } else {
+            for s in &mut self.home_terminals {
+                s.resize(rows, cols);
+            }
+        }
+        if self.active_terminal.is_none() && !self.home_terminals.is_empty() {
+            self.active_terminal = Some(0);
+        }
+    }
+
+    /// Spawn an additional home terminal and focus it.
+    pub fn new_home_terminal(&mut self, rows: u16, cols: u16) {
+        self.spawn_home_terminal(rows, cols);
+    }
+
+    /// Replace the active terminal's shell in place with a fresh one at `~`,
+    /// keeping its slot and label. Used to recover an exited terminal.
+    pub fn restart_active_terminal(&mut self, rows: u16, cols: u16) {
+        let Some(i) = self.active_terminal else { return };
+        if i >= self.home_terminals.len() {
+            return;
+        }
+        let label = self.home_terminals[i].label.clone();
+        // Only swap once the replacement is live: on spawn failure
+        // `build_home_terminal` toasts and we keep the (usually exited)
+        // terminal in place rather than leaving an empty slot.
+        if let Some(s) = self.build_home_terminal(label, rows, cols) {
+            let mut old = std::mem::replace(&mut self.home_terminals[i], s);
+            old.kill();
+        }
+    }
+
+    /// Close the terminal at `idx`. The terminal tab always keeps at least one
+    /// shell, so closing the last one immediately spawns a replacement.
+    pub fn close_home_terminal(&mut self, idx: usize, rows: u16, cols: u16) {
+        if idx >= self.home_terminals.len() {
+            return;
+        }
+        let mut s = self.home_terminals.remove(idx);
+        s.kill();
+        self.active_terminal = match self.active_terminal {
+            Some(a) if a == idx => {
+                if self.home_terminals.is_empty() {
+                    None
+                } else {
+                    Some(idx.min(self.home_terminals.len() - 1))
+                }
+            }
+            Some(a) if a > idx => Some(a - 1),
+            other => other,
+        };
+        if self.home_terminals.is_empty() {
+            self.spawn_home_terminal(rows, cols);
+        }
+    }
+
+    fn spawn_home_terminal(&mut self, rows: u16, cols: u16) {
+        self.home_terminal_seq += 1;
+        let label = format!("terminal {}", self.home_terminal_seq);
+        if let Some(s) = self.build_home_terminal(label, rows, cols) {
+            self.home_terminals.push(s);
+            self.active_terminal = Some(self.home_terminals.len() - 1);
+        }
+    }
+
+    /// Build a native home-terminal session at `~`, sized to the pane. Always
+    /// native: a local convenience shell, not a worktree-backed agent that
+    /// needs to survive grove restarts via tmux. Returns `None` (and toasts) on
+    /// spawn failure.
+    fn build_home_terminal(&mut self, label: String, rows: u16, cols: u16) -> Option<Session> {
+        let home = Self::home_dir();
+        let args = Agent::Terminal.launch_args();
+        match Session::spawn(
+            label,
+            String::new(),
+            home.clone(),
+            Agent::Terminal,
+            &args,
+            &home,
+            false,
+        ) {
+            Ok(mut s) => {
+                s.resize(rows, cols);
+                Some(s)
+            }
+            Err(e) => {
+                self.set_toast(format!("terminal failed: {e}"));
+                None
+            }
+        }
     }
 
     pub fn enter_browser(&mut self) {
