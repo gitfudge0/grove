@@ -14,10 +14,11 @@ pub const SIDEBAR_DIVIDER_W: f32 = 1.0;
 pub const PTY_PAD_W: f32 = 36.0;
 pub const PTY_PAD_H: f32 = 28.0;
 
-/// Hardcoded cell metrics for IBM Plex Mono at 12.5pt. IBM Plex Mono uses a
-/// 600-unit advance on a 1000-unit em, which gives a 7.5px cell at this size.
-/// The canvas maps (row, col) directly to pixels, so this must stay aligned
-/// with the bundled font or the cursor drifts across long rows.
+/// Hardcoded cell metrics for BlexMono Nerd Font (IBM Plex Mono patched with
+/// Nerd Font glyphs) at 12.5pt. It keeps Plex Mono's 600-unit advance on a
+/// 1000-unit em, which gives a 7.5px cell at this size. The canvas maps
+/// (row, col) directly to pixels, so this must stay aligned with the bundled
+/// font or the cursor drifts across long rows.
 pub const CELL_W: f32 = 7.5;
 pub const CELL_H: f32 = 17.0;
 pub const FONT_SIZE: f32 = 12.5;
@@ -40,9 +41,11 @@ pub fn pty_metrics(zoom: f32) -> PtyMetrics {
     }
 }
 
-/// IBM Plex Mono — used for PTY output and any monospace-sensitive content.
-/// Bundled as TTF and registered at startup in `gui::run`.
-pub const MONO_FONT: Font = Font::with_name("IBM Plex Mono");
+/// BlexMono Nerd Font Mono — IBM Plex Mono patched with Nerd Font icon glyphs.
+/// Used for PTY output and any monospace-sensitive content; the Nerd Font
+/// coverage means `eza`/`ls` file icons and powerline glyphs render instead of
+/// tofu. Bundled as TTF and registered at startup in `gui::run`.
+pub const MONO_FONT: Font = Font::with_name("BlexMono Nerd Font Mono");
 
 /// IBM Plex Sans — sole UI font used throughout the chrome (sidebar, appbar,
 /// modals, session bar). Anything that renders code, paths, or PTY output
@@ -58,8 +61,9 @@ pub const UI_BOLD: Font = Font {
 /// system fallback.
 pub const PLEX_SANS_REGULAR: &[u8] = include_bytes!("../../assets/fonts/IBMPlexSans-Regular.ttf");
 pub const PLEX_SANS_BOLD: &[u8] = include_bytes!("../../assets/fonts/IBMPlexSans-Bold.ttf");
-pub const PLEX_MONO_REGULAR: &[u8] = include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf");
-pub const PLEX_MONO_BOLD: &[u8] = include_bytes!("../../assets/fonts/IBMPlexMono-Bold.ttf");
+pub const MONO_REGULAR: &[u8] =
+    include_bytes!("../../assets/fonts/BlexMonoNerdFontMono-Regular.ttf");
+pub const MONO_BOLD: &[u8] = include_bytes!("../../assets/fonts/BlexMonoNerdFontMono-Bold.ttf");
 
 /// PTY dimensions derived from unzoomed window size. Subtracts the visible chrome
 /// (rail, dividers, appbar, statusbar, sessbar, container padding) and divides
@@ -93,17 +97,14 @@ pub fn compute_pty_dims(win_w: f32, win_h: f32, zoom: f32, chrome_visible: bool)
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_pty_dims, APPBAR_H, CELL_H, CELL_W, FONT_SIZE, PLEX_MONO_REGULAR, PTY_PAD_H,
-        PTY_PAD_W, RAIL_W, SESSBAR_H, SIDEBAR_DIVIDER_W, STATUS_H,
+        compute_pty_dims, APPBAR_H, CELL_H, CELL_W, FONT_SIZE, MONO_REGULAR, PTY_PAD_H, PTY_PAD_W,
+        RAIL_W, SESSBAR_H, SIDEBAR_DIVIDER_W, STATUS_H,
     };
 
     #[test]
     fn cell_width_matches_bundled_mono_advance() {
-        let units_per_em = u16_at(
-            PLEX_MONO_REGULAR,
-            table_offset(PLEX_MONO_REGULAR, b"head") + 18,
-        );
-        let advance = u16_at(PLEX_MONO_REGULAR, table_offset(PLEX_MONO_REGULAR, b"hmtx"));
+        let units_per_em = u16_at(MONO_REGULAR, table_offset(MONO_REGULAR, b"head") + 18);
+        let advance = u16_at(MONO_REGULAR, table_offset(MONO_REGULAR, b"hmtx"));
         let expected = advance as f32 / units_per_em as f32 * FONT_SIZE;
 
         assert!((CELL_W - expected).abs() < 0.001);

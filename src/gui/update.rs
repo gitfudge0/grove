@@ -972,6 +972,9 @@ impl Grove {
                 s.resize(self.pty_rows, self.pty_cols);
                 self.app.sessions.push(s);
                 self.app.active_session = Some(self.app.sessions.len() - 1);
+                // Reveal the freshly spawned session if its worktree was
+                // collapsed in the tree.
+                self.collapsed_wt.remove(&(proj, wt));
             }
             Err(e) => {
                 self.app.status = format!("failed to start session: {e}");
