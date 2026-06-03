@@ -881,6 +881,7 @@ impl Grove {
             container(identity).width(Length::Fill).clip(true),
             sess_text(s.wt_path.clone(), c::FG_MUTE()),
             vline(),
+            tool_btn("term", "terminal", false, Msg::StartTerminalHere),
             tool_btn(
                 "zen",
                 if self.app.chrome_visible {

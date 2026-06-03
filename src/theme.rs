@@ -382,6 +382,22 @@ pub const ZENBURN: Theme = Theme {
     red: rgb(0xcc, 0x93, 0x93),
 };
 
+pub const ORANGE: Theme = Theme {
+    name: "orange",
+    kind: ThemeKind::Dark,
+    bg: rgb(0x14, 0x12, 0x10),
+    bg_highlight: rgb(0x26, 0x22, 0x1d),
+    fg: rgb(0xe9, 0xe4, 0xd8),
+    fg_dark: rgb(0xb8, 0xb1, 0xa4),
+    comment: rgb(0x8c, 0x85, 0x7a),
+    blue: rgb(0x7a, 0x9c, 0xa8),
+    cyan: rgb(0x4f, 0xb8, 0x9a),
+    magenta: rgb(0xc4, 0x82, 0x8c),
+    green: rgb(0x3a, 0x9d, 0x7e),
+    yellow: rgb(0xd9, 0x8a, 0x4e),
+    red: rgb(0xc7, 0x5a, 0x32),
+};
+
 // ---------------- Light themes ----------------
 
 pub const GITHUB_LIGHT: Theme = Theme {
@@ -632,6 +648,7 @@ pub const BUILTINS: &[Theme] = &[
     SYNTHWAVE_84,
     ZENBURN,
     MATRIX,
+    ORANGE,
     // Light
     GITHUB_LIGHT,
     SOLARIZED_LIGHT,

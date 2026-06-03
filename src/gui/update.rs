@@ -220,6 +220,33 @@ impl Grove {
                 self.open_agent_menu = None;
                 self.spawn(proj, wt, Agent::Terminal);
             }
+            Msg::StartTerminalHere => {
+                self.open_agent_menu = None;
+                // Resolve the active session's project + worktree to indices,
+                // then spawn a terminal there.
+                if let Some(s) = self
+                    .app
+                    .active_session
+                    .and_then(|i| self.app.sessions.get(i))
+                {
+                    let pname = s.project.clone();
+                    let wt_path = s.wt_path.clone();
+                    if let Some(proj) = self
+                        .app
+                        .store
+                        .projects
+                        .iter()
+                        .position(|p| p.name == pname)
+                    {
+                        self.switch_active_project(proj);
+                        if let Some(wt) =
+                            self.app.worktrees.iter().position(|w| w.path == wt_path)
+                        {
+                            self.spawn(proj, wt, Agent::Terminal);
+                        }
+                    }
+                }
+            }
             Msg::CloseAgentMenu => {
                 self.open_agent_menu = None;
             }

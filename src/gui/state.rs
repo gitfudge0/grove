@@ -177,6 +177,9 @@ pub enum Msg {
         proj: usize,
         wt: usize,
     },
+    /// Spawn a terminal session in the active session's worktree (the one
+    /// shown in the session header). No-op if there is no active session.
+    StartTerminalHere,
     CloseAgentMenu,
     SelectSession(usize),
     KillSession(usize),
