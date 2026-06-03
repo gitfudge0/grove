@@ -4,7 +4,7 @@
 
 a worktree launchpad for ai coding agents
 
-![grove session view](screenshots/grove-session.png)
+![grove session view](screenshots/grove-hero.png)
 
 [![license: MIT](https://img.shields.io/badge/license-MIT-9ece6a?style=flat-square)](#license)
 [![platform: linux | macOS](https://img.shields.io/badge/platform-linux%20%7C%20macOS-7aa2f7?style=flat-square)](#requirements)
