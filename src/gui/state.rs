@@ -24,6 +24,16 @@ pub enum SidebarView {
     Terminal,
 }
 
+/// Which of the two PTYs receives keyboard input, scroll, and selection while
+/// the right-docked terminal slide-over panel is open. Meaningless (and ignored
+/// by `focused_session*`) when the panel is closed. Clicking a PTY sets this to
+/// its pane; opening the panel defaults to `Panel` (the user just asked for it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusedPane {
+    Agent,
+    Panel,
+}
+
 /// Top-level iced application state.
 pub struct Grove {
     pub app: App,
@@ -44,7 +54,14 @@ pub struct Grove {
     /// Current PTY dimensions derived from window size. Updated on every
     /// `WindowResized` event and applied to sessions on spawn / select.
     pub pty_rows: u16,
+    /// Full workspace column count (panel closed) — used by the home-terminal
+    /// tab and as the fallback width.
     pub pty_cols: u16,
+    /// Agent-view column count: equals `pty_cols` when the slide-over terminal
+    /// panel is closed, the 65% share when it is open.
+    pub pty_sess_cols: u16,
+    /// Terminal-panel column count: the 35% share used while the panel is open.
+    pub pty_panel_cols: u16,
     /// Per-window GUI zoom multiplier. Applied as the iced application scale
     /// factor and reused when deriving PTY rows/cols from the visible area.
     pub ui_zoom: f32,
@@ -83,6 +100,26 @@ pub struct Grove {
     /// User-toggled expansion of the `worktrees · no sessions` activity-view
     /// group. `None` means "use default" (expanded iff non-empty).
     pub activity_no_sessions_expanded: Option<bool>,
+    /// Whether the right-docked terminal slide-over panel is open. The panel
+    /// belongs to the active session's worktree; toggled by the `term` button
+    /// in the session header. Closing it leaves the worktree's shells alive
+    /// (they reattach when reopened); they only die when the worktree is
+    /// removed.
+    pub term_panel_open: bool,
+    /// Which PTY (agent vs panel) input is routed to while the panel is open.
+    /// Only consulted when `term_panel_open`; defaults to `Panel` on open and
+    /// resets to `Agent` on close or active-session change. Clicking either PTY
+    /// updates it.
+    pub focused_pane: FocusedPane,
+}
+
+/// Identifies which on-screen PTY a mouse event originated from. The home
+/// terminal tab and the single full-width agent view both use `Agent`; only the
+/// right-docked slide-over panel uses `Panel`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PtyPane {
+    Agent,
+    Panel,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,22 +210,32 @@ pub enum Msg {
         wt: usize,
         agent: Agent,
     },
+    /// Spawn a terminal *session* (a sibling tree row) in a worktree. Still used
+    /// by the per-worktree-row hover button; the session header's `term` button
+    /// no longer uses this — it toggles the slide-over panel instead.
     StartTerminal {
         proj: usize,
         wt: usize,
     },
-    /// Spawn a terminal session in the active session's worktree (the one
-    /// shown in the session header). No-op if there is no active session.
-    StartTerminalHere,
+    /// Toggle the right-docked terminal slide-over for the active session's
+    /// worktree. Ensures a shell exists when opening.
+    ToggleTermPanel,
+    /// Spawn an additional panel shell in the active session's worktree.
+    NewWtTerminal,
+    /// Focus the panel shell at this index in the active worktree's panel.
+    SelectWtTerminal(usize),
+    /// Close the panel shell at this index in the active worktree's panel.
+    CloseWtTerminal(usize),
     CloseAgentMenu,
     SelectSession(usize),
     KillSession(usize),
     RequestKillSession(usize),
     KeyPress(Key, Modifiers),
-    PtyMouseDown(f32, f32),
-    PtyMouseDrag(f32, f32),
+    PtyMouseDown(PtyPane, f32, f32),
+    PtyMouseDrag(PtyPane, f32, f32),
     PtyMouseUp,
     PtyScroll {
+        pane: PtyPane,
         up: bool,
         x: f32,
         y: f32,

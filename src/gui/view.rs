@@ -11,10 +11,10 @@ use super::rows::{
     activity_group_header, project_row, session_activity_row, session_activity_row_idle,
     session_row, worktree_activity_row, worktree_row,
 };
-use super::state::{Grove, Msg, PtyCacheEntry, PtyCell, SidebarView};
+use super::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, SidebarView};
 use super::widgets::{
     control_btn, divider_h, divider_v, dot, empty_workspace, icon_btn, modal_action, modal_dir_row,
-    modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn, vline, SegSide,
+    modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn, tool_btn_toggle, vline, SegSide,
 };
 use crate::app::{InputKind, Modal};
 use crate::git::Worktree;
@@ -677,14 +677,34 @@ impl Grove {
         if self.terminal_tab() {
             return self.terminal_workspace();
         }
-        let inner: Element<'_, Msg> = match self.app.active_session {
+        let left: Element<'_, Msg> = match self.app.active_session {
             Some(i) if i < self.app.sessions.len() => column![
                 self.sess_bar(&self.app.sessions[i]),
-                self.pty(&self.app.sessions[i]),
+                self.pty(PtyPane::Agent, &self.app.sessions[i]),
             ]
             .height(Length::Fill)
             .into(),
             _ => empty_workspace(),
+        };
+
+        // When the slide-over panel is open and a session is active, split the
+        // workspace: session view on the left (filling remaining space), the
+        // worktree terminal panel docked full-height on the right (~46%).
+        let inner: Element<'_, Msg> = if self.term_panel_open && self.active_wt_path().is_some() {
+            row![
+                container(left)
+                    .width(Length::FillPortion(crate::gui::metrics::AGENT_PORTION))
+                    .height(Length::Fill),
+                divider_v(c::BORDER()),
+                container(self.term_panel())
+                    .width(Length::FillPortion(crate::gui::metrics::TERM_PANEL_PORTION))
+                    .height(Length::Fill),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+        } else {
+            left
         };
 
         container(inner)
@@ -697,12 +717,153 @@ impl Grove {
             .into()
     }
 
+    /// The right-docked terminal slide-over for the active session's worktree:
+    /// a thin tab strip (one tab per shell + a `＋` add) above the active
+    /// shell's PTY. Reuses the shared `pty()` renderer.
+    fn term_panel(&self) -> Element<'_, Msg> {
+        let Some(wt) = self.active_wt_path() else {
+            return empty_workspace();
+        };
+        let shells = self.app.wt_terminals_for(&wt);
+        let active_idx = self.app.active_wt_terminal_idx(&wt);
+
+        // Tab strip: a small mono tab per shell with a running/exited dot and a
+        // × close, plus a ＋ to add a new shell.
+        let mut tabs = row![].spacing(6).align_y(iced::Alignment::Center);
+        for (i, s) in shells.iter().enumerate() {
+            tabs = tabs.push(self.term_panel_tab(i, s, active_idx == Some(i)));
+        }
+        tabs = tabs.push(
+            button(
+                container(icon("plus", 13.0, c::FG_DIM()))
+                    .center_x(22)
+                    .center_y(22),
+            )
+            .on_press(Msg::NewWtTerminal)
+            .padding(0)
+            .style(|_, status| {
+                let hovered = matches!(status, button::Status::Hovered);
+                button::Style {
+                    background: if hovered {
+                        Some(Background::Color(c::BG_HOVER()))
+                    } else {
+                        None
+                    },
+                    text_color: if hovered { c::FG() } else { c::FG_DIM() },
+                    border: Border {
+                        color: Color::TRANSPARENT,
+                        width: 0.0,
+                        radius: Radius::from(4.0),
+                    },
+                    shadow: Shadow::default(),
+                }
+            }),
+        );
+
+        // Close the whole slide-over (same effect as the header term toggle),
+        // so the panel is always dismissable from itself.
+        let close_panel = icon_btn("close", Msg::ToggleTermPanel);
+
+        let strip = container(
+            row![
+                container(scrollable(tabs).direction(scrollable::Direction::Horizontal(
+                    scrollable::Scrollbar::new().width(0).scroller_width(0)
+                )))
+                .width(Length::Fill)
+                .clip(true),
+                close_panel,
+            ]
+            .align_y(iced::Alignment::Center)
+            .height(Length::Fill)
+            .padding(Padding::from([0, 10])),
+        )
+        .height(SESSBAR_H)
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Background::Color(c::BG_STRIP())),
+            ..Default::default()
+        });
+
+        let surface: Element<'_, Msg> = match self.app.active_wt_terminal(&wt) {
+            Some(s) => self.pty(PtyPane::Panel, s),
+            None => empty_workspace(),
+        };
+
+        column![strip, divider_h(c::BORDER_SOFT()), surface]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// A single tab in the terminal panel's tab strip.
+    fn term_panel_tab<'a>(&self, idx: usize, s: &Session, active: bool) -> Element<'a, Msg> {
+        let running = matches!(*s.status.lock().unwrap(), SessionStatus::Running);
+        let dot_color = if running { c::GREEN() } else { c::FG_MUTE() };
+        let name_color = if active { c::CYAN() } else { c::FG_DIM() };
+
+        let close = button(
+            container(icon("close", 11.0, c::FG_MUTE()))
+                .center_x(16)
+                .center_y(18),
+        )
+        .on_press(Msg::CloseWtTerminal(idx))
+        .padding(0)
+        .style(|_, status| {
+            let hovered = matches!(status, button::Status::Hovered);
+            button::Style {
+                background: None,
+                text_color: if hovered { c::RED() } else { c::FG_MUTE() },
+                border: Border {
+                    color: Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: Radius::from(3.0),
+                },
+                shadow: Shadow::default(),
+            }
+        });
+
+        // Tabs are identified by a terminal icon (status conveyed by the dot
+        // and the active highlight), not a textual name — cleaner when several
+        // shells share a worktree.
+        let label = row![dot(dot_color), icon("term", 13.0, name_color), close,]
+            .spacing(6)
+            .align_y(iced::Alignment::Center);
+
+        button(
+            container(label)
+                .padding(Padding::from([0, 8]))
+                .center_y(24),
+        )
+        .on_press(Msg::SelectWtTerminal(idx))
+        .padding(0)
+        .style(move |_, status| {
+            let hovered = matches!(status, button::Status::Hovered);
+            button::Style {
+                background: if active {
+                    Some(Background::Color(c::BG_HOVER()))
+                } else if hovered {
+                    Some(Background::Color(c::BG_HOVER()))
+                } else {
+                    None
+                },
+                text_color: name_color,
+                border: Border {
+                    color: if active { c::CYAN() } else { Color::TRANSPARENT },
+                    width: if active { 1.0 } else { 0.0 },
+                    radius: Radius::from(4.0),
+                },
+                shadow: Shadow::default(),
+            }
+        })
+        .into()
+    }
+
     /// Workspace for the persistent home-terminal tab: a status bar with a
     /// restart control above the home shell's PTY. Shows a spawn-failure hint
     /// if the shell could never be started.
     fn terminal_workspace(&self) -> Element<'_, Msg> {
         let inner: Element<'_, Msg> = match self.app.active_home_terminal() {
-            Some(s) => column![self.home_terminal_bar(s), self.pty(s)]
+            Some(s) => column![self.home_terminal_bar(s), self.pty(PtyPane::Agent, s)]
                 .height(Length::Fill)
                 .into(),
             None => empty_workspace(),
@@ -881,7 +1042,13 @@ impl Grove {
             container(identity).width(Length::Fill).clip(true),
             sess_text(s.wt_path.clone(), c::FG_MUTE()),
             vline(),
-            tool_btn("term", "terminal", false, Msg::StartTerminalHere),
+            tool_btn_toggle(
+                "term",
+                "terminal",
+                false,
+                self.term_panel_open,
+                Msg::ToggleTermPanel
+            ),
             tool_btn(
                 "zen",
                 if self.app.chrome_visible {
@@ -915,7 +1082,7 @@ impl Grove {
         column![bar_container, divider_h(c::BORDER_SOFT())].into()
     }
 
-    fn pty(&self, s: &Session) -> Element<'_, Msg> {
+    fn pty(&self, pane: PtyPane, s: &Session) -> Element<'_, Msg> {
         // Per-session row snapshot + canvas cache. Switching to a quiet
         // session returns the cached geometry with zero draw work; switching
         // to a session that produced output re-snaps the rows and clears the
@@ -975,8 +1142,15 @@ impl Grove {
         let cursor_visible = self.blink_tick % 16 < 8;
         // Translate the scrollback-stable selection into the current viewport.
         // Each endpoint clamps to the visible window; a selection entirely off
-        // one edge isn't painted.
-        let selection = self.pty_selection.and_then(|(a, b)| {
+        // one edge isn't painted. The selection lives in the *focused* session,
+        // so only paint it on the PTY that currently owns input — otherwise a
+        // selection in one pane would mis-render against the other's grid.
+        let selection = if pane == self.focused_input_pane() {
+            self.pty_selection
+        } else {
+            None
+        }
+        .and_then(|(a, b)| {
             let (h, sb) = {
                 let p = s.parser.lock().ok()?;
                 (p.screen().size().0 as isize, p.screen().scrollback() as isize)
@@ -996,6 +1170,7 @@ impl Grove {
             Some((cell(&a, ra), cell(&b, rb)))
         });
         let program = PtyProgram {
+            pane,
             rows,
             cache,
             selection,
@@ -1007,15 +1182,39 @@ impl Grove {
             .height(Length::Fixed((rows_len * CELL_H).max(CELL_H)))
             .into();
 
+        // While the split is live, tint the focused PTY's top edge so it's clear
+        // which terminal will receive keystrokes. Suppressed when the panel is
+        // closed (only one PTY is interactive then).
+        let focused = self.term_panel_open && pane == self.focused_input_pane();
         container(scrollable(body).width(Length::Fill).height(Length::Fill))
             .padding(Padding::from([12, 16]))
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(|_| container::Style {
+            .style(move |_| container::Style {
                 background: Some(Background::Color(c::BG())),
+                border: if focused {
+                    Border {
+                        color: c::CYAN(),
+                        width: 1.0,
+                        radius: Radius::from(0.0),
+                    }
+                } else {
+                    Border::default()
+                },
                 ..Default::default()
             })
             .into()
+    }
+
+    /// The pane that currently owns keyboard/scroll/selection input. Mirrors the
+    /// routing logic in `focused_session*`: the panel only wins while it is open
+    /// *and* `focused_pane` selects it; otherwise input belongs to the agent.
+    pub(super) fn focused_input_pane(&self) -> PtyPane {
+        if self.term_panel_open && matches!(self.focused_pane, FocusedPane::Panel) {
+            PtyPane::Panel
+        } else {
+            PtyPane::Agent
+        }
     }
 
     // ── status bar ────────────────────────────────────────────────────────

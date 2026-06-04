@@ -466,11 +466,26 @@ pub fn tool_btn<'a>(
     danger: bool,
     msg: Msg,
 ) -> Element<'a, Msg> {
+    tool_btn_toggle(icon_name, label, danger, false, msg)
+}
+
+/// `tool_btn` with an extra `active` flag: when set, the button renders in the
+/// cyan "on" state, matching how other toggle tools (sidebar tab, zen) signal
+/// that they are currently engaged. Used by the header `term` button to show
+/// the slide-over panel is open.
+pub fn tool_btn_toggle<'a>(
+    icon_name: &'static str,
+    label: &str,
+    danger: bool,
+    active: bool,
+    msg: Msg,
+) -> Element<'a, Msg> {
     let label_owned = label.to_string();
+    let base = if active { c::CYAN() } else { c::FG_DIM() };
     button(
         container(
             row![
-                container(icon(icon_name, 12.0, c::FG_DIM()))
+                container(icon(icon_name, 12.0, base))
                     .height(18)
                     .align_y(iced::Alignment::Center),
                 text(label_owned)
@@ -479,7 +494,7 @@ pub fn tool_btn<'a>(
                     .line_height(1.0)
                     .height(18)
                     .align_y(iced::alignment::Vertical::Center)
-                    .color(c::FG_DIM()),
+                    .color(base),
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center),
@@ -491,7 +506,9 @@ pub fn tool_btn<'a>(
     .padding(0)
     .style(move |_, status| {
         let hovered = matches!(status, button::Status::Hovered);
-        let color = if hovered {
+        let color = if active {
+            c::CYAN()
+        } else if hovered {
             if danger {
                 c::RED()
             } else {

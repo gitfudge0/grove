@@ -3,7 +3,7 @@
 
 use super::metrics::{CELL_H, CELL_W, FONT_SIZE, MONO_FONT};
 use super::palette as c;
-use super::state::{Msg, PtyCell, StyledRun};
+use super::state::{Msg, PtyCell, PtyPane, StyledRun};
 use iced::widget::canvas::{self, Frame, Geometry};
 use iced::{mouse, Color, Font, Pixels, Point, Rectangle, Renderer, Size, Theme};
 use std::sync::Arc;
@@ -66,6 +66,9 @@ pub fn rebuild_row_runs(screen: &vt100::Screen, row: u16, cols: u16) -> Vec<Styl
 /// Custom `canvas::Program` that paints PTY cells directly using
 /// `fill_rectangle` and `fill_text`. Bypasses iced's text layout pipeline.
 pub struct PtyProgram {
+    /// Which on-screen PTY this canvas is, so mouse messages carry their origin
+    /// pane and `update` can route input/selection to the right session.
+    pub pane: PtyPane,
     pub rows: Arc<Vec<Vec<StyledRun>>>,
     pub cache: Arc<canvas::Cache>,
     pub selection: Option<(PtyCell, PtyCell)>,
@@ -112,7 +115,7 @@ impl canvas::Program<Msg> for PtyProgram {
                     state.dragging = true;
                     return (
                         canvas::event::Status::Captured,
-                        Some(Msg::PtyMouseDown(p.x, p.y)),
+                        Some(Msg::PtyMouseDown(self.pane, p.x, p.y)),
                     );
                 }
                 (canvas::event::Status::Ignored, None)
@@ -121,7 +124,7 @@ impl canvas::Program<Msg> for PtyProgram {
                 if let Some(p) = local(cursor) {
                     return (
                         canvas::event::Status::Captured,
-                        Some(Msg::PtyMouseDrag(p.x, p.y)),
+                        Some(Msg::PtyMouseDrag(self.pane, p.x, p.y)),
                     );
                 }
                 (canvas::event::Status::Ignored, None)
@@ -145,6 +148,7 @@ impl canvas::Program<Msg> for PtyProgram {
                         (
                             canvas::event::Status::Captured,
                             Some(Msg::PtyScroll {
+                                pane: self.pane,
                                 up: y > 0.0,
                                 x: p.x,
                                 y: p.y,
@@ -164,7 +168,12 @@ impl canvas::Program<Msg> for PtyProgram {
                         state.scroll_accum -= step.copysign(state.scroll_accum);
                         (
                             canvas::event::Status::Captured,
-                            Some(Msg::PtyScroll { up, x: p.x, y: p.y }),
+                            Some(Msg::PtyScroll {
+                                pane: self.pane,
+                                up,
+                                x: p.x,
+                                y: p.y,
+                            }),
                         )
                     }
                 }

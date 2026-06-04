@@ -2,9 +2,10 @@
 
 use super::keys::key_to_bytes;
 use super::metrics::{
-    compute_pty_dims, pty_metrics, PTY_ZOOM_DEFAULT, PTY_ZOOM_MAX, PTY_ZOOM_MIN, PTY_ZOOM_STEP,
+    compute_pty_dims, pty_cols_for_fraction, pty_metrics, AGENT_PORTION, PTY_ZOOM_DEFAULT,
+    PTY_ZOOM_MAX, PTY_ZOOM_MIN, PTY_ZOOM_STEP, TERM_PANEL_PORTION,
 };
-use super::state::{AbsCell, Grove, Msg, PtyCell, PtyDrag, SidebarView};
+use super::state::{AbsCell, FocusedPane, Grove, Msg, PtyCell, PtyDrag, PtyPane, SidebarView};
 use crate::agent::Agent;
 use crate::app::{App, InputKind, Modal, Pane};
 use crate::session::Session;
@@ -40,6 +41,8 @@ impl Grove {
             pty_cache: Default::default(),
             pty_rows,
             pty_cols,
+            pty_sess_cols: pty_cols,
+            pty_panel_cols: pty_cols,
             ui_zoom,
             window_size,
             open_agent_menu: None,
@@ -51,6 +54,8 @@ impl Grove {
             hovered_activity_row: None,
             sidebar_view: SidebarView::Activity,
             activity_no_sessions_expanded: None,
+            term_panel_open: false,
+            focused_pane: FocusedPane::Agent,
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -220,31 +225,58 @@ impl Grove {
                 self.open_agent_menu = None;
                 self.spawn(proj, wt, Agent::Terminal);
             }
-            Msg::StartTerminalHere => {
+            Msg::ToggleTermPanel => {
                 self.open_agent_menu = None;
-                // Resolve the active session's project + worktree to indices,
-                // then spawn a terminal there.
-                if let Some(s) = self
-                    .app
-                    .active_session
-                    .and_then(|i| self.app.sessions.get(i))
-                {
-                    let pname = s.project.clone();
-                    let wt_path = s.wt_path.clone();
-                    if let Some(proj) = self
-                        .app
-                        .store
-                        .projects
-                        .iter()
-                        .position(|p| p.name == pname)
-                    {
-                        self.switch_active_project(proj);
-                        if let Some(wt) =
-                            self.app.worktrees.iter().position(|w| w.path == wt_path)
-                        {
-                            self.spawn(proj, wt, Agent::Terminal);
-                        }
+                // Opening only makes sense with an active session to anchor the
+                // panel to a worktree; bail before flipping the flag if there
+                // is none.
+                if !self.term_panel_open && self.active_wt_path().is_none() {
+                    return Task::none();
+                }
+                self.term_panel_open = !self.term_panel_open;
+                // Recompute the split dims (resizes the agent + panel shells to
+                // their new 65/35 — or full — widths) before spawning anything.
+                self.refresh_pty_viewport();
+                if self.term_panel_open {
+                    if let Some(wt) = self.active_wt_path() {
+                        self.app
+                            .ensure_wt_terminal(&wt, self.pty_rows, self.pty_panel_cols);
                     }
+                    // Focusing the just-opened panel is the natural default —
+                    // that's why the user opened it. Click the agent to switch.
+                    self.focused_pane = FocusedPane::Panel;
+                } else {
+                    // Panel gone: the only interactive PTY is the agent again.
+                    self.focused_pane = FocusedPane::Agent;
+                }
+                self.pty_selection = None;
+            }
+            Msg::NewWtTerminal => {
+                if let Some(wt) = self.active_wt_path() {
+                    self.app
+                        .new_wt_terminal(&wt, self.pty_rows, self.pty_panel_cols);
+                    self.pty_selection = None;
+                    self.invalidate_pty_render_cache();
+                }
+            }
+            Msg::SelectWtTerminal(i) => {
+                if let Some(wt) = self.active_wt_path() {
+                    self.app
+                        .select_wt_terminal(&wt, i, self.pty_rows, self.pty_panel_cols);
+                    self.pty_selection = None;
+                    self.invalidate_pty_render_cache();
+                }
+            }
+            Msg::CloseWtTerminal(i) => {
+                if let Some(wt) = self.active_wt_path() {
+                    // Evict just this shell's render-cache entry (mirroring
+                    // KillSession), capturing its key before the session drops.
+                    if let Some(s) = self.app.wt_terminals.get(&wt).and_then(|v| v.get(i)) {
+                        let key = Arc::as_ptr(&s.dirty) as usize;
+                        self.pty_cache.borrow_mut().remove(&key);
+                    }
+                    self.app.close_wt_terminal(&wt, i);
+                    self.pty_selection = None;
                 }
             }
             Msg::CloseAgentMenu => {
@@ -255,7 +287,10 @@ impl Grove {
                 self.pending_kill = None;
                 if i < self.app.sessions.len() {
                     self.app.active_session = Some(i);
-                    self.app.sessions[i].resize(self.pty_rows, self.pty_cols);
+                    self.app.sessions[i].resize(self.pty_rows, self.pty_sess_cols);
+                    // The panel re-anchors to the new session's worktree; reset
+                    // focus so a stale agent/panel choice doesn't carry over.
+                    self.reset_focused_pane();
                     // Keep the sidebar worktree highlight in sync with the
                     // session that is now visible in the workspace.
                     let proj_name = self.app.sessions[i].project.clone();
@@ -290,8 +325,15 @@ impl Grove {
                     return self.scroll_theme_picker_to_selection();
                 }
             }
-            Msg::PtyMouseDown(x, y) => {
+            Msg::PtyMouseDown(pane, x, y) => {
                 self.pending_kill = None;
+                // Clicking a PTY focuses its pane (so subsequent keystrokes,
+                // scroll, and this very selection route there). Honored only
+                // while the panel is open; otherwise the agent always owns input.
+                self.focus_pane(pane);
+                // A focus switch invalidates any in-progress selection on the
+                // previously focused PTY — it was anchored to a different grid.
+                self.pty_selection = None;
                 if let (Some(cell), Some((h, _))) = (self.pixel_to_abs(x, y), self.pty_view_geom())
                 {
                     self.pty_selection = Some((cell, cell));
@@ -302,7 +344,13 @@ impl Grove {
                     });
                 }
             }
-            Msg::PtyMouseDrag(x, y) => {
+            Msg::PtyMouseDrag(pane, x, y) => {
+                // Ignore drags from the pane that doesn't own the active
+                // selection (the canvas captures the drag, but focus — and thus
+                // the geometry helpers — belong to the pane the press landed in).
+                if self.focused_input_pane() != pane {
+                    return Task::none();
+                }
                 if let Some(d) = self.pty_drag.as_mut() {
                     d.last_x = x;
                     d.last_y = y;
@@ -311,7 +359,10 @@ impl Grove {
                     self.pty_selection = Some((a, cell));
                 }
             }
-            Msg::PtyScroll { up, x, y } => {
+            Msg::PtyScroll { pane, up, x, y } => {
+                // Scrolling over a PTY focuses it too, so the wheel always
+                // drives the terminal under the cursor.
+                self.focus_pane(pane);
                 let cell = pixel_to_cell(x, y);
                 if let Some(s) = self.focused_session_mut() {
                     s.scroll(up, cell.col as u16, cell.row as u16);
@@ -493,6 +544,14 @@ impl Grove {
         for s in &self.app.sessions {
             s.dirty.store(true, Ordering::Relaxed);
         }
+        for s in &self.app.home_terminals {
+            s.dirty.store(true, Ordering::Relaxed);
+        }
+        for v in self.app.wt_terminals.values() {
+            for s in v {
+                s.dirty.store(true, Ordering::Relaxed);
+            }
+        }
     }
 
     fn refresh_pty_viewport(&mut self) {
@@ -504,11 +563,40 @@ impl Grove {
         );
         self.pty_rows = rows;
         self.pty_cols = cols;
+        // When the slide-over panel is open the workspace splits 65/35, so the
+        // agent PTY and the panel PTY each see a narrower width than the full
+        // workspace. Compute both so every shell wraps at its rendered width.
+        let (sess_cols, panel_cols) = if self.term_panel_open {
+            (
+                pty_cols_for_fraction(
+                    self.window_size.width,
+                    self.ui_zoom,
+                    self.app.chrome_visible,
+                    AGENT_PORTION as f32 / (AGENT_PORTION + TERM_PANEL_PORTION) as f32,
+                ),
+                pty_cols_for_fraction(
+                    self.window_size.width,
+                    self.ui_zoom,
+                    self.app.chrome_visible,
+                    TERM_PANEL_PORTION as f32 / (AGENT_PORTION + TERM_PANEL_PORTION) as f32,
+                ),
+            )
+        } else {
+            (cols, cols)
+        };
+        self.pty_sess_cols = sess_cols;
+        self.pty_panel_cols = panel_cols;
         for s in &mut self.app.sessions {
-            s.resize(rows, cols);
+            s.resize(rows, sess_cols);
         }
+        // Home terminals live on their own full-width tab, never beside the panel.
         for s in &mut self.app.home_terminals {
             s.resize(rows, cols);
+        }
+        for v in self.app.wt_terminals.values_mut() {
+            for s in v {
+                s.resize(rows, panel_cols);
+            }
         }
         self.invalidate_pty_render_cache();
     }
@@ -707,7 +795,7 @@ impl Grove {
         for s in &mut self.app.sessions {
             let key = Arc::as_ptr(&s.dirty) as usize;
             if !before.contains(&key) {
-                s.resize(self.pty_rows, self.pty_cols);
+                s.resize(self.pty_rows, self.pty_sess_cols);
             }
         }
     }
@@ -996,7 +1084,7 @@ impl Grove {
             use_tmux,
         ) {
             Ok(mut s) => {
-                s.resize(self.pty_rows, self.pty_cols);
+                s.resize(self.pty_rows, self.pty_sess_cols);
                 self.app.sessions.push(s);
                 self.app.active_session = Some(self.app.sessions.len() - 1);
                 // Reveal the freshly spawned session if its worktree was
@@ -1017,12 +1105,50 @@ impl Grove {
         matches!(self.sidebar_view, SidebarView::Terminal)
     }
 
+    /// Reset the input-focus target after the active session (and hence the
+    /// panel's worktree) changes: focus the panel when it's open (the just
+    /// re-anchored terminal), otherwise the agent.
+    fn reset_focused_pane(&mut self) {
+        self.focused_pane = if self.term_panel_open {
+            FocusedPane::Panel
+        } else {
+            FocusedPane::Agent
+        };
+    }
+
+    /// Whether input currently routes to the panel PTY. Only true while the
+    /// panel is open *and* the panel pane holds focus.
+    fn panel_focused(&self) -> bool {
+        matches!(self.focused_input_pane(), PtyPane::Panel)
+    }
+
+    /// Apply a click/scroll's origin pane to the input-focus target. A `Panel`
+    /// click only takes effect while the panel is open; an `Agent` click always
+    /// returns focus to the agent (it's only reachable as a click target when
+    /// the split is showing both PTYs).
+    fn focus_pane(&mut self, pane: PtyPane) {
+        if !self.term_panel_open {
+            return;
+        }
+        self.focused_pane = match pane {
+            PtyPane::Agent => FocusedPane::Agent,
+            PtyPane::Panel => FocusedPane::Panel,
+        };
+    }
+
     /// The session the workspace PTY is currently showing — and that keystrokes,
     /// scrolling, and selection target. The home terminal when the terminal tab
     /// is active, otherwise the active worktree session.
     pub(super) fn focused_session(&self) -> Option<&Session> {
         if self.terminal_tab() {
             self.app.active_home_terminal()
+        } else if self.panel_focused() {
+            // Panel terminal when this worktree has one; otherwise fall back to
+            // the agent so a worktree with no shell doesn't silently swallow
+            // keystrokes.
+            self.active_wt_path()
+                .and_then(|wt| self.app.active_wt_terminal(&wt))
+                .or_else(|| self.app.active_session.and_then(|i| self.app.sessions.get(i)))
         } else {
             self.app.active_session.and_then(|i| self.app.sessions.get(i))
         }
@@ -1033,11 +1159,30 @@ impl Grove {
             self.app
                 .active_terminal
                 .and_then(move |i| self.app.home_terminals.get_mut(i))
+        } else if self.panel_focused() {
+            if let Some(wt) = self.active_wt_path() {
+                if let Some(idx) = self.app.active_wt_terminal_idx(&wt) {
+                    return self.app.wt_terminals.get_mut(&wt).and_then(|v| v.get_mut(idx));
+                }
+            }
+            // No panel shell for this worktree — route to the agent instead.
+            self.app
+                .active_session
+                .and_then(move |i| self.app.sessions.get_mut(i))
         } else {
             self.app
                 .active_session
                 .and_then(move |i| self.app.sessions.get_mut(i))
         }
+    }
+
+    /// Absolute worktree path of the active session — the scope of the terminal
+    /// slide-over panel. `None` when no session is active.
+    pub(super) fn active_wt_path(&self) -> Option<String> {
+        self.app
+            .active_session
+            .and_then(|i| self.app.sessions.get(i))
+            .map(|s| s.wt_path.clone())
     }
 
     pub(super) fn selection_text(&self) -> Option<String> {

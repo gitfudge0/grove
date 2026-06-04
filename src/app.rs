@@ -6,7 +6,7 @@ use crate::storage::{self, Project, Store};
 use crate::theme;
 use crate::tmux;
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 pub fn cycle(cur: usize, delta: i32, len: usize) -> usize {
@@ -184,6 +184,17 @@ pub struct App {
     /// unique per terminal so it can be stripped from that title and preserved
     /// across a restart.
     pub home_terminal_seq: usize,
+    /// Worktree-scoped terminals for the right-docked slide-over panel, keyed by
+    /// absolute worktree path. Each panel can hold several shells (the panel's
+    /// tab strip). These live outside `sessions` so they never appear as
+    /// sidebar/tree/activity rows — they belong *inside* a session's worktree,
+    /// not beside it. Entries are dropped (shells killed) when the worktree is
+    /// removed via [`kill_wt_terminals`].
+    pub wt_terminals: HashMap<String, Vec<Session>>,
+    /// Active shell index within each worktree's panel, keyed by worktree path.
+    pub wt_active_terminal: HashMap<String, usize>,
+    /// Monotonic counter behind each panel terminal's internal label.
+    pub wt_terminal_seq: usize,
     pub ui_mode: UiMode,
     /// Active mouse text selection over the agent pane, if any.
     pub selection: Option<Selection>,
@@ -257,6 +268,9 @@ impl App {
             home_terminals: Vec::new(),
             active_terminal: None,
             home_terminal_seq: 0,
+            wt_terminals: HashMap::new(),
+            wt_active_terminal: HashMap::new(),
+            wt_terminal_seq: 0,
             ui_mode: UiMode::Browser,
             selection: None,
             toast: None,
@@ -813,6 +827,133 @@ impl App {
         }
     }
 
+    // ── per-worktree terminal panel ────────────────────────────────────────
+
+    /// The shells of the panel for `wt_path` (empty if none spawned yet).
+    pub fn wt_terminals_for(&self, wt_path: &str) -> &[Session] {
+        self.wt_terminals
+            .get(wt_path)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// The active shell of the panel for `wt_path`, if any.
+    pub fn active_wt_terminal(&self, wt_path: &str) -> Option<&Session> {
+        let i = *self.wt_active_terminal.get(wt_path)?;
+        self.wt_terminals.get(wt_path)?.get(i)
+    }
+
+    /// Active shell index within the panel for `wt_path`.
+    pub fn active_wt_terminal_idx(&self, wt_path: &str) -> Option<usize> {
+        self.wt_active_terminal.get(wt_path).copied()
+    }
+
+    /// Ensure the panel for `wt_path` has at least one shell, resize them all,
+    /// and select something. Mirrors `ensure_home_terminal` but rooted in the
+    /// worktree rather than `~`.
+    pub fn ensure_wt_terminal(&mut self, wt_path: &str, rows: u16, cols: u16) {
+        match self.wt_terminals.get_mut(wt_path) {
+            Some(v) if !v.is_empty() => {
+                for s in v {
+                    s.resize(rows, cols);
+                }
+            }
+            // Missing or present-but-empty: spawn the first shell (which also
+            // sets the active index).
+            _ => self.spawn_wt_terminal(wt_path, rows, cols),
+        }
+        if self.wt_active_terminal.get(wt_path).is_none()
+            && !self.wt_terminals_for(wt_path).is_empty()
+        {
+            self.wt_active_terminal.insert(wt_path.to_string(), 0);
+        }
+    }
+
+    /// Spawn an additional panel shell for `wt_path` and focus it.
+    pub fn new_wt_terminal(&mut self, wt_path: &str, rows: u16, cols: u16) {
+        self.spawn_wt_terminal(wt_path, rows, cols);
+    }
+
+    /// Focus the panel shell at `idx` for `wt_path`.
+    pub fn select_wt_terminal(&mut self, wt_path: &str, idx: usize, rows: u16, cols: u16) {
+        if let Some(v) = self.wt_terminals.get_mut(wt_path) {
+            if idx < v.len() {
+                v[idx].resize(rows, cols);
+                self.wt_active_terminal.insert(wt_path.to_string(), idx);
+            }
+        }
+    }
+
+    /// Close the panel shell at `idx` for `wt_path`. Unlike the home terminal
+    /// this does *not* respawn when the last one closes — an empty panel is a
+    /// valid state (the panel shows its empty/start affordance).
+    pub fn close_wt_terminal(&mut self, wt_path: &str, idx: usize) {
+        let Some(v) = self.wt_terminals.get_mut(wt_path) else {
+            return;
+        };
+        if idx >= v.len() {
+            return;
+        }
+        let mut s = v.remove(idx);
+        s.kill();
+        let new_active = match self.wt_active_terminal.get(wt_path).copied() {
+            Some(a) if a == idx => {
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(idx.min(v.len() - 1))
+                }
+            }
+            Some(a) if a > idx => Some(a - 1),
+            other => other,
+        };
+        match new_active {
+            Some(a) => {
+                self.wt_active_terminal.insert(wt_path.to_string(), a);
+            }
+            None => {
+                self.wt_active_terminal.remove(wt_path);
+            }
+        }
+    }
+
+    /// Kill and drop every panel shell for `wt_path`. Called when the owning
+    /// worktree/session is removed so no orphaned shells survive.
+    pub fn kill_wt_terminals(&mut self, wt_path: &str) {
+        if let Some(mut v) = self.wt_terminals.remove(wt_path) {
+            for s in &mut v {
+                s.kill();
+            }
+        }
+        self.wt_active_terminal.remove(wt_path);
+    }
+
+    fn spawn_wt_terminal(&mut self, wt_path: &str, rows: u16, cols: u16) {
+        self.wt_terminal_seq += 1;
+        let label = format!("wt-terminal {}", self.wt_terminal_seq);
+        let args = Agent::Terminal.launch_args();
+        match Session::spawn(
+            label,
+            String::new(),
+            wt_path.to_string(),
+            Agent::Terminal,
+            &args,
+            wt_path,
+            false,
+        ) {
+            Ok(mut s) => {
+                s.resize(rows, cols);
+                let v = self.wt_terminals.entry(wt_path.to_string()).or_default();
+                v.push(s);
+                self.wt_active_terminal
+                    .insert(wt_path.to_string(), v.len() - 1);
+            }
+            Err(e) => {
+                self.set_toast(format!("terminal failed: {e}"));
+            }
+        }
+    }
+
     pub fn enter_browser(&mut self) {
         self.ui_mode = UiMode::Browser;
     }
@@ -930,6 +1071,8 @@ impl App {
         if self.sessions.is_empty() {
             self.active_session = None;
         }
+        // The worktree is going away — drop its panel shells too.
+        self.kill_wt_terminals(wt_path);
     }
 
     pub fn kill_active_session(&mut self) {

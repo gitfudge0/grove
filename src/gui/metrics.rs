@@ -23,6 +23,13 @@ pub const CELL_W: f32 = 7.5;
 pub const CELL_H: f32 = 17.0;
 pub const FONT_SIZE: f32 = 12.5;
 
+/// Workspace split when the slide-over terminal panel is open: the agent view
+/// takes `AGENT_PORTION`, the terminal panel `TERM_PANEL_PORTION`. Used both as
+/// iced `FillPortion` weights in `view.rs` and to derive each region's PTY
+/// column count (see `pty_cols_for_fraction`), so they must stay in sync.
+pub const AGENT_PORTION: u16 = 60;
+pub const TERM_PANEL_PORTION: u16 = 40;
+
 pub const PTY_ZOOM_DEFAULT: f32 = 1.0;
 pub const PTY_ZOOM_MIN: f32 = 0.6;
 pub const PTY_ZOOM_MAX: f32 = 2.0;
@@ -94,6 +101,26 @@ pub fn compute_pty_dims(win_w: f32, win_h: f32, zoom: f32, chrome_visible: bool)
     (rows, cols)
 }
 
+/// Column count for a PTY region that occupies `fraction` of the workspace
+/// width (the area right of the sidebar) when the slide-over panel splits it.
+/// Accounts for the 1px split divider and the region's own horizontal padding.
+/// Height (rows) is unaffected by the split, so callers reuse `compute_pty_dims`
+/// rows.
+pub fn pty_cols_for_fraction(win_w: f32, zoom: f32, chrome_visible: bool, fraction: f32) -> u16 {
+    let zoom = zoom.max(0.1);
+    let logical_w = win_w / zoom;
+    let visible_w = if chrome_visible {
+        RAIL_W + SIDEBAR_DIVIDER_W
+    } else {
+        0.0
+    };
+    // Workspace width, minus the vertical split divider, then this region's
+    // share, then the PTY's own padding inside that region.
+    let work_w = logical_w - visible_w - SIDEBAR_DIVIDER_W;
+    let region_w = work_w * fraction - PTY_PAD_W;
+    (region_w / CELL_W).max(10.0) as u16
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -151,6 +178,21 @@ mod tests {
             assert!((cols as f32) * CELL_W <= usable_w);
             assert!((rows as f32) * CELL_H <= usable_h);
         }
+    }
+
+    #[test]
+    fn pty_cols_for_fraction_splits_workspace() {
+        use super::{pty_cols_for_fraction, AGENT_PORTION, TERM_PANEL_PORTION};
+        let total = (AGENT_PORTION + TERM_PANEL_PORTION) as f32;
+        let agent = pty_cols_for_fraction(1280.0, 1.0, true, AGENT_PORTION as f32 / total);
+        let panel = pty_cols_for_fraction(1280.0, 1.0, true, TERM_PANEL_PORTION as f32 / total);
+        let full = compute_pty_dims(1280.0, 800.0, 1.0, true).1;
+
+        // The 35% panel is narrower than the 65% agent, and both fit inside the
+        // full single-pane width.
+        assert!(panel < agent);
+        assert!(agent < full);
+        assert!(panel >= 10); // floor enforced
     }
 
     #[test]
