@@ -2,8 +2,9 @@
 
 use super::keys::key_to_bytes;
 use super::metrics::{
-    compute_pty_dims, pty_cols_for_fraction, pty_metrics, AGENT_PORTION, PTY_ZOOM_DEFAULT,
-    PTY_ZOOM_MAX, PTY_ZOOM_MIN, PTY_ZOOM_STEP, TERM_PANEL_PORTION,
+    compute_pty_dims, pty_cols_for_fraction, pty_metrics, PTY_ZOOM_DEFAULT, PTY_ZOOM_MAX,
+    PTY_ZOOM_MIN, PTY_ZOOM_STEP, TERM_PANEL_PORTION, TERM_PANEL_PORTION_MAX,
+    TERM_PANEL_PORTION_MIN, TERM_PANEL_PORTION_STEP,
 };
 use super::state::{AbsCell, FocusedPane, Grove, Msg, PtyCell, PtyDrag, PtyPane, SidebarView};
 use crate::agent::Agent;
@@ -55,6 +56,7 @@ impl Grove {
             sidebar_view: SidebarView::Activity,
             activity_no_sessions_expanded: None,
             term_panel_open: false,
+            term_panel_portion: TERM_PANEL_PORTION,
             focused_pane: FocusedPane::Agent,
         };
         // Prime the per-project worktree cache so `view()` never has to shell
@@ -567,18 +569,19 @@ impl Grove {
         // agent PTY and the panel PTY each see a narrower width than the full
         // workspace. Compute both so every shell wraps at its rendered width.
         let (sess_cols, panel_cols) = if self.term_panel_open {
+            let panel = self.term_panel_portion as f32 / 100.0;
             (
                 pty_cols_for_fraction(
                     self.window_size.width,
                     self.ui_zoom,
                     self.app.chrome_visible,
-                    AGENT_PORTION as f32 / (AGENT_PORTION + TERM_PANEL_PORTION) as f32,
+                    1.0 - panel,
                 ),
                 pty_cols_for_fraction(
                     self.window_size.width,
                     self.ui_zoom,
                     self.app.chrome_visible,
-                    TERM_PANEL_PORTION as f32 / (AGENT_PORTION + TERM_PANEL_PORTION) as f32,
+                    panel,
                 ),
             )
         } else {
@@ -668,12 +671,42 @@ impl Grove {
                 return;
             }
         }
+        // Resize the terminal panel with Ctrl+Shift+Left/Right while it is open.
+        // Intercepted before `key_to_bytes` so the arrows don't reach the PTY.
+        if self.term_panel_open && mods.control() && mods.shift() {
+            match key {
+                Key::Named(Named::ArrowRight) => {
+                    self.adjust_term_panel_portion(TERM_PANEL_PORTION_STEP as i16);
+                    return;
+                }
+                Key::Named(Named::ArrowLeft) => {
+                    self.adjust_term_panel_portion(-(TERM_PANEL_PORTION_STEP as i16));
+                    return;
+                }
+                _ => {}
+            }
+        }
         if let Some(bytes) = key_to_bytes(&key, mods) {
             if let Some(s) = self.focused_session_mut() {
                 s.send(&bytes);
             }
             self.pty_selection = None;
         }
+    }
+
+    /// Grow (`delta > 0`) or shrink the terminal panel by `delta` percent of the
+    /// workspace, clamped to `[TERM_PANEL_PORTION_MIN, TERM_PANEL_PORTION_MAX]`,
+    /// then reflow every PTY to its new width.
+    fn adjust_term_panel_portion(&mut self, delta: i16) {
+        let next = (self.term_panel_portion as i16 + delta).clamp(
+            TERM_PANEL_PORTION_MIN as i16,
+            TERM_PANEL_PORTION_MAX as i16,
+        ) as u16;
+        if next == self.term_panel_portion {
+            return;
+        }
+        self.term_panel_portion = next;
+        self.refresh_pty_viewport();
     }
 
     fn handle_modal_key(&mut self, key: Key, mods: Modifiers) {

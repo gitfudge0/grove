@@ -23,12 +23,18 @@ pub const CELL_W: f32 = 7.5;
 pub const CELL_H: f32 = 17.0;
 pub const FONT_SIZE: f32 = 12.5;
 
-/// Workspace split when the slide-over terminal panel is open: the agent view
-/// takes `AGENT_PORTION`, the terminal panel `TERM_PANEL_PORTION`. Used both as
-/// iced `FillPortion` weights in `view.rs` and to derive each region's PTY
-/// column count (see `pty_cols_for_fraction`), so they must stay in sync.
-pub const AGENT_PORTION: u16 = 60;
+/// Default terminal-panel share of the workspace width (in percent) when the
+/// slide-over panel is open; the agent view gets the remaining `100 -
+/// TERM_PANEL_PORTION`. The live value is `State::term_panel_portion`, which
+/// drives both the iced `FillPortion` weights in `view.rs` and each region's
+/// PTY column count (see `pty_cols_for_fraction`), so they stay in sync.
 pub const TERM_PANEL_PORTION: u16 = 40;
+
+/// Bounds and step (in percent of the workspace) for resizing the terminal
+/// panel with Ctrl+Shift+Left/Right.
+pub const TERM_PANEL_PORTION_MIN: u16 = 20;
+pub const TERM_PANEL_PORTION_MAX: u16 = 75;
+pub const TERM_PANEL_PORTION_STEP: u16 = 5;
 
 pub const PTY_ZOOM_DEFAULT: f32 = 1.0;
 pub const PTY_ZOOM_MIN: f32 = 0.6;
@@ -182,10 +188,10 @@ mod tests {
 
     #[test]
     fn pty_cols_for_fraction_splits_workspace() {
-        use super::{pty_cols_for_fraction, AGENT_PORTION, TERM_PANEL_PORTION};
-        let total = (AGENT_PORTION + TERM_PANEL_PORTION) as f32;
-        let agent = pty_cols_for_fraction(1280.0, 1.0, true, AGENT_PORTION as f32 / total);
-        let panel = pty_cols_for_fraction(1280.0, 1.0, true, TERM_PANEL_PORTION as f32 / total);
+        use super::{pty_cols_for_fraction, TERM_PANEL_PORTION};
+        let panel_frac = TERM_PANEL_PORTION as f32 / 100.0;
+        let agent = pty_cols_for_fraction(1280.0, 1.0, true, 1.0 - panel_frac);
+        let panel = pty_cols_for_fraction(1280.0, 1.0, true, panel_frac);
         let full = compute_pty_dims(1280.0, 800.0, 1.0, true).1;
 
         // The 35% panel is narrower than the 65% agent, and both fit inside the

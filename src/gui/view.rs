@@ -693,11 +693,11 @@ impl Grove {
         let inner: Element<'_, Msg> = if self.term_panel_open && self.active_wt_path().is_some() {
             row![
                 container(left)
-                    .width(Length::FillPortion(crate::gui::metrics::AGENT_PORTION))
+                    .width(Length::FillPortion(100 - self.term_panel_portion))
                     .height(Length::Fill),
                 divider_v(c::BORDER()),
                 container(self.term_panel())
-                    .width(Length::FillPortion(crate::gui::metrics::TERM_PANEL_PORTION))
+                    .width(Length::FillPortion(self.term_panel_portion))
                     .height(Length::Fill),
             ]
             .width(Length::Fill)

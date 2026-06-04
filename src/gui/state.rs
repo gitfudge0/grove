@@ -106,6 +106,12 @@ pub struct Grove {
     /// (they reattach when reopened); they only die when the worktree is
     /// removed.
     pub term_panel_open: bool,
+    /// The terminal panel's share of the workspace width, in percent (the agent
+    /// view gets `100 - term_panel_portion`). Adjusted live with
+    /// Ctrl+Shift+Left/Right between `TERM_PANEL_PORTION_MIN` and
+    /// `TERM_PANEL_PORTION_MAX`; drives both the `FillPortion` weights in
+    /// `view()` and each PTY's derived column count.
+    pub term_panel_portion: u16,
     /// Which PTY (agent vs panel) input is routed to while the panel is open.
     /// Only consulted when `term_panel_open`; defaults to `Panel` on open and
     /// resets to `Agent` on close or active-session change. Clicking either PTY
