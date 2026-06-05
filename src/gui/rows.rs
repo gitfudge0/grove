@@ -325,13 +325,14 @@ pub fn session_row<'a>(
     .align_y(iced::Alignment::Center);
     if let Some(ctx) = context.as_deref() {
         let truncated = truncate_ellipsis(ctx, 28);
-        meta_row = meta_row.push(text("·").size(11).color(c::FG_MUTE())).push(
+        meta_row = meta_row.push(text("·").size(11).color(c::FG_MUTE())).push(single_line(
             text(truncated)
                 .font(UI_FONT)
                 .size(11)
                 .color(c::FG_MUTE())
                 .wrapping(iced::widget::text::Wrapping::None),
-        );
+            11.0,
+        ));
     }
 
     let meta: Element<'a, Msg> = container(meta_row).width(Length::Fill).clip(true).into();
@@ -380,11 +381,14 @@ pub fn terminal_row<'a>(
     let ctx = terminal_context(s).unwrap_or_else(|| "~".to_string());
     let meta_row = row![
         icon("term", 12.0, name_color),
-        text(truncate_ellipsis(&ctx, 28))
-            .font(UI_FONT)
-            .size(12)
-            .color(name_color)
-            .wrapping(iced::widget::text::Wrapping::None),
+        single_line(
+            text(truncate_ellipsis(&ctx, 28))
+                .font(UI_FONT)
+                .size(12)
+                .color(name_color)
+                .wrapping(iced::widget::text::Wrapping::None),
+            12.0,
+        ),
     ]
     .spacing(6)
     .align_y(iced::Alignment::Center);
@@ -464,6 +468,21 @@ pub fn sanitize_ui_text(raw: &str) -> Option<String> {
     } else {
         Some(cleaned)
     }
+}
+
+/// Force an element to render on a single line.
+///
+/// iced 0.13's plain `text` widget ignores `.wrapping(Wrapping::None)` — the
+/// graphics `Paragraph` stores the wrapping mode but never calls cosmic-text's
+/// `set_wrap`, so a long label always word-wraps to a second line regardless.
+/// Clipping the element to exactly one line height (iced's default line height
+/// is `1.3 × size`) hides any wrapped overflow; paired with `truncate_ellipsis`
+/// this gives "one line, `…` when the text is too long".
+fn single_line<'a>(elem: impl Into<Element<'a, Msg>>, text_size: f32) -> Element<'a, Msg> {
+    container(elem)
+        .height(Length::Fixed(text_size * 1.3))
+        .clip(true)
+        .into()
 }
 
 fn truncate_ellipsis(s: &str, max_chars: usize) -> String {
