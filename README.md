@@ -9,11 +9,11 @@ a worktree launchpad for ai coding agents
 [![license: MIT](https://img.shields.io/badge/license-MIT-9ece6a?style=flat-square)](#license)
 [![platform: linux | macOS](https://img.shields.io/badge/platform-linux%20%7C%20macOS-7aa2f7?style=flat-square)](#requirements)
 [![built with: rust](https://img.shields.io/badge/built%20with-rust-bb9af7?style=flat-square)](https://www.rust-lang.org/)
-[![version: 0.5.0](https://img.shields.io/badge/version-0.5.0-e0af68?style=flat-square)](Cargo.toml)
+[![version: 0.13.1](https://img.shields.io/badge/version-0.13.1-e0af68?style=flat-square)](Cargo.toml)
 
 </div>
 
-grove is a terminal-native TUI that manages git worktrees across projects and runs ai coding agents (claude code, codex, opencode) in embedded PTY sessions inside each worktree. several agents run side by side. you never leave the terminal.
+grove is a native desktop app and terminal TUI for managing git worktrees across projects and running ai coding agents (claude code, codex, opencode) in embedded PTY sessions inside each worktree. several agents run side by side, with optional tmux persistence when you want sessions to survive restarts.
 
 ## table of contents
 
@@ -22,7 +22,7 @@ grove is a terminal-native TUI that manages git worktrees across projects and ru
   - [desktop app](#desktop-app)
 - [quickstart](#quickstart)
 - [sessions](#sessions)
-- [keybindings](#keybindings)
+- [terminal UI](#terminal-ui)
 - [supported agents](#supported-agents)
 - [themes](#themes)
 - [requirements](#requirements)
@@ -31,13 +31,14 @@ grove is a terminal-native TUI that manages git worktrees across projects and ru
 
 ## why grove
 
-if you regularly drive more than one ai coding agent at a time, you have probably ended up with a tab graveyard, a forest of detached tmux sessions, or a window manager full of nearly-identical terminals. grove collapses that into one keyboard-driven surface.
+if you regularly drive more than one ai coding agent at a time, you have probably ended up with a tab graveyard, a forest of detached tmux sessions, or a window manager full of nearly-identical terminals. grove collapses that into one focused surface.
 
-- **one screen, two modes.** a browser for projects and worktrees, and a session view with a sidebar of every live agent next to the focused PTY. no tabs, no nested navigation.
-- **sessions are the unit of work.** every agent you spawn lives in a managed session you can jump to in one or two keystrokes. `Ctrl-g` toggles between the sidebar and the PTY; number keys jump straight to a session.
+- **projects, worktrees, and sessions in one place.** the sidebar can show a project tree, a flat activity stream of every session, or a persistent home terminal.
+- **sessions are the unit of work.** every agent you spawn lives in a managed session with an embedded PTY. switch sessions without leaving grove, or open a worktree terminal beside an active agent.
 - **worktrees, not branches.** grove treats `git worktree` as a first-class primitive. create, list, and destroy worktrees per project, and launch agents directly inside them.
-- **terminal-native.** no electron, no web view. runs in any modern terminal, picks up your colors, ships with 36 built-in themes (22 dark, 14 light).
-- **stays out of the way.** a green ● next to a project means something is running there. that is the entire status system. no badges, no toasts, no progress rings.
+- **desktop by default, terminal when you want it.** `grove` opens the iced desktop app; `grove tui` opens the keyboard-driven terminal UI.
+- **native PTYs.** agents run as real terminal sessions, so full-screen CLIs, mouse selection, paste, scrollback, and terminal output behave like terminal work.
+- **stays out of the way.** running sessions are visible in the sidebar without turning the app into a dashboard.
 - **persistent by default.** with tmux installed, sessions survive grove exits and are rediscovered on the next launch. without tmux, native mode runs PTYs directly.
 
 ## install
@@ -80,21 +81,31 @@ when launched from a GUI (no terminal), grove recovers your login `PATH` from yo
 ## quickstart
 
 ```sh
-grove                       # launch the TUI
-# inside grove:
-#   a                       # add a project (point at a git repo)
-#   l                       # focus the worktrees pane
-#   a                       # add a worktree
-#   enter                   # start an agent session in that worktree
+grove                       # launch the desktop app
+grove tui                   # launch the terminal UI instead
 ```
 
-that is the entire onboarding. every other binding is on the footer.
+then:
+
+1. add a project by pointing grove at a git repository.
+2. select a worktree, or create a new one from that project.
+3. start `claude`, `codex`, `opencode`, or a terminal session in that worktree.
+
+the desktop app exposes the common actions as row controls and toolbar buttons. the terminal UI keeps the same project/worktree/session model and shows its bindings in the footer and help modal.
 
 ## sessions
 
-agents run as managed sessions rather than replacing grove. the session view has a **sessions** sidebar on the left (every project → worktree → session) and the active session's PTY on the right.
+agents run as managed sessions rather than replacing grove. each session belongs to a project and worktree, and the active session renders as an embedded PTY.
 
-`Ctrl-g` toggles keyboard focus between the two. press it from the PTY to move into the sidebar, where you can browse sessions; press it again (or `enter`) to drop back into the PTY. every other keystroke in the PTY is forwarded to the agent.
+the desktop app has three sidebar views:
+
+| view | purpose |
+|---|---|
+| **tree** | projects, worktrees, and their sessions |
+| **activity** | all sessions grouped by running, idle, and worktrees with no sessions |
+| **terminal** | persistent home terminals rooted at `~` |
+
+from an active desktop session, the `term` control opens a right-docked shell for the same worktree. you can keep the agent on one side and run git, tests, or edits in the adjacent terminal panel.
 
 grove supports two session backends:
 
@@ -105,7 +116,9 @@ grove supports two session backends:
 
 on first launch with `tmux` installed, grove asks which backend to use. press `m` later to open the tmux settings modal, toggle tmux for new sessions, and copy the optional tmux config snippet. existing sessions keep the backend they were started with.
 
-## keybindings
+## terminal UI
+
+run `grove tui` for the terminal UI. it uses the same storage, session backends, agents, themes, and project registrations as the desktop app.
 
 ### browser (projects / worktrees)
 
@@ -136,6 +149,14 @@ on first launch with `tmux` installed, grove asks which backend to use. press `m
 | `c` / `C` | new session for the active worktree (default / pick agent) |
 | `t` | new terminal for the active session's worktree |
 
+### session pane
+
+| key | action |
+|---|---|
+| `Ctrl-g` | focus the sessions sidebar |
+| `Ctrl-G` | toggle zen mode (hide chrome) |
+| other keys | forwarded to the agent |
+
 projects and worktrees with running sessions are marked with a green ● and a session count in the browser.
 
 ## supported agents
@@ -151,9 +172,9 @@ each agent must be installed and available on your `PATH`. grove does not bundle
 
 ## themes
 
-grove ships with 36 themes (22 dark, 14 light). the default is tokyonight. press `T` from the browser to open the theme picker; the selection persists across launches.
+grove ships with 37 themes (23 dark, 14 light). the default is tokyonight. use the desktop settings button or press `T` from the TUI browser to open the theme picker; the selection persists across launches.
 
-themes are colorways, not chrome. every screen reads correctly across all 36, because grove paints by semantic role (`fg`, `bg`, `comment`, `green` for running state, `yellow` for keybinding letters, `red` for errors) rather than fixed hex values. see [DESIGN.md](DESIGN.md) for the role contract.
+themes are colorways, not chrome. every screen reads correctly across all 37, because grove paints by semantic role (`fg`, `bg`, `comment`, `green` for running state, `yellow` for keybinding letters, `red` for errors) rather than fixed hex values. see [DESIGN.md](DESIGN.md) for the role contract.
 
 ## requirements
 
