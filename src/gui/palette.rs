@@ -1,9 +1,9 @@
 //! GUI color tokens, derived live from the active [`crate::theme`].
 //!
-//! The TUI exposes a flat `Theme` with `bg / bg_highlight / fg / fg_dark /
-//! comment` plus six accents. The GUI uses a richer surface vocabulary
-//! (rail, strip, hover, two border weights), so the missing tokens are
-//! synthesized by blending the base theme colors at fixed ratios.
+//! The shared theme exposes a flat `Theme` with `bg / bg_highlight / fg /
+//! fg_dark / comment` plus six accents. The GUI uses a richer surface
+//! vocabulary (rail, strip, hover, two border weights), so the missing tokens
+//! are synthesized by blending the base theme colors at fixed ratios.
 //!
 //! All accessors read [`crate::theme::current()`] on each call, so swapping
 //! themes at runtime takes effect on the next frame.
@@ -12,14 +12,12 @@
 
 use crate::theme;
 use iced::Color;
-use ratatui::style::Color as RColor;
 
-fn ic(c: RColor) -> Color {
+fn ic(c: theme::Color) -> Color {
     match c {
-        RColor::Rgb(r, g, b) => {
+        theme::Color::Rgb(r, g, b) => {
             Color::from_rgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
         }
-        _ => Color::from_rgb(1.0, 0.0, 1.0),
     }
 }
 

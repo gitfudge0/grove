@@ -1,13 +1,12 @@
 use crate::agent::Agent;
 use crate::git::{self, Worktree};
-use crate::launch;
 use crate::session::Session;
 use crate::storage::{self, Project, Store};
 use crate::theme;
 use crate::tmux;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::process::Command;
 
 pub fn cycle(cur: usize, delta: i32, len: usize) -> usize {
     if len == 0 {
@@ -18,23 +17,12 @@ pub fn cycle(cur: usize, delta: i32, len: usize) -> usize {
 
 pub struct Toast {
     pub message: String,
-    pub expires_at: Instant,
 }
 
 #[derive(Copy, Clone, PartialEq)]
 pub enum Pane {
     Projects,
     Worktrees,
-}
-
-#[derive(Copy, Clone, PartialEq)]
-pub enum UiMode {
-    /// Browsing the project/worktree sidebar.
-    Browser,
-    /// An agent session pane has the keyboard; keys are forwarded to the PTY.
-    Agent,
-    /// Inside the session view, but focus is on the Sessions sidebar (not the PTY).
-    SessionList,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,33 +41,6 @@ pub fn effective_backend_for(tmux_available: bool, tmux_enabled: Option<bool>) -
 
 pub fn needs_tmux_choice(tmux_available: bool, tmux_enabled: Option<bool>) -> bool {
     tmux_available && tmux_enabled.is_none()
-}
-
-/// A text selection over the active agent pane. Coordinates are pane-relative
-/// and 0-based (`(col, row)`), matching the visible vt100 screen.
-#[derive(Clone, Copy)]
-pub struct Selection {
-    pub anchor: (u16, u16),
-    pub head: (u16, u16),
-    /// Still being dragged (mouse button held).
-    pub dragging: bool,
-}
-
-impl Selection {
-    /// Returns `(start, end)` ordered top-to-bottom, left-to-right.
-    pub fn normalized(&self) -> ((u16, u16), (u16, u16)) {
-        let (a, h) = (self.anchor, self.head);
-        if (a.1, a.0) <= (h.1, h.0) {
-            (a, h)
-        } else {
-            (h, a)
-        }
-    }
-
-    /// True when the selection covers no cells (a bare click).
-    pub fn is_empty(&self) -> bool {
-        self.anchor == self.head
-    }
 }
 
 #[derive(Clone)]
@@ -113,8 +74,6 @@ pub enum Modal {
         errors: Vec<String>,
     },
     Message(String),
-    Help,
-    TmuxSetup,
     TmuxChoice,
     AgentPicker {
         project: String,
@@ -128,19 +87,6 @@ pub enum Modal {
         original: crate::theme::Theme,
     },
 }
-
-pub const TMUX_SETUP_SNIPPET: &str = r#"# Use Ctrl-a as the tmux prefix instead of Ctrl-b.
-unbind C-b
-set -g prefix C-a
-bind C-a send-prefix
-
-# Basic defaults.
-set -g mouse on
-set -g history-limit 10000
-set -g renumber-windows on
-set -g base-index 1
-setw -g pane-base-index 1
-"#;
 
 #[derive(Clone)]
 pub enum InputKind {
@@ -166,7 +112,6 @@ pub struct App {
     pub wt_idx: usize,
     pub modal: Modal,
     pub status: String,
-    pub should_quit: bool,
     pub sessions: Vec<Session>,
     pub active_session: Option<usize>,
     /// The shells behind the `terminal` tab, each rooted at `~`. The first is
@@ -195,9 +140,6 @@ pub struct App {
     pub wt_active_terminal: HashMap<String, usize>,
     /// Monotonic counter behind each panel terminal's internal label.
     pub wt_terminal_seq: usize,
-    pub ui_mode: UiMode,
-    /// Active mouse text selection over the agent pane, if any.
-    pub selection: Option<Selection>,
     /// Transient top-right notification (e.g. copy confirmation).
     pub toast: Option<Toast>,
     /// Total worktrees across all projects, cached so the renderer doesn't
@@ -220,7 +162,6 @@ impl App {
     pub fn set_toast(&mut self, message: impl Into<String>) {
         self.toast = Some(Toast {
             message: message.into(),
-            expires_at: Instant::now() + Duration::from_millis(1800),
         });
     }
 
@@ -262,7 +203,6 @@ impl App {
             wt_idx: 0,
             modal: initial_modal,
             status: String::new(),
-            should_quit: false,
             sessions,
             active_session: None,
             home_terminals: Vec::new(),
@@ -271,8 +211,6 @@ impl App {
             wt_terminals: HashMap::new(),
             wt_active_terminal: HashMap::new(),
             wt_terminal_seq: 0,
-            ui_mode: UiMode::Browser,
-            selection: None,
             toast: None,
             worktree_count: 0,
             chrome_visible: true,
@@ -312,10 +250,6 @@ impl App {
         self.set_tmux_enabled(enabled)?;
         self.modal = Modal::None;
         Ok(())
-    }
-
-    pub fn toggle_tmux_enabled(&mut self) -> Result<()> {
-        self.set_tmux_enabled(!self.use_tmux())
     }
 
     fn discover_tmux_sessions(&mut self) {
@@ -380,47 +314,6 @@ impl App {
         self.recount_worktrees();
     }
 
-    pub fn move_up(&mut self) {
-        match self.focus {
-            Pane::Projects => {
-                if self.proj_idx > 0 {
-                    self.proj_idx -= 1;
-                    self.wt_idx = 0;
-                    self.refresh_worktrees();
-                }
-            }
-            Pane::Worktrees => {
-                if self.wt_idx > 0 {
-                    self.wt_idx -= 1;
-                }
-            }
-        }
-    }
-
-    pub fn move_down(&mut self) {
-        match self.focus {
-            Pane::Projects => {
-                if self.proj_idx + 1 < self.store.projects.len() {
-                    self.proj_idx += 1;
-                    self.wt_idx = 0;
-                    self.refresh_worktrees();
-                }
-            }
-            Pane::Worktrees => {
-                if self.wt_idx + 1 < self.worktrees.len() {
-                    self.wt_idx += 1;
-                }
-            }
-        }
-    }
-
-    pub fn toggle_focus(&mut self) {
-        self.focus = match self.focus {
-            Pane::Projects => Pane::Worktrees,
-            Pane::Worktrees => Pane::Projects,
-        };
-    }
-
     pub fn focus_pane(&mut self, pane: Pane) {
         self.focus = pane;
     }
@@ -480,68 +373,6 @@ impl App {
                 }
             }
         }
-    }
-
-    pub fn on_enter(&mut self) -> Result<()> {
-        match self.focus {
-            Pane::Projects => {
-                if !self.worktrees.is_empty() || self.selected_project().is_some() {
-                    self.focus = Pane::Worktrees;
-                }
-            }
-            Pane::Worktrees => self.open_worktree(false),
-        }
-        Ok(())
-    }
-
-    pub fn open_worktree(&mut self, force_pick: bool) {
-        let Some(wt) = self.worktrees.get(self.wt_idx).cloned() else {
-            return;
-        };
-        let project = self
-            .selected_project()
-            .map(|p| p.name.clone())
-            .unwrap_or_default();
-        if force_pick {
-            self.refresh_available_agents();
-            self.modal = Modal::AgentPicker {
-                project,
-                wt_path: wt.path,
-                sel: self.picker_sel(),
-            };
-            return;
-        }
-        // An existing session for this worktree: jump into it rather than
-        // spawning a second agent against the same checkout.
-        if let Some(idx) = self.sessions.iter().position(|s| s.wt_path == wt.path) {
-            self.active_session = Some(idx);
-            self.focus_active_session();
-            return;
-        }
-        self.launch_or_pick(project, wt.path);
-    }
-
-    /// Open a plain terminal session in the currently selected browser
-    /// worktree. Mirrors `new_terminal_for_active` but sourced from the
-    /// browser selection rather than the active session.
-    pub fn open_worktree_terminal(&mut self) {
-        let Some(wt) = self.worktrees.get(self.wt_idx).cloned() else {
-            return;
-        };
-        let project = self
-            .selected_project()
-            .map(|p| p.name.clone())
-            .unwrap_or_default();
-        let label = path_basename(&wt.path);
-        let args = Agent::Terminal.launch_args();
-        self.spawn_session(
-            label,
-            project,
-            wt.path.clone(),
-            Agent::Terminal,
-            args,
-            &wt.path,
-        );
     }
 
     /// Index of the default agent in the picker, or 0 if none is set.
@@ -640,7 +471,6 @@ impl App {
                 let at = self.session_insert_index(&s);
                 self.sessions.insert(at, s);
                 self.active_session = Some(at);
-                self.ui_mode = UiMode::Agent;
                 self.status = format!("started {label}");
             }
             Err(e) => {
@@ -662,59 +492,6 @@ impl App {
         }
         self.refresh_worktrees();
         self.launch_or_pick(p.name.clone(), wt_path);
-    }
-
-    /// Spawn an additional session for the active session's worktree.
-    pub fn new_session_for_active(&mut self) {
-        let Some(i) = self.active_session else { return };
-        let Some(s) = self.sessions.get(i) else {
-            return;
-        };
-        let wt_path = s.wt_path.clone();
-        let project = s.project.clone();
-        self.launch_or_pick(project, wt_path);
-    }
-
-    /// Open the agent picker for the active session's worktree, ignoring any
-    /// configured default.
-    pub fn new_session_for_active_pick(&mut self) {
-        let Some(i) = self.active_session else { return };
-        let Some(s) = self.sessions.get(i) else {
-            return;
-        };
-        let wt_path = s.wt_path.clone();
-        let project = s.project.clone();
-        self.refresh_available_agents();
-        self.modal = Modal::AgentPicker {
-            project,
-            wt_path,
-            sel: self.picker_sel(),
-        };
-    }
-
-    /// Open a plain terminal session for the active session's worktree.
-    pub fn new_terminal_for_active(&mut self) {
-        let Some(i) = self.active_session else { return };
-        let Some(s) = self.sessions.get(i) else {
-            return;
-        };
-        let wt_path = s.wt_path.clone();
-        let project = s.project.clone();
-        let label = path_basename(&wt_path);
-        let args = Agent::Terminal.launch_args();
-        self.spawn_session(
-            label,
-            project,
-            wt_path.clone(),
-            Agent::Terminal,
-            args,
-            &wt_path,
-        );
-    }
-
-    pub fn active_session_mut(&mut self) -> Option<&mut Session> {
-        self.active_session
-            .and_then(move |i| self.sessions.get_mut(i))
     }
 
     /// Absolute path of the home directory, falling back to `/` if it can't be
@@ -954,37 +731,6 @@ impl App {
         }
     }
 
-    pub fn enter_browser(&mut self) {
-        self.ui_mode = UiMode::Browser;
-    }
-
-    pub fn focus_active_session(&mut self) {
-        if self.active_session.is_some() {
-            self.ui_mode = UiMode::Agent;
-        }
-    }
-
-    pub fn enter_session_list(&mut self) {
-        if self.active_session.is_some() {
-            self.ui_mode = UiMode::SessionList;
-        }
-    }
-
-    pub fn session_cycle(&mut self, delta: i32) {
-        if self.sessions.is_empty() {
-            return;
-        }
-        let next = cycle(self.active_session.unwrap_or(0), delta, self.sessions.len());
-        self.active_session = Some(next);
-    }
-
-    pub fn session_select(&mut self, idx: usize) {
-        if idx < self.sessions.len() {
-            self.active_session = Some(idx);
-            self.focus_active_session();
-        }
-    }
-
     /// Open the project-removal modal for the project at `idx`. Discovers
     /// the project's non-main worktrees up front so the modal can show
     /// "Also delete N worktrees on disk" without re-shelling-out per frame.
@@ -1073,21 +819,6 @@ impl App {
         }
         // The worktree is going away — drop its panel shells too.
         self.kill_wt_terminals(wt_path);
-    }
-
-    pub fn kill_active_session(&mut self) {
-        let Some(i) = self.active_session else { return };
-        if i >= self.sessions.len() {
-            return;
-        }
-        self.sessions[i].kill();
-        self.sessions.remove(i);
-        if self.sessions.is_empty() {
-            self.active_session = None;
-            self.enter_browser();
-        } else {
-            self.active_session = Some(i.min(self.sessions.len() - 1));
-        }
     }
 
     pub fn picker_move(&mut self, delta: i32) {
@@ -1447,18 +1178,24 @@ impl App {
                     into a fresh git worktree so the worktree can run immediately (.env, .env.local, local config, \
                     secrets, build/IDE state that's gitignored but needed). Look at .gitignore, package.json, \
                     pyproject.toml, Gemfile, go.mod, etc. Only write the file. No commentary.";
-                let res = launch::run_inline(|| {
-                    launch::run_claude_inline(
-                        &path,
-                        &[
-                            "--model",
-                            "haiku",
-                            "--dangerously-skip-permissions",
-                            "-p",
-                            prompt,
-                        ],
-                    )
-                });
+                let res = Command::new("claude")
+                    .args([
+                        "--model",
+                        "haiku",
+                        "--dangerously-skip-permissions",
+                        "-p",
+                        prompt,
+                    ])
+                    .current_dir(&path)
+                    .status()
+                    .map_err(anyhow::Error::from)
+                    .and_then(|status| {
+                        if status.success() {
+                            Ok(())
+                        } else {
+                            anyhow::bail!("claude exited with {:?}", status.code());
+                        }
+                    });
                 self.status = match res {
                     Ok(()) => ".worktreeinclude generated".into(),
                     Err(e) => format!("generate failed: {e}"),

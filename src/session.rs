@@ -347,17 +347,6 @@ impl Session {
         self.send(&encode_mouse(encoding, cb, col, row, true));
     }
 
-    /// Extract the text logically between two pane-relative cells (inclusive
-    /// of the cell under `end`). Returns `None` if the selection is empty.
-    pub fn selection_text(&self, start: (u16, u16), end: (u16, u16)) -> Option<String> {
-        let p = self.parser.lock().ok()?;
-        let screen = p.screen();
-        let (_, cols) = screen.size();
-        let end_col = end.0.saturating_add(1).min(cols);
-        let raw = screen.contents_between(start.1, start.0, end.1, end_col);
-        clean_selection(raw)
-    }
-
     /// Extract the selected text between two endpoints given in scrollback-
     /// stable absolute coordinates (`(a_row, col)`, where larger `a_row` is
     /// older — see `gui::state::AbsCell`). The selection may extend beyond the
@@ -448,28 +437,6 @@ impl Session {
         } else {
             Some(t)
         }
-    }
-
-    /// True if the inner app has asked to receive mouse events.
-    pub fn wants_mouse(&self) -> bool {
-        self.parser
-            .lock()
-            .map(|p| p.screen().mouse_protocol_mode() != MouseProtocolMode::None)
-            .unwrap_or(false)
-    }
-
-    /// Forward a left-button press+release at a pane-relative cell to the inner
-    /// app, encoded the way it requested. Used for bare clicks (no drag) so
-    /// agents with clickable UI still work while drag-to-select is always on.
-    pub fn forward_click(&mut self, col: u16, row: u16) {
-        let encoding = match self.parser.lock() {
-            Ok(p) => p.screen().mouse_protocol_encoding(),
-            Err(_) => return,
-        };
-        let mut bytes = encode_mouse(encoding, 0, col, row, true);
-        bytes.extend(encode_mouse(encoding, 0, col, row, false));
-        let _ = self.writer.write_all(&bytes);
-        let _ = self.writer.flush();
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {

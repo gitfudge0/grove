@@ -5,8 +5,8 @@
 #   Linux: produces a .deb (via cargo-bundle) and installs it, or falls back to
 #          a binary + .desktop launcher under ~/.local when dpkg is unavailable.
 #
-# The plain terminal install (`./install.sh` / `cargo install --path .`) is
-# unaffected — this is an additional, GUI-launchable packaging path.
+# The plain binary install (`./install.sh` / `cargo install --path .`) is
+# unaffected — this adds desktop launcher/package integration.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"

@@ -1,6 +1,6 @@
 [package]
 name = "grove"
-version = "0.13.1"
+version = "0.14.0"
 edition = "2021"
 description = "Grove — a worktree launchpad for AI coding agents"
 
@@ -22,14 +22,11 @@ short_description = "A worktree launchpad for AI coding agents"
 copyright = "Copyright (c) 2026 Grove"
 
 [dependencies]
-ratatui = "0.29"
-crossterm = { version = "0.28", features = ["bracketed-paste"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 dirs = "5"
 portable-pty = "0.9"
-tui-term = "0.2"
 vt100 = "0.15"
 arboard = "3"
 base64 = "0.22"

@@ -1,10 +1,14 @@
-use ratatui::style::Color;
 use std::sync::RwLock;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ThemeKind {
     Dark,
     Light,
+}
+
+#[derive(Clone, Copy)]
+pub enum Color {
+    Rgb(u8, u8, u8),
 }
 
 #[derive(Clone, Copy)]

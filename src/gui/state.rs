@@ -236,7 +236,10 @@ pub enum Msg {
     SelectSession(usize),
     KillSession(usize),
     RequestKillSession(usize),
-    KeyPress(Key, Modifiers),
+    /// `(key, modified_key, modifiers)`. `key` is layout-aware but
+    /// modifier-independent (so Ctrl shortcuts match across platforms);
+    /// `modified_key` carries Shift/AltGr for text entry.
+    KeyPress(Key, Key, Modifiers),
     PtyMouseDown(PtyPane, f32, f32),
     PtyMouseDrag(PtyPane, f32, f32),
     PtyMouseUp,

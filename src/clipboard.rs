@@ -8,6 +8,7 @@
 //! is terminal-dependent and not universally available.
 
 use base64::Engine;
+use std::io::{self, Write};
 use std::sync::{Mutex, OnceLock};
 
 fn clipboard() -> &'static Mutex<Option<arboard::Clipboard>> {
@@ -25,10 +26,9 @@ pub fn copy(text: &str) {
     }
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::style::Print(format!("\x1b]52;c;{}\x07", b64))
-    );
+    let mut stdout = io::stdout();
+    let _ = write!(stdout, "\x1b]52;c;{}\x07", b64);
+    let _ = stdout.flush();
 }
 
 /// Read text from the OS clipboard. Returns `None` if the clipboard is

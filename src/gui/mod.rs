@@ -1,4 +1,4 @@
-//! iced port of the grove TUI. The visual contract is `mockups/gui.html`.
+//! Native desktop interface for Grove. The visual contract is `mockups/gui.html`.
 //!
 //! Module layout:
 //! - [`state`]    — shared model: `Grove`, `Msg`, PTY cache types

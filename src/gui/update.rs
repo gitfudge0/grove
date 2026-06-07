@@ -89,10 +89,11 @@ impl Grove {
             }
             match ev {
                 Event::Keyboard(keyboard::Event::KeyPressed {
+                    key,
                     modified_key,
                     modifiers,
                     ..
-                }) => Some(Msg::KeyPress(modified_key, modifiers)),
+                }) => Some(Msg::KeyPress(key, modified_key, modifiers)),
                 _ => None,
             }
         });
@@ -320,9 +321,9 @@ impl Grove {
                     }
                 }
             }
-            Msg::KeyPress(key, mods) => {
+            Msg::KeyPress(key, modified_key, mods) => {
                 let was_theme_picker = matches!(self.app.modal, Modal::ThemePicker { .. });
-                self.handle_key(key, mods);
+                self.handle_key(key, modified_key, mods);
                 if was_theme_picker && matches!(self.app.modal, Modal::ThemePicker { .. }) {
                     return self.scroll_theme_picker_to_selection();
                 }
@@ -642,11 +643,13 @@ impl Grove {
         self.rebuild_wt_cache();
     }
 
-    fn handle_key(&mut self, key: Key, mods: Modifiers) {
+    fn handle_key(&mut self, key: Key, modified_key: Key, mods: Modifiers) {
         if !matches!(self.app.modal, Modal::None) {
-            self.handle_modal_key(key, mods);
+            self.handle_modal_key(key, modified_key, mods);
             return;
         }
+        // Shortcuts match the modifier-independent `key`: on Linux a Ctrl
+        // combo turns `modified_key` into a control char (e.g. Ctrl+V -> \u16).
         // Copy PTY selection with the OS copy shortcut.
         // macOS: Cmd+C  |  others: Ctrl+Shift+C
         if let Key::Character(s) = &key {
@@ -686,7 +689,11 @@ impl Grove {
                 _ => {}
             }
         }
-        if let Some(bytes) = key_to_bytes(&key, mods) {
+        // Feed the PTY the modifier-independent `key` for Ctrl combos (so the
+        // control-byte math sees the base letter), and `modified_key` otherwise
+        // so Shift/AltGr text is preserved.
+        let pty_key = if mods.control() { &key } else { &modified_key };
+        if let Some(bytes) = key_to_bytes(pty_key, mods) {
             if let Some(s) = self.focused_session_mut() {
                 s.send(&bytes);
             }
@@ -709,7 +716,7 @@ impl Grove {
         self.refresh_pty_viewport();
     }
 
-    fn handle_modal_key(&mut self, key: Key, mods: Modifiers) {
+    fn handle_modal_key(&mut self, key: Key, modified_key: Key, mods: Modifiers) {
         match &self.app.modal {
             Modal::Input { .. } => match key {
                 Key::Named(Named::Escape) => self.cancel_modal(),
@@ -735,7 +742,13 @@ impl Grove {
                             self.app.input_buffer_edit(|b| b.push_str(&text));
                         }
                     } else if !mods.alt() {
-                        self.app.input_buffer_edit(|b| b.push_str(&s));
+                        // Insert the `modified_key` text so Shift/AltGr produce
+                        // the right glyph; fall back to the base key.
+                        let text = match &modified_key {
+                            Key::Character(m) => m.clone(),
+                            _ => s,
+                        };
+                        self.app.input_buffer_edit(|b| b.push_str(&text));
                     }
                 }
                 _ => {}

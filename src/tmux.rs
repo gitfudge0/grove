@@ -14,7 +14,7 @@ fn tmux() -> Command {
     c.args(["-L", SOCKET]);
     // Closed stdin is always safe; stdout/stderr are configured per-call so
     // `.output()` callers can still capture, while `.status()` callers route
-    // both to /dev/null (otherwise tmux warnings would corrupt the TUI).
+    // both to /dev/null so tmux warnings do not leak into the parent process.
     c.stdin(Stdio::null());
     c
 }
