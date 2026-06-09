@@ -11,7 +11,13 @@ pub const NAME_PREFIX: &str = "grove__";
 
 fn tmux() -> Command {
     let mut c = Command::new("tmux");
-    c.args(["-L", SOCKET]);
+    // `-u` forces UTF-8 handling even when the environment carries no UTF-8
+    // locale, and `LC_ALL` gives the tmux server itself one. Grove launches
+    // from a macOS .app bundle that inherits no `LANG`/`LC_*` from the shell;
+    // without this, tmux treats clients as non-UTF-8 and downgrades Unicode
+    // box-drawing to ACS line-drawing escapes (rendered as literal `q`/`x`).
+    c.args(["-u", "-L", SOCKET]);
+    c.env("LC_ALL", "en_US.UTF-8");
     // Closed stdin is always safe; stdout/stderr are configured per-call so
     // `.output()` callers can still capture, while `.status()` callers route
     // both to /dev/null so tmux warnings do not leak into the parent process.

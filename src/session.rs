@@ -111,6 +111,9 @@ impl Session {
         }
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
+        // Ensure the agent emits UTF-8 even when grove is launched from a macOS
+        // .app bundle (which inherits no UTF-8 locale from the shell).
+        cmd.env("LC_ALL", "en_US.UTF-8");
 
         Self::launch_pty(
             label,
@@ -145,10 +148,18 @@ impl Session {
         let mut cmd = CommandBuilder::new("tmux");
         cmd.arg("-L");
         cmd.arg(tmux::SOCKET);
+        // `-u` forces tmux to write UTF-8 to this client even when the
+        // environment has no UTF-8 locale. Grove launches from a macOS .app
+        // bundle, which inherits no `LANG`/`LC_*` from the shell, so without
+        // this tmux thinks the client is non-UTF-8 (client_utf8=0) and
+        // downgrades box-drawing glyphs to ACS/DEC line-drawing escapes —
+        // which surface in the vt100 renderer as literal `q`/`x` characters.
+        cmd.arg("-u");
         cmd.arg("attach-session");
         cmd.arg("-t");
         cmd.arg(format!("={}", tmux_name));
         cmd.env("TERM", "xterm-256color");
+        cmd.env("LC_ALL", "en_US.UTF-8");
 
         Self::launch_pty(
             label,
