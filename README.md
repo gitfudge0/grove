@@ -9,7 +9,7 @@ a worktree launchpad for ai coding agents
 [![license: MIT](https://img.shields.io/badge/license-MIT-9ece6a?style=flat-square)](#license)
 [![platform: linux | macOS](https://img.shields.io/badge/platform-linux%20%7C%20macOS-7aa2f7?style=flat-square)](#requirements)
 [![built with: rust](https://img.shields.io/badge/built%20with-rust-bb9af7?style=flat-square)](https://www.rust-lang.org/)
-[![version: 0.14.2](https://img.shields.io/badge/version-0.14.2-e0af68?style=flat-square)](Cargo.toml)
+[![version: 0.14.3](https://img.shields.io/badge/version-0.14.3-e0af68?style=flat-square)](Cargo.toml)
 
 </div>
 

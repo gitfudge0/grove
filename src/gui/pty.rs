@@ -1,7 +1,7 @@
 //! PTY-canvas rendering: row-snapshot building, the `canvas::Program`
 //! implementation, selection painting, and vt100 → iced colour mapping.
 
-use super::metrics::{CELL_H, CELL_W, FONT_SIZE, MONO_FONT};
+use super::metrics::{mono_covers, CELL_H, CELL_W, FONT_SIZE, MONO_FONT};
 use super::palette as c;
 use super::state::{Msg, PtyCell, PtyPane, StyledRun};
 use iced::widget::canvas::{self, Frame, Geometry};
@@ -220,17 +220,43 @@ impl canvas::Program<Msg> for PtyProgram {
                         if let Some(bg) = run.bg {
                             frame.fill_rectangle(Point::new(x, y), Size::new(w, CELL_H), bg);
                         }
-                        frame.fill_text(canvas::Text {
-                            content: run.text.clone(),
-                            position: Point::new(x, y),
-                            color: run.fg.unwrap_or(c::FG()),
-                            size: Pixels(FONT_SIZE),
-                            line_height: iced::widget::text::LineHeight::Absolute(Pixels(CELL_H)),
-                            font: if run.bold { bold_font } else { MONO_FONT },
-                            horizontal_alignment: iced::alignment::Horizontal::Left,
-                            vertical_alignment: iced::alignment::Vertical::Top,
-                            shaping: iced::widget::text::Shaping::Basic,
-                        });
+                        let font = if run.bold { bold_font } else { MONO_FONT };
+                        let color = run.fg.unwrap_or(c::FG());
+                        // Split the run into segments of consecutive characters
+                        // the bundled mono font covers vs. doesn't. Covered
+                        // segments keep fast basic shaping; uncovered ones use
+                        // advanced shaping so cosmic-text falls back to a system
+                        // font instead of painting tofu. Each segment is drawn
+                        // at its own column, so the monospace grid never drifts.
+                        let mut segs: Vec<(usize, String, bool)> = Vec::new();
+                        let mut idx = col_i;
+                        for ch in run.text.chars() {
+                            let covered = mono_covers(ch);
+                            match segs.last_mut() {
+                                Some((_, s, c)) if *c == covered => s.push(ch),
+                                _ => segs.push((idx, String::from(ch), covered)),
+                            }
+                            idx += 1;
+                        }
+                        for (start, content, covered) in segs {
+                            frame.fill_text(canvas::Text {
+                                content,
+                                position: Point::new(start as f32 * CELL_W, y),
+                                color,
+                                size: Pixels(FONT_SIZE),
+                                line_height: iced::widget::text::LineHeight::Absolute(Pixels(
+                                    CELL_H,
+                                )),
+                                font,
+                                horizontal_alignment: iced::alignment::Horizontal::Left,
+                                vertical_alignment: iced::alignment::Vertical::Top,
+                                shaping: if covered {
+                                    iced::widget::text::Shaping::Basic
+                                } else {
+                                    iced::widget::text::Shaping::Advanced
+                                },
+                            });
+                        }
                         col_i += n;
                     }
                 }

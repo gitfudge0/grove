@@ -1,6 +1,8 @@
 //! Layout constants and PTY cell metrics shared across the GUI.
 
 use iced::Font;
+use std::collections::HashSet;
+use std::sync::OnceLock;
 
 pub const ROW_H: f32 = 28.0;
 /// Extra height appended to `ROW_H` for sidebar rows that render a second
@@ -77,6 +79,145 @@ pub const PLEX_SANS_BOLD: &[u8] = include_bytes!("../../assets/fonts/IBMPlexSans
 pub const MONO_REGULAR: &[u8] =
     include_bytes!("../../assets/fonts/BlexMonoNerdFontMono-Regular.ttf");
 pub const MONO_BOLD: &[u8] = include_bytes!("../../assets/fonts/BlexMonoNerdFontMono-Bold.ttf");
+
+/// Codepoints the bundled mono font can actually render, parsed once from the
+/// font's `cmap`. The PTY canvas paints with `Shaping::Basic`, which has no
+/// font fallback, so any character absent here would render as tofu (□). The
+/// renderer consults `mono_covers` to fall back to advanced shaping (system
+/// font fallback) for exactly those characters.
+static MONO_COVERAGE: OnceLock<HashSet<u32>> = OnceLock::new();
+
+/// Whether the bundled mono font has a glyph for `c`. ASCII is always present,
+/// so it short-circuits before touching the parsed `cmap`. Undercounting is
+/// harmless — the renderer just routes the char through advanced shaping, which
+/// can still find it (including in the bundled font itself).
+pub fn mono_covers(c: char) -> bool {
+    let cp = c as u32;
+    if cp < 0x80 {
+        return true;
+    }
+    MONO_COVERAGE
+        .get_or_init(|| build_coverage(MONO_REGULAR))
+        .contains(&cp)
+}
+
+/// Union the codepoint coverage of every `cmap` subtable we understand (the
+/// segment-mapped format 4 for the BMP and the segmented-coverage format 12 for
+/// supplementary planes). Other subtable formats are ignored.
+fn build_coverage(ttf: &[u8]) -> HashSet<u32> {
+    let mut set = HashSet::new();
+    let Some(cmap) = find_table(ttf, b"cmap") else {
+        return set;
+    };
+    let num_tables = u16_at(ttf, cmap + 2) as usize;
+    for i in 0..num_tables {
+        let rec = cmap + 4 + i * 8;
+        if rec + 8 > ttf.len() {
+            break;
+        }
+        let sub = cmap + u32_at(ttf, rec + 4) as usize;
+        if sub + 2 > ttf.len() {
+            continue;
+        }
+        match u16_at(ttf, sub) {
+            4 => parse_cmap_format4(ttf, sub, &mut set),
+            12 => parse_cmap_format12(ttf, sub, &mut set),
+            _ => {}
+        }
+    }
+    set
+}
+
+/// Format 4: segment-mapped BMP coverage. Honours `idRangeOffset`/`idDelta` so
+/// codepoints that map to glyph 0 inside a segment are correctly excluded.
+fn parse_cmap_format4(ttf: &[u8], off: usize, set: &mut HashSet<u32>) {
+    let seg_count = u16_at(ttf, off + 6) as usize / 2;
+    let end_codes = off + 14;
+    let start_codes = end_codes + seg_count * 2 + 2; // skip reservedPad
+    let id_deltas = start_codes + seg_count * 2;
+    let id_range_offsets = id_deltas + seg_count * 2;
+    for s in 0..seg_count {
+        let end = u16_at(ttf, end_codes + s * 2);
+        let start = u16_at(ttf, start_codes + s * 2);
+        if start > end {
+            continue;
+        }
+        let delta = u16_at(ttf, id_deltas + s * 2);
+        let ro_pos = id_range_offsets + s * 2;
+        let range_offset = u16_at(ttf, ro_pos);
+        for cp in start..=end {
+            if cp == 0xFFFF {
+                continue;
+            }
+            let gid = if range_offset == 0 {
+                cp.wrapping_add(delta)
+            } else {
+                let gi = ro_pos + range_offset as usize + (cp - start) as usize * 2;
+                if gi + 2 > ttf.len() {
+                    0
+                } else {
+                    let g = u16_at(ttf, gi);
+                    if g == 0 {
+                        0
+                    } else {
+                        g.wrapping_add(delta)
+                    }
+                }
+            };
+            if gid != 0 {
+                set.insert(cp as u32);
+            }
+        }
+    }
+}
+
+/// Format 12: segmented coverage for supplementary planes. Each group maps a
+/// contiguous codepoint range, so every codepoint in the range is covered.
+fn parse_cmap_format12(ttf: &[u8], off: usize, set: &mut HashSet<u32>) {
+    let num_groups = u32_at(ttf, off + 12) as usize;
+    for g in 0..num_groups {
+        let rec = off + 16 + g * 12;
+        if rec + 12 > ttf.len() {
+            break;
+        }
+        let start = u32_at(ttf, rec);
+        let end = u32_at(ttf, rec + 8);
+        if end < start {
+            continue;
+        }
+        // Guard against a malformed range exploding the set.
+        let end = end.min(start.saturating_add(0x20000));
+        for cp in start..=end {
+            set.insert(cp);
+        }
+    }
+}
+
+/// Offset of a top-level font table by tag, or `None` if absent.
+fn find_table(ttf: &[u8], tag: &[u8; 4]) -> Option<usize> {
+    if ttf.len() < 12 {
+        return None;
+    }
+    let table_count = u16_at(ttf, 4) as usize;
+    for i in 0..table_count {
+        let rec = 12 + i * 16;
+        if rec + 16 > ttf.len() {
+            break;
+        }
+        if &ttf[rec..rec + 4] == tag {
+            return Some(u32_at(ttf, rec + 8) as usize);
+        }
+    }
+    None
+}
+
+fn u16_at(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_be_bytes(bytes[offset..offset + 2].try_into().unwrap())
+}
+
+fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap())
+}
 
 /// PTY dimensions derived from unzoomed window size. Subtracts the visible chrome
 /// (rail, dividers, appbar, statusbar, sessbar, container padding) and divides
@@ -232,5 +373,22 @@ mod tests {
 
     fn u32_at(bytes: &[u8], offset: usize) -> u32 {
         u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn mono_coverage_reflects_bundled_font() {
+        use super::mono_covers;
+
+        // ASCII and Latin text the font obviously ships.
+        assert!(mono_covers('A'));
+        assert!(mono_covers('~'));
+        assert!(mono_covers('é'));
+        // Box-drawing the prompt relies on.
+        assert!(mono_covers('└'));
+        assert!(mono_covers('─'));
+        // A Nerd Font private-use icon (nf-fa-home) the patched font adds.
+        assert!(mono_covers('\u{f015}'));
+        // CJK is absent from IBM Plex Mono, so it must route to fallback.
+        assert!(!mono_covers('好'));
     }
 }
