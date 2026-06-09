@@ -127,6 +127,44 @@ pub fn configure_embedded_session(name: &str) {
     let _ = run_silent(c);
 }
 
+/// Drive an embedded tmux client's scrollback via copy-mode. The attached
+/// client renders on the alternate screen, so the real pane history lives in
+/// tmux's own buffer and is only reachable through copy-mode — grove's vt100
+/// scrollback is empty here. Wheel-up enters mouse copy-mode (`-e`, which
+/// auto-exits when scrolled back to the bottom) and walks the view up; wheel-
+/// down walks it back down. `lines` is the notch step.
+pub fn scroll(name: &str, up: bool, lines: usize) {
+    // NB: `copy-mode`/`send-keys` take a *pane* target, where the `=` exact-
+    // match prefix used by `exact()` is invalid ("can't find pane"). The plain
+    // session name resolves to the session's active pane — the agent — which is
+    // what we want for these single-pane embedded sessions.
+    if up {
+        let mut enter = tmux();
+        enter.args(["copy-mode", "-e", "-t", name]);
+        let _ = run_silent(enter);
+    }
+    let cmd = if up { "scroll-up" } else { "scroll-down" };
+    let mut c = tmux();
+    c.args([
+        "send-keys",
+        "-t",
+        name,
+        "-X",
+        "-N",
+        &lines.to_string(),
+        cmd,
+    ]);
+    let _ = run_silent(c);
+}
+
+/// Leave copy-mode so subsequent keystrokes reach the agent again. A no-op if
+/// the client is not currently in copy-mode.
+pub fn cancel_copy_mode(name: &str) {
+    let mut c = tmux();
+    c.args(["send-keys", "-t", name, "-X", "cancel"]);
+    let _ = run_silent(c);
+}
+
 pub fn kill_session(name: &str) {
     let mut c = tmux();
     c.args(["kill-session", "-t", &exact(name)]);
@@ -212,4 +250,58 @@ pub fn next_free_n(wt_path: &str, agent: Agent) -> u32 {
 /// Anchor a target so tmux treats it as a session-exact match, not a prefix.
 fn exact(name: &str) -> String {
     format!("={}", name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Read a single tmux format value for a target on grove's socket.
+    fn display(target: &str, fmt: &str) -> String {
+        let out = tmux()
+            .args(["display-message", "-p", "-t", target, fmt])
+            .stderr(Stdio::null())
+            .output()
+            .expect("tmux display-message");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    // Drives the real copy-mode scroll path against a throwaway session on
+    // grove's socket. Verifies the wheel actually enters copy-mode and moves
+    // the view, and that cancel returns to the live screen — the regression
+    // that the `=`-prefixed pane target silently broke. Skipped when tmux is
+    // unavailable (e.g. minimal CI).
+    #[test]
+    fn scroll_drives_copy_mode() {
+        if !available() {
+            eprintln!("skipping: tmux not on PATH");
+            return;
+        }
+        let name = "grove__selftest__scroll__0";
+        // Clean any leftover from a previous aborted run.
+        kill_session(name);
+
+        // A 24-row pane printing 200 lines guarantees real scrollback history.
+        let mut create = tmux();
+        create.args([
+            "new-session", "-d", "-s", name, "-x", "80", "-y", "24",
+            "sh", "-c", "for i in $(seq 1 200); do echo line $i; done; sleep 30",
+        ]);
+        assert!(run_silent(create).expect("spawn").success(), "new-session failed");
+
+        // Give the shell a moment to emit its output into the pane history.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        assert_eq!(display(name, "#{pane_in_mode}"), "0", "should start live");
+
+        scroll(name, true, 3);
+        assert_eq!(display(name, "#{pane_in_mode}"), "1", "wheel-up enters copy-mode");
+        let pos: i32 = display(name, "#{scroll_position}").parse().unwrap_or(-1);
+        assert!(pos > 0, "scroll_position should advance, got {pos}");
+
+        cancel_copy_mode(name);
+        assert_eq!(display(name, "#{pane_in_mode}"), "0", "cancel returns to live");
+
+        kill_session(name);
+    }
 }

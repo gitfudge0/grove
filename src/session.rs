@@ -48,6 +48,10 @@ pub struct Session {
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     rows: u16,
     cols: u16,
+    /// Tmux-only: whether the attached client is currently in copy-mode (i.e.
+    /// the user has scrolled back). Tracked so we only spawn a `cancel` tmux
+    /// call once when typing resumes, rather than on every keystroke.
+    tmux_copy_mode: bool,
 }
 
 impl Session {
@@ -255,6 +259,7 @@ impl Session {
             child,
             rows,
             cols,
+            tmux_copy_mode: false,
         })
     }
 
@@ -314,6 +319,16 @@ impl Session {
                 self.dirty.store(true, Ordering::Relaxed);
             }
         }
+        // Tmux renders on the alternate screen, so its scrollback lives in
+        // copy-mode rather than grove's vt100 buffer. If the user had scrolled
+        // back, leave copy-mode first so these keystrokes reach the agent
+        // instead of being eaten as copy-mode commands.
+        if self.tmux_copy_mode {
+            if let SessionBackend::Tmux { name } = &self.backend {
+                tmux::cancel_copy_mode(name);
+            }
+            self.tmux_copy_mode = false;
+        }
         let _ = self.writer.write_all(bytes);
         let _ = self.writer.flush();
     }
@@ -323,6 +338,18 @@ impl Session {
     /// the event is forwarded to it; otherwise we scroll grove's own
     /// scrollback buffer.
     pub fn scroll(&mut self, up: bool, col: u16, row: u16) {
+        // Tmux backend: the attached client is on the alternate screen, so the
+        // real history is in tmux's copy-mode buffer, not grove's vt100
+        // scrollback. Drive copy-mode directly; the re-render arrives through
+        // the reader thread, which flags `dirty`.
+        if let SessionBackend::Tmux { name } = &self.backend {
+            tmux::scroll(name, up, SCROLL_STEP);
+            if up {
+                self.tmux_copy_mode = true;
+            }
+            return;
+        }
+
         let mut p = match self.parser.lock() {
             Ok(p) => p,
             Err(_) => return,
