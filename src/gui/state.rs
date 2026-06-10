@@ -244,6 +244,9 @@ pub enum Msg {
     /// modifier-independent (so Ctrl shortcuts match across platforms);
     /// `modified_key` carries Shift/AltGr for text entry.
     KeyPress(Key, Key, Modifiers),
+    /// A file was dragged onto the window; its path is typed into the
+    /// focused session (shell-escaped, trailing space).
+    FileDropped(std::path::PathBuf),
     PtyMouseDown(PtyPane, f32, f32),
     PtyMouseDrag(PtyPane, f32, f32),
     PtyMouseUp,

@@ -95,6 +95,9 @@ impl Grove {
                     modifiers,
                     ..
                 }) => Some(Msg::KeyPress(key, modified_key, modifiers)),
+                Event::Window(iced::window::Event::FileDropped(path)) => {
+                    Some(Msg::FileDropped(path))
+                }
                 _ => None,
             }
         });
@@ -345,6 +348,16 @@ impl Grove {
                 self.handle_key(key, modified_key, mods);
                 if was_theme_picker && matches!(self.app.modal, Modal::ThemePicker { .. }) {
                     return self.scroll_theme_picker_to_selection();
+                }
+            }
+            Msg::FileDropped(path) => {
+                // Ignored when a modal is up — dropped text could land in an
+                // unexpected place otherwise.
+                if matches!(self.app.modal, Modal::None) {
+                    if let Some(sess) = self.focused_session_mut() {
+                        sess.send(super::drop::dropped_path_text(&path).as_bytes());
+                        self.pty_selection = None;
+                    }
                 }
             }
             Msg::PtyMouseDown(pane, x, y) => {

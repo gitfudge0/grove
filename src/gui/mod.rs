@@ -9,9 +9,11 @@
 //! - [`pty`]      — PTY canvas program + row-snapshot construction
 //! - [`icons`]    — inline SVG sprite
 //! - [`keys`]     — keyboard → PTY byte mapping
+//! - [`drop`]     — dropped file paths → PTY text
 //! - [`metrics`]  — layout constants
 //! - [`palette`]  — color tokens
 
+mod drop;
 mod icons;
 mod keys;
 mod metrics;
