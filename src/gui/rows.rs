@@ -11,19 +11,6 @@ use iced::widget::{button, column, container, row, text, Space};
 use iced::{Background, Border, Color, Element, Length, Padding, Shadow};
 use std::time::Duration;
 
-/// 2px colored stripe used as a left rail (magenta on busy projects,
-/// cyan on the active worktree). Pass `Color::TRANSPARENT` for "no rail".
-fn left_rail<'a>(color: Color) -> Element<'a, Msg> {
-    container(Space::with_height(Length::Fill))
-        .width(2.0)
-        .height(Length::Fill)
-        .style(move |_| container::Style {
-            background: Some(Background::Color(color)),
-            ..Default::default()
-        })
-        .into()
-}
-
 /// Branch "chip" — pill for feature branches, plain mono text for `main`.
 fn branch_chip<'a>(branch: &str, subtle: bool) -> Element<'a, Msg> {
     let label = text(branch.to_string())
@@ -62,12 +49,17 @@ pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> 
     } else {
         c::FG_MUTE()
     };
-    let rail_color = Color::TRANSPARENT;
 
-    let inline_count = text(format!("•{count}"))
-        .font(UI_FONT)
-        .size(11)
-        .color(count_color);
+    // Same dot-plus-numeral vocabulary as the statusbar's "● N running".
+    let inline_count = row![
+        super::widgets::dot(count_color),
+        text(format!("{count}"))
+            .font(UI_FONT)
+            .size(11)
+            .color(count_color),
+    ]
+    .spacing(4)
+    .align_y(iced::Alignment::Center);
 
     let project_label = row![
         container(icon(twist, 10.0, c::FG_MUTE()))
@@ -167,7 +159,7 @@ pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> 
             right: 8.0,
         });
 
-    container(row![left_rail(rail_color), project_btn, right].align_y(iced::Alignment::Center))
+    container(row![project_btn, right].align_y(iced::Alignment::Center))
         .height(ROW_H)
         .width(Length::Fill)
         .into()
@@ -266,19 +258,7 @@ pub fn worktree_row<'a>(
         Space::with_width(Length::Fixed(0.0)).into()
     };
 
-    let rail_color = if active {
-        c::CYAN()
-    } else {
-        Color::TRANSPARENT
-    };
-
-    container(
-        row![
-            left_rail(rail_color),
-            row![left_btn, actions].align_y(iced::Alignment::Center)
-        ]
-        .align_y(iced::Alignment::Center),
-    )
+    container(row![left_btn, actions].align_y(iced::Alignment::Center))
     .height(row_h)
     .width(Length::Fill)
     .style(move |_| container::Style {
@@ -349,7 +329,8 @@ pub fn session_row<'a>(
         .padding(Padding {
             top: 0.0,
             bottom: 0.0,
-            left: 48.0,
+            // Aligns under the worktree row's label text (26 + 14 + 6).
+            left: 46.0,
             right: 8.0,
         })
         .into();
@@ -766,26 +747,18 @@ pub fn worktree_activity_row<'a>(
         right: 12.0,
     });
 
-    container(
-        row![
-            container(Space::with_height(Length::Fill))
-                .width(2.0)
-                .height(Length::Fill),
-            container(inner).width(Length::Fill),
-        ]
-        .align_y(iced::Alignment::Center),
-    )
-    .height(h)
-    .width(Length::Fill)
-    .style(move |_| container::Style {
-        background: if hovered {
-            Some(Background::Color(c::BG_HOVER()))
-        } else {
-            None
-        },
-        ..Default::default()
-    })
-    .into()
+    container(inner)
+        .height(h)
+        .width(Length::Fill)
+        .style(move |_| container::Style {
+            background: if hovered {
+                Some(Background::Color(c::BG_HOVER()))
+            } else {
+                None
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -881,11 +854,6 @@ fn activity_row_inner<'a>(
     });
 
     let h = ROW_H + SUBTITLE_H;
-    let rail_color = if active {
-        c::CYAN()
-    } else {
-        Color::TRANSPARENT
-    };
 
     let row_btn: Element<'a, Msg> = if let Some(i) = session_idx {
         clickable_row(inner, h, active, Msg::SelectSession(i))
@@ -893,30 +861,18 @@ fn activity_row_inner<'a>(
         container(inner).height(h).width(Length::Fill).into()
     };
 
-    container(
-        row![
-            container(Space::with_height(Length::Fill))
-                .width(2.0)
-                .height(Length::Fill)
-                .style(move |_| container::Style {
-                    background: Some(Background::Color(rail_color)),
-                    ..Default::default()
-                }),
-            row_btn,
-        ]
-        .align_y(iced::Alignment::Center),
-    )
-    .height(h)
-    .width(Length::Fill)
-    .style(move |_| container::Style {
-        background: if active {
-            Some(Background::Color(c::BG_HL()))
-        } else {
-            None
-        },
-        ..Default::default()
-    })
-    .into()
+    container(row_btn)
+        .height(h)
+        .width(Length::Fill)
+        .style(move |_| container::Style {
+            background: if active {
+                Some(Background::Color(c::BG_HL()))
+            } else {
+                None
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 /// Format a Duration into the short relative-time labels the activity stream

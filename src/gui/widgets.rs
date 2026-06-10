@@ -571,6 +571,41 @@ pub fn control_btn<'a>(label: String, msg: Msg) -> Element<'a, Msg> {
     .into()
 }
 
+/// Full-width outlined footer button used at the bottom of the sidebar
+/// (`+ add project`, `+ new terminal`). Shared so both footers get the same
+/// rest / hover treatment.
+pub fn footer_btn<'a>(label: &'static str, msg: Msg) -> Element<'a, Msg> {
+    container(
+        button(
+            container(text(label).size(12))
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+        )
+        .on_press(msg)
+        .width(Length::Fill)
+        .height(28.0)
+        .style(|_, status| {
+            let hovered = matches!(status, button::Status::Hovered);
+            button::Style {
+                background: if hovered {
+                    Some(Background::Color(c::BG_HOVER()))
+                } else {
+                    None
+                },
+                text_color: if hovered { c::FG() } else { c::FG_DIM() },
+                border: Border {
+                    color: c::BORDER(),
+                    width: 1.0,
+                    radius: Radius::from(4.0),
+                },
+                shadow: Shadow::default(),
+            }
+        }),
+    )
+    .padding(Padding::from([12, 12]))
+    .into()
+}
+
 pub fn empty_workspace<'a>() -> Element<'a, Msg> {
     container(
         column![
@@ -593,15 +628,9 @@ pub fn empty_workspace<'a>() -> Element<'a, Msg> {
     .into()
 }
 
-pub fn modal_panel<'a>(
-    content: Element<'a, Msg>,
-    width: f32,
-    height: f32,
-    accent: Color,
-) -> Element<'a, Msg> {
+pub fn modal_panel<'a>(content: Element<'a, Msg>, width: f32, accent: Color) -> Element<'a, Msg> {
     container(content)
         .width(width)
-        .height(height)
         .padding(Padding::from([16, 20]))
         .style(move |_| container::Style {
             background: Some(Background::Color(c::BG())),
@@ -616,28 +645,44 @@ pub fn modal_panel<'a>(
         .into()
 }
 
-pub fn modal_action<'a>(label: &'static str, primary: bool, msg: Msg) -> Element<'a, Msg> {
+/// Visual weight of a modal footer button.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ModalBtn {
+    /// Dismiss / secondary action.
+    Plain,
+    /// Default affirmative action.
+    Primary,
+    /// Default affirmative action with destructive consequences.
+    Danger,
+}
+
+pub fn modal_action<'a>(label: &'static str, kind: ModalBtn, msg: Msg) -> Element<'a, Msg> {
     button(text(label).size(12))
         .on_press(msg)
         .padding(Padding::from([6, 12]))
         .style(move |_, status| {
             let hovered = matches!(status, button::Status::Hovered);
-            let bg = if primary {
-                if hovered {
-                    c::BG_HOVER()
-                } else {
-                    c::BG_HL()
-                }
-            } else if hovered {
+            let filled = !matches!(kind, ModalBtn::Plain);
+            let bg = if hovered {
                 c::BG_HOVER()
+            } else if filled {
+                c::BG_HL()
             } else {
                 c::BG()
             };
             button::Style {
                 background: Some(Background::Color(bg)),
-                text_color: if primary { c::FG() } else { c::FG_DIM() },
+                text_color: match kind {
+                    ModalBtn::Plain => c::FG_DIM(),
+                    ModalBtn::Primary => c::FG(),
+                    ModalBtn::Danger => c::RED(),
+                },
                 border: Border {
-                    color: c::BORDER(),
+                    color: if matches!(kind, ModalBtn::Danger) {
+                        c::RED()
+                    } else {
+                        c::BORDER()
+                    },
                     width: 1.0,
                     radius: Radius::from(4.0),
                 },
@@ -647,23 +692,23 @@ pub fn modal_action<'a>(label: &'static str, primary: bool, msg: Msg) -> Element
         .into()
 }
 
-pub fn modal_dir_row<'a>(path: String, active: bool) -> Element<'a, Msg> {
-    let msg_path = path.clone();
+/// One selectable row inside a modal list (agent picker, theme picker,
+/// directory matches). Shared so every list uses the same active/hover
+/// treatment: active rows get `bg_highlight`, hovered rows `bg_hover`.
+pub fn modal_list_row<'a>(
+    label: impl Into<Element<'a, Msg>>,
+    active: bool,
+    msg: Msg,
+) -> Element<'a, Msg> {
     button(
-        container(
-            text(path)
-                .font(UI_FONT)
-                .size(12)
-                .color(if active { c::FG() } else { c::CYAN() })
-                .wrapping(iced::widget::text::Wrapping::None),
-        )
-        .height(ROW_H)
-        .width(Length::Fill)
-        .align_y(iced::Alignment::Center)
-        .padding(Padding::from([0, 8]))
-        .clip(true),
+        container(label)
+            .width(Length::Fill)
+            .height(ROW_H)
+            .align_y(iced::Alignment::Center)
+            .padding(Padding::from([0, 10]))
+            .clip(true),
     )
-    .on_press(Msg::ModalPickDir(msg_path))
+    .on_press(msg)
     .width(Length::Fill)
     .padding(0)
     .style(move |_, status| {
@@ -676,16 +721,25 @@ pub fn modal_dir_row<'a>(path: String, active: bool) -> Element<'a, Msg> {
             } else {
                 None
             },
-            text_color: if active || hovered {
-                c::FG()
-            } else {
-                c::CYAN()
-            },
+            text_color: if active { c::FG() } else { c::FG_DIM() },
             border: Border::default(),
             shadow: Shadow::default(),
         }
     })
     .into()
+}
+
+pub fn modal_dir_row<'a>(path: String, active: bool) -> Element<'a, Msg> {
+    let msg_path = path.clone();
+    modal_list_row(
+        text(path)
+            .font(UI_FONT)
+            .size(12)
+            .color(if active { c::FG() } else { c::FG_DIM() })
+            .wrapping(iced::widget::text::Wrapping::None),
+        active,
+        Msg::ModalPickDir(msg_path),
+    )
 }
 
 pub fn clickable_row<'a>(

@@ -322,7 +322,7 @@ impl App {
         match self.focus {
             Pane::Projects => {
                 self.modal = Modal::Input {
-                    title: "Project directory path".into(),
+                    title: "project directory path".into(),
                     buffer: "~/".into(),
                     kind: InputKind::AddProjectPath,
                     dir_sel: 0,
@@ -331,7 +331,7 @@ impl App {
             Pane::Worktrees => {
                 if self.selected_project().is_some() {
                     self.modal = Modal::Input {
-                        title: "Worktree name".into(),
+                        title: "worktree name".into(),
                         buffer: String::new(),
                         kind: InputKind::AddWorktreeName,
                         dir_sel: 0,
@@ -346,7 +346,7 @@ impl App {
             Pane::Projects => {
                 if let Some(p) = self.selected_project() {
                     self.modal = Modal::Confirm {
-                        title: "Remove project?".into(),
+                        title: "remove project?".into(),
                         prompt: format!(
                             "'{}' will be unregistered. Files on disk stay put.",
                             p.name
@@ -365,7 +365,7 @@ impl App {
                     }
                     let path = wt.path.clone();
                     self.modal = Modal::Confirm {
-                        title: "Remove worktree?".into(),
+                        title: "remove worktree?".into(),
                         prompt: format!("git worktree remove --force {}", path),
                         destructive: true,
                         kind: ConfirmKind::RemoveWorktree(path),
@@ -1047,7 +1047,7 @@ impl App {
                     .unwrap_or("project")
                     .to_string();
                 self.modal = Modal::Input {
-                    title: "Project name".into(),
+                    title: "project name".into(),
                     buffer: default_name,
                     kind: InputKind::AddProjectName { path: abs },
                     dir_sel: 0,
@@ -1055,7 +1055,7 @@ impl App {
             }
             InputKind::AddProjectName { path } => {
                 if self.store.projects.iter().any(|p| p.name == value) {
-                    self.modal = Modal::Message(format!("Project '{value}' already exists"));
+                    self.modal = Modal::Message(format!("project '{value}' already exists"));
                     return Ok(());
                 }
                 self.store.projects.push(Project {
@@ -1073,14 +1073,14 @@ impl App {
 
                 if needs_init {
                     self.modal = Modal::Confirm {
-                        title: "Initialize git repo?".into(),
+                        title: "initialize git repo?".into(),
                         prompt: format!("'{path}' is not a git repo. Run `git init`."),
                         destructive: false,
                         kind: ConfirmKind::InitRepo { path, name: value },
                     };
                 } else if needs_include {
                     self.modal = Modal::Confirm {
-                        title: "Generate .worktreeinclude?".into(),
+                        title: "generate .worktreeinclude?".into(),
                         prompt: "Use Claude (haiku) to draft a .worktreeinclude for this repo."
                             .into(),
                         destructive: false,
@@ -1099,7 +1099,7 @@ impl App {
                 };
                 if !std::path::Path::new(&p.path).join(".git").exists() {
                     self.modal = Modal::Confirm {
-                        title: "Initialize git repo?".into(),
+                        title: "initialize git repo?".into(),
                         prompt: format!(
                             "'{}' is not a git repo. Run `git init`, then create worktree '{}'.",
                             p.path, value
@@ -1163,7 +1163,7 @@ impl App {
                     .exists();
                 if needs_include {
                     self.modal = Modal::Confirm {
-                        title: "Generate .worktreeinclude?".into(),
+                        title: "generate .worktreeinclude?".into(),
                         prompt: "Use Claude (haiku) to draft a .worktreeinclude for this repo."
                             .into(),
                         destructive: false,

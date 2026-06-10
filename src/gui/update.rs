@@ -322,6 +322,10 @@ impl Grove {
                 }
             }
             Msg::KeyPress(key, modified_key, mods) => {
+                if let Modal::RemoveProject { in_progress, .. } = &self.app.modal {
+                    let busy = *in_progress;
+                    return self.handle_remove_project_key(key, busy);
+                }
                 let was_theme_picker = matches!(self.app.modal, Modal::ThemePicker { .. });
                 self.handle_key(key, modified_key, mods);
                 if was_theme_picker && matches!(self.app.modal, Modal::ThemePicker { .. }) {
@@ -714,6 +718,35 @@ impl Grove {
         }
         self.term_panel_portion = next;
         self.refresh_pty_viewport();
+    }
+
+    /// Keyboard handling for the remove-project modal, mirroring the plain
+    /// confirm modal (Esc/n cancel, Enter/y confirm) plus Space to toggle the
+    /// delete-worktrees checkbox. Ignored while removal is in flight.
+    fn handle_remove_project_key(&mut self, key: Key, busy: bool) -> Task<Msg> {
+        if busy {
+            return Task::none();
+        }
+        match key {
+            Key::Named(Named::Escape) => self.cancel_modal(),
+            Key::Named(Named::Enter) => return self.kick_off_remove_project(),
+            Key::Named(Named::Space) => {
+                if let Modal::RemoveProject {
+                    also_remove_worktrees,
+                    ..
+                } = &mut self.app.modal
+                {
+                    *also_remove_worktrees = !*also_remove_worktrees;
+                }
+            }
+            Key::Character(s) => match s.as_str() {
+                "y" | "Y" => return self.kick_off_remove_project(),
+                "n" | "N" => self.cancel_modal(),
+                _ => {}
+            },
+            _ => {}
+        }
+        Task::none()
     }
 
     fn handle_modal_key(&mut self, key: Key, modified_key: Key, mods: Modifiers) {

@@ -13,8 +13,10 @@ use super::rows::{
 };
 use super::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, SidebarView};
 use super::widgets::{
-    control_btn, divider_h, divider_v, dot, empty_workspace, icon_btn, modal_action, modal_dir_row,
-    modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn, tool_btn_toggle, vline, SegSide,
+    control_btn, divider_h, divider_v, dot, empty_workspace, footer_btn, icon_btn, modal_action,
+    modal_dir_row,
+    modal_list_row, modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn, tool_btn_toggle,
+    vline, ModalBtn, SegSide,
 };
 use crate::app::{InputKind, Modal};
 use crate::git::Worktree;
@@ -180,34 +182,12 @@ impl Grove {
             None => tree_area.into(),
         };
 
-        let add_proj = container(
-            button(
-                container(text("+ add project").size(12).color(c::FG_DIM()))
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill),
-            )
-            .on_press(Msg::AddProject)
-            .width(Length::Fill)
-            .height(28.0)
-            .style(|_, _| button::Style {
-                background: None,
-                text_color: c::FG_DIM(),
-                border: Border {
-                    color: c::BORDER(),
-                    width: 1.0,
-                    radius: Radius::from(4.0),
-                },
-                shadow: Shadow::default(),
-            }),
-        )
-        .padding(Padding::from([12, 12]));
-
         // The footer is view-specific: project-oriented views get "+ add
         // project"; the terminal tab gets "+ new terminal".
         let footer: Element<'_, Msg> = if matches!(self.sidebar_view, SidebarView::Terminal) {
-            self.new_terminal_button()
+            footer_btn("+ new terminal", Msg::NewHomeTerminal)
         } else {
-            add_proj.into()
+            footer_btn("+ add project", Msg::AddProject)
         };
         let stack_col = column![
             tree_head,
@@ -616,7 +596,9 @@ impl Grove {
         .height(ROW_H)
         .width(Length::Fill)
         .align_y(iced::Alignment::Center)
-        .padding(Padding::from([0, 18]))
+        // 12px row padding + 14px dot column + 8px spacing = 34, so the hint
+        // text lines up with the activity rows' titles.
+        .padding(Padding::from([0, 34]))
         .into()
     }
 
@@ -840,7 +822,7 @@ impl Grove {
             let hovered = matches!(status, button::Status::Hovered);
             button::Style {
                 background: if active {
-                    Some(Background::Color(c::BG_HOVER()))
+                    Some(Background::Color(c::BG_HL()))
                 } else if hovered {
                     Some(Background::Color(c::BG_HOVER()))
                 } else {
@@ -949,32 +931,6 @@ impl Grove {
             col = col.push(crate::gui::rows::terminal_row(i, s, active, show_close));
         }
         col.into()
-    }
-
-    /// "+ new terminal" footer button for the terminal tab.
-    fn new_terminal_button(&self) -> Element<'_, Msg> {
-        container(
-            button(
-                container(text("+ new terminal").size(12).color(c::FG_DIM()))
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill),
-            )
-            .on_press(Msg::NewHomeTerminal)
-            .width(Length::Fill)
-            .height(28.0)
-            .style(|_, _| button::Style {
-                background: None,
-                text_color: c::FG_DIM(),
-                border: Border {
-                    color: c::BORDER(),
-                    width: 1.0,
-                    radius: Radius::from(4.0),
-                },
-                shadow: Shadow::default(),
-            }),
-        )
-        .padding(Padding::from([12, 12]))
-        .into()
     }
 
     fn sess_bar(&self, s: &Session) -> Element<'_, Msg> {
@@ -1373,11 +1329,6 @@ impl Grove {
         } else {
             0
         };
-        let modal_h = if show_dirs {
-            192.0 + (visible_matches as f32 * ROW_H)
-        } else {
-            180.0
-        };
         let modal_w = if show_dirs { 640.0 } else { 480.0 };
 
         let input = container(
@@ -1440,14 +1391,14 @@ impl Grove {
         body = body.push(Space::with_height(8)).push(
             row![
                 Space::with_width(Length::Fill),
-                modal_action("cancel", false, Msg::ModalCancel),
-                modal_action("submit", true, Msg::ModalSubmit),
+                modal_action("cancel", ModalBtn::Plain, Msg::ModalCancel),
+                modal_action("submit", ModalBtn::Primary, Msg::ModalSubmit),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
         );
 
-        modal_panel(body.into(), modal_w, modal_h, c::MAGENTA())
+        modal_panel(body.into(), modal_w, c::MAGENTA())
     }
 
     fn confirm_modal<'a>(
@@ -1466,10 +1417,14 @@ impl Grove {
             Space::with_height(8),
             row![
                 Space::with_width(Length::Fill),
-                modal_action("cancel", false, Msg::ModalConfirm(false)),
+                modal_action("cancel", ModalBtn::Plain, Msg::ModalConfirm(false)),
                 modal_action(
                     if destructive { "remove" } else { "confirm" },
-                    true,
+                    if destructive {
+                        ModalBtn::Danger
+                    } else {
+                        ModalBtn::Primary
+                    },
                     Msg::ModalConfirm(true)
                 ),
             ]
@@ -1478,7 +1433,7 @@ impl Grove {
         ]
         .spacing(12);
 
-        modal_panel(body.into(), 480.0, 180.0, accent)
+        modal_panel(body.into(), 480.0, accent)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1519,7 +1474,7 @@ impl Grove {
                 .color(c::FG_MUTE())
                 .wrapping(iced::widget::text::Wrapping::Word),
         ]
-        .spacing(10);
+        .spacing(12);
 
         if total > 0 {
             let label = if total == 1 {
@@ -1604,8 +1559,8 @@ impl Grove {
             body = body.push(Space::with_height(8)).push(
                 row![
                     Space::with_width(Length::Fill),
-                    modal_action("cancel", false, Msg::ModalCancel),
-                    modal_action("remove", true, Msg::ConfirmRemoveProject),
+                    modal_action("cancel", ModalBtn::Plain, Msg::ModalCancel),
+                    modal_action("remove", ModalBtn::Danger, Msg::ConfirmRemoveProject),
                 ]
                 .spacing(8)
                 .align_y(iced::Alignment::Center),
@@ -1622,8 +1577,7 @@ impl Grove {
             );
         }
 
-        let h = if total > 0 { 230.0 } else { 190.0 };
-        modal_panel(body.into(), 520.0, h, accent)
+        modal_panel(body.into(), 520.0, accent)
     }
 
     fn message_modal<'a>(&'a self, message: &'a str) -> Element<'a, Msg> {
@@ -1636,14 +1590,14 @@ impl Grove {
             Space::with_height(8),
             row![
                 Space::with_width(Length::Fill),
-                modal_action("close", true, Msg::ModalCancel),
+                modal_action("close", ModalBtn::Primary, Msg::ModalCancel),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
         ]
         .spacing(12);
 
-        modal_panel(body.into(), 480.0, 180.0, c::CYAN())
+        modal_panel(body.into(), 480.0, c::CYAN())
     }
 
     fn tmux_choice_modal(&self) -> Element<'_, Msg> {
@@ -1656,15 +1610,15 @@ impl Grove {
             Space::with_height(8),
             row![
                 Space::with_width(Length::Fill),
-                modal_action("native", false, Msg::ChooseTmux(false)),
-                modal_action("tmux", true, Msg::ChooseTmux(true)),
+                modal_action("native", ModalBtn::Plain, Msg::ChooseTmux(false)),
+                modal_action("tmux", ModalBtn::Primary, Msg::ChooseTmux(true)),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
         ]
         .spacing(12);
 
-        modal_panel(body.into(), 480.0, 180.0, c::CYAN())
+        modal_panel(body.into(), 480.0, c::CYAN())
     }
 
     fn agent_picker_modal<'a>(
@@ -1697,32 +1651,7 @@ impl Grove {
             ]
             .align_y(iced::Alignment::Center);
 
-            list = list.push(
-                button(
-                    container(label)
-                        .width(Length::Fill)
-                        .center_y(ROW_H)
-                        .padding(Padding::from([0, 10])),
-                )
-                .on_press(Msg::AgentPickerSelect(i))
-                .width(Length::Fill)
-                .padding(0)
-                .style(move |_, status| {
-                    let hovered = matches!(status, button::Status::Hovered);
-                    button::Style {
-                        background: if active {
-                            Some(Background::Color(c::BG_HL()))
-                        } else if hovered {
-                            Some(Background::Color(c::BG_HOVER()))
-                        } else {
-                            None
-                        },
-                        text_color: if active { c::FG() } else { c::FG_DIM() },
-                        border: Border::default(),
-                        shadow: Shadow::default(),
-                    }
-                }),
-            );
+            list = list.push(modal_list_row(label, active, Msg::AgentPickerSelect(i)));
         }
 
         let list_h = (self.app.available_agents.len() as f32) * ROW_H;
@@ -1742,19 +1671,19 @@ impl Grove {
         let body = column![
             text(title).size(13).color(c::MAGENTA()),
             list_box,
-            Space::with_height(4),
+            Space::with_height(8),
             row![
-                modal_action("default", false, Msg::AgentPickerToggleDefault),
+                modal_action("default", ModalBtn::Plain, Msg::AgentPickerToggleDefault),
                 Space::with_width(Length::Fill),
-                modal_action("cancel", false, Msg::ModalCancel),
-                modal_action("launch", true, Msg::AgentPickerSubmit),
+                modal_action("cancel", ModalBtn::Plain, Msg::ModalCancel),
+                modal_action("launch", ModalBtn::Primary, Msg::AgentPickerSubmit),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
         ]
         .spacing(12);
 
-        modal_panel(body.into(), 500.0, 150.0 + list_h, c::MAGENTA())
+        modal_panel(body.into(), 500.0, c::MAGENTA())
     }
 
     fn theme_picker_modal(
@@ -1769,80 +1698,47 @@ impl Grove {
             crate::theme::ThemeKind::Light => sel_light,
         };
 
-        let tab_pill = |label: &'static str, active: bool, msg: Msg| -> Element<'_, Msg> {
-            button(text(label).size(11))
-                .on_press(msg)
-                .padding(Padding::from([4, 12]))
-                .style(move |_, status| {
-                    let hovered = matches!(status, button::Status::Hovered);
-                    button::Style {
-                        background: if active {
-                            Some(Background::Color(c::BG_HL()))
-                        } else if hovered {
-                            Some(Background::Color(c::BG_HOVER()))
-                        } else {
-                            None
-                        },
-                        text_color: if active { c::MAGENTA() } else { c::FG_MUTE() },
-                        border: Border {
-                            color: Color::TRANSPARENT,
-                            width: 0.0,
-                            radius: Radius::from(3.0),
-                        },
-                        shadow: Shadow::default(),
-                    }
-                })
-                .into()
-        };
-
-        let tabs = row![
-            tab_pill(
-                "Dark",
-                matches!(tab, crate::theme::ThemeKind::Dark),
-                Msg::ThemePickerSwitchTab,
-            ),
-            tab_pill(
-                "Light",
-                matches!(tab, crate::theme::ThemeKind::Light),
-                Msg::ThemePickerSwitchTab,
-            ),
-        ]
-        .spacing(6);
+        // Same segmented control as the appbar backend switch and the sidebar
+        // view switch — one vocabulary for "choose one of N".
+        let tabs = container(
+            row![
+                seg_button(
+                    "dark",
+                    matches!(tab, crate::theme::ThemeKind::Dark),
+                    SegSide::Left,
+                    Msg::ThemePickerSwitchTab,
+                ),
+                seg_button(
+                    "light",
+                    matches!(tab, crate::theme::ThemeKind::Light),
+                    SegSide::Right,
+                    Msg::ThemePickerSwitchTab,
+                ),
+            ]
+            .spacing(0),
+        )
+        .style(|_| container::Style {
+            border: Border {
+                color: c::BORDER(),
+                width: 1.0,
+                radius: Radius::from(6.0),
+            },
+            ..Default::default()
+        });
 
         let mut list = Column::new().spacing(0);
         for (i, th) in themes.iter().enumerate() {
             let active = i == sel;
             let name = th.name.to_string();
-            list = list.push(
-                button(
-                    container(text(name).size(12).color(if active {
-                        c::FG()
-                    } else {
-                        c::FG_DIM()
-                    }))
-                    .width(Length::Fill)
-                    .center_y(ROW_H)
-                    .padding(Padding::from([0, 10])),
-                )
-                .on_press(Msg::ThemePickerSelect(i))
-                .width(Length::Fill)
-                .padding(0)
-                .style(move |_, status| {
-                    let hovered = matches!(status, button::Status::Hovered);
-                    button::Style {
-                        background: if active {
-                            Some(Background::Color(c::BG_HL()))
-                        } else if hovered {
-                            Some(Background::Color(c::BG_HOVER()))
-                        } else {
-                            None
-                        },
-                        text_color: if active { c::FG() } else { c::FG_DIM() },
-                        border: Border::default(),
-                        shadow: Shadow::default(),
-                    }
+            list = list.push(modal_list_row(
+                text(name).size(12).color(if active {
+                    c::FG()
+                } else {
+                    c::FG_DIM()
                 }),
-            );
+                active,
+                Msg::ThemePickerSelect(i),
+            ));
         }
 
         let list_h = (themes.len().min(12) as f32) * ROW_H;
@@ -1863,18 +1759,17 @@ impl Grove {
             text("theme").size(13).color(c::MAGENTA()),
             tabs,
             scroller,
-            Space::with_height(4),
+            Space::with_height(8),
             row![
                 Space::with_width(Length::Fill),
-                modal_action("cancel", false, Msg::ThemePickerCancel),
-                modal_action("apply", true, Msg::ThemePickerSubmit),
+                modal_action("cancel", ModalBtn::Plain, Msg::ThemePickerCancel),
+                modal_action("apply", ModalBtn::Primary, Msg::ThemePickerSubmit),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
         ]
         .spacing(12);
 
-        let modal_h = 140.0 + list_h;
-        modal_panel(body.into(), 460.0, modal_h, c::MAGENTA())
+        modal_panel(body.into(), 460.0, c::MAGENTA())
     }
 }
