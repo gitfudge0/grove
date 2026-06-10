@@ -165,6 +165,22 @@ pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> 
         .into()
 }
 
+/// Only show a branch chip for non-default worktrees. The main worktree's
+/// branch (typically `main` / `master`) is redundant with the project name.
+pub fn worktree_shows_branch(is_main: bool, branch: &str, name: &str) -> bool {
+    !is_main && branch != name && !branch.is_empty()
+}
+
+/// Rendered height of a worktree row. Must stay in sync with `worktree_row`'s
+/// layout — the agent-menu overlay position is computed from this.
+pub fn worktree_row_height(show_branch: bool) -> f32 {
+    if show_branch {
+        ROW_H + 14.0
+    } else {
+        ROW_H
+    }
+}
+
 pub fn worktree_row<'a>(
     proj: usize,
     wt: usize,
@@ -175,13 +191,13 @@ pub fn worktree_row<'a>(
     hovered: bool,
     expanded: bool,
 ) -> Element<'a, Msg> {
+    // (Height logic shared with the agent-menu overlay positioning in view.rs
+    // via `worktree_shows_branch` / `worktree_row_height`.)
     // Split layout — action buttons are siblings of the left button, NOT
     // nested inside it. Nesting buttons inside a button causes both to fire
     // on a single click (iced 0.13 does not propagate captured-event status
     // through the outer button's on_event handler).
-    // Only show a branch chip for non-default worktrees. The main worktree's
-    // branch (typically `main` / `master`) is redundant with the project name.
-    let show_branch = !is_main && branch != name && !branch.is_empty();
+    let show_branch = worktree_shows_branch(is_main, branch, name);
 
     let name_text = text(name.to_string())
         .size(13)
@@ -204,7 +220,7 @@ pub fn worktree_row<'a>(
         name_text.into()
     };
 
-    let row_h = if show_branch { ROW_H + 14.0 } else { ROW_H };
+    let row_h = worktree_row_height(show_branch);
 
     let twist = if expanded { "chev-down" } else { "chev-right" };
     let left_content = row![
@@ -259,17 +275,17 @@ pub fn worktree_row<'a>(
     };
 
     container(row![left_btn, actions].align_y(iced::Alignment::Center))
-    .height(row_h)
-    .width(Length::Fill)
-    .style(move |_| container::Style {
-        background: if active {
-            Some(Background::Color(c::BG_HL()))
-        } else {
-            None
-        },
-        ..Default::default()
-    })
-    .into()
+        .height(row_h)
+        .width(Length::Fill)
+        .style(move |_| container::Style {
+            background: if active {
+                Some(Background::Color(c::BG_HL()))
+            } else {
+                None
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 pub fn session_row<'a>(
@@ -279,7 +295,10 @@ pub fn session_row<'a>(
     active: bool,
     pending_kill: bool,
 ) -> Element<'a, Msg> {
-    let running = matches!(*s.status.lock().unwrap(), SessionStatus::Running);
+    let running = matches!(
+        *s.status.lock().unwrap_or_else(|e| e.into_inner()),
+        SessionStatus::Running
+    );
     let agent_color = if active {
         c::CYAN()
     } else if running {
@@ -305,14 +324,16 @@ pub fn session_row<'a>(
     .align_y(iced::Alignment::Center);
     if let Some(ctx) = context.as_deref() {
         let truncated = truncate_ellipsis(ctx, 28);
-        meta_row = meta_row.push(text("·").size(11).color(c::FG_MUTE())).push(single_line(
-            text(truncated)
-                .font(UI_FONT)
-                .size(11)
-                .color(c::FG_MUTE())
-                .wrapping(iced::widget::text::Wrapping::None),
-            11.0,
-        ));
+        meta_row = meta_row
+            .push(text("·").size(11).color(c::FG_MUTE()))
+            .push(single_line(
+                text(truncated)
+                    .font(UI_FONT)
+                    .size(11)
+                    .color(c::FG_MUTE())
+                    .wrapping(iced::widget::text::Wrapping::None),
+                11.0,
+            ));
     }
 
     let meta: Element<'a, Msg> = container(meta_row).width(Length::Fill).clip(true).into();
@@ -347,7 +368,10 @@ pub fn terminal_row<'a>(
     active: bool,
     show_close: bool,
 ) -> Element<'a, Msg> {
-    let running = matches!(*s.status.lock().unwrap(), SessionStatus::Running);
+    let running = matches!(
+        *s.status.lock().unwrap_or_else(|e| e.into_inner()),
+        SessionStatus::Running
+    );
     let name_color = if active {
         c::CYAN()
     } else if running {
@@ -609,7 +633,7 @@ pub fn session_activity_row<'a>(
     hovered: bool,
     spawn_coords: Option<(usize, usize)>,
 ) -> Element<'a, Msg> {
-    let status = *s.status.lock().unwrap();
+    let status = *s.status.lock().unwrap_or_else(|e| e.into_inner());
     let state = match status {
         SessionStatus::Running => ActivityState::Running,
         SessionStatus::Exited(_) => ActivityState::Exited,
@@ -648,7 +672,7 @@ pub fn session_activity_row_idle<'a>(
     hovered: bool,
     spawn_coords: Option<(usize, usize)>,
 ) -> Element<'a, Msg> {
-    let status = *s.status.lock().unwrap();
+    let status = *s.status.lock().unwrap_or_else(|e| e.into_inner());
     let state = match status {
         SessionStatus::Running => ActivityState::Idle,
         SessionStatus::Exited(_) => ActivityState::Exited,
@@ -734,7 +758,9 @@ pub fn worktree_activity_row<'a>(
     };
 
     let inner = row![
-        container(state_dot(&ActivityState::Exited)).width(14).center_y(Length::Fill),
+        container(state_dot(&ActivityState::Exited))
+            .width(14)
+            .center_y(Length::Fill),
         label_btn,
         right_chips,
     ]
@@ -839,7 +865,9 @@ fn activity_row_inner<'a>(
     };
 
     let inner = row![
-        container(state_dot(&state)).width(14).center_y(Length::Fill),
+        container(state_dot(&state))
+            .width(14)
+            .center_y(Length::Fill),
         container(body).width(Length::Fill).clip(true),
         right_el,
         close_btn,
@@ -887,6 +915,65 @@ fn format_relative(d: Duration) -> String {
         format!("{}h", s / 3600)
     } else {
         format!("{}d", s / 86_400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── worktree_shows_branch ────────────────────────────────────────────────
+
+    /// The main worktree never shows a branch chip, regardless of branch name.
+    #[test]
+    fn main_worktree_never_shows_branch() {
+        assert!(!worktree_shows_branch(true, "main", "main"));
+        assert!(!worktree_shows_branch(true, "feature-x", "feature-x"));
+        // Even if branch and name differ, is_main wins.
+        assert!(!worktree_shows_branch(true, "develop", "myworktree"));
+    }
+
+    /// A linked worktree whose branch equals its name is not shown (redundant).
+    #[test]
+    fn branch_equal_to_name_hidden() {
+        assert!(!worktree_shows_branch(false, "feature-x", "feature-x"));
+    }
+
+    /// A linked worktree with an empty branch string should not show the chip.
+    #[test]
+    fn empty_branch_hidden() {
+        assert!(!worktree_shows_branch(false, "", "myworktree"));
+    }
+
+    /// A linked worktree whose branch differs from its name shows the chip.
+    #[test]
+    fn branch_different_from_name_shown() {
+        assert!(worktree_shows_branch(false, "feature/awesome", "awesome"));
+        assert!(worktree_shows_branch(false, "main", "awesome-wt"));
+    }
+
+    // ── sanitize_ui_text ─────────────────────────────────────────────────────
+
+    /// Emoji and non-Latin glyphs are stripped; runs of whitespace are collapsed.
+    #[test]
+    fn sanitize_strips_emoji_and_collapses_spaces() {
+        // Input: emoji prefix + content that survives
+        let result = sanitize_ui_text("🚀 Review pull request");
+        assert_eq!(result, Some("Review pull request".into()));
+    }
+
+    /// A string that is only stripped characters returns `None`.
+    #[test]
+    fn sanitize_empty_after_strip_returns_none() {
+        assert_eq!(sanitize_ui_text("🎉🎊"), None);
+        assert_eq!(sanitize_ui_text(""), None);
+    }
+
+    /// Plain ASCII content passes through unchanged.
+    #[test]
+    fn sanitize_plain_ascii_passes_through() {
+        let result = sanitize_ui_text("fix: handle edge case");
+        assert_eq!(result, Some("fix: handle edge case".into()));
     }
 }
 

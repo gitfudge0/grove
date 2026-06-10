@@ -117,6 +117,10 @@ pub struct Grove {
     /// resets to `Agent` on close or active-session change. Clicking either PTY
     /// updates it.
     pub focused_pane: FocusedPane,
+    /// Memoized `list_dirs` result for the add-project path modal, keyed by the
+    /// input buffer. `view()` runs every tick; without this the modal would hit
+    /// the filesystem (`read_dir`) on every frame.
+    pub dir_cache: std::cell::RefCell<Option<(String, Vec<String>)>>,
 }
 
 /// Identifies which on-screen PTY a mouse event originated from. The home

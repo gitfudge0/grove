@@ -88,7 +88,9 @@ impl Session {
         let n = tmux::next_free_n(&wt_path, agent);
         let tmux_name = tmux::make_name(&wt_path, agent, n);
         tmux::new_session(&tmux_name, cwd, rows, cols, &agent.program(), args)?;
-        let _ = session_meta::write(
+        // Without the sidecar the session can't be rediscovered after a grove
+        // restart — kill the tmux session rather than orphan it.
+        if let Err(e) = session_meta::write(
             &tmux_name,
             &SessionMeta {
                 wt_path: wt_path.clone(),
@@ -96,7 +98,10 @@ impl Session {
                 label: label.clone(),
                 agent,
             },
-        );
+        ) {
+            tmux::kill_session(&tmux_name);
+            return Err(e.context("failed to write session metadata"));
+        }
 
         Self::attach_tmux(label, project, wt_path, agent, tmux_name, rows, cols)
     }
@@ -430,8 +435,7 @@ impl Session {
             };
         let orig = s;
         let mut lines: Vec<String> = Vec::new();
-        let mut a = a_top;
-        loop {
+        for a in (a_bot..=a_top).rev() {
             // Bring absolute row `a` to the bottom visible row (vr = h-1).
             // `set_scrollback` clamps to the filled buffer; if `a` is older
             // than the oldest retained line it lands `delta` rows above bottom.
@@ -449,10 +453,6 @@ impl Session {
                 let raw = parser.screen().contents_between(vrow, sc, vrow, ec);
                 lines.push(raw.trim_end().to_string());
             }
-            if a == a_bot {
-                break;
-            }
-            a -= 1;
         }
         parser.set_scrollback(orig);
         drop(parser);
@@ -544,9 +544,15 @@ fn encode_mouse(
             if press { 'M' } else { 'm' }
         )
         .into_bytes(),
-        // Default / Utf8: classic X10 packet, one printable byte each.
+        // Default / Utf8: classic X10 packet, one printable byte each. The
+        // protocol tops out at coordinate 223 (byte 255); past that the
+        // position can't be represented, so emit nothing rather than a wrong
+        // position.
         _ => {
-            let enc = |v: u32| -> u8 { (32 + v).min(255) as u8 };
+            if col >= 223 || row >= 223 {
+                return vec![];
+            }
+            let enc = |v: u32| -> u8 { (32 + v) as u8 };
             let button = if press { cb } else { 3 };
             vec![
                 0x1b,
@@ -557,6 +563,89 @@ fn encode_mouse(
                 enc(row as u32 + 1),
             ]
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vt100::MouseProtocolEncoding;
+
+    // ── clean_selection ──────────────────────────────────────────────────────
+
+    /// Trailing whitespace on each line is stripped.
+    #[test]
+    fn clean_selection_strips_trailing_whitespace() {
+        let result = clean_selection("hello   \nworld  ".into());
+        assert_eq!(result, Some("hello\nworld".into()));
+    }
+
+    /// Trailing blank lines are removed.
+    #[test]
+    fn clean_selection_removes_trailing_blank_lines() {
+        let result = clean_selection("line1\nline2\n\n\n".into());
+        assert_eq!(result, Some("line1\nline2".into()));
+    }
+
+    /// A string that is only whitespace/newlines returns `None`.
+    #[test]
+    fn clean_selection_all_whitespace_returns_none() {
+        assert_eq!(clean_selection("   \n  \n".into()), None);
+        assert_eq!(clean_selection("".into()), None);
+    }
+
+    /// Interior blank lines are preserved; only trailing ones are dropped.
+    #[test]
+    fn clean_selection_preserves_interior_blank_lines() {
+        let result = clean_selection("a\n\nb\n".into());
+        assert_eq!(result, Some("a\n\nb".into()));
+    }
+
+    // ── encode_mouse ─────────────────────────────────────────────────────────
+
+    /// SGR encoding uses the `\x1b[<cb;col+1;rowM` format.
+    #[test]
+    fn encode_mouse_sgr_format() {
+        // Wheel-up (cb=64) at col=0, row=0, press=true → "\x1b[<64;1;1M"
+        let bytes = encode_mouse(MouseProtocolEncoding::Sgr, 64, 0, 0, true);
+        assert_eq!(bytes, b"\x1b[<64;1;1M");
+    }
+
+    /// SGR release uses lowercase `m` as the final byte.
+    #[test]
+    fn encode_mouse_sgr_release_uses_lowercase_m() {
+        let bytes = encode_mouse(MouseProtocolEncoding::Sgr, 64, 5, 3, false);
+        let s = std::str::from_utf8(&bytes).expect("valid utf8");
+        assert!(s.ends_with('m'), "SGR release must end with 'm', got {s:?}");
+    }
+
+    /// X10 (default) encoding: col or row >= 223 returns an empty vec because
+    /// the coordinate can't fit in one printable byte.
+    #[test]
+    fn encode_mouse_x10_large_coord_returns_empty() {
+        let bytes = encode_mouse(MouseProtocolEncoding::default(), 64, 223, 0, true);
+        assert!(
+            bytes.is_empty(),
+            "X10 must return empty vec when col >= 223"
+        );
+        let bytes = encode_mouse(MouseProtocolEncoding::default(), 64, 0, 223, true);
+        assert!(
+            bytes.is_empty(),
+            "X10 must return empty vec when row >= 223"
+        );
+    }
+
+    /// X10 encoding for small coordinates produces the classic 6-byte packet:
+    /// ESC [ M <button+32> <col+1+32> <row+1+32>.
+    #[test]
+    fn encode_mouse_x10_small_coords_correct_packet() {
+        // cb=64 (wheel-up), col=0, row=0 → button byte = 64+32=96, col byte = 0+1+32=33, row byte = same
+        let bytes = encode_mouse(MouseProtocolEncoding::default(), 64, 0, 0, true);
+        assert_eq!(bytes.len(), 6, "X10 packet must be 6 bytes");
+        assert_eq!(&bytes[..3], b"\x1b[M", "must start with ESC [ M");
+        assert_eq!(bytes[3], 96, "button byte: cb + 32");
+        assert_eq!(bytes[4], 33, "col byte: col + 1 + 32");
+        assert_eq!(bytes[5], 33, "row byte: row + 1 + 32");
     }
 }
 

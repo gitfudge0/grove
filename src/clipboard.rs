@@ -25,10 +25,15 @@ pub fn copy(text: &str) {
         }
     }
 
-    let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-    let mut stdout = io::stdout();
-    let _ = write!(stdout, "\x1b]52;c;{}\x07", b64);
-    let _ = stdout.flush();
+    // OSC 52 only makes sense when stdout is actually a terminal; writing it
+    // into a pipe/file would just inject escape garbage.
+    use std::io::IsTerminal;
+    if io::stdout().is_terminal() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+        let mut stdout = io::stdout();
+        let _ = write!(stdout, "\x1b]52;c;{}\x07", b64);
+        let _ = stdout.flush();
+    }
 }
 
 /// Read text from the OS clipboard. Returns `None` if the clipboard is

@@ -145,15 +145,7 @@ pub fn scroll(name: &str, up: bool, lines: usize) {
     }
     let cmd = if up { "scroll-up" } else { "scroll-down" };
     let mut c = tmux();
-    c.args([
-        "send-keys",
-        "-t",
-        name,
-        "-X",
-        "-N",
-        &lines.to_string(),
-        cmd,
-    ]);
+    c.args(["send-keys", "-t", name, "-X", "-N", &lines.to_string(), cmd]);
     let _ = run_silent(c);
 }
 
@@ -216,16 +208,17 @@ pub fn list_grove_sessions() -> Vec<DiscoveredSession> {
         .collect()
 }
 
-/// Stable 8-hex-char hash of an arbitrary string. Used to fit a worktree path
-/// into a tmux session name (which can't contain `:` or `.`).
+/// Stable 16-hex-char hash of an arbitrary string. Used to fit a worktree path
+/// into a tmux session name (which can't contain `:` or `.`). Full 64 bits so
+/// two worktree paths can't realistically collide into the same session name.
 pub fn short_hash(s: &str) -> String {
-    // FNV-1a 64-bit, truncated. Good enough for naming; not cryptographic.
+    // FNV-1a 64-bit. Good enough for naming; not cryptographic.
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.as_bytes() {
         h ^= *b as u64;
         h = h.wrapping_mul(0x100000001b3);
     }
-    format!("{:08x}", (h ^ (h >> 32)) as u32)
+    format!("{:016x}", h)
 }
 
 /// Build a unique grove session name. `n` disambiguates multiple sessions
@@ -242,7 +235,8 @@ pub fn make_name(wt_path: &str, agent: Agent, n: u32) -> String {
 
 /// Pick the smallest `n` such that `make_name(...)` isn't taken yet.
 pub fn next_free_n(wt_path: &str, agent: Agent) -> u32 {
-    (0u32..)
+    // Bounded so a wedged tmux server can't spin this forever.
+    (0u32..1024)
         .find(|n| !has_session(&make_name(wt_path, agent, *n)))
         .unwrap_or(0)
 }
@@ -255,6 +249,104 @@ fn exact(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Agent;
+
+    // ── short_hash ───────────────────────────────────────────────────────────
+
+    /// `short_hash` always produces exactly 16 hex characters.
+    #[test]
+    fn short_hash_is_16_hex_chars() {
+        for s in &[
+            "",
+            "hello",
+            "/home/user/project/worktree",
+            "a".repeat(200).as_str(),
+        ] {
+            let h = short_hash(s);
+            assert_eq!(
+                h.len(),
+                16,
+                "short_hash({s:?}) must be 16 chars, got {:?}",
+                h
+            );
+            assert!(
+                h.chars().all(|c| c.is_ascii_hexdigit()),
+                "short_hash({s:?}) must be hex digits, got {h:?}"
+            );
+        }
+    }
+
+    /// `short_hash` is deterministic: the same input always produces the same
+    /// output, and different inputs produce different outputs (FNV collisions
+    /// are astronomically unlikely for these controlled inputs).
+    #[test]
+    fn short_hash_deterministic_and_distinct() {
+        let a = short_hash("/home/user/project/wt-a");
+        let b = short_hash("/home/user/project/wt-b");
+        assert_eq!(
+            a,
+            short_hash("/home/user/project/wt-a"),
+            "short_hash must be deterministic"
+        );
+        assert_ne!(a, b, "different paths must produce different hashes");
+    }
+
+    // ── make_name ────────────────────────────────────────────────────────────
+
+    /// `make_name` produces a string that starts with `NAME_PREFIX`, embeds the
+    /// hash and agent label, and ends with the disambiguator `n`.
+    #[test]
+    fn make_name_structure() {
+        let path = "/repos/myproject/wt-feat";
+        let name = make_name(path, Agent::Claude, 0);
+        assert!(
+            name.starts_with(NAME_PREFIX),
+            "session name must start with NAME_PREFIX, got {name:?}"
+        );
+        assert!(
+            name.contains(short_hash(path).as_str()),
+            "session name must contain the path hash"
+        );
+        assert!(
+            name.contains("claude"),
+            "session name must contain the agent label"
+        );
+        assert!(
+            name.ends_with("__0"),
+            "session name must end with the disambiguator __0"
+        );
+
+        // Different `n` → different name.
+        let name1 = make_name(path, Agent::Claude, 1);
+        assert_ne!(name, name1, "n=0 and n=1 must produce different names");
+    }
+
+    // ── sh_quote ─────────────────────────────────────────────────────────────
+
+    /// `sh_quote` wraps the string in single quotes.
+    #[test]
+    fn sh_quote_wraps_in_single_quotes() {
+        let q = sh_quote("hello world");
+        assert_eq!(q, "'hello world'");
+    }
+
+    /// A string containing a single quote must be escaped as `'\''` so the
+    /// shell receives the correct literal character.
+    #[test]
+    fn sh_quote_escapes_embedded_single_quote() {
+        // Input: a'b  → expected: 'a'\''b'
+        let q = sh_quote("a'b");
+        assert_eq!(
+            q, "'a'\\''b'",
+            "embedded single quote must use '\\'' escape sequence"
+        );
+    }
+
+    /// An empty string round-trips as `''`.
+    #[test]
+    fn sh_quote_empty_string() {
+        assert_eq!(sh_quote(""), "''");
+    }
 
     /// Read a single tmux format value for a target on grove's socket.
     fn display(target: &str, fmt: &str) -> String {
@@ -284,10 +376,22 @@ mod tests {
         // A 24-row pane printing 200 lines guarantees real scrollback history.
         let mut create = tmux();
         create.args([
-            "new-session", "-d", "-s", name, "-x", "80", "-y", "24",
-            "sh", "-c", "for i in $(seq 1 200); do echo line $i; done; sleep 30",
+            "new-session",
+            "-d",
+            "-s",
+            name,
+            "-x",
+            "80",
+            "-y",
+            "24",
+            "sh",
+            "-c",
+            "for i in $(seq 1 200); do echo line $i; done; sleep 30",
         ]);
-        assert!(run_silent(create).expect("spawn").success(), "new-session failed");
+        assert!(
+            run_silent(create).expect("spawn").success(),
+            "new-session failed"
+        );
 
         // Give the shell a moment to emit its output into the pane history.
         std::thread::sleep(std::time::Duration::from_millis(300));
@@ -295,12 +399,20 @@ mod tests {
         assert_eq!(display(name, "#{pane_in_mode}"), "0", "should start live");
 
         scroll(name, true, 3);
-        assert_eq!(display(name, "#{pane_in_mode}"), "1", "wheel-up enters copy-mode");
+        assert_eq!(
+            display(name, "#{pane_in_mode}"),
+            "1",
+            "wheel-up enters copy-mode"
+        );
         let pos: i32 = display(name, "#{scroll_position}").parse().unwrap_or(-1);
         assert!(pos > 0, "scroll_position should advance, got {pos}");
 
         cancel_copy_mode(name);
-        assert_eq!(display(name, "#{pane_in_mode}"), "0", "cancel returns to live");
+        assert_eq!(
+            display(name, "#{pane_in_mode}"),
+            "0",
+            "cancel returns to live"
+        );
 
         kill_session(name);
     }

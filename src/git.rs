@@ -118,6 +118,10 @@ fn worktree_mtime(path: &str) -> Option<SystemTime> {
 }
 
 pub fn remove_worktree(project_path: &str, wt_path: &str) -> Result<()> {
+    // Never let a stale/buggy path force-remove the main checkout itself.
+    if Path::new(wt_path) == Path::new(project_path) {
+        anyhow::bail!("refusing to remove the project root checkout");
+    }
     let out = Command::new("git")
         .args(["-C", project_path, "worktree", "remove", wt_path, "--force"])
         .output()?;
@@ -139,7 +143,25 @@ pub fn worktrees_root() -> Result<PathBuf> {
     Ok(home.join(".config").join("grove").join("worktrees"))
 }
 
+/// Validate a user-supplied worktree/branch name before it's used as both a
+/// git branch name and a filesystem path component.
+pub fn valid_worktree_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.starts_with('-')
+        && !name.ends_with(".lock")
+        && !name.contains("..")
+        && !name.contains("@{")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 pub fn add_worktree(project_path: &str, project_name: &str, name: &str) -> Result<String> {
+    if !valid_worktree_name(name) {
+        anyhow::bail!("invalid worktree name: use letters, digits, '-', '_' or '.'");
+    }
     let dest = worktrees_root()?.join(project_name).join(name);
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
@@ -204,6 +226,7 @@ pub fn copy_worktree_includes(project_path: &str, wt_path: &str) -> Result<()> {
     }
     let src_root = Path::new(project_path);
     let dst_root = Path::new(wt_path);
+    let mut failed: Vec<String> = vec![];
     for rel in out.stdout.split(|&b| b == 0) {
         let Ok(rel) = std::str::from_utf8(rel) else {
             continue;
@@ -213,11 +236,120 @@ pub fn copy_worktree_includes(project_path: &str, wt_path: &str) -> Result<()> {
         }
         let dst = dst_root.join(rel);
         if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent).ok();
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                failed.push(format!("{rel}: {e}"));
+                continue;
+            }
         }
-        std::fs::copy(src_root.join(rel), &dst).ok();
+        if let Err(e) = std::fs::copy(src_root.join(rel), &dst) {
+            failed.push(format!("{rel}: {e}"));
+        }
+    }
+    if !failed.is_empty() {
+        anyhow::bail!("failed to copy: {}", failed.join(", "));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── valid_worktree_name ──────────────────────────────────────────────────
+
+    /// Ordinary names that are safe as both branch names and path components.
+    #[test]
+    fn valid_names_accepted() {
+        for name in &["feature-x", "fix_1", "v1.2", "abc", "a-b_c.d", "123"] {
+            assert!(
+                valid_worktree_name(name),
+                "{name:?} should be accepted as a valid worktree name"
+            );
+        }
+    }
+
+    /// An empty string is never a valid worktree name.
+    #[test]
+    fn empty_name_rejected() {
+        assert!(!valid_worktree_name(""));
+    }
+
+    /// `.` and `..` are invalid as path components.
+    #[test]
+    fn dot_names_rejected() {
+        assert!(!valid_worktree_name("."));
+        assert!(!valid_worktree_name(".."));
+    }
+
+    /// Names starting with `-` can be misinterpreted as git flags.
+    #[test]
+    fn leading_dash_rejected() {
+        assert!(!valid_worktree_name("-bad"));
+        assert!(!valid_worktree_name("--force"));
+        assert!(!valid_worktree_name("-"));
+    }
+
+    /// `.lock` suffix is reserved by git's ref locking mechanism.
+    #[test]
+    fn lock_suffix_rejected() {
+        assert!(!valid_worktree_name("HEAD.lock"));
+        assert!(!valid_worktree_name("feature.lock"));
+    }
+
+    /// Path separators must never appear in a name used as a path component.
+    #[test]
+    fn slash_in_name_rejected() {
+        assert!(!valid_worktree_name("feat/scope"));
+        assert!(!valid_worktree_name("a/b"));
+    }
+
+    /// `..` anywhere inside the name is a path-traversal vector.
+    #[test]
+    fn double_dot_inside_rejected() {
+        assert!(!valid_worktree_name("a..b"));
+        assert!(!valid_worktree_name("..bad"));
+    }
+
+    /// `@{` is rejected by git's refname rules.
+    #[test]
+    fn at_brace_rejected() {
+        assert!(!valid_worktree_name("ref@{0}"));
+        assert!(!valid_worktree_name("a@{b}"));
+    }
+
+    /// Spaces and common shell metacharacters must be rejected.
+    #[test]
+    fn space_and_shell_metacharacters_rejected() {
+        let bad = [
+            "my name", "a;b", "a|b", "a&b", "a>b", "a<b", "a`b", "a$b", "a!b",
+        ];
+        for name in &bad {
+            assert!(
+                !valid_worktree_name(name),
+                "{name:?} should be rejected (space/metachar)"
+            );
+        }
+    }
+
+    // ── remove_worktree ──────────────────────────────────────────────────────
+
+    /// `remove_worktree` must return `Err` immediately — without shelling out
+    /// to git — when `wt_path` equals `project_path`. Use a nonexistent path
+    /// so no filesystem side-effects can occur even if the guard is bypassed.
+    #[test]
+    fn remove_worktree_refuses_to_remove_project_root() {
+        let path = "/nonexistent/path/that/does/not/exist";
+        let result = remove_worktree(path, path);
+        assert!(
+            result.is_err(),
+            "remove_worktree must refuse when wt_path == project_path"
+        );
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("refusing"),
+            "error message should mention refusing, got: {msg}"
+        );
+    }
 }
 
 pub fn init_if_needed(project_path: &str) -> Result<()> {

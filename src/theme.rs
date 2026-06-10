@@ -673,12 +673,14 @@ pub const BUILTINS: &[Theme] = &[
 static ACTIVE: RwLock<Theme> = RwLock::new(TOKYONIGHT);
 
 pub fn current() -> Theme {
-    *ACTIVE.read().expect("theme lock poisoned")
+    // Recover from poisoning: a Theme is plain data, so a panic elsewhere
+    // can't leave it half-written.
+    *ACTIVE.read().unwrap_or_else(|e| e.into_inner())
 }
 
 pub fn set_by_name(name: &str) -> bool {
     if let Some(t) = BUILTINS.iter().find(|t| t.name == name) {
-        *ACTIVE.write().expect("theme lock poisoned") = *t;
+        *ACTIVE.write().unwrap_or_else(|e| e.into_inner()) = *t;
         true
     } else {
         false
@@ -686,7 +688,7 @@ pub fn set_by_name(name: &str) -> bool {
 }
 
 pub fn set(theme: Theme) {
-    *ACTIVE.write().expect("theme lock poisoned") = theme;
+    *ACTIVE.write().unwrap_or_else(|e| e.into_inner()) = theme;
 }
 
 pub fn themes_of(kind: ThemeKind) -> Vec<Theme> {

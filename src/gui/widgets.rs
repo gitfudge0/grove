@@ -178,11 +178,7 @@ pub fn split_start_button_flat<'a>(
 /// launchers as `split_start_button_flat`, but the destructive delete-worktree
 /// chip is never shown. Deleting a worktree from a row that still has a live
 /// session is the wrong gesture; that action belongs to the worktree row.
-pub fn session_spawn_chips_flat<'a>(
-    proj: usize,
-    wt: usize,
-    icon_size: f32,
-) -> Element<'a, Msg> {
+pub fn session_spawn_chips_flat<'a>(proj: usize, wt: usize, icon_size: f32) -> Element<'a, Msg> {
     split_start_button_inner(proj, wt, false, icon_size, true, false)
 }
 

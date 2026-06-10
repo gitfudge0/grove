@@ -10,9 +10,12 @@ mkdir -p "$CONFIG_DIR"
 need() { command -v "$1" >/dev/null || { echo "missing: $1" >&2; exit 1; }; }
 need gum; need jq; need git; need claude
 
+# jq_save <filter> [extra jq args...] — values must be passed via --arg, never
+# interpolated into the filter string (quotes in a name would corrupt the JSON).
 jq_save() {
+  local filter="$1"; shift
   local tmp; tmp=$(mktemp)
-  jq "$1" "$PROJECTS_FILE" > "$tmp" && mv "$tmp" "$PROJECTS_FILE"
+  jq "$@" "$filter" "$PROJECTS_FILE" > "$tmp" && mv "$tmp" "$PROJECTS_FILE"
 }
 
 list_projects()      { jq -r '.projects | keys[]' "$PROJECTS_FILE"; }
@@ -47,7 +50,7 @@ add_project() {
   if jq -e --arg n "$name" '.projects[$n]' "$PROJECTS_FILE" >/dev/null; then
     gum style --foreground 196 "Project '$name' already exists."; return
   fi
-  jq_save ".projects[\"$name\"] = {\"path\": \"$path\"}"
+  jq_save '.projects[$n] = {"path": $p}' --arg n "$name" --arg p "$path"
   gum style --foreground 42 "Added project: $name -> $path"
   [[ -d "$path/.git" ]] || git -C "$path" init -q
   generate_worktreeinclude "$path"
@@ -58,7 +61,7 @@ remove_project() {
   name=$(list_projects | gum choose --header "Remove which project?") || return
   [[ -z "$name" ]] && return
   gum confirm "Remove project '$name' from manager (files untouched)?" || return
-  jq_save "del(.projects[\"$name\"])"
+  jq_save 'del(.projects[$n])' --arg n "$name"
   gum style --foreground 42 "Removed: $name"
 }
 
@@ -82,6 +85,9 @@ add_worktree() {
   path=$(project_path "$proj")
   name=$(gum input --header "Worktree / branch name") || return
   [[ -z "$name" ]] && return
+  if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ || "$name" == -* || "$name" == *..* ]]; then
+    gum style --foreground 196 "Invalid name: use letters, digits, '.', '-', '_'"; return
+  fi
   wt_path="$path/../${proj}-wt-${name}"
   branch="$name"
   if git -C "$path" show-ref --verify --quiet "refs/heads/$branch"; then

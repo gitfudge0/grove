@@ -96,8 +96,8 @@ fn looks_thin() -> bool {
     let rich_markers = [
         cargo_bin.as_str(),
         local_bin.as_str(),
-        "/opt/homebrew/bin",                 // Homebrew (macOS, Apple Silicon)
-        "/home/linuxbrew/.linuxbrew/bin",    // Homebrew (Linux)
+        "/opt/homebrew/bin",              // Homebrew (macOS, Apple Silicon)
+        "/home/linuxbrew/.linuxbrew/bin", // Homebrew (Linux)
     ];
 
     let dirs: Vec<_> = std::env::split_paths(&path).collect();
@@ -106,11 +106,21 @@ fn looks_thin() -> bool {
         .any(|dir| rich_markers.iter().any(|m| dir.as_os_str() == *m))
 }
 
+/// The user's login shell from `$SHELL`, accepted only when it's an absolute
+/// path to an existing file. Anything else (relative path, stale entry, a
+/// value injected by a hostile parent environment) falls back to `/bin/sh`.
+pub fn login_shell() -> String {
+    match std::env::var("SHELL") {
+        Ok(s) if s.starts_with('/') && std::path::Path::new(&s).is_file() => s,
+        _ => "/bin/sh".into(),
+    }
+}
+
 /// Spawn the user's login shell and capture the PATH it produces. Returns
 /// `None` on any failure (no shell, non-zero exit, timeout, bad UTF-8) so the
 /// caller silently keeps the existing PATH.
 fn query_login_path() -> Option<String> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let shell = login_shell();
 
     // `-l` makes it a login shell (sources profile files), `-i` interactive
     // (sources rc files where many users set PATH), `-c` runs the command. We
@@ -124,8 +134,7 @@ fn query_login_path() -> Option<String> {
     // the value. The exported `PATH` env var the child `sh` inherits is always
     // colon-separated per POSIX, so this stays correct regardless of which
     // shell the user runs. bash/zsh are unaffected by the extra hop.
-    let script =
-        format!("/bin/sh -c 'printf \"{PATH_START}%s{PATH_END}\" \"$PATH\"'");
+    let script = format!("/bin/sh -c 'printf \"{PATH_START}%s{PATH_END}\" \"$PATH\"'");
     let mut child = Command::new(&shell)
         .args(["-lic", &script])
         .stdin(std::process::Stdio::null())
@@ -175,5 +184,50 @@ mod tests {
     #[test]
     fn returns_none_without_markers() {
         assert_eq!(extract_fenced_path("/usr/bin:/bin"), None);
+    }
+
+    // ── login_shell ──────────────────────────────────────────────────────────
+    //
+    // IMPORTANT: `set_var`/`remove_var` are not thread-safe.  These two tests
+    // are combined into a single test function so they share the same thread and
+    // run sequentially, eliminating the race that would occur if they ran in
+    // parallel.
+    #[test]
+    fn login_shell_absolute_existing_vs_fallback() {
+        // Case 1: $SHELL points to a real absolute executable → returned as-is.
+        // `/bin/sh` is universally present on macOS and Linux.
+        std::env::set_var("SHELL", "/bin/sh");
+        let shell = login_shell();
+        assert_eq!(
+            shell, "/bin/sh",
+            "login_shell must return /bin/sh when $SHELL=/bin/sh"
+        );
+
+        // Case 2: $SHELL is relative (no leading `/`) → must fall back to /bin/sh.
+        std::env::set_var("SHELL", "bash");
+        let shell = login_shell();
+        assert_eq!(
+            shell, "/bin/sh",
+            "login_shell must return /bin/sh when $SHELL is a relative path"
+        );
+
+        // Case 3: $SHELL is absolute but does not exist → must fall back to /bin/sh.
+        std::env::set_var("SHELL", "/does/not/exist/myshell");
+        let shell = login_shell();
+        assert_eq!(
+            shell, "/bin/sh",
+            "login_shell must return /bin/sh when $SHELL points to a nonexistent file"
+        );
+
+        // Restore to the actual shell so other tests / the process aren't
+        // affected.  Best-effort: if we can't restore we leave it as /bin/sh
+        // which is a safe fallback.
+        if let Ok(real) = std::env::var("SHELL") {
+            if real == "/does/not/exist/myshell" {
+                // We're still holding our fake value — restore to /bin/sh at
+                // minimum.
+                std::env::set_var("SHELL", "/bin/sh");
+            }
+        }
     }
 }

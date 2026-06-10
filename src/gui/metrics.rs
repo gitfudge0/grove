@@ -211,12 +211,20 @@ fn find_table(ttf: &[u8], tag: &[u8; 4]) -> Option<usize> {
     None
 }
 
+/// Big-endian u16 read; 0 on out-of-bounds so a truncated/malformed font can
+/// never panic the parser (a 0 reads as "absent/glyph 0" everywhere it's used).
 fn u16_at(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_be_bytes(bytes[offset..offset + 2].try_into().unwrap())
+    bytes
+        .get(offset..offset + 2)
+        .map(|b| u16::from_be_bytes([b[0], b[1]]))
+        .unwrap_or(0)
 }
 
 fn u32_at(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    bytes
+        .get(offset..offset + 4)
+        .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        .unwrap_or(0)
 }
 
 /// PTY dimensions derived from unzoomed window size. Subtracts the visible chrome

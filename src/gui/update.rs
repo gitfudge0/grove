@@ -58,6 +58,7 @@ impl Grove {
             term_panel_open: false,
             term_panel_portion: TERM_PANEL_PORTION,
             focused_pane: FocusedPane::Agent,
+            dir_cache: Default::default(),
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -107,6 +108,13 @@ impl Grove {
                 // Advance the blink counter (~30 Hz at 60 ms tick interval).
                 self.blink_tick = self.blink_tick.wrapping_add(1);
                 self.tick_drag_autoscroll();
+                // Surface results from background jobs (.worktreeinclude
+                // generation runs off-thread).
+                let bg = self.app.bg_status.lock().ok().and_then(|mut g| g.take());
+                if let Some(msg) = bg {
+                    self.app.status = msg;
+                    self.app.refresh_worktrees();
+                }
             }
             Msg::SidebarSetView(v) => {
                 self.sidebar_view = v;
@@ -116,7 +124,8 @@ impl Grove {
                 }
             }
             Msg::RestartHomeTerminal => {
-                self.app.restart_active_terminal(self.pty_rows, self.pty_cols);
+                self.app
+                    .restart_active_terminal(self.pty_rows, self.pty_cols);
                 self.invalidate_pty_render_cache();
             }
             Msg::NewHomeTerminal => {
@@ -306,7 +315,13 @@ impl Grove {
                 self.pending_kill = Some(i);
             }
             Msg::KillSession(i) => {
-                self.pending_kill = None;
+                // Shift any pending confirmation index across the removal so
+                // it can't end up pointing at a different session.
+                self.pending_kill = match self.pending_kill {
+                    Some(p) if p == i => None,
+                    Some(p) if p > i => Some(p - 1),
+                    other => other,
+                };
                 if i < self.app.sessions.len() {
                     let key = Arc::as_ptr(&self.app.sessions[i].dirty) as usize;
                     self.pty_cache.borrow_mut().remove(&key);
@@ -368,8 +383,15 @@ impl Grove {
             }
             Msg::PtyScroll { pane, up, x, y } => {
                 // Scrolling over a PTY focuses it too, so the wheel always
-                // drives the terminal under the cursor.
-                self.focus_pane(pane);
+                // drives the terminal under the cursor — but don't hand focus
+                // to a panel with no shell: input routed there would fall back
+                // to the agent while keystrokes stayed stuck on the panel.
+                let panel_has_shell = self
+                    .active_wt_path()
+                    .is_some_and(|wt| self.app.active_wt_terminal(&wt).is_some());
+                if !matches!(pane, PtyPane::Panel) || panel_has_shell {
+                    self.focus_pane(pane);
+                }
                 let cell = pixel_to_cell(x, y);
                 if let Some(s) = self.focused_session_mut() {
                     s.scroll(up, cell.col as u16, cell.row as u16);
@@ -709,10 +731,9 @@ impl Grove {
     /// workspace, clamped to `[TERM_PANEL_PORTION_MIN, TERM_PANEL_PORTION_MAX]`,
     /// then reflow every PTY to its new width.
     fn adjust_term_panel_portion(&mut self, delta: i16) {
-        let next = (self.term_panel_portion as i16 + delta).clamp(
-            TERM_PANEL_PORTION_MIN as i16,
-            TERM_PANEL_PORTION_MAX as i16,
-        ) as u16;
+        let next = (self.term_panel_portion as i16 + delta)
+            .clamp(TERM_PANEL_PORTION_MIN as i16, TERM_PANEL_PORTION_MAX as i16)
+            as u16;
         if next == self.term_panel_portion {
             return;
         }
@@ -1056,11 +1077,7 @@ impl Grove {
             return;
         }
 
-        self.app.active_session = self
-            .app
-            .sessions
-            .iter()
-            .position(|s| s.wt_path == path);
+        self.app.active_session = self.app.sessions.iter().position(|s| s.wt_path == path);
     }
 
     fn worktrees_for_project(&self, proj: usize) -> &[crate::git::Worktree] {
@@ -1227,9 +1244,15 @@ impl Grove {
             // keystrokes.
             self.active_wt_path()
                 .and_then(|wt| self.app.active_wt_terminal(&wt))
-                .or_else(|| self.app.active_session.and_then(|i| self.app.sessions.get(i)))
+                .or_else(|| {
+                    self.app
+                        .active_session
+                        .and_then(|i| self.app.sessions.get(i))
+                })
         } else {
-            self.app.active_session.and_then(|i| self.app.sessions.get(i))
+            self.app
+                .active_session
+                .and_then(|i| self.app.sessions.get(i))
         }
     }
 
@@ -1241,7 +1264,11 @@ impl Grove {
         } else if self.panel_focused() {
             if let Some(wt) = self.active_wt_path() {
                 if let Some(idx) = self.app.active_wt_terminal_idx(&wt) {
-                    return self.app.wt_terminals.get_mut(&wt).and_then(|v| v.get_mut(idx));
+                    return self
+                        .app
+                        .wt_terminals
+                        .get_mut(&wt)
+                        .and_then(|v| v.get_mut(idx));
                 }
             }
             // No panel shell for this worktree — route to the agent instead.
@@ -1328,11 +1355,7 @@ impl Grove {
 /// Spawn a tokio blocking task that runs `git worktree remove --force` for
 /// `path` inside `project_path`, then emits `Msg::WorktreeRemovedStep` with
 /// the outcome and the still-unprocessed `remaining` queue.
-fn remove_worktree_task(
-    project_path: String,
-    path: String,
-    remaining: Vec<String>,
-) -> Task<Msg> {
+fn remove_worktree_task(project_path: String, path: String, remaining: Vec<String>) -> Task<Msg> {
     Task::perform(
         async move {
             // `git worktree remove` is a short subprocess; run it inline on

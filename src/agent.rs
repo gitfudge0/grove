@@ -39,8 +39,8 @@ impl Agent {
     pub fn program(self) -> String {
         match self {
             Agent::Claude | Agent::Codex | Agent::OpenCode => self.binary_name().into(),
-            // The user's login shell, falling back to a POSIX shell.
-            Agent::Terminal => std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()),
+            // The user's login shell (validated), falling back to a POSIX shell.
+            Agent::Terminal => crate::env_path::login_shell(),
         }
     }
 
@@ -77,11 +77,9 @@ impl Agent {
             Agent::Terminal => true,
             Agent::Claude | Agent::Codex | Agent::OpenCode => {
                 let name = self.binary_name();
-                std::env::var_os("PATH")
-                    .is_some_and(|paths| {
-                        std::env::split_paths(&paths)
-                            .any(|dir| is_executable(dir.join(name)))
-                    })
+                std::env::var_os("PATH").is_some_and(|paths| {
+                    std::env::split_paths(&paths).any(|dir| is_executable(dir.join(name)))
+                })
             }
         }
     }

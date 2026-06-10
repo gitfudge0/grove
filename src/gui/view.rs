@@ -14,9 +14,8 @@ use super::rows::{
 use super::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, SidebarView};
 use super::widgets::{
     control_btn, divider_h, divider_v, dot, empty_workspace, footer_btn, icon_btn, modal_action,
-    modal_dir_row,
-    modal_list_row, modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn, tool_btn_toggle,
-    vline, ModalBtn, SegSide,
+    modal_dir_row, modal_list_row, modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn,
+    tool_btn_toggle, vline, ModalBtn, SegSide,
 };
 use crate::app::{InputKind, Modal};
 use crate::git::Worktree;
@@ -394,8 +393,12 @@ impl Grove {
             .enumerate()
             .map(|(i, p)| (p.name.as_str(), i))
             .collect();
-        let wt_paths_with_sessions: std::collections::HashSet<&str> =
-            self.app.sessions.iter().map(|s| s.wt_path.as_str()).collect();
+        let wt_paths_with_sessions: std::collections::HashSet<&str> = self
+            .app
+            .sessions
+            .iter()
+            .map(|s| s.wt_path.as_str())
+            .collect();
         let mut session_count_by_wt: std::collections::HashMap<&str, usize> =
             std::collections::HashMap::new();
         for s in &self.app.sessions {
@@ -410,8 +413,8 @@ impl Grove {
             .collect();
 
         let mut running: Vec<usize> = Vec::new();
-        let mut idle: Vec<usize> = Vec::new();
-        let mut exited: Vec<usize> = Vec::new();
+        let mut idle: Vec<(usize, std::time::Instant)> = Vec::new();
+        let mut exited: Vec<(usize, std::time::Instant)> = Vec::new();
         for (i, s) in self.app.sessions.iter().enumerate() {
             let status = *s.status.lock().unwrap_or_else(|e| e.into_inner());
             let t = *s.last_output_at.lock().unwrap_or_else(|e| e.into_inner());
@@ -419,12 +422,12 @@ impl Grove {
             match status {
                 crate::session::SessionStatus::Running => {
                     if age >= IDLE_AFTER {
-                        idle.push(i);
+                        idle.push((i, t));
                     } else {
                         running.push(i);
                     }
                 }
-                crate::session::SessionStatus::Exited(_) => exited.push(i),
+                crate::session::SessionStatus::Exited(_) => exited.push((i, t)),
             }
         }
         // Exited sessions live under "idle" — they're not running, not "live".
@@ -433,15 +436,11 @@ impl Grove {
         // `last_output_at` made the list reorder on every PTY read, since a
         // live agent updates its timestamp many times per second.
         // Why: idle/exited timestamps are frozen by definition, so sorting
-        // those by recency is stable; running ones aren't.
+        // those by recency is stable; running ones aren't. The timestamps were
+        // snapshotted above so the sort doesn't re-lock per comparison.
         running.sort_by_key(|i| std::cmp::Reverse(*i));
-        idle.sort_by_key(|i| {
-            let t = *self.app.sessions[*i]
-                .last_output_at
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            std::cmp::Reverse(t)
-        });
+        idle.sort_by_key(|&(_, t)| std::cmp::Reverse(t));
+        let idle: Vec<usize> = idle.into_iter().map(|(i, _)| i).collect();
 
         // All worktrees across all projects, listed `project / worktree`.
         // The row shows the session count and lets the user spawn new
@@ -459,7 +458,10 @@ impl Grove {
                 } else {
                     crate::app::path_basename(&w.path)
                 };
-                let count = session_count_by_wt.get(w.path.as_str()).copied().unwrap_or(0);
+                let count = session_count_by_wt
+                    .get(w.path.as_str())
+                    .copied()
+                    .unwrap_or(0);
                 worktree_rows.push((pi, wi, p.name.clone(), wname, w.is_main, count));
             }
         }
@@ -476,7 +478,13 @@ impl Grove {
             col = col.push(self.activity_empty_hint("no live sessions"));
         }
         for si in running {
-            col = col.push(self.activity_row_wrapped(si, false, &session_wnames[si], now, &project_idx));
+            col = col.push(self.activity_row_wrapped(
+                si,
+                false,
+                &session_wnames[si],
+                now,
+                &project_idx,
+            ));
         }
 
         col = col.push(activity_group_header("idle", idle.len(), true, None));
@@ -484,7 +492,13 @@ impl Grove {
             col = col.push(self.activity_empty_hint("nothing paused"));
         }
         for si in idle {
-            col = col.push(self.activity_row_wrapped(si, true, &session_wnames[si], now, &project_idx));
+            col = col.push(self.activity_row_wrapped(
+                si,
+                true,
+                &session_wnames[si],
+                now,
+                &project_idx,
+            ));
         }
 
         col = col.push(activity_group_header(
@@ -496,8 +510,7 @@ impl Grove {
         if no_sessions_expanded {
             for (pi, wi, pname, wname, is_main, count) in worktree_rows {
                 let hovered = self.hovered_wt == Some((pi, wi));
-                let row_el =
-                    worktree_activity_row(pi, wi, &pname, &wname, is_main, count, hovered);
+                let row_el = worktree_activity_row(pi, wi, &pname, &wname, is_main, count, hovered);
                 col = col.push(
                     iced::widget::mouse_area(row_el)
                         .on_enter(Msg::HoverWorktree(Some((pi, wi))))
@@ -528,9 +541,29 @@ impl Grove {
         let hovered = self.hovered_activity_row == Some(si);
         let coords = self.resolve_session_wt_coords(s, project_idx);
         let row_el = if force_idle {
-            session_activity_row_idle(si, s, &s.project, wname, active, pending_kill, last, hovered, coords)
+            session_activity_row_idle(
+                si,
+                s,
+                &s.project,
+                wname,
+                active,
+                pending_kill,
+                last,
+                hovered,
+                coords,
+            )
         } else {
-            session_activity_row(si, s, &s.project, wname, active, pending_kill, last, hovered, coords)
+            session_activity_row(
+                si,
+                s,
+                &s.project,
+                wname,
+                active,
+                pending_kill,
+                last,
+                hovered,
+                coords,
+            )
         };
         iced::widget::mouse_area(row_el)
             .on_enter(Msg::HoverActivityRow(Some(si)))
@@ -633,8 +666,8 @@ impl Grove {
                 } else {
                     crate::app::path_basename(&w.path)
                 };
-                let show_branch = !w.is_main && w.branch != wname && !w.branch.is_empty();
-                let wt_h = if show_branch { ROW_H + 14.0 } else { ROW_H };
+                let show_branch = super::rows::worktree_shows_branch(w.is_main, &w.branch, &wname);
+                let wt_h = super::rows::worktree_row_height(show_branch);
                 if pi == open_proj && wi == open_wt {
                     return Some((pi, wi, 6.0 + acc_y + wt_h, w.is_main));
                 }
@@ -661,7 +694,7 @@ impl Grove {
         }
         let left: Element<'_, Msg> = match self.app.active_session {
             Some(i) if i < self.app.sessions.len() => column![
-                self.sess_bar(&self.app.sessions[i]),
+                self.sess_bar(i, &self.app.sessions[i]),
                 self.pty(PtyPane::Agent, &self.app.sessions[i]),
             ]
             .height(Length::Fill)
@@ -748,9 +781,11 @@ impl Grove {
 
         let strip = container(
             row![
-                container(scrollable(tabs).direction(scrollable::Direction::Horizontal(
-                    scrollable::Scrollbar::new().width(0).scroller_width(0)
-                )))
+                container(
+                    scrollable(tabs).direction(scrollable::Direction::Horizontal(
+                        scrollable::Scrollbar::new().width(0).scroller_width(0)
+                    ))
+                )
                 .width(Length::Fill)
                 .clip(true),
                 close_panel,
@@ -779,7 +814,10 @@ impl Grove {
 
     /// A single tab in the terminal panel's tab strip.
     fn term_panel_tab<'a>(&self, idx: usize, s: &Session, active: bool) -> Element<'a, Msg> {
-        let running = matches!(*s.status.lock().unwrap(), SessionStatus::Running);
+        let running = matches!(
+            *s.status.lock().unwrap_or_else(|e| e.into_inner()),
+            SessionStatus::Running
+        );
         let dot_color = if running { c::GREEN() } else { c::FG_MUTE() };
         let name_color = if active { c::CYAN() } else { c::FG_DIM() };
 
@@ -811,33 +849,33 @@ impl Grove {
             .spacing(6)
             .align_y(iced::Alignment::Center);
 
-        button(
-            container(label)
-                .padding(Padding::from([0, 8]))
-                .center_y(24),
-        )
-        .on_press(Msg::SelectWtTerminal(idx))
-        .padding(0)
-        .style(move |_, status| {
-            let hovered = matches!(status, button::Status::Hovered);
-            button::Style {
-                background: if active {
-                    Some(Background::Color(c::BG_HL()))
-                } else if hovered {
-                    Some(Background::Color(c::BG_HOVER()))
-                } else {
-                    None
-                },
-                text_color: name_color,
-                border: Border {
-                    color: if active { c::CYAN() } else { Color::TRANSPARENT },
-                    width: if active { 1.0 } else { 0.0 },
-                    radius: Radius::from(4.0),
-                },
-                shadow: Shadow::default(),
-            }
-        })
-        .into()
+        button(container(label).padding(Padding::from([0, 8])).center_y(24))
+            .on_press(Msg::SelectWtTerminal(idx))
+            .padding(0)
+            .style(move |_, status| {
+                let hovered = matches!(status, button::Status::Hovered);
+                button::Style {
+                    background: if active {
+                        Some(Background::Color(c::BG_HL()))
+                    } else if hovered {
+                        Some(Background::Color(c::BG_HOVER()))
+                    } else {
+                        None
+                    },
+                    text_color: name_color,
+                    border: Border {
+                        color: if active {
+                            c::CYAN()
+                        } else {
+                            Color::TRANSPARENT
+                        },
+                        width: if active { 1.0 } else { 0.0 },
+                        radius: Radius::from(4.0),
+                    },
+                    shadow: Shadow::default(),
+                }
+            })
+            .into()
     }
 
     /// Workspace for the persistent home-terminal tab: a status bar with a
@@ -866,7 +904,10 @@ impl Grove {
     /// shell at `~`. When the shell has exited the restart button is the
     /// affordance the user reaches for.
     fn home_terminal_bar(&self, s: &Session) -> Element<'_, Msg> {
-        let running = matches!(*s.status.lock().unwrap(), SessionStatus::Running);
+        let running = matches!(
+            *s.status.lock().unwrap_or_else(|e| e.into_inner()),
+            SessionStatus::Running
+        );
         let (dot_color, label) = if running {
             (c::GREEN(), "running")
         } else {
@@ -882,11 +923,10 @@ impl Grove {
                 .color(color)
         };
 
-        let status: Element<'_, Msg> =
-            row![dot(dot_color), bar_text(label.to_string(), dot_color)]
-                .spacing(6)
-                .align_y(iced::Alignment::Center)
-                .into();
+        let status: Element<'_, Msg> = row![dot(dot_color), bar_text(label.to_string(), dot_color)]
+            .spacing(6)
+            .align_y(iced::Alignment::Center)
+            .into();
 
         let ctx = crate::gui::rows::terminal_context(s).unwrap_or_else(|| "~".to_string());
         let ctx = crate::gui::widgets::truncate_middle(&ctx, 80);
@@ -933,8 +973,11 @@ impl Grove {
         col.into()
     }
 
-    fn sess_bar(&self, s: &Session) -> Element<'_, Msg> {
-        let running = matches!(*s.status.lock().unwrap(), SessionStatus::Running);
+    fn sess_bar(&self, si: usize, s: &Session) -> Element<'_, Msg> {
+        let running = matches!(
+            *s.status.lock().unwrap_or_else(|e| e.into_inner()),
+            SessionStatus::Running
+        );
         let (dot_color, label) = if running {
             (c::GREEN(), "running")
         } else {
@@ -1017,9 +1060,19 @@ impl Grove {
             ),
             tool_btn(
                 "trash",
-                "kill",
+                if self.pending_kill == Some(si) {
+                    "confirm kill"
+                } else {
+                    "kill"
+                },
                 true,
-                Msg::KillSession(self.app.active_session.unwrap_or(0)),
+                // Two-step confirm, targeting the session this bar renders —
+                // never a fallback index.
+                if self.pending_kill == Some(si) {
+                    Msg::KillSession(si)
+                } else {
+                    Msg::RequestKillSession(si)
+                },
             ),
         ]
         .spacing(12)
@@ -1066,7 +1119,7 @@ impl Grove {
                 cursor_pos: None,
             });
             if needs_rebuild {
-                let parser = s.parser.lock().unwrap();
+                let parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
                 let screen = parser.screen();
                 let (h, w) = screen.size();
                 let mut new_rows = Vec::with_capacity(h as usize);
@@ -1109,7 +1162,10 @@ impl Grove {
         .and_then(|(a, b)| {
             let (h, sb) = {
                 let p = s.parser.lock().ok()?;
-                (p.screen().size().0 as isize, p.screen().scrollback() as isize)
+                (
+                    p.screen().size().0 as isize,
+                    p.screen().scrollback() as isize,
+                )
             };
             if h == 0 {
                 return None;
@@ -1179,7 +1235,12 @@ impl Grove {
             .app
             .sessions
             .iter()
-            .filter(|s| matches!(*s.status.lock().unwrap(), SessionStatus::Running))
+            .filter(|s| {
+                matches!(
+                    *s.status.lock().unwrap_or_else(|e| e.into_inner()),
+                    SessionStatus::Running
+                )
+            })
             .count();
         let backend = if self.app.use_tmux() {
             "tmux"
@@ -1320,7 +1381,15 @@ impl Grove {
     ) -> Element<'a, Msg> {
         let show_dirs = matches!(kind, InputKind::AddProjectPath);
         let entries = if show_dirs {
-            crate::app::list_dirs(buffer)
+            let mut cache = self.dir_cache.borrow_mut();
+            match cache.as_ref() {
+                Some((k, v)) if k == buffer => v.clone(),
+                _ => {
+                    let v = crate::app::list_dirs(buffer);
+                    *cache = Some((buffer.to_string(), v.clone()));
+                    v
+                }
+            }
         } else {
             Vec::new()
         };
@@ -1544,17 +1613,19 @@ impl Grove {
                         .color(c::FG_MUTE())
                         .wrapping(iced::widget::text::Wrapping::None),
                 )
-                .push(progress_bar(0.0..=1.0, frac).height(6.0).style(|_| {
-                    ProgressStyle {
-                        background: Background::Color(c::BG_STRIP()),
-                        bar: Background::Color(c::RED()),
-                        border: Border {
-                            color: c::BORDER(),
-                            width: 1.0,
-                            radius: Radius::from(4.0),
-                        },
-                    }
-                }));
+                .push(
+                    progress_bar(0.0..=1.0, frac)
+                        .height(6.0)
+                        .style(|_| ProgressStyle {
+                            background: Background::Color(c::BG_STRIP()),
+                            bar: Background::Color(c::RED()),
+                            border: Border {
+                                color: c::BORDER(),
+                                width: 1.0,
+                                radius: Radius::from(4.0),
+                            },
+                        }),
+                );
         } else {
             body = body.push(Space::with_height(8)).push(
                 row![
@@ -1731,11 +1802,9 @@ impl Grove {
             let active = i == sel;
             let name = th.name.to_string();
             list = list.push(modal_list_row(
-                text(name).size(12).color(if active {
-                    c::FG()
-                } else {
-                    c::FG_DIM()
-                }),
+                text(name)
+                    .size(12)
+                    .color(if active { c::FG() } else { c::FG_DIM() }),
                 active,
                 Msg::ThemePickerSelect(i),
             ));

@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "grove"
-version = "0.14.4"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1519,6 +1519,7 @@ dependencies = [
  "portable-pty",
  "serde",
  "serde_json",
+ "smol_str",
  "vt100",
 ]
 

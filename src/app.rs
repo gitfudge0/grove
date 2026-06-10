@@ -156,6 +156,9 @@ pub struct App {
     /// Re-scanned each time the picker is opened so newly-installed tools
     /// appear without restarting Grove.
     pub(crate) available_agents: Vec<Agent>,
+    /// Completion message from a background job (e.g. `.worktreeinclude`
+    /// generation). Set by the worker thread, drained on the GUI tick.
+    pub bg_status: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl App {
@@ -215,7 +218,12 @@ impl App {
             worktree_count: 0,
             chrome_visible: true,
             tmux_available,
-            available_agents: Agent::ALL.iter().copied().filter(|a| a.available()).collect(),
+            available_agents: Agent::ALL
+                .iter()
+                .copied()
+                .filter(|a| a.available())
+                .collect(),
+            bg_status: std::sync::Arc::new(std::sync::Mutex::new(None)),
         };
         app.refresh_worktrees();
         Ok(app)
@@ -387,7 +395,9 @@ impl App {
     /// default is configured or the saved default is no longer available.
     fn launch_or_pick(&mut self, project: String, wt_path: String) {
         self.refresh_available_agents();
-        let default = self.store.default_agent
+        let default = self
+            .store
+            .default_agent
             .filter(|a| self.available_agents.contains(a));
         if let Some(agent) = default {
             let label = path_basename(&wt_path);
@@ -504,7 +514,8 @@ impl App {
 
     /// The home terminal the tab is currently showing, if any.
     pub fn active_home_terminal(&self) -> Option<&Session> {
-        self.active_terminal.and_then(|i| self.home_terminals.get(i))
+        self.active_terminal
+            .and_then(|i| self.home_terminals.get(i))
     }
 
     /// Ensure at least one home terminal exists (spawning the first on demand),
@@ -530,7 +541,9 @@ impl App {
     /// Replace the active terminal's shell in place with a fresh one at `~`,
     /// keeping its slot and label. Used to recover an exited terminal.
     pub fn restart_active_terminal(&mut self, rows: u16, cols: u16) {
-        let Some(i) = self.active_terminal else { return };
+        let Some(i) = self.active_terminal else {
+            return;
+        };
         if i >= self.home_terminals.len() {
             return;
         }
@@ -1090,8 +1103,9 @@ impl App {
                 self.refresh_worktrees();
             }
             InputKind::AddWorktreeName => {
-                if value.contains('/') {
-                    self.modal = Modal::Message("name cannot contain '/'".into());
+                if !git::valid_worktree_name(&value) {
+                    self.modal =
+                        Modal::Message("invalid name: use letters, digits, '-', '_' or '.'".into());
                     return Ok(());
                 }
                 let Some(p) = self.selected_project().cloned() else {
@@ -1157,7 +1171,10 @@ impl App {
                 self.create_worktree(&p, &name);
             }
             ConfirmKind::InitRepo { path, name } => {
-                git::init_if_needed(&path)?;
+                if let Err(e) = git::init_if_needed(&path) {
+                    self.modal = Modal::Message(format!("git init failed: {e}"));
+                    return Ok(());
+                }
                 let needs_include = !std::path::Path::new(&path)
                     .join(".worktreeinclude")
                     .exists();
@@ -1178,29 +1195,32 @@ impl App {
                     into a fresh git worktree so the worktree can run immediately (.env, .env.local, local config, \
                     secrets, build/IDE state that's gitignored but needed). Look at .gitignore, package.json, \
                     pyproject.toml, Gemfile, go.mod, etc. Only write the file. No commentary.";
-                let res = Command::new("claude")
-                    .args([
-                        "--model",
-                        "haiku",
-                        "--dangerously-skip-permissions",
-                        "-p",
-                        prompt,
-                    ])
-                    .current_dir(&path)
-                    .status()
-                    .map_err(anyhow::Error::from)
-                    .and_then(|status| {
-                        if status.success() {
-                            Ok(())
-                        } else {
-                            anyhow::bail!("claude exited with {:?}", status.code());
-                        }
-                    });
-                self.status = match res {
-                    Ok(()) => ".worktreeinclude generated".into(),
-                    Err(e) => format!("generate failed: {e}"),
-                };
-                self.refresh_worktrees();
+                // Run in the background — the claude CLI can take minutes and
+                // must not block the UI thread. The tick handler drains
+                // `bg_status` when the job finishes.
+                let slot = self.bg_status.clone();
+                self.status = "generating .worktreeinclude…".into();
+                std::thread::spawn(move || {
+                    let res = Command::new("claude")
+                        .args([
+                            "--model",
+                            "haiku",
+                            "--dangerously-skip-permissions",
+                            "-p",
+                            prompt,
+                        ])
+                        .current_dir(&path)
+                        .stdin(std::process::Stdio::null())
+                        .status();
+                    let msg = match res {
+                        Ok(s) if s.success() => ".worktreeinclude generated".into(),
+                        Ok(s) => format!("generate failed: claude exited with {:?}", s.code()),
+                        Err(e) => format!("generate failed: {e}"),
+                    };
+                    if let Ok(mut g) = slot.lock() {
+                        *g = Some(msg);
+                    }
+                });
             }
         }
         Ok(())
