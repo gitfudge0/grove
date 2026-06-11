@@ -1,0 +1,73 @@
+<h2>Which indicator style fits Grove?</h2>
+<p class="subtitle">Each mockup shows the same five states: working, waiting for input, done, idle, exited. Animations are live.</p>
+
+<style>
+  .sb { background:#16181d; border-radius:8px; padding:10px 8px; font-family:ui-monospace,Menlo,monospace; font-size:13px; color:#c8ccd4; }
+  .srow { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:5px; }
+  .srow .lbl { flex:1; }
+  .srow .st { font-size:10px; color:#5b6170; text-transform:uppercase; letter-spacing:.5px; }
+  .dim { color:#6b7180; } .mute { color:#4a4f5c; }
+
+  /* A: pulsing dots */
+  .dot { width:8px; height:8px; border-radius:50%; flex:none; }
+  .d-work { background:#4cc38a; animation:pulse 1.2s ease-in-out infinite; }
+  .d-wait { background:#f0b429; animation:pulse 0.9s ease-in-out infinite; box-shadow:0 0 6px #f0b42966; }
+  .d-done { background:#4cc38a; }
+  .d-idle { background:#3a3f4b; }
+  .d-exit { background:transparent; border:1.5px solid #3a3f4b; }
+  @keyframes pulse { 0%,100%{opacity:1; transform:scale(1);} 50%{opacity:.35; transform:scale(.75);} }
+
+  /* B: icon glyphs */
+  .gl { width:14px; text-align:center; flex:none; font-size:12px; }
+  .g-work { color:#4cc38a; animation:spin8 0.8s steps(8) infinite; display:inline-block; }
+  @keyframes spin8 { to { transform:rotate(360deg); } }
+  .g-wait { color:#f0b429; animation:blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity:.2; } }
+  .g-done { color:#4cc38a; }
+
+  /* C: edge bar + tint */
+  .bar { border-left:3px solid transparent; }
+  .b-work { border-left-color:#4cc38a; background:linear-gradient(90deg,#4cc38a14,transparent 60%); }
+  .b-work .lbl::after { content:""; display:inline-block; width:5px; height:11px; margin-left:6px; background:#4cc38a; vertical-align:-1px; animation:blink 1s steps(2) infinite; }
+  .b-wait { border-left-color:#f0b429; background:linear-gradient(90deg,#f0b42918,transparent 60%); animation:tintpulse 1.4s ease-in-out infinite; }
+  @keyframes tintpulse { 50% { background:linear-gradient(90deg,#f0b42933,transparent 60%); } }
+  .b-done { border-left-color:#4cc38a55; }
+</style>
+
+<div class="cards">
+  <div class="card" data-choice="dots" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="sb">
+      <div class="srow"><span class="dot d-work"></span><span class="lbl">claude · auth-fix</span><span class="st">working</span></div>
+      <div class="srow"><span class="dot d-wait"></span><span class="lbl">claude · api-refactor</span><span class="st">waiting</span></div>
+      <div class="srow"><span class="dot d-done"></span><span class="lbl dim">codex · docs</span><span class="st">done</span></div>
+      <div class="srow"><span class="dot d-idle"></span><span class="lbl dim">opencode · spike</span><span class="st">idle</span></div>
+      <div class="srow"><span class="dot d-exit"></span><span class="lbl mute">claude · old-task</span><span class="st">exited</span></div>
+    </div></div>
+    <div class="card-body"><h3>A — Animated color dots</h3>
+    <p>Evolves the existing dot: green pulse = working, amber glow-pulse = waiting, solid green = done, dim = idle, hollow = exited. Minimal change to current visual language.</p></div>
+  </div>
+
+  <div class="card" data-choice="glyphs" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="sb">
+      <div class="srow"><span class="gl"><span class="g-work">◠</span></span><span class="lbl">claude · auth-fix</span><span class="st">working</span></div>
+      <div class="srow"><span class="gl g-wait">?</span><span class="lbl">claude · api-refactor</span><span class="st">waiting</span></div>
+      <div class="srow"><span class="gl g-done">✓</span><span class="lbl dim">codex · docs</span><span class="st">done</span></div>
+      <div class="srow"><span class="gl" style="color:#3a3f4b">·</span><span class="lbl dim">opencode · spike</span><span class="st">idle</span></div>
+      <div class="srow"><span class="gl" style="color:#3a3f4b">○</span><span class="lbl mute">claude · old-task</span><span class="st">exited</span></div>
+    </div></div>
+    <div class="card-body"><h3>B — Status glyphs</h3>
+    <p>Distinct icon per state: spinner = working, blinking "?" = waiting, check = done. Readable without relying on color alone (color-blind friendly), but busier.</p></div>
+  </div>
+
+  <div class="card" data-choice="bar" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="sb">
+      <div class="srow bar b-work"><span class="lbl">claude · auth-fix</span><span class="st">working</span></div>
+      <div class="srow bar b-wait"><span class="lbl">claude · api-refactor</span><span class="st">waiting</span></div>
+      <div class="srow bar b-done"><span class="lbl dim">codex · docs</span><span class="st">done</span></div>
+      <div class="srow bar"><span class="lbl dim">opencode · spike</span><span class="st">idle</span></div>
+      <div class="srow bar"><span class="lbl mute">claude · old-task</span><span class="st">exited</span></div>
+    </div></div>
+    <div class="card-body"><h3>C — Edge bar + row tint</h3>
+    <p>Colored left edge with a subtle row tint; waiting rows breathe. Most glanceable from across the room, but a bigger departure from the current design.</p></div>
+  </div>
+</div>

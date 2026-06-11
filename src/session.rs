@@ -477,6 +477,28 @@ impl Session {
         }
     }
 
+    /// Last `n` rows of the visible screen, newline-joined, for the activity
+    /// classifier. Reads the live grid regardless of any user scrollback.
+    pub fn tail_contents(&self, n: usize) -> String {
+        let Ok(p) = self.parser.lock() else {
+            return String::new();
+        };
+        let contents = p.screen().contents();
+        let lines: Vec<&str> = contents.lines().collect();
+        let start = lines.len().saturating_sub(n);
+        lines[start..].join("\n")
+    }
+
+    /// Total BEL (0x07) count vt100 has seen on this session's stream.
+    /// Monotonic; the caller diffs against its last-seen value. Using vt100's
+    /// counter (not a raw byte scan) means OSC terminators don't false-ring.
+    pub fn bell_count(&self) -> usize {
+        self.parser
+            .lock()
+            .map(|p| p.screen().audible_bell_count())
+            .unwrap_or(0)
+    }
+
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let rows = rows.max(1);
         let cols = cols.max(1);

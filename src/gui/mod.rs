@@ -13,6 +13,8 @@
 //! - [`metrics`]  — layout constants
 //! - [`palette`]  — color tokens
 
+mod activity;
+mod dock;
 mod drop;
 mod icons;
 mod keys;

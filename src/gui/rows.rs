@@ -1,7 +1,8 @@
 //! Sidebar row builders — projects, worktrees, and sessions.
 
+use super::activity::ActivityState;
 use super::icons::icon;
-use super::metrics::{ROW_H, SUBTITLE_H, UI_BOLD, UI_FONT};
+use super::metrics::{MONO_FONT, ROW_H, SUBTITLE_H, UI_BOLD, UI_FONT};
 use super::palette as c;
 use super::state::Msg;
 use super::widgets::{action_mini, action_mini_danger, clickable_row, split_start_button};
@@ -41,7 +42,14 @@ fn branch_chip<'a>(branch: &str, subtle: bool) -> Element<'a, Msg> {
     }
 }
 
-pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> Element<'a, Msg> {
+pub fn project_row<'a>(
+    idx: usize,
+    name: &str,
+    count: usize,
+    expanded: bool,
+    rollup: Option<ActivityState>,
+    tick: u32,
+) -> Element<'a, Msg> {
     let twist = if expanded { "chev-down" } else { "chev-right" };
     let has_sessions = count > 0;
     let count_color = if has_sessions {
@@ -149,7 +157,11 @@ pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> 
         }
     });
 
-    let right = row![add_btn, remove_btn]
+    let rollup_el: Element<'a, Msg> = match rollup {
+        Some(st) => state_glyph(st, tick),
+        None => Space::with_width(Length::Fixed(0.0)).into(),
+    };
+    let right = row![rollup_el, add_btn, remove_btn]
         .spacing(6)
         .align_y(iced::Alignment::Center)
         .padding(Padding {
@@ -190,6 +202,8 @@ pub fn worktree_row<'a>(
     is_main: bool,
     hovered: bool,
     expanded: bool,
+    rollup: Option<ActivityState>,
+    tick: u32,
 ) -> Element<'a, Msg> {
     // (Height logic shared with the agent-menu overlay positioning in view.rs
     // via `worktree_shows_branch` / `worktree_row_height`.)
@@ -274,7 +288,11 @@ pub fn worktree_row<'a>(
         Space::with_width(Length::Fixed(0.0)).into()
     };
 
-    container(row![left_btn, actions].align_y(iced::Alignment::Center))
+    let rollup_el: Element<'a, Msg> = match rollup {
+        Some(st) => state_glyph(st, tick),
+        None => Space::with_width(Length::Fixed(0.0)).into(),
+    };
+    container(row![left_btn, rollup_el, actions].align_y(iced::Alignment::Center))
         .height(row_h)
         .width(Length::Fill)
         .style(move |_| container::Style {
@@ -294,17 +312,17 @@ pub fn session_row<'a>(
     wt_name: &str,
     active: bool,
     pending_kill: bool,
+    state: ActivityState,
+    tick: u32,
 ) -> Element<'a, Msg> {
-    let running = matches!(
-        *s.status.lock().unwrap_or_else(|e| e.into_inner()),
-        SessionStatus::Running
-    );
     let agent_color = if active {
         c::CYAN()
-    } else if running {
-        c::FG()
     } else {
-        c::FG_MUTE()
+        match state {
+            ActivityState::Working | ActivityState::WaitingForInput => c::FG(),
+            ActivityState::Done | ActivityState::Idle => c::FG_DIM(),
+            ActivityState::Exited => c::FG_MUTE(),
+        }
     };
 
     // "Context" = the PTY's OSC window title with the redundant worktree /
@@ -344,7 +362,7 @@ pub fn session_row<'a>(
         action_mini("close", Msg::RequestKillSession(idx))
     };
 
-    let main_row: Element<'a, Msg> = row![Space::with_width(Length::Fixed(0.0)), meta, close_btn,]
+    let main_row: Element<'a, Msg> = row![state_glyph(state, tick), meta, close_btn,]
         .spacing(8)
         .align_y(iced::Alignment::Center)
         .padding(Padding {
@@ -504,36 +522,34 @@ fn truncate_ellipsis(s: &str, max_chars: usize) -> String {
 
 // ── activity-stream rows ────────────────────────────────────────────────
 
-/// Small 7×7 state dot. Three flavors:
-/// - `Running`: solid green.
-/// - `Idle`: faint (FG_MUTE) solid dot.
-/// - `Exited`: hollow ring drawn with a transparent fill and a `FG_MUTE`
-///   border.
-pub enum ActivityState {
-    Running,
-    Idle,
-    Exited,
-}
+/// Spinner frames for the Working state, advanced by the GUI tick.
+const SPINNER: [&str; 6] = ["◜", "◠", "◝", "◞", "◡", "◟"];
 
-fn state_dot<'a>(state: &ActivityState) -> Element<'a, Msg> {
-    let (bg, border_color, border_w) = match state {
-        ActivityState::Running => (Some(Background::Color(c::GREEN())), c::GREEN(), 0.0),
-        ActivityState::Idle => (Some(Background::Color(c::FG_MUTE())), c::FG_MUTE(), 0.0),
-        ActivityState::Exited => (None, c::FG_MUTE(), 1.0),
+/// Status glyph replacing the old state dot. `tick` is `Grove::blink_tick`
+/// (~60ms): spinner advances every 2 ticks (~8fps), the waiting `?` blinks
+/// at ~1Hz (8 ticks on, 8 off) by dimming — never hiding — the glyph, so
+/// row layout is stable.
+pub fn state_glyph<'a>(state: ActivityState, tick: u32) -> Element<'a, Msg> {
+    let (glyph, color) = match state {
+        ActivityState::Working => (SPINNER[(tick / 2) as usize % SPINNER.len()], c::GREEN()),
+        ActivityState::WaitingForInput => {
+            let on = (tick / 8).is_multiple_of(2);
+            ("?", if on { c::AMBER() } else { c::FG_MUTE() })
+        }
+        ActivityState::Done => ("✓", c::GREEN()),
+        ActivityState::Idle => ("·", c::FG_MUTE()),
+        ActivityState::Exited => ("○", c::FG_MUTE()),
     };
-    container(Space::with_width(7))
-        .width(7)
-        .height(7)
-        .style(move |_| container::Style {
-            background: bg,
-            border: Border {
-                color: border_color,
-                width: border_w,
-                radius: Radius::from(3.5),
-            },
-            ..Default::default()
-        })
-        .into()
+    container(
+        text(glyph)
+            .font(MONO_FONT)
+            .size(11)
+            .color(color)
+            .wrapping(iced::widget::text::Wrapping::None),
+    )
+    .width(14)
+    .center_x(14)
+    .into()
 }
 
 /// Group header row used between activity-stream sections: mono uppercase
@@ -632,55 +648,14 @@ pub fn session_activity_row<'a>(
     last_activity: Option<Duration>,
     hovered: bool,
     spawn_coords: Option<(usize, usize)>,
+    state: ActivityState,
+    tick: u32,
 ) -> Element<'a, Msg> {
-    let status = *s.status.lock().unwrap_or_else(|e| e.into_inner());
-    let state = match status {
-        SessionStatus::Running => ActivityState::Running,
-        SessionStatus::Exited(_) => ActivityState::Exited,
-    };
-    // Idle = running but no recent dirty signal. The activity-stream view
-    // separates the lists; this only affects the dot shade if the caller
-    // overrides via `state`.
     activity_row_inner(
         Some(idx),
         Some(s),
         state,
-        s.agent.label(),
-        project,
-        worktree,
-        Some(&s.branch),
-        active,
-        pending_kill,
-        last_activity,
-        hovered,
-        spawn_coords,
-    )
-}
-
-/// Variant of `session_activity_row` that forces the "idle" dot — used when
-/// the activity-stream grouping logic decides a Running session should appear
-/// under the `idle` heading.
-#[allow(clippy::too_many_arguments)]
-pub fn session_activity_row_idle<'a>(
-    idx: usize,
-    s: &Session,
-    project: &str,
-    worktree: &str,
-    active: bool,
-    pending_kill: bool,
-    last_activity: Option<Duration>,
-    hovered: bool,
-    spawn_coords: Option<(usize, usize)>,
-) -> Element<'a, Msg> {
-    let status = *s.status.lock().unwrap_or_else(|e| e.into_inner());
-    let state = match status {
-        SessionStatus::Running => ActivityState::Idle,
-        SessionStatus::Exited(_) => ActivityState::Exited,
-    };
-    activity_row_inner(
-        Some(idx),
-        Some(s),
-        state,
+        tick,
         s.agent.label(),
         project,
         worktree,
@@ -758,7 +733,7 @@ pub fn worktree_activity_row<'a>(
     };
 
     let inner = row![
-        container(state_dot(&ActivityState::Exited))
+        container(state_glyph(ActivityState::Exited, 0))
             .width(14)
             .center_y(Length::Fill),
         label_btn,
@@ -792,6 +767,7 @@ fn activity_row_inner<'a>(
     session_idx: Option<usize>,
     session: Option<&Session>,
     state: ActivityState,
+    tick: u32,
     agent_label: &str,
     project: &str,
     worktree: &str,
@@ -803,8 +779,8 @@ fn activity_row_inner<'a>(
     spawn_coords: Option<(usize, usize)>,
 ) -> Element<'a, Msg> {
     let agent_color = match state {
-        ActivityState::Running => c::FG(),
-        ActivityState::Idle => c::FG_DIM(),
+        ActivityState::Working | ActivityState::WaitingForInput => c::FG(),
+        ActivityState::Done | ActivityState::Idle => c::FG_DIM(),
         ActivityState::Exited => c::FG_MUTE(),
     };
     let agent_color = if active { c::CYAN() } else { agent_color };
@@ -865,7 +841,7 @@ fn activity_row_inner<'a>(
     };
 
     let inner = row![
-        container(state_dot(&state))
+        container(state_glyph(state, tick))
             .width(14)
             .center_y(Length::Fill),
         container(body).width(Length::Fill).clip(true),
