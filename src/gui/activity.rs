@@ -9,6 +9,9 @@ use std::time::Duration;
 
 /// Output younger than this counts as "actively producing".
 pub const WORKING_RECENT: Duration = Duration::from_secs(2);
+/// A scroll within this window discounts output recency: scrolling redraws
+/// the PTY, which otherwise reads as fresh agent output.
+pub const SCROLL_QUIET: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActivityState {
@@ -31,6 +34,10 @@ pub struct Signals {
     pub was_working: bool,
     /// This session is the focused/visible one right now.
     pub focused: bool,
+    /// The user scrolled within the last `SCROLL_QUIET` window. The redraw
+    /// that scrolling causes must not count as the agent producing output;
+    /// a genuinely working agent is still caught by its working marker.
+    pub scrolling: bool,
 }
 
 /// Per-session bookkeeping kept between classification ticks.
@@ -76,7 +83,7 @@ pub fn classify(agent: Agent, tail: &str, sig: &Signals) -> ActivityState {
     if !sig.alive {
         return ActivityState::Exited;
     }
-    let recent = sig.output_age < WORKING_RECENT;
+    let recent = sig.output_age < WORKING_RECENT && !sig.scrolling;
     if recent || matches_working(agent, tail) {
         return ActivityState::Working;
     }
@@ -149,6 +156,7 @@ mod tests {
             bell_pending: bell,
             was_working,
             focused,
+            scrolling: false,
         }
     }
 
@@ -183,6 +191,32 @@ mod tests {
         assert_eq!(
             classify(Agent::Terminal, "$ ", &sig(true, 60, false, false, false)),
             ActivityState::Idle
+        );
+    }
+
+    // ── scroll suppression ──────────────────────────────────────────────────
+
+    /// Scrolling a Done session redraws the PTY (fresh output), but must not
+    /// flip it to Working — the redraw is user-caused, not agent activity.
+    #[test]
+    fn scroll_redraw_does_not_resurrect_working() {
+        let mut signals = sig(true, 0, false, true, true);
+        signals.scrolling = true;
+        assert_eq!(
+            classify(Agent::Claude, "❯ ", &signals),
+            ActivityState::Done
+        );
+    }
+
+    /// While scrolling, a genuinely working agent is still caught by its
+    /// on-screen working marker.
+    #[test]
+    fn scroll_keeps_working_when_marker_visible() {
+        let mut signals = sig(true, 0, false, true, true);
+        signals.scrolling = true;
+        assert_eq!(
+            classify(Agent::Claude, "✻ Cogitating… (esc to interrupt)", &signals),
+            ActivityState::Working
         );
     }
 

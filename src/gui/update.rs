@@ -634,12 +634,16 @@ impl Grove {
             // Skip the parser lock for sessions that can't need it.
             let tail = if alive { s.tail_contents(15) } else { String::new() };
 
+            let scrolling = s
+                .scroll_age()
+                .is_some_and(|a| a < super::activity::SCROLL_QUIET);
             let sig = Signals {
                 alive,
                 output_age,
                 bell_pending: tracker.bell_pending,
                 was_working: tracker.was_working,
                 focused,
+                scrolling,
             };
             let new_state = classify(s.agent, &tail, &sig);
             if new_state == ActivityState::Working {

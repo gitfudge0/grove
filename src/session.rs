@@ -52,6 +52,11 @@ pub struct Session {
     /// the user has scrolled back). Tracked so we only spawn a `cancel` tmux
     /// call once when typing resumes, rather than on every keystroke.
     tmux_copy_mode: bool,
+    /// When the user last scrolled this session. Scrolling redraws the PTY
+    /// (tmux copy-mode, forwarded mouse events), which looks like fresh agent
+    /// output to the activity classifier — this timestamp lets it discount
+    /// output that immediately follows a scroll.
+    last_scroll_at: Option<Instant>,
 }
 
 impl Session {
@@ -265,6 +270,7 @@ impl Session {
             rows,
             cols,
             tmux_copy_mode: false,
+            last_scroll_at: None,
         })
     }
 
@@ -342,7 +348,13 @@ impl Session {
     /// pane-relative and 0-based. If the inner app requested mouse reporting
     /// the event is forwarded to it; otherwise we scroll grove's own
     /// scrollback buffer.
+    /// Seconds since the user last scrolled this session, if ever.
+    pub fn scroll_age(&self) -> Option<std::time::Duration> {
+        self.last_scroll_at.map(|t| t.elapsed())
+    }
+
     pub fn scroll(&mut self, up: bool, col: u16, row: u16) {
+        self.last_scroll_at = Some(Instant::now());
         // Tmux backend: the attached client is on the alternate screen, so the
         // real history is in tmux's copy-mode buffer, not grove's vt100
         // scrollback. Drive copy-mode directly; the re-render arrives through
