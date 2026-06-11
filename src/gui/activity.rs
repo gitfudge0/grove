@@ -1,0 +1,350 @@
+//! Derived per-session activity state + the per-agent screen classifiers.
+//!
+//! All agent UI pattern strings live here so agent-UI drift is a one-file fix.
+//! Classification is best-effort and cosmetic: states drive only sidebar
+//! visuals and the macOS dock badge, never behavior.
+
+use crate::agent::Agent;
+use std::time::Duration;
+
+/// Output younger than this counts as "actively producing".
+pub const WORKING_RECENT: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivityState {
+    Working,
+    WaitingForInput,
+    Done,
+    Idle,
+    Exited,
+}
+
+/// Signals sampled per session on the classification tick.
+pub struct Signals {
+    /// Process alive (SessionStatus::Running).
+    pub alive: bool,
+    /// Time since the last PTY read.
+    pub output_age: Duration,
+    /// BEL rang since the user last viewed this session.
+    pub bell_pending: bool,
+    /// Session was `Working` earlier in this stretch (since last ack).
+    pub was_working: bool,
+    /// This session is the focused/visible one right now.
+    pub focused: bool,
+}
+
+/// Per-session bookkeeping kept between classification ticks.
+pub struct Tracker {
+    pub state: ActivityState,
+    /// Sticky "was Working since last acknowledgment" flag.
+    pub was_working: bool,
+    /// vt100 `audible_bell_count()` we've already consumed.
+    pub bell_seen: usize,
+    /// A bell rang while the session was unfocused and hasn't been acked.
+    pub bell_pending: bool,
+}
+
+impl Default for Tracker {
+    fn default() -> Self {
+        Self {
+            state: ActivityState::Idle,
+            was_working: false,
+            bell_seen: 0,
+            bell_pending: false,
+        }
+    }
+}
+
+impl Tracker {
+    /// Acknowledge pending attention: called when the user focuses the
+    /// session. Bell clears, working-history resets, urgent states downgrade.
+    pub fn acknowledge(&mut self) {
+        self.bell_pending = false;
+        self.was_working = false;
+        if matches!(
+            self.state,
+            ActivityState::WaitingForInput | ActivityState::Done
+        ) {
+            self.state = ActivityState::Idle;
+        }
+    }
+}
+
+/// Classify one session from its signals + the bottom rows of its screen.
+/// `tail` is the last ~15 rows of the parsed vt100 grid, newline-joined.
+pub fn classify(agent: Agent, tail: &str, sig: &Signals) -> ActivityState {
+    if !sig.alive {
+        return ActivityState::Exited;
+    }
+    let recent = sig.output_age < WORKING_RECENT;
+    if recent || matches_working(agent, tail) {
+        return ActivityState::Working;
+    }
+    // Output is quiet from here on.
+    if !sig.focused && (sig.bell_pending || matches_waiting(agent, tail)) {
+        return ActivityState::WaitingForInput;
+    }
+    if sig.was_working {
+        return ActivityState::Done;
+    }
+    ActivityState::Idle
+}
+
+/// Screen shows the agent's active-work marker. Generic agents (plain
+/// terminals) have none — recency alone decides for them.
+fn matches_working(agent: Agent, tail: &str) -> bool {
+    let patterns: &[&str] = match agent {
+        Agent::Claude => &["esc to interrupt"],
+        Agent::Codex => &["Esc to interrupt", "esc to interrupt"],
+        Agent::OpenCode => &["esc interrupt", "working"],
+        Agent::Terminal => &[],
+    };
+    patterns.iter().any(|p| tail.contains(p))
+}
+
+/// Screen bottom shows a pending question / permission prompt.
+fn matches_waiting(agent: Agent, tail: &str) -> bool {
+    let patterns: &[&str] = match agent {
+        Agent::Claude => &["Do you want", "Would you like", "❯ 1.", "1. Yes"],
+        Agent::Codex => &["Allow command?", "Yes (y)", "▌ Yes", "select an option"],
+        Agent::OpenCode => &["permission", "Permission", "1. Yes"],
+        Agent::Terminal => &[],
+    };
+    patterns.iter().any(|p| tail.contains(p))
+}
+
+/// Roll-up urgency for collapsed parent rows: waiting > working > done;
+/// idle/exited contribute nothing.
+pub fn most_urgent(states: impl Iterator<Item = ActivityState>) -> Option<ActivityState> {
+    let mut best: Option<ActivityState> = None;
+    for s in states {
+        let rank = urgency_rank(s);
+        if rank.is_none() {
+            continue;
+        }
+        if rank > best.and_then(urgency_rank) {
+            best = Some(s);
+        }
+    }
+    best
+}
+
+fn urgency_rank(s: ActivityState) -> Option<u8> {
+    match s {
+        ActivityState::WaitingForInput => Some(3),
+        ActivityState::Working => Some(2),
+        ActivityState::Done => Some(1),
+        ActivityState::Idle | ActivityState::Exited => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sig(alive: bool, age_secs: u64, bell: bool, was_working: bool, focused: bool) -> Signals {
+        Signals {
+            alive,
+            output_age: Duration::from_secs(age_secs),
+            bell_pending: bell,
+            was_working,
+            focused,
+        }
+    }
+
+    // ── classify: generic rules ─────────────────────────────────────────────
+
+    #[test]
+    fn dead_process_is_exited() {
+        assert_eq!(
+            classify(Agent::Claude, "", &sig(false, 999, true, true, false)),
+            ActivityState::Exited
+        );
+    }
+
+    #[test]
+    fn recent_output_is_working() {
+        assert_eq!(
+            classify(Agent::Terminal, "", &sig(true, 0, false, false, false)),
+            ActivityState::Working
+        );
+    }
+
+    #[test]
+    fn quiet_with_working_history_is_done() {
+        assert_eq!(
+            classify(Agent::Claude, "❯ ", &sig(true, 10, false, true, false)),
+            ActivityState::Done
+        );
+    }
+
+    #[test]
+    fn quiet_no_history_is_idle() {
+        assert_eq!(
+            classify(Agent::Terminal, "$ ", &sig(true, 60, false, false, false)),
+            ActivityState::Idle
+        );
+    }
+
+    // ── bell handling ───────────────────────────────────────────────────────
+
+    #[test]
+    fn bell_plus_quiet_is_waiting() {
+        assert_eq!(
+            classify(Agent::Terminal, "", &sig(true, 10, true, false, false)),
+            ActivityState::WaitingForInput
+        );
+    }
+
+    /// A decorative BEL during active output must not flag waiting.
+    #[test]
+    fn bell_while_output_recent_stays_working() {
+        assert_eq!(
+            classify(Agent::Claude, "", &sig(true, 0, true, true, false)),
+            ActivityState::Working
+        );
+    }
+
+    /// The focused session never shows WaitingForInput.
+    #[test]
+    fn focused_session_never_waiting() {
+        let s = classify(
+            Agent::Claude,
+            "Do you want to proceed?",
+            &sig(true, 10, true, true, true),
+        );
+        assert_ne!(s, ActivityState::WaitingForInput);
+        assert_eq!(s, ActivityState::Done); // was_working + quiet
+    }
+
+    // ── per-agent fixtures (captured screen snippets) ───────────────────────
+
+    /// Claude Code's running footer.
+    #[test]
+    fn claude_working_marker() {
+        let tail = "✻ Cogitating… (3s · esc to interrupt)";
+        assert_eq!(
+            classify(Agent::Claude, tail, &sig(true, 10, false, false, false)),
+            ActivityState::Working
+        );
+    }
+
+    /// Claude Code's permission dialog.
+    #[test]
+    fn claude_permission_box_is_waiting() {
+        let tail = "\
+│ Do you want to make this edit to main.rs?          │
+│ ❯ 1. Yes                                            │
+│   2. Yes, allow all edits during this session       │
+│   3. No, and tell Claude what to do differently     │";
+        assert_eq!(
+            classify(Agent::Claude, tail, &sig(true, 10, false, true, false)),
+            ActivityState::WaitingForInput
+        );
+    }
+
+    /// Claude at-rest prompt with working history → Done, not Waiting.
+    #[test]
+    fn claude_at_rest_after_work_is_done() {
+        let tail = "╭──────╮\n│ >    │\n╰──────╯";
+        assert_eq!(
+            classify(Agent::Claude, tail, &sig(true, 10, false, true, false)),
+            ActivityState::Done
+        );
+    }
+
+    /// Codex spinner/footer.
+    #[test]
+    fn codex_working_marker() {
+        let tail = "▌ Working (12s · Esc to interrupt)";
+        assert_eq!(
+            classify(Agent::Codex, tail, &sig(true, 10, false, false, false)),
+            ActivityState::Working
+        );
+    }
+
+    /// Codex approval prompt.
+    #[test]
+    fn codex_approval_is_waiting() {
+        let tail = "Allow command?\n▌ Yes (y)\n  No, provide feedback (n)";
+        assert_eq!(
+            classify(Agent::Codex, tail, &sig(true, 10, false, true, false)),
+            ActivityState::WaitingForInput
+        );
+    }
+
+    /// OpenCode permission prompt.
+    #[test]
+    fn opencode_permission_is_waiting() {
+        let tail = "permission required: edit src/main.rs\n1. Yes  2. No";
+        assert_eq!(
+            classify(Agent::OpenCode, tail, &sig(true, 10, false, false, false)),
+            ActivityState::WaitingForInput
+        );
+    }
+
+    /// Unknown/plain terminal: no pattern matches → pure recency.
+    #[test]
+    fn terminal_ignores_agent_patterns() {
+        let tail = "Do you want fries with that? (shell output, not a prompt)";
+        assert_eq!(
+            classify(Agent::Terminal, tail, &sig(true, 60, false, false, false)),
+            ActivityState::Idle
+        );
+    }
+
+    // ── most_urgent roll-up ─────────────────────────────────────────────────
+
+    #[test]
+    fn urgency_waiting_beats_working() {
+        let got =
+            most_urgent([ActivityState::Working, ActivityState::WaitingForInput].into_iter());
+        assert_eq!(got, Some(ActivityState::WaitingForInput));
+    }
+
+    #[test]
+    fn urgency_working_beats_done() {
+        let got = most_urgent([ActivityState::Done, ActivityState::Working].into_iter());
+        assert_eq!(got, Some(ActivityState::Working));
+    }
+
+    #[test]
+    fn urgency_idle_and_exited_roll_up_to_nothing() {
+        let got = most_urgent([ActivityState::Idle, ActivityState::Exited].into_iter());
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn rollup_empty_iterator_is_none() {
+        assert_eq!(most_urgent(std::iter::empty()), None);
+    }
+
+    // ── tracker acknowledgment ──────────────────────────────────────────────
+
+    #[test]
+    fn acknowledge_clears_bell_and_downgrades() {
+        let mut t = Tracker {
+            state: ActivityState::WaitingForInput,
+            was_working: true,
+            bell_seen: 3,
+            bell_pending: true,
+        };
+        t.acknowledge();
+        assert!(!t.bell_pending);
+        assert!(!t.was_working);
+        assert_eq!(t.state, ActivityState::Idle);
+    }
+
+    #[test]
+    fn acknowledge_leaves_working_alone() {
+        let mut t = Tracker {
+            state: ActivityState::Working,
+            was_working: true,
+            bell_seen: 0,
+            bell_pending: true,
+        };
+        t.acknowledge();
+        assert_eq!(t.state, ActivityState::Working);
+        assert!(!t.bell_pending);
+    }
+}
