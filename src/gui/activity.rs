@@ -91,7 +91,9 @@ pub fn classify(agent: Agent, tail: &str, sig: &Signals) -> ActivityState {
     if !sig.focused && (sig.bell_pending || matches_waiting(agent, tail)) {
         return ActivityState::WaitingForInput;
     }
-    if sig.was_working {
+    // Plain terminals never reach Done: their "work" signal is just typing
+    // echo, and a green ✓ on a shell where nothing ran reads as noise.
+    if sig.was_working && agent != Agent::Terminal {
         return ActivityState::Done;
     }
     ActivityState::Idle
@@ -110,14 +112,29 @@ fn matches_working(agent: Agent, tail: &str) -> bool {
 }
 
 /// Screen bottom shows a pending question / permission prompt.
+///
+/// Question phrases like "Do you want" routinely appear in agent *response
+/// text* too, so a bare phrase match would false-positive (spurious dock
+/// bounces). Each phrase must co-occur with menu structure — a selection
+/// caret or numbered options — which response prose doesn't have.
 fn matches_waiting(agent: Agent, tail: &str) -> bool {
-    let patterns: &[&str] = match agent {
-        Agent::Claude => &["Do you want", "Would you like", "❯ 1.", "1. Yes"],
-        Agent::Codex => &["Allow command?", "Yes (y)", "▌ Yes", "select an option"],
-        Agent::OpenCode => &["permission", "Permission", "1. Yes"],
-        Agent::Terminal => &[],
-    };
-    patterns.iter().any(|p| tail.contains(p))
+    match agent {
+        Agent::Claude => {
+            tail.contains("❯ 1.")
+                || ((tail.contains("Do you want") || tail.contains("Would you like"))
+                    && tail.contains("1."))
+        }
+        Agent::Codex => {
+            tail.contains("Allow command?")
+                || tail.contains("select an option")
+                || (tail.contains("Yes (y)") && tail.contains("(n)"))
+        }
+        Agent::OpenCode => {
+            (tail.contains("permission") || tail.contains("Permission"))
+                && (tail.contains("1.") || tail.contains("Yes"))
+        }
+        Agent::Terminal => false,
+    }
 }
 
 /// Roll-up urgency for collapsed parent rows: waiting > working > done;
@@ -323,6 +340,27 @@ mod tests {
         let tail = "Do you want fries with that? (shell output, not a prompt)";
         assert_eq!(
             classify(Agent::Terminal, tail, &sig(true, 60, false, false, false)),
+            ActivityState::Idle
+        );
+    }
+
+    /// Question phrases inside agent response *prose* (no menu structure)
+    /// must not flag waiting — that caused spurious dock bounces.
+    #[test]
+    fn claude_prose_question_is_not_waiting() {
+        let tail = "Do you want me to also update the docs? I can do that\n\
+                    in a follow-up. Let me know which approach you prefer.";
+        assert_eq!(
+            classify(Agent::Claude, tail, &sig(true, 10, false, false, false)),
+            ActivityState::Idle
+        );
+    }
+
+    /// Plain terminals never show Done — typing echo isn't "work".
+    #[test]
+    fn terminal_never_done() {
+        assert_eq!(
+            classify(Agent::Terminal, "$ ", &sig(true, 10, false, true, false)),
             ActivityState::Idle
         );
     }

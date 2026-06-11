@@ -60,6 +60,9 @@ impl Grove {
             focused_pane: FocusedPane::Agent,
             dir_cache: Default::default(),
             activity: Default::default(),
+            // Assumed focused at launch (iced can't be queried); corrected by
+            // the first Focused/Unfocused event. Worst case: one missed dock
+            // bounce in the first moments of an unfocused launch.
             window_focused: true,
             last_badge: 0,
         };
@@ -610,18 +613,21 @@ impl Grove {
     fn refresh_activity(&mut self) {
         use super::activity::{classify, ActivityState, Signals};
         let now = std::time::Instant::now();
-        let mut live_keys: Vec<usize> = Vec::with_capacity(self.app.sessions.len());
+        let mut live_keys: Vec<u64> = Vec::with_capacity(self.app.sessions.len());
         let mut newly_waiting = false;
 
         for (i, s) in self.app.sessions.iter().enumerate() {
-            let key = Arc::as_ptr(&s.dirty) as usize;
-            live_keys.push(key);
+            live_keys.push(s.id);
             let focused = self.app.active_session == Some(i) && self.window_focused;
-            let tracker = self.activity.entry(key).or_default();
+            let tracker = self.activity.entry(s.id).or_default();
 
             // Consume new bells: pending only when they ring unfocused.
             let bells = s.bell_count();
-            if bells > tracker.bell_seen {
+            if bells < tracker.bell_seen {
+                // The counter only goes backwards if the vt100 parser was
+                // reset/replaced — resync instead of going silent forever.
+                tracker.bell_seen = bells;
+            } else if bells > tracker.bell_seen {
                 tracker.bell_seen = bells;
                 if !focused {
                     tracker.bell_pending = true;
@@ -685,8 +691,7 @@ impl Grove {
     /// Acknowledge the given session's tracker (user focused it).
     fn acknowledge_session(&mut self, i: usize) {
         if let Some(s) = self.app.sessions.get(i) {
-            let key = Arc::as_ptr(&s.dirty) as usize;
-            if let Some(t) = self.activity.get_mut(&key) {
+            if let Some(t) = self.activity.get_mut(&s.id) {
                 t.acknowledge();
             }
         }
@@ -695,9 +700,8 @@ impl Grove {
     /// Read-only state lookup for the view layer. Unknown sessions render
     /// Idle until the first classification tick.
     pub(super) fn activity_state(&self, s: &Session) -> super::activity::ActivityState {
-        let key = Arc::as_ptr(&s.dirty) as usize;
         self.activity
-            .get(&key)
+            .get(&s.id)
             .map(|t| t.state)
             .unwrap_or(super::activity::ActivityState::Idle)
     }

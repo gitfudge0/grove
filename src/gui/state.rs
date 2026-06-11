@@ -121,10 +121,10 @@ pub struct Grove {
     /// input buffer. `view()` runs every tick; without this the modal would hit
     /// the filesystem (`read_dir`) on every frame.
     pub dir_cache: std::cell::RefCell<Option<(String, Vec<String>)>>,
-    /// Per-session activity trackers, keyed by the session's `dirty` Arc
-    /// pointer (same stable key as `pty_cache`). Refreshed every ~480ms by
-    /// `Msg::Tick`; stale keys are pruned on the same pass.
-    pub activity: HashMap<usize, super::activity::Tracker>,
+    /// Per-session activity trackers, keyed by `Session::id` (never reused,
+    /// unlike Arc pointer addresses). Refreshed every ~480ms by `Msg::Tick`;
+    /// stale keys are pruned on the same pass.
+    pub activity: HashMap<u64, super::activity::Tracker>,
     /// Whether the OS window currently has focus — gates the dock bounce.
     pub window_focused: bool,
     /// Last dock badge value pushed, to avoid redundant objc calls.

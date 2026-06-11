@@ -13,7 +13,7 @@ const INIT_COLS: u16 = 80;
 const SCROLL_STEP: usize = 3;
 /// Max scrollback lines retained by the vt100 parser per session.
 const SCROLLBACK_LINES: usize = 5000;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -30,8 +30,15 @@ pub enum SessionBackend {
     Tmux { name: String },
 }
 
+/// Process-wide session id source. Never reused, unlike Arc pointer
+/// addresses, so map keys derived from `Session::id` can't collide when a
+/// session is killed and another spawned at the same allocation.
+static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(0);
+
 /// An agent process running inside an embedded pseudo-terminal.
 pub struct Session {
+    /// Unique, never-reused id (see `NEXT_SESSION_ID`).
+    pub id: u64,
     pub label: String,
     pub project: String,
     #[allow(dead_code)]
@@ -254,6 +261,7 @@ impl Session {
 
         let branch = crate::git::current_branch(&wt_path);
         Ok(Session {
+            id: NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed),
             label,
             project,
             wt_path,
@@ -490,12 +498,21 @@ impl Session {
     }
 
     /// Last `n` rows of the visible screen, newline-joined, for the activity
-    /// classifier. Reads the live grid regardless of any user scrollback.
+    /// classifier. Always reads the *live* grid: the scrollback offset is
+    /// temporarily zeroed so a user scrolled into history doesn't make the
+    /// classifier see stale markers (or miss a fresh prompt at the bottom).
     pub fn tail_contents(&self, n: usize) -> String {
-        let Ok(p) = self.parser.lock() else {
+        let Ok(mut p) = self.parser.lock() else {
             return String::new();
         };
+        let orig = p.screen().scrollback();
+        if orig != 0 {
+            p.set_scrollback(0);
+        }
         let contents = p.screen().contents();
+        if orig != 0 {
+            p.set_scrollback(orig);
+        }
         let lines: Vec<&str> = contents.lines().collect();
         let start = lines.len().saturating_sub(n);
         lines[start..].join("\n")
