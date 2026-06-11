@@ -38,6 +38,10 @@ pub struct Signals {
     /// that scrolling causes must not count as the agent producing output;
     /// a genuinely working agent is still caught by its working marker.
     pub scrolling: bool,
+    /// The OSC 0/1/2 window title the inner app last emitted, if any.
+    /// Structured (the agent sets it deliberately), so it outranks the
+    /// screen-pattern scrape when it yields a definite answer.
+    pub title: Option<String>,
 }
 
 /// Per-session bookkeeping kept between classification ticks.
@@ -83,6 +87,17 @@ pub fn classify(agent: Agent, tail: &str, sig: &Signals) -> ActivityState {
     if !sig.alive {
         return ActivityState::Exited;
     }
+    // Structured signal first: the OSC title is set by the agent on purpose,
+    // unlike the screen scrape which breaks whenever the TUI is restyled.
+    // An unrecognized (or absent) title is "no answer", not "not working" —
+    // we fall through to the screen patterns and recency heuristics.
+    let title = sig.title.as_deref();
+    if title.is_some_and(|t| title_working(agent, t)) {
+        return ActivityState::Working;
+    }
+    if !sig.focused && title.is_some_and(|t| title_waiting(agent, t)) {
+        return ActivityState::WaitingForInput;
+    }
     let recent = sig.output_age < WORKING_RECENT && !sig.scrolling;
     if recent || matches_working(agent, tail) {
         return ActivityState::Working;
@@ -97,6 +112,40 @@ pub fn classify(agent: Agent, tail: &str, sig: &Signals) -> ActivityState {
         return ActivityState::Done;
     }
     ActivityState::Idle
+}
+
+/// Title shows the agent's "actively working" marker.
+///
+/// Claude Code titles its window `"{prefix} {task}"`. While a turn runs the
+/// prefix animates through `["\u{2802}", "\u{2810}"]` (braille ⠂/⠐, 960ms
+/// cycle); at rest it is the static `✳` (verified against the shipped
+/// 2.1.173 binary: `Vg4=["⠂","⠐"]`, `hg4="✳"`). Older builds
+/// cycled the on-screen spinner frames (✢ ✶ ✻ ✽) instead, so those are
+/// accepted too. `✳` is deliberately NOT a signal either way: it is both the
+/// at-rest prefix and one historical spinner frame, so it proves nothing.
+///
+/// Codex does not emit OSC titles (openai/codex#21958) and we could not
+/// substantiate any for OpenCode — both stay on the screen-pattern fallback.
+fn title_working(agent: Agent, title: &str) -> bool {
+    let prefixes: &[&str] = match agent {
+        Agent::Claude => &[
+            "\u{2802} ", // ⠂ current spinner frame
+            "\u{2810} ", // ⠐ current spinner frame
+            "\u{2722} ", // ✢ legacy spinner frame
+            "\u{2736} ", // ✶ legacy spinner frame
+            "\u{273B} ", // ✻ legacy spinner frame
+            "\u{273D} ", // ✽ legacy spinner frame
+        ],
+        Agent::Codex | Agent::OpenCode | Agent::Terminal => &[],
+    };
+    prefixes.iter().any(|p| title.starts_with(p))
+}
+
+/// Title shows a pending question / permission prompt. No agent we support
+/// emits a substantiated waiting marker in its title today; this exists so
+/// the precedence slot is wired up when one appears.
+fn title_waiting(_agent: Agent, _title: &str) -> bool {
+    false
 }
 
 /// Screen shows the agent's active-work marker. Generic agents (plain
@@ -174,7 +223,13 @@ mod tests {
             was_working,
             focused,
             scrolling: false,
+            title: None,
         }
+    }
+
+    fn with_title(mut s: Signals, title: &str) -> Signals {
+        s.title = Some(title.to_string());
+        s
     }
 
     // ── classify: generic rules ─────────────────────────────────────────────
@@ -363,6 +418,77 @@ mod tests {
             classify(Agent::Terminal, "$ ", &sig(true, 10, false, true, false)),
             ActivityState::Idle
         );
+    }
+
+    // ── structured title signal ─────────────────────────────────────────────
+
+    /// Claude's animated braille title prefix means a turn is running, even
+    /// when output is quiet and no screen marker is visible.
+    #[test]
+    fn claude_braille_title_is_working() {
+        for t in ["\u{2802} Fix the login bug", "\u{2810} Fix the login bug"] {
+            let s = with_title(sig(true, 60, false, false, false), t);
+            assert_eq!(classify(Agent::Claude, "", &s), ActivityState::Working);
+        }
+    }
+
+    /// Legacy Claude builds animated the on-screen spinner frames instead.
+    #[test]
+    fn claude_legacy_spinner_title_is_working() {
+        let s = with_title(sig(true, 60, false, false, false), "✶ Refactor parser");
+        assert_eq!(classify(Agent::Claude, "", &s), ActivityState::Working);
+    }
+
+    /// Title says working, screen shows a (stale) permission menu: the
+    /// structured signal wins over the screen scrape.
+    #[test]
+    fn title_working_beats_screen_waiting() {
+        let tail = "│ Do you want to make this edit?  │\n│ ❯ 1. Yes  │";
+        let s = with_title(sig(true, 10, false, true, false), "\u{2802} Edit main.rs");
+        assert_eq!(classify(Agent::Claude, tail, &s), ActivityState::Working);
+    }
+
+    /// The static ✳ prefix is the at-rest glyph (and a legacy spinner
+    /// frame): ambiguous, so it must NOT count as working — fall through.
+    #[test]
+    fn claude_static_asterisk_title_is_no_answer() {
+        let s = with_title(sig(true, 60, false, false, false), "✳ Fix the login bug");
+        assert_eq!(classify(Agent::Claude, "", &s), ActivityState::Idle);
+    }
+
+    /// An unrecognized title falls through to the screen patterns.
+    #[test]
+    fn unrecognized_title_falls_back_to_screen() {
+        let tail = "✻ Cogitating… (3s · esc to interrupt)";
+        let s = with_title(sig(true, 10, false, false, false), "some shell title");
+        assert_eq!(classify(Agent::Claude, tail, &s), ActivityState::Working);
+    }
+
+    /// No title at all behaves exactly like before (screen fallback).
+    #[test]
+    fn missing_title_falls_back_to_screen() {
+        let tail = "Allow command?\n▌ Yes (y)\n  No, provide feedback (n)";
+        assert_eq!(
+            classify(Agent::Codex, tail, &sig(true, 10, false, true, false)),
+            ActivityState::WaitingForInput
+        );
+    }
+
+    /// The braille glyphs only mean "working" for Claude; other agents'
+    /// titles are not interpreted.
+    #[test]
+    fn title_patterns_are_per_agent() {
+        let s = with_title(sig(true, 60, false, false, false), "\u{2802} doing stuff");
+        assert_eq!(classify(Agent::Codex, "", &s), ActivityState::Idle);
+        let s = with_title(sig(true, 60, false, false, false), "\u{2802} doing stuff");
+        assert_eq!(classify(Agent::Terminal, "", &s), ActivityState::Idle);
+    }
+
+    /// A dead process is Exited regardless of what the stale title claims.
+    #[test]
+    fn title_never_resurrects_dead_process() {
+        let s = with_title(sig(false, 0, false, false, false), "\u{2802} working hard");
+        assert_eq!(classify(Agent::Claude, "", &s), ActivityState::Exited);
     }
 
     // ── most_urgent roll-up ─────────────────────────────────────────────────
