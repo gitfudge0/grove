@@ -522,23 +522,45 @@ fn truncate_ellipsis(s: &str, max_chars: usize) -> String {
 
 // ── activity-stream rows ────────────────────────────────────────────────
 
-/// Spinner frames for the Working state, advanced by the GUI tick.
-const SPINNER: [&str; 6] = ["◜", "◠", "◝", "◞", "◡", "◟"];
+/// Spinner frames for the Working state, advanced by the GUI tick. Plain
+/// ASCII on purpose: the bundled fonts carry no arc/braille/circle glyphs
+/// (U+25xx / U+28xx render as tofu), so frames must come from the chars the
+/// fonts actually have.
+const SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
 
 /// Status glyph replacing the old state dot. `tick` is `Grove::blink_tick`
-/// (~60ms): spinner advances every 2 ticks (~8fps), the waiting `?` blinks
-/// at ~1Hz (8 ticks on, 8 off) by dimming — never hiding — the glyph, so
-/// row layout is stable.
+/// (~60ms): spinner advances every 3 ticks, the waiting `?` blinks at ~1Hz
+/// (8 ticks on, 8 off) by dimming — never hiding — the glyph, so row layout
+/// is stable. `Exited` is a drawn hollow ring (no suitable glyph in the
+/// bundled fonts).
 pub fn state_glyph<'a>(state: ActivityState, tick: u32) -> Element<'a, Msg> {
     let (glyph, color) = match state {
-        ActivityState::Working => (SPINNER[(tick / 2) as usize % SPINNER.len()], c::GREEN()),
+        ActivityState::Working => (SPINNER[(tick / 3) as usize % SPINNER.len()], c::GREEN()),
         ActivityState::WaitingForInput => {
             let on = (tick / 8).is_multiple_of(2);
             ("?", if on { c::AMBER() } else { c::FG_MUTE() })
         }
         ActivityState::Done => ("✓", c::GREEN()),
         ActivityState::Idle => ("·", c::FG_MUTE()),
-        ActivityState::Exited => ("○", c::FG_MUTE()),
+        ActivityState::Exited => {
+            // Hollow 7px ring, vector-drawn like the original state dot.
+            return container(
+                container(Space::with_width(7))
+                    .width(7)
+                    .height(7)
+                    .style(|_| container::Style {
+                        border: Border {
+                            color: c::FG_MUTE(),
+                            width: 1.0,
+                            radius: Radius::from(3.5),
+                        },
+                        ..Default::default()
+                    }),
+            )
+            .width(14)
+            .center_x(14)
+            .into();
+        }
     };
     container(
         text(glyph)
