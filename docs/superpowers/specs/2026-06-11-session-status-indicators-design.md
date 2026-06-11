@@ -1,7 +1,7 @@
 # Session Status Indicators — Design
 
 **Date:** 2026-06-11
-**Status:** Approved
+**Status:** Implemented
 
 ## Goal
 
