@@ -36,5 +36,8 @@ iced = { version = "0.13", features = ["tokio", "advanced", "svg", "canvas"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
 [dev-dependencies]
 smol_str = "0.2"

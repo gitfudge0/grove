@@ -533,7 +533,7 @@ pub fn state_glyph<'a>(state: ActivityState, tick: u32) -> Element<'a, Msg> {
     let (glyph, color) = match state {
         ActivityState::Working => (SPINNER[(tick / 2) as usize % SPINNER.len()], c::GREEN()),
         ActivityState::WaitingForInput => {
-            let on = (tick / 8) % 2 == 0;
+            let on = (tick / 8).is_multiple_of(2);
             ("?", if on { c::AMBER() } else { c::FG_MUTE() })
         }
         ActivityState::Done => ("✓", c::GREEN()),

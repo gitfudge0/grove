@@ -128,7 +128,7 @@ impl Grove {
                     self.app.refresh_worktrees();
                 }
                 // Re-classify session activity every 8th tick (~480ms at 60ms).
-                if self.blink_tick % 8 == 0 {
+                if self.blink_tick.is_multiple_of(8) {
                     self.refresh_activity();
                 }
             }
