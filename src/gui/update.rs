@@ -59,6 +59,9 @@ impl Grove {
             term_panel_portion: TERM_PANEL_PORTION,
             focused_pane: FocusedPane::Agent,
             dir_cache: Default::default(),
+            activity: Default::default(),
+            window_focused: true,
+            last_badge: 0,
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -98,6 +101,12 @@ impl Grove {
                 Event::Window(iced::window::Event::FileDropped(path)) => {
                     Some(Msg::FileDropped(path))
                 }
+                Event::Window(iced::window::Event::Focused) => {
+                    Some(Msg::WindowFocusChanged(true))
+                }
+                Event::Window(iced::window::Event::Unfocused) => {
+                    Some(Msg::WindowFocusChanged(false))
+                }
                 _ => None,
             }
         });
@@ -117,6 +126,19 @@ impl Grove {
                 if let Some(msg) = bg {
                     self.app.status = msg;
                     self.app.refresh_worktrees();
+                }
+                // Re-classify session activity every 8th tick (~480ms at 60ms).
+                if self.blink_tick % 8 == 0 {
+                    self.refresh_activity();
+                }
+            }
+            Msg::WindowFocusChanged(f) => {
+                self.window_focused = f;
+                // Regaining focus acknowledges the visible session.
+                if f {
+                    if let Some(i) = self.app.active_session {
+                        self.acknowledge_session(i);
+                    }
                 }
             }
             Msg::SidebarSetView(v) => {
@@ -302,6 +324,7 @@ impl Grove {
                 self.pending_kill = None;
                 if i < self.app.sessions.len() {
                     self.app.active_session = Some(i);
+                    self.acknowledge_session(i);
                     self.app.sessions[i].resize(self.pty_rows, self.pty_sess_cols);
                     // The panel re-anchors to the new session's worktree; reset
                     // focus so a stale agent/panel choice doesn't carry over.
@@ -579,6 +602,100 @@ impl Grove {
     fn theme_picker_cancel(&mut self) {
         self.app.theme_picker_cancel();
         self.invalidate_pty_render_cache();
+    }
+
+    /// Recompute every session's `ActivityState` from its live signals.
+    /// Runs every ~480ms; also prunes trackers for sessions that no longer
+    /// exist and pushes dock badge/bounce updates on transitions.
+    fn refresh_activity(&mut self) {
+        use super::activity::{classify, ActivityState, Signals};
+        let now = std::time::Instant::now();
+        let mut live_keys: Vec<usize> = Vec::with_capacity(self.app.sessions.len());
+        let mut newly_waiting = false;
+
+        for (i, s) in self.app.sessions.iter().enumerate() {
+            let key = Arc::as_ptr(&s.dirty) as usize;
+            live_keys.push(key);
+            let focused = self.app.active_session == Some(i) && self.window_focused;
+            let tracker = self.activity.entry(key).or_default();
+
+            // Consume new bells: pending only when they ring unfocused.
+            let bells = s.bell_count();
+            if bells > tracker.bell_seen {
+                tracker.bell_seen = bells;
+                if !focused {
+                    tracker.bell_pending = true;
+                }
+            }
+
+            let alive = matches!(s.status(), crate::session::SessionStatus::Running);
+            let t = *s.last_output_at.lock().unwrap_or_else(|e| e.into_inner());
+            let output_age = now.saturating_duration_since(t);
+            // Skip the parser lock for sessions that can't need it.
+            let tail = if alive { s.tail_contents(15) } else { String::new() };
+
+            let sig = Signals {
+                alive,
+                output_age,
+                bell_pending: tracker.bell_pending,
+                was_working: tracker.was_working,
+                focused,
+            };
+            let new_state = classify(s.agent, &tail, &sig);
+            if new_state == ActivityState::Working {
+                tracker.was_working = true;
+            }
+            if !alive {
+                tracker.was_working = false;
+                tracker.bell_pending = false;
+            }
+            if focused {
+                // Watching it = continuously acknowledged.
+                tracker.bell_pending = false;
+            }
+            if new_state == ActivityState::WaitingForInput
+                && tracker.state != ActivityState::WaitingForInput
+            {
+                newly_waiting = true;
+            }
+            tracker.state = new_state;
+        }
+
+        self.activity.retain(|k, _| live_keys.contains(k));
+
+        // Dock: badge = waiting count; one bounce per enter-while-unfocused.
+        let waiting = self
+            .activity
+            .values()
+            .filter(|t| t.state == ActivityState::WaitingForInput)
+            .count();
+        if waiting != self.last_badge {
+            super::dock::set_badge(waiting);
+            self.last_badge = waiting;
+        }
+        if newly_waiting && !self.window_focused {
+            super::dock::request_attention();
+        }
+    }
+
+    /// Acknowledge the given session's tracker (user focused it).
+    fn acknowledge_session(&mut self, i: usize) {
+        if let Some(s) = self.app.sessions.get(i) {
+            let key = Arc::as_ptr(&s.dirty) as usize;
+            if let Some(t) = self.activity.get_mut(&key) {
+                t.acknowledge();
+            }
+        }
+    }
+
+    /// Read-only state lookup for the view layer. Unknown sessions render
+    /// Idle until the first classification tick.
+    pub(super) fn activity_state(&self, s: &Session) -> super::activity::ActivityState {
+        let key = Arc::as_ptr(&s.dirty) as usize;
+        self.activity
+            .get(&key)
+            .map(|t| t.state)
+            .unwrap_or(super::activity::ActivityState::Idle)
     }
 
     fn invalidate_pty_render_cache(&mut self) {

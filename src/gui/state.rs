@@ -121,6 +121,14 @@ pub struct Grove {
     /// input buffer. `view()` runs every tick; without this the modal would hit
     /// the filesystem (`read_dir`) on every frame.
     pub dir_cache: std::cell::RefCell<Option<(String, Vec<String>)>>,
+    /// Per-session activity trackers, keyed by the session's `dirty` Arc
+    /// pointer (same stable key as `pty_cache`). Refreshed every ~480ms by
+    /// `Msg::Tick`; stale keys are pruned on the same pass.
+    pub activity: HashMap<usize, super::activity::Tracker>,
+    /// Whether the OS window currently has focus — gates the dock bounce.
+    pub window_focused: bool,
+    /// Last dock badge value pushed, to avoid redundant objc calls.
+    pub last_badge: usize,
 }
 
 /// Identifies which on-screen PTY a mouse event originated from. The home
@@ -186,6 +194,9 @@ pub struct StyledRun {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Tick,
+    /// OS window gained/lost focus (drives dock-bounce gating and
+    /// implicit acknowledgment of the visible session).
+    WindowFocusChanged(bool),
     WindowResized(Size),
     BackendNative,
     BackendTmux,
