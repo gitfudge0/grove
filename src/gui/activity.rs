@@ -9,6 +9,10 @@ use std::time::Duration;
 
 /// Output younger than this counts as "actively producing".
 pub const WORKING_RECENT: Duration = Duration::from_secs(2);
+/// A working title older than this (by output age) is distrusted: a real
+/// working turn always produces output well within this window, so a quiet
+/// PTY plus an animated title means the agent is hung with a stale title.
+pub const TITLE_STALE: Duration = Duration::from_secs(60);
 /// A scroll within this window discounts output recency: scrolling redraws
 /// the PTY, which otherwise reads as fresh agent output.
 pub const SCROLL_QUIET: Duration = Duration::from_secs(3);
@@ -87,23 +91,26 @@ pub fn classify(agent: Agent, tail: &str, sig: &Signals) -> ActivityState {
     if !sig.alive {
         return ActivityState::Exited;
     }
-    // Structured signal first: the OSC title is set by the agent on purpose,
-    // unlike the screen scrape which breaks whenever the TUI is restyled.
-    // An unrecognized (or absent) title is "no answer", not "not working" —
-    // we fall through to the screen patterns and recency heuristics.
+    // Waiting evidence: a visible permission prompt or a pending bell. The
+    // title is a coarse whole-turn status signal, so this more specific
+    // evidence must outrank it — letting a working title mask
+    // WaitingForInput (the highest-urgency state, the one that drives the
+    // dock badge) would be the worst possible failure. The title may only
+    // assert Working when there is no waiting evidence. The staleness belt:
+    // a working title on a long-quiet PTY means a hard-hung agent whose
+    // animated title froze, not real work, so the title alone never asserts
+    // Working past TITLE_STALE.
+    let waiting = !sig.focused && (sig.bell_pending || matches_waiting(agent, tail));
     let title = sig.title.as_deref();
-    if title.is_some_and(|t| title_working(agent, t)) {
+    if !waiting && sig.output_age < TITLE_STALE && title.is_some_and(|t| title_working(agent, t)) {
         return ActivityState::Working;
-    }
-    if !sig.focused && title.is_some_and(|t| title_waiting(agent, t)) {
-        return ActivityState::WaitingForInput;
     }
     let recent = sig.output_age < WORKING_RECENT && !sig.scrolling;
     if recent || matches_working(agent, tail) {
         return ActivityState::Working;
     }
     // Output is quiet from here on.
-    if !sig.focused && (sig.bell_pending || matches_waiting(agent, tail)) {
+    if waiting {
         return ActivityState::WaitingForInput;
     }
     // Plain terminals never reach Done: their "work" signal is just typing
@@ -119,9 +126,9 @@ pub fn classify(agent: Agent, tail: &str, sig: &Signals) -> ActivityState {
 /// Claude Code titles its window `"{prefix} {task}"`. While a turn runs the
 /// prefix animates through `["\u{2802}", "\u{2810}"]` (braille ⠂/⠐, 960ms
 /// cycle); at rest it is the static `✳` (verified against the shipped
-/// 2.1.173 binary: `Vg4=["⠂","⠐"]`, `hg4="✳"`). Older builds
-/// cycled the on-screen spinner frames (✢ ✶ ✻ ✽) instead, so those are
-/// accepted too. `✳` is deliberately NOT a signal either way: it is both the
+/// 2.1.173 binary: `Vg4=["⠂","⠐"]`, `hg4="✳"`). Only the current frames are
+/// encoded; an unrecognized prefix falls through harmlessly to the screen
+/// patterns. `✳` is deliberately NOT a signal either way: it is both the
 /// at-rest prefix and one historical spinner frame, so it proves nothing.
 ///
 /// Codex does not emit OSC titles (openai/codex#21958) and we could not
@@ -131,21 +138,10 @@ fn title_working(agent: Agent, title: &str) -> bool {
         Agent::Claude => &[
             "\u{2802} ", // ⠂ current spinner frame
             "\u{2810} ", // ⠐ current spinner frame
-            "\u{2722} ", // ✢ legacy spinner frame
-            "\u{2736} ", // ✶ legacy spinner frame
-            "\u{273B} ", // ✻ legacy spinner frame
-            "\u{273D} ", // ✽ legacy spinner frame
         ],
         Agent::Codex | Agent::OpenCode | Agent::Terminal => &[],
     };
     prefixes.iter().any(|p| title.starts_with(p))
-}
-
-/// Title shows a pending question / permission prompt. No agent we support
-/// emits a substantiated waiting marker in its title today; this exists so
-/// the precedence slot is wired up when one appears.
-fn title_waiting(_agent: Agent, _title: &str) -> bool {
-    false
 }
 
 /// Screen shows the agent's active-work marker. Generic agents (plain
@@ -274,10 +270,7 @@ mod tests {
     fn scroll_redraw_does_not_resurrect_working() {
         let mut signals = sig(true, 0, false, true, true);
         signals.scrolling = true;
-        assert_eq!(
-            classify(Agent::Claude, "❯ ", &signals),
-            ActivityState::Done
-        );
+        assert_eq!(classify(Agent::Claude, "❯ ", &signals), ActivityState::Done);
     }
 
     /// While scrolling, a genuinely working agent is still caught by its
@@ -427,25 +420,35 @@ mod tests {
     #[test]
     fn claude_braille_title_is_working() {
         for t in ["\u{2802} Fix the login bug", "\u{2810} Fix the login bug"] {
-            let s = with_title(sig(true, 60, false, false, false), t);
+            let s = with_title(sig(true, 30, false, false, false), t);
             assert_eq!(classify(Agent::Claude, "", &s), ActivityState::Working);
         }
     }
 
-    /// Legacy Claude builds animated the on-screen spinner frames instead.
+    /// A visible permission menu is specific evidence the agent is blocked
+    /// on the user; the title is only a coarse turn-status signal. Waiting
+    /// must win — masking WaitingForInput (the state that drives the dock
+    /// badge) behind a working title would be the worst possible failure.
     #[test]
-    fn claude_legacy_spinner_title_is_working() {
-        let s = with_title(sig(true, 60, false, false, false), "✶ Refactor parser");
-        assert_eq!(classify(Agent::Claude, "", &s), ActivityState::Working);
-    }
-
-    /// Title says working, screen shows a (stale) permission menu: the
-    /// structured signal wins over the screen scrape.
-    #[test]
-    fn title_working_beats_screen_waiting() {
+    fn screen_waiting_beats_working_title() {
         let tail = "│ Do you want to make this edit?  │\n│ ❯ 1. Yes  │";
         let s = with_title(sig(true, 10, false, true, false), "\u{2802} Edit main.rs");
-        assert_eq!(classify(Agent::Claude, tail, &s), ActivityState::Working);
+        assert_eq!(
+            classify(Agent::Claude, tail, &s),
+            ActivityState::WaitingForInput
+        );
+    }
+
+    /// A working title on a long-quiet PTY is a hard-hung agent with a
+    /// frozen animated title, not real work: past TITLE_STALE the title
+    /// alone must not assert Working (with working history it reads Done).
+    #[test]
+    fn stale_working_title_does_not_assert_working() {
+        let s = with_title(
+            sig(true, 120, false, true, false),
+            "\u{2802} Fix the login bug",
+        );
+        assert_eq!(classify(Agent::Claude, "", &s), ActivityState::Done);
     }
 
     /// The static ✳ prefix is the at-rest glyph (and a legacy spinner
@@ -495,8 +498,7 @@ mod tests {
 
     #[test]
     fn urgency_waiting_beats_working() {
-        let got =
-            most_urgent([ActivityState::Working, ActivityState::WaitingForInput].into_iter());
+        let got = most_urgent([ActivityState::Working, ActivityState::WaitingForInput].into_iter());
         assert_eq!(got, Some(ActivityState::WaitingForInput));
     }
 
