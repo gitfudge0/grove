@@ -42,7 +42,14 @@ fn branch_chip<'a>(branch: &str, subtle: bool) -> Element<'a, Msg> {
     }
 }
 
-pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> Element<'a, Msg> {
+pub fn project_row<'a>(
+    idx: usize,
+    name: &str,
+    count: usize,
+    expanded: bool,
+    rollup: Option<ActivityState>,
+    tick: u32,
+) -> Element<'a, Msg> {
     let twist = if expanded { "chev-down" } else { "chev-right" };
     let has_sessions = count > 0;
     let count_color = if has_sessions {
@@ -150,7 +157,11 @@ pub fn project_row<'a>(idx: usize, name: &str, count: usize, expanded: bool) -> 
         }
     });
 
-    let right = row![add_btn, remove_btn]
+    let rollup_el: Element<'a, Msg> = match rollup {
+        Some(st) => state_glyph(st, tick),
+        None => Space::with_width(Length::Fixed(0.0)).into(),
+    };
+    let right = row![rollup_el, add_btn, remove_btn]
         .spacing(6)
         .align_y(iced::Alignment::Center)
         .padding(Padding {
@@ -191,6 +202,8 @@ pub fn worktree_row<'a>(
     is_main: bool,
     hovered: bool,
     expanded: bool,
+    rollup: Option<ActivityState>,
+    tick: u32,
 ) -> Element<'a, Msg> {
     // (Height logic shared with the agent-menu overlay positioning in view.rs
     // via `worktree_shows_branch` / `worktree_row_height`.)
@@ -275,7 +288,11 @@ pub fn worktree_row<'a>(
         Space::with_width(Length::Fixed(0.0)).into()
     };
 
-    container(row![left_btn, actions].align_y(iced::Alignment::Center))
+    let rollup_el: Element<'a, Msg> = match rollup {
+        Some(st) => state_glyph(st, tick),
+        None => Space::with_width(Length::Fixed(0.0)).into(),
+    };
+    container(row![left_btn, rollup_el, actions].align_y(iced::Alignment::Center))
         .height(row_h)
         .width(Length::Fill)
         .style(move |_| container::Style {

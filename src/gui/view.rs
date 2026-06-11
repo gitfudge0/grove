@@ -324,7 +324,27 @@ impl Grove {
                 .iter()
                 .filter(|s| s.project == pname)
                 .count();
-            col = col.push(project_row(pi, &pname, count, expanded));
+            // Collapsed projects surface the most urgent descendant state as
+            // a trailing glyph; expanded parents show nothing extra.
+            let proj_rollup = if !expanded {
+                super::activity::most_urgent(
+                    self.app
+                        .sessions
+                        .iter()
+                        .filter(|s| s.project == pname)
+                        .map(|s| self.activity_state(s)),
+                )
+            } else {
+                None
+            };
+            col = col.push(project_row(
+                pi,
+                &pname,
+                count,
+                expanded,
+                proj_rollup,
+                self.blink_tick,
+            ));
 
             if !expanded {
                 continue;
@@ -343,6 +363,18 @@ impl Grove {
                 let active_wt = pi == self.app.proj_idx && wi == self.app.wt_idx;
                 let hovered = self.hovered_wt == Some((pi, wi));
                 let wt_expanded = !self.collapsed_wt.contains(&(pi, wi));
+                // Same roll-up rule as projects: only when collapsed.
+                let wt_rollup = if !wt_expanded {
+                    super::activity::most_urgent(
+                        self.app
+                            .sessions
+                            .iter()
+                            .filter(|s| s.wt_path == w.path)
+                            .map(|s| self.activity_state(s)),
+                    )
+                } else {
+                    None
+                };
                 let wt_el = worktree_row(
                     pi,
                     wi,
@@ -352,6 +384,8 @@ impl Grove {
                     w.is_main,
                     hovered,
                     wt_expanded,
+                    wt_rollup,
+                    self.blink_tick,
                 );
                 col = col.push(
                     iced::widget::mouse_area(wt_el)
