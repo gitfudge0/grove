@@ -650,6 +650,9 @@ impl Grove {
                 was_working: tracker.was_working,
                 focused,
                 scrolling,
+                // Structured OSC title — primary working signal for agents
+                // that emit one; vt100 already tracks it from the PTY stream.
+                title: if alive { s.current_title() } else { None },
             };
             let new_state = classify(s.agent, &tail, &sig);
             if new_state == ActivityState::Working {
