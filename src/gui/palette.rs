@@ -111,6 +111,11 @@ pub fn MAGENTA() -> Color {
 pub fn GREEN() -> Color {
     ic(theme::current().green)
 }
+/// Attention amber — the "needs input" accent. Warmer than YELLOW so it
+/// reads as a call to action next to green/working.
+pub fn AMBER() -> Color {
+    mix(ic(theme::current().yellow), ic(theme::current().red), 0.25)
+}
 pub fn YELLOW() -> Color {
     ic(theme::current().yellow)
 }

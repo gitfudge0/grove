@@ -8,7 +8,7 @@ use super::metrics::{
 use super::palette as c;
 use super::pty::{rebuild_row_runs, PtyProgram};
 use super::rows::{
-    activity_group_header, project_row, session_activity_row, session_activity_row_idle,
+    activity_group_header, project_row, session_activity_row,
     session_row, worktree_activity_row, worktree_row,
 };
 use super::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, SidebarView};
@@ -366,7 +366,15 @@ impl Grove {
                     if s.wt_path == w.path {
                         let active = self.app.active_session == Some(si);
                         let pending_kill = self.pending_kill == Some(si);
-                        col = col.push(session_row(si, s, &wname, active, pending_kill));
+                        col = col.push(session_row(
+                            si,
+                            s,
+                            &wname,
+                            active,
+                            pending_kill,
+                            self.activity_state(s),
+                            self.blink_tick,
+                        ));
                     }
                 }
             }
@@ -378,9 +386,7 @@ impl Grove {
     /// worktree, grouped by liveness (`running` / `idle` / `worktrees · no
     /// sessions`).
     fn activity_view(&self) -> Element<'_, Msg> {
-        // Idle threshold: a running session whose dirty flag hasn't lit up in
-        // this window is considered idle. ~45s feels right for "paused".
-        const IDLE_AFTER: std::time::Duration = std::time::Duration::from_secs(45);
+        use super::activity::ActivityState;
         let now = std::time::Instant::now();
 
         // Pre-compute lookups used by both the grouping pass and the row
@@ -412,32 +418,28 @@ impl Grove {
             .map(|s| self.resolve_session_wname(s, &project_idx))
             .collect();
 
+        let mut waiting: Vec<usize> = Vec::new();
         let mut running: Vec<usize> = Vec::new();
         let mut idle: Vec<(usize, std::time::Instant)> = Vec::new();
         let mut exited: Vec<(usize, std::time::Instant)> = Vec::new();
         for (i, s) in self.app.sessions.iter().enumerate() {
-            let status = *s.status.lock().unwrap_or_else(|e| e.into_inner());
             let t = *s.last_output_at.lock().unwrap_or_else(|e| e.into_inner());
-            let age = now.saturating_duration_since(t);
-            match status {
-                crate::session::SessionStatus::Running => {
-                    if age >= IDLE_AFTER {
-                        idle.push((i, t));
-                    } else {
-                        running.push(i);
-                    }
-                }
-                crate::session::SessionStatus::Exited(_) => exited.push((i, t)),
+            match self.activity_state(s) {
+                ActivityState::WaitingForInput => waiting.push(i),
+                ActivityState::Working => running.push(i),
+                ActivityState::Done | ActivityState::Idle => idle.push((i, t)),
+                ActivityState::Exited => exited.push((i, t)),
             }
         }
         // Exited sessions live under "idle" — they're not running, not "live".
         idle.extend(exited);
-        // Running sessions sort by creation order (newest first) — sorting by
-        // `last_output_at` made the list reorder on every PTY read, since a
-        // live agent updates its timestamp many times per second.
+        // Waiting/working sessions sort by creation order (newest first) —
+        // sorting by `last_output_at` made the list reorder on every PTY read,
+        // since a live agent updates its timestamp many times per second.
         // Why: idle/exited timestamps are frozen by definition, so sorting
         // those by recency is stable; running ones aren't. The timestamps were
         // snapshotted above so the sort doesn't re-lock per comparison.
+        waiting.sort_by_key(|i| std::cmp::Reverse(*i));
         running.sort_by_key(|i| std::cmp::Reverse(*i));
         idle.sort_by_key(|&(_, t)| std::cmp::Reverse(t));
         let idle: Vec<usize> = idle.into_iter().map(|(i, _)| i).collect();
@@ -473,18 +475,21 @@ impl Grove {
 
         let mut col: Column<'_, Msg> = Column::new().spacing(0);
 
+        // "waiting" is an attention group: shown on top, hidden when empty
+        // (unlike the always-visible running/idle scaffolding).
+        if !waiting.is_empty() {
+            col = col.push(activity_group_header("waiting", waiting.len(), true, None));
+            for si in waiting {
+                col = col.push(self.activity_row_wrapped(si, &session_wnames[si], now, &project_idx));
+            }
+        }
+
         col = col.push(activity_group_header("running", running.len(), true, None));
         if running.is_empty() {
             col = col.push(self.activity_empty_hint("no live sessions"));
         }
         for si in running {
-            col = col.push(self.activity_row_wrapped(
-                si,
-                false,
-                &session_wnames[si],
-                now,
-                &project_idx,
-            ));
+            col = col.push(self.activity_row_wrapped(si, &session_wnames[si], now, &project_idx));
         }
 
         col = col.push(activity_group_header("idle", idle.len(), true, None));
@@ -492,13 +497,7 @@ impl Grove {
             col = col.push(self.activity_empty_hint("nothing paused"));
         }
         for si in idle {
-            col = col.push(self.activity_row_wrapped(
-                si,
-                true,
-                &session_wnames[si],
-                now,
-                &project_idx,
-            ));
+            col = col.push(self.activity_row_wrapped(si, &session_wnames[si], now, &project_idx));
         }
 
         col = col.push(activity_group_header(
@@ -528,7 +527,6 @@ impl Grove {
     fn activity_row_wrapped<'a>(
         &'a self,
         si: usize,
-        force_idle: bool,
         wname: &str,
         now: std::time::Instant,
         project_idx: &std::collections::HashMap<&str, usize>,
@@ -540,31 +538,19 @@ impl Grove {
         let last = Some(now.saturating_duration_since(t));
         let hovered = self.hovered_activity_row == Some(si);
         let coords = self.resolve_session_wt_coords(s, project_idx);
-        let row_el = if force_idle {
-            session_activity_row_idle(
-                si,
-                s,
-                &s.project,
-                wname,
-                active,
-                pending_kill,
-                last,
-                hovered,
-                coords,
-            )
-        } else {
-            session_activity_row(
-                si,
-                s,
-                &s.project,
-                wname,
-                active,
-                pending_kill,
-                last,
-                hovered,
-                coords,
-            )
-        };
+        let row_el = session_activity_row(
+            si,
+            s,
+            &s.project,
+            wname,
+            active,
+            pending_kill,
+            last,
+            hovered,
+            coords,
+            self.activity_state(s),
+            self.blink_tick,
+        );
         iced::widget::mouse_area(row_el)
             .on_enter(Msg::HoverActivityRow(Some(si)))
             .on_exit(Msg::HoverActivityRow(None))
