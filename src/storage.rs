@@ -3,10 +3,28 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Optional per-project shell scripts run at worktree lifecycle points. Each is
+/// a shell snippet (run via `$SHELL -lc`); `None`/empty means that lifecycle
+/// step is a no-op. Shared by every worktree of the project.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ProjectScripts {
+    /// Runs when a new worktree is created (in the new worktree's directory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<String>,
+    /// Runs on demand when the user triggers it from a worktree row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    /// Runs when a worktree is deleted, before `git worktree remove`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teardown: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
     pub path: String,
+    #[serde(default)]
+    pub scripts: ProjectScripts,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -124,10 +142,12 @@ mod tests {
                 Project {
                     name: "myapp".into(),
                     path: "/home/user/myapp".into(),
+                    scripts: Default::default(),
                 },
                 Project {
                     name: "other".into(),
                     path: "/tmp/other".into(),
+                    scripts: Default::default(),
                 },
             ],
             default_agent: Some(Agent::Claude),

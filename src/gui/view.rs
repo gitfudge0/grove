@@ -13,7 +13,8 @@ use super::rows::{
 };
 use super::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, SidebarView};
 use super::widgets::{
-    control_btn, divider_h, divider_v, dot, empty_workspace, footer_btn, icon_btn, modal_action,
+    control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_workspace, footer_btn,
+    icon_btn, modal_action,
     modal_dir_row, modal_list_row, modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn,
     tool_btn_toggle, vline, ModalBtn, SegSide,
 };
@@ -119,12 +120,25 @@ impl Grove {
             ..Default::default()
         });
 
+        // `- <num> +` reads as one control: the three buttons sit flush (zero
+        // row spacing, tight per-button padding), with outer horizontal padding
+        // that becomes the margin to the left of `-` and the right of `+`,
+        // separating the unit from the segment buttons and the theme toggle.
+        let zoom = container(
+            row![
+                control_icon_btn("minus", Msg::ZoomOut, 20.0, 13.0),
+                control_btn_sized(format!("{:.0}%", self.ui_zoom * 100.0), Msg::ZoomReset, 12, 2),
+                control_icon_btn("plus", Msg::ZoomIn, 20.0, 13.0),
+            ]
+            .spacing(0)
+            .align_y(iced::Alignment::Center),
+        )
+        .padding(Padding::from([0, 10]));
+
         let right = row![
             seg,
-            control_btn("-".to_string(), Msg::ZoomOut),
-            control_btn(format!("{:.0}%", self.ui_zoom * 100.0), Msg::ZoomReset),
-            control_btn("+".to_string(), Msg::ZoomIn),
-            icon_btn("cog", Msg::OpenThemePicker),
+            zoom,
+            icon_btn("contrast", Msg::OpenThemePicker),
         ]
         .spacing(4)
         .padding(Padding::from([0, 16]))
@@ -390,6 +404,9 @@ impl Grove {
                 } else {
                     None
                 };
+                let has_run = self.app.store.projects.get(pi).is_some_and(|p| {
+                    p.scripts.run.as_deref().is_some_and(|s| !s.trim().is_empty())
+                });
                 let wt_el = worktree_row(
                     pi,
                     wi,
@@ -399,6 +416,7 @@ impl Grove {
                     w.is_main,
                     hovered,
                     wt_expanded,
+                    has_run,
                     wt_rollup,
                     self.blink_tick,
                 );
@@ -1084,12 +1102,43 @@ impl Grove {
                 .push(session_context);
         }
 
+        // Resolve the session's (project, worktree) indices so the run button
+        // can target the right worktree, and only show it when the project has
+        // a run script configured.
+        let coords = self
+            .app
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == s.project)
+            .and_then(|pi| {
+                let wts: &[Worktree] = if pi == self.app.proj_idx {
+                    &self.app.worktrees
+                } else {
+                    self.wt_cache.get(&pi).map(|v| v.as_slice()).unwrap_or(&[])
+                };
+                wts.iter().position(|w| w.path == s.wt_path).map(|wi| (pi, wi))
+            });
+        let run_btn: Element<'_, Msg> = match coords {
+            Some((proj, wt))
+                if self.app.store.projects[proj]
+                    .scripts
+                    .run
+                    .as_deref()
+                    .is_some_and(|s| !s.trim().is_empty()) =>
+            {
+                tool_btn("play", "run script", false, Msg::RunScript { proj, wt })
+            }
+            _ => Space::with_width(0).into(),
+        };
+
         let bar = row![
             status,
             vline(),
             container(identity).width(Length::Fill).clip(true),
             sess_text(s.wt_path.clone(), c::FG_MUTE()),
             vline(),
+            run_btn,
             tool_btn_toggle(
                 "term",
                 "terminal",
@@ -1406,6 +1455,8 @@ impl Grove {
                 tab,
                 ..
             } => self.theme_picker_modal(*sel_dark, *sel_light, *tab),
+            Modal::Teardown => self.teardown_modal(),
+            Modal::ScriptsEditor => self.scripts_editor_modal(),
             _ => Space::with_width(0).into(),
         };
 
@@ -1718,6 +1769,207 @@ impl Grove {
         .spacing(12);
 
         modal_panel(body.into(), 480.0, c::CYAN())
+    }
+
+    fn teardown_modal(&self) -> Element<'_, Msg> {
+        use crate::app::TeardownStage;
+        let td = match &self.app.teardown {
+            Some(td) => td,
+            None => return Space::with_width(0).into(),
+        };
+        let wt_name = crate::app::path_basename(&td.wt_path);
+        let done = matches!(td.stage, TeardownStage::Done { .. });
+        let running = matches!(td.stage, TeardownStage::RunningScript);
+
+        let mut body = column![
+            text(format!("delete worktree / {wt_name}"))
+                .size(13)
+                .color(c::RED()),
+        ]
+        .spacing(12);
+
+        // Embedded teardown-script PTY (read-only) while it runs / after it
+        // exits, until removal completes and the session is dropped.
+        if let Some(s) = &td.session {
+            let pty = container(self.pty(PtyPane::Agent, s))
+                .width(Length::Fill)
+                .height(Length::Fixed(220.0))
+                .style(|_| container::Style {
+                    background: Some(Background::Color(c::BG())),
+                    border: Border {
+                        color: c::BORDER(),
+                        width: 1.0,
+                        radius: Radius::from(4.0),
+                    },
+                    ..Default::default()
+                });
+            body = body.push(pty);
+        }
+
+        body = body.push(
+            text(td.message.clone())
+                .size(13)
+                .color(if done { c::FG_DIM() } else { c::FG_MUTE() })
+                .wrapping(iced::widget::text::Wrapping::Word),
+        );
+
+        let buttons = if done {
+            row![
+                Space::with_width(Length::Fill),
+                modal_action("close", ModalBtn::Primary, Msg::ModalCancel),
+            ]
+        } else if running {
+            // Let the user proceed without waiting for a hung teardown script.
+            row![
+                Space::with_width(Length::Fill),
+                modal_action("skip & remove", ModalBtn::Plain, Msg::ModalCancel),
+            ]
+        } else {
+            row![Space::with_width(Length::Fill)]
+        }
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+
+        body = body.push(Space::with_height(4)).push(buttons);
+        modal_panel(body.into(), 560.0, c::RED())
+    }
+
+    fn scripts_editor_modal(&self) -> Element<'_, Msg> {
+        use super::state::ScriptField;
+        let ed = match &self.scripts_editor {
+            Some(ed) => ed,
+            None => return Space::with_width(0).into(),
+        };
+
+        let field = |label: &str,
+                     desc: &str,
+                     placeholder: &str,
+                     content,
+                     which: ScriptField| {
+            // Shrink height grows the editor with its content (Iced sizes a
+            // Shrink text_editor to its measured line count), so it never
+            // scrolls internally — the outer scroll area absorbs any overflow.
+            let editor = iced::widget::text_editor(content)
+                .height(Length::Shrink)
+                .font(iced::Font::MONOSPACE)
+                .size(12)
+                .padding(8)
+                .placeholder(placeholder.to_string())
+                .style(|_, status| {
+                    use iced::widget::text_editor::Status;
+                    // Cyan border on focus mirrors the modal accent and tells the
+                    // user which field has keyboard focus without relying on color
+                    // alone (the caret and selection move with it too).
+                    let border_color = match status {
+                        Status::Focused => c::CYAN(),
+                        Status::Hovered => c::BORDER(),
+                        _ => c::BORDER_SOFT(),
+                    };
+                    iced::widget::text_editor::Style {
+                        background: Background::Color(c::BG_STRIP()),
+                        border: Border {
+                            color: border_color,
+                            width: 1.0,
+                            radius: Radius::from(4.0),
+                        },
+                        icon: c::FG_MUTE(),
+                        placeholder: c::FG_MUTE(),
+                        value: c::FG(),
+                        selection: c::BG_HL(),
+                    }
+                })
+                .on_action(move |a| Msg::ScriptsEditorAction(which, a));
+            column![
+                text(label.to_string()).size(12).color(c::FG()),
+                text(desc.to_string())
+                    .size(11)
+                    .color(c::FG_MUTE())
+                    .wrapping(iced::widget::text::Wrapping::Word),
+                editor,
+            ]
+            .spacing(5)
+        };
+
+        let fields = column![
+            field(
+                "setup",
+                "Runs once when a new worktree is created, inside the new worktree's directory. \
+                 Use it to install dependencies, copy ignored env files, or start the services \
+                 an agent needs before you begin working.",
+                "npm install",
+                &ed.setup,
+                ScriptField::Setup,
+            ),
+            field(
+                "run",
+                "Runs on demand when you press the play button (worktree row or session header). \
+                 It opens an interactive terminal tab, so it suits dev servers, test watchers, \
+                 or any command you want to watch and interact with.",
+                "npm run dev",
+                &ed.run,
+                ScriptField::Run,
+            ),
+            field(
+                "teardown",
+                "Runs when you delete the worktree, before it is removed from disk. Use it to \
+                 stop services, tear down databases, or clean up anything setup created. \
+                 Deletion proceeds once it exits.",
+                "docker compose down",
+                &ed.teardown,
+                ScriptField::Teardown,
+            ),
+        ]
+        .spacing(16);
+
+        // The fields size to their content (min-height) and only scroll once
+        // they exceed `max_height` — so on a tall enough window no scrollbar
+        // appears at all. The scrollbar itself is invisible (zero-width,
+        // transparent): scrolling still works via wheel/trackpad, but nothing
+        // is drawn over the editors.
+        use iced::widget::scrollable::{Direction, Rail, Scrollbar, Scroller};
+        let invisible_rail = Rail {
+            background: None,
+            border: Border::default(),
+            scroller: Scroller {
+                color: Color::TRANSPARENT,
+                border: Border::default(),
+            },
+        };
+        let scroll_area = container(
+            scrollable(fields)
+                .height(Length::Shrink)
+                .direction(Direction::Vertical(
+                    Scrollbar::new().width(0).scroller_width(0),
+                ))
+                .style(move |_, _| iced::widget::scrollable::Style {
+                    container: container::Style::default(),
+                    vertical_rail: invisible_rail,
+                    horizontal_rail: invisible_rail,
+                    gap: None,
+                }),
+        )
+        .max_height(480.0);
+
+        let body = column![
+            text(format!("scripts / {}", ed.project_name))
+                .size(13)
+                .color(c::CYAN()),
+            text("Shell snippets shared by every worktree of this project, run via $SHELL -lc. Leave a field blank to disable that step.")
+                .size(11)
+                .color(c::FG_MUTE())
+                .wrapping(iced::widget::text::Wrapping::Word),
+            scroll_area,
+            row![
+                Space::with_width(Length::Fill),
+                modal_action("cancel", ModalBtn::Plain, Msg::ScriptsEditorCancel),
+                modal_action("save", ModalBtn::Primary, Msg::ScriptsEditorSave),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(12);
+
+        modal_panel(body.into(), 560.0, c::CYAN())
     }
 
     fn tmux_choice_modal(&self) -> Element<'_, Msg> {

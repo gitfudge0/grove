@@ -7,7 +7,8 @@ use super::metrics::{
     TERM_PANEL_PORTION, TERM_PANEL_PORTION_MAX, TERM_PANEL_PORTION_MIN, TERM_PANEL_PORTION_STEP,
 };
 use super::state::{
-    AbsCell, FocusedPane, Grove, Msg, PtyCell, PtyDrag, PtyPane, SidebarDrag, SidebarView,
+    AbsCell, FocusedPane, Grove, Msg, PtyCell, PtyDrag, PtyPane, ScriptField, ScriptsEditorState,
+    SidebarDrag, SidebarView,
 };
 use crate::agent::Agent;
 use crate::app::{App, InputKind, Modal, Pane};
@@ -81,6 +82,7 @@ impl Grove {
             last_divider_press: None,
             term_panel_dragging: false,
             last_term_divider_press: None,
+            scripts_editor: None,
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -177,6 +179,29 @@ impl Grove {
                 // Re-classify session activity every 8th tick (~480ms at 60ms).
                 if self.blink_tick.is_multiple_of(8) {
                     self.refresh_activity();
+                }
+                // Advance an in-progress worktree teardown (script exit → git
+                // removal). Cheap no-op when none is running.
+                if self.app.teardown.is_some() {
+                    let had_session = self
+                        .app
+                        .teardown
+                        .as_ref()
+                        .and_then(|t| t.session.as_ref())
+                        .map(|s| Arc::as_ptr(&s.dirty) as usize);
+                    self.app.poll_teardown();
+                    // The teardown PTY was dropped during removal — evict its
+                    // render-cache entry so a future session can't alias its
+                    // (now reusable) dirty-Arc address.
+                    let still = self
+                        .app
+                        .teardown
+                        .as_ref()
+                        .and_then(|t| t.session.as_ref())
+                        .is_some();
+                    if let (Some(key), false) = (had_session, still) {
+                        self.pty_cache.borrow_mut().remove(&key);
+                    }
                 }
             }
             Msg::WindowFocusChanged(f) => {
@@ -608,6 +633,32 @@ impl Grove {
                 self.app.focus_pane(Pane::Projects);
                 self.app.open_remove_project_modal(proj);
             }
+            Msg::RunScript { proj, wt } => {
+                self.open_agent_menu = None;
+                self.switch_active_project(proj);
+                self.app.wt_idx = wt;
+                if let Some(w) = self.app.worktrees.get(wt).cloned() {
+                    let before = self.session_keys();
+                    self.app.run_worktree_script(&w.path);
+                    self.resize_new_sessions(&before);
+                    self.collapsed_wt.remove(&(proj, wt));
+                }
+            }
+            Msg::EditScripts { proj } => {
+                self.open_agent_menu = None;
+                self.open_scripts_editor(proj);
+            }
+            Msg::ScriptsEditorAction(field, action) => {
+                if let Some(ed) = self.scripts_editor.as_mut() {
+                    match field {
+                        ScriptField::Setup => ed.setup.perform(action),
+                        ScriptField::Run => ed.run.perform(action),
+                        ScriptField::Teardown => ed.teardown.perform(action),
+                    }
+                }
+            }
+            Msg::ScriptsEditorSave => self.save_scripts_editor(),
+            Msg::ScriptsEditorCancel => self.cancel_modal(),
             Msg::ToggleRemoveWorktrees(v) => {
                 if let Modal::RemoveProject {
                     also_remove_worktrees,
@@ -632,7 +683,20 @@ impl Grove {
             }
             Msg::ModalSubmit => self.submit_modal_input(),
             Msg::ModalCancel => self.cancel_modal(),
-            Msg::ModalConfirm(yes) => self.submit_modal_confirm(yes),
+            Msg::ModalConfirm(yes) => {
+                if matches!(self.app.modal, Modal::Teardown) {
+                    // The teardown modal's only confirm action is dismissal,
+                    // and only once removal has finished.
+                    if matches!(
+                        self.app.teardown.as_ref().map(|t| t.stage),
+                        Some(crate::app::TeardownStage::Done { .. })
+                    ) {
+                        self.app.close_teardown();
+                    }
+                } else {
+                    self.submit_modal_confirm(yes);
+                }
+            }
             Msg::ModalPickDir(path) => {
                 if let Modal::Input {
                     buffer,
@@ -1170,6 +1234,10 @@ impl Grove {
             self.app.modal = Modal::Message(format!("action failed: {e}"));
         }
         self.resize_new_sessions(&before);
+        // The teardown PTY lives outside `app.sessions`, so resize it directly.
+        if let Some(s) = self.app.teardown.as_mut().and_then(|t| t.session.as_mut()) {
+            s.resize(self.pty_rows, self.pty_sess_cols);
+        }
         self.rebuild_wt_cache();
     }
 
@@ -1194,7 +1262,62 @@ impl Grove {
             .collect()
     }
 
+    /// Open the per-project lifecycle-scripts editor, seeding the three
+    /// `text_editor` buffers from the project's stored scripts.
+    fn open_scripts_editor(&mut self, proj: usize) {
+        use iced::widget::text_editor::Content;
+        let Some(p) = self.app.store.projects.get(proj) else {
+            return;
+        };
+        self.scripts_editor = Some(ScriptsEditorState {
+            proj,
+            project_name: p.name.clone(),
+            setup: Content::with_text(p.scripts.setup.as_deref().unwrap_or("")),
+            run: Content::with_text(p.scripts.run.as_deref().unwrap_or("")),
+            teardown: Content::with_text(p.scripts.teardown.as_deref().unwrap_or("")),
+        });
+        self.app.modal = Modal::ScriptsEditor;
+    }
+
+    /// Persist the edited scripts back to the project and close the editor. An
+    /// empty/whitespace-only buffer clears that script (stored as `None`).
+    fn save_scripts_editor(&mut self) {
+        let Some(ed) = self.scripts_editor.take() else {
+            self.app.modal = Modal::None;
+            return;
+        };
+        let norm = |t: String| {
+            let t = t.trim().to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        };
+        if let Some(p) = self.app.store.projects.get_mut(ed.proj) {
+            p.scripts.setup = norm(ed.setup.text());
+            p.scripts.run = norm(ed.run.text());
+            p.scripts.teardown = norm(ed.teardown.text());
+        }
+        if let Err(e) = crate::storage::save(&self.app.store) {
+            self.app.modal = Modal::Message(format!("failed to save scripts: {e}"));
+            return;
+        }
+        self.app.status = "saved project scripts".into();
+        self.app.modal = Modal::None;
+    }
+
     fn cancel_modal(&mut self) {
+        // The teardown modal repurposes cancel: skip a still-running script
+        // (proceed to removal) or dismiss once removal has finished.
+        if matches!(self.app.modal, Modal::Teardown) {
+            match self.app.teardown.as_ref().map(|t| t.stage) {
+                Some(crate::app::TeardownStage::Done { .. }) => self.app.close_teardown(),
+                _ => self.app.skip_teardown_script(),
+            }
+            return;
+        }
+        self.scripts_editor = None;
         self.app.modal = Modal::None;
     }
 

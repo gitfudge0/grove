@@ -86,6 +86,36 @@ pub enum Modal {
         tab: crate::theme::ThemeKind,
         original: crate::theme::Theme,
     },
+    /// Worktree teardown: runs the project's teardown script (if any) in a
+    /// modal-embedded PTY, then performs `git worktree remove`. The live PTY
+    /// session and stage live in `App::teardown`.
+    Teardown,
+    /// Per-project lifecycle-scripts editor. The editable buffers and target
+    /// project live in the GUI model (`Grove::scripts_editor`); this just marks
+    /// the modal open.
+    ScriptsEditor,
+}
+
+/// Stage of an in-progress worktree teardown.
+#[derive(Clone, Copy, PartialEq)]
+pub enum TeardownStage {
+    /// The teardown script is running in `session`.
+    RunningScript,
+    /// Script finished; `git worktree remove` is executing.
+    Removing,
+    /// Done — `error` is `Some` if removal failed.
+    Done { failed: bool },
+}
+
+/// State for a worktree deletion in progress. Holds the live teardown PTY (if a
+/// teardown script is configured) so the modal can render it; kept out of the
+/// cloneable `Modal` because `Session` isn't `Clone`.
+pub struct Teardown {
+    pub wt_path: String,
+    pub project_path: String,
+    pub session: Option<Session>,
+    pub stage: TeardownStage,
+    pub message: String,
 }
 
 #[derive(Clone)]
@@ -159,6 +189,8 @@ pub struct App {
     /// Completion message from a background job (e.g. `.worktreeinclude`
     /// generation). Set by the worker thread, drained on the GUI tick.
     pub bg_status: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// In-progress worktree teardown, when `modal` is `Modal::Teardown`.
+    pub teardown: Option<Teardown>,
 }
 
 impl App {
@@ -224,6 +256,7 @@ impl App {
                 .filter(|a| a.available())
                 .collect(),
             bg_status: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            teardown: None,
         };
         app.refresh_worktrees();
         Ok(app)
@@ -489,6 +522,45 @@ impl App {
         }
     }
 
+    /// Spawn a lifecycle script (`setup`/`run`) as a focused session tab under
+    /// `wt_path`. No-op when the snippet is empty/whitespace.
+    pub fn spawn_script_session(
+        &mut self,
+        stage: &str,
+        project: String,
+        wt_path: String,
+        script: &str,
+    ) {
+        let script = script.trim();
+        if script.is_empty() {
+            return;
+        }
+        match Session::spawn_script(stage.to_string(), project, wt_path.clone(), script, &wt_path) {
+            Ok(s) => {
+                let at = self.session_insert_index(&s);
+                self.sessions.insert(at, s);
+                self.active_session = Some(at);
+                self.status = format!("running {stage} script");
+            }
+            Err(e) => {
+                self.set_toast(format!("{stage} script failed: {e}"));
+            }
+        }
+    }
+
+    /// Run the project's `run` script in the given worktree, if configured.
+    pub fn run_worktree_script(&mut self, wt_path: &str) {
+        let Some(p) = self.selected_project().cloned() else {
+            return;
+        };
+        match p.scripts.run.as_deref() {
+            Some(script) if !script.trim().is_empty() => {
+                self.spawn_script_session("run", p.name.clone(), wt_path.to_string(), script);
+            }
+            _ => self.set_toast("no run script configured for this project"),
+        }
+    }
+
     fn create_worktree(&mut self, p: &Project, name: &str) {
         let wt_path = match git::add_worktree(&p.path, &p.name, name) {
             Ok(path) => path,
@@ -501,7 +573,14 @@ impl App {
             self.status = format!("worktreeinclude: {e}");
         }
         self.refresh_worktrees();
-        self.launch_or_pick(p.name.clone(), wt_path);
+        // Launch the agent first, then the setup script (if any) so the setup
+        // tab is spawned last and is the one focused by default — when a setup
+        // script exists, the user wants to watch it run before touching the
+        // agent. Both tabs coexist.
+        self.launch_or_pick(p.name.clone(), wt_path.clone());
+        if let Some(setup) = p.scripts.setup.clone() {
+            self.spawn_script_session("setup", p.name.clone(), wt_path, &setup);
+        }
     }
 
     /// Absolute path of the home directory, falling back to `/` if it can't be
@@ -834,6 +913,102 @@ impl App {
         self.kill_wt_terminals(wt_path);
     }
 
+    /// Begin tearing down `path`: kill its sessions, then either run the
+    /// project's teardown script in a modal PTY (advancing to removal when it
+    /// exits) or remove the worktree immediately. Opens `Modal::Teardown`.
+    fn start_teardown(&mut self, p: &Project, path: String) {
+        self.kill_sessions_for_wt(&path);
+        let script = p
+            .scripts
+            .teardown
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let session = script.and_then(|s| {
+            Session::spawn_script("teardown".into(), p.name.clone(), path.clone(), s, &path).ok()
+        });
+        self.modal = Modal::Teardown;
+        if session.is_some() {
+            self.teardown = Some(Teardown {
+                wt_path: path,
+                project_path: p.path.clone(),
+                session,
+                stage: TeardownStage::RunningScript,
+                message: "running teardown script…".into(),
+            });
+        } else {
+            // No teardown script (or it failed to spawn): remove right away.
+            self.teardown = Some(Teardown {
+                wt_path: path,
+                project_path: p.path.clone(),
+                session: None,
+                stage: TeardownStage::Removing,
+                message: "removing worktree…".into(),
+            });
+            self.do_teardown_removal();
+        }
+    }
+
+    /// Drive an in-progress teardown forward. Called every GUI tick. When the
+    /// teardown script's PTY exits, performs the git removal.
+    pub fn poll_teardown(&mut self) {
+        let advance = matches!(
+            self.teardown.as_ref(),
+            Some(td) if td.stage == TeardownStage::RunningScript
+                && td.session.as_ref().is_none_or(|s| !s.is_running())
+        );
+        if advance {
+            self.do_teardown_removal();
+        }
+    }
+
+    /// Run `git worktree remove` for the active teardown and transition to
+    /// `Done`. Drops the (exited) teardown PTY session.
+    fn do_teardown_removal(&mut self) {
+        let Some(td) = self.teardown.as_mut() else {
+            return;
+        };
+        td.stage = TeardownStage::Removing;
+        td.session = None;
+        let wt_path = td.wt_path.clone();
+        let project_path = td.project_path.clone();
+        let err = git::remove_worktree(&project_path, &wt_path)
+            .err()
+            .map(|e| e.to_string());
+        if let Some(td) = self.teardown.as_mut() {
+            td.stage = TeardownStage::Done {
+                failed: err.is_some(),
+            };
+            td.message = match &err {
+                Some(e) => format!("removal failed: {e}"),
+                None => "worktree deleted".into(),
+            };
+        }
+        self.status = match &err {
+            Some(e) => format!("teardown err: {e}"),
+            None => format!("removed worktree {wt_path}"),
+        };
+        self.refresh_worktrees();
+    }
+
+    /// Skip a still-running teardown script: kill it and proceed to removal.
+    pub fn skip_teardown_script(&mut self) {
+        if let Some(td) = self.teardown.as_mut() {
+            if td.stage == TeardownStage::RunningScript {
+                if let Some(s) = td.session.as_mut() {
+                    s.kill();
+                }
+                self.do_teardown_removal();
+            }
+        }
+    }
+
+    /// Dismiss the teardown modal. Only meaningful once removal has finished.
+    pub fn close_teardown(&mut self) {
+        self.teardown = None;
+        self.modal = Modal::None;
+    }
+
     pub fn picker_move(&mut self, delta: i32) {
         if let Modal::AgentPicker { sel, .. } = &mut self.modal {
             *sel = cycle(*sel, delta, self.available_agents.len());
@@ -1074,6 +1249,7 @@ impl App {
                 self.store.projects.push(Project {
                     name: value.clone(),
                     path: path.clone(),
+                    scripts: Default::default(),
                 });
                 storage::save(&self.store)?;
                 self.proj_idx = self.store.projects.len() - 1;
@@ -1151,13 +1327,7 @@ impl App {
             }
             ConfirmKind::RemoveWorktree(path) => {
                 if let Some(p) = self.selected_project().cloned() {
-                    self.kill_sessions_for_wt(&path);
-                    if let Err(e) = git::remove_worktree(&p.path, &path) {
-                        self.status = format!("err: {e}");
-                    } else {
-                        self.status = format!("removed worktree {path}");
-                    }
-                    self.refresh_worktrees();
+                    self.start_teardown(&p, path);
                 }
             }
             ConfirmKind::InitAndAddWorktree { name } => {

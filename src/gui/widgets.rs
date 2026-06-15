@@ -149,17 +149,13 @@ pub fn icon_btn<'a>(name: &'static str, msg: Msg) -> Element<'a, Msg> {
     .into()
 }
 
-pub fn split_start_button<'a>(proj: usize, wt: usize, is_main: bool) -> Element<'a, Msg> {
-    split_start_button_sized(proj, wt, is_main, 12.0)
-}
-
-pub fn split_start_button_sized<'a>(
+pub fn split_start_button<'a>(
     proj: usize,
     wt: usize,
     is_main: bool,
-    icon_size: f32,
+    has_run: bool,
 ) -> Element<'a, Msg> {
-    split_start_button_inner(proj, wt, is_main, icon_size, false, true)
+    split_start_button_inner(proj, wt, is_main, 12.0, false, true, has_run)
 }
 
 /// Flat variant: no per-chip background or border on hover (just an icon
@@ -171,7 +167,7 @@ pub fn split_start_button_flat<'a>(
     is_main: bool,
     icon_size: f32,
 ) -> Element<'a, Msg> {
-    split_start_button_inner(proj, wt, is_main, icon_size, true, true)
+    split_start_button_inner(proj, wt, is_main, icon_size, true, true, false)
 }
 
 /// Flat spawn chips for an activity-stream session row: same agent / terminal
@@ -179,7 +175,7 @@ pub fn split_start_button_flat<'a>(
 /// chip is never shown. Deleting a worktree from a row that still has a live
 /// session is the wrong gesture; that action belongs to the worktree row.
 pub fn session_spawn_chips_flat<'a>(proj: usize, wt: usize, icon_size: f32) -> Element<'a, Msg> {
-    split_start_button_inner(proj, wt, false, icon_size, true, false)
+    split_start_button_inner(proj, wt, false, icon_size, true, false, false)
 }
 
 fn split_start_button_inner<'a>(
@@ -189,6 +185,7 @@ fn split_start_button_inner<'a>(
     icon_size: f32,
     flat: bool,
     allow_delete: bool,
+    show_run: bool,
 ) -> Element<'a, Msg> {
     let make = |name, msg| {
         if flat {
@@ -226,6 +223,11 @@ fn split_start_button_inner<'a>(
     let mut r = row![claude, codex, opencode, terminal]
         .spacing(if flat { 6 } else { 2 })
         .align_y(iced::Alignment::Center);
+    // The run-script play button only appears when the project actually has a
+    // `run` script configured.
+    if show_run {
+        r = r.push(make("play", Msg::RunScript { proj, wt }));
+    }
     // The main worktree is the repository checkout itself — deleting it via
     // `git worktree remove` would fail, so the trash icon is suppressed there.
     // Session-row spawn chips suppress it unconditionally via `allow_delete`.
@@ -531,18 +533,61 @@ pub fn tool_btn_toggle<'a>(
     .into()
 }
 
-pub fn control_btn<'a>(label: String, msg: Msg) -> Element<'a, Msg> {
+/// A flat appbar button whose content is a centered SVG icon in a fixed-width
+/// box. Used for the zoom `-` / `+` so both glyphs share an identical footprint
+/// and sit perfectly centered, flanking the percentage label as one unit.
+pub fn control_icon_btn<'a>(
+    name: &'static str,
+    msg: Msg,
+    box_w: f32,
+    icon_size: f32,
+) -> Element<'a, Msg> {
+    button(
+        container(icon(name, icon_size, c::FG_DIM()))
+            .center_x(Length::Fixed(box_w))
+            .center_y(22),
+    )
+    .on_press(msg)
+    .padding(0)
+    .style(|_, status| {
+        let hovered = matches!(status, button::Status::Hovered);
+        button::Style {
+            background: if hovered {
+                Some(Background::Color(c::BG_HOVER()))
+            } else {
+                None
+            },
+            text_color: c::FG_DIM(),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: Radius::from(4.0),
+            },
+            shadow: Shadow::default(),
+        }
+    })
+    .into()
+}
+
+/// A flat appbar text button with explicit text size and horizontal padding,
+/// used for the zoom percentage label between the `-` / `+` icon buttons.
+pub fn control_btn_sized<'a>(
+    label: String,
+    msg: Msg,
+    text_size: u16,
+    h_padding: u16,
+) -> Element<'a, Msg> {
     button(
         container(
             text(label)
                 .font(UI_FONT)
-                .size(12)
+                .size(text_size)
                 .line_height(1.0)
                 .height(18)
                 .align_y(iced::alignment::Vertical::Center)
                 .color(c::FG_DIM()),
         )
-        .padding(Padding::from([0, 8]))
+        .padding(Padding::from([0, h_padding]))
         .center_y(22),
     )
     .on_press(msg)

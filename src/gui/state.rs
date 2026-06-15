@@ -144,6 +144,9 @@ pub struct Grove {
     /// Timestamp of the last terminal-panel divider press, for double-click
     /// reset detection.
     pub last_term_divider_press: Option<std::time::Instant>,
+    /// Live state for the per-project lifecycle-scripts editor, when open.
+    /// `Some` exactly when `app.modal` is `Modal::ScriptsEditor`.
+    pub scripts_editor: Option<ScriptsEditorState>,
 }
 
 /// Transient state for an in-progress sidebar divider drag.
@@ -216,6 +219,25 @@ pub struct StyledRun {
     pub fg: Option<Color>,
     pub bg: Option<Color>,
     pub bold: bool,
+}
+
+/// Which lifecycle script a `ScriptsEditorAction` targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptField {
+    Setup,
+    Run,
+    Teardown,
+}
+
+/// Live state for the per-project scripts editor overlay. Holds the three
+/// `text_editor` buffers (which must persist across frames, so they can't live
+/// in the cloneable `Modal`) plus the target project index.
+pub struct ScriptsEditorState {
+    pub proj: usize,
+    pub project_name: String,
+    pub setup: iced::widget::text_editor::Content,
+    pub run: iced::widget::text_editor::Content,
+    pub teardown: iced::widget::text_editor::Content,
 }
 
 #[derive(Debug, Clone)]
@@ -322,6 +344,21 @@ pub enum Msg {
         proj: usize,
         wt: usize,
     },
+    /// Run the project's `run` script in this worktree (spawns a session tab).
+    RunScript {
+        proj: usize,
+        wt: usize,
+    },
+    /// Open the per-project lifecycle-scripts editor.
+    EditScripts {
+        proj: usize,
+    },
+    /// Edit one of the three script buffers in the scripts editor.
+    ScriptsEditorAction(ScriptField, iced::widget::text_editor::Action),
+    /// Persist the edited scripts back to the project and close the editor.
+    ScriptsEditorSave,
+    /// Close the scripts editor without saving.
+    ScriptsEditorCancel,
     /// Open the remove-project confirmation modal for the given project row.
     RemoveProject {
         proj: usize,

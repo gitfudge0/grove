@@ -132,6 +132,31 @@ pub fn project_row<'a>(
         }
     });
 
+    let scripts_btn = button(
+        container(icon("cog", 12.0, c::FG_MUTE()))
+            .center_x(22)
+            .center_y(22),
+    )
+    .on_press(Msg::EditScripts { proj: idx })
+    .padding(0)
+    .style(|_, status| {
+        let hovered = matches!(status, button::Status::Hovered);
+        button::Style {
+            background: if hovered {
+                Some(Background::Color(c::BG_HOVER()))
+            } else {
+                None
+            },
+            text_color: if hovered { c::FG() } else { c::FG_MUTE() },
+            border: Border {
+                color: iced::Color::TRANSPARENT,
+                width: 0.0,
+                radius: Radius::from(4.0),
+            },
+            shadow: Shadow::default(),
+        }
+    });
+
     let remove_btn = button(
         container(icon("trash", 12.0, c::FG_MUTE()))
             .center_x(22)
@@ -161,7 +186,7 @@ pub fn project_row<'a>(
         Some(st) => state_glyph(st, tick),
         None => Space::with_width(Length::Fixed(0.0)).into(),
     };
-    let right = row![rollup_el, add_btn, remove_btn]
+    let right = row![rollup_el, add_btn, scripts_btn, remove_btn]
         .spacing(6)
         .align_y(iced::Alignment::Center)
         .padding(Padding {
@@ -202,6 +227,7 @@ pub fn worktree_row<'a>(
     is_main: bool,
     hovered: bool,
     expanded: bool,
+    has_run: bool,
     rollup: Option<ActivityState>,
     tick: u32,
 ) -> Element<'a, Msg> {
@@ -274,7 +300,7 @@ pub fn worktree_row<'a>(
     });
 
     let actions: Element<'a, Msg> = if hovered {
-        row![split_start_button(proj, wt, is_main)]
+        row![split_start_button(proj, wt, is_main, has_run)]
             .spacing(6)
             .align_y(iced::Alignment::Center)
             .padding(Padding {

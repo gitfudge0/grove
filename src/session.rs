@@ -154,6 +154,38 @@ impl Session {
         )
     }
 
+    /// Spawn a one-off shell session running a lifecycle script (`setup` /
+    /// `run` / `teardown`). Always native — these are ephemeral and not worth
+    /// persisting through tmux. The shell exits when the script finishes (the
+    /// session then shows `Exited`); long-lived scripts like dev servers keep
+    /// the session running. Carries `Agent::Terminal` so it reuses terminal
+    /// rendering/handling; the `label` distinguishes the lifecycle stage.
+    pub fn spawn_script(
+        label: String,
+        project: String,
+        wt_path: String,
+        script: &str,
+        cwd: &str,
+    ) -> Result<Self> {
+        let mut cmd = CommandBuilder::new(crate::env_path::login_shell());
+        cmd.arg("-lc");
+        cmd.arg(script);
+        cmd.cwd(cwd);
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("LC_ALL", "en_US.UTF-8");
+
+        Self::launch_pty(
+            label,
+            project,
+            wt_path,
+            Agent::Terminal,
+            SessionBackend::Native,
+            cmd,
+            INIT_ROWS,
+            INIT_COLS,
+        )
+    }
+
     /// Re-attach to an existing tmux session previously created by grove.
     pub fn attach_existing(d: tmux::DiscoveredSession) -> Result<Self> {
         Self::attach_tmux(
