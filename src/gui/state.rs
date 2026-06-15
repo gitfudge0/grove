@@ -138,6 +138,12 @@ pub struct Grove {
     pub sidebar_drag: Option<SidebarDrag>,
     /// Timestamp of the last divider press, for double-click reset detection.
     pub last_divider_press: Option<std::time::Instant>,
+    /// Whether the terminal-panel split divider is being dragged. While true, a
+    /// global mouse subscription feeds cursor moves and the button-release.
+    pub term_panel_dragging: bool,
+    /// Timestamp of the last terminal-panel divider press, for double-click
+    /// reset detection.
+    pub last_term_divider_press: Option<std::time::Instant>,
 }
 
 /// Transient state for an in-progress sidebar divider drag.
@@ -290,6 +296,14 @@ pub enum Msg {
     SidebarDragMove(f32),
     /// Left button released: commit the width (recompute PTYs, persist).
     SidebarDragEnd,
+    /// Left button pressed on the terminal-panel split divider. Begins a drag,
+    /// or resets to the default split on a double-click.
+    TermPanelDragStart,
+    /// Cursor moved while the terminal-panel divider is held; carries the
+    /// cursor's logical x-position, mapped to the panel's width share.
+    TermPanelDragMove(f32),
+    /// Left button released: commit the split (recompute PTY columns).
+    TermPanelDragEnd,
     PtyScroll {
         pane: PtyPane,
         up: bool,

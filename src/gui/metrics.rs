@@ -249,6 +249,17 @@ pub fn clamp_sidebar_width(width: f32, logical_win_w: f32) -> f32 {
     width.clamp(SIDEBAR_MIN_W, upper)
 }
 
+/// Terminal-panel width share (percent) for a divider dragged to logical
+/// cursor x. The panel is docked on the right, so a cursor further left grows
+/// it. Clamped to `[TERM_PANEL_PORTION_MIN, TERM_PANEL_PORTION_MAX]`.
+pub fn term_portion_for_cursor(cursor_x: f32, logical_win_w: f32, sidebar_w: f32) -> u16 {
+    let work_left = sidebar_w + SIDEBAR_DIVIDER_W;
+    let work_w = (logical_win_w - work_left).max(1.0);
+    let frac = ((logical_win_w - cursor_x) / work_w).clamp(0.0, 1.0);
+    let pct = (frac * 100.0).round() as i32;
+    pct.clamp(TERM_PANEL_PORTION_MIN as i32, TERM_PANEL_PORTION_MAX as i32) as u16
+}
+
 pub fn compute_pty_dims(
     win_w: f32,
     win_h: f32,
@@ -310,9 +321,9 @@ pub fn pty_cols_for_fraction(
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_sidebar_width, compute_pty_dims, APPBAR_H, CELL_H, CELL_W, FONT_SIZE, MONO_REGULAR,
-        PTY_PAD_H, PTY_PAD_W, RAIL_W, SESSBAR_H, SIDEBAR_DIVIDER_W, SIDEBAR_MIN_W, STATUS_H,
-        WORKSPACE_MIN_W,
+        clamp_sidebar_width, compute_pty_dims, term_portion_for_cursor, APPBAR_H, CELL_H, CELL_W,
+        FONT_SIZE, MONO_REGULAR, PTY_PAD_H, PTY_PAD_W, RAIL_W, SESSBAR_H, SIDEBAR_DIVIDER_W,
+        SIDEBAR_MIN_W, STATUS_H, TERM_PANEL_PORTION_MAX, TERM_PANEL_PORTION_MIN, WORKSPACE_MIN_W,
     };
 
     #[test]
@@ -410,6 +421,27 @@ mod tests {
         let a = compute_pty_dims(1280.0, 800.0, 1.0, false, SIDEBAR_MIN_W);
         let b = compute_pty_dims(1280.0, 800.0, 1.0, false, 600.0);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn term_portion_for_cursor_maps_and_clamps() {
+        let win = 1280.0;
+        let sidebar = RAIL_W; // workspace spans (RAIL_W + SIDEBAR_DIVIDER_W) .. win
+        let work_left = sidebar + SIDEBAR_DIVIDER_W;
+        let work_w = win - work_left;
+        // Cursor at the midpoint of the workspace → ~50% panel.
+        let mid = work_left + work_w * 0.5;
+        assert_eq!(term_portion_for_cursor(mid, win, sidebar), 50);
+        // Dragging far right shrinks the panel to its minimum.
+        assert_eq!(
+            term_portion_for_cursor(win - 1.0, win, sidebar),
+            TERM_PANEL_PORTION_MIN
+        );
+        // Dragging far left grows it to its maximum (not the full workspace).
+        assert_eq!(
+            term_portion_for_cursor(work_left + 1.0, win, sidebar),
+            TERM_PANEL_PORTION_MAX
+        );
     }
 
     #[test]

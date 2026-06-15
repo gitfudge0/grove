@@ -722,6 +722,20 @@ impl Grove {
         None
     }
 
+    /// The draggable divider between the session view and the right-docked
+    /// terminal panel. Mirrors `sidebar_resize_handle` but drives the panel's
+    /// percentage split (`term_panel_portion`) instead of a pixel width.
+    fn term_panel_resize_handle(&self) -> Element<'_, Msg> {
+        iced::widget::mouse_area(
+            container(divider_v(c::BORDER()))
+                .height(Length::Fill)
+                .center_x(SIDEBAR_DIVIDER_W),
+        )
+        .on_press(Msg::TermPanelDragStart)
+        .interaction(iced::mouse::Interaction::ResizingHorizontally)
+        .into()
+    }
+
     // ── workspace ─────────────────────────────────────────────────────────
     fn workspace(&self) -> Element<'_, Msg> {
         if self.terminal_tab() {
@@ -745,7 +759,7 @@ impl Grove {
                 container(left)
                     .width(Length::FillPortion(100 - self.term_panel_portion))
                     .height(Length::Fill),
-                divider_v(c::BORDER()),
+                self.term_panel_resize_handle(),
                 container(self.term_panel())
                     .width(Length::FillPortion(self.term_panel_portion))
                     .height(Length::Fill),

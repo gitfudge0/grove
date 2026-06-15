@@ -2,9 +2,9 @@
 
 use super::keys::key_to_bytes;
 use super::metrics::{
-    clamp_sidebar_width, compute_pty_dims, pty_cols_for_fraction, pty_metrics, PTY_ZOOM_DEFAULT,
-    PTY_ZOOM_MAX, PTY_ZOOM_MIN, PTY_ZOOM_STEP, RAIL_W, TERM_PANEL_PORTION, TERM_PANEL_PORTION_MAX,
-    TERM_PANEL_PORTION_MIN, TERM_PANEL_PORTION_STEP,
+    clamp_sidebar_width, compute_pty_dims, pty_cols_for_fraction, pty_metrics,
+    term_portion_for_cursor, PTY_ZOOM_DEFAULT, PTY_ZOOM_MAX, PTY_ZOOM_MIN, PTY_ZOOM_STEP, RAIL_W,
+    TERM_PANEL_PORTION, TERM_PANEL_PORTION_MAX, TERM_PANEL_PORTION_MIN, TERM_PANEL_PORTION_STEP,
 };
 use super::state::{
     AbsCell, FocusedPane, Grove, Msg, PtyCell, PtyDrag, PtyPane, SidebarDrag, SidebarView,
@@ -79,6 +79,8 @@ impl Grove {
             sidebar_width,
             sidebar_drag: None,
             last_divider_press: None,
+            term_panel_dragging: false,
+            last_term_divider_press: None,
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -139,6 +141,18 @@ impl Grove {
                 }
                 Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
                     Some(Msg::SidebarDragEnd)
+                }
+                _ => None,
+            });
+            subs.push(drag);
+        }
+        if self.term_panel_dragging {
+            let drag = event::listen_with(|ev, _status, _| match ev {
+                Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Msg::TermPanelDragMove(position.x))
+                }
+                Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    Some(Msg::TermPanelDragEnd)
                 }
                 _ => None,
             });
@@ -535,6 +549,39 @@ impl Grove {
                         self.refresh_pty_viewport();
                         self.persist_sidebar_width();
                     }
+                }
+            }
+            Msg::TermPanelDragStart => {
+                let now = std::time::Instant::now();
+                let double = self
+                    .last_term_divider_press
+                    .is_some_and(|t| now.duration_since(t) < Duration::from_millis(350));
+                if double {
+                    self.term_panel_dragging = false;
+                    self.last_term_divider_press = None;
+                    if self.term_panel_portion != TERM_PANEL_PORTION {
+                        self.term_panel_portion = TERM_PANEL_PORTION;
+                        self.refresh_pty_viewport();
+                    }
+                } else {
+                    self.last_term_divider_press = Some(now);
+                    self.term_panel_dragging = true;
+                }
+            }
+            Msg::TermPanelDragMove(cursor_x) => {
+                if self.term_panel_dragging {
+                    let logical_w = self.window_size.width / self.ui_zoom;
+                    // The split divider sits at the workspace edge, so the cursor
+                    // x maps directly to the panel's width share. Live update;
+                    // PTY columns are recomputed on release.
+                    self.term_panel_portion =
+                        term_portion_for_cursor(cursor_x, logical_w, self.sidebar_width);
+                }
+            }
+            Msg::TermPanelDragEnd => {
+                if self.term_panel_dragging {
+                    self.term_panel_dragging = false;
+                    self.refresh_pty_viewport();
                 }
             }
             Msg::AddProject => {
