@@ -22,6 +22,10 @@ pub struct Store {
     pub tmux_enabled: Option<bool>,
     #[serde(default)]
     pub ui_zoom: Option<f32>,
+    /// Sidebar width in logical pixels, set by dragging the divider. None falls
+    /// back to the default `RAIL_W`.
+    #[serde(default)]
+    pub sidebar_width: Option<f32>,
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -130,6 +134,7 @@ mod tests {
             theme: Some("dark".into()),
             tmux_enabled: Some(true),
             ui_zoom: Some(1.25),
+            sidebar_width: Some(360.0),
         };
 
         let json = serde_json::to_string_pretty(&original).expect("serialize");
@@ -142,6 +147,7 @@ mod tests {
         assert_eq!(recovered.theme.as_deref(), Some("dark"));
         assert_eq!(recovered.tmux_enabled, Some(true));
         assert!((recovered.ui_zoom.unwrap() - 1.25).abs() < f32::EPSILON);
+        assert!((recovered.sidebar_width.unwrap() - 360.0).abs() < f32::EPSILON);
     }
 
     /// `Store::default()` deserializes from an empty JSON object — the
@@ -154,6 +160,7 @@ mod tests {
         assert!(store.theme.is_none());
         assert!(store.tmux_enabled.is_none());
         assert!(store.ui_zoom.is_none());
+        assert!(store.sidebar_width.is_none());
     }
 
     /// A corrupted JSON file must make `write_atomic` + a subsequent manual

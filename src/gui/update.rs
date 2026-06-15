@@ -2,11 +2,13 @@
 
 use super::keys::key_to_bytes;
 use super::metrics::{
-    compute_pty_dims, pty_cols_for_fraction, pty_metrics, PTY_ZOOM_DEFAULT, PTY_ZOOM_MAX,
-    PTY_ZOOM_MIN, PTY_ZOOM_STEP, TERM_PANEL_PORTION, TERM_PANEL_PORTION_MAX,
+    clamp_sidebar_width, compute_pty_dims, pty_cols_for_fraction, pty_metrics, PTY_ZOOM_DEFAULT,
+    PTY_ZOOM_MAX, PTY_ZOOM_MIN, PTY_ZOOM_STEP, RAIL_W, TERM_PANEL_PORTION, TERM_PANEL_PORTION_MAX,
     TERM_PANEL_PORTION_MIN, TERM_PANEL_PORTION_STEP,
 };
-use super::state::{AbsCell, FocusedPane, Grove, Msg, PtyCell, PtyDrag, PtyPane, SidebarView};
+use super::state::{
+    AbsCell, FocusedPane, Grove, Msg, PtyCell, PtyDrag, PtyPane, SidebarDrag, SidebarView,
+};
 use crate::agent::Agent;
 use crate::app::{App, InputKind, Modal, Pane};
 use crate::session::Session;
@@ -27,8 +29,17 @@ impl Grove {
             .ui_zoom
             .unwrap_or(PTY_ZOOM_DEFAULT)
             .clamp(PTY_ZOOM_MIN, PTY_ZOOM_MAX);
-        let (pty_rows, pty_cols) =
-            compute_pty_dims(window_size.width, window_size.height, ui_zoom, true);
+        let sidebar_width = clamp_sidebar_width(
+            app.store.sidebar_width.unwrap_or(RAIL_W),
+            window_size.width / ui_zoom,
+        );
+        let (pty_rows, pty_cols) = compute_pty_dims(
+            window_size.width,
+            window_size.height,
+            ui_zoom,
+            true,
+            sidebar_width,
+        );
         // Resize any sessions discovered from a previous grove run so tmux
         // reports the correct terminal size immediately.
         for s in &mut app.sessions {
@@ -65,6 +76,9 @@ impl Grove {
             // bounce in the first moments of an unfocused launch.
             window_focused: true,
             last_badge: 0,
+            sidebar_width,
+            sidebar_drag: None,
+            last_divider_press: None,
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -114,7 +128,23 @@ impl Grove {
             }
         });
         let resize = iced::window::resize_events().map(|(_id, size)| Msg::WindowResized(size));
-        Subscription::batch([tick, keys, resize])
+        let mut subs = vec![tick, keys, resize];
+        // While the divider is held, listen globally for cursor motion and the
+        // button-release — the 1px handle can't drive `mouse_area::on_move` once
+        // the cursor leaves its bounds, so the drag is tracked at the app level.
+        if self.sidebar_drag.is_some() {
+            let drag = event::listen_with(|ev, _status, _| match ev {
+                Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Msg::SidebarDragMove(position.x))
+                }
+                Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    Some(Msg::SidebarDragEnd)
+                }
+                _ => None,
+            });
+            subs.push(drag);
+        }
+        Subscription::batch(subs)
     }
 
     pub fn update(&mut self, msg: Msg) -> Task<Msg> {
@@ -184,6 +214,9 @@ impl Grove {
             Msg::WindowResized(size) => {
                 self.window_size =
                     iced::Size::new(size.width * self.ui_zoom, size.height * self.ui_zoom);
+                // Keep the sidebar inside the window's bounds (it may now be too
+                // wide for a shrunken window). `size` is already logical.
+                self.sidebar_width = clamp_sidebar_width(self.sidebar_width, size.width);
                 self.refresh_pty_viewport();
             }
             Msg::BackendNative => {
@@ -448,6 +481,59 @@ impl Grove {
                 if let Some((a, h)) = self.pty_selection {
                     if a == h {
                         self.pty_selection = None;
+                    }
+                }
+            }
+            Msg::SidebarDragStart => {
+                // Double-click (two presses within 350ms) resets to the default.
+                let now = std::time::Instant::now();
+                let double = self
+                    .last_divider_press
+                    .is_some_and(|t| now.duration_since(t) < Duration::from_millis(350));
+                if double {
+                    self.sidebar_drag = None;
+                    self.last_divider_press = None;
+                    let logical_w = self.window_size.width / self.ui_zoom;
+                    self.sidebar_width = clamp_sidebar_width(RAIL_W, logical_w);
+                    self.refresh_pty_viewport();
+                    self.persist_sidebar_width();
+                } else {
+                    self.last_divider_press = Some(now);
+                    self.sidebar_drag = Some(SidebarDrag {
+                        grab_offset: None,
+                        start_width: self.sidebar_width,
+                    });
+                }
+            }
+            Msg::SidebarDragMove(cursor_x) => {
+                if let Some(drag) = self.sidebar_drag {
+                    // The sidebar's left edge is the window's left edge, so the
+                    // cursor x maps directly to width; the grab offset (set on
+                    // the first move) absorbs an off-edge press so width doesn't
+                    // jump. Both are logical px (iced scale_factor == ui_zoom).
+                    let offset = match drag.grab_offset {
+                        Some(o) => o,
+                        None => {
+                            let o = self.sidebar_width - cursor_x;
+                            self.sidebar_drag = Some(SidebarDrag {
+                                grab_offset: Some(o),
+                                start_width: drag.start_width,
+                            });
+                            o
+                        }
+                    };
+                    let logical_w = self.window_size.width / self.ui_zoom;
+                    self.sidebar_width = clamp_sidebar_width(cursor_x + offset, logical_w);
+                    // Visual width follows live; PTY grid is recomputed on end.
+                }
+            }
+            Msg::SidebarDragEnd => {
+                if let Some(drag) = self.sidebar_drag.take() {
+                    // Skip the PTY resize + persist when the width didn't move
+                    // (a plain click rather than a drag).
+                    if (self.sidebar_width - drag.start_width).abs() >= 0.5 {
+                        self.refresh_pty_viewport();
+                        self.persist_sidebar_width();
                     }
                 }
             }
@@ -730,6 +816,7 @@ impl Grove {
             self.window_size.height,
             self.ui_zoom,
             self.app.chrome_visible,
+            self.sidebar_width,
         );
         self.pty_rows = rows;
         self.pty_cols = cols;
@@ -744,12 +831,14 @@ impl Grove {
                     self.ui_zoom,
                     self.app.chrome_visible,
                     1.0 - panel,
+                    self.sidebar_width,
                 ),
                 pty_cols_for_fraction(
                     self.window_size.width,
                     self.ui_zoom,
                     self.app.chrome_visible,
                     panel,
+                    self.sidebar_width,
                 ),
             )
         } else {
@@ -770,6 +859,11 @@ impl Grove {
             }
         }
         self.invalidate_pty_render_cache();
+    }
+
+    fn persist_sidebar_width(&mut self) {
+        self.app.store.sidebar_width = Some(self.sidebar_width);
+        let _ = crate::storage::save(&self.app.store);
     }
 
     fn adjust_ui_zoom(&mut self, delta: f32) {

@@ -129,6 +129,27 @@ pub struct Grove {
     pub window_focused: bool,
     /// Last dock badge value pushed, to avoid redundant objc calls.
     pub last_badge: usize,
+    /// Sidebar width in logical pixels. Driven by dragging the divider, clamped
+    /// to `[SIDEBAR_MIN_W, window cap]`, persisted to `Store.sidebar_width`.
+    pub sidebar_width: f32,
+    /// Active divider drag, if the left button is held over the resize handle.
+    /// While set, a global mouse subscription feeds cursor moves and the
+    /// button-release that ends the drag.
+    pub sidebar_drag: Option<SidebarDrag>,
+    /// Timestamp of the last divider press, for double-click reset detection.
+    pub last_divider_press: Option<std::time::Instant>,
+}
+
+/// Transient state for an in-progress sidebar divider drag.
+#[derive(Clone, Copy, Debug)]
+pub struct SidebarDrag {
+    /// `sidebar_width - cursor_x` captured on the first cursor move after the
+    /// press, so the width tracks the cursor without jumping when the press
+    /// lands a few px off the exact divider edge. `None` until that first move.
+    pub grab_offset: Option<f32>,
+    /// Sidebar width when the drag began, so a press without real movement
+    /// (a plain click) skips the PTY resize + persist on release.
+    pub start_width: f32,
 }
 
 /// Identifies which on-screen PTY a mouse event originated from. The home
@@ -261,6 +282,14 @@ pub enum Msg {
     PtyMouseDown(PtyPane, f32, f32),
     PtyMouseDrag(PtyPane, f32, f32),
     PtyMouseUp,
+    /// Left button pressed on the sidebar resize handle. Begins a drag (or, on a
+    /// second press within the double-click window, resets to the default width).
+    SidebarDragStart,
+    /// Cursor moved while the divider is held; carries the cursor's logical
+    /// x-position (window-relative), which maps to the new sidebar width.
+    SidebarDragMove(f32),
+    /// Left button released: commit the width (recompute PTYs, persist).
+    SidebarDragEnd,
     PtyScroll {
         pane: PtyPane,
         up: bool,

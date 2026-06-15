@@ -3,7 +3,7 @@
 
 use super::icons::icon;
 use super::metrics::{
-    APPBAR_H, CELL_H, CELL_W, RAIL_W, ROW_H, SESSBAR_H, STATUS_H, UI_BOLD, UI_FONT,
+    APPBAR_H, CELL_H, CELL_W, ROW_H, SESSBAR_H, SIDEBAR_DIVIDER_W, STATUS_H, UI_BOLD, UI_FONT,
 };
 use super::palette as c;
 use super::pty::{rebuild_row_runs, PtyProgram};
@@ -55,7 +55,7 @@ impl Grove {
         let body = if self.app.chrome_visible {
             column![
                 self.appbar(),
-                row![self.sidebar(), divider_v(c::BORDER()), self.workspace()]
+                row![self.sidebar(), self.sidebar_resize_handle(), self.workspace()]
                     .height(Length::Fill)
                     .width(Length::Fill),
                 self.statusbar(),
@@ -131,7 +131,7 @@ impl Grove {
         .align_y(iced::Alignment::Center);
 
         let inner = row![
-            container(brand).width(RAIL_W),
+            container(brand).width(self.sidebar_width),
             Space::with_width(Length::Fill),
             right,
         ]
@@ -147,6 +147,21 @@ impl Grove {
             });
 
         column![bar, divider_h(c::BORDER())].into()
+    }
+
+    /// The draggable divider between the sidebar and the workspace. A 1px line
+    /// centered in a `SIDEBAR_DIVIDER_W`-wide hit zone, with a resize cursor on
+    /// hover. The press starts a drag; cursor moves and the release are tracked
+    /// by a global subscription (see `Grove::subscription`).
+    fn sidebar_resize_handle(&self) -> Element<'_, Msg> {
+        iced::widget::mouse_area(
+            container(divider_v(c::BORDER()))
+                .height(Length::Fill)
+                .center_x(SIDEBAR_DIVIDER_W),
+        )
+        .on_press(Msg::SidebarDragStart)
+        .interaction(iced::mouse::Interaction::ResizingHorizontally)
+        .into()
     }
 
     // ── sidebar ───────────────────────────────────────────────────────────
@@ -198,7 +213,7 @@ impl Grove {
         .height(Length::Fill);
 
         container(stack_col)
-            .width(RAIL_W)
+            .width(self.sidebar_width)
             .height(Length::Fill)
             .style(|_| container::Style {
                 background: Some(Background::Color(c::BG_RAIL())),

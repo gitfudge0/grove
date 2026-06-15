@@ -8,11 +8,19 @@ pub const ROW_H: f32 = 28.0;
 /// Extra height appended to `ROW_H` for sidebar rows that render a second
 /// (subtitle) line — used by the activity-stream view's session rows.
 pub const SUBTITLE_H: f32 = 16.0;
+/// Default sidebar width, also the reset target for a divider double-click.
 pub const RAIL_W: f32 = 320.0;
+/// Lower bound for the drag-resizable sidebar.
+pub const SIDEBAR_MIN_W: f32 = 220.0;
+/// Minimum workspace width the sidebar must leave behind when the window is
+/// narrow. Caps the sidebar so the agent view never collapses to nothing.
+pub const WORKSPACE_MIN_W: f32 = 400.0;
 pub const APPBAR_H: f32 = 44.0;
 pub const STATUS_H: f32 = 26.0;
 pub const SESSBAR_H: f32 = 36.0;
-pub const SIDEBAR_DIVIDER_W: f32 = 1.0;
+/// Width of the draggable divider/grab-handle between sidebar and workspace.
+/// Counts against the workspace in the PTY column math just like the sidebar.
+pub const SIDEBAR_DIVIDER_W: f32 = 6.0;
 pub const PTY_PAD_W: f32 = 36.0;
 pub const PTY_PAD_H: f32 = 28.0;
 
@@ -230,7 +238,24 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
 /// PTY dimensions derived from unzoomed window size. Subtracts the visible chrome
 /// (rail, dividers, appbar, statusbar, sessbar, container padding) and divides
 /// by the cell metrics that iced lays out in logical pixels.
-pub fn compute_pty_dims(win_w: f32, win_h: f32, zoom: f32, chrome_visible: bool) -> (u16, u16) {
+/// Clamp a requested sidebar width (logical px) to its valid range for the
+/// current window. Lower bound is [`SIDEBAR_MIN_W`]; upper bound is the smaller
+/// of half the window and "window minus a usable workspace", but never below
+/// the lower bound (so tiny windows still yield a sane value).
+pub fn clamp_sidebar_width(width: f32, logical_win_w: f32) -> f32 {
+    let upper = (logical_win_w * 0.5)
+        .min(logical_win_w - WORKSPACE_MIN_W)
+        .max(SIDEBAR_MIN_W);
+    width.clamp(SIDEBAR_MIN_W, upper)
+}
+
+pub fn compute_pty_dims(
+    win_w: f32,
+    win_h: f32,
+    zoom: f32,
+    chrome_visible: bool,
+    sidebar_w: f32,
+) -> (u16, u16) {
     // `ui_zoom` is applied as iced's application scale factor, which reduces
     // the logical viewport available to layout. The terminal grid must be
     // computed against that zoomed viewport; otherwise the same number of
@@ -240,7 +265,7 @@ pub fn compute_pty_dims(win_w: f32, win_h: f32, zoom: f32, chrome_visible: bool)
     let logical_w = win_w / zoom;
     let logical_h = win_h / zoom;
     let visible_w = if chrome_visible {
-        RAIL_W + SIDEBAR_DIVIDER_W
+        sidebar_w + SIDEBAR_DIVIDER_W
     } else {
         0.0
     };
@@ -261,11 +286,17 @@ pub fn compute_pty_dims(win_w: f32, win_h: f32, zoom: f32, chrome_visible: bool)
 /// Accounts for the 1px split divider and the region's own horizontal padding.
 /// Height (rows) is unaffected by the split, so callers reuse `compute_pty_dims`
 /// rows.
-pub fn pty_cols_for_fraction(win_w: f32, zoom: f32, chrome_visible: bool, fraction: f32) -> u16 {
+pub fn pty_cols_for_fraction(
+    win_w: f32,
+    zoom: f32,
+    chrome_visible: bool,
+    fraction: f32,
+    sidebar_w: f32,
+) -> u16 {
     let zoom = zoom.max(0.1);
     let logical_w = win_w / zoom;
     let visible_w = if chrome_visible {
-        RAIL_W + SIDEBAR_DIVIDER_W
+        sidebar_w + SIDEBAR_DIVIDER_W
     } else {
         0.0
     };
@@ -279,8 +310,9 @@ pub fn pty_cols_for_fraction(win_w: f32, zoom: f32, chrome_visible: bool, fracti
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_pty_dims, APPBAR_H, CELL_H, CELL_W, FONT_SIZE, MONO_REGULAR, PTY_PAD_H, PTY_PAD_W,
-        RAIL_W, SESSBAR_H, SIDEBAR_DIVIDER_W, STATUS_H,
+        clamp_sidebar_width, compute_pty_dims, APPBAR_H, CELL_H, CELL_W, FONT_SIZE, MONO_REGULAR,
+        PTY_PAD_H, PTY_PAD_W, RAIL_W, SESSBAR_H, SIDEBAR_DIVIDER_W, SIDEBAR_MIN_W, STATUS_H,
+        WORKSPACE_MIN_W,
     };
 
     #[test]
@@ -307,11 +339,11 @@ mod tests {
         let expected_rows_15x = (usable_h_15x / CELL_H).max(4.0) as u16;
 
         assert_eq!(
-            compute_pty_dims(win_w, win_h, 1.0, true),
+            compute_pty_dims(win_w, win_h, 1.0, true, RAIL_W),
             (expected_rows_1x, expected_cols_1x)
         );
         assert_eq!(
-            compute_pty_dims(win_w, win_h, 1.5, true),
+            compute_pty_dims(win_w, win_h, 1.5, true, RAIL_W),
             (expected_rows_15x, expected_cols_15x)
         );
         assert!(expected_rows_15x < expected_rows_1x);
@@ -324,7 +356,7 @@ mod tests {
         let win_h = 800.0;
 
         for zoom in [1.0, 1.5, 2.0] {
-            let (rows, cols) = compute_pty_dims(win_w, win_h, zoom, true);
+            let (rows, cols) = compute_pty_dims(win_w, win_h, zoom, true, RAIL_W);
             let logical_w = win_w / zoom;
             let logical_h = win_h / zoom;
             let usable_w = logical_w - (RAIL_W + SIDEBAR_DIVIDER_W + PTY_PAD_W);
@@ -339,9 +371,9 @@ mod tests {
     fn pty_cols_for_fraction_splits_workspace() {
         use super::{pty_cols_for_fraction, TERM_PANEL_PORTION};
         let panel_frac = TERM_PANEL_PORTION as f32 / 100.0;
-        let agent = pty_cols_for_fraction(1280.0, 1.0, true, 1.0 - panel_frac);
-        let panel = pty_cols_for_fraction(1280.0, 1.0, true, panel_frac);
-        let full = compute_pty_dims(1280.0, 800.0, 1.0, true).1;
+        let agent = pty_cols_for_fraction(1280.0, 1.0, true, 1.0 - panel_frac, RAIL_W);
+        let panel = pty_cols_for_fraction(1280.0, 1.0, true, panel_frac, RAIL_W);
+        let full = compute_pty_dims(1280.0, 800.0, 1.0, true, RAIL_W).1;
 
         // The 35% panel is narrower than the 65% agent, and both fit inside the
         // full single-pane width.
@@ -352,16 +384,48 @@ mod tests {
 
     #[test]
     fn compute_pty_dims_enforces_minimum_size() {
-        assert_eq!(compute_pty_dims(100.0, 100.0, 2.0, true), (4, 10));
+        assert_eq!(compute_pty_dims(100.0, 100.0, 2.0, true, RAIL_W), (4, 10));
     }
 
     #[test]
     fn compute_pty_dims_uses_hidden_chrome_area_for_pty() {
-        let visible = compute_pty_dims(1280.0, 800.0, 1.0, true);
-        let zen = compute_pty_dims(1280.0, 800.0, 1.0, false);
+        let visible = compute_pty_dims(1280.0, 800.0, 1.0, true, RAIL_W);
+        let zen = compute_pty_dims(1280.0, 800.0, 1.0, false, RAIL_W);
 
         assert!(zen.0 > visible.0);
         assert!(zen.1 > visible.1);
+    }
+
+    #[test]
+    fn wider_sidebar_yields_fewer_pty_cols() {
+        let narrow = compute_pty_dims(1280.0, 800.0, 1.0, true, SIDEBAR_MIN_W);
+        let wide = compute_pty_dims(1280.0, 800.0, 1.0, true, 500.0);
+        // Rows are unaffected by sidebar width; only columns shrink.
+        assert_eq!(narrow.0, wide.0);
+        assert!(wide.1 < narrow.1);
+    }
+
+    #[test]
+    fn hidden_chrome_ignores_sidebar_width() {
+        let a = compute_pty_dims(1280.0, 800.0, 1.0, false, SIDEBAR_MIN_W);
+        let b = compute_pty_dims(1280.0, 800.0, 1.0, false, 600.0);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn clamp_sidebar_width_bounds() {
+        let win = 1280.0;
+        // Pass-through within range.
+        assert_eq!(clamp_sidebar_width(360.0, win), 360.0);
+        // Below the minimum clamps up.
+        assert_eq!(clamp_sidebar_width(50.0, win), SIDEBAR_MIN_W);
+        // Above the window-relative cap (half the window) clamps down.
+        assert_eq!(clamp_sidebar_width(1000.0, win), win * 0.5);
+        // Workspace-minimum is the binding cap on a narrow window.
+        let narrow = 700.0;
+        assert_eq!(clamp_sidebar_width(1000.0, narrow), narrow - WORKSPACE_MIN_W);
+        // Degenerate tiny window never returns below the minimum.
+        assert_eq!(clamp_sidebar_width(500.0, 100.0), SIDEBAR_MIN_W);
     }
 
     fn table_offset(ttf: &[u8], tag: &[u8; 4]) -> usize {
