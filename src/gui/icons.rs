@@ -14,6 +14,25 @@ pub fn icon<'a>(name: &str, size: f32, color: Color) -> Element<'a, Msg> {
         .into()
 }
 
+/// Continuously rotating arc — the Working/loading indicator. `tick` is the
+/// GUI `blink_tick`; the arc advances 12° per tick for a smooth spin without
+/// any glyph-font dependency or discrete frame array.
+pub fn spinner<'a>(size: f32, color: Color, tick: u32) -> Element<'a, Msg> {
+    let deg = (tick.wrapping_mul(12) % 360) as f32;
+    // Open ~270° arc, gapped at the top-left, so the rotation is visible.
+    let inner = format!(
+        r#"<path d="M8 1.5a6.5 6.5 0 1 1-4.6 1.9" transform="rotate({deg} 8 8)"/>"#
+    );
+    let s = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{inner}</svg>"#
+    );
+    svg(svg::Handle::from_memory(s.into_bytes()))
+        .width(size)
+        .height(size)
+        .style(move |_, _| svg::Style { color: Some(color) })
+        .into()
+}
+
 fn svg_for(name: &str) -> String {
     let inner = match name {
         "plus" => r#"<path d="M8 3v10M3 8h10"/>"#,
@@ -35,6 +54,12 @@ fn svg_for(name: &str) -> String {
             r#"<circle cx="8" cy="8" r="2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/>"#
         }
         "search" => r#"<circle cx="7" cy="7" r="4.5"/><path d="M10.4 10.4l3 3"/>"#,
+        // Activity status glyphs.
+        "question" => {
+            r#"<path d="M5.8 6a2.2 2.2 0 1 1 3.2 2c-.8.5-1 .8-1 1.6"/><circle cx="8" cy="12.2" r="0.5" fill="currentColor" stroke="none"/>"#
+        }
+        "dot" => r#"<circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/>"#,
+        "ring" => r#"<circle cx="8" cy="8" r="3.5"/>"#,
         "term" => {
             r#"<rect x="1.5" y="3" width="13" height="10" rx="1.5"/><path d="M4.5 7l2 1.5-2 1.5M8 10h3.5"/>"#
         }

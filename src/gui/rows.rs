@@ -1,8 +1,8 @@
 //! Sidebar row builders — projects, worktrees, and sessions.
 
 use super::activity::ActivityState;
-use super::icons::icon;
-use super::metrics::{MONO_FONT, ROW_H, SUBTITLE_H, UI_BOLD, UI_FONT};
+use super::icons::{icon, spinner};
+use super::metrics::{ROW_H, SUBTITLE_H, UI_BOLD, UI_FONT};
 use super::palette as c;
 use super::state::Msg;
 use super::widgets::{action_mini, action_mini_danger, clickable_row, split_start_button};
@@ -522,56 +522,23 @@ fn truncate_ellipsis(s: &str, max_chars: usize) -> String {
 
 // ── activity-stream rows ────────────────────────────────────────────────
 
-/// Spinner frames for the Working state, advanced by the GUI tick. Plain
-/// ASCII on purpose: the bundled fonts carry no arc/braille/circle glyphs
-/// (U+25xx / U+28xx render as tofu), so frames must come from the chars the
-/// fonts actually have.
-const SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
-
-/// Status glyph replacing the old state dot. `tick` is `Grove::blink_tick`
-/// (~60ms): spinner advances every 3 ticks, the waiting `?` blinks at ~1Hz
-/// (8 ticks on, 8 off) by dimming — never hiding — the glyph, so row layout
-/// is stable. `Exited` is a drawn hollow ring (no suitable glyph in the
-/// bundled fonts).
+/// Status glyph replacing the old state dot. All states render as font-free
+/// SVG icons (the bundled fonts carry no arc/braille/circle glyphs). `tick` is
+/// `Grove::blink_tick` (~60ms): the Working arc spins continuously, and the
+/// waiting glyph blinks at ~1Hz (8 ticks on, 8 off) by dimming — never hiding
+/// — the icon, so row layout stays stable.
 pub fn state_glyph<'a>(state: ActivityState, tick: u32) -> Element<'a, Msg> {
-    let (glyph, color) = match state {
-        ActivityState::Working => (SPINNER[(tick / 3) as usize % SPINNER.len()], c::GREEN()),
+    let inner: Element<'a, Msg> = match state {
+        ActivityState::Working => spinner(11.0, c::GREEN(), tick),
         ActivityState::WaitingForInput => {
             let on = (tick / 8).is_multiple_of(2);
-            ("?", if on { c::AMBER() } else { c::FG_MUTE() })
+            icon("question", 11.0, if on { c::AMBER() } else { c::FG_MUTE() })
         }
-        ActivityState::Done => ("✓", c::GREEN()),
-        ActivityState::Idle => ("·", c::FG_MUTE()),
-        ActivityState::Exited => {
-            // Hollow 7px ring, vector-drawn like the original state dot.
-            return container(
-                container(Space::with_width(7))
-                    .width(7)
-                    .height(7)
-                    .style(|_| container::Style {
-                        border: Border {
-                            color: c::FG_MUTE(),
-                            width: 1.0,
-                            radius: Radius::from(3.5),
-                        },
-                        ..Default::default()
-                    }),
-            )
-            .width(14)
-            .center_x(14)
-            .into();
-        }
+        ActivityState::Done => icon("check", 11.0, c::GREEN()),
+        ActivityState::Idle => icon("dot", 11.0, c::FG_MUTE()),
+        ActivityState::Exited => icon("ring", 11.0, c::FG_MUTE()),
     };
-    container(
-        text(glyph)
-            .font(MONO_FONT)
-            .size(11)
-            .color(color)
-            .wrapping(iced::widget::text::Wrapping::None),
-    )
-    .width(14)
-    .center_x(14)
-    .into()
+    container(inner).width(14).center_x(14).into()
 }
 
 /// Group header row used between activity-stream sections: mono uppercase
