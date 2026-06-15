@@ -776,6 +776,9 @@ impl Grove {
             let scrolling = s
                 .scroll_age()
                 .is_some_and(|a| a < super::activity::SCROLL_QUIET);
+            let interacting = s
+                .input_age()
+                .is_some_and(|a| a < super::activity::INPUT_QUIET);
             let sig = Signals {
                 alive,
                 output_age,
@@ -783,6 +786,7 @@ impl Grove {
                 was_working: tracker.was_working,
                 focused,
                 scrolling,
+                interacting,
                 // Structured OSC title — primary working signal for agents
                 // that emit one; vt100 already tracks it from the PTY stream.
                 title: if alive { s.current_title() } else { None },

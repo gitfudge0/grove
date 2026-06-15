@@ -64,6 +64,12 @@ pub struct Session {
     /// output to the activity classifier — this timestamp lets it discount
     /// output that immediately follows a scroll.
     last_scroll_at: Option<Instant>,
+    /// When the user last typed into or resized this session. The inner app's
+    /// keystroke echo and SIGWINCH repaint flow back through the PTY reader,
+    /// which looks like fresh agent output to the activity classifier — this
+    /// timestamp lets it discount output that immediately follows the user's
+    /// own interaction.
+    last_input_at: Option<Instant>,
 }
 
 impl Session {
@@ -279,6 +285,7 @@ impl Session {
             cols,
             tmux_copy_mode: false,
             last_scroll_at: None,
+            last_input_at: None,
         })
     }
 
@@ -331,6 +338,7 @@ impl Session {
     }
 
     pub fn send(&mut self, bytes: &[u8]) {
+        self.last_input_at = Some(Instant::now());
         // Typing snaps the view back to the live screen, like a real terminal.
         if let Ok(mut p) = self.parser.lock() {
             if p.screen().scrollback() != 0 {
@@ -359,6 +367,11 @@ impl Session {
     /// Seconds since the user last scrolled this session, if ever.
     pub fn scroll_age(&self) -> Option<std::time::Duration> {
         self.last_scroll_at.map(|t| t.elapsed())
+    }
+
+    /// Seconds since the user last typed into or resized this session, if ever.
+    pub fn input_age(&self) -> Option<std::time::Duration> {
+        self.last_input_at.map(|t| t.elapsed())
     }
 
     pub fn scroll(&mut self, up: bool, col: u16, row: u16) {
@@ -534,6 +547,9 @@ impl Session {
         if rows == self.rows && cols == self.cols {
             return;
         }
+        // A real size change makes the inner app repaint (SIGWINCH); discount
+        // that redraw burst so it isn't read as the agent producing output.
+        self.last_input_at = Some(Instant::now());
         self.rows = rows;
         self.cols = cols;
         let _ = self.master.resize(PtySize {

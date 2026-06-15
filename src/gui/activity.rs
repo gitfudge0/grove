@@ -16,6 +16,15 @@ pub const TITLE_STALE: Duration = Duration::from_secs(60);
 /// A scroll within this window discounts output recency: scrolling redraws
 /// the PTY, which otherwise reads as fresh agent output.
 pub const SCROLL_QUIET: Duration = Duration::from_secs(3);
+/// A keystroke or resize within this window discounts output recency: the
+/// inner app's echo / SIGWINCH repaint flows back through the PTY reader and
+/// otherwise reads as fresh agent output. Tracks `WORKING_RECENT` intentionally
+/// (the discount should exactly cancel the recency window it guards). Genuine
+/// work is still caught by the title marker and `matches_working`, so this only
+/// suppresses self-induced redraws — note that for agents without a working
+/// marker (plain Terminal, and Codex/OpenCode until their on-screen marker
+/// first paints) a freshly typed command shows non-working for up to this long.
+pub const INPUT_QUIET: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActivityState {
@@ -42,6 +51,11 @@ pub struct Signals {
     /// that scrolling causes must not count as the agent producing output;
     /// a genuinely working agent is still caught by its working marker.
     pub scrolling: bool,
+    /// The user typed into or resized this session within the last
+    /// `INPUT_QUIET` window. The keystroke echo / SIGWINCH repaint this causes
+    /// must not count as the agent producing output; a genuinely working agent
+    /// is still caught by its working marker.
+    pub interacting: bool,
     /// The OSC 0/1/2 window title the inner app last emitted, if any.
     /// Structured (the agent sets it deliberately), so it outranks the
     /// screen-pattern scrape when it yields a definite answer.
@@ -105,7 +119,7 @@ pub fn classify(agent: Agent, tail: &str, sig: &Signals) -> ActivityState {
     if !waiting && sig.output_age < TITLE_STALE && title.is_some_and(|t| title_working(agent, t)) {
         return ActivityState::Working;
     }
-    let recent = sig.output_age < WORKING_RECENT && !sig.scrolling;
+    let recent = sig.output_age < WORKING_RECENT && !sig.scrolling && !sig.interacting;
     if recent || matches_working(agent, tail) {
         return ActivityState::Working;
     }
@@ -219,6 +233,7 @@ mod tests {
             was_working,
             focused,
             scrolling: false,
+            interacting: false,
             title: None,
         }
     }
@@ -282,6 +297,58 @@ mod tests {
         assert_eq!(
             classify(Agent::Claude, "✻ Cogitating… (esc to interrupt)", &signals),
             ActivityState::Working
+        );
+    }
+
+    /// Typing into or resizing a session redraws the PTY (keystroke echo /
+    /// SIGWINCH repaint), but that self-induced output must not read as the
+    /// agent working.
+    #[test]
+    fn interaction_redraw_is_not_working() {
+        let mut signals = sig(true, 0, false, false, true);
+        signals.interacting = true;
+        assert_eq!(classify(Agent::Terminal, "❯ ", &signals), ActivityState::Idle);
+    }
+
+    /// A Done session that the user resizes must not flip back to Working.
+    #[test]
+    fn interaction_redraw_does_not_resurrect_working() {
+        let mut signals = sig(true, 0, false, true, true);
+        signals.interacting = true;
+        assert_eq!(classify(Agent::Claude, "❯ ", &signals), ActivityState::Done);
+    }
+
+    /// While interacting, a genuinely working Claude is still caught by its
+    /// animated title marker.
+    #[test]
+    fn interaction_keeps_working_when_title_marker_present() {
+        let mut signals = sig(true, 0, false, false, true);
+        signals.interacting = true;
+        let signals = with_title(signals, "\u{2802} Cogitating…");
+        assert_eq!(classify(Agent::Claude, "", &signals), ActivityState::Working);
+    }
+
+    /// While interacting, a genuinely working agent is still caught by its
+    /// on-screen working marker (Codex/OpenCode have no title signal).
+    #[test]
+    fn interaction_keeps_working_when_marker_visible() {
+        let mut signals = sig(true, 0, false, false, true);
+        signals.interacting = true;
+        assert_eq!(
+            classify(Agent::Codex, "esc to interrupt", &signals),
+            ActivityState::Working
+        );
+    }
+
+    /// Interaction must never mask the highest-urgency waiting state: a
+    /// permission prompt that appears as the user types still wins.
+    #[test]
+    fn interaction_does_not_mask_waiting() {
+        let mut signals = sig(true, 0, false, false, false);
+        signals.interacting = true;
+        assert_eq!(
+            classify(Agent::Claude, "Do you want to proceed?\n❯ 1. Yes", &signals),
+            ActivityState::WaitingForInput
         );
     }
 
