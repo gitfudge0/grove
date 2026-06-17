@@ -697,6 +697,22 @@ impl Grove {
                     self.submit_modal_confirm(yes);
                 }
             }
+            Msg::AddProjectInitGit => {
+                if let Err(e) = self.app.add_project_init_git() {
+                    self.app.modal = Modal::Message(format!("action failed: {e}"));
+                }
+                self.rebuild_wt_cache();
+            }
+            Msg::AddProjectContinueNoGit => {
+                self.app.add_project_continue_no_git();
+                self.rebuild_wt_cache();
+            }
+            Msg::AddProjectCancelNoGit => {
+                if let Err(e) = self.app.add_project_cancel_no_git() {
+                    self.app.modal = Modal::Message(format!("action failed: {e}"));
+                }
+                self.rebuild_wt_cache();
+            }
             Msg::ModalPickDir(path) => {
                 if let Modal::Input {
                     buffer,
@@ -1163,6 +1179,28 @@ impl Grove {
                 Key::Character(s) => match s.as_str() {
                     "y" | "Y" => self.submit_modal_confirm(true),
                     "n" | "N" => self.submit_modal_confirm(false),
+                    _ => {}
+                },
+                _ => {}
+            },
+            Modal::AddProjectNoGit { .. } => match key {
+                Key::Named(Named::Escape) => {
+                    let _ = self.app.add_project_cancel_no_git();
+                    self.rebuild_wt_cache();
+                }
+                Key::Named(Named::Enter) => {
+                    let _ = self.app.add_project_init_git();
+                    self.rebuild_wt_cache();
+                }
+                Key::Character(s) => match s.as_str() {
+                    "g" | "G" => {
+                        let _ = self.app.add_project_init_git();
+                        self.rebuild_wt_cache();
+                    }
+                    "c" | "C" => {
+                        self.app.add_project_continue_no_git();
+                        self.rebuild_wt_cache();
+                    }
                     _ => {}
                 },
                 _ => {}

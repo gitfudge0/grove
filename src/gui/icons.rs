@@ -93,6 +93,30 @@ fn svg_for(name: &str) -> String {
         "opencode" => {
             r#"<rect x="4" y="3" width="8" height="10" rx="0.5"/><rect x="6" y="5" width="4" height="6" fill="currentColor" stroke="none"/>"#
         }
+        // Git branch — two nodes on a trunk plus a branch node.
+        "git-branch" => {
+            r#"<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="3.5" r="1.5"/><path d="M11.5 5v1.5a3 3 0 0 1-3 3H4.5M4.5 5v6"/>"#
+        }
+        // Generic git commit — a node on a horizontal line.
+        "git" => {
+            r#"<circle cx="8" cy="8" r="2.5"/><path d="M1.5 8h4M10.5 8h4"/>"#
+        }
+        // Git branch with a slash through it — git disabled.
+        "no-git" => {
+            r#"<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="3.5" r="1.5"/><path d="M11.5 5v1.5a3 3 0 0 1-3 3H4.5M4.5 5v6"/><path d="M2.5 13.5l11-11"/>"#
+        }
+        // Simple folder outline.
+        "folder" => {
+            r#"<path d="M2 4.5a1 1 0 0 1 1-1h3l1.2 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/>"#
+        }
+        // Open folder outline.
+        "folder-open" => {
+            r#"<path d="M2 12V4.5a1 1 0 0 1 1-1h3l1.2 1.5H12a1 1 0 0 1 1 1V7"/><path d="M2 12l1.7-4.2a1 1 0 0 1 .93-.63h9.1a.6.6 0 0 1 .56.82L14 12a1 1 0 0 1-.93.63H3a1 1 0 0 1-1-.63z"/>"#
+        }
+        // Four-point sparkle — initialize / new.
+        "sparkle" => {
+            r#"<path d="M8 2.5c.6 2.6 1.9 3.9 4.5 4.5C9.9 7.6 8.6 8.9 8 11.5 7.4 8.9 6.1 7.6 3.5 7 6.1 6.4 7.4 5.1 8 2.5z" fill="currentColor" stroke="none"/>"#
+        }
         _ => "",
     };
     format!(

@@ -379,6 +379,12 @@ pub enum Msg {
     ModalSubmit,
     ModalCancel,
     ModalConfirm(bool),
+    /// No-git add-project decision: initialize git for the just-added project.
+    AddProjectInitGit,
+    /// No-git add-project decision: keep the project without git.
+    AddProjectContinueNoGit,
+    /// No-git add-project decision: discard the just-added project.
+    AddProjectCancelNoGit,
     ModalPickDir(String),
     ChooseTmux(bool),
     AgentPickerSelect(usize),

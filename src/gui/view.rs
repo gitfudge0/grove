@@ -343,10 +343,11 @@ impl Grove {
             .projects
             .iter()
             .enumerate()
-            .map(|(i, p)| (i, p.name.clone()))
+            .map(|(i, p)| (i, p.name.clone(), p.path.clone()))
             .collect();
-        for (pi, pname) in projects {
+        for (pi, pname, ppath) in projects {
             let expanded = !self.collapsed.contains(&pi);
+            let is_git = crate::git::is_repo(&ppath);
             let count = self
                 .app
                 .sessions
@@ -371,6 +372,7 @@ impl Grove {
                 &pname,
                 count,
                 expanded,
+                is_git,
                 proj_rollup,
                 self.blink_tick,
             ));
@@ -414,6 +416,7 @@ impl Grove {
                     &w.branch,
                     active_wt,
                     w.is_main,
+                    is_git,
                     hovered,
                     wt_expanded,
                     has_run,
@@ -1434,6 +1437,7 @@ impl Grove {
                 destructive,
                 ..
             } => self.confirm_modal(title, prompt, *destructive),
+            Modal::AddProjectNoGit { path, .. } => self.add_project_no_git_modal(path),
             Modal::RemoveProject {
                 name,
                 worktrees,
@@ -1613,6 +1617,43 @@ impl Grove {
         .spacing(12);
 
         modal_panel(body.into(), 480.0, accent)
+    }
+
+    fn add_project_no_git_modal<'a>(&'a self, path: &'a str) -> Element<'a, Msg> {
+        let accent = c::MAGENTA();
+        let header = row![
+            icon("no-git", 14.0, accent),
+            text("not a git repository").size(13).color(accent),
+        ]
+        .spacing(7)
+        .align_y(iced::Alignment::Center);
+        let body = column![
+            header,
+            text(format!(
+                "'{path}' is not a git repository. Initialize git for branch \
+                 isolation and worktrees, or continue without it — sessions and \
+                 terminals will run directly in the project path."
+            ))
+            .size(13)
+            .color(c::FG_DIM())
+            .wrapping(iced::widget::text::Wrapping::Word),
+            Space::with_height(8),
+            row![
+                modal_action("cancel", ModalBtn::Plain, Msg::AddProjectCancelNoGit),
+                Space::with_width(Length::Fill),
+                modal_action(
+                    "continue without git",
+                    ModalBtn::Plain,
+                    Msg::AddProjectContinueNoGit,
+                ),
+                modal_action("initialize git", ModalBtn::Primary, Msg::AddProjectInitGit),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(12);
+
+        modal_panel(body.into(), 520.0, accent)
     }
 
     #[allow(clippy::too_many_arguments)]

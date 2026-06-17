@@ -58,6 +58,14 @@ pub enum Modal {
         destructive: bool,
         kind: ConfirmKind,
     },
+    /// Three-way decision shown after adding a project whose directory is not a
+    /// git repository: initialize git, continue without git (sessions run
+    /// directly in the project path, no worktrees), or cancel (un-add the
+    /// just-added project). `idx` is the index of the freshly-added project.
+    AddProjectNoGit {
+        idx: usize,
+        path: String,
+    },
     /// Two-stage project removal: confirmation (with an optional checkbox to
     /// also delete worktrees on disk) followed by a progress view while the
     /// worktrees are torn down.
@@ -129,7 +137,6 @@ pub enum InputKind {
 pub enum ConfirmKind {
     RemoveProject(usize),
     RemoveWorktree(String), // wt path
-    InitRepo { path: String, name: String },
     InitAndAddWorktree { name: String },
     GenerateInclude { path: String },
 }
@@ -1255,17 +1262,15 @@ impl App {
                 self.proj_idx = self.store.projects.len() - 1;
                 self.status = format!("added {value}");
 
-                let needs_init = !std::path::Path::new(&path).join(".git").exists();
+                let needs_init = !git::is_repo(&path);
                 let needs_include = !std::path::Path::new(&path)
                     .join(".worktreeinclude")
                     .exists();
 
                 if needs_init {
-                    self.modal = Modal::Confirm {
-                        title: "initialize git repo?".into(),
-                        prompt: format!("'{path}' is not a git repo. Run `git init`."),
-                        destructive: false,
-                        kind: ConfirmKind::InitRepo { path, name: value },
+                    self.modal = Modal::AddProjectNoGit {
+                        idx: self.proj_idx,
+                        path,
                     };
                 } else if needs_include {
                     self.modal = Modal::Confirm {
@@ -1287,7 +1292,7 @@ impl App {
                 let Some(p) = self.selected_project().cloned() else {
                     return Ok(());
                 };
-                if !std::path::Path::new(&p.path).join(".git").exists() {
+                if !git::is_repo(&p.path) {
                     self.modal = Modal::Confirm {
                         title: "initialize git repo?".into(),
                         prompt: format!(
@@ -1301,6 +1306,61 @@ impl App {
                 }
                 self.create_worktree(&p, &value);
             }
+        }
+        Ok(())
+    }
+
+    /// "initialize git" from the no-git add-project decision: run `git init`,
+    /// then offer to generate `.worktreeinclude` (matching the normal add flow).
+    pub fn add_project_init_git(&mut self) -> Result<()> {
+        let Modal::AddProjectNoGit { path, .. } =
+            std::mem::replace(&mut self.modal, Modal::None)
+        else {
+            return Ok(());
+        };
+        if let Err(e) = git::init_if_needed(&path) {
+            self.modal = Modal::Message(format!("git init failed: {e}"));
+            return Ok(());
+        }
+        let needs_include = !std::path::Path::new(&path)
+            .join(".worktreeinclude")
+            .exists();
+        if needs_include {
+            self.modal = Modal::Confirm {
+                title: "generate .worktreeinclude?".into(),
+                prompt: "Use Claude (haiku) to draft a .worktreeinclude for this repo.".into(),
+                destructive: false,
+                kind: ConfirmKind::GenerateInclude { path },
+            };
+        }
+        self.refresh_worktrees();
+        Ok(())
+    }
+
+    /// "continue without git" from the no-git add-project decision: keep the
+    /// project as-is. Sessions/terminals run in the project path via the
+    /// synthesized root worktree; no worktrees are created.
+    pub fn add_project_continue_no_git(&mut self) {
+        self.modal = Modal::None;
+        self.refresh_worktrees();
+    }
+
+    /// "cancel" from the no-git add-project decision: un-add the project that
+    /// was registered just before the decision was shown.
+    pub fn add_project_cancel_no_git(&mut self) -> Result<()> {
+        let Modal::AddProjectNoGit { idx, .. } =
+            std::mem::replace(&mut self.modal, Modal::None)
+        else {
+            return Ok(());
+        };
+        if idx < self.store.projects.len() {
+            let removed = self.store.projects.remove(idx);
+            storage::save(&self.store)?;
+            if self.proj_idx >= self.store.projects.len() {
+                self.proj_idx = self.store.projects.len().saturating_sub(1);
+            }
+            self.status = format!("discarded {}", removed.name);
+            self.refresh_worktrees();
         }
         Ok(())
     }
@@ -1339,25 +1399,6 @@ impl App {
                     return Ok(());
                 }
                 self.create_worktree(&p, &name);
-            }
-            ConfirmKind::InitRepo { path, name } => {
-                if let Err(e) = git::init_if_needed(&path) {
-                    self.modal = Modal::Message(format!("git init failed: {e}"));
-                    return Ok(());
-                }
-                let needs_include = !std::path::Path::new(&path)
-                    .join(".worktreeinclude")
-                    .exists();
-                if needs_include {
-                    self.modal = Modal::Confirm {
-                        title: "generate .worktreeinclude?".into(),
-                        prompt: "Use Claude (haiku) to draft a .worktreeinclude for this repo."
-                            .into(),
-                        destructive: false,
-                        kind: ConfirmKind::GenerateInclude { path },
-                    };
-                }
-                let _ = name;
             }
             ConfirmKind::GenerateInclude { path } => {
                 let prompt = "Inspect this project directory and write a .worktreeinclude file at its root. \

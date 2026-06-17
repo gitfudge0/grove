@@ -15,9 +15,12 @@ pub fn list_worktrees(project_path: &str) -> Vec<Worktree> {
     let out = Command::new("git")
         .args(["-C", project_path, "worktree", "list", "--porcelain"])
         .output();
-    let Ok(out) = out else { return vec![] };
+    // Not a git repo (or git unavailable): surface a single synthetic root
+    // worktree so the project still has a row to host sessions/terminals. Git
+    // is optional — sessions run directly in the project path, no isolation.
+    let Ok(out) = out else { return vec![root_worktree(project_path)] };
     if !out.status.success() {
-        return vec![];
+        return vec![root_worktree(project_path)];
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut result = vec![];
@@ -63,22 +66,29 @@ pub fn list_worktrees(project_path: &str) -> Vec<Worktree> {
     // include it. The root is the user's default landing spot.
     let has_root = result.iter().any(|w| w.path == project_path);
     if !has_root {
-        let branch = current_branch(project_path);
-        result.insert(
-            0,
-            Worktree {
-                path: project_path.to_string(),
-                branch: if branch.is_empty() {
-                    "—".into()
-                } else {
-                    branch
-                },
-                mtime: worktree_mtime(project_path),
-                is_main: true,
-            },
-        );
+        result.insert(0, root_worktree(project_path));
     }
     result
+}
+
+/// The implicit main worktree for a project root — used both for git repos that
+/// didn't emit their root and for non-git projects (where it's the only entry).
+fn root_worktree(project_path: &str) -> Worktree {
+    let branch = current_branch(project_path);
+    Worktree {
+        path: project_path.to_string(),
+        branch: if branch.is_empty() { "—".into() } else { branch },
+        mtime: worktree_mtime(project_path),
+        is_main: true,
+    }
+}
+
+/// Whether `path` is a git repository. The app's single definition of "is a
+/// repo" — a `.git` entry exists (directory for a normal repo, file for a linked
+/// worktree/submodule). Cheap (one stat), safe to call per render. Used to gate
+/// git-only affordances (worktrees, lifecycle scripts) consistently.
+pub fn is_repo(path: &str) -> bool {
+    Path::new(path).join(".git").exists()
 }
 
 /// Branch checked out at `wt_path`, or `(detached)` if HEAD is detached.

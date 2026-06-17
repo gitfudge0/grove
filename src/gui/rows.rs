@@ -47,6 +47,7 @@ pub fn project_row<'a>(
     name: &str,
     count: usize,
     expanded: bool,
+    is_git: bool,
     rollup: Option<ActivityState>,
     tick: u32,
 ) -> Element<'a, Msg> {
@@ -186,15 +187,18 @@ pub fn project_row<'a>(
         Some(st) => state_glyph(st, tick),
         None => Space::with_width(Length::Fixed(0.0)).into(),
     };
-    let right = row![rollup_el, add_btn, scripts_btn, remove_btn]
-        .spacing(6)
-        .align_y(iced::Alignment::Center)
-        .padding(Padding {
-            top: 0.0,
-            bottom: 0.0,
-            left: 0.0,
-            right: 8.0,
-        });
+    // Worktrees and worktree-lifecycle scripts are git-only — omit the add and
+    // settings buttons for non-git projects.
+    let mut right = row![rollup_el].spacing(6).align_y(iced::Alignment::Center);
+    if is_git {
+        right = right.push(add_btn).push(scripts_btn);
+    }
+    right = right.push(remove_btn).padding(Padding {
+        top: 0.0,
+        bottom: 0.0,
+        left: 0.0,
+        right: 8.0,
+    });
 
     container(row![project_btn, right].align_y(iced::Alignment::Center))
         .height(ROW_H)
@@ -225,6 +229,7 @@ pub fn worktree_row<'a>(
     branch: &str,
     active: bool,
     is_main: bool,
+    is_git: bool,
     hovered: bool,
     expanded: bool,
     has_run: bool,
@@ -244,6 +249,9 @@ pub fn worktree_row<'a>(
         .color(c::FG_DIM())
         .wrapping(iced::widget::text::Wrapping::None);
 
+    // Non-git project root: flag it so the user knows sessions run directly in
+    // the project path with no branch isolation / worktrees.
+    let no_git = is_main && !is_git;
     let label: Element<'a, Msg> = if show_branch {
         column![
             container(name_text).clip(true),
@@ -255,6 +263,15 @@ pub fn worktree_row<'a>(
             }),
         ]
         .spacing(0)
+        .into()
+    } else if no_git {
+        row![
+            container(name_text).clip(true),
+            icon("no-git", 11.0, c::FG_MUTE()),
+            text("no git").size(10).color(c::FG_MUTE()),
+        ]
+        .spacing(5)
+        .align_y(iced::Alignment::Center)
         .into()
     } else {
         name_text.into()
