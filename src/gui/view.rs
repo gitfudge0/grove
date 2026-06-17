@@ -1008,6 +1008,16 @@ impl Grove {
             bar_text("~".to_string(), c::FG_MUTE()),
             vline(),
             tool_btn("restart", "restart", false, Msg::RestartHomeTerminal),
+            tool_btn(
+                "zen",
+                if self.app.chrome_visible {
+                    "zen"
+                } else {
+                    "exit zen"
+                },
+                false,
+                Msg::ToggleZen,
+            ),
         ]
         .spacing(12)
         .align_y(iced::Alignment::Center)
