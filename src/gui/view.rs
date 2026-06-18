@@ -94,55 +94,12 @@ impl Grove {
             .padding(Padding::from([0, 16]))
             .align_y(iced::Alignment::Center);
 
-        let seg = container(
-            row![
-                seg_button(
-                    "native",
-                    !self.app.use_tmux(),
-                    SegSide::Left,
-                    Msg::BackendNative
-                ),
-                seg_button(
-                    "tmux",
-                    self.app.use_tmux(),
-                    SegSide::Right,
-                    Msg::BackendTmux
-                ),
-            ]
-            .spacing(0),
-        )
-        .style(|_| container::Style {
-            border: Border {
-                color: c::BORDER(),
-                width: 1.0,
-                radius: Radius::from(6.0),
-            },
-            ..Default::default()
-        });
-
-        // `- <num> +` reads as one control: the three buttons sit flush (zero
-        // row spacing, tight per-button padding), with outer horizontal padding
-        // that becomes the margin to the left of `-` and the right of `+`,
-        // separating the unit from the segment buttons and the theme toggle.
-        let zoom = container(
-            row![
-                control_icon_btn("minus", Msg::ZoomOut, 20.0, 13.0),
-                control_btn_sized(format!("{:.0}%", self.ui_zoom * 100.0), Msg::ZoomReset, 12, 2),
-                control_icon_btn("plus", Msg::ZoomIn, 20.0, 13.0),
-            ]
-            .spacing(0)
-            .align_y(iced::Alignment::Center),
-        )
-        .padding(Padding::from([0, 10]));
-
-        let right = row![
-            seg,
-            zoom,
-            icon_btn("contrast", Msg::OpenThemePicker),
-        ]
-        .spacing(4)
-        .padding(Padding::from([0, 16]))
-        .align_y(iced::Alignment::Center);
+        // App size, theme, and terminal backend now live in the Settings modal;
+        // the appbar's right cluster is just the cog entry point.
+        let right = row![icon_btn("cog", Msg::OpenSettings)]
+            .spacing(4)
+            .padding(Padding::from([0, 16]))
+            .align_y(iced::Alignment::Center);
 
         let inner = row![
             container(brand).width(self.sidebar_width),
@@ -1469,6 +1426,7 @@ impl Grove {
                 tab,
                 ..
             } => self.theme_picker_modal(*sel_dark, *sel_light, *tab),
+            Modal::Settings => self.settings_modal(),
             Modal::Teardown => self.teardown_modal(),
             Modal::ScriptsEditor => self.scripts_editor_modal(),
             _ => Space::with_width(0).into(),
@@ -2107,6 +2065,249 @@ impl Grove {
         .spacing(12);
 
         modal_panel(body.into(), 500.0, c::MAGENTA())
+    }
+
+    fn settings_modal(&self) -> Element<'_, Msg> {
+        use iced::Alignment::Center;
+
+        // A muted, indented one-liner used under section headers and rows to
+        // explain what a control does.
+        let caption = |s: &'static str| -> Element<'_, Msg> {
+            container(text(s).size(11).color(c::FG_MUTE()))
+                .padding(Padding::from([0, 10]))
+                .into()
+        };
+
+        // ── header ─────────────────────────────────────────────────────────
+        let header = row![
+            text("Settings").size(13).color(c::MAGENTA()),
+            Space::with_width(Length::Fill),
+            icon_btn("close", Msg::ModalCancel),
+        ]
+        .align_y(Center);
+
+        // ── appearance ───────────────────────────────────────────────────────
+        let theme_row = modal_list_row(
+            row![
+                text("App theme").size(12).color(c::FG()),
+                Space::with_width(Length::Fill),
+                text(crate::theme::current().name.to_string())
+                    .size(12)
+                    .color(c::FG_DIM()),
+                Space::with_width(8),
+                icon("chev-right", 12.0, c::FG_MUTE()),
+            ]
+            .align_y(Center),
+            false,
+            Msg::OpenThemePicker,
+        );
+
+        let zoom = container(
+            row![
+                control_icon_btn("minus", Msg::ZoomOut, 20.0, 13.0),
+                control_btn_sized(format!("{:.0}%", self.ui_zoom * 100.0), Msg::ZoomReset, 12, 2),
+                control_icon_btn("plus", Msg::ZoomIn, 20.0, 13.0),
+            ]
+            .spacing(0)
+            .align_y(Center),
+        )
+        .style(|_| container::Style {
+            border: Border {
+                color: c::BORDER(),
+                width: 1.0,
+                radius: Radius::from(6.0),
+            },
+            ..Default::default()
+        });
+        let app_size_row = container(
+            row![
+                text("App size").size(12).color(c::FG()),
+                Space::with_width(Length::Fill),
+                zoom,
+            ]
+            .align_y(Center),
+        )
+        .height(ROW_H)
+        .padding(Padding::from([0, 10]));
+
+        // ── terminal ──────────────────────────────────────────────────────
+        let tmux_on = self.app.use_tmux();
+        let backend_seg = container(
+            row![
+                seg_button("native", !tmux_on, SegSide::Left, Msg::BackendNative),
+                seg_button("tmux", tmux_on, SegSide::Right, Msg::BackendTmux),
+            ]
+            .spacing(0),
+        )
+        .style(|_| container::Style {
+            border: Border {
+                color: c::BORDER(),
+                width: 1.0,
+                radius: Radius::from(6.0),
+            },
+            ..Default::default()
+        });
+        let backend_row = container(
+            row![
+                text("Backend").size(12).color(c::FG()),
+                Space::with_width(Length::Fill),
+                backend_seg,
+            ]
+            .align_y(Center),
+        )
+        .height(ROW_H)
+        .padding(Padding::from([0, 10]));
+        let backend_caption = container(
+            text(if self.app.tmux_available {
+                "Applies to new sessions only · tmux: detected"
+            } else {
+                "Applies to new sessions only · tmux not found"
+            })
+            .size(11)
+            .color(c::FG_MUTE()),
+        )
+        .padding(Padding::from([0, 10]));
+
+        // ── tools ─────────────────────────────────────────────────────────
+        let tools_header = container(
+            row![
+                text("TOOLS").font(UI_BOLD).size(11).color(c::FG_MUTE()),
+                Space::with_width(Length::Fill),
+                icon_btn("restart", Msg::RefreshTools),
+            ]
+            .align_y(Center),
+        )
+        .padding(Padding::from([0, 10]));
+
+        let mut tools = Column::new().spacing(0);
+        for st in &self.settings_tools {
+            // Install state is carried by shape as well as color so it survives
+            // grayscale: a filled ● (green) for installed, a hollow ○ (muted)
+            // for missing — both at the app's 7px status-dot diameter.
+            let status_dot: Element<'_, Msg> = if st.installed {
+                dot(c::GREEN())
+            } else {
+                container(Space::with_width(7))
+                    .width(7)
+                    .height(7)
+                    .style(|_| container::Style {
+                        border: Border {
+                            color: c::FG_MUTE(),
+                            width: 1.0,
+                            radius: Radius::from(3.5),
+                        },
+                        ..Default::default()
+                    })
+                    .into()
+            };
+            // Missing tools recede: dim the label and mute the status. Present
+            // tools keep full-strength labels; version numbers read as data.
+            let (status, status_color) = if st.detecting {
+                ("detecting…".to_string(), c::FG_MUTE())
+            } else if !st.installed {
+                ("not installed".to_string(), c::FG_MUTE())
+            } else {
+                (
+                    st.version.clone().unwrap_or_else(|| "installed".to_string()),
+                    c::FG_DIM(),
+                )
+            };
+            let label_color = if st.installed { c::FG() } else { c::FG_DIM() };
+            let is_default = self.app.store.default_agent == Some(st.agent);
+            let selector: Element<'_, Msg> = if is_default {
+                // The chosen default reads as a selected control (filled
+                // highlight), not a category tag — magenta stays reserved for
+                // the modal's identity accent.
+                container(text("default").size(12).color(c::FG()))
+                    .padding(Padding::from([4, 12]))
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(c::BG_HL())),
+                        border: Border {
+                            radius: Radius::from(4.0),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .into()
+            } else if st.installed {
+                modal_action("set default", ModalBtn::Plain, Msg::SetDefaultAgent(st.agent))
+            } else {
+                Space::with_width(0).into()
+            };
+            // A fixed-width, right-aligned action cell keeps the badge and the
+            // buttons in one column, so the version strings to their left also
+            // align — even on missing rows, where the cell stays reserved.
+            let action_cell = container(selector)
+                .width(Length::Fixed(108.0))
+                .align_x(iced::alignment::Horizontal::Right);
+            let row = container(
+                row![
+                    status_dot,
+                    Space::with_width(8),
+                    icon(st.agent.icon_name(), 14.0, label_color),
+                    Space::with_width(8),
+                    text(st.agent.label()).size(12).color(label_color),
+                    Space::with_width(Length::Fill),
+                    text(status).size(12).color(status_color),
+                    Space::with_width(16),
+                    action_cell,
+                ]
+                .align_y(Center),
+            )
+            .height(ROW_H)
+            .padding(Padding::from([0, 10]));
+            tools = tools.push(row);
+        }
+        let tools_caption = container(
+            text("The default launches for new worktrees.")
+                .size(11)
+                .color(c::FG_MUTE()),
+        )
+        .padding(Padding::from([0, 10]));
+
+        // Each section groups its eyebrow, description, and rows tightly; the
+        // outer column spaces the groups apart so the hierarchy reads as
+        // section → controls rather than one undifferentiated list.
+        let eyebrow = |label: &'static str| -> Element<'_, Msg> {
+            container(text(label).font(UI_BOLD).size(11).color(c::FG_MUTE()))
+                .padding(Padding::from([0, 10]))
+                .into()
+        };
+
+        let head = column![
+            header,
+            caption("Changes save automatically."),
+        ]
+        .spacing(3);
+
+        let appearance = column![
+            eyebrow("APPEARANCE"),
+            caption("Theme colors and how large the interface renders."),
+            Space::with_height(2),
+            theme_row,
+            app_size_row,
+        ]
+        .spacing(4);
+
+        let terminal = column![
+            eyebrow("TERMINAL"),
+            backend_row,
+            backend_caption,
+        ]
+        .spacing(4);
+
+        let tools_section = column![
+            tools_header,
+            caption("Coding agents Grove can launch. Versions read from each CLI."),
+            Space::with_height(2),
+            tools,
+            tools_caption,
+        ]
+        .spacing(4);
+
+        let body = column![head, appearance, terminal, tools_section].spacing(16);
+
+        modal_panel(body.into(), 580.0, c::MAGENTA())
     }
 
     fn theme_picker_modal(

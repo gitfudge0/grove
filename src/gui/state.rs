@@ -147,6 +147,24 @@ pub struct Grove {
     /// Live state for the per-project lifecycle-scripts editor, when open.
     /// `Some` exactly when `app.modal` is `Modal::ScriptsEditor`.
     pub scripts_editor: Option<ScriptsEditorState>,
+    /// Per-tool install/version status shown in the Settings → Tools section.
+    /// Parked on the model (like `scripts_editor`) because detection runs
+    /// asynchronously and posts results back via `Msg::ToolVersionsDetected`.
+    /// Empty until Settings is first opened.
+    pub settings_tools: Vec<ToolStatus>,
+}
+
+/// Install + version status for a single coding-agent tool in the Settings
+/// Tools section. Built asynchronously off the UI thread.
+#[derive(Clone, Debug)]
+pub struct ToolStatus {
+    pub agent: Agent,
+    pub installed: bool,
+    /// Version string from `<program> --version`, or `None` when missing /
+    /// undetectable (callers then show "installed").
+    pub version: Option<String>,
+    /// True while detection is in flight — drives the per-row spinner.
+    pub detecting: bool,
 }
 
 /// Transient state for an in-progress sidebar divider drag.
@@ -391,6 +409,15 @@ pub enum Msg {
     AgentPickerToggleDefault,
     AgentPickerSubmit,
     OpenThemePicker,
+    /// Open the Settings modal (cog in the appbar).
+    OpenSettings,
+    /// Set (or clear, if re-selecting the current) the global default agent
+    /// from the Settings Tools section.
+    SetDefaultAgent(Agent),
+    /// Re-run tool install/version detection for the Settings Tools section.
+    RefreshTools,
+    /// Async detection finished; carries the fresh per-tool statuses.
+    ToolVersionsDetected(Vec<(Agent, ToolStatus)>),
     ThemePickerSwitchTab,
     ThemePickerSelect(usize),
     ThemePickerSubmit,

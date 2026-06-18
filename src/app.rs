@@ -93,7 +93,15 @@ pub enum Modal {
         sel_light: usize,
         tab: crate::theme::ThemeKind,
         original: crate::theme::Theme,
+        /// When true, closing the picker (apply or cancel) reopens
+        /// `Modal::Settings` instead of `Modal::None` — the picker was entered
+        /// from the Settings Appearance section.
+        return_to_settings: bool,
     },
+    /// The consolidated Settings modal (appearance, terminal, tools). Opened
+    /// from the appbar cog. All controls persist immediately; there is no
+    /// apply/cancel footer.
+    Settings,
     /// Worktree teardown: runs the project's teardown script (if any) in a
     /// modal-embedded PTY, then performs `git worktree remove`. The live PTY
     /// session and stage live in `App::teardown`.
@@ -1058,7 +1066,26 @@ impl App {
         self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path);
     }
 
-    pub fn open_theme_picker(&mut self) {
+    pub fn open_settings(&mut self) {
+        self.modal = Modal::Settings;
+    }
+
+    /// Set the global default agent, or clear it when re-selecting the current
+    /// default (mirrors `picker_toggle_default`). Only installed tools should
+    /// reach here — the Settings UI hides the action on missing tools.
+    pub fn set_default_agent(&mut self, agent: Agent) -> Result<()> {
+        if self.store.default_agent == Some(agent) {
+            self.store.default_agent = None;
+            self.status = format!("cleared default agent ({})", agent.label());
+        } else {
+            self.store.default_agent = Some(agent);
+            self.status = format!("default agent: {}", agent.label());
+        }
+        storage::save(&self.store)?;
+        Ok(())
+    }
+
+    pub fn open_theme_picker(&mut self, return_to_settings: bool) {
         let original = theme::current();
         let tab = original.kind;
         let sel = theme::themes_of(tab)
@@ -1074,6 +1101,7 @@ impl App {
             sel_light,
             tab,
             original,
+            return_to_settings,
         };
     }
 
@@ -1129,11 +1157,15 @@ impl App {
             sel_dark,
             sel_light,
             tab,
+            return_to_settings,
             ..
         } = modal
         else {
             return Ok(());
         };
+        if return_to_settings {
+            self.modal = Modal::Settings;
+        }
         let themes = theme::themes_of(tab);
         let sel = match tab {
             theme::ThemeKind::Dark => sel_dark,
@@ -1151,8 +1183,16 @@ impl App {
 
     pub fn theme_picker_cancel(&mut self) {
         let modal = std::mem::replace(&mut self.modal, Modal::None);
-        if let Modal::ThemePicker { original, .. } = modal {
+        if let Modal::ThemePicker {
+            original,
+            return_to_settings,
+            ..
+        } = modal
+        {
             theme::set(original);
+            if return_to_settings {
+                self.modal = Modal::Settings;
+            }
         }
     }
 

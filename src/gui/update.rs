@@ -8,7 +8,7 @@ use super::metrics::{
 };
 use super::state::{
     AbsCell, FocusedPane, Grove, Msg, PtyCell, PtyDrag, PtyPane, ScriptField, ScriptsEditorState,
-    SidebarDrag, SidebarView,
+    SidebarDrag, SidebarView, ToolStatus,
 };
 use crate::agent::Agent;
 use crate::app::{App, InputKind, Modal, Pane};
@@ -83,6 +83,7 @@ impl Grove {
             term_panel_dragging: false,
             last_term_divider_press: None,
             scripts_editor: None,
+            settings_tools: Vec::new(),
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -728,8 +729,23 @@ impl Grove {
                 }
             }
             Msg::OpenThemePicker => {
-                self.app.open_theme_picker();
+                // The only entry point now is the Settings Appearance section,
+                // so the picker always returns to Settings when closed.
+                self.app.open_theme_picker(true);
                 return self.scroll_theme_picker_to_selection();
+            }
+            Msg::OpenSettings => {
+                self.app.open_settings();
+                return self.detect_tools_task();
+            }
+            Msg::RefreshTools => return self.detect_tools_task(),
+            Msg::SetDefaultAgent(agent) => {
+                if let Err(e) = self.app.set_default_agent(agent) {
+                    self.app.status = e.to_string();
+                }
+            }
+            Msg::ToolVersionsDetected(results) => {
+                self.settings_tools = results.into_iter().map(|(_, status)| status).collect();
             }
             Msg::ThemePickerSwitchTab => {
                 self.theme_picker_switch_tab();
@@ -743,6 +759,48 @@ impl Grove {
             Msg::ThemePickerCancel => self.theme_picker_cancel(),
         }
         Task::none()
+    }
+
+    /// The tools shown in the Settings Tools section, in display order.
+    /// `Terminal` is omitted — always available, no version.
+    const SETTINGS_TOOLS: [Agent; 3] = [Agent::Claude, Agent::Codex, Agent::OpenCode];
+
+    /// Mark the Tools rows as detecting (drives the spinner) and dispatch the
+    /// off-thread availability + version scan, which posts back
+    /// `Msg::ToolVersionsDetected`.
+    fn detect_tools_task(&mut self) -> Task<Msg> {
+        self.settings_tools = Self::SETTINGS_TOOLS
+            .iter()
+            .map(|&agent| ToolStatus {
+                agent,
+                installed: false,
+                version: None,
+                detecting: true,
+            })
+            .collect();
+        Task::perform(
+            async {
+                // `--version` is a short subprocess; running it on the executor
+                // keeps the UI thread free even if a binary is slow.
+                Self::SETTINGS_TOOLS
+                    .iter()
+                    .map(|&agent| {
+                        let installed = agent.available();
+                        let version = if installed { agent.version() } else { None };
+                        (
+                            agent,
+                            ToolStatus {
+                                agent,
+                                installed,
+                                version,
+                                detecting: false,
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            },
+            Msg::ToolVersionsDetected,
+        )
     }
 
     fn scroll_theme_picker_to_selection(&self) -> Task<Msg> {
@@ -1237,6 +1295,11 @@ impl Grove {
                 },
                 _ => {}
             },
+            Modal::Settings => {
+                if matches!(key, Key::Named(Named::Escape)) {
+                    self.app.modal = Modal::None;
+                }
+            }
             Modal::TmuxChoice => match key {
                 Key::Named(Named::Enter) => self.choose_tmux(true),
                 Key::Named(Named::Escape) => self.choose_tmux(false),

@@ -83,6 +83,35 @@ impl Agent {
             }
         }
     }
+
+    /// Runs `<program> --version` and returns the trimmed first non-empty line
+    /// of stdout — robust across the three CLIs' differing formats. Returns
+    /// `None` if the agent has no static binary (`Terminal`), the command fails
+    /// to spawn or run, or it yields no usable output; callers then fall back to
+    /// displaying "installed". This shells out, so callers should run it off the
+    /// UI thread.
+    pub fn version(self) -> Option<String> {
+        if matches!(self, Agent::Terminal) {
+            return None;
+        }
+        let name = self.binary_name();
+        if name.is_empty() {
+            return None;
+        }
+        let output = std::process::Command::new(name)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_string)
+    }
 }
 
 /// Returns true if `path` is a regular file with at least one execute bit set.
