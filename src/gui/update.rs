@@ -444,10 +444,11 @@ impl Grove {
                     return self.handle_remove_project_key(key, busy);
                 }
                 let was_theme_picker = matches!(self.app.modal, Modal::ThemePicker { .. });
-                self.handle_key(key, modified_key, mods);
+                let task = self.handle_key(key, modified_key, mods);
                 if was_theme_picker && matches!(self.app.modal, Modal::ThemePicker { .. }) {
                     return self.scroll_theme_picker_to_selection();
                 }
+                return task;
             }
             Msg::FileDropped(path) => {
                 // Ignored when a modal is up — dropped text could land in an
@@ -614,12 +615,14 @@ impl Grove {
                 self.open_agent_menu = None;
                 self.app.focus_pane(Pane::Projects);
                 self.app.start_add();
+                return iced::widget::text_input::focus(crate::gui::view::modal_input_id());
             }
             Msg::AddWorktree { proj } => {
                 self.open_agent_menu = None;
                 self.switch_active_project(proj);
                 self.app.focus_pane(Pane::Worktrees);
                 self.app.start_add();
+                return iced::widget::text_input::focus(crate::gui::view::modal_input_id());
             }
             Msg::DeleteWorktree { proj, wt } => {
                 self.open_agent_menu = None;
@@ -684,6 +687,8 @@ impl Grove {
             }
             Msg::ModalSubmit => self.submit_modal_input(),
             Msg::ModalCancel => self.cancel_modal(),
+            Msg::InputPathChanged(s) => self.app.set_input_path(s),
+            Msg::InputNameChanged(s) => self.app.set_input_name(s),
             Msg::ModalConfirm(yes) => {
                 if matches!(self.app.modal, Modal::Teardown) {
                     // The teardown modal's only confirm action is dismissal,
@@ -715,17 +720,17 @@ impl Grove {
                 self.rebuild_wt_cache();
             }
             Msg::ModalPickDir(path) => {
-                if let Modal::Input {
-                    buffer,
-                    kind,
-                    dir_sel,
-                    ..
-                } = &mut self.app.modal
-                {
-                    if matches!(kind, InputKind::AddProjectPath) {
-                        *buffer = format!("{path}/");
-                        *dir_sel = 0;
+                if matches!(
+                    &self.app.modal,
+                    Modal::Input {
+                        kind: InputKind::AddProjectPath,
+                        ..
                     }
+                ) {
+                    self.app.set_input_path(format!("{path}/"));
+                    return iced::widget::text_input::move_cursor_to_end(
+                        crate::gui::view::modal_input_id(),
+                    );
                 }
             }
             Msg::OpenThemePicker => {
@@ -1093,10 +1098,10 @@ impl Grove {
         self.rebuild_wt_cache();
     }
 
-    fn handle_key(&mut self, key: Key, modified_key: Key, mods: Modifiers) {
+    fn handle_key(&mut self, key: Key, modified_key: Key, mods: Modifiers) -> Task<Msg> {
+        eprintln!("DBG key={:?} modified_key={:?} ctrl={} shift={} sel={}", key, modified_key, mods.control(), mods.shift(), self.pty_selection.is_some());
         if !matches!(self.app.modal, Modal::None) {
-            self.handle_modal_key(key, modified_key, mods);
-            return;
+            return self.handle_modal_key(key, mods);
         }
         // Shortcuts match the modifier-independent `key`: on Linux a Ctrl
         // combo turns `modified_key` into a control char (e.g. Ctrl+V -> \u16).
@@ -1107,9 +1112,23 @@ impl Grove {
                 if let Some(text) = self.selection_text() {
                     crate::clipboard::copy(&text);
                 }
-                return;
+                return Task::none();
             }
             if is_paste_shortcut(mods, s) {
+                // Wayland has no native file drag-and-drop (winit gap), so if the
+                // clipboard holds file URIs (e.g. "Copy" from a file manager),
+                // type their paths like a drop would. Falls through to text paste
+                // otherwise.
+                let paths = super::drop::clipboard_paths();
+                if !paths.is_empty() {
+                    if let Some(sess) = self.focused_session_mut() {
+                        for path in &paths {
+                            sess.send(super::drop::dropped_path_text(path).as_bytes());
+                        }
+                    }
+                    self.pty_selection = None;
+                    return Task::none();
+                }
                 if let Some(text) = crate::clipboard::paste() {
                     if let Some(sess) = self.focused_session_mut() {
                         let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
@@ -1121,7 +1140,7 @@ impl Grove {
                     }
                 }
                 self.pty_selection = None;
-                return;
+                return Task::none();
             }
         }
         // Resize the terminal panel with Ctrl+Shift+Left/Right while it is open.
@@ -1130,11 +1149,11 @@ impl Grove {
             match key {
                 Key::Named(Named::ArrowRight) => {
                     self.adjust_term_panel_portion(TERM_PANEL_PORTION_STEP as i16);
-                    return;
+                    return Task::none();
                 }
                 Key::Named(Named::ArrowLeft) => {
                     self.adjust_term_panel_portion(-(TERM_PANEL_PORTION_STEP as i16));
-                    return;
+                    return Task::none();
                 }
                 _ => {}
             }
@@ -1149,6 +1168,7 @@ impl Grove {
             }
             self.pty_selection = None;
         }
+        Task::none()
     }
 
     /// Grow (`delta > 0`) or shrink the terminal panel by `delta` percent of the
@@ -1194,40 +1214,27 @@ impl Grove {
         Task::none()
     }
 
-    fn handle_modal_key(&mut self, key: Key, modified_key: Key, mods: Modifiers) {
+    fn handle_modal_key(&mut self, key: Key, mods: Modifiers) -> Task<Msg> {
         match &self.app.modal {
+            // Text entry, caret movement, selection, and paste are owned by the
+            // `text_input` widgets. The subscription only drives the directory
+            // match list and modal lifecycle.
             Modal::Input { .. } => match key {
                 Key::Named(Named::Escape) => self.cancel_modal(),
                 Key::Named(Named::Enter) => self.submit_modal_input(),
                 Key::Named(Named::ArrowDown) => self.app.input_dir_move(1),
                 Key::Named(Named::ArrowUp) => self.app.input_dir_move(-1),
-                Key::Named(Named::Tab) | Key::Named(Named::ArrowRight) => self.app.input_dir_pick(),
-                Key::Named(Named::Backspace) => self.app.input_buffer_edit(|b| {
-                    b.pop();
-                }),
-                Key::Named(Named::Space) if !mods.control() && !mods.alt() => {
-                    self.app.input_buffer_edit(|b| b.push(' '));
+                Key::Named(Named::Tab) => {
+                    // Tab completes the path in the buffer; move the caret to the
+                    // end so subsequent typing appends instead of inserting where
+                    // the caret happened to sit before completion.
+                    self.app.input_dir_pick();
+                    return iced::widget::text_input::move_cursor_to_end(
+                        crate::gui::view::modal_input_id(),
+                    );
                 }
-                Key::Character(s) => {
-                    if mods.control() {
-                        match s.as_str() {
-                            "u" | "U" => self.app.input_buffer_edit(|b| b.clear()),
-                            "c" | "C" => self.cancel_modal(),
-                            _ => {}
-                        }
-                    } else if is_paste_shortcut(mods, &s) {
-                        if let Some(text) = crate::clipboard::paste() {
-                            self.app.input_buffer_edit(|b| b.push_str(&text));
-                        }
-                    } else if !mods.alt() {
-                        // Insert the `modified_key` text so Shift/AltGr produce
-                        // the right glyph; fall back to the base key.
-                        let text = match &modified_key {
-                            Key::Character(m) => m.clone(),
-                            _ => s,
-                        };
-                        self.app.input_buffer_edit(|b| b.push_str(&text));
-                    }
+                Key::Character(s) if mods.control() && matches!(s.as_str(), "c" | "C") => {
+                    self.cancel_modal()
                 }
                 _ => {}
             },
@@ -1312,6 +1319,7 @@ impl Grove {
             },
             _ => {}
         }
+        Task::none()
     }
 
     fn choose_tmux(&mut self, enabled: bool) {
@@ -1904,7 +1912,8 @@ fn is_copy_shortcut(mods: Modifiers, s: &str) -> bool {
 
 /// Returns true when the key event matches the OS paste shortcut.
 /// macOS: Cmd+V (logo, no ctrl)
-/// Others: Ctrl+V (no shift)
+/// Others: Ctrl+Shift+V (mirrors the Ctrl+Shift+C copy shortcut; plain
+/// Ctrl+V is left for the PTY, e.g. literal insert in vim/readline).
 fn is_paste_shortcut(mods: Modifiers, s: &str) -> bool {
     if !s.eq_ignore_ascii_case("v") {
         return false;
@@ -1912,5 +1921,5 @@ fn is_paste_shortcut(mods: Modifiers, s: &str) -> bool {
     #[cfg(target_os = "macos")]
     return mods.logo() && !mods.control();
     #[cfg(not(target_os = "macos"))]
-    return mods.control() && !mods.shift();
+    return mods.control() && mods.shift();
 }

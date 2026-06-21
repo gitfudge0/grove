@@ -397,6 +397,10 @@ pub enum Msg {
     ModalSubmit,
     ModalCancel,
     ModalConfirm(bool),
+    /// Live edit of the path field in the add-project / add-worktree input modal.
+    InputPathChanged(String),
+    /// Live edit of the optional project-name field in the add-project modal.
+    InputNameChanged(String),
     /// No-git add-project decision: initialize git for the just-added project.
     AddProjectInitGit,
     /// No-git add-project decision: keep the project without git.

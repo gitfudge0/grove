@@ -51,6 +51,13 @@ pub enum Modal {
         buffer: String,
         kind: InputKind,
         dir_sel: usize,
+        /// Project-name buffer, populated once `buffer` resolves to a real
+        /// directory. `None` while the path is incomplete and for the
+        /// worktree-name modal, which has no second field.
+        name: Option<String>,
+        /// Inline validation message (e.g. "not a directory"), shown in red
+        /// under the fields. Cleared on the next edit.
+        note: Option<String>,
     },
     Confirm {
         title: String,
@@ -132,12 +139,14 @@ pub struct Teardown {
     pub session: Option<Session>,
     pub stage: TeardownStage,
     pub message: String,
+    /// Set once the blocking `git worktree remove` has been kicked off, so a
+    /// `Removing` frame paints before the UI thread blocks on it.
+    pub removal_started: bool,
 }
 
 #[derive(Clone)]
 pub enum InputKind {
     AddProjectPath,
-    AddProjectName { path: String },
     AddWorktreeName,
 }
 
@@ -382,6 +391,8 @@ impl App {
                     buffer: "~/".into(),
                     kind: InputKind::AddProjectPath,
                     dir_sel: 0,
+                    name: None,
+                    note: None,
                 };
             }
             Pane::Worktrees => {
@@ -391,6 +402,8 @@ impl App {
                         buffer: String::new(),
                         kind: InputKind::AddWorktreeName,
                         dir_sel: 0,
+                        name: None,
+                        note: None,
                     };
                 }
             }
@@ -950,29 +963,40 @@ impl App {
                 session,
                 stage: TeardownStage::RunningScript,
                 message: "running teardown script…".into(),
+                removal_started: false,
             });
         } else {
-            // No teardown script (or it failed to spawn): remove right away.
+            // No teardown script (or it failed to spawn): the next poll paints
+            // "removing worktree…" then runs the blocking git removal.
             self.teardown = Some(Teardown {
                 wt_path: path,
                 project_path: p.path.clone(),
                 session: None,
                 stage: TeardownStage::Removing,
                 message: "removing worktree…".into(),
+                removal_started: false,
             });
-            self.do_teardown_removal();
         }
     }
 
     /// Drive an in-progress teardown forward. Called every GUI tick. When the
     /// teardown script's PTY exits, performs the git removal.
     pub fn poll_teardown(&mut self) {
-        let advance = matches!(
-            self.teardown.as_ref(),
-            Some(td) if td.stage == TeardownStage::RunningScript
-                && td.session.as_ref().is_none_or(|s| !s.is_running())
-        );
-        if advance {
+        let Some(td) = self.teardown.as_mut() else {
+            return;
+        };
+        // Script finished → switch to the "removing…" stage. Removal itself
+        // waits for the next poll so that frame paints before we block.
+        if td.stage == TeardownStage::RunningScript
+            && td.session.as_ref().is_none_or(|s| !s.is_running())
+        {
+            td.stage = TeardownStage::Removing;
+            td.session = None;
+            td.message = "removing worktree…".into();
+            return;
+        }
+        if td.stage == TeardownStage::Removing && !td.removal_started {
+            td.removal_started = true;
             self.do_teardown_removal();
         }
     }
@@ -1218,112 +1242,120 @@ impl App {
     }
 
     pub fn input_dir_pick(&mut self) {
-        let Modal::Input {
+        if let Modal::Input {
             buffer,
-            kind,
+            kind: InputKind::AddProjectPath,
             dir_sel,
             ..
         } = &mut self.modal
-        else {
-            return;
-        };
-        if !matches!(kind, InputKind::AddProjectPath) {
-            return;
+        {
+            let entries = list_dirs(buffer);
+            if let Some(pick) = entries.get(*dir_sel) {
+                *buffer = format!("{}/", pick);
+                *dir_sel = 0;
+            }
         }
-        let entries = list_dirs(buffer);
-        if let Some(pick) = entries.get(*dir_sel) {
-            *buffer = format!("{}/", pick);
+        self.refresh_project_name();
+    }
+
+    /// Replace the path buffer from a live `text_input` edit and refresh the
+    /// match selection, inline note, and derived project-name field.
+    pub fn set_input_path(&mut self, s: String) {
+        if let Modal::Input {
+            buffer,
+            dir_sel,
+            note,
+            ..
+        } = &mut self.modal
+        {
+            *buffer = s;
             *dir_sel = 0;
+            *note = None;
+        }
+        self.refresh_project_name();
+    }
+
+    /// Set the optional project-name override (the second field).
+    pub fn set_input_name(&mut self, s: String) {
+        if let Modal::Input { name, .. } = &mut self.modal {
+            *name = Some(s);
         }
     }
 
-    pub fn input_buffer_edit<F: FnOnce(&mut String)>(&mut self, f: F) {
+    /// Seed the project-name field with the path's basename once the path
+    /// resolves to a real directory; clear it while the path is incomplete so
+    /// the second field stays hidden.
+    fn refresh_project_name(&mut self) {
         if let Modal::Input {
-            buffer, dir_sel, ..
+            buffer,
+            kind: InputKind::AddProjectPath,
+            name,
+            ..
         } = &mut self.modal
         {
-            f(buffer);
-            *dir_sel = 0;
+            let pb = std::path::PathBuf::from(shellexpand_tilde(buffer.trim()));
+            if pb.is_dir() {
+                if name.is_none() {
+                    *name = Some(
+                        pb.file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("project")
+                            .to_string(),
+                    );
+                }
+            } else {
+                *name = None;
+            }
+        }
+    }
+
+    fn set_input_note(&mut self, msg: String) {
+        if let Modal::Input { note, .. } = &mut self.modal {
+            *note = Some(msg);
         }
     }
 
     pub fn submit_input(&mut self) -> Result<()> {
-        if let Modal::Input {
-            buffer,
-            kind: InputKind::AddProjectPath,
-            ..
-        } = &self.modal
-        {
-            let expanded = shellexpand_tilde(buffer.trim());
-            let is_dir = std::path::PathBuf::from(&expanded).is_dir();
-            if !is_dir {
-                if !list_dirs(buffer).is_empty() {
-                    self.input_dir_pick();
-                }
-                return Ok(());
-            }
-        }
-        let modal = std::mem::replace(&mut self.modal, Modal::None);
-        let Modal::Input { buffer, kind, .. } = modal else {
-            return Ok(());
+        let (buffer, kind, name) = match &self.modal {
+            Modal::Input {
+                buffer, kind, name, ..
+            } => (buffer.trim().to_string(), kind.clone(), name.clone()),
+            _ => return Ok(()),
         };
-        let value = buffer.trim().to_string();
-        if value.is_empty() {
-            return Ok(());
-        }
         match kind {
             InputKind::AddProjectPath => {
-                let path = shellexpand_tilde(&value);
-                let pb = std::path::PathBuf::from(&path);
-                let abs = std::fs::canonicalize(&pb)?.to_string_lossy().to_string();
-                let default_name = pb
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("project")
-                    .to_string();
-                self.modal = Modal::Input {
-                    title: "project name".into(),
-                    buffer: default_name,
-                    kind: InputKind::AddProjectName { path: abs },
-                    dir_sel: 0,
-                };
-            }
-            InputKind::AddProjectName { path } => {
-                if self.store.projects.iter().any(|p| p.name == value) {
-                    self.modal = Modal::Message(format!("project '{value}' already exists"));
+                let pb = std::path::PathBuf::from(shellexpand_tilde(&buffer));
+                if !pb.is_dir() {
+                    self.set_input_note("not a directory — press Tab to complete".into());
                     return Ok(());
                 }
-                self.store.projects.push(Project {
-                    name: value.clone(),
-                    path: path.clone(),
-                    scripts: Default::default(),
-                });
-                storage::save(&self.store)?;
-                self.proj_idx = self.store.projects.len() - 1;
-                self.status = format!("added {value}");
-
-                let needs_init = !git::is_repo(&path);
-                let needs_include = !std::path::Path::new(&path)
-                    .join(".worktreeinclude")
-                    .exists();
-
-                if needs_init {
-                    self.modal = Modal::AddProjectNoGit {
-                        idx: self.proj_idx,
-                        path,
-                    };
-                } else if needs_include {
-                    self.modal = Modal::Confirm {
-                        title: "generate .worktreeinclude?".into(),
-                        prompt: "Use Claude (haiku) to draft a .worktreeinclude for this repo."
-                            .into(),
-                        destructive: false,
-                        kind: ConfirmKind::GenerateInclude { path },
-                    };
+                let project_name = name
+                    .unwrap_or_else(|| {
+                        pb.file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("project")
+                            .to_string()
+                    })
+                    .trim()
+                    .to_string();
+                if project_name.is_empty() {
+                    self.set_input_note("name required".into());
+                    return Ok(());
                 }
-                self.refresh_worktrees();
+                if self.store.projects.iter().any(|p| p.name == project_name) {
+                    self.set_input_note(format!("project '{project_name}' already exists"));
+                    return Ok(());
+                }
+                let abs = std::fs::canonicalize(&pb)?.to_string_lossy().to_string();
+                self.modal = Modal::None;
+                self.add_project_record(project_name, abs)?;
             }
             InputKind::AddWorktreeName => {
+                let value = buffer;
+                if value.is_empty() {
+                    return Ok(());
+                }
+                self.modal = Modal::None;
                 if !git::valid_worktree_name(&value) {
                     self.modal =
                         Modal::Message("invalid name: use letters, digits, '-', '_' or '.'".into());
@@ -1347,6 +1379,37 @@ impl App {
                 self.create_worktree(&p, &value);
             }
         }
+        Ok(())
+    }
+
+    /// Persist a new project, select it, and chain into the no-git or
+    /// generate-`.worktreeinclude` follow-up modal as appropriate.
+    fn add_project_record(&mut self, name: String, path: String) -> Result<()> {
+        self.store.projects.push(Project {
+            name: name.clone(),
+            path: path.clone(),
+            scripts: Default::default(),
+        });
+        storage::save(&self.store)?;
+        self.proj_idx = self.store.projects.len() - 1;
+        self.status = format!("added {name}");
+
+        let needs_init = !git::is_repo(&path);
+        let needs_include = !std::path::Path::new(&path).join(".worktreeinclude").exists();
+        if needs_init {
+            self.modal = Modal::AddProjectNoGit {
+                idx: self.proj_idx,
+                path,
+            };
+        } else if needs_include {
+            self.modal = Modal::Confirm {
+                title: "generate .worktreeinclude?".into(),
+                prompt: "Use Claude (haiku) to draft a .worktreeinclude for this repo.".into(),
+                destructive: false,
+                kind: ConfirmKind::GenerateInclude { path },
+            };
+        }
+        self.refresh_worktrees();
         Ok(())
     }
 

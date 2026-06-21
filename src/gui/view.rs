@@ -23,10 +23,35 @@ use crate::git::Worktree;
 use crate::session::{Session, SessionStatus};
 use iced::border::Radius;
 use iced::widget::{
-    button, canvas as canvas_widget, column, container, row, scrollable, stack, text, Column, Space,
+    button, canvas as canvas_widget, column, container, row, scrollable, stack, text, text_input,
+    Column, Space,
 };
 use iced::{Background, Border, Color, Element, Length, Padding, Shadow};
 use std::sync::atomic::Ordering;
+
+/// Stable id for the add-project / add-worktree primary text input, used to
+/// focus it from `update` when the modal opens.
+pub fn modal_input_id() -> text_input::Id {
+    text_input::Id::new("modal-input-primary")
+}
+
+/// Shared `text_input` styling for modal fields: strip background, themed
+/// border, cyan caret/selection. Focus brightens the border.
+fn input_field_style(_t: &iced::Theme, status: text_input::Status) -> text_input::Style {
+    let focused = matches!(status, text_input::Status::Focused);
+    text_input::Style {
+        background: Background::Color(c::BG_STRIP()),
+        border: Border {
+            color: if focused { c::MAGENTA() } else { c::BORDER() },
+            width: 1.0,
+            radius: Radius::from(4.0),
+        },
+        icon: c::FG_MUTE(),
+        placeholder: c::FG_MUTE(),
+        value: c::FG(),
+        selection: c::CYAN(),
+    }
+}
 
 /// Stable id for the theme-picker scrollable, used to scroll the active
 /// selection into view from `update`.
@@ -1387,7 +1412,9 @@ impl Grove {
                 buffer,
                 kind,
                 dir_sel,
-            } => self.input_modal(title, buffer, kind, *dir_sel),
+                name,
+                note,
+            } => self.input_modal(title, buffer, kind, *dir_sel, name.as_deref(), note.as_deref()),
             Modal::Confirm {
                 title,
                 prompt,
@@ -1450,6 +1477,8 @@ impl Grove {
         buffer: &'a str,
         kind: &'a InputKind,
         dir_sel: usize,
+        name: Option<&'a str>,
+        note: Option<&'a str>,
     ) -> Element<'a, Msg> {
         let show_dirs = matches!(kind, InputKind::AddProjectPath);
         let entries = if show_dirs {
@@ -1465,53 +1494,38 @@ impl Grove {
         } else {
             Vec::new()
         };
-        let visible_matches = if show_dirs {
-            entries.len().clamp(1, 6)
-        } else {
-            0
-        };
         let modal_w = if show_dirs { 640.0 } else { 480.0 };
 
-        let input = container(
-            row![
-                text(buffer.to_string())
-                    .font(UI_FONT)
-                    .size(13)
-                    .color(c::FG())
-                    .wrapping(iced::widget::text::Wrapping::None),
-                container(Space::with_width(7))
-                    .width(7)
-                    .height(15)
-                    .style(|_| container::Style {
-                        background: Some(Background::Color(c::CYAN())),
-                        ..Default::default()
-                    }),
-            ]
-            .spacing(1)
-            .align_y(iced::Alignment::Center),
-        )
-        .height(36)
-        .width(Length::Fill)
-        .align_y(iced::Alignment::Center)
-        .padding(Padding::from([0, 12]))
-        .clip(true)
-        .style(|_| container::Style {
-            background: Some(Background::Color(c::BG_STRIP())),
-            border: Border {
-                color: c::BORDER(),
-                width: 1.0,
-                radius: Radius::from(4.0),
-            },
-            ..Default::default()
-        });
+        let path_input = text_input("", buffer)
+            .id(modal_input_id())
+            .font(UI_FONT)
+            .size(13)
+            .padding(Padding::from([8, 12]))
+            .on_input(if show_dirs {
+                Msg::InputPathChanged
+            } else {
+                Msg::InputNameChanged
+            })
+            .on_submit(Msg::ModalSubmit)
+            .style(input_field_style);
 
         let mut body =
-            column![text(title.to_string()).size(13).color(c::MAGENTA()), input,].spacing(12);
+            column![text(title.to_string()).size(13).color(c::MAGENTA()), path_input].spacing(12);
 
         if show_dirs {
-            let mut matches_col = Column::new()
-                .spacing(0)
-                .height(Length::Fixed(visible_matches as f32 * ROW_H));
+            // A sliding window of up to 6 matches that scrolls to keep the
+            // selected row in view, with muted "↑N"/"↓N" hints when entries
+            // sit above or below the window.
+            const WINDOW: usize = 6;
+            let total = entries.len();
+            let shown = total.min(WINDOW);
+            // Scroll the window so dir_sel stays visible.
+            let start = dir_sel.saturating_sub(WINDOW - 1).min(total.saturating_sub(WINDOW));
+            let above = start;
+            let below = total.saturating_sub(start + shown);
+            let rows = shown + usize::from(above > 0) + usize::from(below > 0) + usize::from(total == 0);
+            let mut matches_col =
+                Column::new().spacing(0).height(Length::Fixed(rows.max(1) as f32 * ROW_H));
             if entries.is_empty() {
                 matches_col = matches_col.push(
                     container(text("no matches").size(12).color(c::FG_MUTE()))
@@ -1519,25 +1533,64 @@ impl Grove {
                         .align_y(iced::Alignment::Center),
                 );
             } else {
-                for (i, path) in entries.into_iter().take(6).enumerate() {
-                    matches_col = matches_col.push(modal_dir_row(path, i == dir_sel));
+                let more = |n: usize, arrow: char| {
+                    container(text(format!("{arrow}{n} more")).size(11).color(c::FG_MUTE()))
+                        .height(ROW_H)
+                        .padding(Padding::from([0, 10]))
+                        .align_y(iced::Alignment::Center)
+                };
+                if above > 0 {
+                    matches_col = matches_col.push(more(above, '↑'));
+                }
+                for (i, path) in entries.into_iter().skip(start).take(shown).enumerate() {
+                    matches_col = matches_col.push(modal_dir_row(path, start + i == dir_sel));
+                }
+                if below > 0 {
+                    matches_col = matches_col.push(more(below, '↓'));
                 }
             }
 
             body = body
                 .push(text("matches").size(11).color(c::FG_MUTE()))
                 .push(matches_col);
+
+            // The name field appears only once the path is a real directory.
+            if let Some(name) = name {
+                let name_input = text_input("project name", name)
+                    .font(UI_FONT)
+                    .size(13)
+                    .padding(Padding::from([8, 12]))
+                    .on_input(Msg::InputNameChanged)
+                    .on_submit(Msg::ModalSubmit)
+                    .style(input_field_style);
+                body = body
+                    .push(text("name").size(11).color(c::FG_MUTE()))
+                    .push(name_input);
+            }
         }
 
-        body = body.push(Space::with_height(8)).push(
-            row![
-                Space::with_width(Length::Fill),
-                modal_action("cancel", ModalBtn::Plain, Msg::ModalCancel),
-                modal_action("submit", ModalBtn::Primary, Msg::ModalSubmit),
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
-        );
+        if let Some(note) = note {
+            body = body.push(text(note.to_string()).size(12).color(c::RED()));
+        }
+
+        let hint = if show_dirs {
+            "tab complete · ↑↓ select · enter add"
+        } else {
+            "enter to confirm · esc to cancel"
+        };
+
+        body = body
+            .push(text(hint).size(11).color(c::FG_MUTE()))
+            .push(Space::with_height(4))
+            .push(
+                row![
+                    Space::with_width(Length::Fill),
+                    modal_action("cancel", ModalBtn::Plain, Msg::ModalCancel),
+                    modal_action("submit", ModalBtn::Primary, Msg::ModalSubmit),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            );
 
         modal_panel(body.into(), modal_w, c::MAGENTA())
     }
