@@ -44,6 +44,12 @@ pub struct Store {
     /// back to the default `RAIL_W`.
     #[serde(default)]
     pub sidebar_width: Option<f32>,
+    /// Whether the first-run onboarding wizard has been completed or skipped.
+    /// False (the serde default) means a fresh install — the wizard runs on the
+    /// next launch. Set true once the user finishes or skips it, so it never
+    /// reappears even if they later remove every project.
+    #[serde(default)]
+    pub onboarded: bool,
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -155,6 +161,7 @@ mod tests {
             tmux_enabled: Some(true),
             ui_zoom: Some(1.25),
             sidebar_width: Some(360.0),
+            onboarded: true,
         };
 
         let json = serde_json::to_string_pretty(&original).expect("serialize");
@@ -168,6 +175,7 @@ mod tests {
         assert_eq!(recovered.tmux_enabled, Some(true));
         assert!((recovered.ui_zoom.unwrap() - 1.25).abs() < f32::EPSILON);
         assert!((recovered.sidebar_width.unwrap() - 360.0).abs() < f32::EPSILON);
+        assert!(recovered.onboarded);
     }
 
     /// `Store::default()` deserializes from an empty JSON object — the
@@ -181,6 +189,10 @@ mod tests {
         assert!(store.tmux_enabled.is_none());
         assert!(store.ui_zoom.is_none());
         assert!(store.sidebar_width.is_none());
+        assert!(
+            !store.onboarded,
+            "a fresh config must report onboarded=false so the wizard runs"
+        );
     }
 
     /// A corrupted JSON file must make `write_atomic` + a subsequent manual

@@ -762,8 +762,87 @@ impl Grove {
             }
             Msg::ThemePickerSubmit => self.theme_picker_submit(),
             Msg::ThemePickerCancel => self.theme_picker_cancel(),
+            Msg::OnbNext => return self.onboard_advance(),
+            Msg::OnbBack => self.app.onboard_back(),
+            Msg::OnbSkip => self.onboard_skip(),
+            Msg::OnbPathChanged(s) => self.app.onboard_set_path(s),
+            Msg::OnbNameChanged(s) => self.app.onboard_set_name(s),
+            Msg::OnbPickDir(p) => {
+                self.app.onboard_pick_dir(p);
+                return iced::widget::text_input::move_cursor_to_end(
+                    crate::gui::view::modal_input_id(),
+                );
+            }
+            Msg::OnbThemeTab => self.app.onboard_theme_switch_tab(),
+            Msg::OnbThemeSelect(i) => self.app.onboard_theme_select(i),
+            Msg::OnbAgentSelect(i) => self.app.onboard_agent_select(i),
         }
         Task::none()
+    }
+
+    /// On the session step, advance == finish (launch). On any other step, move
+    /// forward; if the project step just registered a project, refresh the
+    /// worktree cache so the rest of the app sees it.
+    fn onboard_advance(&mut self) -> Task<Msg> {
+        let on_session = matches!(
+            self.app.modal,
+            Modal::Onboarding {
+                step: crate::app::OnboardStep::Session,
+                ..
+            }
+        );
+        if on_session {
+            return self.onboard_finish();
+        }
+        self.app.onboard_next();
+        self.rebuild_wt_cache();
+        // Keep the project-step path input focused after rendering.
+        if matches!(
+            self.app.modal,
+            Modal::Onboarding {
+                step: crate::app::OnboardStep::Project,
+                ..
+            }
+        ) {
+            return iced::widget::text_input::focus(crate::gui::view::modal_input_id());
+        }
+        Task::none()
+    }
+
+    fn onboard_skip(&mut self) {
+        if let Err(e) = self.app.onboard_skip() {
+            self.app.modal = Modal::Message(format!("setup failed: {e}"));
+            return;
+        }
+        self.after_onboarding();
+    }
+
+    fn onboard_finish(&mut self) -> Task<Msg> {
+        match self.app.onboard_finish() {
+            Ok(Some((proj, agent))) => {
+                let before = self.session_keys();
+                self.spawn(proj, 0, agent);
+                self.resize_new_sessions(&before);
+                self.rebuild_wt_cache();
+            }
+            Ok(None) => {}
+            Err(e) => {
+                self.app.modal = Modal::Message(format!("setup failed: {e}"));
+                return Task::none();
+            }
+        }
+        self.after_onboarding();
+        Task::none()
+    }
+
+    /// After the wizard closes, surface the one-time tmux/native choice if it's
+    /// still pending and nothing else grabbed the modal slot.
+    fn after_onboarding(&mut self) {
+        if matches!(self.app.modal, Modal::None)
+            && crate::app::needs_tmux_choice(self.app.tmux_available, self.app.store.tmux_enabled)
+        {
+            self.app.modal = Modal::TmuxChoice;
+        }
     }
 
     /// The tools shown in the Settings Tools section, in display order.
@@ -1317,6 +1396,34 @@ impl Grove {
                 },
                 _ => {}
             },
+            Modal::Onboarding { step, .. } => {
+                let step = *step;
+                match key {
+                    Key::Named(Named::Escape) => self.onboard_skip(),
+                    Key::Named(Named::Enter) => return self.onboard_advance(),
+                    Key::Named(Named::ArrowDown) => match step {
+                        crate::app::OnboardStep::Project => self.app.onboard_dir_move(1),
+                        crate::app::OnboardStep::Theme => self.app.onboard_theme_move(1),
+                        _ => {}
+                    },
+                    Key::Named(Named::ArrowUp) => match step {
+                        crate::app::OnboardStep::Project => self.app.onboard_dir_move(-1),
+                        crate::app::OnboardStep::Theme => self.app.onboard_theme_move(-1),
+                        _ => {}
+                    },
+                    Key::Named(Named::Tab) => match step {
+                        crate::app::OnboardStep::Project => {
+                            self.app.onboard_dir_pick();
+                            return iced::widget::text_input::move_cursor_to_end(
+                                crate::gui::view::modal_input_id(),
+                            );
+                        }
+                        crate::app::OnboardStep::Theme => self.app.onboard_theme_switch_tab(),
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
             _ => {}
         }
         Task::none()

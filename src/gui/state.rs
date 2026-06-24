@@ -426,4 +426,25 @@ pub enum Msg {
     ThemePickerSelect(usize),
     ThemePickerSubmit,
     ThemePickerCancel,
+    // ── first-run onboarding wizard ──────────────────────────────────────
+    /// Advance one step. On the project step this registers the project first;
+    /// on the theme step it persists the previewed theme; on the session step it
+    /// finishes setup and launches the chosen agent.
+    OnbNext,
+    /// Step back one step.
+    OnbBack,
+    /// Skip the rest of setup; marks onboarded and restores the pre-preview theme.
+    OnbSkip,
+    /// Live edit of the project-step path field.
+    OnbPathChanged(String),
+    /// Live edit of the project-step name field.
+    OnbNameChanged(String),
+    /// Clicked a directory match in the project step.
+    OnbPickDir(String),
+    /// Toggle the theme-step dark/light tab.
+    OnbThemeTab,
+    /// Select (and live-preview) the theme at this index in the theme step.
+    OnbThemeSelect(usize),
+    /// Select the agent at this index in the session step.
+    OnbAgentSelect(usize),
 }

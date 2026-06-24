@@ -18,13 +18,13 @@ use super::widgets::{
     modal_dir_row, modal_list_row, modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn,
     tool_btn_toggle, vline, ModalBtn, SegSide,
 };
-use crate::app::{InputKind, Modal};
+use crate::app::{InputKind, Modal, OnboardStep};
 use crate::git::Worktree;
 use crate::session::{Session, SessionStatus};
 use iced::border::Radius;
 use iced::widget::{
     button, canvas as canvas_widget, column, container, row, scrollable, stack, text, text_input,
-    Column, Space,
+    Column, Row, Space,
 };
 use iced::{Background, Border, Color, Element, Length, Padding, Shadow};
 use std::sync::atomic::Ordering;
@@ -1456,6 +1456,28 @@ impl Grove {
             Modal::Settings => self.settings_modal(),
             Modal::Teardown => self.teardown_modal(),
             Modal::ScriptsEditor => self.scripts_editor_modal(),
+            Modal::Onboarding {
+                step,
+                path,
+                dir_sel,
+                name,
+                note,
+                tab,
+                sel_dark,
+                sel_light,
+                agent_sel,
+                ..
+            } => self.onboarding_modal(
+                *step,
+                path,
+                *dir_sel,
+                name.as_deref(),
+                note.as_deref(),
+                *tab,
+                *sel_dark,
+                *sel_light,
+                *agent_sel,
+            ),
             _ => Space::with_width(0).into(),
         };
 
@@ -2447,4 +2469,431 @@ impl Grove {
 
         modal_panel(body.into(), 460.0, c::MAGENTA())
     }
+
+    /// The first-run onboarding wizard. A single modal that walks the user
+    /// through five steps in grove's own quiet chrome — no SaaS-wizard
+    /// flourishes, just the same modal vocabulary every other surface uses.
+    #[allow(clippy::too_many_arguments)]
+    fn onboarding_modal<'a>(
+        &'a self,
+        step: OnboardStep,
+        path: &'a str,
+        dir_sel: usize,
+        name: Option<&'a str>,
+        note: Option<&'a str>,
+        tab: crate::theme::ThemeKind,
+        sel_dark: usize,
+        sel_light: usize,
+        agent_sel: usize,
+    ) -> Element<'a, Msg> {
+        use iced::Alignment::Center;
+
+        // ── progress rail ───────────────────────────────────────────────────
+        let mut rail = Row::new().spacing(10).align_y(Center);
+        for s in OnboardStep::ALL {
+            let (dotc, txtc) = if s == step {
+                (c::MAGENTA(), c::FG())
+            } else if s.index() < step.index() {
+                (c::MAGENTA(), c::FG_DIM())
+            } else {
+                (c::BORDER(), c::FG_MUTE())
+            };
+            rail = rail.push(
+                row![dot(dotc), text(s.label()).size(10).color(txtc)]
+                    .spacing(5)
+                    .align_y(Center),
+            );
+        }
+
+        // ── step body ────────────────────────────────────────────────────────
+        let body: Element<'_, Msg> = match step {
+            OnboardStep::Welcome => column![
+                text("welcome to grove").size(19).color(c::FG()),
+                text("a worktree launchpad for ai coding agents")
+                    .size(13)
+                    .color(c::FG_DIM()),
+                Space::with_height(6),
+                onboard_point(
+                    "sessions are the unit of work",
+                    "every agent you spawn lives in a managed session that survives navigation — switch between them in two keystrokes.",
+                ),
+                onboard_point(
+                    "worktrees, not branches",
+                    "grove treats git worktrees as a first-class primitive — create, list, and run agents inside them.",
+                ),
+                onboard_point(
+                    "quiet and keyboard-first",
+                    "the app stays out of the way so terminal output stays primary. this takes about a minute.",
+                ),
+            ]
+            .spacing(10)
+            .into(),
+
+            OnboardStep::Environment => {
+                let mut list = Column::new().spacing(6);
+                let rows = [
+                    (on_path("git"), false, "git", "version control"),
+                    (
+                        crate::agent::Agent::Claude.available(),
+                        false,
+                        "claude",
+                        "claude code",
+                    ),
+                    (
+                        crate::agent::Agent::Codex.available(),
+                        false,
+                        "codex",
+                        "codex cli",
+                    ),
+                    (
+                        crate::agent::Agent::OpenCode.available(),
+                        false,
+                        "opencode",
+                        "opencode cli",
+                    ),
+                    (
+                        self.app.tmux_available,
+                        true,
+                        "tmux",
+                        "persists sessions across restarts",
+                    ),
+                ];
+                for (found, optional, n, meta) in rows {
+                    list = list.push(onboard_env_row(found, optional, n, meta));
+                }
+                column![
+                    text("environment").size(16).color(c::FG()),
+                    text("grove spawns agents from your PATH — it doesn't install or authenticate them. only git is required to get going.")
+                        .size(12)
+                        .color(c::FG_DIM())
+                        .wrapping(iced::widget::text::Wrapping::Word),
+                    Space::with_height(4),
+                    list,
+                ]
+                .spacing(10)
+                .into()
+            }
+
+            OnboardStep::Project => {
+                let path_input = text_input("~/code/my-repo", path)
+                    .id(modal_input_id())
+                    .font(UI_FONT)
+                    .size(13)
+                    .padding(Padding::from([8, 12]))
+                    .on_input(Msg::OnbPathChanged)
+                    .on_submit(Msg::OnbNext)
+                    .style(input_field_style);
+
+                let mut col = column![
+                    text("add your first project").size(16).color(c::FG()),
+                    text("point grove at a git repository, or any plain folder for ad-hoc sessions.")
+                        .size(12)
+                        .color(c::FG_DIM())
+                        .wrapping(iced::widget::text::Wrapping::Word),
+                    text("repository or folder").size(11).color(c::FG_MUTE()),
+                    path_input,
+                ]
+                .spacing(8);
+
+                // Directory matches (memoized in dir_cache, keyed by buffer).
+                let entries = {
+                    let mut cache = self.dir_cache.borrow_mut();
+                    match cache.as_ref() {
+                        Some((k, v)) if k == path => v.clone(),
+                        _ => {
+                            let v = crate::app::list_dirs(path);
+                            *cache = Some((path.to_string(), v.clone()));
+                            v
+                        }
+                    }
+                };
+                const WINDOW: usize = 5;
+                let total = entries.len();
+                let shown = total.min(WINDOW);
+                let start = dir_sel
+                    .saturating_sub(WINDOW - 1)
+                    .min(total.saturating_sub(WINDOW));
+                if total > 0 {
+                    let mut matches_col = Column::new().spacing(0);
+                    for (i, p) in entries.into_iter().skip(start).take(shown).enumerate() {
+                        let active = start + i == dir_sel;
+                        let p2 = p.clone();
+                        matches_col = matches_col.push(modal_list_row(
+                            text(p).size(12).color(if active { c::FG() } else { c::FG_DIM() }),
+                            active,
+                            Msg::OnbPickDir(p2),
+                        ));
+                    }
+                    col = col
+                        .push(text("matches").size(11).color(c::FG_MUTE()))
+                        .push(
+                            container(matches_col)
+                                .width(Length::Fill)
+                                .style(|_| container::Style {
+                                    background: Some(Background::Color(c::BG_STRIP())),
+                                    border: Border {
+                                        color: c::BORDER(),
+                                        width: 1.0,
+                                        radius: Radius::from(4.0),
+                                    },
+                                    ..Default::default()
+                                }),
+                        );
+                }
+
+                if let Some(name) = name {
+                    let name_input = text_input("project name", name)
+                        .font(UI_FONT)
+                        .size(13)
+                        .padding(Padding::from([8, 12]))
+                        .on_input(Msg::OnbNameChanged)
+                        .on_submit(Msg::OnbNext)
+                        .style(input_field_style);
+                    col = col
+                        .push(text("name").size(11).color(c::FG_MUTE()))
+                        .push(name_input);
+                }
+
+                if let Some(note) = note {
+                    col = col.push(text(note.to_string()).size(12).color(c::RED()));
+                }
+                col = col.push(
+                    text("tab complete · ↑↓ select · enter continue · or skip setup")
+                        .size(11)
+                        .color(c::FG_MUTE()),
+                );
+                col.into()
+            }
+
+            OnboardStep::Theme => {
+                let themes = crate::theme::themes_of(tab);
+                let sel = match tab {
+                    crate::theme::ThemeKind::Dark => sel_dark,
+                    crate::theme::ThemeKind::Light => sel_light,
+                };
+                let tabs = container(
+                    row![
+                        seg_button(
+                            "dark",
+                            matches!(tab, crate::theme::ThemeKind::Dark),
+                            SegSide::Left,
+                            Msg::OnbThemeTab,
+                        ),
+                        seg_button(
+                            "light",
+                            matches!(tab, crate::theme::ThemeKind::Light),
+                            SegSide::Right,
+                            Msg::OnbThemeTab,
+                        ),
+                    ]
+                    .spacing(0),
+                )
+                .style(|_| container::Style {
+                    border: Border {
+                        color: c::BORDER(),
+                        width: 1.0,
+                        radius: Radius::from(6.0),
+                    },
+                    ..Default::default()
+                });
+
+                let mut list = Column::new().spacing(0);
+                for (i, th) in themes.iter().enumerate() {
+                    let active = i == sel;
+                    list = list.push(modal_list_row(
+                        text(th.name.to_string())
+                            .size(12)
+                            .color(if active { c::FG() } else { c::FG_DIM() }),
+                        active,
+                        Msg::OnbThemeSelect(i),
+                    ));
+                }
+                let list_h = (themes.len().min(7) as f32) * ROW_H;
+                let scroller = container(scrollable(list))
+                    .width(Length::Fill)
+                    .height(Length::Fixed(list_h))
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(c::BG_STRIP())),
+                        border: Border {
+                            color: c::BORDER(),
+                            width: 1.0,
+                            radius: Radius::from(4.0),
+                        },
+                        ..Default::default()
+                    });
+
+                column![
+                    text("pick a theme").size(16).color(c::FG()),
+                    text("37 colorways, painted by semantic role so every screen reads correctly. change it any time in settings.")
+                        .size(12)
+                        .color(c::FG_DIM())
+                        .wrapping(iced::widget::text::Wrapping::Word),
+                    tabs,
+                    scroller,
+                ]
+                .spacing(10)
+                .into()
+            }
+
+            OnboardStep::Session => {
+                let mut col = column![
+                    text("start your first session").size(16).color(c::FG()),
+                ]
+                .spacing(8);
+
+                match self.app.store.projects.last() {
+                    Some(p) => {
+                        col = col.push(
+                            text(format!("launch an agent inside {}.", p.name))
+                                .size(12)
+                                .color(c::FG_DIM())
+                                .wrapping(iced::widget::text::Wrapping::Word),
+                        );
+                        let mut list = Column::new().spacing(0);
+                        for (i, agent) in self.app.available_agents.iter().enumerate() {
+                            let active = i == agent_sel;
+                            list = list.push(modal_list_row(
+                                text(agent.label().to_string())
+                                    .size(12)
+                                    .color(if active { c::FG() } else { c::FG_DIM() }),
+                                active,
+                                Msg::OnbAgentSelect(i),
+                            ));
+                        }
+                        let list_h = (self.app.available_agents.len().max(1) as f32) * ROW_H;
+                        col = col.push(
+                            container(list)
+                                .width(Length::Fill)
+                                .height(Length::Fixed(list_h))
+                                .style(|_| container::Style {
+                                    background: Some(Background::Color(c::BG_STRIP())),
+                                    border: Border {
+                                        color: c::BORDER(),
+                                        width: 1.0,
+                                        radius: Radius::from(4.0),
+                                    },
+                                    ..Default::default()
+                                }),
+                        );
+                    }
+                    None => {
+                        col = col.push(
+                            text("no project added — you can add one any time from the sidebar. finish to start using grove.")
+                                .size(12)
+                                .color(c::FG_DIM())
+                                .wrapping(iced::widget::text::Wrapping::Word),
+                        );
+                    }
+                }
+                col.into()
+            }
+        };
+
+        // ── footer ────────────────────────────────────────────────────────────
+        let next_label = match step {
+            OnboardStep::Welcome => "get started",
+            OnboardStep::Session => "launch session",
+            _ => "continue",
+        };
+        let count = format!("{} / {}", step.index() + 1, OnboardStep::ALL.len());
+        let mut footer = row![
+            text(count).size(11).color(c::FG_MUTE()),
+            Space::with_width(Length::Fill),
+            modal_action("skip setup", ModalBtn::Plain, Msg::OnbSkip),
+        ]
+        .spacing(8)
+        .align_y(Center);
+        if step.prev().is_some() {
+            footer = footer.push(modal_action("back", ModalBtn::Plain, Msg::OnbBack));
+        }
+        footer = footer.push(modal_action(next_label, ModalBtn::Primary, Msg::OnbNext));
+
+        let content = column![
+            rail,
+            container(body)
+                .width(Length::Fill)
+                .height(Length::Fixed(300.0)),
+            footer,
+        ]
+        .spacing(14);
+
+        modal_panel(content.into(), 600.0, c::MAGENTA())
+    }
+}
+
+/// One bulleted value-prop line on the welcome step: a magenta mark, a bold
+/// lead, and a muted explanation that wraps.
+fn onboard_point<'a>(lead: &'a str, body: &'a str) -> Element<'a, Msg> {
+    row![
+        // A drawn marker, not a glyph: the bundled fonts have no U+25xx box
+        // characters, so a text bullet renders as tofu. Nudged down to sit on
+        // the lead line's baseline.
+        container(dot(c::MAGENTA())).padding(Padding {
+            top: 5.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        }),
+        column![
+            text(lead).size(12).color(c::FG()),
+            text(body)
+                .size(11)
+                .color(c::FG_DIM())
+                .wrapping(iced::widget::text::Wrapping::Word),
+        ]
+        .spacing(2),
+    ]
+    .spacing(10)
+    .into()
+}
+
+/// One detected-tool row on the environment step: a status dot, the tool name,
+/// a muted description, and a right-aligned found/missing/optional tag.
+fn onboard_env_row<'a>(
+    found: bool,
+    optional: bool,
+    name: &'a str,
+    meta: &'a str,
+) -> Element<'a, Msg> {
+    let (dotc, tag, tagc) = if found {
+        (c::GREEN(), "found", c::GREEN())
+    } else if optional {
+        (c::AMBER(), "optional", c::AMBER())
+    } else {
+        (c::FG_MUTE(), "missing", c::FG_MUTE())
+    };
+    container(
+        row![
+            dot(dotc),
+            text(name.to_string()).size(12).color(c::FG()),
+            text(meta.to_string()).size(11).color(c::FG_MUTE()),
+            Space::with_width(Length::Fill),
+            text(tag).size(10).color(tagc),
+        ]
+        .spacing(10)
+        .align_y(iced::Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding(Padding::from([8, 12]))
+    .style(|_| container::Style {
+        background: Some(Background::Color(c::BG_STRIP())),
+        border: Border {
+            color: c::BORDER(),
+            width: 1.0,
+            radius: Radius::from(4.0),
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+/// Cheap PATH scan for a bare binary name — used to report `git`/`tmux`
+/// presence on the onboarding environment step without shelling out.
+fn on_path(bin: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| {
+            let p = dir.join(bin);
+            std::fs::metadata(&p).map(|m| m.is_file()).unwrap_or(false)
+        })
+    })
 }
