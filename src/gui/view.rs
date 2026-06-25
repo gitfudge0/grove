@@ -1523,11 +1523,10 @@ impl Grove {
             .font(UI_FONT)
             .size(13)
             .padding(Padding::from([8, 12]))
-            .on_input(if show_dirs {
-                Msg::InputPathChanged
-            } else {
-                Msg::InputNameChanged
-            })
+            // The primary field always edits `buffer` (what we display and what
+            // submit_input reads), so it must route through InputPathChanged in
+            // both modes. The separate `name_input` below owns InputNameChanged.
+            .on_input(Msg::InputPathChanged)
             .on_submit(Msg::ModalSubmit)
             .style(input_field_style);
 

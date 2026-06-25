@@ -21,10 +21,25 @@ if ! cargo bundle --help >/dev/null 2>&1; then
   cargo install cargo-bundle
 fi
 
-echo "Building release bundle..."
-cargo bundle --release
-
 OS="$(uname -s)"
+
+# Pin the bundle format per-OS. Left unset, `cargo bundle` on macOS also builds
+# a .dmg, whose hdiutil unmount step intermittently fails with "Resource busy"
+# (Spotlight/fseventsd grab the freshly-mounted staging volume). We only ever
+# install the .app below, so build just that and skip the flaky DMG path.
+case "$OS" in
+  Darwin) BUNDLE_FORMAT=osx ;;
+  Linux)  BUNDLE_FORMAT=deb ;;
+  *)      BUNDLE_FORMAT="" ;;
+esac
+
+echo "Building release bundle..."
+if [ -n "$BUNDLE_FORMAT" ]; then
+  cargo bundle --release --format "$BUNDLE_FORMAT"
+else
+  cargo bundle --release
+fi
+
 case "$OS" in
   Darwin)
     APP="$(find target/release/bundle/osx -maxdepth 1 -name '*.app' | head -n1)"
