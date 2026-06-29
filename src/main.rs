@@ -9,6 +9,7 @@ mod session_meta;
 mod storage;
 mod theme;
 mod tmux;
+mod upgrade;
 
 use anyhow::Result;
 

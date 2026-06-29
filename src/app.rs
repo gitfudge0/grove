@@ -216,6 +216,9 @@ pub enum Modal {
     /// project live in the GUI model (`Grove::scripts_editor`); this just marks
     /// the modal open.
     ScriptsEditor,
+    /// Apply-in-progress overlay. Mirrors the one-deep modal pattern; the
+    /// live stage is tracked in `Grove.upgrade` and polled every `Msg::Tick`.
+    Updating,
     /// First-run onboarding wizard. Self-contained, multi-step state: the
     /// project step mirrors the add-project path input (`path`/`dir_sel`/`name`/
     /// `note`), the theme step mirrors the theme picker (`tab`/`sel_*`), and the

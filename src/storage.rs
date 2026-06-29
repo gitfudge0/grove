@@ -50,6 +50,14 @@ pub struct Store {
     /// reappears even if they later remove every project.
     #[serde(default)]
     pub onboarded: bool,
+    /// Unix timestamp (seconds) of the last completed update check. Gates the
+    /// periodic (24h) trigger. `#[serde(default)]` so old config files load.
+    #[serde(default)]
+    pub last_update_check: Option<i64>,
+    /// The release tag the user chose to skip. While the latest release equals
+    /// this value no update notice is shown; a newer release clears it.
+    #[serde(default)]
+    pub skipped_version: Option<String>,
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -162,6 +170,8 @@ mod tests {
             ui_zoom: Some(1.25),
             sidebar_width: Some(360.0),
             onboarded: true,
+            last_update_check: None,
+            skipped_version: None,
         };
 
         let json = serde_json::to_string_pretty(&original).expect("serialize");
@@ -207,5 +217,24 @@ mod tests {
             result.is_err(),
             "corrupt JSON must not silently produce a default Store"
         );
+    }
+
+    #[test]
+    fn store_loads_without_update_fields_and_defaults_them() {
+        // Existing config files predate these fields; they must default to None.
+        let store: Store = serde_json::from_str("{}").unwrap();
+        assert!(store.last_update_check.is_none());
+        assert!(store.skipped_version.is_none());
+    }
+
+    #[test]
+    fn store_round_trips_update_fields() {
+        let mut store = Store::default();
+        store.last_update_check = Some(1_700_000_000);
+        store.skipped_version = Some("v0.25.0".to_string());
+        let json = serde_json::to_string(&store).unwrap();
+        let back: Store = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.last_update_check, Some(1_700_000_000));
+        assert_eq!(back.skipped_version.as_deref(), Some("v0.25.0"));
     }
 }

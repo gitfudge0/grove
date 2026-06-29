@@ -7,8 +7,8 @@ use super::metrics::{
     TERM_PANEL_PORTION, TERM_PANEL_PORTION_MAX, TERM_PANEL_PORTION_MIN, TERM_PANEL_PORTION_STEP,
 };
 use super::state::{
-    AbsCell, FocusedPane, Grove, Msg, PtyCell, PtyDrag, PtyPane, ScriptField, ScriptsEditorState,
-    SidebarDrag, SidebarView, ToolStatus,
+    AbsCell, ChangelogState, FocusedPane, Grove, Msg, PtyCell, PtyDrag, PtyPane, ScriptField,
+    ScriptsEditorState, SidebarDrag, SidebarView, ToolStatus, UpgradeState,
 };
 use crate::agent::Agent;
 use crate::app::{App, InputKind, Modal, Pane};
@@ -84,6 +84,11 @@ impl Grove {
             last_term_divider_press: None,
             scripts_editor: None,
             settings_tools: Vec::new(),
+            upgrade: UpgradeState::Idle,
+            upgrade_method: crate::upgrade::detect(),
+            upgrade_progress: std::sync::Arc::new(std::sync::Mutex::new(crate::gui::state::UpgradeProgress::default())),
+            changelog: ChangelogState::Idle,
+            show_changelog: false,
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -202,6 +207,35 @@ impl Grove {
                         .is_some();
                     if let (Some(key), false) = (had_session, still) {
                         self.pty_cache.borrow_mut().remove(&key);
+                    }
+                }
+                // Drain apply progress (set by the background apply thread).
+                {
+                    let drained = if let Ok(mut g) = self.upgrade_progress.lock() {
+                        let stage = g.stage.take();
+                        let finished = g.finished.take();
+                        (stage, finished)
+                    } else {
+                        (None, None)
+                    };
+                    if let Some(stage) = drained.0 {
+                        self.upgrade = UpgradeState::Updating(stage);
+                    }
+                    if let Some(result) = drained.1 {
+                        self.upgrade = match result {
+                            Ok(()) => UpgradeState::Updated,
+                            Err(e) => UpgradeState::UpdateFailed(e),
+                        };
+                    }
+                }
+                // Periodic update check: at most once per 24h while running.
+                {
+                    let due = match self.app.store.last_update_check {
+                        Some(ts) => now_unix() - ts >= 24 * 60 * 60,
+                        None => false, // launch check seeds the timestamp; don't double-fire at boot
+                    };
+                    if due && matches!(self.upgrade, UpgradeState::Idle | UpgradeState::UpToDate) {
+                        return self.check_updates_task(false);
                     }
                 }
             }
@@ -752,6 +786,94 @@ impl Grove {
             Msg::ToolVersionsDetected(results) => {
                 self.settings_tools = results.into_iter().map(|(_, status)| status).collect();
             }
+            Msg::CheckForUpdates { manual } => {
+                // Guard: don't fire a duplicate request if a check is already in-flight.
+                if matches!(self.upgrade, UpgradeState::Checking) {
+                    return Task::none();
+                }
+                return self.check_updates_task(manual);
+            }
+            Msg::UpdateCheckResult(result, manual) => {
+                // Record the check time regardless of outcome so the periodic trigger backs off.
+                self.app.store.last_update_check = Some(now_unix());
+                let _ = crate::storage::save(&self.app.store);
+                match result {
+                    Ok(release) => {
+                        let current = env!("CARGO_PKG_VERSION");
+                        let skipped = self.app.store.skipped_version.as_deref();
+                        if crate::upgrade::update_available(current, &release, skipped) {
+                            self.upgrade = UpgradeState::Available(release);
+                        } else {
+                            self.upgrade = UpgradeState::UpToDate;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("update check failed: {e}");
+                        if manual {
+                            // Manual checks surface the error inline so the user knows.
+                            self.upgrade = UpgradeState::Error(e);
+                        } else {
+                            // Launch/periodic checks fail silently (log only; no badge/error shown).
+                            self.upgrade = UpgradeState::Idle;
+                        }
+                    }
+                }
+            }
+            Msg::SkipVersion => {
+                if let UpgradeState::Available(release) = &self.upgrade {
+                    self.app.store.skipped_version = Some(release.tag.clone());
+                    let _ = crate::storage::save(&self.app.store);
+                }
+                self.upgrade = UpgradeState::UpToDate;
+            }
+            Msg::StartUpdate => {
+                let UpgradeState::Available(release) = self.upgrade.clone() else {
+                    return Task::none();
+                };
+                let method = self.upgrade_method;
+                self.upgrade = UpgradeState::Updating(crate::upgrade::Stage::Downloading);
+                self.app.modal = Modal::Updating;
+
+                let handle = self.upgrade_progress.clone();
+                std::thread::spawn(move || {
+                    let cb_handle = handle.clone();
+                    let cb = move |stage: crate::upgrade::Stage| {
+                        if let Ok(mut g) = cb_handle.lock() {
+                            g.stage = Some(stage);
+                        }
+                    };
+                    let result =
+                        crate::upgrade::apply(method, &release, &cb).map_err(|e| e.to_string());
+                    if let Ok(mut g) = handle.lock() {
+                        g.finished = Some(result);
+                    }
+                });
+                return Task::none();
+            }
+            Msg::RestartApp => {
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = std::process::Command::new(exe).spawn();
+                }
+                std::process::exit(0);
+            }
+            Msg::OpenChangelog => {
+                self.changelog = ChangelogState::Loading;
+                self.show_changelog = true;
+                // The changelog modal takes over; close the Settings modal behind it.
+                self.app.modal = Modal::None;
+                return self.fetch_changelog_task();
+            }
+            Msg::ChangelogLoaded(result) => {
+                self.changelog = match result {
+                    Ok(notes) => ChangelogState::Loaded(notes),
+                    Err(e) => ChangelogState::Error(e),
+                };
+            }
+            Msg::CloseChangelog => {
+                self.show_changelog = false;
+                // Return to Settings, where the button lives (mirrors ThemePicker return).
+                self.app.modal = Modal::Settings;
+            }
             Msg::ThemePickerSwitchTab => {
                 self.theme_picker_switch_tab();
                 return self.scroll_theme_picker_to_selection();
@@ -884,6 +1006,29 @@ impl Grove {
                     .collect::<Vec<_>>()
             },
             Msg::ToolVersionsDetected,
+        )
+    }
+
+    /// Set upgrade state to Checking and dispatch an off-thread release fetch,
+    /// which posts back `Msg::UpdateCheckResult`. Mirrors `detect_tools_task`.
+    /// `manual` is threaded into the result so the handler can apply the correct
+    /// error policy (surface inline vs. fail silently).
+    fn check_updates_task(&mut self, manual: bool) -> Task<Msg> {
+        self.upgrade = UpgradeState::Checking;
+        // Mirrors detect_tools_task: short blocking work on the iced/tokio executor.
+        Task::perform(
+            async move { crate::upgrade::latest().map_err(|e| e.to_string()) },
+            move |result| Msg::UpdateCheckResult(result, manual),
+        )
+    }
+
+    /// Dispatch an off-thread release-notes fetch, posting back `Msg::ChangelogLoaded`.
+    /// Mirrors `check_updates_task`.
+    fn fetch_changelog_task(&self) -> Task<Msg> {
+        // Off-thread, mirroring the update check. 10 most recent releases.
+        Task::perform(
+            async { crate::upgrade::releases(10).map_err(|e| e.to_string()) },
+            Msg::ChangelogLoaded,
         )
     }
 
@@ -1178,7 +1323,14 @@ impl Grove {
     }
 
     fn handle_key(&mut self, key: Key, modified_key: Key, mods: Modifiers) -> Task<Msg> {
-        eprintln!("DBG key={:?} modified_key={:?} ctrl={} shift={} sel={}", key, modified_key, mods.control(), mods.shift(), self.pty_selection.is_some());
+        // Changelog is a modal overlay; Escape returns to Settings.
+        if self.show_changelog {
+            if matches!(key, Key::Named(Named::Escape)) {
+                self.show_changelog = false;
+                self.app.modal = Modal::Settings;
+            }
+            return Task::none();
+        }
         if !matches!(self.app.modal, Modal::None) {
             return self.handle_modal_key(key, mods);
         }
@@ -1383,6 +1535,13 @@ impl Grove {
             },
             Modal::Settings => {
                 if matches!(key, Key::Named(Named::Escape)) {
+                    self.app.modal = Modal::None;
+                }
+            }
+            Modal::Updating => {
+                if matches!(key, Key::Named(Named::Escape))
+                    && !matches!(self.upgrade, UpgradeState::Updating(_))
+                {
                     self.app.modal = Modal::None;
                 }
             }
@@ -1994,6 +2153,14 @@ fn remove_worktree_task(project_path: String, path: String, remaining: Vec<Strin
             remaining,
         },
     )
+}
+
+/// Returns the current time as seconds since UNIX_EPOCH, or 0 on error.
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn pixel_to_cell(x: f32, y: f32) -> PtyCell {

@@ -11,7 +11,7 @@ use super::rows::{
     activity_group_header, project_row, session_activity_row,
     session_row, worktree_activity_row, worktree_row,
 };
-use super::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, SidebarView};
+use super::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, SidebarView, UpgradeState};
 use super::widgets::{
     control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_workspace, footer_btn,
     icon_btn, modal_action,
@@ -94,13 +94,17 @@ impl Grove {
                 .height(Length::Fill)
         };
 
-        let content: Element<'_, Msg> = if matches!(self.app.modal, Modal::None) {
+        let content: Element<'_, Msg> = if matches!(self.app.modal, Modal::None) && !self.show_changelog {
             body.into()
         } else {
-            stack![body, self.modal_layer()]
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
+            let mut layers = stack![body];
+            if !matches!(self.app.modal, Modal::None) {
+                layers = layers.push(self.modal_layer());
+            }
+            if self.show_changelog {
+                layers = layers.push(self.changelog_modal());
+            }
+            layers.width(Length::Fill).height(Length::Fill).into()
         };
 
         container(content)
@@ -121,7 +125,21 @@ impl Grove {
 
         // App size, theme, and terminal backend now live in the Settings modal;
         // the appbar's right cluster is just the cog entry point.
-        let right = row![icon_btn("cog", Msg::OpenSettings)]
+        let cog = icon_btn("cog", Msg::OpenSettings);
+        let cog: Element<'_, Msg> = if matches!(self.upgrade, UpgradeState::Available(_)) {
+            stack![
+                cog,
+                container(dot(c::GREEN()))
+                    .align_x(iced::alignment::Horizontal::Right)
+                    .align_y(iced::alignment::Vertical::Top)
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            ]
+            .into()
+        } else {
+            cog
+        };
+        let right = row![cog]
             .spacing(4)
             .padding(Padding::from([0, 16]))
             .align_y(iced::Alignment::Center);
@@ -1465,6 +1483,7 @@ impl Grove {
                 ..
             } => self.theme_picker_modal(*sel_dark, *sel_light, *tab),
             Modal::Settings => self.settings_modal(),
+            Modal::Updating => self.updating_modal(),
             Modal::Teardown => self.teardown_modal(),
             Modal::ScriptsEditor => self.scripts_editor_modal(),
             Modal::Onboarding {
@@ -2390,9 +2409,167 @@ impl Grove {
         ]
         .spacing(4);
 
-        let body = column![head, appearance, terminal, tools_section].spacing(16);
+        // ── updates ──────────────────────────────────────────────────────────
+        let current_ver = env!("CARGO_PKG_VERSION");
+        let status_line: Element<'_, Msg> = match &self.upgrade {
+            UpgradeState::Idle => text("Not checked yet").size(12).color(c::FG_MUTE()).into(),
+            UpgradeState::Checking => row![
+                super::icons::spinner(12.0, c::FG_MUTE(), self.blink_tick),
+                Space::with_width(8),
+                text("Checking…").size(12).color(c::FG_MUTE()),
+            ]
+            .align_y(Center)
+            .into(),
+            UpgradeState::UpToDate => text("Up to date").size(12).color(c::FG_DIM()).into(),
+            UpgradeState::Error(e) => {
+                text(format!("Check failed: {e}")).size(12).color(c::FG_MUTE()).into()
+            }
+            UpgradeState::Available(r) => {
+                text(format!("Update available: {}", r.tag)).size(12).color(c::GREEN()).into()
+            }
+            // Updating/Updated/UpdateFailed are shown in the progress modal.
+            _ => text("Updating…").size(12).color(c::FG_DIM()).into(),
+        };
+
+        let updates_header = container(
+            row![
+                text("UPDATES").font(UI_BOLD).size(11).color(c::FG_MUTE()),
+                Space::with_width(Length::Fill),
+                if matches!(self.upgrade, UpgradeState::Checking) {
+                    container(super::icons::spinner(13.0, c::FG_MUTE(), self.blink_tick)).into()
+                } else {
+                    icon_btn("restart", Msg::CheckForUpdates { manual: true })
+                },
+            ]
+            .align_y(Center),
+        )
+        .padding(Padding::from([0, 10]));
+
+        let current_row = container(
+            row![
+                text("Current version").size(12).color(c::FG()),
+                Space::with_width(Length::Fill),
+                text(format!("v{current_ver}")).size(12).color(c::FG_DIM()),
+            ]
+            .align_y(Center),
+        )
+        .height(ROW_H)
+        .padding(Padding::from([0, 10]));
+
+        let status_row = container(
+            row![
+                text("Status").size(12).color(c::FG()),
+                Space::with_width(Length::Fill),
+                status_line,
+            ]
+            .align_y(Center),
+        )
+        .height(ROW_H)
+        .padding(Padding::from([0, 10]));
+
+        let mut updates_col = column![updates_header, current_row, status_row].spacing(4);
+
+        if let UpgradeState::Available(r) = &self.upgrade {
+            let mut actions = row![].spacing(8).align_y(Center);
+            // Hide "Update now" for Unknown installs (notify-only).
+            if !matches!(self.upgrade_method, crate::upgrade::InstallMethod::Unknown) {
+                actions =
+                    actions.push(modal_action("Update now", ModalBtn::Primary, Msg::StartUpdate));
+            }
+            actions = actions.push(modal_action(
+                "Skip this version",
+                ModalBtn::Plain,
+                Msg::SkipVersion,
+            ));
+            // No open-URL mechanism exists in this codebase (no `open` crate,
+            // no Msg::OpenUrl handler). Render the URL as a non-clickable hint.
+            actions = actions.push(
+                text(r.html_url.clone())
+                    .size(11)
+                    .color(c::FG_MUTE()),
+            );
+
+            let action_row = container(actions).padding(Padding::from([4, 10]));
+            updates_col = updates_col.push(action_row);
+
+            if !r.body.is_empty() {
+                let truncated: String = r
+                    .body
+                    .lines()
+                    .take(6)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .chars()
+                    .take(300)
+                    .collect();
+                let notes_row = container(
+                    text(truncated).size(11).color(c::FG_MUTE()),
+                )
+                .padding(Padding::from([2, 10]));
+                updates_col = updates_col.push(notes_row);
+            }
+        }
+
+        let changelog_row = container(
+            modal_action("View changelog", ModalBtn::Plain, Msg::OpenChangelog),
+        )
+        .padding(Padding::from([4, 10]));
+        updates_col = updates_col.push(changelog_row);
+
+        let updates_section = updates_col;
+
+        let body = column![head, appearance, terminal, tools_section, updates_section].spacing(16);
 
         modal_panel(body.into(), 580.0, c::MAGENTA())
+    }
+
+    fn updating_modal(&self) -> Element<'_, Msg> {
+        use iced::Alignment::Center;
+
+        let header = text("Updating Grove").size(13).color(c::MAGENTA());
+
+        let body: Element<'_, Msg> = match &self.upgrade {
+            UpgradeState::Updating(stage) => {
+                let label = match stage {
+                    crate::upgrade::Stage::Downloading => "Downloading…",
+                    crate::upgrade::Stage::Building => "Building…",
+                    crate::upgrade::Stage::Installing => "Installing…",
+                    crate::upgrade::Stage::Done => "Finishing…",
+                };
+                row![
+                    super::icons::spinner(16.0, c::FG_DIM(), self.blink_tick),
+                    Space::with_width(10),
+                    text(label).size(12).color(c::FG()),
+                ]
+                .align_y(Center)
+                .into()
+            }
+            UpgradeState::Updated => column![
+                text("Update installed — restart grove to apply")
+                    .size(12)
+                    .color(c::FG()),
+                Space::with_height(10),
+                row![
+                    modal_action("Restart", ModalBtn::Primary, Msg::RestartApp),
+                    Space::with_width(8),
+                    modal_action("Later", ModalBtn::Plain, Msg::ModalCancel),
+                ]
+                .align_y(Center),
+            ]
+            .into(),
+            UpgradeState::UpdateFailed(e) => column![
+                text("Update failed").size(12).color(c::FG()),
+                Space::with_height(6),
+                text(e.clone()).size(11).color(c::FG_MUTE()),
+                Space::with_height(10),
+                modal_action("Close", ModalBtn::Plain, Msg::ModalCancel),
+            ]
+            .into(),
+            _ => text("Updating…").size(12).color(c::FG_DIM()).into(),
+        };
+
+        let content = column![header, Space::with_height(12), body].spacing(0);
+        modal_panel(content.into(), 420.0, c::MAGENTA())
     }
 
     fn theme_picker_modal(
@@ -2828,6 +3005,98 @@ impl Grove {
         .spacing(14);
 
         modal_panel(content.into(), 600.0, c::MAGENTA())
+    }
+
+    // ── changelog modal ───────────────────────────────────────────────────
+
+    fn changelog_modal(&self) -> Element<'_, Msg> {
+        use iced::Alignment::Center;
+        use super::state::ChangelogState;
+
+        let header = row![
+            text("Changelog").size(13).color(c::MAGENTA()),
+            Space::with_width(Length::Fill),
+            icon_btn("close", Msg::CloseChangelog),
+        ]
+        .align_y(Center);
+
+        let inner: Element<'_, Msg> = match &self.changelog {
+            ChangelogState::Idle | ChangelogState::Loading => row![
+                super::icons::spinner(16.0, c::FG_DIM(), self.blink_tick),
+                Space::with_width(10),
+                text("Loading\u{2026}").size(12).color(c::FG_MUTE()),
+            ]
+            .align_y(Center)
+            .into(),
+            ChangelogState::Error(e) => text(format!("Couldn't load changelog: {e}"))
+                .size(12)
+                .color(c::FG_MUTE())
+                .into(),
+            ChangelogState::Loaded(notes) if notes.is_empty() => {
+                text("No releases yet.").size(12).color(c::FG_MUTE()).into()
+            }
+            ChangelogState::Loaded(notes) => {
+                let mut list = Column::new().spacing(18);
+                for n in notes {
+                    let mut head = row![
+                        text(n.tag.clone()).size(13).font(UI_BOLD).color(c::FG()),
+                    ]
+                    .spacing(8)
+                    .align_y(Center);
+                    if !n.name.is_empty() && n.name != n.tag {
+                        head = head.push(text(n.name.clone()).size(13).color(c::FG_DIM()));
+                    }
+                    if !n.date.is_empty() {
+                        head = head.push(Space::with_width(Length::Fill));
+                        head = head.push(text(n.date.clone()).size(11).color(c::FG_MUTE()));
+                    }
+                    let body_text = crate::upgrade::clean_markdown(&n.body);
+                    let entry = column![
+                        head,
+                        Space::with_height(4),
+                        text(body_text).size(12).color(c::FG_MUTE()),
+                    ]
+                    .spacing(0);
+                    list = list.push(entry);
+                }
+                // Right padding leaves a gap between the text and the
+                // scrollbar so they don't crowd each other.
+                scrollable(
+                    container(list).padding(Padding {
+                        top: 0.0,
+                        right: 12.0,
+                        bottom: 0.0,
+                        left: 0.0,
+                    }),
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+            }
+        };
+
+        let body = column![
+            header,
+            Space::with_height(12),
+            container(inner)
+                .width(Length::Fill)
+                .height(Length::Fixed(420.0)),
+        ]
+        .spacing(0);
+
+        let panel = modal_panel(body.into(), 600.0, c::MAGENTA());
+
+        // Centered overlay on a dim backdrop, matching the settings modal.
+        container(panel)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.16))),
+                ..Default::default()
+            })
+            .into()
     }
 }
 

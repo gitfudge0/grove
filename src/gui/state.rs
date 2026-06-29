@@ -152,6 +152,16 @@ pub struct Grove {
     /// asynchronously and posts results back via `Msg::ToolVersionsDetected`.
     /// Empty until Settings is first opened.
     pub settings_tools: Vec<ToolStatus>,
+    /// Current self-update state — drives the Updates UI and badge.
+    pub upgrade: UpgradeState,
+    /// State for the changelog modal.
+    pub changelog: ChangelogState,
+    /// When true, the changelog modal is shown over the normal view.
+    pub show_changelog: bool,
+    /// How Grove was installed (homebrew, cargo, etc.) — determines the update command.
+    pub upgrade_method: crate::upgrade::InstallMethod,
+    /// Written by the apply thread, drained on `Tick` to drive `UpgradeState`.
+    pub upgrade_progress: std::sync::Arc<std::sync::Mutex<UpgradeProgress>>,
 }
 
 /// Install + version status for a single coding-agent tool in the Settings
@@ -237,6 +247,38 @@ pub struct StyledRun {
     pub fg: Option<Color>,
     pub bg: Option<Color>,
     pub bold: bool,
+}
+
+/// Shared progress state written by the background apply thread and drained on
+/// each `Msg::Tick`. Both fields are `take`-d by the Tick handler so they are
+/// consumed exactly once.
+#[derive(Default)]
+pub struct UpgradeProgress {
+    pub stage: Option<crate::upgrade::Stage>,
+    pub finished: Option<Result<(), String>>,
+}
+
+/// Drives the changelog modal.
+#[derive(Debug, Clone)]
+pub enum ChangelogState {
+    Idle,
+    Loading,
+    Loaded(Vec<crate::upgrade::ReleaseNote>),
+    Error(String),
+}
+
+/// Drives the Updates UI. `Available` carries the resolved release; the apply
+/// states drive the progress modal.
+#[derive(Debug, Clone)]
+pub enum UpgradeState {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(crate::upgrade::Release),
+    Error(String),
+    Updating(crate::upgrade::Stage),
+    Updated,
+    UpdateFailed(String),
 }
 
 /// Which lifecycle script a `ScriptsEditorAction` targets.
@@ -422,6 +464,24 @@ pub enum Msg {
     RefreshTools,
     /// Async detection finished; carries the fresh per-tool statuses.
     ToolVersionsDetected(Vec<(Agent, ToolStatus)>),
+    /// Open the changelog modal (fetches releases off-thread).
+    OpenChangelog,
+    /// Off-thread release-note fetch completed; carries the notes or an error string.
+    ChangelogLoaded(Result<Vec<crate::upgrade::ReleaseNote>, String>),
+    /// Close the changelog modal and return to the Settings modal.
+    CloseChangelog,
+    /// Trigger an off-thread update check. `manual: true` = user-initiated (surfaces
+    /// errors inline); `manual: false` = launch/periodic (fails silently, log only).
+    CheckForUpdates { manual: bool },
+    /// Off-thread check completed; carries the fetched release or an error string.
+    /// The `bool` mirrors the `manual` flag from the originating `CheckForUpdates`.
+    UpdateCheckResult(Result<crate::upgrade::Release, String>, bool),
+    /// User chose to skip the available release version.
+    SkipVersion,
+    /// User confirmed they want to apply the update.
+    StartUpdate,
+    /// Restart the app after a successful update.
+    RestartApp,
     ThemePickerSwitchTab,
     ThemePickerSelect(usize),
     ThemePickerSubmit,
