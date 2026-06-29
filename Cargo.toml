@@ -1,6 +1,6 @@
 [package]
 name = "grove"
-version = "0.25.0"
+version = "0.25.1"
 edition = "2021"
 description = "Grove — a worktree launchpad for AI coding agents"
 
@@ -28,7 +28,7 @@ anyhow = "1"
 dirs = "5"
 portable-pty = "0.9"
 vt100 = "0.15"
-arboard = "3"
+arboard = { version = "3", features = ["wayland-data-control"] }
 base64 = "0.22"
 keepawake = "0.6.0"
 iced = { version = "0.13", features = ["tokio", "advanced", "svg", "canvas"] }
