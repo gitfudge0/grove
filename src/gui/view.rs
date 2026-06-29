@@ -184,7 +184,7 @@ impl Grove {
         let tree_layer: Element<'_, Msg> = match agent_menu_top {
             Some((proj, wt, top, is_main)) => stack![
                 tree_area,
-                sidebar_agent_menu_overlay(proj, wt, top, is_main),
+                sidebar_agent_menu_overlay(proj, wt, top, is_main, &self.app.available_agents),
             ]
             .width(Length::Fill)
             .height(Length::Fill)
@@ -404,6 +404,7 @@ impl Grove {
                     has_run,
                     wt_rollup,
                     self.blink_tick,
+                    &self.app.available_agents,
                 );
                 col = col.push(
                     iced::widget::mouse_area(wt_el)
@@ -561,7 +562,16 @@ impl Grove {
         if no_sessions_expanded {
             for (pi, wi, pname, wname, is_main, count) in worktree_rows {
                 let hovered = self.hovered_wt == Some((pi, wi));
-                let row_el = worktree_activity_row(pi, wi, &pname, &wname, is_main, count, hovered);
+                let row_el = worktree_activity_row(
+                    pi,
+                    wi,
+                    &pname,
+                    &wname,
+                    is_main,
+                    count,
+                    hovered,
+                    &self.app.available_agents,
+                );
                 col = col.push(
                     iced::widget::mouse_area(row_el)
                         .on_enter(Msg::HoverWorktree(Some((pi, wi))))
@@ -602,6 +612,7 @@ impl Grove {
             coords,
             self.activity_state(s),
             self.blink_tick,
+            &self.app.available_agents,
         );
         iced::widget::mouse_area(row_el)
             .on_enter(Msg::HoverActivityRow(Some(si)))

@@ -154,8 +154,9 @@ pub fn split_start_button<'a>(
     wt: usize,
     is_main: bool,
     has_run: bool,
+    available: &[Agent],
 ) -> Element<'a, Msg> {
-    split_start_button_inner(proj, wt, is_main, 12.0, false, true, has_run)
+    split_start_button_inner(proj, wt, is_main, 12.0, false, true, has_run, available)
 }
 
 /// Flat variant: no per-chip background or border on hover (just an icon
@@ -166,18 +167,25 @@ pub fn split_start_button_flat<'a>(
     wt: usize,
     is_main: bool,
     icon_size: f32,
+    available: &[Agent],
 ) -> Element<'a, Msg> {
-    split_start_button_inner(proj, wt, is_main, icon_size, true, true, false)
+    split_start_button_inner(proj, wt, is_main, icon_size, true, true, false, available)
 }
 
 /// Flat spawn chips for an activity-stream session row: same agent / terminal
 /// launchers as `split_start_button_flat`, but the destructive delete-worktree
 /// chip is never shown. Deleting a worktree from a row that still has a live
 /// session is the wrong gesture; that action belongs to the worktree row.
-pub fn session_spawn_chips_flat<'a>(proj: usize, wt: usize, icon_size: f32) -> Element<'a, Msg> {
-    split_start_button_inner(proj, wt, false, icon_size, true, false, false)
+pub fn session_spawn_chips_flat<'a>(
+    proj: usize,
+    wt: usize,
+    icon_size: f32,
+    available: &[Agent],
+) -> Element<'a, Msg> {
+    split_start_button_inner(proj, wt, false, icon_size, true, false, false, available)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn split_start_button_inner<'a>(
     proj: usize,
     wt: usize,
@@ -186,6 +194,7 @@ fn split_start_button_inner<'a>(
     flat: bool,
     allow_delete: bool,
     show_run: bool,
+    available: &[Agent],
 ) -> Element<'a, Msg> {
     let make = |name, msg| {
         if flat {
@@ -194,35 +203,22 @@ fn split_start_button_inner<'a>(
             mini_action_btn(name, icon_size, c::FG_MUTE(), msg)
         }
     };
-    let claude = make(
-        "claude",
-        Msg::StartSession {
-            proj,
-            wt,
-            agent: Agent::Claude,
-        },
-    );
-    let codex = make(
-        "codex",
-        Msg::StartSession {
-            proj,
-            wt,
-            agent: Agent::Codex,
-        },
-    );
-    let opencode = make(
-        "opencode",
-        Msg::StartSession {
-            proj,
-            wt,
-            agent: Agent::OpenCode,
-        },
-    );
-    let terminal = make("term", Msg::StartTerminal { proj, wt });
 
-    let mut r = row![claude, codex, opencode, terminal]
+    let mut r = row![]
         .spacing(if flat { 6 } else { 2 })
         .align_y(iced::Alignment::Center);
+    // Only surface agents whose binary is actually on `$PATH` (see
+    // `Agent::available` / `App::available_agents`). Terminal is always
+    // available, so its chip is added unconditionally below.
+    for agent in [Agent::Claude, Agent::Codex, Agent::OpenCode] {
+        if available.contains(&agent) {
+            r = r.push(make(
+                agent.icon_name(),
+                Msg::StartSession { proj, wt, agent },
+            ));
+        }
+    }
+    r = r.push(make("term", Msg::StartTerminal { proj, wt }));
     // The run-script play button only appears when the project actually has a
     // `run` script configured.
     if show_run {
@@ -310,6 +306,7 @@ pub fn sidebar_agent_menu_overlay<'a>(
     wt: usize,
     top: f32,
     is_main: bool,
+    available: &[Agent],
 ) -> Element<'a, Msg> {
     let backdrop = button(Space::new(Length::Fill, Length::Fill))
         .on_press(Msg::CloseAgentMenu)
@@ -327,7 +324,7 @@ pub fn sidebar_agent_menu_overlay<'a>(
         Space::with_height(top),
         row![
             Space::with_width(Length::Fill),
-            agent_menu(proj, wt, is_main)
+            agent_menu(proj, wt, is_main, available)
         ]
         .padding(Padding {
             top: 0.0,
@@ -345,7 +342,7 @@ pub fn sidebar_agent_menu_overlay<'a>(
         .into()
 }
 
-fn agent_menu<'a>(proj: usize, wt: usize, is_main: bool) -> Element<'a, Msg> {
+fn agent_menu<'a>(proj: usize, wt: usize, is_main: bool, available: &[Agent]) -> Element<'a, Msg> {
     let item = |label: String, msg: Msg, danger: bool| {
         button(
             container(text(label).font(UI_FONT).size(11).color(if danger {
@@ -389,7 +386,14 @@ fn agent_menu<'a>(proj: usize, wt: usize, is_main: bool) -> Element<'a, Msg> {
         )
     };
 
-    let mut items = column![agent_item(Agent::Codex), agent_item(Agent::OpenCode)].spacing(0);
+    let mut items = column![].spacing(0);
+    // Same availability gate as the inline spawn chips: hide menu entries for
+    // agents whose binary isn't on `$PATH`.
+    for agent in [Agent::Codex, Agent::OpenCode] {
+        if available.contains(&agent) {
+            items = items.push(agent_item(agent));
+        }
+    }
     if !is_main {
         items = items
             .push(container(divider_h(c::BORDER())).padding(Padding::from([3, 0])))

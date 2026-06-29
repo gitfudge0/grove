@@ -6,6 +6,7 @@ use super::metrics::{ROW_H, SUBTITLE_H, UI_BOLD, UI_FONT};
 use super::palette as c;
 use super::state::Msg;
 use super::widgets::{action_mini, action_mini_danger, clickable_row, split_start_button};
+use crate::agent::Agent;
 use crate::session::{Session, SessionStatus};
 use iced::border::Radius;
 use iced::widget::{button, column, container, row, text, Space};
@@ -222,6 +223,7 @@ pub fn worktree_row_height(show_branch: bool) -> f32 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn worktree_row<'a>(
     proj: usize,
     wt: usize,
@@ -235,6 +237,7 @@ pub fn worktree_row<'a>(
     has_run: bool,
     rollup: Option<ActivityState>,
     tick: u32,
+    available: &[Agent],
 ) -> Element<'a, Msg> {
     // (Height logic shared with the agent-menu overlay positioning in view.rs
     // via `worktree_shows_branch` / `worktree_row_height`.)
@@ -317,7 +320,7 @@ pub fn worktree_row<'a>(
     });
 
     let actions: Element<'a, Msg> = if hovered {
-        row![split_start_button(proj, wt, is_main, has_run)]
+        row![split_start_button(proj, wt, is_main, has_run, available)]
             .spacing(6)
             .align_y(iced::Alignment::Center)
             .padding(Padding {
@@ -682,6 +685,7 @@ pub fn session_activity_row<'a>(
     spawn_coords: Option<(usize, usize)>,
     state: ActivityState,
     tick: u32,
+    available: &[Agent],
 ) -> Element<'a, Msg> {
     activity_row_inner(
         Some(idx),
@@ -697,6 +701,7 @@ pub fn session_activity_row<'a>(
         last_activity,
         hovered,
         spawn_coords,
+        available,
     )
 }
 
@@ -704,6 +709,7 @@ pub fn session_activity_row<'a>(
 /// `project / worktree` with a session-count subtitle. On hover the
 /// new-session action chips appear at the row's right edge; the label fills
 /// the remaining width and clips, so a long name never wraps to a second line.
+#[allow(clippy::too_many_arguments)]
 pub fn worktree_activity_row<'a>(
     proj: usize,
     wt: usize,
@@ -712,6 +718,7 @@ pub fn worktree_activity_row<'a>(
     is_main: bool,
     session_count: usize,
     hovered: bool,
+    available: &[Agent],
 ) -> Element<'a, Msg> {
     let label = format!("{project} / {worktree}");
 
@@ -759,7 +766,7 @@ pub fn worktree_activity_row<'a>(
     // (matching the session rows) rather than growing inline next to the count,
     // which previously pushed long labels into a second line.
     let right_chips: Element<'a, Msg> = if hovered {
-        super::widgets::split_start_button_flat(proj, wt, is_main, 10.0)
+        super::widgets::split_start_button_flat(proj, wt, is_main, 10.0, available)
     } else {
         Space::with_width(Length::Fixed(0.0)).into()
     };
@@ -809,6 +816,7 @@ fn activity_row_inner<'a>(
     last_activity: Option<Duration>,
     hovered: bool,
     spawn_coords: Option<(usize, usize)>,
+    available: &[Agent],
 ) -> Element<'a, Msg> {
     let agent_color = match state {
         ActivityState::Working | ActivityState::WaitingForInput => c::FG(),
@@ -862,7 +870,7 @@ fn activity_row_inner<'a>(
     // terminal), the same control the worktree rows reveal. Off-hover the time
     // shows, so the row keeps full label width at rest.
     let right_el: Element<'a, Msg> = match (hovered, spawn_coords) {
-        (true, Some((pi, wi))) => super::widgets::session_spawn_chips_flat(pi, wi, 10.0),
+        (true, Some((pi, wi))) => super::widgets::session_spawn_chips_flat(pi, wi, 10.0, available),
         _ => time_el,
     };
 
