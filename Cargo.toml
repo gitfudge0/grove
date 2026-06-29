@@ -1,6 +1,6 @@
 [package]
 name = "grove"
-version = "0.23.1"
+version = "0.24.0"
 edition = "2021"
 description = "Grove — a worktree launchpad for AI coding agents"
 
