@@ -408,17 +408,6 @@ impl Session {
 
     pub fn scroll(&mut self, up: bool, col: u16, row: u16) {
         self.last_scroll_at = Some(Instant::now());
-        // Tmux backend: the attached client is on the alternate screen, so the
-        // real history is in tmux's copy-mode buffer, not grove's vt100
-        // scrollback. Drive copy-mode directly; the re-render arrives through
-        // the reader thread, which flags `dirty`.
-        if let SessionBackend::Tmux { name } = &self.backend {
-            tmux::scroll(name, up, SCROLL_STEP);
-            if up {
-                self.tmux_copy_mode = true;
-            }
-            return;
-        }
 
         let mut p = match self.parser.lock() {
             Ok(p) => p,
@@ -426,22 +415,37 @@ impl Session {
         };
 
         if p.screen().mouse_protocol_mode() == MouseProtocolMode::None {
-            // App doesn't want the mouse — drive our own scrollback view.
-            let cur = p.screen().scrollback();
-            // Cap at the configured scrollback size. vt100 0.15.2's
-            // `set_scrollback` clamps to the actually-filled scrollback
-            // internally, so reading `scrollback()` back gives the effective
-            // offset (and avoids the `rows_len - offset` underflow in
-            // `visible_rows` when the buffer isn't full yet).
-            let target = if up {
-                (cur + SCROLL_STEP).min(SCROLLBACK_LINES)
-            } else {
-                cur.saturating_sub(SCROLL_STEP)
-            };
-            if target != cur {
-                p.set_scrollback(target);
-                if p.screen().scrollback() != cur {
-                    self.dirty.store(true, Ordering::Relaxed);
+            // Inner app doesn't handle the mouse — scroll the terminal view.
+            match &self.backend {
+                SessionBackend::Tmux { name } => {
+                    // The agent runs on the alternate screen inside tmux, so
+                    // grove's vt100 scrollback is empty. Drive tmux copy-mode
+                    // instead; the re-render arrives through the reader thread.
+                    let name = name.clone();
+                    drop(p);
+                    tmux::scroll(&name, up, SCROLL_STEP);
+                    if up {
+                        self.tmux_copy_mode = true;
+                    }
+                }
+                SessionBackend::Native => {
+                    // Cap at the configured scrollback size. vt100 0.15.2's
+                    // `set_scrollback` clamps to the actually-filled scrollback
+                    // internally, so reading `scrollback()` back gives the
+                    // effective offset (and avoids the `rows_len - offset`
+                    // underflow in `visible_rows` when the buffer isn't full).
+                    let cur = p.screen().scrollback();
+                    let target = if up {
+                        (cur + SCROLL_STEP).min(SCROLLBACK_LINES)
+                    } else {
+                        cur.saturating_sub(SCROLL_STEP)
+                    };
+                    if target != cur {
+                        p.set_scrollback(target);
+                        if p.screen().scrollback() != cur {
+                            self.dirty.store(true, Ordering::Relaxed);
+                        }
+                    }
                 }
             }
             return;
@@ -450,7 +454,10 @@ impl Session {
         let encoding = p.screen().mouse_protocol_encoding();
         drop(p);
 
-        // Forward a wheel event the way the inner app expects to receive it.
+        // Inner app has mouse reporting — forward the wheel event to it.
+        // For the tmux backend, writing to the PTY reaches the agent through
+        // tmux's input forwarding (unaffected by the `mouse off` session option,
+        // which only suppresses tmux's own terminal mouse interception).
         let cb: u32 = if up { 64 } else { 65 };
         self.send(&encode_mouse(encoding, cb, col, row, true));
     }
