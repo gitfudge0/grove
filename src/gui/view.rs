@@ -79,9 +79,18 @@ fn is_in_progress_title(title: &str) -> bool {
 impl Grove {
     pub fn view(&self) -> Element<'_, Msg> {
         let body = if self.app.chrome_visible {
+            let workspace_row: Element<'_, Msg> = if self.grid_view {
+                // Grid mode: sidebar is hidden, workspace fills the full width.
+                self.workspace()
+            } else {
+                row![self.sidebar(), self.sidebar_resize_handle(), self.workspace()]
+                    .height(Length::Fill)
+                    .width(Length::Fill)
+                    .into()
+            };
             column![
                 self.appbar(),
-                row![self.sidebar(), self.sidebar_resize_handle(), self.workspace()]
+                container(workspace_row)
                     .height(Length::Fill)
                     .width(Length::Fill),
                 self.statusbar(),
@@ -139,7 +148,35 @@ impl Grove {
         } else {
             cog
         };
-        let right = row![cog]
+        let grid_color = if self.grid_view { c::CYAN() } else { c::FG_MUTE() };
+        let grid_bg = if self.grid_view {
+            Some(Background::Color(c::BG_HL()))
+        } else {
+            None
+        };
+        let grid_btn = button(
+            container(icon("grid", 13.0, grid_color))
+                .center_x(22)
+                .center_y(22),
+        )
+        .on_press(Msg::ToggleGridView)
+        .padding(0)
+        .style(move |_, status| button::Style {
+            background: if matches!(status, button::Status::Hovered) {
+                Some(Background::Color(c::BG_HOVER()))
+            } else {
+                grid_bg
+            },
+            text_color: grid_color,
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: Radius::from(4.0),
+            },
+            shadow: Shadow::default(),
+        });
+
+        let right = row![grid_btn, cog]
             .spacing(4)
             .padding(Padding::from([0, 16]))
             .align_y(iced::Alignment::Center);
@@ -769,7 +806,67 @@ impl Grove {
     }
 
     // ── workspace ─────────────────────────────────────────────────────────
+    fn grid_workspace(&self) -> Element<'_, Msg> {
+        use super::metrics::grid_layout;
+
+        let n = self.tile_order.len();
+        if n == 0 {
+            return empty_workspace();
+        }
+        let (grid_cols, grid_rows) = grid_layout(n);
+
+        let mut rows_col = column![].spacing(1);
+        for row_idx in 0..grid_rows {
+            let mut row_el = row![].spacing(1).height(Length::Fill);
+            for col_idx in 0..grid_cols {
+                let tile_idx = row_idx * grid_cols + col_idx;
+                let el: Element<'_, Msg> = if tile_idx < n {
+                    let si = self.tile_order[tile_idx];
+                    if si < self.app.sessions.len() {
+                        self.grid_tile(tile_idx, si, &self.app.sessions[si])
+                    } else {
+                        // Stale index: render blank until KillSession prunes tile_order.
+                        container(Space::new(Length::Fill, Length::Fill))
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .style(|_| container::Style {
+                                background: Some(Background::Color(c::BG())),
+                                ..Default::default()
+                            })
+                            .into()
+                    }
+                } else {
+                    // Empty slot (e.g., 3 sessions in a 2×2 grid).
+                    container(Space::new(Length::Fill, Length::Fill))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .style(|_| container::Style {
+                            background: Some(Background::Color(c::BG())),
+                            ..Default::default()
+                        })
+                        .into()
+                };
+                row_el = row_el.push(el);
+            }
+            rows_col = rows_col.push(row_el);
+        }
+
+        // Inter-tile gaps: set the container background to BORDER_SOFT;
+        // 1px spacing in column/row lets that background show through.
+        container(rows_col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(c::BORDER_SOFT())),
+                ..Default::default()
+            })
+            .into()
+    }
+
     fn workspace(&self) -> Element<'_, Msg> {
+        if self.grid_view {
+            return self.grid_workspace();
+        }
         if self.terminal_tab() {
             return self.terminal_workspace();
         }
@@ -1338,6 +1435,178 @@ impl Grove {
                 ..Default::default()
             })
             .into()
+    }
+
+    fn grid_tile(&self, tile_order_idx: usize, si: usize, s: &Session) -> Element<'_, Msg> {
+        use super::metrics::TILE_HEAD_H;
+
+        let focused = self.grid_focused == Some(si);
+        let is_drag_src = self
+            .grid_drag
+            .as_ref()
+            .map_or(false, |d| d.source_idx == tile_order_idx);
+        let is_drop_zone = self.grid_drag.as_ref().map_or(false, |d| {
+            d.hover_idx == tile_order_idx && d.source_idx != tile_order_idx
+        });
+
+        // ── tile header ────────────────────────────────────────────────
+        let running = matches!(
+            *s.status.lock().unwrap_or_else(|e| e.into_inner()),
+            SessionStatus::Running
+        );
+        let dot_color = if running { c::GREEN() } else { c::FG_MUTE() };
+        let tile_btn = |icon_name, msg| {
+            button(
+                container(icon(icon_name, 10.0, c::FG_MUTE()))
+                    .center_x(18)
+                    .center_y(18),
+            )
+            .on_press(msg)
+            .padding(0)
+            .style(|_, _| button::Style {
+                background: None,
+                text_color: c::FG_MUTE(),
+                border: Border::default(),
+                shadow: Shadow::default(),
+            })
+        };
+        let confirming_kill = self.pending_kill == Some(si);
+        let kill_btn = button(
+            container(icon("trash", 10.0, if confirming_kill { c::RED() } else { c::FG_MUTE() }))
+                .center_x(18)
+                .center_y(18),
+        )
+        .on_press(if confirming_kill {
+            Msg::KillSession(si)
+        } else {
+            Msg::RequestKillSession(si)
+        })
+        .padding(0)
+        .style(move |_, _| button::Style {
+            background: None,
+            text_color: if confirming_kill { c::RED() } else { c::FG_MUTE() },
+            border: Border::default(),
+            shadow: Shadow::default(),
+        });
+        let header_row = row![
+            dot(dot_color),
+            text(s.agent.label()).font(UI_BOLD).size(10).color(c::FG_DIM()),
+            text("·").size(10).color(c::FG_MUTE()),
+            text(s.branch.clone()).size(10).color(c::FG_MUTE()),
+            Space::with_width(Length::Fill),
+            tile_btn("zen", Msg::GridTileZen(si)),
+            kill_btn,
+        ]
+        .spacing(4)
+        .align_y(iced::Alignment::Center)
+        .padding(Padding::from([0, 6]));
+
+        let header_bg = if focused { c::BG_HL() } else { c::BG_STRIP() };
+        let header = iced::widget::mouse_area(
+            container(header_row)
+                .height(TILE_HEAD_H)
+                .align_y(iced::Alignment::Center)
+                .width(Length::Fill)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(header_bg)),
+                    ..Default::default()
+                }),
+        )
+        .on_press(Msg::GridDragStart(tile_order_idx));
+
+        // ── tile body (header + PTY) ───────────────────────────────────
+        let tile_body: Element<'_, Msg> = column![
+            header,
+            divider_h(c::BORDER_SOFT()),
+            // Reuse the existing pty() renderer with PtyPane::Tile(si).
+            // Selection returns None automatically (focused_input_pane won't
+            // match PtyPane::Tile) — that's the intentional no-selection policy.
+            self.pty(PtyPane::Tile(si), s),
+        ]
+        .height(Length::Fill)
+        .into();
+
+        // Drop-zone overlay: cyan inset when this tile is the drag target.
+        let with_drop: Element<'_, Msg> = if is_drop_zone {
+            stack![
+                tile_body,
+                container(Space::new(Length::Fill, Length::Fill))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(|_| container::Style {
+                        border: Border {
+                            color: c::CYAN(),
+                            width: 1.5,
+                            radius: Radius::from(0.0),
+                        },
+                        background: Some(Background::Color(Color {
+                            a: 0.06,
+                            ..c::CYAN()
+                        })),
+                        ..Default::default()
+                    }),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+        } else {
+            tile_body
+        };
+
+        // Drag-source dim: semi-transparent BG overlay to show "lifted" state.
+        let with_dim: Element<'_, Msg> = if is_drag_src {
+            stack![
+                with_drop,
+                container(Space::new(Length::Fill, Length::Fill))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(|_| {
+                        let mut bg = c::BG();
+                        bg.a = 0.72;
+                        container::Style {
+                            background: Some(Background::Color(bg)),
+                            ..Default::default()
+                        }
+                    }),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+        } else {
+            with_drop
+        };
+
+        // Waiting-for-input: amber border blinking at ~1Hz (same cadence as the
+        // activity "?" glyph). Overrides the focused-cyan border — attention wins.
+        use super::activity::ActivityState;
+        let waiting = matches!(self.activity_state(s), ActivityState::WaitingForInput);
+        let blink_on = self.blink_tick % 16 < 8;
+        let (border_color, border_width) = if waiting {
+            (if blink_on { c::AMBER() } else { Color::TRANSPARENT }, 1.5f32)
+        } else if focused {
+            (c::CYAN(), 1.5f32)
+        } else {
+            (Color::TRANSPARENT, 0.0)
+        };
+
+        // on_enter fires even while a button is held — the GridDragHover handler
+        // ignores it when no drag is active.
+        iced::widget::mouse_area(
+            container(with_dim)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(c::BG())),
+                    border: Border {
+                        color: border_color,
+                        width: border_width,
+                        radius: Radius::from(0.0),
+                    },
+                    ..Default::default()
+                }),
+        )
+        .on_enter(Msg::GridDragHover(tile_order_idx))
+        .into()
     }
 
     /// The pane that currently owns keyboard/scroll/selection input. Mirrors the

@@ -7,8 +7,8 @@ use super::metrics::{
     TERM_PANEL_PORTION, TERM_PANEL_PORTION_MAX, TERM_PANEL_PORTION_MIN, TERM_PANEL_PORTION_STEP,
 };
 use super::state::{
-    AbsCell, ChangelogState, FocusedPane, Grove, Msg, PtyCell, PtyDrag, PtyPane, ScriptField,
-    ScriptsEditorState, SidebarDrag, SidebarView, ToolStatus, UpgradeState,
+    AbsCell, ChangelogState, FocusedPane, GridDrag, Grove, Msg, PtyCell, PtyDrag, PtyPane,
+    ScriptField, ScriptsEditorState, SidebarDrag, SidebarView, ToolStatus, UpgradeState,
 };
 use crate::agent::Agent;
 use crate::app::{App, InputKind, Modal, Pane};
@@ -79,6 +79,11 @@ impl Grove {
             last_badge: 0,
             sidebar_width,
             sidebar_drag: None,
+            grid_view: false,
+            tile_order: Vec::new(),
+            grid_focused: None,
+            grid_drag: None,
+            grid_view_before_zen: false,
             last_divider_press: None,
             term_panel_dragging: false,
             last_term_divider_press: None,
@@ -162,6 +167,15 @@ impl Grove {
                 Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
                     Some(Msg::TermPanelDragEnd)
                 }
+                _ => None,
+            });
+            subs.push(drag);
+        }
+        if self.grid_drag.is_some() {
+            let drag = event::listen_with(|ev, _status, _| match ev {
+                Event::Mouse(iced::mouse::Event::ButtonReleased(
+                    iced::mouse::Button::Left,
+                )) => Some(Msg::GridDragEnd),
                 _ => None,
             });
             subs.push(drag);
@@ -470,6 +484,27 @@ impl Grove {
                             self.app.active_session = Some(a - 1);
                         }
                     }
+                    if self.grid_view || self.grid_view_before_zen {
+                        // Remove the killed session index from tile_order; shift
+                        // higher indices down to match the new sessions array.
+                        self.tile_order.retain_mut(|si| {
+                            if *si == i { return false; }
+                            if *si > i { *si -= 1; }
+                            true
+                        });
+                        self.grid_focused = match self.grid_focused {
+                            Some(si) if si == i => None,
+                            Some(si) if si > i => Some(si - 1),
+                            other => other,
+                        };
+                        if self.grid_view {
+                            if self.tile_order.is_empty() {
+                                // Auto-exit grid when all sessions are gone.
+                                self.grid_view = false;
+                            }
+                            self.refresh_pty_viewport();
+                        }
+                    }
                 }
             }
             Msg::KeyPress(key, modified_key, mods) => {
@@ -495,6 +530,13 @@ impl Grove {
                 }
             }
             Msg::PtyMouseDown(pane, x, y) => {
+                if let PtyPane::Tile(si) = pane {
+                    // Focus this tile; no selection tracking in grid view.
+                    self.grid_focused = Some(si);
+                    self.app.active_session = Some(si);
+                    self.pty_selection = None;
+                    return Task::none();
+                }
                 self.pending_kill = None;
                 // Clicking a PTY focuses its pane (so subsequent keystrokes,
                 // scroll, and this very selection route there). Honored only
@@ -514,6 +556,10 @@ impl Grove {
                 }
             }
             Msg::PtyMouseDrag(pane, x, y) => {
+                if matches!(pane, PtyPane::Tile(_)) {
+                    // ponytail: no text selection in tiles; drag is a no-op here.
+                    return Task::none();
+                }
                 // Ignore drags from the pane that doesn't own the active
                 // selection (the canvas captures the drag, but focus — and thus
                 // the geometry helpers — belong to the pane the press landed in).
@@ -529,6 +575,14 @@ impl Grove {
                 }
             }
             Msg::PtyScroll { pane, up, x, y } => {
+                if let PtyPane::Tile(si) = pane {
+                    // Scroll the specific tile under the cursor, not just the focused one.
+                    if let Some(s) = self.app.sessions.get_mut(si) {
+                        let cell = pixel_to_cell(x, y);
+                        s.scroll(up, cell.col as u16, cell.row as u16);
+                    }
+                    return Task::none();
+                }
                 // Scrolling over a PTY focuses it too, so the wheel always
                 // drives the terminal under the cursor — but don't hand focus
                 // to a panel with no shell: input routed there would fall back
@@ -546,6 +600,11 @@ impl Grove {
             }
             Msg::ToggleZen => {
                 self.app.chrome_visible = !self.app.chrome_visible;
+                if self.app.chrome_visible && self.grid_view_before_zen {
+                    // Exiting zen that was entered from grid view: restore grid.
+                    self.grid_view = true;
+                    self.grid_view_before_zen = false;
+                }
                 self.refresh_pty_viewport();
             }
             Msg::ZoomIn => self.adjust_ui_zoom(PTY_ZOOM_STEP),
@@ -679,6 +738,11 @@ impl Grove {
                     let before = self.session_keys();
                     self.app.run_worktree_script(&w.path);
                     self.resize_new_sessions(&before);
+                    // If the grid is open, append the new session index so it appears.
+                    if self.grid_view && self.app.sessions.len() > before.len() {
+                        self.tile_order.push(self.app.sessions.len() - 1);
+                        self.refresh_pty_viewport();
+                    }
                     self.collapsed_wt.remove(&(proj, wt));
                 }
             }
@@ -898,6 +962,62 @@ impl Grove {
             Msg::OnbThemeTab => self.app.onboard_theme_switch_tab(),
             Msg::OnbThemeSelect(i) => self.app.onboard_theme_select(i),
             Msg::OnbAgentSelect(i) => self.app.onboard_agent_select(i),
+            Msg::ToggleGridView => {
+                self.grid_view = !self.grid_view;
+                if self.grid_view {
+                    self.tile_order = (0..self.app.sessions.len()).collect();
+                    self.grid_focused = None;
+                    self.grid_drag = None;
+                } else {
+                    // Carry the focused tile into the normal workspace.
+                    if let Some(si) = self.grid_focused {
+                        self.app.active_session = Some(si);
+                    }
+                    self.tile_order.clear();
+                    self.grid_focused = None;
+                    self.grid_drag = None;
+                }
+                self.refresh_pty_viewport();
+            }
+            Msg::GridDragStart(tile_idx) => {
+                if tile_idx >= self.tile_order.len() {
+                    return Task::none();
+                }
+                let si = self.tile_order[tile_idx];
+                self.grid_focused = Some(si);
+                self.app.active_session = Some(si);
+                self.grid_drag = Some(GridDrag {
+                    source_idx: tile_idx,
+                    hover_idx: tile_idx,
+                });
+            }
+            Msg::GridDragHover(tile_idx) => {
+                if let Some(drag) = &mut self.grid_drag {
+                    drag.hover_idx = tile_idx;
+                }
+                // No-op when no drag is active (on_enter always fires).
+            }
+            Msg::GridDragEnd => {
+                if let Some(drag) = self.grid_drag.take() {
+                    let src = drag.source_idx;
+                    let dst = drag.hover_idx;
+                    if src != dst
+                        && src < self.tile_order.len()
+                        && dst < self.tile_order.len()
+                    {
+                        self.tile_order.swap(src, dst);
+                    }
+                }
+            }
+            Msg::GridTileZen(si) => {
+                self.app.active_session = Some(si);
+                self.grid_focused = Some(si);
+                // Temporarily exit grid so zen has a single-session workspace.
+                self.grid_view = false;
+                self.grid_view_before_zen = true;
+                self.app.chrome_visible = false;
+                self.refresh_pty_viewport();
+            }
         }
         Task::none()
     }
@@ -945,6 +1065,11 @@ impl Grove {
                 let before = self.session_keys();
                 self.spawn(proj, 0, agent);
                 self.resize_new_sessions(&before);
+                // If the grid is open, append the new session index so it appears.
+                if self.grid_view && self.app.sessions.len() > before.len() {
+                    self.tile_order.push(self.app.sessions.len() - 1);
+                    self.refresh_pty_viewport();
+                }
                 self.rebuild_wt_cache();
             }
             Ok(None) => {}
@@ -1229,6 +1354,20 @@ impl Grove {
     }
 
     fn refresh_pty_viewport(&mut self) {
+        if self.grid_view {
+            let n = self.tile_order.len().max(1);
+            let (tile_rows, tile_cols) = super::metrics::grid_tile_dims(
+                self.window_size.width,
+                self.window_size.height,
+                self.ui_zoom,
+                n,
+            );
+            for s in &mut self.app.sessions {
+                s.resize(tile_rows, tile_cols);
+            }
+            self.invalidate_pty_render_cache();
+            return;
+        }
         let (rows, cols) = compute_pty_dims(
             self.window_size.width,
             self.window_size.height,
@@ -1319,6 +1458,11 @@ impl Grove {
         let before = self.session_keys();
         self.app.picker_submit();
         self.resize_new_sessions(&before);
+        // If the grid is open, append the new session index so it appears.
+        if self.grid_view && self.app.sessions.len() > before.len() {
+            self.tile_order.push(self.app.sessions.len() - 1);
+            self.refresh_pty_viewport();
+        }
         self.rebuild_wt_cache();
     }
 
@@ -1600,6 +1744,11 @@ impl Grove {
             self.app.modal = Modal::Message(format!("input failed: {e}"));
         }
         self.resize_new_sessions(&before);
+        // If the grid is open, append the new session index so it appears.
+        if self.grid_view && self.app.sessions.len() > before.len() {
+            self.tile_order.push(self.app.sessions.len() - 1);
+            self.refresh_pty_viewport();
+        }
         self.rebuild_wt_cache();
     }
 
@@ -1609,6 +1758,11 @@ impl Grove {
             self.app.modal = Modal::Message(format!("action failed: {e}"));
         }
         self.resize_new_sessions(&before);
+        // If the grid is open, append the new session index so it appears.
+        if self.grid_view && self.app.sessions.len() > before.len() {
+            self.tile_order.push(self.app.sessions.len() - 1);
+            self.refresh_pty_viewport();
+        }
         // The teardown PTY lives outside `app.sessions`, so resize it directly.
         if let Some(s) = self.app.teardown.as_mut().and_then(|t| t.session.as_mut()) {
             s.resize(self.pty_rows, self.pty_sess_cols);
@@ -2013,6 +2167,7 @@ impl Grove {
         self.focused_pane = match pane {
             PtyPane::Agent => FocusedPane::Agent,
             PtyPane::Panel => FocusedPane::Panel,
+            PtyPane::Tile(_) => return, // tile focus handled via grid_focused
         };
     }
 
@@ -2020,6 +2175,9 @@ impl Grove {
     /// scrolling, and selection target. The home terminal when the terminal tab
     /// is active, otherwise the active worktree session.
     pub(super) fn focused_session(&self) -> Option<&Session> {
+        if self.grid_view {
+            return self.grid_focused.and_then(|si| self.app.sessions.get(si));
+        }
         if self.terminal_tab() {
             self.app.active_home_terminal()
         } else if self.panel_focused() {
@@ -2041,6 +2199,11 @@ impl Grove {
     }
 
     pub(super) fn focused_session_mut(&mut self) -> Option<&mut Session> {
+        if self.grid_view {
+            return self
+                .grid_focused
+                .and_then(move |si| self.app.sessions.get_mut(si));
+        }
         if self.terminal_tab() {
             self.app
                 .active_terminal

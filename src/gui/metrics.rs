@@ -51,6 +51,13 @@ pub const PTY_ZOOM_MIN: f32 = 0.6;
 pub const PTY_ZOOM_MAX: f32 = 2.0;
 pub const PTY_ZOOM_STEP: f32 = 0.1;
 
+/// Height of the tile header bar in grid view.
+pub const TILE_HEAD_H: f32 = 22.0;
+/// Horizontal padding inside each tile's PTY container (matches `pty()` padding: 16*2).
+pub const TILE_PTY_PAD_W: f32 = 32.0;
+/// Vertical padding inside each tile's PTY container (matches `pty()` padding: 12*2).
+pub const TILE_PTY_PAD_H: f32 = 24.0;
+
 #[derive(Clone, Copy)]
 pub struct PtyMetrics {
     pub cell_w: f32,
@@ -318,6 +325,35 @@ pub fn pty_cols_for_fraction(
     (region_w / CELL_W).max(10.0) as u16
 }
 
+/// Grid dimensions `(cols, rows)` for `n` sessions.
+/// Formula: cols = ceil(sqrt(n)).clamp(1,4), rows = ceil(n/cols).min(4).
+pub fn grid_layout(n: usize) -> (usize, usize) {
+    let n = n.max(1);
+    let cols = ((n as f64).sqrt().ceil() as usize).clamp(1, 4);
+    let rows = ((n + cols - 1) / cols).min(4);
+    (cols, rows)
+}
+
+/// Per-tile PTY dimensions `(rows, cols)` for a grid of `n` sessions.
+/// Grid mode hides the sidebar, so the full window width is available.
+pub fn grid_tile_dims(win_w: f32, win_h: f32, zoom: f32, n: usize) -> (u16, u16) {
+    let (grid_cols, grid_rows) = grid_layout(n);
+    let zoom = zoom.max(0.1);
+    let logical_w = win_w / zoom;
+    let logical_h = win_h / zoom;
+    // Grid mode keeps appbar + statusbar but hides the sidebar.
+    let workspace_h = logical_h - APPBAR_H - STATUS_H;
+    let workspace_w = logical_w;
+    // Subtract 1px inter-tile gaps, tile header, and pty container padding.
+    let tile_h = (workspace_h - (grid_rows as f32 - 1.0)) / grid_rows as f32;
+    let tile_w = (workspace_w - (grid_cols as f32 - 1.0)) / grid_cols as f32;
+    let pty_h = tile_h - TILE_HEAD_H - TILE_PTY_PAD_H;
+    let pty_w = tile_w - TILE_PTY_PAD_W;
+    let rows = (pty_h / CELL_H).max(4.0) as u16;
+    let cols = (pty_w / CELL_W).max(10.0) as u16;
+    (rows, cols)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -494,5 +530,32 @@ mod tests {
         assert!(mono_covers('\u{f015}'));
         // CJK is absent from IBM Plex Mono, so it must route to fallback.
         assert!(!mono_covers('好'));
+    }
+
+    #[test]
+    fn grid_layout_picks_sensible_dimensions() {
+        use super::grid_layout;
+        assert_eq!(grid_layout(1),  (1, 1));
+        assert_eq!(grid_layout(2),  (2, 1));
+        assert_eq!(grid_layout(3),  (2, 2));
+        assert_eq!(grid_layout(4),  (2, 2));
+        assert_eq!(grid_layout(5),  (3, 2));
+        assert_eq!(grid_layout(6),  (3, 2));
+        assert_eq!(grid_layout(7),  (3, 3));
+        assert_eq!(grid_layout(9),  (3, 3));
+        assert_eq!(grid_layout(10), (4, 3));
+        assert_eq!(grid_layout(16), (4, 4));
+        assert_eq!(grid_layout(20), (4, 4)); // capped at 4×4
+    }
+
+    #[test]
+    fn grid_tile_dims_shrink_with_more_sessions() {
+        use super::grid_tile_dims;
+        let (r2, c2) = grid_tile_dims(1280.0, 800.0, 1.0, 2);
+        let (r4, c4) = grid_tile_dims(1280.0, 800.0, 1.0, 4);
+        assert!(r2 >= r4, "more sessions → smaller tiles");
+        assert!(c2 >= c4, "more sessions → fewer cols per tile");
+        assert!(r4 >= 4,  "never below floor");
+        assert!(c4 >= 10, "never below floor");
     }
 }

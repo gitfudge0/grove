@@ -136,6 +136,16 @@ pub struct Grove {
     /// While set, a global mouse subscription feeds cursor moves and the
     /// button-release that ends the drag.
     pub sidebar_drag: Option<SidebarDrag>,
+    pub grid_view: bool,
+    /// Session indices in display order. Built on grid entry; kept in sync
+    /// as sessions spawn or die while the grid is open.
+    pub tile_order: Vec<usize>,
+    /// Session index with keyboard focus (`app.sessions[i]`). `None` until
+    /// a tile is clicked. All keystrokes route here while set.
+    pub grid_focused: Option<usize>,
+    pub grid_drag: Option<GridDrag>,
+    /// True when zen was entered from grid view; exiting zen re-enters grid.
+    pub grid_view_before_zen: bool,
     /// Timestamp of the last divider press, for double-click reset detection.
     pub last_divider_press: Option<std::time::Instant>,
     /// Whether the terminal-panel split divider is being dragged. While true, a
@@ -189,6 +199,15 @@ pub struct SidebarDrag {
     pub start_width: f32,
 }
 
+/// Active tile-reorder drag in grid view.
+#[derive(Clone, Copy, Debug)]
+pub struct GridDrag {
+    /// Index into `tile_order` of the tile being dragged.
+    pub source_idx: usize,
+    /// Index into `tile_order` of the tile currently under the cursor.
+    pub hover_idx: usize,
+}
+
 /// Identifies which on-screen PTY a mouse event originated from. The home
 /// terminal tab and the single full-width agent view both use `Agent`; only the
 /// right-docked slide-over panel uses `Panel`.
@@ -196,6 +215,8 @@ pub struct SidebarDrag {
 pub enum PtyPane {
     Agent,
     Panel,
+    /// Grid-view tile; carries the index into `app.sessions`.
+    Tile(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -507,4 +528,16 @@ pub enum Msg {
     OnbThemeSelect(usize),
     /// Select the agent at this index in the session step.
     OnbAgentSelect(usize),
+    ToggleGridView,
+    /// Tile header was pressed; starts a drag and focuses the tile.
+    /// Argument is an index into `tile_order`.
+    GridDragStart(usize),
+    /// Cursor entered a tile while a drag is live.
+    /// Argument is an index into `tile_order`.
+    GridDragHover(usize),
+    /// Left button released: commit the drag (swap if source ≠ hover).
+    GridDragEnd,
+    /// ⤢ expand clicked in tile header: enter zen for this session and
+    /// remember to return to grid on exit.
+    GridTileZen(usize),
 }
