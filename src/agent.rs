@@ -55,12 +55,13 @@ impl Agent {
         }
     }
 
-    pub fn launch_args(self) -> Vec<String> {
+    pub fn launch_args(self, skip_permissions: bool) -> Vec<String> {
         match self {
-            Agent::Claude => vec!["--dangerously-skip-permissions".into()],
-            Agent::Codex => vec![],
-            Agent::OpenCode => vec![],
-            Agent::Terminal => vec![],
+            Agent::Claude if skip_permissions => vec!["--dangerously-skip-permissions".into()],
+            Agent::Codex if skip_permissions => {
+                vec!["--dangerously-bypass-approvals-and-sandbox".into()]
+            }
+            _ => vec![],
         }
     }
 

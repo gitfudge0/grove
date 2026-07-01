@@ -12,15 +12,22 @@ permissions:
 
 jobs:
   bundle:
-    name: Bundle (${{ matrix.os }})
+    name: Bundle (${{ matrix.os }}-${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # macOS Apple Silicon (arm64) — macos-latest is an arm64 runner.
           - os: macos
+            arch: arm64
             runner: macos-latest
+          # macOS Intel (x86_64) — macos-13 is the last Intel runner.
+          - os: macos
+            arch: x86_64
+            runner: macos-13
           - os: linux
+            arch: amd64
             runner: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,8 +42,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ matrix.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ matrix.os }}-cargo-
+          key: ${{ matrix.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-${{ matrix.arch }}-cargo-
 
       - name: Install Linux build deps
         if: matrix.os == 'linux'
@@ -65,8 +72,15 @@ jobs:
           if [ "${{ matrix.os }}" = "macos" ]; then
             APP="$(find target/release/bundle/osx -maxdepth 1 -name '*.app' | head -n1)"
             [ -n "$APP" ] || { echo "no .app produced" >&2; exit 1; }
+            # Ad-hoc sign: an unsigned .app downloaded via browser gets the
+            # com.apple.quarantine xattr, and Gatekeeper reports totally
+            # unsigned + quarantined apps as "damaged" rather than the usual
+            # "unidentified developer" prompt. Ad-hoc signing (no cert/Apple
+            # account needed) gives it a valid signature so Gatekeeper falls
+            # back to the normal unidentified-developer flow.
+            codesign --force --deep -s - "$APP"
             # Wrap the .app in a .dmg for distribution.
-            DMG="$OUT/Grove-${VERSION}-macos.dmg"
+            DMG="$OUT/Grove-${VERSION}-macos-${{ matrix.arch }}.dmg"
             hdiutil create -volname "Grove" -srcfolder "$APP" -ov -format UDZO "$DMG"
             echo "Built $DMG"
           else

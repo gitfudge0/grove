@@ -194,6 +194,18 @@ pub enum Modal {
         wt_path: String,
         sel: usize,
     },
+    /// Agent View "+ New session" launcher: three Miller columns
+    /// (project → worktree → agent). `proj` indexes `store.projects`; `wt`
+    /// indexes the selected project's worktrees (`app.worktrees` when it is the
+    /// active project, else `Grove::wt_cache[proj]`); `agent` indexes
+    /// `available_agents`; `col` is the focused column (0=project 1=worktree
+    /// 2=agent). Reachable only while the grid is open.
+    SessionLauncher {
+        proj: usize,
+        wt: usize,
+        agent: usize,
+        col: u8,
+    },
     ThemePicker {
         sel_dark: usize,
         sel_light: usize,
@@ -441,6 +453,21 @@ impl App {
         Ok(())
     }
 
+    pub fn skip_permissions_enabled(&self) -> bool {
+        self.store.dangerously_skip_permissions_enabled.unwrap_or(true)
+    }
+
+    pub fn set_skip_permissions_enabled(&mut self, enabled: bool) -> Result<()> {
+        self.store.dangerously_skip_permissions_enabled = Some(enabled);
+        storage::save(&self.store)?;
+        self.status = if enabled {
+            "permission bypass enabled for new sessions".into()
+        } else {
+            "permission bypass disabled for new sessions".into()
+        };
+        Ok(())
+    }
+
     fn discover_tmux_sessions(&mut self) {
         if !self.tmux_available {
             return;
@@ -586,8 +613,8 @@ impl App {
             .filter(|a| self.available_agents.contains(a));
         if let Some(agent) = default {
             let label = path_basename(&wt_path);
-            let args = agent.launch_args();
-            self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path);
+            let args = agent.launch_args(self.skip_permissions_enabled());
+            self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path, false);
         } else {
             if let Some(saved) = self.store.default_agent {
                 if !self.available_agents.contains(&saved) {
@@ -643,7 +670,14 @@ impl App {
         proj_block.last().unwrap() + 1
     }
 
-    /// Spawn an agent in a new embedded PTY session and focus it.
+    /// Spawn an agent in a new embedded PTY session and focus it. Returns the
+    /// index in `self.sessions` where the new session was inserted, or `None`
+    /// if the spawn failed (an error modal is set).
+    ///
+    /// When `at_end` is false the session is grouped by project and sorted by
+    /// worktree (so the insert can be mid-vector). When `at_end` is true it is
+    /// appended after all existing sessions — used by the Agent View launcher
+    /// so a freshly launched session always lands last in the grid.
     pub fn spawn_session(
         &mut self,
         label: String,
@@ -652,7 +686,8 @@ impl App {
         agent: Agent,
         args: Vec<String>,
         cwd: &str,
-    ) {
+        at_end: bool,
+    ) -> Option<usize> {
         match Session::spawn(
             label.clone(),
             project,
@@ -663,13 +698,19 @@ impl App {
             self.use_tmux(),
         ) {
             Ok(s) => {
-                let at = self.session_insert_index(&s);
+                let at = if at_end {
+                    self.sessions.len()
+                } else {
+                    self.session_insert_index(&s)
+                };
                 self.sessions.insert(at, s);
                 self.active_session = Some(at);
                 self.status = format!("started {label}");
+                Some(at)
             }
             Err(e) => {
                 self.modal = Modal::Message(format!("failed to start agent: {e}"));
+                None
             }
         }
     }
@@ -701,13 +742,31 @@ impl App {
     }
 
     /// Run the project's `run` script in the given worktree, if configured.
-    pub fn run_worktree_script(&mut self, wt_path: &str) {
+    /// Runs as an additional shell in that worktree's terminal panel rather
+    /// than a sibling session tab — like an ad hoc terminal, its output
+    /// shouldn't clutter the tree or take over the agent view.
+    pub fn run_worktree_script(&mut self, wt_path: &str, rows: u16, cols: u16) {
         let Some(p) = self.selected_project().cloned() else {
             return;
         };
         match p.scripts.run.as_deref() {
             Some(script) if !script.trim().is_empty() => {
-                self.spawn_script_session("run", p.name.clone(), wt_path.to_string(), script);
+                match Session::spawn_script(
+                    "run".to_string(),
+                    p.name.clone(),
+                    wt_path.to_string(),
+                    script,
+                    wt_path,
+                ) {
+                    Ok(mut s) => {
+                        s.resize(rows, cols);
+                        let v = self.wt_terminals.entry(wt_path.to_string()).or_default();
+                        v.push(s);
+                        self.wt_active_terminal
+                            .insert(wt_path.to_string(), v.len() - 1);
+                    }
+                    Err(e) => self.set_toast(format!("run script failed: {e}")),
+                }
             }
             _ => self.set_toast("no run script configured for this project"),
         }
@@ -827,7 +886,7 @@ impl App {
     /// spawn failure.
     fn build_home_terminal(&mut self, label: String, rows: u16, cols: u16) -> Option<Session> {
         let home = Self::home_dir();
-        let args = Agent::Terminal.launch_args();
+        let args = Agent::Terminal.launch_args(false);
         match Session::spawn(
             label,
             String::new(),
@@ -952,7 +1011,7 @@ impl App {
     fn spawn_wt_terminal(&mut self, wt_path: &str, rows: u16, cols: u16) {
         self.wt_terminal_seq += 1;
         let label = format!("wt-terminal {}", self.wt_terminal_seq);
-        let args = Agent::Terminal.launch_args();
+        let args = Agent::Terminal.launch_args(false);
         match Session::spawn(
             label,
             String::new(),
@@ -1210,8 +1269,8 @@ impl App {
             return;
         };
         let label = path_basename(&wt_path);
-        let args = agent.launch_args();
-        self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path);
+        let args = agent.launch_args(self.skip_permissions_enabled());
+        self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path, false);
     }
 
     pub fn open_settings(&mut self) {

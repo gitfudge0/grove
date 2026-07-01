@@ -19,7 +19,6 @@ grove is a native desktop app for managing git worktrees across projects and run
 
 - [why grove](#why-grove)
 - [install](#install)
-  - [desktop app](#desktop-app)
 - [quickstart](#quickstart)
 - [sessions](#sessions)
 - [supported agents](#supported-agents)
@@ -56,19 +55,7 @@ cd grove
 ./install.sh
 ```
 
-the `grove` binary is installed to `$CARGO_HOME/bin` (default `~/.cargo/bin`). make sure that directory is on your `PATH`. running `grove` launches the desktop app.
-
-### desktop app
-
-to install grove as a clickable native app — in Launchpad/Spotlight on macOS, or the application menu on linux — build a bundle instead of (or in addition to) the binary:
-
-```sh
-git clone https://github.com/gitfudge0/grove.git
-cd grove
-./package.sh
-```
-
-`package.sh` builds a release bundle with [`cargo-bundle`] (installing it on first run) and installs it:
+`install.sh` builds a release bundle with [`cargo-bundle`] (installing it on first run) and installs grove as a clickable native app:
 
 - **macOS** — copies `Grove.app` to `/Applications` (or `~/Applications`). launch it from Spotlight or Launchpad.
 - **linux** — installs the generated `.deb` via `dpkg`, or falls back to a binary plus a `grove.desktop` launcher and icon under `~/.local`. launch "Grove" from your application menu.
@@ -144,7 +131,7 @@ themes are colorways, not chrome. every screen reads correctly across all 37, be
 ./uninstall.sh
 ```
 
-removes the `grove` binary installed by `cargo install`. if you installed a desktop bundle with `package.sh`, remove `Grove.app` from `/Applications` or `~/Applications` on macOS, or remove the installed package/launcher on linux. your project registrations and theme settings live under `~/.config/grove` and are left in place; delete that directory if you want a clean slate.
+removes the app bundle (or `.deb`/`~/.local` install on linux) that `install.sh` installed. your project registrations and theme settings live under `~/.config/grove` and are left in place; delete that directory if you want a clean slate.
 
 ## license
 

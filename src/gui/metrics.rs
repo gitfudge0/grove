@@ -336,23 +336,34 @@ pub fn grid_layout(n: usize) -> (usize, usize) {
 
 /// Per-tile PTY dimensions `(rows, cols)` for a grid of `n` sessions.
 /// Grid mode hides the sidebar, so the full window width is available.
-pub fn grid_tile_dims(win_w: f32, win_h: f32, zoom: f32, n: usize) -> (u16, u16) {
-    let (grid_cols, grid_rows) = grid_layout(n);
+/// PTY width (in cells) for a grid tile. Every column is equal width, so this
+/// depends only on the column count for `n` tiles.
+pub fn grid_tile_cols(win_w: f32, zoom: f32, n: usize) -> u16 {
+    let (grid_cols, _) = grid_layout(n);
     let zoom = zoom.max(0.1);
-    let logical_w = win_w / zoom;
-    let logical_h = win_h / zoom;
-    // Grid mode keeps appbar + statusbar but hides the sidebar.
-    let workspace_h = logical_h - APPBAR_H - STATUS_H;
-    let workspace_w = logical_w;
-    // Subtract 1px inter-tile gaps, tile header, and pty container padding.
-    let tile_h = (workspace_h - (grid_rows as f32 - 1.0)) / grid_rows as f32;
+    let workspace_w = win_w / zoom;
+    // Subtract 1px inter-tile gaps and pty container padding.
     let tile_w = (workspace_w - (grid_cols as f32 - 1.0)) / grid_cols as f32;
-    let pty_h = tile_h - TILE_HEAD_H - TILE_PTY_PAD_H;
     let pty_w = tile_w - TILE_PTY_PAD_W;
-    let rows = (pty_h / CELL_H).max(4.0) as u16;
-    let cols = (pty_w / CELL_W).max(10.0) as u16;
-    (rows, cols)
+    (pty_w / CELL_W).max(10.0) as u16
 }
+
+/// PTY height (in cells) for a grid tile, given how many tiles share its
+/// column. The workspace is laid out as columns-of-tiles: each column spans the
+/// full height and splits it evenly among its own tiles. A column with fewer
+/// tiles than the grid's tallest column (e.g. the lone tile beside a 2-stack in
+/// a 3-session grid) therefore gets a taller PTY and fills the height.
+pub fn grid_tile_rows_for_col(win_h: f32, zoom: f32, tiles_in_col: usize) -> u16 {
+    let zoom = zoom.max(0.1);
+    // Grid mode keeps appbar + statusbar but hides the sidebar.
+    let workspace_h = win_h / zoom - APPBAR_H - STATUS_H;
+    let k = tiles_in_col.max(1) as f32;
+    // Subtract 1px inter-tile gaps, tile header, and pty container padding.
+    let tile_h = (workspace_h - (k - 1.0)) / k;
+    let pty_h = tile_h - TILE_HEAD_H - TILE_PTY_PAD_H;
+    (pty_h / CELL_H).max(4.0) as u16
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -549,13 +560,26 @@ mod tests {
     }
 
     #[test]
-    fn grid_tile_dims_shrink_with_more_sessions() {
-        use super::grid_tile_dims;
-        let (r2, c2) = grid_tile_dims(1280.0, 800.0, 1.0, 2);
-        let (r4, c4) = grid_tile_dims(1280.0, 800.0, 1.0, 4);
-        assert!(r2 >= r4, "more sessions → smaller tiles");
-        assert!(c2 >= c4, "more sessions → fewer cols per tile");
-        assert!(r4 >= 4,  "never below floor");
-        assert!(c4 >= 10, "never below floor");
+    fn grid_tile_cols_shrink_with_more_columns() {
+        use super::grid_tile_cols;
+        // n=2 → 2 columns, n=5 → 3 columns, so tiles get narrower.
+        let c2 = grid_tile_cols(1280.0, 1.0, 2);
+        let c5 = grid_tile_cols(1280.0, 1.0, 5);
+        assert!(c2 >= c5, "more columns → fewer cols per tile");
+        assert!(c5 >= 10, "never below floor");
+    }
+
+    #[test]
+    fn grid_tile_rows_taller_for_shorter_columns() {
+        use super::grid_tile_rows_for_col;
+        // A column with 1 tile spans the full height; a column with 2 tiles
+        // splits it — so the 1-tile column gets (roughly) twice the PTY rows.
+        // This is exactly the 3-session case: the lone right-hand tile must
+        // fill the full height instead of half.
+        let full = grid_tile_rows_for_col(800.0, 1.0, 1);
+        let half = grid_tile_rows_for_col(800.0, 1.0, 2);
+        assert!(full > half, "fewer tiles in a column → taller PTY");
+        assert!(full >= 2 * half - 4, "single-tile column ≈ full height");
+        assert!(half >= 4, "never below floor");
     }
 }

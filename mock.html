@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Grove — UI Mockup: Launch session from Agent View</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+
+<style>
+/* ─── RESET ──────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+
+/* ─── DESIGN TOKENS (Tokyo Night — matched to Grove) ─────────────────────── */
+:root {
+  --bg:           #1a1b26;
+  --bg-rail:      #16161e;
+  --bg-strip:     #13131a;
+  --bg-tile:      #16171f;
+  --bg-hover:     #222333;
+  --bg-active:    #2a2b3d;
+  --bg-modal:     #1e1f2e;
+  --bg-input:     #14151f;
+  --fg:           #c0caf5;
+  --fg-dim:       #828bb8;
+  --fg-mute:      #565f89;
+  --fg-faint:     #3b4072;
+  --magenta:      #bb9af7;
+  --magenta-dim:  #7c5cbf;
+  --cyan:         #7dcfff;
+  --green:        #9ece6a;
+  --red:          #f7768e;
+  --amber:        #e0af68;
+  --blue:         #7aa2f7;
+  --border:       #292e42;
+  --border-soft:  #20242f;
+  --border-modal: #333654;
+
+  --font-ui:   "IBM Plex Sans", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  --appbar-h:   44px;
+  --statusbar-h:26px;
+  --radius-modal: 8px;
+  --radius-btn:   5px;
+  --radius-chip:  3px;
+}
+
+/* ─── BASE ───────────────────────────────────────────────────────────────── */
+body {
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  color: var(--fg);
+  background: var(--bg);
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app { display: flex; flex-direction: column; height: 100vh; width: 100vw; }
+
+/* ─── APPBAR ─────────────────────────────────────────────────────────────── */
+#appbar {
+  height: var(--appbar-h);
+  min-height: var(--appbar-h);
+  background: var(--bg-strip);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 8px;
+  position: relative;
+  z-index: 10;
+}
+.brand {
+  font-weight: 600; font-size: 13px; letter-spacing: .3px;
+  color: var(--fg); display: flex; align-items: center; gap: 7px;
+}
+.brand .logo {
+  width: 16px; height: 16px; border-radius: 4px;
+  background: linear-gradient(135deg, var(--magenta), var(--cyan));
+  display: inline-block;
+}
+.appbar-spacer { flex: 1; }
+.appbar-title {
+  font-size: 11px; color: var(--fg-mute); letter-spacing: .4px;
+  text-transform: uppercase; font-weight: 500;
+}
+.appbar-btns { display: flex; gap: 2px; }
+.icon-btn {
+  width: 30px; height: 30px; border-radius: var(--radius-btn);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--fg-dim); cursor: pointer; border: 1px solid transparent;
+}
+.icon-btn:hover { background: var(--bg-hover); color: var(--fg); }
+.icon-btn.active { background: var(--bg-active); color: var(--cyan); border-color: var(--border); }
+.icon-btn svg { width: 16px; height: 16px; }
+
+/* ─── GRID WORKSPACE ─────────────────────────────────────────────────────── */
+#workspace {
+  flex: 1; position: relative; overflow: hidden;
+  background: var(--bg);
+}
+#grid {
+  position: absolute; inset: 0; padding: 8px;
+  display: grid; gap: 8px;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+.tile {
+  background: var(--bg-tile);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  display: flex; flex-direction: column;
+  overflow: hidden; position: relative;
+}
+.tile.focused { border-color: var(--cyan); box-shadow: 0 0 0 1px var(--cyan); }
+.tile.waiting { border-color: var(--amber); animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse {
+  0%,100% { box-shadow: 0 0 0 0 rgba(224,175,104,.0); border-color: var(--amber); }
+  50%     { box-shadow: 0 0 0 2px rgba(224,175,104,.35); border-color: #f0c078; }
+}
+.tile-head {
+  height: 26px; min-height: 26px;
+  background: var(--bg-strip);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 6px 0 8px; gap: 7px;
+  font-size: 11px; cursor: grab;
+}
+.tile-head .agent-ic { width: 13px; height: 13px; flex: none; }
+.tile-head .label { color: var(--fg); font-weight: 500; }
+.tile-head .sep { color: var(--fg-faint); }
+.tile-head .branch { color: var(--fg-dim); font-family: var(--font-mono); font-size: 10.5px; }
+.tile-head .badge {
+  font-family: var(--font-mono); font-size: 9px; padding: 1px 5px;
+  border-radius: var(--radius-chip); background: rgba(224,175,104,.15);
+  color: var(--amber); letter-spacing: .3px;
+}
+.tile-head .head-spacer { flex: 1; }
+.tile-head .h-btn {
+  width: 18px; height: 18px; border-radius: 3px; display: flex;
+  align-items: center; justify-content: center; color: var(--fg-mute); cursor: pointer;
+}
+.tile-head .h-btn:hover { background: var(--bg-hover); color: var(--fg); }
+.tile-head .h-btn.kill:hover { color: var(--red); }
+.tile-body {
+  flex: 1; padding: 8px 10px; overflow: hidden;
+  font-family: var(--font-mono); font-size: 10.5px; line-height: 1.55;
+  color: var(--fg-dim);
+}
+.tile-body .u { color: var(--cyan); }
+.tile-body .m { color: var(--magenta); }
+.tile-body .g { color: var(--green); }
+.tile-body .a { color: var(--amber); }
+.tile-body .d { color: var(--fg-mute); }
+.tile-body .cursor { background: var(--fg); color: var(--bg); }
+
+/* ─── FLOATING LAUNCHER PILL ─────────────────────────────────────────────── */
+#fab {
+  position: absolute; right: 18px; bottom: 18px; z-index: 40;
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 15px 9px 13px;
+  background: linear-gradient(135deg, var(--magenta-dim), #5a6fb5);
+  color: #fff; border-radius: 22px;
+  font-weight: 600; font-size: 12px; letter-spacing: .2px;
+  cursor: pointer; border: 1px solid rgba(255,255,255,.14);
+  box-shadow: 0 6px 22px rgba(0,0,0,.45), 0 0 0 1px rgba(0,0,0,.25);
+}
+#fab:hover { filter: brightness(1.1); }
+#fab svg { width: 15px; height: 15px; }
+#fab .kbd {
+  font-family: var(--font-mono); font-size: 9.5px; opacity: .8;
+  background: rgba(0,0,0,.28); padding: 1px 5px; border-radius: 3px; margin-left: 2px;
+}
+
+/* ─── LAUNCHER OVERLAY ───────────────────────────────────────────────────── */
+#overlay {
+  position: absolute; inset: 0; z-index: 60;
+  background: rgba(10,10,16,.55); backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center;
+}
+#overlay.hidden { display: none; }
+.launcher {
+  width: 760px; max-width: calc(100vw - 48px);
+  background: var(--bg-modal);
+  border: 1px solid var(--border-modal);
+  border-radius: var(--radius-modal);
+  box-shadow: 0 24px 70px rgba(0,0,0,.6);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.launcher-head {
+  padding: 13px 16px 11px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: baseline; gap: 10px;
+}
+.launcher-head h2 { font-size: 13.5px; font-weight: 600; color: var(--fg); }
+.launcher-head .sub { font-size: 11px; color: var(--fg-mute); }
+
+/* Miller columns */
+.cols { display: grid; grid-template-columns: 1fr 1fr 1fr; height: 320px; }
+.col { border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+.col:last-child { border-right: none; }
+.col-title {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: .7px;
+  color: var(--fg-faint); font-weight: 600;
+  padding: 9px 12px 7px; border-bottom: 1px solid var(--border-soft);
+}
+.col-list { flex: 1; overflow-y: auto; padding: 5px; }
+.col-list::-webkit-scrollbar { width: 8px; }
+.col-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+.item {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 9px; border-radius: var(--radius-btn);
+  cursor: pointer; color: var(--fg-dim); position: relative;
+}
+.item:hover { background: var(--bg-hover); color: var(--fg); }
+.item.selected { background: var(--bg-active); color: var(--fg); }
+.item.selected::before {
+  content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px;
+  background: var(--cyan); border-radius: 2px;
+}
+.item .ic { width: 15px; height: 15px; flex: none; color: var(--fg-mute); }
+.item.selected .ic { color: var(--cyan); }
+.item .name { flex: 1; font-size: 12px; font-weight: 500; }
+.item .name .path { color: var(--fg-faint); font-weight: 400; }
+.item .meta { font-size: 10px; color: var(--fg-mute); font-family: var(--font-mono); }
+.item .chev { color: var(--fg-faint); }
+.item.selected .chev { color: var(--fg-dim); }
+
+.item .branch-mono { font-family: var(--font-mono); font-size: 11px; }
+.dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.dot.dirty { background: var(--amber); }
+.dot.clean { background: var(--fg-faint); }
+.tag {
+  font-family: var(--font-mono); font-size: 8.5px; letter-spacing: .3px;
+  padding: 1px 5px; border-radius: var(--radius-chip);
+  background: rgba(122,162,247,.14); color: var(--blue);
+}
+.tag.main { background: rgba(158,206,106,.14); color: var(--green); }
+.tag.busy { background: rgba(224,175,104,.14); color: var(--amber); }
+
+.item.add { color: var(--magenta); }
+.item.add .ic { color: var(--magenta); }
+.item.add:hover { background: rgba(187,154,247,.1); }
+
+/* agent column extras */
+.agent-opts { border-top: 1px solid var(--border-soft); padding: 10px 12px; }
+.opt-row { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+.opt-row:last-child { margin-bottom: 0; }
+.opt-row label { font-size: 11px; color: var(--fg-dim); flex: 1; }
+.toggle {
+  width: 30px; height: 17px; border-radius: 9px; background: var(--bg-input);
+  border: 1px solid var(--border); position: relative; cursor: pointer; flex: none;
+}
+.toggle::after {
+  content: ""; position: absolute; top: 1px; left: 1px; width: 13px; height: 13px;
+  border-radius: 50%; background: var(--fg-mute); transition: all .15s;
+}
+.toggle.on { background: var(--magenta-dim); border-color: var(--magenta); }
+.toggle.on::after { left: 14px; background: #fff; }
+.label-input {
+  width: 100%; background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius-btn); color: var(--fg); padding: 6px 8px;
+  font-family: var(--font-ui); font-size: 11.5px;
+}
+.label-input::placeholder { color: var(--fg-faint); }
+.label-input:focus { outline: none; border-color: var(--magenta-dim); }
+
+/* footer */
+.launcher-foot {
+  border-top: 1px solid var(--border);
+  padding: 11px 16px; display: flex; align-items: center; gap: 14px;
+}
+.breadcrumb { flex: 1; font-size: 12px; display: flex; align-items: center; gap: 7px; }
+.breadcrumb .crumb { color: var(--fg); font-weight: 500; }
+.breadcrumb .crumb.mono { font-family: var(--font-mono); font-size: 11.5px; }
+.breadcrumb .crumb.pending { color: var(--fg-faint); font-weight: 400; }
+.breadcrumb .arrow { color: var(--fg-faint); }
+.kbdhint { font-size: 10px; color: var(--fg-mute); font-family: var(--font-mono); }
+.kbdhint kbd {
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 5px; color: var(--fg-dim); margin: 0 1px;
+}
+.btn-start {
+  background: linear-gradient(135deg, var(--magenta-dim), #5a6fb5);
+  color: #fff; font-weight: 600; font-size: 12px;
+  padding: 8px 18px; border-radius: var(--radius-btn);
+  border: 1px solid rgba(255,255,255,.14); cursor: pointer;
+  display: flex; align-items: center; gap: 7px;
+}
+.btn-start:hover { filter: brightness(1.1); }
+.btn-start svg { width: 13px; height: 13px; }
+
+/* ─── STATUS BAR ─────────────────────────────────────────────────────────── */
+#statusbar {
+  height: var(--statusbar-h); min-height: var(--statusbar-h);
+  background: var(--bg-strip); border-top: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 12px; gap: 14px;
+  font-size: 10.5px; color: var(--fg-mute); font-family: var(--font-mono);
+}
+#statusbar .s-item { display: flex; align-items: center; gap: 5px; }
+#statusbar .s-item .dt { width: 6px; height: 6px; border-radius: 50%; }
+.status-spacer { flex: 1; }
+.toast {
+  position: absolute; bottom: 68px; right: 18px; z-index: 50;
+  background: var(--bg-active); border: 1px solid var(--green);
+  color: var(--fg); padding: 9px 14px; border-radius: 6px; font-size: 11.5px;
+  display: flex; align-items: center; gap: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  opacity: 0; transform: translateY(8px); transition: all .2s; pointer-events: none;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast svg { width: 14px; height: 14px; color: var(--green); }
+</style>
+</head>
+<body>
+
+<!-- ══ ICON SPRITES ══════════════════════════════════════════════════════ -->
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="ic-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+    <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+  </symbol>
+  <symbol id="ic-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+    <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+  </symbol>
+  <symbol id="ic-zen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+  </symbol>
+  <symbol id="ic-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>
+  </symbol>
+  <symbol id="ic-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+  </symbol>
+  <symbol id="ic-branch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+    <circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="7" r="2.4"/>
+    <path d="M6 8.4v7.2M18 9.4c0 4-4 3.6-4 6.6"/>
+  </symbol>
+  <symbol id="ic-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5l12 7-12 7z"/></symbol>
+  <symbol id="ic-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><polyline points="4 12 10 18 20 6"/></symbol>
+  <!-- agent glyphs (stylized) -->
+  <symbol id="ag-claude" viewBox="0 0 24 24" fill="none" stroke="#e0af68" stroke-width="1.9" stroke-linecap="round"><path d="M5 17L10 6l2 5 2-5 5 11M8.5 13h7"/></symbol>
+  <symbol id="ag-codex" viewBox="0 0 24 24" fill="none" stroke="#7dcfff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polyline points="8 8 4 12 8 16"/><polyline points="16 8 20 12 16 16"/></symbol>
+  <symbol id="ag-opencode" viewBox="0 0 24 24" fill="none" stroke="#9ece6a" stroke-width="1.9"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.3" fill="#9ece6a"/></symbol>
+  <symbol id="ag-term" viewBox="0 0 24 24" fill="none" stroke="#bb9af7" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 8 10 12 6 16"/><line x1="12" y1="16" x2="18" y2="16"/></symbol>
+</svg>
+
+<div id="app">
+
+  <!-- APPBAR -->
+  <div id="appbar">
+    <div class="brand"><span class="logo"></span>grove</div>
+    <div class="appbar-spacer"></div>
+    <div class="appbar-title">Agent View · 4 sessions</div>
+    <div class="appbar-spacer"></div>
+    <div class="appbar-btns">
+      <div class="icon-btn active" title="Agent view"><svg><use href="#ic-grid"/></svg></div>
+    </div>
+  </div>
+
+  <!-- WORKSPACE -->
+  <div id="workspace">
+    <div id="grid">
+      <!-- tile 1: focused, claude -->
+      <div class="tile focused">
+        <div class="tile-head">
+          <svg class="agent-ic"><use href="#ag-claude"/></svg>
+          <span class="label">claude</span><span class="sep">·</span>
+          <span class="branch">fix-tmux-scroll</span>
+          <span class="head-spacer"></span>
+          <div class="h-btn" title="Zen"><svg width="12" height="12"><use href="#ic-zen"/></svg></div>
+          <div class="h-btn kill" title="Kill"><svg width="12" height="12"><use href="#ic-x"/></svg></div>
+        </div>
+        <div class="tile-body">
+<span class="m">●</span> I'll forward the scroll events to the pane instead<br>
+&nbsp;&nbsp;of entering copy-mode.<br><br>
+<span class="d">⏺</span> <span class="u">Edit</span>(src/tmux.rs)<br>
+&nbsp;&nbsp;<span class="g">+ if pane.mouse_reporting() {</span><br>
+&nbsp;&nbsp;<span class="g">+&nbsp;&nbsp;&nbsp;&nbsp;forward_scroll(dir, n);</span><br>
+&nbsp;&nbsp;<span class="d">&nbsp;&nbsp;} else {</span><br>
+&nbsp;&nbsp;<span class="d">&nbsp;&nbsp;&nbsp;&nbsp;enter_copy_mode();</span><br>
+&nbsp;&nbsp;<span class="d">&nbsp;&nbsp;}</span><br><br>
+<span class="d">Running cargo build…</span> <span class="cursor">&nbsp;</span>
+        </div>
+      </div>
+
+      <!-- tile 2: codex -->
+      <div class="tile">
+        <div class="tile-head">
+          <svg class="agent-ic"><use href="#ag-codex"/></svg>
+          <span class="label">codex</span><span class="sep">·</span>
+          <span class="branch">feat-auth</span>
+          <span class="head-spacer"></span>
+          <div class="h-btn" title="Zen"><svg width="12" height="12"><use href="#ic-zen"/></svg></div>
+          <div class="h-btn kill" title="Kill"><svg width="12" height="12"><use href="#ic-x"/></svg></div>
+        </div>
+        <div class="tile-body">
+<span class="d">$</span> implementing session token refresh<br><br>
+<span class="u">codex</span> added <span class="g">jwt.rs</span>, wired middleware<br>
+<span class="d">›</span> tests: <span class="g">14 passed</span>, 0 failed<br><br>
+<span class="d">thinking about edge cases for expiry</span><br>
+<span class="d">windows…</span> <span class="cursor">&nbsp;</span>
+        </div>
+      </div>
+
+      <!-- tile 3: waiting, claude on main -->
+      <div class="tile waiting">
+        <div class="tile-head">
+          <svg class="agent-ic"><use href="#ag-claude"/></svg>
+          <span class="label">claude</span><span class="sep">·</span>
+          <span class="branch">main</span>
+          <span class="badge">waiting</span>
+          <span class="head-spacer"></span>
+          <div class="h-btn" title="Zen"><svg width="12" height="12"><use href="#ic-zen"/></svg></div>
+          <div class="h-btn kill" title="Kill"><svg width="12" height="12"><use href="#ic-x"/></svg></div>
+        </div>
+        <div class="tile-body">
+<span class="m">●</span> This will drop the `legacy_sync` table.<br>
+&nbsp;&nbsp;It has 40k rows. Proceed?<br><br>
+<span class="a">❯ 1. Yes, run the migration</span><br>
+&nbsp;&nbsp;<span class="d">2. No, let me review first</span><br>
+&nbsp;&nbsp;<span class="d">3. Show me the SQL</span><br><br>
+<span class="a">Waiting for your response…</span> <span class="cursor">&nbsp;</span>
+        </div>
+      </div>
+
+      <!-- tile 4: terminal -->
+      <div class="tile">
+        <div class="tile-head">
+          <svg class="agent-ic"><use href="#ag-term"/></svg>
+          <span class="label">terminal</span><span class="sep">·</span>
+          <span class="branch">fix-clipboard</span>
+          <span class="head-spacer"></span>
+          <div class="h-btn" title="Zen"><svg width="12" height="12"><use href="#ic-zen"/></svg></div>
+          <div class="h-btn kill" title="Kill"><svg width="12" height="12"><use href="#ic-x"/></svg></div>
+        </div>
+        <div class="tile-body">
+<span class="g">~/grove/.wt/fix-clipboard</span> <span class="u">git:(fix-clipboard)</span><br>
+<span class="d">$</span> cargo test arboard<br>
+&nbsp;&nbsp;<span class="g">Compiling</span> grove v0.26.0<br>
+&nbsp;&nbsp;<span class="g">test clipboard::wayland ... ok</span><br>
+&nbsp;&nbsp;<span class="d">test result: ok. 3 passed</span><br><br>
+<span class="d">$</span> <span class="cursor">&nbsp;</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- FLOATING LAUNCHER PILL -->
+    <div id="fab" onclick="openLauncher()">
+      <svg><use href="#ic-plus"/></svg>
+      New session
+      <span class="kbd">⌘N</span>
+    </div>
+
+    <!-- TOAST -->
+    <div class="toast" id="toast"><svg><use href="#ic-check"/></svg><span id="toast-msg"></span></div>
+
+    <!-- LAUNCHER OVERLAY -->
+    <div id="overlay" class="hidden" onclick="if(event.target===this) closeLauncher()">
+      <div class="launcher">
+        <div class="launcher-head">
+          <h2>New session</h2>
+          <span class="sub">Pick a project, worktree, and agent — the tile joins the grid.</span>
+        </div>
+
+        <div class="cols">
+          <!-- COLUMN 1: PROJECTS -->
+          <div class="col">
+            <div class="col-title">Project</div>
+            <div class="col-list" id="col-projects"></div>
+          </div>
+          <!-- COLUMN 2: WORKTREES -->
+          <div class="col">
+            <div class="col-title">Worktree</div>
+            <div class="col-list" id="col-worktrees"></div>
+          </div>
+          <!-- COLUMN 3: AGENT -->
+          <div class="col">
+            <div class="col-title">Agent</div>
+            <div class="col-list" id="col-agents"></div>
+            <div class="agent-opts">
+              <div class="opt-row">
+                <label>Skip permission prompts</label>
+                <div class="toggle" id="skip-toggle" onclick="this.classList.toggle('on')"></div>
+              </div>
+              <div class="opt-row">
+                <input class="label-input" id="label-input" placeholder="Optional label (defaults to agent · branch)">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="launcher-foot">
+          <div class="breadcrumb" id="breadcrumb"></div>
+          <div class="kbdhint"><kbd>←</kbd><kbd>→</kbd> columns · <kbd>↑</kbd><kbd>↓</kbd> move · <kbd>↵</kbd> start · <kbd>esc</kbd></div>
+          <button class="btn-start" onclick="startSession()"><svg><use href="#ic-play"/></svg>Start session</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATUS BAR -->
+  <div id="statusbar">
+    <div class="s-item"><span class="dt" style="background:var(--cyan)"></span>grove · fix-tmux-scroll</div>
+    <div class="s-item">4 sessions · 3 projects · 11 worktrees</div>
+    <div class="status-spacer"></div>
+    <div class="s-item">v0.26.0</div>
+  </div>
+
+</div>
+
+<script>
+/* ─── MOCK DATA ──────────────────────────────────────────────────────────── */
+const DATA = {
+  projects: [
+    { name: "grove", path: "~/Sandbox", worktrees: [
+      { branch: "main", tag: "main", dirty: false },
+      { branch: "fix-tmux-scroll", tag: null, dirty: true, busy: true },
+      { branch: "feat-agent-view", tag: null, dirty: true },
+      { branch: "fix-clipboard", tag: null, dirty: false, busy: true },
+    ]},
+    { name: "care-api", path: "~/work", worktrees: [
+      { branch: "main", tag: "main", dirty: false },
+      { branch: "feat-auth", tag: null, dirty: true, busy: true },
+      { branch: "fix-login-redirect", tag: null, dirty: false },
+    ]},
+    { name: "web-app", path: "~/work", worktrees: [
+      { branch: "main", tag: "main", dirty: false },
+      { branch: "redesign-nav", tag: null, dirty: true },
+    ]},
+  ],
+};
+const AGENTS = [
+  { id: "claude",   name: "claude",   ic: "ag-claude",   meta: "opus 4.8" },
+  { id: "codex",    name: "codex",    ic: "ag-codex",    meta: "gpt" },
+  { id: "opencode", name: "opencode", ic: "ag-opencode", meta: "" },
+  { id: "terminal", name: "terminal", ic: "ag-term",     meta: "$SHELL" },
+];
+
+let sel = { proj: 1, wt: 1, agent: 0, col: 0 }; // start on grove › fix-tmux
+
+/* ─── RENDER ─────────────────────────────────────────────────────────────── */
+function renderProjects() {
+  const el = document.getElementById("col-projects");
+  el.innerHTML = "";
+  DATA.projects.forEach((p, i) => {
+    const div = document.createElement("div");
+    div.className = "item" + (i === sel.proj ? " selected" : "");
+    div.innerHTML = `<svg class="ic"><use href="#ic-folder"/></svg>
+      <span class="name">${p.name} <span class="path">${p.path}/</span></span>
+      <span class="meta">${p.worktrees.length}</span>
+      <span class="chev">›</span>`;
+    div.onclick = () => { sel.proj = i; sel.wt = 0; sel.col = 0; render(); };
+    el.appendChild(div);
+  });
+}
+function renderWorktrees() {
+  const el = document.getElementById("col-worktrees");
+  el.innerHTML = "";
+  const wts = DATA.projects[sel.proj].worktrees;
+  wts.forEach((w, i) => {
+    const div = document.createElement("div");
+    div.className = "item" + (i === sel.wt ? " selected" : "");
+    let tags = "";
+    if (w.tag === "main") tags += `<span class="tag main">main</span>`;
+    if (w.busy) tags += `<span class="tag busy">running</span>`;
+    div.innerHTML = `<svg class="ic"><use href="#ic-branch"/></svg>
+      <span class="dot ${w.dirty ? "dirty" : "clean"}" title="${w.dirty ? "uncommitted changes" : "clean"}"></span>
+      <span class="name branch-mono">${w.branch}</span>${tags}
+      <span class="chev">›</span>`;
+    div.onclick = () => { sel.wt = i; sel.col = 1; render(); };
+    el.appendChild(div);
+  });
+  // + new worktree affordance
+  const add = document.createElement("div");
+  add.className = "item add";
+  add.innerHTML = `<svg class="ic"><use href="#ic-plus"/></svg>
+    <span class="name">New worktree…</span>`;
+  add.onclick = () => showToast("Would open the new-worktree prompt inline");
+  el.appendChild(add);
+}
+function renderAgents() {
+  const el = document.getElementById("col-agents");
+  el.innerHTML = "";
+  AGENTS.forEach((a, i) => {
+    const div = document.createElement("div");
+    div.className = "item" + (i === sel.agent ? " selected" : "");
+    div.innerHTML = `<svg class="ic"><use href="#${a.ic}"/></svg>
+      <span class="name">${a.name}</span>
+      <span class="meta">${a.meta}</span>`;
+    div.onclick = () => { sel.agent = i; sel.col = 2; render(); };
+    el.appendChild(div);
+  });
+}
+function renderBreadcrumb() {
+  const p = DATA.projects[sel.proj];
+  const w = p.worktrees[sel.wt];
+  const a = AGENTS[sel.agent];
+  document.getElementById("breadcrumb").innerHTML =
+    `<svg class="ic" style="width:14px;height:14px;color:var(--fg-mute)"><use href="#ic-folder"/></svg>
+     <span class="crumb">${p.name}</span>
+     <span class="arrow">›</span>
+     <span class="crumb mono">${w.branch}</span>
+     <span class="arrow">›</span>
+     <svg class="ic" style="width:14px;height:14px"><use href="#${a.ic}"/></svg>
+     <span class="crumb">${a.name}</span>`;
+}
+function render() {
+  renderProjects(); renderWorktrees(); renderAgents(); renderBreadcrumb();
+}
+
+/* ─── INTERACTIONS ───────────────────────────────────────────────────────── */
+function openLauncher() {
+  document.getElementById("overlay").classList.remove("hidden");
+  render();
+}
+function closeLauncher() {
+  document.getElementById("overlay").classList.add("hidden");
+}
+function startSession() {
+  const p = DATA.projects[sel.proj];
+  const w = p.worktrees[sel.wt];
+  const a = AGENTS[sel.agent];
+  const skip = document.getElementById("skip-toggle").classList.contains("on");
+  closeLauncher();
+  showToast(`Started ${a.name} · ${w.branch}${skip ? " (skip-perms)" : ""} — tile added to grid`);
+}
+let toastT;
+function showToast(msg) {
+  const t = document.getElementById("toast");
+  document.getElementById("toast-msg").textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toastT);
+  toastT = setTimeout(() => t.classList.remove("show"), 2600);
+}
+
+/* keyboard */
+document.addEventListener("keydown", (e) => {
+  const open = !document.getElementById("overlay").classList.contains("hidden");
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") { e.preventDefault(); openLauncher(); return; }
+  if (!open) return;
+  if (e.key === "Escape") { closeLauncher(); return; }
+  if (e.key === "Enter") { startSession(); return; }
+  if (e.target.tagName === "INPUT") return;
+  const lists = [DATA.projects, DATA.projects[sel.proj].worktrees, AGENTS];
+  if (e.key === "ArrowLeft")  { sel.col = Math.max(0, sel.col - 1); render(); e.preventDefault(); }
+  if (e.key === "ArrowRight") { sel.col = Math.min(2, sel.col + 1); render(); e.preventDefault(); }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    const d = e.key === "ArrowDown" ? 1 : -1;
+    if (sel.col === 0) { sel.proj = clamp(sel.proj + d, lists[0].length); sel.wt = 0; }
+    else if (sel.col === 1) { sel.wt = clamp(sel.wt + d, lists[1].length); }
+    else { sel.agent = clamp(sel.agent + d, lists[2].length); }
+    render(); e.preventDefault();
+  }
+});
+function clamp(v, n) { return Math.max(0, Math.min(n - 1, v)); }
+
+render();
+</script>
+</body>
+</html>

@@ -10,7 +10,7 @@ use std::time::Duration;
 /// How the running binary was installed. Determines the apply strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallMethod {
-    /// `cargo install` into `~/.cargo/bin` (what `install.sh` does). Rebuild from source.
+    /// `cargo install --path .` into `~/.cargo/bin` (a manual/legacy install). Rebuild from source.
     Source,
     /// macOS `.app` bundle from the release `.dmg`. Replace the bundle.
     Dmg,

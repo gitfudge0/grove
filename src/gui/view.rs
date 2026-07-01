@@ -815,28 +815,23 @@ impl Grove {
         }
         let (grid_cols, grid_rows) = grid_layout(n);
 
-        let mut rows_col = column![].spacing(1);
-        for row_idx in 0..grid_rows {
-            let mut row_el = row![].spacing(1).height(Length::Fill);
-            for col_idx in 0..grid_cols {
+        // Lay out columns-of-tiles (not rows-of-tiles): each column stacks only
+        // the tiles it actually has, so a column left with a single tile (e.g.
+        // the odd one out in a 2×2 grid holding 3 sessions) spans the full
+        // workspace height instead of leaving an empty cell beside it.
+        let mut cols_row = row![].spacing(1).height(Length::Fill);
+        for col_idx in 0..grid_cols {
+            let mut col_el = column![].spacing(1).width(Length::Fill).height(Length::Fill);
+            for row_idx in 0..grid_rows {
                 let tile_idx = row_idx * grid_cols + col_idx;
-                let el: Element<'_, Msg> = if tile_idx < n {
-                    let si = self.tile_order[tile_idx];
-                    if si < self.app.sessions.len() {
-                        self.grid_tile(tile_idx, si, &self.app.sessions[si])
-                    } else {
-                        // Stale index: render blank until KillSession prunes tile_order.
-                        container(Space::new(Length::Fill, Length::Fill))
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .style(|_| container::Style {
-                                background: Some(Background::Color(c::BG())),
-                                ..Default::default()
-                            })
-                            .into()
-                    }
+                if tile_idx >= n {
+                    continue;
+                }
+                let si = self.tile_order[tile_idx];
+                let el: Element<'_, Msg> = if si < self.app.sessions.len() {
+                    self.grid_tile(tile_idx, si, &self.app.sessions[si])
                 } else {
-                    // Empty slot (e.g., 3 sessions in a 2×2 grid).
+                    // Stale index: render blank until KillSession prunes tile_order.
                     container(Space::new(Length::Fill, Length::Fill))
                         .width(Length::Fill)
                         .height(Length::Fill)
@@ -846,21 +841,62 @@ impl Grove {
                         })
                         .into()
                 };
-                row_el = row_el.push(el);
+                col_el = col_el.push(el);
             }
-            rows_col = rows_col.push(row_el);
+            cols_row = cols_row.push(col_el);
         }
 
         // Inter-tile gaps: set the container background to BORDER_SOFT;
         // 1px spacing in column/row lets that background show through.
-        container(rows_col)
+        let grid = container(cols_row)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_| container::Style {
                 background: Some(Background::Color(c::BORDER_SOFT())),
                 ..Default::default()
-            })
-            .into()
+            });
+
+        // Circular "+" button: a fixed square with a fully-rounded border and
+        // the glyph centered.
+        let pill_d = 40.0;
+        let pill = button(
+            container(text("+").size(22).color(c::FG()))
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+        )
+        .on_press(Msg::OpenSessionLauncher)
+        .width(Length::Fixed(pill_d))
+        .height(Length::Fixed(pill_d))
+        .padding(0)
+        .style(move |_, status| {
+            let hovered = matches!(status, button::Status::Hovered);
+            button::Style {
+                background: Some(Background::Color(if hovered {
+                    c::BG_HOVER()
+                } else {
+                    c::BG_HL()
+                })),
+                text_color: c::FG(),
+                border: Border {
+                    color: c::MAGENTA(),
+                    width: 1.0,
+                    radius: Radius::from(pill_d / 2.0),
+                },
+                shadow: Shadow::default(),
+            }
+        });
+
+        // Anchor the pill bottom-right without disturbing grid packing: wrap
+        // it in a full-size container aligned to the bottom-right, then
+        // stack it over the grid.
+        let pill_layer = container(pill)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Right)
+            .align_y(iced::alignment::Vertical::Bottom)
+            .padding(18);
+
+        stack![grid, pill_layer].into()
     }
 
     fn workspace(&self) -> Element<'_, Msg> {
@@ -1492,6 +1528,8 @@ impl Grove {
             dot(dot_color),
             text(s.agent.label()).font(UI_BOLD).size(10).color(c::FG_DIM()),
             text("·").size(10).color(c::FG_MUTE()),
+            text(s.project.clone()).size(10).color(c::FG_MUTE()),
+            text("·").size(10).color(c::FG_MUTE()),
             text(s.branch.clone()).size(10).color(c::FG_MUTE()),
             Space::with_width(Length::Fill),
             tile_btn("zen", Msg::GridTileZen(si)),
@@ -1777,6 +1815,12 @@ impl Grove {
                 *sel_light,
                 *agent_sel,
             ),
+            Modal::SessionLauncher {
+                proj,
+                wt,
+                agent,
+                col,
+            } => self.session_launcher_modal(*proj, *wt, *agent, *col),
             _ => Space::with_width(0).into(),
         };
 
@@ -2440,6 +2484,139 @@ impl Grove {
         modal_panel(body.into(), 500.0, c::MAGENTA())
     }
 
+    /// Agent View "+ New session" launcher: three Miller columns (project →
+    /// worktree → agent) and a footer breadcrumb + Start button. See
+    /// `mock.html` for the approved visual source of truth.
+    fn session_launcher_modal<'a>(
+        &'a self,
+        proj: usize,
+        wt: usize,
+        agent: usize,
+        col: u8,
+    ) -> Element<'a, Msg> {
+        // ── Column 1: projects ──────────────────────────────────────────
+        let mut proj_list = Column::new().spacing(0);
+        for (i, p) in self.app.store.projects.iter().enumerate() {
+            let count = self.launcher_worktrees(i).len();
+            let active = i == proj;
+            let label_row = row![
+                text(p.name.clone()).size(12).color(if active { c::FG() } else { c::FG_DIM() }),
+                Space::with_width(Length::Fill),
+                text(count.to_string()).size(11).color(c::FG_MUTE()),
+            ]
+            .align_y(iced::Alignment::Center);
+            proj_list = proj_list.push(modal_list_row(label_row, active, Msg::LauncherSelectProject(i)));
+        }
+
+        // ── Column 2: worktrees ─────────────────────────────────────────
+        let worktrees = self.launcher_worktrees(proj);
+        let mut wt_list = Column::new().spacing(0);
+        for (i, w) in worktrees.iter().enumerate() {
+            let active = i == wt;
+            let name = if w.branch.is_empty() {
+                crate::app::path_basename(&w.path)
+            } else {
+                w.branch.clone()
+            };
+            let tag = if w.is_main { "main" } else { "" };
+            let label_row = row![
+                text(name).size(12).color(if active { c::FG() } else { c::FG_DIM() }),
+                Space::with_width(Length::Fill),
+                text(tag.to_string()).size(10).color(c::GREEN()),
+            ]
+            .align_y(iced::Alignment::Center);
+            wt_list = wt_list.push(modal_list_row(label_row, active, Msg::LauncherSelectWorktree(i)));
+        }
+        // "+ New worktree…" affordance.
+        let add_row = row![text("+ New worktree…").size(12).color(c::MAGENTA())]
+            .align_y(iced::Alignment::Center);
+        wt_list = wt_list.push(modal_list_row(add_row, false, Msg::LauncherNewWorktree));
+
+        // ── Column 3: agents + options ──────────────────────────────────
+        let mut agent_list = Column::new().spacing(0);
+        for (i, ag) in self.app.available_agents.iter().enumerate() {
+            let active = i == agent;
+            let label_row = row![text(ag.label().to_string())
+                .size(12)
+                .color(if active { c::FG() } else { c::FG_DIM() })]
+            .align_y(iced::Alignment::Center);
+            agent_list = agent_list.push(modal_list_row(label_row, active, Msg::LauncherSelectAgent(i)));
+        }
+        let agent_col = agent_list;
+
+        // Fixed-height columns so the modal keeps the mock's proportions.
+        let col_h = Length::Fixed(300.0);
+        let make_col = |title: &'static str, body: Element<'a, Msg>, focused: bool| {
+            column![
+                text(title).size(10).color(if focused { c::CYAN() } else { c::FG_MUTE() }),
+                container(body).height(col_h).width(Length::Fill),
+            ]
+            .spacing(6)
+            .width(Length::FillPortion(1))
+        };
+        let cols = row![
+            make_col("PROJECT", proj_list.into(), col == 0),
+            make_col("WORKTREE", wt_list.into(), col == 1),
+            make_col("AGENT", agent_col.into(), col == 2),
+        ]
+        .spacing(12);
+
+        // ── Footer: breadcrumb + Start ──────────────────────────────────
+        let pname = self.app.store.projects.get(proj).map(|p| p.name.clone()).unwrap_or_default();
+        let branch = worktrees
+            .get(wt)
+            .map(|w| if w.branch.is_empty() { crate::app::path_basename(&w.path) } else { w.branch.clone() })
+            .unwrap_or_default();
+        let ag_label = self.app.available_agents.get(agent).map(|a| a.label().to_string()).unwrap_or_default();
+        let crumb = crate::gui::launcher::breadcrumb(&pname, &branch, &ag_label);
+        let footer = row![
+            text(crumb).size(12).color(c::FG_DIM()),
+            Space::with_width(Length::Fill),
+            text("←/→ columns · ↑/↓ move · enter start · esc").size(10).color(c::FG_MUTE()),
+            modal_action("Start session", ModalBtn::Primary, Msg::LauncherStart),
+        ]
+        .spacing(10)
+        .align_y(iced::Alignment::Center);
+
+        // Header: title on the left, close (✕) button on the right.
+        let close_btn = button(
+            container(icon("close", 12.0, c::FG_MUTE()))
+                .center_x(20)
+                .center_y(20),
+        )
+        .on_press(Msg::ModalCancel)
+        .padding(0)
+        .style(|_, status| {
+            let hovered = matches!(status, button::Status::Hovered);
+            button::Style {
+                background: None,
+                text_color: if hovered { c::FG() } else { c::FG_MUTE() },
+                border: Border {
+                    color: Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: Radius::from(3.0),
+                },
+                shadow: Shadow::default(),
+            }
+        });
+        let header = row![
+            text("New session").size(13).color(c::MAGENTA()),
+            Space::with_width(Length::Fill),
+            close_btn,
+        ]
+        .align_y(iced::Alignment::Center);
+
+        let body = column![
+            header,
+            cols,
+            Space::with_height(8),
+            footer,
+        ]
+        .spacing(12);
+
+        modal_panel(body.into(), 760.0, c::MAGENTA())
+    }
+
     fn settings_modal(&self) -> Element<'_, Msg> {
         use iced::Alignment::Center;
 
@@ -2538,6 +2715,49 @@ impl Grove {
             })
             .size(11)
             .color(c::FG_MUTE()),
+        )
+        .padding(Padding::from([0, 10]));
+
+        let skip_perms_on = self.app.skip_permissions_enabled();
+        let skip_perms_seg = container(
+            row![
+                seg_button(
+                    "skip",
+                    skip_perms_on,
+                    SegSide::Left,
+                    Msg::SkipPermissionsEnable
+                ),
+                seg_button(
+                    "safe",
+                    !skip_perms_on,
+                    SegSide::Right,
+                    Msg::SkipPermissionsDisable
+                ),
+            ]
+            .spacing(0),
+        )
+        .style(|_| container::Style {
+            border: Border {
+                color: c::BORDER(),
+                width: 1.0,
+                radius: Radius::from(6.0),
+            },
+            ..Default::default()
+        });
+        let skip_perms_row = container(
+            row![
+                text("Permissions").size(12).color(c::FG()),
+                Space::with_width(Length::Fill),
+                skip_perms_seg,
+            ]
+            .align_y(Center),
+        )
+        .height(ROW_H)
+        .padding(Padding::from([0, 10]));
+        let skip_perms_caption = container(
+            text("Applies to new Claude/Codex sessions only")
+                .size(11)
+                .color(c::FG_MUTE()),
         )
         .padding(Padding::from([0, 10]));
 
@@ -2666,6 +2886,8 @@ impl Grove {
             eyebrow("TERMINAL"),
             backend_row,
             backend_caption,
+            skip_perms_row,
+            skip_perms_caption,
         ]
         .spacing(4);
 

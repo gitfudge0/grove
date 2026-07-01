@@ -83,6 +83,7 @@ impl Grove {
             tile_order: Vec::new(),
             grid_focused: None,
             grid_drag: None,
+            pending_launcher_proj: None,
             grid_view_before_zen: false,
             last_divider_press: None,
             term_panel_dragging: false,
@@ -312,6 +313,12 @@ impl Grove {
             }
             Msg::BackendTmux => {
                 let _ = self.app.set_tmux_enabled(true);
+            }
+            Msg::SkipPermissionsEnable => {
+                let _ = self.app.set_skip_permissions_enabled(true);
+            }
+            Msg::SkipPermissionsDisable => {
+                let _ = self.app.set_skip_permissions_enabled(false);
             }
             Msg::ChooseTmux(enabled) => {
                 if let Err(e) = self.app.choose_tmux_enabled(enabled) {
@@ -736,12 +743,20 @@ impl Grove {
                 self.app.wt_idx = wt;
                 if let Some(w) = self.app.worktrees.get(wt).cloned() {
                     let before = self.session_keys();
-                    self.app.run_worktree_script(&w.path);
-                    self.resize_new_sessions(&before);
-                    // If the grid is open, append the new session index so it appears.
-                    if self.grid_view && self.app.sessions.len() > before.len() {
-                        self.tile_order.push(self.app.sessions.len() - 1);
+                    if self.grid_view {
+                        self.app
+                            .run_worktree_script(&w.path, self.pty_rows, self.pty_panel_cols);
+                        if self.app.sessions.len() > before.len() {
+                            self.tile_order.push(self.app.sessions.len() - 1);
+                        }
                         self.refresh_pty_viewport();
+                    } else {
+                        self.term_panel_open = true;
+                        self.refresh_pty_viewport();
+                        self.app
+                            .run_worktree_script(&w.path, self.pty_rows, self.pty_panel_cols);
+                        self.focused_pane = FocusedPane::Panel;
+                        self.pty_selection = None;
                     }
                     self.collapsed_wt.remove(&(proj, wt));
                 }
@@ -1006,6 +1021,11 @@ impl Grove {
                         && dst < self.tile_order.len()
                     {
                         self.tile_order.swap(src, dst);
+                        // The swapped sessions may have moved between columns of
+                        // different heights (e.g. a half-height left tile into
+                        // the full-height lone-tile column), so re-size each
+                        // tile's PTY to its new column.
+                        self.refresh_pty_viewport();
                     }
                 }
             }
@@ -1018,6 +1038,35 @@ impl Grove {
                 self.app.chrome_visible = false;
                 self.refresh_pty_viewport();
             }
+            Msg::OpenSessionLauncher => self.open_session_launcher(),
+            Msg::LauncherSelectProject(i) => self.launcher_select_project(i),
+            Msg::LauncherSelectWorktree(i) => {
+                let proj = match &self.app.modal {
+                    crate::app::Modal::SessionLauncher { proj, .. } => Some(*proj),
+                    _ => None,
+                };
+                if let Some(proj) = proj {
+                    let max = self.launcher_worktrees(proj).len();
+                    if let crate::app::Modal::SessionLauncher { wt, col, .. } = &mut self.app.modal
+                    {
+                        if i < max {
+                            *wt = i;
+                            *col = 1;
+                        }
+                    }
+                }
+            }
+            Msg::LauncherSelectAgent(i) => {
+                let max = self.app.available_agents.len();
+                if let crate::app::Modal::SessionLauncher { agent, col, .. } = &mut self.app.modal {
+                    if i < max {
+                        *agent = i;
+                        *col = 2;
+                    }
+                }
+            }
+            Msg::LauncherNewWorktree => self.launcher_new_worktree(),
+            Msg::LauncherStart => self.launcher_start(),
         }
         Task::none()
     }
@@ -1355,15 +1404,26 @@ impl Grove {
 
     fn refresh_pty_viewport(&mut self) {
         if self.grid_view {
-            let n = self.tile_order.len().max(1);
-            let (tile_rows, tile_cols) = super::metrics::grid_tile_dims(
-                self.window_size.width,
-                self.window_size.height,
-                self.ui_zoom,
-                n,
-            );
-            for s in &mut self.app.sessions {
-                s.resize(tile_rows, tile_cols);
+            let total = self.tile_order.len();
+            let n = total.max(1);
+            let (grid_cols, _) = super::metrics::grid_layout(n);
+            // All columns are equal width, so the cell width is uniform.
+            let tile_cols =
+                super::metrics::grid_tile_cols(self.window_size.width, self.ui_zoom, n);
+            // Height is per-column: a tile's PTY rows depend on how many tiles
+            // share its column (column `p % grid_cols` for tile-order slot `p`),
+            // so the lone tile in a short column fills the full workspace height.
+            for (p, &si) in self.tile_order.iter().enumerate() {
+                let col = p % grid_cols;
+                let tiles_in_col = (total - 1 - col) / grid_cols + 1;
+                let tile_rows = super::metrics::grid_tile_rows_for_col(
+                    self.window_size.height,
+                    self.ui_zoom,
+                    tiles_in_col,
+                );
+                if let Some(s) = self.app.sessions.get_mut(si) {
+                    s.resize(tile_rows, tile_cols);
+                }
             }
             self.invalidate_pty_render_cache();
             return;
@@ -1483,6 +1543,9 @@ impl Grove {
         // Copy PTY selection with the OS copy shortcut.
         // macOS: Cmd+C  |  others: Ctrl+Shift+C
         if let Key::Character(s) = &key {
+            if is_new_session_shortcut(mods, s) && self.grid_view {
+                return self.update(Msg::OpenSessionLauncher);
+            }
             if is_copy_shortcut(mods, s) {
                 if let Some(text) = self.selection_text() {
                     crate::clipboard::copy(&text);
@@ -1677,6 +1740,48 @@ impl Grove {
                 },
                 _ => {}
             },
+            Modal::SessionLauncher {
+                proj,
+                wt,
+                agent,
+                col,
+                ..
+            } => {
+                let (proj, wt, agent, col) = (*proj, *wt, *agent, *col);
+                match key {
+                    Key::Named(Named::Escape) => self.cancel_modal(),
+                    Key::Named(Named::Enter) => self.launcher_start(),
+                    Key::Named(Named::ArrowLeft) => {
+                        if let Modal::SessionLauncher { col, .. } = &mut self.app.modal {
+                            *col = crate::gui::launcher::move_column(*col, -1);
+                        }
+                    }
+                    Key::Named(Named::ArrowRight) => {
+                        if let Modal::SessionLauncher { col, .. } = &mut self.app.modal {
+                            *col = crate::gui::launcher::move_column(*col, 1);
+                        }
+                    }
+                    Key::Named(Named::ArrowDown) | Key::Named(Named::ArrowUp) => {
+                        let delta = if matches!(key, Key::Named(Named::ArrowDown)) { 1 } else { -1 };
+                        let proj_len = self.app.store.projects.len();
+                        let wt_len = self.launcher_worktrees(proj).len();
+                        let agent_len = self.app.available_agents.len();
+                        let (np, nw, na) = crate::gui::launcher::nav_within_column(
+                            col, proj, wt, agent, delta, proj_len, wt_len, agent_len,
+                        );
+                        // A project change reloads that project's worktrees.
+                        if col == 0 && np != proj {
+                            self.ensure_wt_cached(np);
+                        }
+                        if let Modal::SessionLauncher { proj, wt, agent, .. } = &mut self.app.modal {
+                            *proj = np;
+                            *wt = nw;
+                            *agent = na;
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Modal::Settings => {
                 if matches!(key, Key::Named(Named::Escape)) {
                     self.app.modal = Modal::None;
@@ -1750,6 +1855,30 @@ impl Grove {
             self.refresh_pty_viewport();
         }
         self.rebuild_wt_cache();
+        // If the worktree-name input was launched from the session launcher,
+        // and a new worktree/session was actually created, re-open the launcher.
+        if self.pending_launcher_proj.is_some() {
+            match &self.app.modal {
+                Modal::None => self.reopen_launcher(),
+                Modal::Input {
+                    kind: InputKind::AddWorktreeName,
+                    ..
+                } => {
+                    // Validation note re-showed the input: keep the target
+                    // parked so a later successful submit still re-opens the
+                    // launcher.
+                }
+                _ => {
+                    // Landed on some other modal (e.g. AgentPicker, or an
+                    // init-git confirm prompt): that's no longer a plain
+                    // worktree-name round-trip, so don't leave the launcher
+                    // parked indefinitely — an unrelated later modal
+                    // resolving to `Modal::None` must not spuriously re-open
+                    // the launcher.
+                    self.pending_launcher_proj = None;
+                }
+            }
+        }
     }
 
     fn submit_modal_confirm(&mut self, yes: bool) {
@@ -1848,6 +1977,11 @@ impl Grove {
         }
         self.scripts_editor = None;
         self.app.modal = Modal::None;
+        // Cancelling any modal abandons the launcher "+ New worktree…"
+        // round-trip if one was in flight; otherwise a later unrelated
+        // `submit_modal_input` that lands on `Modal::None` would spuriously
+        // re-open the session launcher.
+        self.pending_launcher_proj = None;
     }
 
     /// Begin executing a confirmed remove-project action. If the user opted
@@ -2091,6 +2225,138 @@ impl Grove {
         }
     }
 
+    /// The worktrees backing launcher project `proj`: the live `app.worktrees`
+    /// when it is the active project, else the cached list (loaded on demand).
+    pub(super) fn launcher_worktrees(&self, proj: usize) -> Vec<crate::git::Worktree> {
+        if proj == self.app.proj_idx {
+            self.app.worktrees.clone()
+        } else {
+            self.wt_cache.get(&proj).cloned().unwrap_or_default()
+        }
+    }
+
+    /// Open the session launcher with a sensible default selection: the active
+    /// project + worktree, agent index 0, skip-perms from the global default.
+    fn open_session_launcher(&mut self) {
+        if self.app.store.projects.is_empty() {
+            return;
+        }
+        self.app.refresh_available_agents();
+        let n = self.app.store.projects.len();
+        for i in 0..n {
+            self.ensure_wt_cached(i);
+        }
+        let proj = self.app.proj_idx.min(n - 1);
+        let wt = self
+            .app
+            .wt_idx
+            .min(self.launcher_worktrees(proj).len().saturating_sub(1));
+        self.app.modal = crate::app::Modal::SessionLauncher {
+            proj,
+            wt,
+            agent: 0,
+            col: 0,
+        };
+    }
+
+    /// Select a launcher project: reset the worktree selection and ensure that
+    /// project's worktrees are loaded.
+    fn launcher_select_project(&mut self, index: usize) {
+        let n = self.app.store.projects.len();
+        if index >= n {
+            return;
+        }
+        self.ensure_wt_cached(index);
+        if let crate::app::Modal::SessionLauncher { proj, wt, col, .. } = &mut self.app.modal {
+            *proj = index;
+            *wt = 0;
+            *col = 0;
+        }
+    }
+
+    /// "+ New worktree…": remember the launcher's project, switch to it, and
+    /// open Grove's standard worktree-name input. After creation,
+    /// `submit_modal_input` re-opens the launcher (see `reopen_launcher`).
+    fn launcher_new_worktree(&mut self) {
+        let crate::app::Modal::SessionLauncher { proj, .. } = self.app.modal else {
+            return;
+        };
+        if proj >= self.app.store.projects.len() {
+            return;
+        }
+        self.pending_launcher_proj = Some(proj);
+        self.switch_active_project(proj);
+        // Mirror the sidebar "add worktree" entry point.
+        self.app.focus = crate::app::Pane::Worktrees;
+        self.app.start_add();
+    }
+
+    /// Re-open the launcher after a worktree was created from it. Selects the
+    /// newly-created worktree (the last non-main entry) in the stashed project.
+    fn reopen_launcher(&mut self) {
+        let Some(proj) = self.pending_launcher_proj.take() else {
+            return;
+        };
+        if proj >= self.app.store.projects.len() {
+            return;
+        }
+        self.app.refresh_available_agents();
+        self.ensure_wt_cached(proj);
+        let worktrees = self.launcher_worktrees(proj);
+        // The newest worktree is the last entry (git lists main first).
+        let wt = worktrees.len().saturating_sub(1);
+        self.app.modal = crate::app::Modal::SessionLauncher {
+            proj,
+            wt,
+            agent: 0,
+            col: 1,
+        };
+    }
+
+    /// Start the selected session, then (grid always open here) append it to
+    /// `tile_order` and focus it.
+    fn launcher_start(&mut self) {
+        let crate::app::Modal::SessionLauncher {
+            proj,
+            wt,
+            agent,
+            ..
+        } = self.app.modal.clone()
+        else {
+            return;
+        };
+        let Some(project) = self.app.store.projects.get(proj) else {
+            return;
+        };
+        let pname = project.name.clone();
+        let worktrees = self.launcher_worktrees(proj);
+        let Some(w) = worktrees.get(wt).cloned() else {
+            return;
+        };
+        let Some(ag) = self.app.available_agents.get(agent).copied() else {
+            return;
+        };
+        let label = crate::gui::launcher::default_label(w.is_main, &pname, &w.path);
+        let args = ag.launch_args(self.app.skip_permissions_enabled());
+        let before = self.session_keys();
+        self.app.modal = crate::app::Modal::None;
+        // `at_end = true`: launcher sessions always land last in the sessions
+        // vector so they appear at the end of the Agent View grid, even after a
+        // tile_order rebuild (entering Agent View resets it to sessions order).
+        let inserted = self
+            .app
+            .spawn_session(label, pname, w.path.clone(), ag, args, &w.path, true);
+        self.resize_new_sessions(&before);
+        if let Some(at) = inserted {
+            if self.grid_view {
+                crate::gui::launcher::insert_into_tile_order(&mut self.tile_order, at);
+                self.grid_focused = Some(at);
+                self.refresh_pty_viewport();
+            }
+        }
+        self.rebuild_wt_cache();
+    }
+
     fn spawn(&mut self, proj: usize, wt: usize, agent: Agent) {
         self.switch_active_project(proj);
         self.app.wt_idx = wt;
@@ -2106,7 +2372,7 @@ impl Grove {
         } else {
             crate::app::path_basename(&w.path)
         };
-        let args = agent.launch_args();
+        let args = agent.launch_args(self.app.skip_permissions_enabled());
         let use_tmux = self.app.use_tmux();
         match Session::spawn(
             label,
@@ -2332,6 +2598,18 @@ fn pixel_to_cell(x: f32, y: f32) -> PtyCell {
         row: (y / metrics.cell_h).max(0.0) as usize,
         col: (x / metrics.cell_w).max(0.0) as usize,
     }
+}
+
+/// Returns true when the key event matches the "new session" shortcut.
+/// macOS: Cmd+N (logo, no ctrl)  |  others: Ctrl+N.
+fn is_new_session_shortcut(mods: Modifiers, s: &str) -> bool {
+    if !s.eq_ignore_ascii_case("n") {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    return mods.logo() && !mods.control();
+    #[cfg(not(target_os = "macos"))]
+    return mods.control();
 }
 
 /// Returns true when the key event matches the OS copy shortcut.

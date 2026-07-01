@@ -58,6 +58,10 @@ pub struct Store {
     /// this value no update notice is shown; a newer release clears it.
     #[serde(default)]
     pub skipped_version: Option<String>,
+    /// None means unset; treated as `true` (bypass enabled) to preserve the
+    /// pre-existing hardcoded behavior for upgrading users.
+    #[serde(default)]
+    pub dangerously_skip_permissions_enabled: Option<bool>,
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -172,6 +176,7 @@ mod tests {
             onboarded: true,
             last_update_check: None,
             skipped_version: None,
+            dangerously_skip_permissions_enabled: Some(false),
         };
 
         let json = serde_json::to_string_pretty(&original).expect("serialize");
@@ -186,6 +191,7 @@ mod tests {
         assert!((recovered.ui_zoom.unwrap() - 1.25).abs() < f32::EPSILON);
         assert!((recovered.sidebar_width.unwrap() - 360.0).abs() < f32::EPSILON);
         assert!(recovered.onboarded);
+        assert_eq!(recovered.dangerously_skip_permissions_enabled, Some(false));
     }
 
     /// `Store::default()` deserializes from an empty JSON object — the
@@ -203,6 +209,7 @@ mod tests {
             !store.onboarded,
             "a fresh config must report onboarded=false so the wizard runs"
         );
+        assert!(store.dangerously_skip_permissions_enabled.is_none());
     }
 
     /// A corrupted JSON file must make `write_atomic` + a subsequent manual

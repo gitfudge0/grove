@@ -144,6 +144,9 @@ pub struct Grove {
     /// a tile is clicked. All keystrokes route here while set.
     pub grid_focused: Option<usize>,
     pub grid_drag: Option<GridDrag>,
+    /// Set while the worktree-name input was opened from the session launcher;
+    /// on successful worktree creation the launcher re-opens into this project.
+    pub pending_launcher_proj: Option<usize>,
     /// True when zen was entered from grid view; exiting zen re-enters grid.
     pub grid_view_before_zen: bool,
     /// Timestamp of the last divider press, for double-click reset detection.
@@ -330,6 +333,8 @@ pub enum Msg {
     WindowResized(Size),
     BackendNative,
     BackendTmux,
+    SkipPermissionsEnable,
+    SkipPermissionsDisable,
     ProjectClicked(usize),
     /// Toggle button in the sidebar tree header. Collapses everything except
     /// worktrees that currently contain sessions, or — if already in that
@@ -540,4 +545,19 @@ pub enum Msg {
     /// ⤢ expand clicked in tile header: enter zen for this session and
     /// remember to return to grid on exit.
     GridTileZen(usize),
+
+    // ── Agent View session launcher ──────────────────────────────────────
+    /// Open the launcher (pill click or Cmd/Ctrl+N while the grid is open).
+    OpenSessionLauncher,
+    /// Select the project at this index; resets worktree selection to 0 and
+    /// lazily loads that project's worktrees.
+    LauncherSelectProject(usize),
+    /// Select the worktree at this index within the current project.
+    LauncherSelectWorktree(usize),
+    /// Select the agent at this index within `available_agents`.
+    LauncherSelectAgent(usize),
+    /// "+ New worktree…" row: hand off to the worktree-name input flow.
+    LauncherNewWorktree,
+    /// Start the session with the current selection.
+    LauncherStart,
 }
