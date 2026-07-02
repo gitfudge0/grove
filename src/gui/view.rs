@@ -15,10 +15,10 @@ use super::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, Sid
 use super::widgets::{
     control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_workspace, footer_btn,
     icon_btn, modal_action,
-    modal_dir_row, modal_list_row, modal_panel, seg_button, sidebar_agent_menu_overlay, tool_btn,
-    tool_btn_toggle, vline, ModalBtn, SegSide,
+    modal_checkbox, modal_list_row, modal_panel, seg_button,
+    sidebar_agent_menu_overlay, tool_btn, tool_btn_toggle, vline, ModalBtn, SegSide,
 };
-use crate::app::{InputKind, Modal, OnboardStep};
+use crate::app::{AddProjectStep, GitProbe, Modal, OnboardStep};
 use crate::git::Worktree;
 use crate::session::{Session, SessionStatus};
 use iced::border::Radius;
@@ -33,6 +33,12 @@ use std::sync::atomic::Ordering;
 /// focus it from `update` when the modal opens.
 pub fn modal_input_id() -> text_input::Id {
     text_input::Id::new("modal-input-primary")
+}
+
+/// Stable id for the add-project details-step name field, used to focus it
+/// when the modal advances to step 2.
+pub fn modal_name_id() -> text_input::Id {
+    text_input::Id::new("modal-input-name")
 }
 
 /// Shared `text_input` styling for modal fields: strip background, themed
@@ -1746,18 +1752,31 @@ impl Grove {
             Modal::Input {
                 title,
                 buffer,
-                kind,
-                dir_sel,
-                name,
                 note,
-            } => self.input_modal(title, buffer, kind, *dir_sel, name.as_deref(), note.as_deref()),
+            } => self.input_modal(title, buffer, note.as_deref()),
             Modal::Confirm {
                 title,
                 prompt,
                 destructive,
                 ..
             } => self.confirm_modal(title, prompt, *destructive),
-            Modal::AddProjectNoGit { path, .. } => self.add_project_no_git_modal(path),
+            Modal::AddProject {
+                step,
+                path,
+                dir_sel,
+                name,
+                git,
+                init_git,
+                note,
+            } => self.add_project_modal(
+                *step,
+                path,
+                *dir_sel,
+                name,
+                git,
+                *init_git,
+                note.as_deref(),
+            ),
             Modal::RemoveProject {
                 name,
                 worktrees,
@@ -1840,111 +1859,26 @@ impl Grove {
         &'a self,
         title: &'a str,
         buffer: &'a str,
-        kind: &'a InputKind,
-        dir_sel: usize,
-        name: Option<&'a str>,
         note: Option<&'a str>,
     ) -> Element<'a, Msg> {
-        let show_dirs = matches!(kind, InputKind::AddProjectPath);
-        let entries = if show_dirs {
-            let mut cache = self.dir_cache.borrow_mut();
-            match cache.as_ref() {
-                Some((k, v)) if k == buffer => v.clone(),
-                _ => {
-                    let v = crate::app::list_dirs(buffer);
-                    *cache = Some((buffer.to_string(), v.clone()));
-                    v
-                }
-            }
-        } else {
-            Vec::new()
-        };
-        let modal_w = if show_dirs { 640.0 } else { 480.0 };
-
-        let path_input = text_input("", buffer)
+        let field = text_input("", buffer)
             .id(modal_input_id())
             .font(UI_FONT)
             .size(13)
             .padding(Padding::from([8, 12]))
-            // The primary field always edits `buffer` (what we display and what
-            // submit_input reads), so it must route through InputPathChanged in
-            // both modes. The separate `name_input` below owns InputNameChanged.
             .on_input(Msg::InputPathChanged)
             .on_submit(Msg::ModalSubmit)
             .style(input_field_style);
 
         let mut body =
-            column![text(title.to_string()).size(13).color(c::MAGENTA()), path_input].spacing(12);
-
-        if show_dirs {
-            // A sliding window of up to 6 matches that scrolls to keep the
-            // selected row in view, with muted "↑N"/"↓N" hints when entries
-            // sit above or below the window.
-            const WINDOW: usize = 6;
-            let total = entries.len();
-            let shown = total.min(WINDOW);
-            // Scroll the window so dir_sel stays visible.
-            let start = dir_sel.saturating_sub(WINDOW - 1).min(total.saturating_sub(WINDOW));
-            let above = start;
-            let below = total.saturating_sub(start + shown);
-            let rows = shown + usize::from(above > 0) + usize::from(below > 0) + usize::from(total == 0);
-            let mut matches_col =
-                Column::new().spacing(0).height(Length::Fixed(rows.max(1) as f32 * ROW_H));
-            if entries.is_empty() {
-                matches_col = matches_col.push(
-                    container(text("no matches").size(12).color(c::FG_MUTE()))
-                        .height(ROW_H)
-                        .align_y(iced::Alignment::Center),
-                );
-            } else {
-                let more = |n: usize, arrow: char| {
-                    container(text(format!("{arrow}{n} more")).size(11).color(c::FG_MUTE()))
-                        .height(ROW_H)
-                        .padding(Padding::from([0, 10]))
-                        .align_y(iced::Alignment::Center)
-                };
-                if above > 0 {
-                    matches_col = matches_col.push(more(above, '↑'));
-                }
-                for (i, path) in entries.into_iter().skip(start).take(shown).enumerate() {
-                    matches_col = matches_col.push(modal_dir_row(path, start + i == dir_sel));
-                }
-                if below > 0 {
-                    matches_col = matches_col.push(more(below, '↓'));
-                }
-            }
-
-            body = body
-                .push(text("matches").size(11).color(c::FG_MUTE()))
-                .push(matches_col);
-
-            // The name field appears only once the path is a real directory.
-            if let Some(name) = name {
-                let name_input = text_input("project name", name)
-                    .font(UI_FONT)
-                    .size(13)
-                    .padding(Padding::from([8, 12]))
-                    .on_input(Msg::InputNameChanged)
-                    .on_submit(Msg::ModalSubmit)
-                    .style(input_field_style);
-                body = body
-                    .push(text("name").size(11).color(c::FG_MUTE()))
-                    .push(name_input);
-            }
-        }
+            column![text(title.to_string()).size(13).color(c::MAGENTA()), field].spacing(12);
 
         if let Some(note) = note {
             body = body.push(text(note.to_string()).size(12).color(c::RED()));
         }
 
-        let hint = if show_dirs {
-            "tab complete · ↑↓ select · enter add"
-        } else {
-            "enter to confirm · esc to cancel"
-        };
-
         body = body
-            .push(text(hint).size(11).color(c::FG_MUTE()))
+            .push(text("enter to confirm · esc to cancel").size(11).color(c::FG_MUTE()))
             .push(Space::with_height(4))
             .push(
                 row![
@@ -1956,7 +1890,317 @@ impl Grove {
                 .align_y(iced::Alignment::Center),
             );
 
-        modal_panel(body.into(), modal_w, c::MAGENTA())
+        modal_panel(body.into(), 480.0, c::MAGENTA())
+    }
+
+    /// The windowed directory-match list shared by the add-project pick step
+    /// and the onboarding project step: up to `window` rows that scroll to
+    /// keep the selection visible, with muted "↑N/↓N more" hints when entries
+    /// sit above or below the window. Results are memoized in `dir_cache`
+    /// because `view()` runs every tick.
+    fn dir_matches(
+        &self,
+        buffer: &str,
+        dir_sel: usize,
+        window: usize,
+        on_pick: fn(String) -> Msg,
+    ) -> Element<'_, Msg> {
+        let entries = {
+            let mut cache = self.dir_cache.borrow_mut();
+            match cache.as_ref() {
+                Some((k, v)) if k == buffer => v.clone(),
+                _ => {
+                    let v = crate::app::list_dirs(buffer);
+                    *cache = Some((buffer.to_string(), v.clone()));
+                    v
+                }
+            }
+        };
+        let total = entries.len();
+        let shown = total.min(window);
+        // Scroll the window so dir_sel stays visible.
+        let start = dir_sel
+            .saturating_sub(window - 1)
+            .min(total.saturating_sub(window));
+        let above = start;
+        let below = total.saturating_sub(start + shown);
+        let rows = shown + usize::from(above > 0) + usize::from(below > 0) + usize::from(total == 0);
+        let mut matches_col =
+            Column::new().spacing(0).height(Length::Fixed(rows.max(1) as f32 * ROW_H));
+        if entries.is_empty() {
+            matches_col = matches_col.push(
+                container(text("no matches").size(12).color(c::FG_MUTE()))
+                    .height(ROW_H)
+                    .padding(Padding::from([0, 10]))
+                    .align_y(iced::Alignment::Center),
+            );
+        } else {
+            let more = |n: usize, arrow: char| {
+                container(text(format!("{arrow}{n} more")).size(11).color(c::FG_MUTE()))
+                    .height(ROW_H)
+                    .padding(Padding::from([0, 10]))
+                    .align_y(iced::Alignment::Center)
+            };
+            if above > 0 {
+                matches_col = matches_col.push(more(above, '↑'));
+            }
+            for (i, path) in entries.into_iter().skip(start).take(shown).enumerate() {
+                let active = start + i == dir_sel;
+                // Rows show just the directory name — the buffer above already
+                // carries the parent path, and full paths wrap illegibly.
+                let label = format!("{}/", crate::app::path_basename(&path));
+                matches_col = matches_col.push(modal_list_row(
+                    text(label)
+                        .font(UI_FONT)
+                        .size(12)
+                        .color(if active { c::FG() } else { c::FG_DIM() })
+                        .wrapping(iced::widget::text::Wrapping::None),
+                    active,
+                    on_pick(path),
+                ));
+            }
+            if below > 0 {
+                matches_col = matches_col.push(more(below, '↓'));
+            }
+        }
+        container(matches_col)
+            .width(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(c::BG_STRIP())),
+                border: Border {
+                    color: c::BORDER_SOFT(),
+                    width: 1.0,
+                    radius: Radius::from(4.0),
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
+    /// The two-step add-project modal: pick a folder (native picker, drop, or
+    /// typed path), then confirm the details with the git probe inline.
+    #[allow(clippy::too_many_arguments)]
+    fn add_project_modal<'a>(
+        &'a self,
+        step: AddProjectStep,
+        path: &'a str,
+        dir_sel: usize,
+        name: &'a str,
+        git: &'a GitProbe,
+        init_git: bool,
+        note: Option<&'a str>,
+    ) -> Element<'a, Msg> {
+        let accent = c::MAGENTA();
+        let step_no = match step {
+            AddProjectStep::PickSource => 1,
+            AddProjectStep::Details => 2,
+        };
+        let header = row![
+            text("add project").size(13).color(accent),
+            Space::with_width(Length::Fill),
+            text(format!("step {step_no} of 2")).size(11).color(c::FG_MUTE()),
+        ]
+        .align_y(iced::Alignment::Center);
+
+        let mut body = column![header].spacing(12);
+
+        match step {
+            AddProjectStep::PickSource => {
+                // Hero action: a full-width primary Browse button with the
+                // drop affordance as its caption.
+                let accent_soft = Color { a: 0.45, ..accent };
+                let browse = button(
+                    container(
+                        text(if self.picker_open {
+                            "waiting for the folder picker…"
+                        } else {
+                            "browse for folder…"
+                        })
+                        .size(13),
+                    )
+                    .width(Length::Fill)
+                    .align_x(iced::Alignment::Center),
+                )
+                .on_press(Msg::AddProjectBrowse)
+                .width(Length::Fill)
+                .padding(Padding::from([10, 12]))
+                .style(move |_, status| {
+                    let hovered = matches!(status, button::Status::Hovered);
+                    button::Style {
+                        background: Some(Background::Color(if hovered {
+                            c::BG_HOVER()
+                        } else {
+                            c::BG_HL()
+                        })),
+                        text_color: c::FG(),
+                        border: Border {
+                            color: if hovered { accent } else { accent_soft },
+                            width: 1.0,
+                            radius: Radius::from(5.0),
+                        },
+                        shadow: Shadow::default(),
+                    }
+                });
+                let drop_hint = container(
+                    text("or drop a folder anywhere in this window")
+                        .size(11)
+                        .color(c::FG_MUTE()),
+                )
+                .width(Length::Fill)
+                .align_x(iced::Alignment::Center);
+
+                let or_divider = row![
+                    container(divider_h(c::BORDER_SOFT())).width(Length::Fill),
+                    text("or type a path").size(11).color(c::FG_MUTE()),
+                    container(divider_h(c::BORDER_SOFT())).width(Length::Fill),
+                ]
+                .spacing(10)
+                .align_y(iced::Alignment::Center);
+
+                let path_input = text_input("~/code/my-repo", path)
+                    .id(modal_input_id())
+                    .font(UI_FONT)
+                    .size(13)
+                    .padding(Padding::from([8, 12]))
+                    .on_input(Msg::AddProjectPathChanged)
+                    .on_submit(Msg::AddProjectChooseTyped)
+                    .style(input_field_style);
+
+                body = body
+                    .push(Space::with_height(2))
+                    .push(browse)
+                    .push(drop_hint)
+                    .push(Space::with_height(2))
+                    .push(or_divider)
+                    .push(path_input)
+                    .push(self.dir_matches(path, dir_sel, 6, Msg::ModalPickDir));
+
+                if let Some(note) = note {
+                    body = body.push(text(note.to_string()).size(12).color(c::RED()));
+                }
+                body = body
+                    .push(
+                        text("tab complete · ↑↓ select · enter continue · esc cancel")
+                            .size(11)
+                            .color(c::FG_MUTE()),
+                    )
+                    .push(Space::with_height(4))
+                    .push(
+                        row![
+                            Space::with_width(Length::Fill),
+                            modal_action("cancel", ModalBtn::Plain, Msg::ModalCancel),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center),
+                    );
+            }
+            AddProjectStep::Details => {
+                let chip = container(
+                    row![
+                        icon("folder", 14.0, c::FG_DIM()),
+                        text(path.to_string())
+                            .size(12)
+                            .color(c::FG())
+                            .wrapping(iced::widget::text::Wrapping::None),
+                        Space::with_width(Length::Fill),
+                        modal_action("change", ModalBtn::Plain, Msg::AddProjectChangeSource),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                )
+                .width(Length::Fill)
+                .padding(Padding::from([6, 10]))
+                .style(|_| container::Style {
+                    background: Some(Background::Color(c::BG_STRIP())),
+                    border: Border {
+                        color: c::BORDER(),
+                        width: 1.0,
+                        radius: Radius::from(4.0),
+                    },
+                    ..Default::default()
+                });
+
+                let badge: Element<'a, Msg> = match git {
+                    GitProbe::Repo { branch } => row![
+                        icon("git", 14.0, c::GREEN()),
+                        text(format!("git repository · branch {branch}"))
+                            .size(12)
+                            .color(c::GREEN()),
+                    ]
+                    .spacing(7)
+                    .align_y(iced::Alignment::Center)
+                    .into(),
+                    GitProbe::NotRepo => row![
+                        icon("no-git", 14.0, c::AMBER()),
+                        text("not a git repository").size(12).color(c::AMBER()),
+                    ]
+                    .spacing(7)
+                    .align_y(iced::Alignment::Center)
+                    .into(),
+                };
+
+                // The placeholder is the default (folder basename); typing
+                // overrides it without having to clear pre-filled text.
+                let default_name = crate::app::path_basename(path);
+                let name_input = text_input(&default_name, name)
+                    .id(modal_name_id())
+                    .font(UI_FONT)
+                    .size(13)
+                    .padding(Padding::from([8, 12]))
+                    .on_input(Msg::AddProjectNameChanged)
+                    .on_submit(Msg::AddProjectSubmit)
+                    .style(input_field_style);
+
+                body = body
+                    .push(text("folder").size(11).color(c::FG_MUTE()))
+                    .push(chip)
+                    .push(badge)
+                    .push(
+                        row![
+                            text("name").size(11).color(c::FG_MUTE()),
+                            Space::with_width(Length::Fill),
+                            text(format!("empty uses '{default_name}'"))
+                                .size(11)
+                                .color(c::FG_MUTE()),
+                        ]
+                        .align_y(iced::Alignment::Center),
+                    )
+                    .push(name_input);
+
+                if matches!(git, GitProbe::NotRepo) {
+                    body = body.push(modal_checkbox(
+                        "Initialize git repository".into(),
+                        init_git,
+                        accent,
+                        Some(Msg::AddProjectToggleInitGit),
+                    ));
+                    if !init_git {
+                        body = body.push(
+                            text("sessions will run directly in the project folder — no worktrees")
+                                .size(11)
+                                .color(c::FG_MUTE()),
+                        );
+                    }
+                }
+                if let Some(note) = note {
+                    body = body.push(text(note.to_string()).size(12).color(c::RED()));
+                }
+                body = body
+                    .push(text("enter add · esc back").size(11).color(c::FG_MUTE()))
+                    .push(Space::with_height(4))
+                    .push(
+                        row![
+                            Space::with_width(Length::Fill),
+                            modal_action("cancel", ModalBtn::Plain, Msg::ModalCancel),
+                            modal_action("add project", ModalBtn::Primary, Msg::AddProjectSubmit),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center),
+                    );
+            }
+        }
+
+        modal_panel(body.into(), 640.0, accent)
     }
 
     fn confirm_modal<'a>(
@@ -1994,43 +2238,6 @@ impl Grove {
         modal_panel(body.into(), 480.0, accent)
     }
 
-    fn add_project_no_git_modal<'a>(&'a self, path: &'a str) -> Element<'a, Msg> {
-        let accent = c::MAGENTA();
-        let header = row![
-            icon("no-git", 14.0, accent),
-            text("not a git repository").size(13).color(accent),
-        ]
-        .spacing(7)
-        .align_y(iced::Alignment::Center);
-        let body = column![
-            header,
-            text(format!(
-                "'{path}' is not a git repository. Initialize git for branch \
-                 isolation and worktrees, or continue without it — sessions and \
-                 terminals will run directly in the project path."
-            ))
-            .size(13)
-            .color(c::FG_DIM())
-            .wrapping(iced::widget::text::Wrapping::Word),
-            Space::with_height(8),
-            row![
-                modal_action("cancel", ModalBtn::Plain, Msg::AddProjectCancelNoGit),
-                Space::with_width(Length::Fill),
-                modal_action(
-                    "continue without git",
-                    ModalBtn::Plain,
-                    Msg::AddProjectContinueNoGit,
-                ),
-                modal_action("initialize git", ModalBtn::Primary, Msg::AddProjectInitGit),
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
-        ]
-        .spacing(12);
-
-        modal_panel(body.into(), 520.0, accent)
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn remove_project_modal<'a>(
         &'a self,
@@ -2042,8 +2249,6 @@ impl Grove {
         current: &'a str,
         errors: &'a [String],
     ) -> Element<'a, Msg> {
-        use iced::widget::checkbox;
-        use iced::widget::checkbox::{Status as CheckboxStatus, Style as CheckboxStyle};
         use iced::widget::progress_bar;
         use iced::widget::progress_bar::Style as ProgressStyle;
 
@@ -2077,46 +2282,16 @@ impl Grove {
             } else {
                 format!("Delete {total} non-main worktrees from disk")
             };
-            let cb = checkbox(label, also_remove)
-                .on_toggle_maybe(if in_progress {
+            let cb = modal_checkbox(
+                label,
+                also_remove,
+                c::RED(),
+                if in_progress {
                     None
                 } else {
                     Some(Msg::ToggleRemoveWorktrees)
-                })
-                .size(14)
-                .spacing(8)
-                .text_size(12)
-                .font(UI_FONT)
-                .style(|_, status| {
-                    let (checked, disabled, hovered) = match status {
-                        CheckboxStatus::Active { is_checked } => (is_checked, false, false),
-                        CheckboxStatus::Hovered { is_checked } => (is_checked, false, true),
-                        CheckboxStatus::Disabled { is_checked } => (is_checked, true, false),
-                    };
-                    let border_color = if checked {
-                        c::RED()
-                    } else if hovered {
-                        c::FG_DIM()
-                    } else {
-                        c::BORDER()
-                    };
-                    CheckboxStyle {
-                        background: Background::Color(if checked {
-                            c::BG_HL()
-                        } else if hovered {
-                            c::BG_HOVER()
-                        } else {
-                            c::BG()
-                        }),
-                        icon_color: if disabled { c::FG_MUTE() } else { c::RED() },
-                        border: Border {
-                            color: border_color,
-                            width: 1.0,
-                            radius: Radius::from(4.0),
-                        },
-                        text_color: Some(if disabled { c::FG_MUTE() } else { c::FG_DIM() }),
-                    }
-                });
+                },
+            );
             body = body.push(Space::with_height(2)).push(cb);
         }
 
@@ -3262,6 +3437,16 @@ impl Grove {
                     .on_submit(Msg::OnbNext)
                     .style(input_field_style);
 
+                let browse = modal_action(
+                    if self.picker_open {
+                        "waiting…"
+                    } else {
+                        "browse…"
+                    },
+                    ModalBtn::Plain,
+                    Msg::AddProjectBrowse,
+                );
+
                 let mut col = column![
                     text("add your first project").size(16).color(c::FG()),
                     text("point grove at a git repository, or any plain folder for ad-hoc sessions.")
@@ -3269,55 +3454,15 @@ impl Grove {
                         .color(c::FG_DIM())
                         .wrapping(iced::widget::text::Wrapping::Word),
                     text("repository or folder").size(11).color(c::FG_MUTE()),
-                    path_input,
+                    row![path_input, browse]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center),
                 ]
                 .spacing(8);
 
-                // Directory matches (memoized in dir_cache, keyed by buffer).
-                let entries = {
-                    let mut cache = self.dir_cache.borrow_mut();
-                    match cache.as_ref() {
-                        Some((k, v)) if k == path => v.clone(),
-                        _ => {
-                            let v = crate::app::list_dirs(path);
-                            *cache = Some((path.to_string(), v.clone()));
-                            v
-                        }
-                    }
-                };
-                const WINDOW: usize = 5;
-                let total = entries.len();
-                let shown = total.min(WINDOW);
-                let start = dir_sel
-                    .saturating_sub(WINDOW - 1)
-                    .min(total.saturating_sub(WINDOW));
-                if total > 0 {
-                    let mut matches_col = Column::new().spacing(0);
-                    for (i, p) in entries.into_iter().skip(start).take(shown).enumerate() {
-                        let active = start + i == dir_sel;
-                        let p2 = p.clone();
-                        matches_col = matches_col.push(modal_list_row(
-                            text(p).size(12).color(if active { c::FG() } else { c::FG_DIM() }),
-                            active,
-                            Msg::OnbPickDir(p2),
-                        ));
-                    }
-                    col = col
-                        .push(text("matches").size(11).color(c::FG_MUTE()))
-                        .push(
-                            container(matches_col)
-                                .width(Length::Fill)
-                                .style(|_| container::Style {
-                                    background: Some(Background::Color(c::BG_STRIP())),
-                                    border: Border {
-                                        color: c::BORDER(),
-                                        width: 1.0,
-                                        radius: Radius::from(4.0),
-                                    },
-                                    ..Default::default()
-                                }),
-                        );
-                }
+                col = col
+                    .push(text("matches").size(11).color(c::FG_MUTE()))
+                    .push(self.dir_matches(path, dir_sel, 5, Msg::OnbPickDir));
 
                 if let Some(name) = name {
                     let name_input = text_input("project name", name)

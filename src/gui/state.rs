@@ -121,6 +121,10 @@ pub struct Grove {
     /// input buffer. `view()` runs every tick; without this the modal would hit
     /// the filesystem (`read_dir`) on every frame.
     pub dir_cache: std::cell::RefCell<Option<(String, Vec<String>)>>,
+    /// True while a native folder-picker dialog is open (add-project /
+    /// onboarding "Browse…"). Guards against spawning a second dialog and
+    /// dims the Browse button.
+    pub picker_open: bool,
     /// Per-session activity trackers, keyed by `Session::id` (never reused,
     /// unlike Arc pointer addresses). Refreshed every ~480ms by `Msg::Tick`;
     /// stale keys are pruned on the same pass.
@@ -465,16 +469,25 @@ pub enum Msg {
     ModalSubmit,
     ModalCancel,
     ModalConfirm(bool),
-    /// Live edit of the path field in the add-project / add-worktree input modal.
+    /// Live edit of the add-worktree input modal's text field.
     InputPathChanged(String),
-    /// Live edit of the optional project-name field in the add-project modal.
-    InputNameChanged(String),
-    /// No-git add-project decision: initialize git for the just-added project.
-    AddProjectInitGit,
-    /// No-git add-project decision: keep the project without git.
-    AddProjectContinueNoGit,
-    /// No-git add-project decision: discard the just-added project.
-    AddProjectCancelNoGit,
+    // ── two-step add-project modal ───────────────────────────────────────
+    /// "Browse…" clicked: open the native folder picker off-thread.
+    AddProjectBrowse,
+    /// Native picker resolved; `None` means the user cancelled.
+    AddProjectPicked(Option<std::path::PathBuf>),
+    /// Live edit of the step-1 path buffer.
+    AddProjectPathChanged(String),
+    /// Step-1 Enter on the path field: feed the typed path to the choose funnel.
+    AddProjectChooseTyped,
+    /// Live edit of the step-2 project-name field.
+    AddProjectNameChanged(String),
+    /// "change" on the step-2 folder chip: back to the pick-source step.
+    AddProjectChangeSource,
+    /// Toggle the step-2 "initialize git repository" checkbox.
+    AddProjectToggleInitGit(bool),
+    /// Final submit from the details step.
+    AddProjectSubmit,
     ModalPickDir(String),
     ChooseTmux(bool),
     AgentPickerSelect(usize),

@@ -737,6 +737,55 @@ pub fn modal_action<'a>(label: &'static str, kind: ModalBtn, msg: Msg) -> Elemen
         .into()
 }
 
+/// Modal checkbox in the shared themed style; `accent` colors the tick and
+/// the checked border. `on_toggle: None` renders it disabled.
+pub fn modal_checkbox<'a>(
+    label: String,
+    checked: bool,
+    accent: Color,
+    on_toggle: Option<fn(bool) -> Msg>,
+) -> Element<'a, Msg> {
+    use iced::widget::checkbox;
+    use iced::widget::checkbox::{Status as CheckboxStatus, Style as CheckboxStyle};
+    checkbox(label, checked)
+        .on_toggle_maybe(on_toggle)
+        .size(14)
+        .spacing(8)
+        .text_size(12)
+        .font(UI_FONT)
+        .style(move |_, status| {
+            let (checked, disabled, hovered) = match status {
+                CheckboxStatus::Active { is_checked } => (is_checked, false, false),
+                CheckboxStatus::Hovered { is_checked } => (is_checked, false, true),
+                CheckboxStatus::Disabled { is_checked } => (is_checked, true, false),
+            };
+            let border_color = if checked {
+                accent
+            } else if hovered {
+                c::FG_DIM()
+            } else {
+                c::BORDER()
+            };
+            CheckboxStyle {
+                background: Background::Color(if checked {
+                    c::BG_HL()
+                } else if hovered {
+                    c::BG_HOVER()
+                } else {
+                    c::BG()
+                }),
+                icon_color: if disabled { c::FG_MUTE() } else { accent },
+                border: Border {
+                    color: border_color,
+                    width: 1.0,
+                    radius: Radius::from(4.0),
+                },
+                text_color: Some(if disabled { c::FG_MUTE() } else { c::FG_DIM() }),
+            }
+        })
+        .into()
+}
+
 /// One selectable row inside a modal list (agent picker, theme picker,
 /// directory matches). Shared so every list uses the same active/hover
 /// treatment: active rows get `bg_highlight`, hovered rows `bg_hover`.
@@ -772,19 +821,6 @@ pub fn modal_list_row<'a>(
         }
     })
     .into()
-}
-
-pub fn modal_dir_row<'a>(path: String, active: bool) -> Element<'a, Msg> {
-    let msg_path = path.clone();
-    modal_list_row(
-        text(path)
-            .font(UI_FONT)
-            .size(12)
-            .color(if active { c::FG() } else { c::FG_DIM() })
-            .wrapping(iced::widget::text::Wrapping::None),
-        active,
-        Msg::ModalPickDir(msg_path),
-    )
 }
 
 pub fn clickable_row<'a>(

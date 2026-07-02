@@ -11,7 +11,7 @@ use super::state::{
     ScriptField, ScriptsEditorState, SidebarDrag, SidebarView, ToolStatus, UpgradeState,
 };
 use crate::agent::Agent;
-use crate::app::{App, InputKind, Modal, Pane};
+use crate::app::{AddProjectStep, App, Modal, OnboardStep, Pane};
 use crate::session::Session;
 use iced::keyboard::{key::Named, Key, Modifiers};
 use iced::{event, keyboard, Event, Subscription, Task};
@@ -71,6 +71,7 @@ impl Grove {
             term_panel_portion: TERM_PANEL_PORTION,
             focused_pane: FocusedPane::Agent,
             dir_cache: Default::default(),
+            picker_open: false,
             activity: Default::default(),
             // Assumed focused at launch (iced can't be queried); corrected by
             // the first Focused/Unfocused event. Worst case: one missed dock
@@ -527,13 +528,32 @@ impl Grove {
                 return task;
             }
             Msg::FileDropped(path) => {
-                // Ignored when a modal is up — dropped text could land in an
-                // unexpected place otherwise.
-                if matches!(self.app.modal, Modal::None) {
-                    if let Some(sess) = self.focused_session_mut() {
-                        sess.send(super::drop::dropped_path_text(&path).as_bytes());
-                        self.pty_selection = None;
+                match &self.app.modal {
+                    // A folder dropped while the add-project modal is open
+                    // chooses it (on either step — re-choosing is a cheap undo).
+                    Modal::AddProject { .. } => {
+                        self.app.add_project_choose(path);
+                        return self.focus_add_project_field();
                     }
+                    // Same affordance on the onboarding project step.
+                    Modal::Onboarding {
+                        step: OnboardStep::Project,
+                        ..
+                    } => {
+                        if path.is_dir() {
+                            self.app.onboard_set_path(format!("{}/", path.display()));
+                        }
+                    }
+                    // No modal: paste the path into the focused terminal.
+                    Modal::None => {
+                        if let Some(sess) = self.focused_session_mut() {
+                            sess.send(super::drop::dropped_path_text(&path).as_bytes());
+                            self.pty_selection = None;
+                        }
+                    }
+                    // Any other modal: ignore — dropped text could land in an
+                    // unexpected place otherwise.
+                    _ => {}
                 }
             }
             Msg::PtyMouseDown(pane, x, y) => {
@@ -801,7 +821,6 @@ impl Grove {
             Msg::ModalSubmit => self.submit_modal_input(),
             Msg::ModalCancel => self.cancel_modal(),
             Msg::InputPathChanged(s) => self.app.set_input_path(s),
-            Msg::InputNameChanged(s) => self.app.set_input_name(s),
             Msg::ModalConfirm(yes) => {
                 if matches!(self.app.modal, Modal::Teardown) {
                     // The teardown modal's only confirm action is dismissal,
@@ -816,31 +835,82 @@ impl Grove {
                     self.submit_modal_confirm(yes);
                 }
             }
-            Msg::AddProjectInitGit => {
-                if let Err(e) = self.app.add_project_init_git() {
-                    self.app.modal = Modal::Message(format!("action failed: {e}"));
+            Msg::AddProjectBrowse => {
+                // One dialog at a time — a second click while the picker is up
+                // must not spawn another.
+                if self.picker_open {
+                    return Task::none();
                 }
-                self.rebuild_wt_cache();
+                if matches!(
+                    self.app.modal,
+                    Modal::AddProject { .. } | Modal::Onboarding { .. }
+                ) {
+                    self.picker_open = true;
+                    return Task::perform(
+                        async {
+                            rfd::AsyncFileDialog::new()
+                                .set_title("Choose a project folder")
+                                .pick_folder()
+                                .await
+                                .map(|h| h.path().to_path_buf())
+                        },
+                        Msg::AddProjectPicked,
+                    );
+                }
             }
-            Msg::AddProjectContinueNoGit => {
-                self.app.add_project_continue_no_git();
-                self.rebuild_wt_cache();
+            Msg::AddProjectPicked(picked) => {
+                self.picker_open = false;
+                // A late result after the modal closed (or changed) must not
+                // mutate an unrelated modal; `None` = user cancelled.
+                if let Some(path) = picked {
+                    match &self.app.modal {
+                        Modal::AddProject { .. } => {
+                            self.app.add_project_choose(path);
+                            return self.focus_add_project_field();
+                        }
+                        Modal::Onboarding {
+                            step: OnboardStep::Project,
+                            ..
+                        } => {
+                            self.app.onboard_set_path(format!("{}/", path.display()));
+                            return iced::widget::text_input::move_cursor_to_end(
+                                crate::gui::view::modal_input_id(),
+                            );
+                        }
+                        _ => {}
+                    }
+                }
             }
-            Msg::AddProjectCancelNoGit => {
-                if let Err(e) = self.app.add_project_cancel_no_git() {
-                    self.app.modal = Modal::Message(format!("action failed: {e}"));
+            Msg::AddProjectPathChanged(s) => self.app.add_project_set_path(s),
+            Msg::AddProjectChooseTyped => {
+                self.app.add_project_choose_typed();
+                return self.focus_add_project_field();
+            }
+            Msg::AddProjectNameChanged(s) => self.app.add_project_set_name(s),
+            Msg::AddProjectChangeSource => {
+                self.app.add_project_change_source();
+                return iced::widget::text_input::focus(crate::gui::view::modal_input_id());
+            }
+            Msg::AddProjectToggleInitGit(v) => {
+                if let Modal::AddProject { init_git, .. } = &mut self.app.modal {
+                    *init_git = v;
+                }
+            }
+            Msg::AddProjectSubmit => {
+                if let Err(e) = self.app.submit_add_project() {
+                    self.app.modal = Modal::Message(format!("add project failed: {e}"));
                 }
                 self.rebuild_wt_cache();
             }
             Msg::ModalPickDir(path) => {
                 if matches!(
                     &self.app.modal,
-                    Modal::Input {
-                        kind: InputKind::AddProjectPath,
+                    Modal::AddProject {
+                        step: AddProjectStep::PickSource,
                         ..
                     }
                 ) {
-                    self.app.set_input_path(format!("{path}/"));
+                    self.app.add_project_set_path(format!("{path}/"));
                     return iced::widget::text_input::move_cursor_to_end(
                         crate::gui::view::modal_input_id(),
                     );
@@ -1660,21 +1730,55 @@ impl Grove {
             Modal::Input { .. } => match key {
                 Key::Named(Named::Escape) => self.cancel_modal(),
                 Key::Named(Named::Enter) => self.submit_modal_input(),
-                Key::Named(Named::ArrowDown) => self.app.input_dir_move(1),
-                Key::Named(Named::ArrowUp) => self.app.input_dir_move(-1),
-                Key::Named(Named::Tab) => {
-                    // Tab completes the path in the buffer; move the caret to the
-                    // end so subsequent typing appends instead of inserting where
-                    // the caret happened to sit before completion.
-                    self.app.input_dir_pick();
-                    return iced::widget::text_input::move_cursor_to_end(
-                        crate::gui::view::modal_input_id(),
-                    );
-                }
                 Key::Character(s) if mods.control() && matches!(s.as_str(), "c" | "C") => {
                     self.cancel_modal()
                 }
                 _ => {}
+            },
+            Modal::AddProject { step, .. } => match step {
+                AddProjectStep::PickSource => match key {
+                    Key::Named(Named::Escape) => self.cancel_modal(),
+                    Key::Named(Named::Enter) => {
+                        self.app.add_project_choose_typed();
+                        return self.focus_add_project_field();
+                    }
+                    Key::Named(Named::ArrowDown) => self.app.add_project_dir_move(1),
+                    Key::Named(Named::ArrowUp) => self.app.add_project_dir_move(-1),
+                    Key::Named(Named::Tab) => {
+                        // Tab completes the path in the buffer; move the caret to
+                        // the end so subsequent typing appends instead of
+                        // inserting where the caret happened to sit before
+                        // completion.
+                        self.app.add_project_dir_pick();
+                        return iced::widget::text_input::move_cursor_to_end(
+                            crate::gui::view::modal_input_id(),
+                        );
+                    }
+                    Key::Character(s) if mods.control() && matches!(s.as_str(), "c" | "C") => {
+                        self.cancel_modal()
+                    }
+                    _ => {}
+                },
+                AddProjectStep::Details => match key {
+                    // Esc is a cheap undo back to pick-source; a second Esc
+                    // (from step 1) cancels the modal outright.
+                    Key::Named(Named::Escape) => {
+                        self.app.add_project_change_source();
+                        return iced::widget::text_input::focus(
+                            crate::gui::view::modal_input_id(),
+                        );
+                    }
+                    Key::Named(Named::Enter) => {
+                        if let Err(e) = self.app.submit_add_project() {
+                            self.app.modal = Modal::Message(format!("add project failed: {e}"));
+                        }
+                        self.rebuild_wt_cache();
+                    }
+                    Key::Character(s) if mods.control() && matches!(s.as_str(), "c" | "C") => {
+                        self.cancel_modal()
+                    }
+                    _ => {}
+                },
             },
             Modal::Confirm { .. } => match key {
                 Key::Named(Named::Escape) => self.submit_modal_confirm(false),
@@ -1682,28 +1786,6 @@ impl Grove {
                 Key::Character(s) => match s.as_str() {
                     "y" | "Y" => self.submit_modal_confirm(true),
                     "n" | "N" => self.submit_modal_confirm(false),
-                    _ => {}
-                },
-                _ => {}
-            },
-            Modal::AddProjectNoGit { .. } => match key {
-                Key::Named(Named::Escape) => {
-                    let _ = self.app.add_project_cancel_no_git();
-                    self.rebuild_wt_cache();
-                }
-                Key::Named(Named::Enter) => {
-                    let _ = self.app.add_project_init_git();
-                    self.rebuild_wt_cache();
-                }
-                Key::Character(s) => match s.as_str() {
-                    "g" | "G" => {
-                        let _ = self.app.add_project_init_git();
-                        self.rebuild_wt_cache();
-                    }
-                    "c" | "C" => {
-                        self.app.add_project_continue_no_git();
-                        self.rebuild_wt_cache();
-                    }
                     _ => {}
                 },
                 _ => {}
@@ -1860,10 +1942,7 @@ impl Grove {
         if self.pending_launcher_proj.is_some() {
             match &self.app.modal {
                 Modal::None => self.reopen_launcher(),
-                Modal::Input {
-                    kind: InputKind::AddWorktreeName,
-                    ..
-                } => {
+                Modal::Input { .. } => {
                     // Validation note re-showed the input: keep the target
                     // parked so a later successful submit still re-opens the
                     // launcher.
@@ -1963,6 +2042,22 @@ impl Grove {
         }
         self.app.status = "saved project scripts".into();
         self.app.modal = Modal::None;
+    }
+
+    /// After a choose-funnel attempt, focus whichever add-project field is now
+    /// primary: the name field once the details step is showing, else the
+    /// step-1 path input (the funnel rejected the folder).
+    fn focus_add_project_field(&self) -> Task<Msg> {
+        match &self.app.modal {
+            Modal::AddProject {
+                step: AddProjectStep::Details,
+                ..
+            } => iced::widget::text_input::focus(crate::gui::view::modal_name_id()),
+            Modal::AddProject { .. } => {
+                iced::widget::text_input::focus(crate::gui::view::modal_input_id())
+            }
+            _ => Task::none(),
+        }
     }
 
     fn cancel_modal(&mut self) {

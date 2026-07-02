@@ -6,7 +6,6 @@ use crate::theme;
 use crate::tmux;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
-use std::process::Command;
 
 pub fn cycle(cur: usize, delta: i32, len: usize) -> usize {
     if len == 0 {
@@ -145,17 +144,12 @@ pub fn onboarding_modal() -> Modal {
 #[derive(Clone)]
 pub enum Modal {
     None,
+    /// Single-field text prompt; today only the worktree-name input.
     Input {
         title: String,
         buffer: String,
-        kind: InputKind,
-        dir_sel: usize,
-        /// Project-name buffer, populated once `buffer` resolves to a real
-        /// directory. `None` while the path is incomplete and for the
-        /// worktree-name modal, which has no second field.
-        name: Option<String>,
-        /// Inline validation message (e.g. "not a directory"), shown in red
-        /// under the fields. Cleared on the next edit.
+        /// Inline validation message, shown in red under the field. Cleared on
+        /// the next edit.
         note: Option<String>,
     },
     Confirm {
@@ -164,13 +158,26 @@ pub enum Modal {
         destructive: bool,
         kind: ConfirmKind,
     },
-    /// Three-way decision shown after adding a project whose directory is not a
-    /// git repository: initialize git, continue without git (sessions run
-    /// directly in the project path, no worktrees), or cancel (un-add the
-    /// just-added project). `idx` is the index of the freshly-added project.
-    AddProjectNoGit {
-        idx: usize,
+    /// Two-step add-project flow. Step 1 (`PickSource`) offers the native
+    /// folder picker, drag-and-drop, and a typed path with tab-completion;
+    /// step 2 (`Details`) shows the chosen folder, the name, the upfront git
+    /// probe, and the init-git choice inline.
+    /// Nothing is persisted until the final submit.
+    AddProject {
+        step: AddProjectStep,
+        /// Step 1: the typed path buffer. Step 2: the canonicalized folder.
         path: String,
+        /// Directory-match cursor for the step-1 autocomplete list.
+        dir_sel: usize,
+        /// Project-name override. Left empty, the folder basename is used
+        /// (shown as the field's placeholder). Edits survive a round-trip
+        /// through "change".
+        name: String,
+        git: GitProbe,
+        /// "Initialize git repository" checkbox (meaningful when `NotRepo`).
+        init_git: bool,
+        /// Inline validation message, cleared on the next edit.
+        note: Option<String>,
     },
     /// Two-stage project removal: confirmation (with an optional checkbox to
     /// also delete worktrees on disk) followed by a progress view while the
@@ -277,10 +284,19 @@ pub struct Teardown {
     pub removal_started: bool,
 }
 
+/// Which pane of the two-step add-project modal is showing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AddProjectStep {
+    PickSource,
+    Details,
+}
+
+/// Result of probing the chosen folder for a git repository when the
+/// add-project modal enters its details step.
 #[derive(Clone)]
-pub enum InputKind {
-    AddProjectPath,
-    AddWorktreeName,
+pub enum GitProbe {
+    Repo { branch: String },
+    NotRepo,
 }
 
 #[derive(Clone)]
@@ -288,7 +304,6 @@ pub enum ConfirmKind {
     RemoveProject(usize),
     RemoveWorktree(String), // wt path
     InitAndAddWorktree { name: String },
-    GenerateInclude { path: String },
 }
 
 pub struct App {
@@ -536,29 +551,30 @@ impl App {
 
     pub fn start_add(&mut self) {
         match self.focus {
-            Pane::Projects => {
-                self.modal = Modal::Input {
-                    title: "project directory path".into(),
-                    buffer: "~/".into(),
-                    kind: InputKind::AddProjectPath,
-                    dir_sel: 0,
-                    name: None,
-                    note: None,
-                };
-            }
+            Pane::Projects => self.start_add_project(),
             Pane::Worktrees => {
                 if self.selected_project().is_some() {
                     self.modal = Modal::Input {
                         title: "worktree name".into(),
                         buffer: String::new(),
-                        kind: InputKind::AddWorktreeName,
-                        dir_sel: 0,
-                        name: None,
                         note: None,
                     };
                 }
             }
         }
+    }
+
+    /// Open the two-step add-project modal at its pick-source step.
+    pub fn start_add_project(&mut self) {
+        self.modal = Modal::AddProject {
+            step: AddProjectStep::PickSource,
+            path: "~/".into(),
+            dir_sel: 0,
+            name: String::new(),
+            git: GitProbe::NotRepo,
+            init_git: true,
+            note: None,
+        };
     }
 
     pub fn start_delete(&mut self) {
@@ -1449,8 +1465,8 @@ impl App {
     /// Register the project from the path field, then advance to the theme step.
     /// On validation failure the inline note is set and the step stays put. A
     /// project already added (e.g. after stepping back and forward) just
-    /// advances. Unlike the normal add-project flow this is quiet — it never
-    /// chains into the no-git or generate-`.worktreeinclude` modals.
+    /// advances. Unlike the normal add-project flow this is quiet — no git
+    /// probe or init-git choice.
     fn onboard_submit_project(&mut self) {
         let (already, path, name) = match &self.modal {
             Modal::Onboarding {
@@ -1515,17 +1531,8 @@ impl App {
             .map_err(|e| e.to_string())?
             .to_string_lossy()
             .to_string();
-        self.store.projects.push(Project {
-            name: project_name.clone(),
-            path: abs,
-            scripts: Default::default(),
-        });
-        storage::save(&self.store).map_err(|e| e.to_string())?;
-        let idx = self.store.projects.len() - 1;
-        self.proj_idx = idx;
-        self.status = format!("added {project_name}");
-        self.refresh_worktrees();
-        Ok(idx)
+        self.register_project(project_name, abs)
+            .map_err(|e| e.to_string())
     }
 
     /// Live-update the project-step path field, mirroring the add-project input:
@@ -1728,20 +1735,90 @@ impl App {
         })
     }
 
-    pub fn input_dir_move(&mut self, delta: i32) {
-        let Modal::Input {
-            buffer,
-            kind,
+    /// Replace the input-modal buffer from a live `text_input` edit.
+    pub fn set_input_path(&mut self, s: String) {
+        if let Modal::Input { buffer, note, .. } = &mut self.modal {
+            *buffer = s;
+            *note = None;
+        }
+    }
+
+    pub fn submit_input(&mut self) -> Result<()> {
+        let value = match &self.modal {
+            Modal::Input { buffer, .. } => buffer.trim().to_string(),
+            _ => return Ok(()),
+        };
+        if value.is_empty() {
+            return Ok(());
+        }
+        self.modal = Modal::None;
+        if !git::valid_worktree_name(&value) {
+            self.modal =
+                Modal::Message("invalid name: use letters, digits, '-', '_' or '.'".into());
+            return Ok(());
+        }
+        let Some(p) = self.selected_project().cloned() else {
+            return Ok(());
+        };
+        if !git::is_repo(&p.path) {
+            self.modal = Modal::Confirm {
+                title: "initialize git repo?".into(),
+                prompt: format!(
+                    "'{}' is not a git repo. Run `git init`, then create worktree '{}'.",
+                    p.path, value
+                ),
+                destructive: false,
+                kind: ConfirmKind::InitAndAddWorktree { name: value },
+            };
+            return Ok(());
+        }
+        self.create_worktree(&p, &value);
+        Ok(())
+    }
+
+    // ── two-step add-project modal ───────────────────────────────────────
+
+    fn add_project_note(&mut self, msg: String) {
+        if let Modal::AddProject { note, .. } = &mut self.modal {
+            *note = Some(msg);
+        }
+    }
+
+    /// Live edit of the step-1 path buffer.
+    pub fn add_project_set_path(&mut self, s: String) {
+        if let Modal::AddProject {
+            step: AddProjectStep::PickSource,
+            path,
+            dir_sel,
+            note,
+            ..
+        } = &mut self.modal
+        {
+            *path = s;
+            *dir_sel = 0;
+            *note = None;
+        }
+    }
+
+    /// Live edit of the step-2 name field.
+    pub fn add_project_set_name(&mut self, s: String) {
+        if let Modal::AddProject { name, note, .. } = &mut self.modal {
+            *name = s;
+            *note = None;
+        }
+    }
+
+    pub fn add_project_dir_move(&mut self, delta: i32) {
+        let Modal::AddProject {
+            step: AddProjectStep::PickSource,
+            path,
             dir_sel,
             ..
         } = &mut self.modal
         else {
             return;
         };
-        if !matches!(kind, InputKind::AddProjectPath) {
-            return;
-        }
-        let entries = list_dirs(buffer);
+        let entries = list_dirs(path);
         if entries.is_empty() {
             *dir_sel = 0;
             return;
@@ -1749,231 +1826,150 @@ impl App {
         *dir_sel = cycle(*dir_sel, delta, entries.len());
     }
 
-    pub fn input_dir_pick(&mut self) {
-        if let Modal::Input {
-            buffer,
-            kind: InputKind::AddProjectPath,
+    pub fn add_project_dir_pick(&mut self) {
+        if let Modal::AddProject {
+            step: AddProjectStep::PickSource,
+            path,
             dir_sel,
             ..
         } = &mut self.modal
         {
-            let entries = list_dirs(buffer);
+            let entries = list_dirs(path);
             if let Some(pick) = entries.get(*dir_sel) {
-                *buffer = format!("{}/", pick);
+                *path = format!("{pick}/");
                 *dir_sel = 0;
             }
         }
-        self.refresh_project_name();
     }
 
-    /// Replace the path buffer from a live `text_input` edit and refresh the
-    /// match selection, inline note, and derived project-name field.
-    pub fn set_input_path(&mut self, s: String) {
-        if let Modal::Input {
-            buffer,
-            dir_sel,
+    /// Step-1 Enter: feed the typed buffer into the choose funnel. Guarded to
+    /// the pick-source step so a doubled Enter (the text_input's on_submit plus
+    /// the key subscription) can't fall through and submit the details step.
+    pub fn add_project_choose_typed(&mut self) {
+        let Modal::AddProject {
+            step: AddProjectStep::PickSource,
+            path,
+            ..
+        } = &self.modal
+        else {
+            return;
+        };
+        let pb = std::path::PathBuf::from(shellexpand_tilde(path.trim()));
+        self.add_project_choose(pb);
+    }
+
+    /// Single funnel for all three folder sources (native picker, drop, typed
+    /// path): validate, canonicalize, probe git upfront, and advance to the
+    /// details step. On failure an inline note is set and the step stays put.
+    pub fn add_project_choose(&mut self, pb: std::path::PathBuf) {
+        if !matches!(self.modal, Modal::AddProject { .. }) {
+            return;
+        }
+        if !pb.is_dir() {
+            self.add_project_note("not a folder — choose a directory".into());
+            return;
+        }
+        let abs = match std::fs::canonicalize(&pb) {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(e) => {
+                self.add_project_note(format!("cannot resolve path: {e}"));
+                return;
+            }
+        };
+        let probe = if git::is_repo(&abs) {
+            GitProbe::Repo {
+                branch: git::current_branch(&abs),
+            }
+        } else {
+            GitProbe::NotRepo
+        };
+        if let Modal::AddProject {
+            step,
+            path,
+            git,
             note,
             ..
         } = &mut self.modal
         {
-            *buffer = s;
-            *dir_sel = 0;
+            *step = AddProjectStep::Details;
+            *path = abs;
+            *git = probe;
             *note = None;
         }
-        self.refresh_project_name();
     }
 
-    /// Set the optional project-name override (the second field).
-    pub fn set_input_name(&mut self, s: String) {
-        if let Modal::Input { name, .. } = &mut self.modal {
-            *name = Some(s);
+    /// "change" from the details step: back to pick-source with the buffer
+    /// primed to the current folder. The (possibly edited) name is kept so a
+    /// round-trip doesn't lose it.
+    pub fn add_project_change_source(&mut self) {
+        if let Modal::AddProject { step, note, .. } = &mut self.modal {
+            *step = AddProjectStep::PickSource;
+            *note = None;
         }
     }
 
-    /// Seed the project-name field with the path's basename once the path
-    /// resolves to a real directory; clear it while the path is incomplete so
-    /// the second field stays hidden.
-    fn refresh_project_name(&mut self) {
-        if let Modal::Input {
-            buffer,
-            kind: InputKind::AddProjectPath,
-            name,
-            ..
-        } = &mut self.modal
-        {
-            let pb = std::path::PathBuf::from(shellexpand_tilde(buffer.trim()));
-            if pb.is_dir() {
-                if name.is_none() {
-                    *name = Some(
-                        pb.file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("project")
-                            .to_string(),
-                    );
-                }
-            } else {
-                *name = None;
-            }
-        }
-    }
-
-    fn set_input_note(&mut self, msg: String) {
-        if let Modal::Input { note, .. } = &mut self.modal {
-            *note = Some(msg);
-        }
-    }
-
-    pub fn submit_input(&mut self) -> Result<()> {
-        let (buffer, kind, name) = match &self.modal {
-            Modal::Input {
-                buffer, kind, name, ..
-            } => (buffer.trim().to_string(), kind.clone(), name.clone()),
+    /// Final submit from the details step: validate, optionally `git init`,
+    /// then register the project. Nothing is persisted until every check has
+    /// passed.
+    pub fn submit_add_project(&mut self) -> Result<()> {
+        let (path, name, git, init_git) = match &self.modal {
+            Modal::AddProject {
+                step: AddProjectStep::Details,
+                path,
+                name,
+                git,
+                init_git,
+                ..
+            } => (
+                path.clone(),
+                name.trim().to_string(),
+                git.clone(),
+                *init_git,
+            ),
             _ => return Ok(()),
         };
-        match kind {
-            InputKind::AddProjectPath => {
-                let pb = std::path::PathBuf::from(shellexpand_tilde(&buffer));
-                if !pb.is_dir() {
-                    self.set_input_note("not a directory — press Tab to complete".into());
-                    return Ok(());
-                }
-                let project_name = name
-                    .unwrap_or_else(|| {
-                        pb.file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("project")
-                            .to_string()
-                    })
-                    .trim()
-                    .to_string();
-                if project_name.is_empty() {
-                    self.set_input_note("name required".into());
-                    return Ok(());
-                }
-                if self.store.projects.iter().any(|p| p.name == project_name) {
-                    self.set_input_note(format!("project '{project_name}' already exists"));
-                    return Ok(());
-                }
-                let abs = std::fs::canonicalize(&pb)?.to_string_lossy().to_string();
-                self.modal = Modal::None;
-                self.add_project_record(project_name, abs)?;
-            }
-            InputKind::AddWorktreeName => {
-                let value = buffer;
-                if value.is_empty() {
-                    return Ok(());
-                }
-                self.modal = Modal::None;
-                if !git::valid_worktree_name(&value) {
-                    self.modal =
-                        Modal::Message("invalid name: use letters, digits, '-', '_' or '.'".into());
-                    return Ok(());
-                }
-                let Some(p) = self.selected_project().cloned() else {
-                    return Ok(());
-                };
-                if !git::is_repo(&p.path) {
-                    self.modal = Modal::Confirm {
-                        title: "initialize git repo?".into(),
-                        prompt: format!(
-                            "'{}' is not a git repo. Run `git init`, then create worktree '{}'.",
-                            p.path, value
-                        ),
-                        destructive: false,
-                        kind: ConfirmKind::InitAndAddWorktree { name: value },
-                    };
-                    return Ok(());
-                }
-                self.create_worktree(&p, &value);
+        // The name field is a pure override: left empty, the folder's basename
+        // is used (mirrored by the field's placeholder in the view).
+        let name = if name.is_empty() {
+            path_basename(&path)
+        } else {
+            name
+        };
+        if name.is_empty() {
+            self.add_project_note("name required".into());
+            return Ok(());
+        }
+        if self.store.projects.iter().any(|p| p.name == name) {
+            self.add_project_note(format!("project '{name}' already exists"));
+            return Ok(());
+        }
+        if let Some(p) = self.store.projects.iter().find(|p| p.path == path) {
+            self.add_project_note(format!("folder already added as '{}'", p.name));
+            return Ok(());
+        }
+        if matches!(git, GitProbe::NotRepo) && init_git {
+            if let Err(e) = git::init_if_needed(&path) {
+                self.add_project_note(format!("git init failed: {e}"));
+                return Ok(());
             }
         }
+        self.modal = Modal::None;
+        self.register_project(name, path)?;
         Ok(())
     }
 
-    /// Persist a new project, select it, and chain into the no-git or
-    /// generate-`.worktreeinclude` follow-up modal as appropriate.
-    fn add_project_record(&mut self, name: String, path: String) -> Result<()> {
+    /// Persist a new project and select it. Quiet — no follow-up modals.
+    fn register_project(&mut self, name: String, path: String) -> Result<usize> {
         self.store.projects.push(Project {
             name: name.clone(),
-            path: path.clone(),
+            path,
             scripts: Default::default(),
         });
         storage::save(&self.store)?;
         self.proj_idx = self.store.projects.len() - 1;
         self.status = format!("added {name}");
-
-        let needs_init = !git::is_repo(&path);
-        let needs_include = !std::path::Path::new(&path).join(".worktreeinclude").exists();
-        if needs_init {
-            self.modal = Modal::AddProjectNoGit {
-                idx: self.proj_idx,
-                path,
-            };
-        } else if needs_include {
-            self.modal = Modal::Confirm {
-                title: "generate .worktreeinclude?".into(),
-                prompt: "Use Claude (haiku) to draft a .worktreeinclude for this repo.".into(),
-                destructive: false,
-                kind: ConfirmKind::GenerateInclude { path },
-            };
-        }
         self.refresh_worktrees();
-        Ok(())
-    }
-
-    /// "initialize git" from the no-git add-project decision: run `git init`,
-    /// then offer to generate `.worktreeinclude` (matching the normal add flow).
-    pub fn add_project_init_git(&mut self) -> Result<()> {
-        let Modal::AddProjectNoGit { path, .. } =
-            std::mem::replace(&mut self.modal, Modal::None)
-        else {
-            return Ok(());
-        };
-        if let Err(e) = git::init_if_needed(&path) {
-            self.modal = Modal::Message(format!("git init failed: {e}"));
-            return Ok(());
-        }
-        let needs_include = !std::path::Path::new(&path)
-            .join(".worktreeinclude")
-            .exists();
-        if needs_include {
-            self.modal = Modal::Confirm {
-                title: "generate .worktreeinclude?".into(),
-                prompt: "Use Claude (haiku) to draft a .worktreeinclude for this repo.".into(),
-                destructive: false,
-                kind: ConfirmKind::GenerateInclude { path },
-            };
-        }
-        self.refresh_worktrees();
-        Ok(())
-    }
-
-    /// "continue without git" from the no-git add-project decision: keep the
-    /// project as-is. Sessions/terminals run in the project path via the
-    /// synthesized root worktree; no worktrees are created.
-    pub fn add_project_continue_no_git(&mut self) {
-        self.modal = Modal::None;
-        self.refresh_worktrees();
-    }
-
-    /// "cancel" from the no-git add-project decision: un-add the project that
-    /// was registered just before the decision was shown.
-    pub fn add_project_cancel_no_git(&mut self) -> Result<()> {
-        let Modal::AddProjectNoGit { idx, .. } =
-            std::mem::replace(&mut self.modal, Modal::None)
-        else {
-            return Ok(());
-        };
-        if idx < self.store.projects.len() {
-            let removed = self.store.projects.remove(idx);
-            storage::save(&self.store)?;
-            if self.proj_idx >= self.store.projects.len() {
-                self.proj_idx = self.store.projects.len().saturating_sub(1);
-            }
-            self.status = format!("discarded {}", removed.name);
-            self.refresh_worktrees();
-        }
-        Ok(())
+        Ok(self.proj_idx)
     }
 
     pub fn submit_confirm(&mut self, yes: bool) -> Result<()> {
@@ -2010,39 +2006,6 @@ impl App {
                     return Ok(());
                 }
                 self.create_worktree(&p, &name);
-            }
-            ConfirmKind::GenerateInclude { path } => {
-                let prompt = "Inspect this project directory and write a .worktreeinclude file at its root. \
-                    It uses .gitignore syntax — list patterns matching gitignored files that should be copied \
-                    into a fresh git worktree so the worktree can run immediately (.env, .env.local, local config, \
-                    secrets, build/IDE state that's gitignored but needed). Look at .gitignore, package.json, \
-                    pyproject.toml, Gemfile, go.mod, etc. Only write the file. No commentary.";
-                // Run in the background — the claude CLI can take minutes and
-                // must not block the UI thread. The tick handler drains
-                // `bg_status` when the job finishes.
-                let slot = self.bg_status.clone();
-                self.status = "generating .worktreeinclude…".into();
-                std::thread::spawn(move || {
-                    let res = Command::new("claude")
-                        .args([
-                            "--model",
-                            "haiku",
-                            "--dangerously-skip-permissions",
-                            "-p",
-                            prompt,
-                        ])
-                        .current_dir(&path)
-                        .stdin(std::process::Stdio::null())
-                        .status();
-                    let msg = match res {
-                        Ok(s) if s.success() => ".worktreeinclude generated".into(),
-                        Ok(s) => format!("generate failed: claude exited with {:?}", s.code()),
-                        Err(e) => format!("generate failed: {e}"),
-                    };
-                    if let Ok(mut g) = slot.lock() {
-                        *g = Some(msg);
-                    }
-                });
             }
         }
         Ok(())
