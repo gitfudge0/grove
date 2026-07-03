@@ -213,6 +213,19 @@ pub fn worktree_shows_branch(is_main: bool, branch: &str, name: &str) -> bool {
     !is_main && branch != name && !branch.is_empty()
 }
 
+/// Right-aligned `main` marker for the main worktree row, matching the
+/// launcher's worktree-column tag (see `session_launcher_modal`). Shares a
+/// fixed slot with the on-hover spawn icons — only one of the two is ever
+/// shown, so they never compete for width.
+fn main_tag<'a>() -> Element<'a, Msg> {
+    text("main")
+        .font(UI_FONT)
+        .size(10)
+        .color(c::GREEN())
+        .wrapping(iced::widget::text::Wrapping::None)
+        .into()
+}
+
 /// Rendered height of a worktree row. Must stay in sync with `worktree_row`'s
 /// layout — the agent-menu overlay position is computed from this.
 pub fn worktree_row_height(show_branch: bool) -> f32 {
@@ -319,6 +332,10 @@ pub fn worktree_row<'a>(
         shadow: Shadow::default(),
     });
 
+    // The `main` tag and the hover spawn icons share this one fixed
+    // right-hand slot: at rest the git main worktree shows `main`, on hover
+    // it's replaced by the spawn icons — the two never render at once, so
+    // there's no collision between the tag and the hover actions.
     let actions: Element<'a, Msg> = if hovered {
         row![split_start_button(proj, wt, is_main, has_run, available)]
             .spacing(6)
@@ -330,6 +347,15 @@ pub fn worktree_row<'a>(
                 right: 8.0,
             })
             .into()
+    } else if is_main && is_git {
+        container(main_tag())
+            .padding(Padding {
+                top: 0.0,
+                bottom: 0.0,
+                left: 4.0,
+                right: 12.0,
+            })
+            .into()
     } else {
         Space::with_width(Length::Fixed(0.0)).into()
     };
@@ -338,18 +364,22 @@ pub fn worktree_row<'a>(
         Some(st) => state_glyph(st, tick),
         None => Space::with_width(Length::Fixed(0.0)).into(),
     };
-    container(row![left_btn, rollup_el, actions].align_y(iced::Alignment::Center))
-        .height(row_h)
-        .width(Length::Fill)
-        .style(move |_| container::Style {
-            background: if active {
-                Some(Background::Color(c::BG_HL()))
-            } else {
-                None
-            },
-            ..Default::default()
-        })
-        .into()
+    container(
+        row![left_btn, rollup_el, actions]
+            .spacing(4)
+            .align_y(iced::Alignment::Center),
+    )
+    .height(row_h)
+    .width(Length::Fill)
+    .style(move |_| container::Style {
+        background: if active {
+            Some(Background::Color(c::BG_HL()))
+        } else {
+            None
+        },
+        ..Default::default()
+    })
+    .into()
 }
 
 pub fn session_row<'a>(
@@ -547,14 +577,17 @@ pub fn sanitize_ui_text(raw: &str) -> Option<String> {
 /// Clipping the element to exactly one line height (iced's default line height
 /// is `1.3 × size`) hides any wrapped overflow; paired with `truncate_ellipsis`
 /// this gives "one line, `…` when the text is too long".
-fn single_line<'a>(elem: impl Into<Element<'a, Msg>>, text_size: f32) -> Element<'a, Msg> {
+pub(super) fn single_line<'a>(
+    elem: impl Into<Element<'a, Msg>>,
+    text_size: f32,
+) -> Element<'a, Msg> {
     container(elem)
         .height(Length::Fixed(text_size * 1.3))
         .clip(true)
         .into()
 }
 
-fn truncate_ellipsis(s: &str, max_chars: usize) -> String {
+pub(super) fn truncate_ellipsis(s: &str, max_chars: usize) -> String {
     let count = s.chars().count();
     if count <= max_chars {
         s.to_string()
@@ -716,6 +749,7 @@ pub fn worktree_activity_row<'a>(
     project: &str,
     worktree: &str,
     is_main: bool,
+    is_git: bool,
     session_count: usize,
     hovered: bool,
     available: &[Agent],
@@ -764,9 +798,20 @@ pub fn worktree_activity_row<'a>(
 
     // On hover the spawn chips occupy a fixed slot at the row's right edge
     // (matching the session rows) rather than growing inline next to the count,
-    // which previously pushed long labels into a second line.
+    // which previously pushed long labels into a second line. At rest, the
+    // git main worktree shows a `main` tag in that same slot instead — the
+    // two never render at once, so there's no collision on hover.
     let right_chips: Element<'a, Msg> = if hovered {
         super::widgets::split_start_button_flat(proj, wt, is_main, 10.0, available)
+    } else if is_main && is_git {
+        container(main_tag())
+            .padding(Padding {
+                top: 0.0,
+                bottom: 0.0,
+                left: 4.0,
+                right: 4.0,
+            })
+            .into()
     } else {
         Space::with_width(Length::Fixed(0.0)).into()
     };

@@ -9,14 +9,14 @@ use super::palette as c;
 use super::pty::{rebuild_row_runs, PtyProgram};
 use super::rows::{
     activity_group_header, project_row, session_activity_row,
-    session_row, worktree_activity_row, worktree_row,
+    session_row, single_line, truncate_ellipsis, worktree_activity_row, worktree_row,
 };
 use super::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, SidebarView, UpgradeState};
 use super::widgets::{
     control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_workspace, footer_btn,
     icon_btn, modal_action,
     modal_checkbox, modal_list_row, modal_panel, seg_button,
-    sidebar_agent_menu_overlay, tool_btn, tool_btn_toggle, vline, ModalBtn, SegSide,
+    sidebar_agent_menu_overlay, tool_btn, tool_btn_toggle, truncate_middle, vline, ModalBtn, SegSide,
 };
 use crate::app::{AddProjectStep, ConfirmKind, GitProbe, Modal, OnboardStep};
 use crate::git::Worktree;
@@ -561,8 +561,9 @@ impl Grove {
         // All worktrees across all projects, listed `project / worktree`.
         // The row shows the session count and lets the user spawn new
         // sessions inline regardless of whether sessions already exist.
-        let mut worktree_rows: Vec<(usize, usize, String, String, bool, usize)> = Vec::new();
+        let mut worktree_rows: Vec<(usize, usize, String, String, bool, bool, usize)> = Vec::new();
         for (pi, p) in self.app.store.projects.iter().enumerate() {
+            let is_git = crate::git::is_repo(&p.path);
             let wts: &[Worktree] = if pi == self.app.proj_idx {
                 &self.app.worktrees
             } else {
@@ -578,7 +579,7 @@ impl Grove {
                     .get(w.path.as_str())
                     .copied()
                     .unwrap_or(0);
-                worktree_rows.push((pi, wi, p.name.clone(), wname, w.is_main, count));
+                worktree_rows.push((pi, wi, p.name.clone(), wname, w.is_main, is_git, count));
             }
         }
         let _ = wt_paths_with_sessions; // retained above for symmetry; not used now
@@ -621,7 +622,7 @@ impl Grove {
             Some(Msg::ToggleActivityNoSessionsGroup),
         ));
         if no_sessions_expanded {
-            for (pi, wi, pname, wname, is_main, count) in worktree_rows {
+            for (pi, wi, pname, wname, is_main, is_git, count) in worktree_rows {
                 let hovered = self.hovered_wt == Some((pi, wi));
                 let row_el = worktree_activity_row(
                     pi,
@@ -629,6 +630,7 @@ impl Grove {
                     &pname,
                     &wname,
                     is_main,
+                    is_git,
                     count,
                     hovered,
                     &self.app.available_agents,
@@ -2735,11 +2737,18 @@ impl Grove {
                 w.branch.clone()
             };
             let tag = if w.is_main { "main" } else { "" };
+            let name_el = single_line(
+                text(truncate_ellipsis(&name, 28))
+                    .size(12)
+                    .color(if active { c::FG() } else { c::FG_DIM() })
+                    .wrapping(iced::widget::text::Wrapping::None),
+                12.0,
+            );
             let label_row = row![
-                text(name).size(12).color(if active { c::FG() } else { c::FG_DIM() }),
-                Space::with_width(Length::Fill),
+                container(name_el).width(Length::Fill).clip(true),
                 text(tag.to_string()).size(10).color(c::GREEN()),
             ]
+            .spacing(6)
             .align_y(iced::Alignment::Center);
             wt_list = wt_list.push(modal_list_row(label_row, active, Msg::LauncherSelectWorktree(i)));
         }
@@ -2798,9 +2807,15 @@ impl Grove {
             .unwrap_or_default();
         let ag_label = self.app.available_agents.get(agent).map(|a| a.label().to_string()).unwrap_or_default();
         let crumb = crate::gui::launcher::breadcrumb(&pname, &branch, &ag_label);
+        let crumb_el = single_line(
+            text(truncate_middle(&crumb, 60))
+                .size(12)
+                .color(c::FG_DIM())
+                .wrapping(iced::widget::text::Wrapping::None),
+            12.0,
+        );
         let footer = row![
-            text(crumb).size(12).color(c::FG_DIM()),
-            Space::with_width(Length::Fill),
+            container(crumb_el).width(Length::Fill).clip(true),
             text("←/→ or h/l columns · ↑/↓ or j/k move · space default · enter start · esc")
                 .size(10)
                 .color(c::FG_MUTE()),
