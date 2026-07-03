@@ -335,6 +335,9 @@ pub enum Msg {
     /// implicit acknowledgment of the visible session).
     WindowFocusChanged(bool),
     WindowResized(Size),
+    /// The OS asked to close the window (exit_on_close_request is off; grove
+    /// decides whether running native sessions warrant a confirm first).
+    CloseRequested(iced::window::Id),
     BackendNative,
     BackendTmux,
     SkipPermissionsEnable,
@@ -517,6 +520,8 @@ pub enum Msg {
     UpdateCheckResult(Result<crate::upgrade::Release, String>, bool),
     /// User chose to skip the available release version.
     SkipVersion,
+    /// Copy the available release's GitHub URL to the clipboard.
+    CopyReleaseUrl,
     /// User confirmed they want to apply the update.
     StartUpdate,
     /// Restart the app after a successful update.
@@ -546,6 +551,10 @@ pub enum Msg {
     OnbThemeSelect(usize),
     /// Select the agent at this index in the session step.
     OnbAgentSelect(usize),
+    /// Select the session backend (true = tmux) on the backend step.
+    OnbBackendSelect(bool),
+    /// Select the permissions mode (true = skip prompts) on the session step.
+    OnbPermsSelect(bool),
     ToggleGridView,
     /// Tile header was pressed; starts a drag and focuses the tile.
     /// Argument is an index into `tile_order`.
@@ -553,7 +562,7 @@ pub enum Msg {
     /// Cursor entered a tile while a drag is live.
     /// Argument is an index into `tile_order`.
     GridDragHover(usize),
-    /// Left button released: commit the drag (swap if source ≠ hover).
+    /// Left button released: commit the drag (insert at hover slot if source ≠ hover).
     GridDragEnd,
     /// ⤢ expand clicked in tile header: enter zen for this session and
     /// remember to return to grid on exit.

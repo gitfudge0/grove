@@ -50,6 +50,7 @@ pub fn run() -> Result<()> {
         .font(metrics::MONO_BOLD)
         .default_font(metrics::UI_FONT)
         .window_size(Size::new(1280.0, 800.0))
+        .exit_on_close_request(false)
         .run_with(|| {
             // Fire a background update check ~3 s after startup so the UI is
             // fully rendered before the network round-trip begins.

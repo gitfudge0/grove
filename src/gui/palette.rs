@@ -85,6 +85,20 @@ pub fn BORDER_SOFT() -> Color {
     mix(base_bg(), base_fg(), 0.07)
 }
 
+// ── overlays ─────────────────────────────────────────────────────────────
+
+/// Modal scrim: a translucent wash derived from the theme rather than a
+/// fixed black. Dark themes dim toward black; light themes dim toward the
+/// foreground so the wash stays visible on near-white backgrounds.
+pub fn SCRIM() -> Color {
+    let base = if is_dark() {
+        mix(base_bg(), Color::BLACK, 0.9)
+    } else {
+        mix(base_bg(), base_fg(), 0.9)
+    };
+    Color { a: 0.16, ..base }
+}
+
 // ── text ─────────────────────────────────────────────────────────────────
 
 pub fn FG() -> Color {

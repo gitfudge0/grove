@@ -69,6 +69,17 @@ pub fn insert_into_tile_order(tile_order: &mut Vec<usize>, at: usize) {
     tile_order.push(at);
 }
 
+/// Commit a tile drag with insert semantics: remove the dragged entry and
+/// insert it at the drop slot, shifting the tiles in between (no pairwise
+/// swap). No-op when the indices match or fall outside the order.
+pub fn reorder_tiles(order: &mut Vec<usize>, src: usize, dst: usize) {
+    if src == dst || src >= order.len() || dst >= order.len() {
+        return;
+    }
+    let moved = order.remove(src);
+    order.insert(dst, moved);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +142,24 @@ mod tests {
         let mut empty: Vec<usize> = vec![];
         insert_into_tile_order(&mut empty, 0);
         assert_eq!(empty, vec![0]);
+    }
+
+    #[test]
+    fn reorder_tiles_inserts_instead_of_swapping() {
+        // Dragging tile 0 onto slot 2: everything in between shifts left.
+        let mut order = vec![10, 11, 12, 13];
+        reorder_tiles(&mut order, 0, 2);
+        assert_eq!(order, vec![11, 12, 10, 13]);
+        // Dragging the last tile to the front: everything shifts right.
+        let mut order2 = vec![10, 11, 12, 13];
+        reorder_tiles(&mut order2, 3, 0);
+        assert_eq!(order2, vec![13, 10, 11, 12]);
+        // Same slot and out-of-bounds are no-ops.
+        let mut same = vec![1, 2];
+        reorder_tiles(&mut same, 1, 1);
+        assert_eq!(same, vec![1, 2]);
+        let mut oob = vec![1];
+        reorder_tiles(&mut oob, 0, 5);
+        assert_eq!(oob, vec![1]);
     }
 }

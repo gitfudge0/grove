@@ -11,7 +11,7 @@ use super::state::{
     ScriptField, ScriptsEditorState, SidebarDrag, SidebarView, ToolStatus, UpgradeState,
 };
 use crate::agent::Agent;
-use crate::app::{AddProjectStep, App, Modal, OnboardStep, Pane};
+use crate::app::{AddProjectStep, App, ConfirmKind, Modal, OnboardStep, Pane};
 use crate::session::Session;
 use iced::keyboard::{key::Named, Key, Modifiers};
 use iced::{event, keyboard, Event, Subscription, Task};
@@ -146,6 +146,7 @@ impl Grove {
         });
         let resize = iced::window::resize_events().map(|(_id, size)| Msg::WindowResized(size));
         let mut subs = vec![tick, keys, resize];
+        subs.push(iced::window::close_requests().map(Msg::CloseRequested));
         // While the divider is held, listen globally for cursor motion and the
         // button-release — the 1px handle can't drive `mouse_area::on_move` once
         // the cursor leaves its bounds, so the drag is tracked at the app level.
@@ -191,11 +192,20 @@ impl Grove {
                 // Advance the blink counter (~30 Hz at 60 ms tick interval).
                 self.blink_tick = self.blink_tick.wrapping_add(1);
                 self.tick_drag_autoscroll();
+                // Auto-dismiss the toast once its kind-dependent TTL elapses.
+                if self
+                    .app
+                    .toast
+                    .as_ref()
+                    .is_some_and(|t| t.expired_at(std::time::Instant::now()))
+                {
+                    self.app.toast = None;
+                }
                 // Surface results from background jobs (.worktreeinclude
                 // generation runs off-thread).
                 let bg = self.app.bg_status.lock().ok().and_then(|mut g| g.take());
                 if let Some(msg) = bg {
-                    self.app.status = msg;
+                    self.app.set_toast(msg);
                     self.app.refresh_worktrees();
                 }
                 // Re-classify session activity every 8th tick (~480ms at 60ms).
@@ -308,6 +318,29 @@ impl Grove {
                 // wide for a shrunken window). `size` is already logical.
                 self.sidebar_width = clamp_sidebar_width(self.sidebar_width, size.width);
                 self.refresh_pty_viewport();
+            }
+            Msg::CloseRequested(id) => {
+                // tmux-backed sessions survive grove; only running native
+                // sessions die with the window.
+                let native_running = self.app.native_sessions_running();
+                if native_running == 0 {
+                    return iced::window::close(id);
+                }
+                let noun = if native_running == 1 {
+                    "session"
+                } else {
+                    "sessions"
+                };
+                // Known gap: grove is one-modal-deep, so the quit confirm
+                // replaces any open modal and cancelling does not restore it.
+                // Acceptable for now; a modal stack would be needed to do
+                // better.
+                self.app.modal = Modal::Confirm {
+                    title: "quit grove?".into(),
+                    prompt: format!("{native_running} running {noun} will end. quit anyway?"),
+                    destructive: true,
+                    kind: ConfirmKind::Quit,
+                };
             }
             Msg::BackendNative => {
                 let _ = self.app.set_tmux_enabled(false);
@@ -832,7 +865,7 @@ impl Grove {
                         self.app.close_teardown();
                     }
                 } else {
-                    self.submit_modal_confirm(yes);
+                    return self.confirm_modal_response(yes);
                 }
             }
             Msg::AddProjectBrowse => {
@@ -929,7 +962,7 @@ impl Grove {
             Msg::RefreshTools => return self.detect_tools_task(),
             Msg::SetDefaultAgent(agent) => {
                 if let Err(e) = self.app.set_default_agent(agent) {
-                    self.app.status = e.to_string();
+                    self.app.set_error_toast(e.to_string());
                 }
             }
             Msg::ToolVersionsDetected(results) => {
@@ -974,6 +1007,12 @@ impl Grove {
                     let _ = crate::storage::save(&self.app.store);
                 }
                 self.upgrade = UpgradeState::UpToDate;
+            }
+            Msg::CopyReleaseUrl => {
+                if let UpgradeState::Available(r) = &self.upgrade {
+                    crate::clipboard::copy(&r.html_url);
+                    self.app.set_toast("release url copied");
+                }
             }
             Msg::StartUpdate => {
                 let UpgradeState::Available(release) = self.upgrade.clone() else {
@@ -1047,6 +1086,8 @@ impl Grove {
             Msg::OnbThemeTab => self.app.onboard_theme_switch_tab(),
             Msg::OnbThemeSelect(i) => self.app.onboard_theme_select(i),
             Msg::OnbAgentSelect(i) => self.app.onboard_agent_select(i),
+            Msg::OnbBackendSelect(tmux) => self.app.onboard_set_backend(tmux),
+            Msg::OnbPermsSelect(skip) => self.app.onboard_set_perms(skip),
             Msg::ToggleGridView => {
                 self.grid_view = !self.grid_view;
                 if self.grid_view {
@@ -1086,15 +1127,9 @@ impl Grove {
                 if let Some(drag) = self.grid_drag.take() {
                     let src = drag.source_idx;
                     let dst = drag.hover_idx;
-                    if src != dst
-                        && src < self.tile_order.len()
-                        && dst < self.tile_order.len()
-                    {
-                        self.tile_order.swap(src, dst);
-                        // The swapped sessions may have moved between columns of
-                        // different heights (e.g. a half-height left tile into
-                        // the full-height lone-tile column), so re-size each
-                        // tile's PTY to its new column.
+                    if src != dst && src < self.tile_order.len() && dst < self.tile_order.len() {
+                        crate::gui::launcher::reorder_tiles(&mut self.tile_order, src, dst);
+                        // Every tile between src and dst may have changed column, so re-size each tile's PTY to its new column height.
                         self.refresh_pty_viewport();
                     }
                 }
@@ -1613,9 +1648,6 @@ impl Grove {
         // Copy PTY selection with the OS copy shortcut.
         // macOS: Cmd+C  |  others: Ctrl+Shift+C
         if let Key::Character(s) = &key {
-            if is_new_session_shortcut(mods, s) && self.grid_view {
-                return self.update(Msg::OpenSessionLauncher);
-            }
             if is_copy_shortcut(mods, s) {
                 if let Some(text) = self.selection_text() {
                     crate::clipboard::copy(&text);
@@ -1651,6 +1683,12 @@ impl Grove {
                 return Task::none();
             }
         }
+        // Global app shortcuts (Cmd on macOS, Ctrl+Shift elsewhere). Checked
+        // after copy/paste so those keep their exact existing semantics, and
+        // before key_to_bytes so the chords never leak into the PTY.
+        if let Some(sc) = match_global_shortcut(&key, mods) {
+            return self.run_global_shortcut(sc);
+        }
         // Resize the terminal panel with Ctrl+Shift+Left/Right while it is open.
         // Intercepted before `key_to_bytes` so the arrows don't reach the PTY.
         if self.term_panel_open && mods.control() && mods.shift() {
@@ -1679,6 +1717,80 @@ impl Grove {
         Task::none()
     }
 
+    fn run_global_shortcut(&mut self, sc: GlobalShortcut) -> Task<Msg> {
+        match sc {
+            GlobalShortcut::NewSession => self.update(Msg::OpenSessionLauncher),
+            GlobalShortcut::Settings => self.update(Msg::OpenSettings),
+            GlobalShortcut::ToggleZen => self.update(Msg::ToggleZen),
+            GlobalShortcut::ToggleGrid => self.update(Msg::ToggleGridView),
+            GlobalShortcut::ZoomIn => self.update(Msg::ZoomIn),
+            GlobalShortcut::ZoomOut => self.update(Msg::ZoomOut),
+            GlobalShortcut::ZoomReset => self.update(Msg::ZoomReset),
+            GlobalShortcut::NextSession => {
+                self.cycle_session(1);
+                Task::none()
+            }
+            GlobalShortcut::PrevSession => {
+                self.cycle_session(-1);
+                Task::none()
+            }
+            GlobalShortcut::SelectSession(n) => {
+                self.select_visible_session(n);
+                Task::none()
+            }
+            GlobalShortcut::ShortcutOverlay => {
+                self.app.modal = Modal::ShortcutOverlay;
+                Task::none()
+            }
+        }
+    }
+
+    /// Cycle the focused session in visible order: `tile_order` while the
+    /// grid is open, the sessions list otherwise.
+    fn cycle_session(&mut self, delta: i32) {
+        if self.grid_view {
+            if self.tile_order.is_empty() {
+                return;
+            }
+            let cur = self
+                .grid_focused
+                .and_then(|si| self.tile_order.iter().position(|&x| x == si));
+            let pos = match cur {
+                Some(p) => crate::app::cycle(p, delta, self.tile_order.len()),
+                None if delta > 0 => 0,
+                None => self.tile_order.len() - 1,
+            };
+            let si = self.tile_order[pos];
+            self.grid_focused = Some(si);
+            self.app.active_session = Some(si);
+            return;
+        }
+        if self.app.sessions.is_empty() {
+            return;
+        }
+        let next = match self.app.active_session {
+            Some(cur) => crate::app::cycle(cur, delta, self.app.sessions.len()),
+            None if delta > 0 => 0,
+            None => self.app.sessions.len() - 1,
+        };
+        // Reuse SelectSession so resize / acknowledge / sidebar sync all apply.
+        let _ = self.update(Msg::SelectSession(next));
+    }
+
+    /// Select the Nth session in visible order (mod+1..9).
+    fn select_visible_session(&mut self, n: usize) {
+        if self.grid_view {
+            if let Some(&si) = self.tile_order.get(n) {
+                self.grid_focused = Some(si);
+                self.app.active_session = Some(si);
+            }
+            return;
+        }
+        if n < self.app.sessions.len() {
+            let _ = self.update(Msg::SelectSession(n));
+        }
+    }
+
     /// Grow (`delta > 0`) or shrink the terminal panel by `delta` percent of the
     /// workspace, clamped to `[TERM_PANEL_PORTION_MIN, TERM_PANEL_PORTION_MAX]`,
     /// then reflow every PTY to its new width.
@@ -1693,8 +1805,8 @@ impl Grove {
         self.refresh_pty_viewport();
     }
 
-    /// Keyboard handling for the remove-project modal, mirroring the plain
-    /// confirm modal (Esc/n cancel, Enter/y confirm) plus Space to toggle the
+    /// Keyboard handling for the remove-project modal: Esc/n cancel, y
+    /// confirms (Enter deliberately does not), Space toggles the
     /// delete-worktrees checkbox. Ignored while removal is in flight.
     fn handle_remove_project_key(&mut self, key: Key, busy: bool) -> Task<Msg> {
         if busy {
@@ -1702,7 +1814,6 @@ impl Grove {
         }
         match key {
             Key::Named(Named::Escape) => self.cancel_modal(),
-            Key::Named(Named::Enter) => return self.kick_off_remove_project(),
             Key::Named(Named::Space) => {
                 if let Modal::RemoveProject {
                     also_remove_worktrees,
@@ -1781,11 +1892,11 @@ impl Grove {
                 },
             },
             Modal::Confirm { .. } => match key {
-                Key::Named(Named::Escape) => self.submit_modal_confirm(false),
-                Key::Named(Named::Enter) => self.submit_modal_confirm(true),
+                Key::Named(Named::Escape) => return self.confirm_modal_response(false),
+                Key::Named(Named::Enter) => return self.confirm_modal_response(true),
                 Key::Character(s) => match s.as_str() {
-                    "y" | "Y" => self.submit_modal_confirm(true),
-                    "n" | "N" => self.submit_modal_confirm(false),
+                    "y" | "Y" => return self.confirm_modal_response(true),
+                    "n" | "N" => return self.confirm_modal_response(false),
                     _ => {}
                 },
                 _ => {}
@@ -1830,38 +1941,48 @@ impl Grove {
                 ..
             } => {
                 let (proj, wt, agent, col) = (*proj, *wt, *agent, *col);
-                match key {
-                    Key::Named(Named::Escape) => self.cancel_modal(),
-                    Key::Named(Named::Enter) => self.launcher_start(),
-                    Key::Named(Named::ArrowLeft) => {
-                        if let Modal::SessionLauncher { col, .. } = &mut self.app.modal {
-                            *col = crate::gui::launcher::move_column(*col, -1);
-                        }
+                // Vim parity: h/l mirror ←/→, j/k mirror ↓/↑.
+                let nav_h: Option<i32> = match &key {
+                    Key::Named(Named::ArrowLeft) => Some(-1),
+                    Key::Named(Named::ArrowRight) => Some(1),
+                    Key::Character(s) if matches!(s.as_str(), "h" | "H") => Some(-1),
+                    Key::Character(s) if matches!(s.as_str(), "l" | "L") => Some(1),
+                    _ => None,
+                };
+                let nav_v: Option<i32> = match &key {
+                    Key::Named(Named::ArrowDown) => Some(1),
+                    Key::Named(Named::ArrowUp) => Some(-1),
+                    Key::Character(s) if matches!(s.as_str(), "j" | "J") => Some(1),
+                    Key::Character(s) if matches!(s.as_str(), "k" | "K") => Some(-1),
+                    _ => None,
+                };
+                if let Some(delta) = nav_h {
+                    if let Modal::SessionLauncher { col, .. } = &mut self.app.modal {
+                        *col = crate::gui::launcher::move_column(*col, delta);
                     }
-                    Key::Named(Named::ArrowRight) => {
-                        if let Modal::SessionLauncher { col, .. } = &mut self.app.modal {
-                            *col = crate::gui::launcher::move_column(*col, 1);
-                        }
+                } else if let Some(delta) = nav_v {
+                    let proj_len = self.app.store.projects.len();
+                    let wt_len = self.launcher_worktrees(proj).len();
+                    let agent_len = self.app.available_agents.len();
+                    let (np, nw, na) = crate::gui::launcher::nav_within_column(
+                        col, proj, wt, agent, delta, proj_len, wt_len, agent_len,
+                    );
+                    // A project change reloads that project's worktrees.
+                    if col == 0 && np != proj {
+                        self.ensure_wt_cached(np);
                     }
-                    Key::Named(Named::ArrowDown) | Key::Named(Named::ArrowUp) => {
-                        let delta = if matches!(key, Key::Named(Named::ArrowDown)) { 1 } else { -1 };
-                        let proj_len = self.app.store.projects.len();
-                        let wt_len = self.launcher_worktrees(proj).len();
-                        let agent_len = self.app.available_agents.len();
-                        let (np, nw, na) = crate::gui::launcher::nav_within_column(
-                            col, proj, wt, agent, delta, proj_len, wt_len, agent_len,
-                        );
-                        // A project change reloads that project's worktrees.
-                        if col == 0 && np != proj {
-                            self.ensure_wt_cached(np);
-                        }
-                        if let Modal::SessionLauncher { proj, wt, agent, .. } = &mut self.app.modal {
-                            *proj = np;
-                            *wt = nw;
-                            *agent = na;
-                        }
+                    if let Modal::SessionLauncher { proj, wt, agent, .. } = &mut self.app.modal {
+                        *proj = np;
+                        *wt = nw;
+                        *agent = na;
                     }
-                    _ => {}
+                } else {
+                    match key {
+                        Key::Named(Named::Escape) => self.cancel_modal(),
+                        Key::Named(Named::Enter) => self.launcher_start(),
+                        Key::Named(Named::Space) => self.launcher_toggle_default(),
+                        _ => {}
+                    }
                 }
             }
             Modal::Settings => {
@@ -1878,7 +1999,9 @@ impl Grove {
             }
             Modal::TmuxChoice => match key {
                 Key::Named(Named::Enter) => self.choose_tmux(true),
-                Key::Named(Named::Escape) => self.choose_tmux(false),
+                // Esc dismisses without persisting, so the choice is re-asked
+                // on the next launch. Only explicit picks record a backend.
+                Key::Named(Named::Escape) => self.app.modal = Modal::None,
                 Key::Character(s) => match s.as_str() {
                     "t" | "T" | "y" | "Y" => self.choose_tmux(true),
                     "n" | "N" => self.choose_tmux(false),
@@ -1912,6 +2035,13 @@ impl Grove {
                         _ => {}
                     },
                     _ => {}
+                }
+            }
+            Modal::ShortcutOverlay => {
+                if matches!(key, Key::Named(Named::Escape))
+                    || match_global_shortcut(&key, mods) == Some(GlobalShortcut::ShortcutOverlay)
+                {
+                    self.app.modal = Modal::None;
                 }
             }
             _ => {}
@@ -1958,6 +2088,26 @@ impl Grove {
                 }
             }
         }
+    }
+
+    /// Resolve a Confirm modal. `ConfirmKind::Quit` is handled here (it needs
+    /// an iced Task to exit); everything else delegates to the app layer.
+    fn confirm_modal_response(&mut self, yes: bool) -> Task<Msg> {
+        if matches!(
+            self.app.modal,
+            Modal::Confirm {
+                kind: ConfirmKind::Quit,
+                ..
+            }
+        ) {
+            self.app.modal = Modal::None;
+            if yes {
+                return iced::exit();
+            }
+            return Task::none();
+        }
+        self.submit_modal_confirm(yes);
+        Task::none()
     }
 
     fn submit_modal_confirm(&mut self, yes: bool) {
@@ -2040,7 +2190,7 @@ impl Grove {
             self.app.modal = Modal::Message(format!("failed to save scripts: {e}"));
             return;
         }
-        self.app.status = "saved project scripts".into();
+        self.app.set_toast("saved project scripts");
         self.app.modal = Modal::None;
     }
 
@@ -2102,8 +2252,8 @@ impl Grove {
 
         if !also || queue.is_empty() {
             match self.app.finalize_remove_project(idx) {
-                Ok(msg) if !msg.is_empty() => self.app.status = msg,
-                Err(e) => self.app.status = format!("err: {e}"),
+                Ok(msg) if !msg.is_empty() => self.app.set_toast(msg),
+                Err(e) => self.app.set_error_toast(format!("err: {e}")),
                 _ => {}
             }
             self.app.modal = Modal::None;
@@ -2174,12 +2324,13 @@ impl Grove {
             _ => Vec::new(),
         };
         match self.app.finalize_remove_project(idx) {
-            Ok(msg) if !msg.is_empty() => self.app.status = msg,
-            Err(e) => self.app.status = format!("err: {e}"),
+            Ok(msg) if !msg.is_empty() && !errors.is_empty() => {
+                self.app
+                    .set_error_toast(format!("{} ({} worktree errors)", msg, errors.len()))
+            }
+            Ok(msg) if !msg.is_empty() => self.app.set_toast(msg),
+            Err(e) => self.app.set_error_toast(format!("err: {e}")),
             _ => {}
-        }
-        if !errors.is_empty() {
-            self.app.status = format!("{} ({} worktree errors)", self.app.status, errors.len());
         }
         self.app.modal = Modal::None;
         self.rebuild_wt_cache();
@@ -2334,6 +2485,7 @@ impl Grove {
     /// project + worktree, agent index 0, skip-perms from the global default.
     fn open_session_launcher(&mut self) {
         if self.app.store.projects.is_empty() {
+            self.app.set_toast("add a project first");
             return;
         }
         self.app.refresh_available_agents();
@@ -2406,6 +2558,21 @@ impl Grove {
             agent: 0,
             col: 1,
         };
+    }
+
+    /// Space in the launcher: set (or clear, when re-selecting the current)
+    /// the global default agent from the agent-column selection — the same
+    /// affordance as Modal::AgentPicker's Space.
+    fn launcher_toggle_default(&mut self) {
+        let Modal::SessionLauncher { agent, .. } = self.app.modal else {
+            return;
+        };
+        let Some(a) = self.app.available_agents.get(agent).copied() else {
+            return;
+        };
+        if let Err(e) = self.app.set_default_agent(a) {
+            self.app.modal = Modal::Message(format!("default agent failed: {e}"));
+        }
     }
 
     /// Start the selected session, then (grid always open here) append it to
@@ -2487,7 +2654,8 @@ impl Grove {
                 self.collapsed_wt.remove(&(proj, wt));
             }
             Err(e) => {
-                self.app.status = format!("failed to start session: {e}");
+                self.app
+                    .set_error_toast(format!("failed to start session: {e}"));
             }
         }
     }
@@ -2695,16 +2863,59 @@ fn pixel_to_cell(x: f32, y: f32) -> PtyCell {
     }
 }
 
-/// Returns true when the key event matches the "new session" shortcut.
-/// macOS: Cmd+N (logo, no ctrl)  |  others: Ctrl+N.
-fn is_new_session_shortcut(mods: Modifiers, s: &str) -> bool {
-    if !s.eq_ignore_ascii_case("n") {
-        return false;
-    }
+/// The platform's global-shortcut modifier: Cmd on macOS (matching the Cmd+C /
+/// Cmd+V pair), Ctrl+Shift elsewhere (matching Ctrl+Shift+C / Ctrl+Shift+V, so
+/// plain Ctrl chords stay available to the PTY).
+fn global_mods(mods: Modifiers) -> bool {
     #[cfg(target_os = "macos")]
     return mods.logo() && !mods.control();
     #[cfg(not(target_os = "macos"))]
-    return mods.control();
+    return mods.control() && mods.shift();
+}
+
+/// App-level actions reachable from the global keyboard layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GlobalShortcut {
+    NewSession,
+    Settings,
+    ToggleZen,
+    ToggleGrid,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    NextSession,
+    PrevSession,
+    SelectSession(usize),
+    ShortcutOverlay,
+}
+
+/// Map a key event to a global shortcut. Matches iced's modifier-independent
+/// `key`, so Shift in the non-mac Ctrl+Shift chords doesn't change the
+/// character being compared.
+fn match_global_shortcut(key: &Key, mods: Modifiers) -> Option<GlobalShortcut> {
+    if !global_mods(mods) {
+        return None;
+    }
+    match key {
+        Key::Named(Named::Enter) => Some(GlobalShortcut::ToggleZen),
+        Key::Character(s) => match s.as_str() {
+            "n" | "N" => Some(GlobalShortcut::NewSession),
+            "," => Some(GlobalShortcut::Settings),
+            "g" | "G" => Some(GlobalShortcut::ToggleGrid),
+            "=" | "+" => Some(GlobalShortcut::ZoomIn),
+            "-" | "_" => Some(GlobalShortcut::ZoomOut),
+            "0" => Some(GlobalShortcut::ZoomReset),
+            "j" | "J" => Some(GlobalShortcut::NextSession),
+            "k" | "K" => Some(GlobalShortcut::PrevSession),
+            "/" | "?" => Some(GlobalShortcut::ShortcutOverlay),
+            d => d
+                .parse::<usize>()
+                .ok()
+                .filter(|n| (1..=9).contains(n))
+                .map(|n| GlobalShortcut::SelectSession(n - 1)),
+        },
+        _ => None,
+    }
 }
 
 /// Returns true when the key event matches the OS copy shortcut.
@@ -2732,4 +2943,58 @@ fn is_paste_shortcut(mods: Modifiers, s: &str) -> bool {
     return mods.logo() && !mods.control();
     #[cfg(not(target_os = "macos"))]
     return mods.control() && mods.shift();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{match_global_shortcut, GlobalShortcut};
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    use smol_str::SmolStr;
+
+    /// The platform's global modifier: Cmd on macOS, Ctrl+Shift elsewhere.
+    fn gmods() -> Modifiers {
+        #[cfg(target_os = "macos")]
+        return Modifiers::LOGO;
+        #[cfg(not(target_os = "macos"))]
+        return Modifiers::CTRL | Modifiers::SHIFT;
+    }
+
+    fn ch(s: &str) -> Key {
+        Key::Character(SmolStr::new(s))
+    }
+
+    #[test]
+    fn global_shortcuts_map_with_platform_modifier() {
+        use GlobalShortcut::*;
+        assert_eq!(match_global_shortcut(&ch("n"), gmods()), Some(NewSession));
+        assert_eq!(match_global_shortcut(&ch(","), gmods()), Some(Settings));
+        assert_eq!(match_global_shortcut(&ch("g"), gmods()), Some(ToggleGrid));
+        assert_eq!(match_global_shortcut(&ch("j"), gmods()), Some(NextSession));
+        assert_eq!(match_global_shortcut(&ch("k"), gmods()), Some(PrevSession));
+        assert_eq!(match_global_shortcut(&ch("="), gmods()), Some(ZoomIn));
+        assert_eq!(match_global_shortcut(&ch("-"), gmods()), Some(ZoomOut));
+        assert_eq!(match_global_shortcut(&ch("0"), gmods()), Some(ZoomReset));
+        assert_eq!(
+            match_global_shortcut(&ch("3"), gmods()),
+            Some(SelectSession(2))
+        );
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::Enter), gmods()),
+            Some(ToggleZen)
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("/"), gmods()),
+            Some(ShortcutOverlay)
+        );
+    }
+
+    #[test]
+    fn unmodified_or_unmapped_keys_are_not_shortcuts() {
+        assert_eq!(match_global_shortcut(&ch("n"), Modifiers::empty()), None);
+        assert_eq!(match_global_shortcut(&ch("x"), gmods()), None);
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::Tab), gmods()),
+            None
+        );
+    }
 }

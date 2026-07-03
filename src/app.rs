@@ -14,8 +14,33 @@ pub fn cycle(cur: usize, delta: i32, len: usize) -> usize {
     (cur as i32 + delta).rem_euclid(len as i32) as usize
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToastKind {
+    Info,
+    Error,
+}
+
 pub struct Toast {
     pub message: String,
+    pub kind: ToastKind,
+    pub created: std::time::Instant,
+}
+
+impl Toast {
+    /// How long a toast stays up before auto-dismissing: errors linger
+    /// twice as long as informational messages.
+    pub fn ttl(kind: ToastKind) -> std::time::Duration {
+        match kind {
+            ToastKind::Info => std::time::Duration::from_secs(4),
+            ToastKind::Error => std::time::Duration::from_secs(8),
+        }
+    }
+
+    /// Whether the toast should be dismissed as of `now`. Pure so expiry is
+    /// unit-testable without waiting.
+    pub fn expired_at(&self, now: std::time::Instant) -> bool {
+        now.saturating_duration_since(self.created) >= Self::ttl(self.kind)
+    }
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -68,19 +93,30 @@ pub fn first_run_modal(
 }
 
 /// The ordered steps of the first-run onboarding wizard. `Welcome` orients the
-/// user, `Environment` reports detected tools, `Project` registers the first
-/// project, `Theme` previews colorways, and `Session` launches the first agent.
+/// user, `Environment` reports detected tools, `Backend` picks tmux vs native
+/// (only when tmux was detected), `Project` registers the first project,
+/// `Theme` previews colorways, and `Session` launches the first agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnboardStep {
     Welcome,
     Environment,
+    Backend,
     Project,
     Theme,
     Session,
 }
 
 impl OnboardStep {
-    pub const ALL: [OnboardStep; 5] = [
+    pub const ALL: [OnboardStep; 6] = [
+        OnboardStep::Welcome,
+        OnboardStep::Environment,
+        OnboardStep::Backend,
+        OnboardStep::Project,
+        OnboardStep::Theme,
+        OnboardStep::Session,
+    ];
+
+    const FLOW_NO_TMUX: [OnboardStep; 5] = [
         OnboardStep::Welcome,
         OnboardStep::Environment,
         OnboardStep::Project,
@@ -88,16 +124,33 @@ impl OnboardStep {
         OnboardStep::Session,
     ];
 
-    pub fn index(self) -> usize {
-        Self::ALL.iter().position(|s| *s == self).unwrap_or(0)
+    /// The wizard's step sequence: the backend step only exists when tmux
+    /// was detected, so the choice is never shown where it can't apply.
+    pub fn flow(tmux_available: bool) -> &'static [OnboardStep] {
+        if tmux_available {
+            &Self::ALL
+        } else {
+            &Self::FLOW_NO_TMUX
+        }
     }
 
-    pub fn next(self) -> Option<OnboardStep> {
-        Self::ALL.get(self.index() + 1).copied()
+    pub fn index_in(self, tmux_available: bool) -> usize {
+        Self::flow(tmux_available)
+            .iter()
+            .position(|s| *s == self)
+            .unwrap_or(0)
     }
 
-    pub fn prev(self) -> Option<OnboardStep> {
-        self.index().checked_sub(1).map(|i| Self::ALL[i])
+    pub fn next(self, tmux_available: bool) -> Option<OnboardStep> {
+        Self::flow(tmux_available)
+            .get(self.index_in(tmux_available) + 1)
+            .copied()
+    }
+
+    pub fn prev(self, tmux_available: bool) -> Option<OnboardStep> {
+        self.index_in(tmux_available)
+            .checked_sub(1)
+            .map(|i| Self::flow(tmux_available)[i])
     }
 
     /// Short label shown in the progress rail.
@@ -105,6 +158,7 @@ impl OnboardStep {
         match self {
             OnboardStep::Welcome => "welcome",
             OnboardStep::Environment => "environment",
+            OnboardStep::Backend => "backend",
             OnboardStep::Project => "project",
             OnboardStep::Theme => "theme",
             OnboardStep::Session => "session",
@@ -138,6 +192,8 @@ pub fn onboarding_modal() -> Modal {
         sel_light,
         theme_original: original,
         agent_sel: 0,
+        backend_tmux: true,
+        perms_skip: false,
     }
 }
 
@@ -206,7 +262,7 @@ pub enum Modal {
     /// indexes the selected project's worktrees (`app.worktrees` when it is the
     /// active project, else `Grove::wt_cache[proj]`); `agent` indexes
     /// `available_agents`; `col` is the focused column (0=project 1=worktree
-    /// 2=agent). Reachable only while the grid is open.
+    /// 2=agent). Reachable from any view (grid pill, mod+n).
     SessionLauncher {
         proj: usize,
         wt: usize,
@@ -227,6 +283,8 @@ pub enum Modal {
     /// from the appbar cog. All controls persist immediately; there is no
     /// apply/cancel footer.
     Settings,
+    /// Lightweight keyboard-shortcut reference (mod+/). Esc or mod+/ closes.
+    ShortcutOverlay,
     /// Worktree teardown: runs the project's teardown script (if any) in a
     /// modal-embedded PTY, then performs `git worktree remove`. The live PTY
     /// session and stage live in `App::teardown`.
@@ -256,6 +314,13 @@ pub enum Modal {
         sel_light: usize,
         theme_original: crate::theme::Theme,
         agent_sel: usize,
+        /// Backend step selection: `true` = tmux for new sessions. Persisted
+        /// as `Store::tmux_enabled` only on finish, and only when tmux exists.
+        backend_tmux: bool,
+        /// Session-step permissions selection: `true` = skip permission
+        /// prompts. Persisted as an explicit store value on finish; "safe"
+        /// (`false`) is preselected.
+        perms_skip: bool,
     },
 }
 
@@ -304,6 +369,8 @@ pub enum ConfirmKind {
     RemoveProject(usize),
     RemoveWorktree(String), // wt path
     InitAndAddWorktree { name: String },
+    /// Close grove despite running native sessions.
+    Quit,
 }
 
 pub struct App {
@@ -313,7 +380,6 @@ pub struct App {
     pub proj_idx: usize,
     pub wt_idx: usize,
     pub modal: Modal,
-    pub status: String,
     pub sessions: Vec<Session>,
     pub active_session: Option<usize>,
     /// The shells behind the `terminal` tab, each rooted at `~`. The first is
@@ -367,8 +433,18 @@ pub struct App {
 
 impl App {
     pub fn set_toast(&mut self, message: impl Into<String>) {
+        self.toast_with_kind(message, ToastKind::Info);
+    }
+
+    pub fn set_error_toast(&mut self, message: impl Into<String>) {
+        self.toast_with_kind(message, ToastKind::Error);
+    }
+
+    fn toast_with_kind(&mut self, message: impl Into<String>, kind: ToastKind) {
         self.toast = Some(Toast {
             message: message.into(),
+            kind,
+            created: std::time::Instant::now(),
         });
     }
 
@@ -412,7 +488,6 @@ impl App {
             proj_idx: 0,
             wt_idx: 0,
             modal: initial_modal,
-            status: String::new(),
             sessions,
             active_session: None,
             home_terminals: Vec::new(),
@@ -445,19 +520,27 @@ impl App {
         self.effective_backend() == EffectiveBackend::Tmux
     }
 
+    /// Running sessions that would die with the process: native-backend agent
+    /// sessions only. tmux-backed sessions survive a quit and don't count.
+    pub fn native_sessions_running(&self) -> usize {
+        self.sessions
+            .iter()
+            .filter(|s| s.tmux_name().is_none() && s.is_running())
+            .count()
+    }
+
     pub fn set_tmux_enabled(&mut self, enabled: bool) -> Result<()> {
         if enabled && !self.tmux_available {
-            self.status = "tmux not found; using native sessions".into();
-            self.set_toast("tmux not found");
+            self.set_error_toast("tmux not found; using native sessions");
             return Ok(());
         }
         self.store.tmux_enabled = Some(enabled);
         storage::save(&self.store)?;
         if enabled {
             self.discover_tmux_sessions();
-            self.status = "tmux enabled for new sessions".into();
+            self.set_toast("tmux enabled for new sessions");
         } else {
-            self.status = "tmux disabled for new sessions".into();
+            self.set_toast("tmux disabled for new sessions");
         }
         Ok(())
     }
@@ -475,11 +558,11 @@ impl App {
     pub fn set_skip_permissions_enabled(&mut self, enabled: bool) -> Result<()> {
         self.store.dangerously_skip_permissions_enabled = Some(enabled);
         storage::save(&self.store)?;
-        self.status = if enabled {
-            "permission bypass enabled for new sessions".into()
+        self.set_toast(if enabled {
+            "permission bypass enabled for new sessions"
         } else {
-            "permission bypass disabled for new sessions".into()
-        };
+            "permission bypass disabled for new sessions"
+        });
         Ok(())
     }
 
@@ -584,7 +667,7 @@ impl App {
                     self.modal = Modal::Confirm {
                         title: "remove project?".into(),
                         prompt: format!(
-                            "'{}' will be unregistered. Files on disk stay put.",
+                            "'{}' will be unregistered. files on disk stay put.",
                             p.name
                         ),
                         destructive: true,
@@ -721,7 +804,7 @@ impl App {
                 };
                 self.sessions.insert(at, s);
                 self.active_session = Some(at);
-                self.status = format!("started {label}");
+                self.set_toast(format!("started {label}"));
                 Some(at)
             }
             Err(e) => {
@@ -749,10 +832,10 @@ impl App {
                 let at = self.session_insert_index(&s);
                 self.sessions.insert(at, s);
                 self.active_session = Some(at);
-                self.status = format!("running {stage} script");
+                self.set_toast(format!("running {stage} script"));
             }
             Err(e) => {
-                self.set_toast(format!("{stage} script failed: {e}"));
+                self.set_error_toast(format!("{stage} script failed: {e}"));
             }
         }
     }
@@ -781,7 +864,7 @@ impl App {
                         self.wt_active_terminal
                             .insert(wt_path.to_string(), v.len() - 1);
                     }
-                    Err(e) => self.set_toast(format!("run script failed: {e}")),
+                    Err(e) => self.set_error_toast(format!("run script failed: {e}")),
                 }
             }
             _ => self.set_toast("no run script configured for this project"),
@@ -797,7 +880,7 @@ impl App {
             }
         };
         if let Err(e) = git::copy_worktree_includes(&p.path, &wt_path) {
-            self.status = format!("worktreeinclude: {e}");
+            self.set_error_toast(format!("worktreeinclude: {e}"));
         }
         self.refresh_worktrees();
         // Launch the agent first, then the setup script (if any) so the setup
@@ -917,7 +1000,7 @@ impl App {
                 Some(s)
             }
             Err(e) => {
-                self.set_toast(format!("terminal failed: {e}"));
+                self.set_error_toast(format!("terminal failed: {e}"));
                 None
             }
         }
@@ -1045,7 +1128,7 @@ impl App {
                     .insert(wt_path.to_string(), v.len() - 1);
             }
             Err(e) => {
-                self.set_toast(format!("terminal failed: {e}"));
+                self.set_error_toast(format!("terminal failed: {e}"));
             }
         }
     }
@@ -1222,10 +1305,10 @@ impl App {
                 None => "worktree deleted".into(),
             };
         }
-        self.status = match &err {
-            Some(e) => format!("teardown err: {e}"),
-            None => format!("removed worktree {wt_path}"),
-        };
+        match &err {
+            Some(e) => self.set_error_toast(format!("teardown err: {e}")),
+            None => self.set_toast(format!("removed worktree {wt_path}")),
+        }
         self.refresh_worktrees();
     }
 
@@ -1262,10 +1345,10 @@ impl App {
         };
         if self.store.default_agent == Some(agent) {
             self.store.default_agent = None;
-            self.status = format!("cleared default agent ({})", agent.label());
+            self.set_toast(format!("cleared default agent ({})", agent.label()));
         } else {
             self.store.default_agent = Some(agent);
-            self.status = format!("default agent: {}", agent.label());
+            self.set_toast(format!("default agent: {}", agent.label()));
         }
         storage::save(&self.store)?;
         Ok(())
@@ -1299,10 +1382,10 @@ impl App {
     pub fn set_default_agent(&mut self, agent: Agent) -> Result<()> {
         if self.store.default_agent == Some(agent) {
             self.store.default_agent = None;
-            self.status = format!("cleared default agent ({})", agent.label());
+            self.set_toast(format!("cleared default agent ({})", agent.label()));
         } else {
             self.store.default_agent = Some(agent);
-            self.status = format!("default agent: {}", agent.label());
+            self.set_toast(format!("default agent: {}", agent.label()));
         }
         storage::save(&self.store)?;
         Ok(())
@@ -1400,7 +1483,7 @@ impl App {
         theme::set(chosen);
         self.store.theme = Some(chosen.name.to_string());
         storage::save(&self.store)?;
-        self.status = format!("theme: {}", chosen.name);
+        self.set_toast(format!("theme: {}", chosen.name));
         Ok(())
     }
 
@@ -1436,10 +1519,11 @@ impl App {
         let Modal::Onboarding { step, .. } = &self.modal else {
             return;
         };
+        let step = *step;
         match step {
             // Plain forward steps: walk to the next one.
-            OnboardStep::Welcome | OnboardStep::Environment => {
-                if let Some(next) = step.next() {
+            OnboardStep::Welcome | OnboardStep::Environment | OnboardStep::Backend => {
+                if let Some(next) = step.next(self.tmux_available) {
                     self.onboard_goto(next);
                 }
             }
@@ -1455,10 +1539,12 @@ impl App {
     /// Step back. Never un-registers a project added on the way forward; the
     /// project step recognizes it's already added and skips re-adding.
     pub fn onboard_back(&mut self) {
-        if let Modal::Onboarding { step, .. } = &self.modal {
-            if let Some(prev) = step.prev() {
-                self.onboard_goto(prev);
-            }
+        let prev = match &self.modal {
+            Modal::Onboarding { step, .. } => step.prev(self.tmux_available),
+            _ => None,
+        };
+        if let Some(prev) = prev {
+            self.onboard_goto(prev);
         }
     }
 
@@ -1506,7 +1592,7 @@ impl App {
     fn onboard_add_project(&mut self, path: &str, name: Option<String>) -> Result<usize, String> {
         let trimmed = path.trim();
         if trimmed.is_empty() {
-            return Err("enter a path — or skip setup".into());
+            return Err("enter a path, or skip setup".into());
         }
         let pb = std::path::PathBuf::from(shellexpand_tilde(trimmed));
         if !pb.is_dir() {
@@ -1700,6 +1786,18 @@ impl App {
         }
     }
 
+    pub fn onboard_set_backend(&mut self, tmux: bool) {
+        if let Modal::Onboarding { backend_tmux, .. } = &mut self.modal {
+            *backend_tmux = tmux;
+        }
+    }
+
+    pub fn onboard_set_perms(&mut self, skip: bool) {
+        if let Modal::Onboarding { perms_skip, .. } = &mut self.modal {
+            *perms_skip = skip;
+        }
+    }
+
     /// Skip the wizard: restore the pre-preview theme, mark onboarded, persist,
     /// and close. The first-run gate won't show it again.
     pub fn onboard_skip(&mut self) -> Result<()> {
@@ -1717,16 +1815,24 @@ impl App {
     /// `None` if no project was added or no agent is available.
     pub fn onboard_finish(&mut self) -> Result<Option<(usize, Agent)>> {
         let _ = self.onboard_persist_theme();
-        let (added_proj, agent_sel) = match &self.modal {
+        let (added_proj, agent_sel, backend_tmux, perms_skip) = match &self.modal {
             Modal::Onboarding {
                 added_proj,
                 agent_sel,
+                backend_tmux,
+                perms_skip,
                 ..
-            } => (*added_proj, *agent_sel),
-            _ => (None, 0),
+            } => (*added_proj, *agent_sel, *backend_tmux, *perms_skip),
+            _ => (None, 0, true, false),
         };
         let agent = self.available_agents.get(agent_sel).copied();
         self.store.onboarded = true;
+        if self.tmux_available {
+            // The wizard's backend step made this an explicit choice; persist
+            // it so Modal::TmuxChoice never re-asks an onboarded user.
+            self.store.tmux_enabled = Some(backend_tmux);
+        }
+        self.store.dangerously_skip_permissions_enabled = Some(perms_skip);
         storage::save(&self.store)?;
         self.modal = Modal::None;
         Ok(match (added_proj, agent) {
@@ -1764,7 +1870,7 @@ impl App {
             self.modal = Modal::Confirm {
                 title: "initialize git repo?".into(),
                 prompt: format!(
-                    "'{}' is not a git repo. Run `git init`, then create worktree '{}'.",
+                    "'{}' is not a git repo. run `git init`, then create worktree '{}'.",
                     p.path, value
                 ),
                 destructive: false,
@@ -1866,7 +1972,7 @@ impl App {
             return;
         }
         if !pb.is_dir() {
-            self.add_project_note("not a folder — choose a directory".into());
+            self.add_project_note("not a folder; choose a directory".into());
             return;
         }
         let abs = match std::fs::canonicalize(&pb) {
@@ -1967,7 +2073,7 @@ impl App {
         });
         storage::save(&self.store)?;
         self.proj_idx = self.store.projects.len() - 1;
-        self.status = format!("added {name}");
+        self.set_toast(format!("added {name}"));
         self.refresh_worktrees();
         Ok(self.proj_idx)
     }
@@ -1982,14 +2088,11 @@ impl App {
         }
         match kind {
             ConfirmKind::RemoveProject(idx) => {
-                if idx < self.store.projects.len() {
-                    let removed = self.store.projects.remove(idx);
-                    storage::save(&self.store)?;
-                    if self.proj_idx >= self.store.projects.len() {
-                        self.proj_idx = self.store.projects.len().saturating_sub(1);
-                    }
-                    self.status = format!("removed project {}", removed.name);
-                    self.refresh_worktrees();
+                // Route through the same teardown as the remove-project modal
+                // so the project's sessions are killed, not orphaned.
+                let msg = self.finalize_remove_project(idx)?;
+                if !msg.is_empty() {
+                    self.set_toast(msg);
                 }
             }
             ConfirmKind::RemoveWorktree(path) => {
@@ -2007,6 +2110,8 @@ impl App {
                 }
                 self.create_worktree(&p, &name);
             }
+            // Handled at the GUI layer (needs iced::exit); never reaches here.
+            ConfirmKind::Quit => {}
         }
         Ok(())
     }
@@ -2090,9 +2195,93 @@ fn shellexpand_tilde(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_backend_for, first_run_modal, needs_tmux_choice, EffectiveBackend,
-        FirstRunModal, OnboardStep,
+        effective_backend_for, first_run_modal, needs_tmux_choice, App, EffectiveBackend,
+        FirstRunModal, HashMap, Modal, OnboardStep, Pane, Session, Store,
     };
+    use super::{Toast, ToastKind};
+    use crate::session::{SessionBackend, SessionStatus};
+    use std::time::{Duration, Instant};
+
+    /// Build a minimal `App` around the given sessions, bypassing `App::new`
+    /// (which reads/writes the real on-disk config) so tests stay hermetic.
+    fn test_app(sessions: Vec<Session>) -> App {
+        App {
+            store: Store::default(),
+            worktrees: vec![],
+            focus: Pane::Projects,
+            proj_idx: 0,
+            wt_idx: 0,
+            modal: Modal::None,
+            sessions,
+            active_session: None,
+            home_terminals: Vec::new(),
+            active_terminal: None,
+            home_terminal_seq: 0,
+            wt_terminals: HashMap::new(),
+            wt_active_terminal: HashMap::new(),
+            wt_terminal_seq: 0,
+            toast: None,
+            worktree_count: 0,
+            chrome_visible: true,
+            tmux_available: false,
+            available_agents: vec![],
+            bg_status: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            teardown: None,
+        }
+    }
+
+    /// Spawn a cheap real session (a `true` shell script — exits immediately)
+    /// and force its backend/status to the scenario under test. `Session`'s
+    /// PTY/child fields are private to `session.rs` and can't be constructed
+    /// directly, but `backend` and `status` are `pub`, so overwriting them
+    /// after a real spawn is the lightest way to get a `Session` in an
+    /// arbitrary (backend, running) state without a real tmux session.
+    fn spawn_test_session(status: SessionStatus, tmux: bool) -> Session {
+        let mut s = Session::spawn_script("t".into(), "p".into(), ".".into(), "true", ".")
+            .expect("spawn test session");
+        if tmux {
+            s.backend = SessionBackend::Tmux {
+                name: "test".into(),
+            };
+        }
+        *s.status.lock().unwrap() = status;
+        s
+    }
+
+    #[test]
+    fn native_sessions_running_counts_only_running_native() {
+        let app = test_app(vec![
+            spawn_test_session(SessionStatus::Running, false), // native, running: counts
+            spawn_test_session(SessionStatus::Exited(Some(0)), false), // native, exited: no
+            spawn_test_session(SessionStatus::Running, true),  // tmux, running: no
+        ]);
+        assert_eq!(app.native_sessions_running(), 1);
+    }
+
+    #[test]
+    fn toast_ttl_is_kind_dependent() {
+        assert_eq!(Toast::ttl(ToastKind::Info), Duration::from_secs(4));
+        assert_eq!(Toast::ttl(ToastKind::Error), Duration::from_secs(8));
+    }
+
+    #[test]
+    fn toast_expiry_follows_ttl() {
+        let t0 = Instant::now();
+        let info = Toast {
+            message: "copied".into(),
+            kind: ToastKind::Info,
+            created: t0,
+        };
+        let error = Toast {
+            message: "failed".into(),
+            kind: ToastKind::Error,
+            created: t0,
+        };
+        assert!(!info.expired_at(t0 + Duration::from_secs(3)));
+        assert!(info.expired_at(t0 + Duration::from_secs(4)));
+        assert!(!error.expired_at(t0 + Duration::from_secs(7)));
+        assert!(error.expired_at(t0 + Duration::from_secs(8)));
+    }
 
     #[test]
     fn onboarding_takes_precedence_until_completed() {
@@ -2113,13 +2302,30 @@ mod tests {
 
     #[test]
     fn onboard_step_navigation_is_bounded() {
-        assert_eq!(OnboardStep::Welcome.prev(), None);
-        assert_eq!(OnboardStep::Welcome.next(), Some(OnboardStep::Environment));
-        assert_eq!(OnboardStep::Session.next(), None);
-        assert_eq!(OnboardStep::Session.prev(), Some(OnboardStep::Theme));
-        // index round-trips through ALL in order.
-        for (i, s) in OnboardStep::ALL.iter().enumerate() {
-            assert_eq!(s.index(), i);
+        // With tmux detected, the backend step sits between environment and project.
+        assert_eq!(OnboardStep::Welcome.prev(true), None);
+        assert_eq!(
+            OnboardStep::Environment.next(true),
+            Some(OnboardStep::Backend)
+        );
+        assert_eq!(OnboardStep::Backend.next(true), Some(OnboardStep::Project));
+        assert_eq!(OnboardStep::Project.prev(true), Some(OnboardStep::Backend));
+        assert_eq!(OnboardStep::Session.next(true), None);
+        // Without tmux the backend step is skipped entirely.
+        assert_eq!(
+            OnboardStep::Environment.next(false),
+            Some(OnboardStep::Project)
+        );
+        assert_eq!(
+            OnboardStep::Project.prev(false),
+            Some(OnboardStep::Environment)
+        );
+        assert!(!OnboardStep::flow(false).contains(&OnboardStep::Backend));
+        // index round-trips through each flow in order.
+        for tmux in [true, false] {
+            for (i, s) in OnboardStep::flow(tmux).iter().enumerate() {
+                assert_eq!(s.index_in(tmux), i);
+            }
         }
     }
 

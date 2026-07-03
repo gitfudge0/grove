@@ -21,6 +21,7 @@ grove is a native desktop app for managing git worktrees across projects and run
 - [install](#install)
 - [quickstart](#quickstart)
 - [sessions](#sessions)
+- [keyboard](#keyboard)
 - [supported agents](#supported-agents)
 - [themes](#themes)
 - [requirements](#requirements)
@@ -100,6 +101,25 @@ grove supports two session backends:
 | **native** | no tmux dependency | sessions end when grove exits |
 
 on first launch with `tmux` installed, grove asks which backend to use. use the `native` / `tmux` controls in the app chrome to choose the backend for new sessions. existing sessions keep the backend they were started with.
+
+## keyboard
+
+`mod` is `cmd` on macOS and `ctrl+shift` on linux.
+
+| shortcut | action |
+|---|---|
+| `mod+n` | open the new-session launcher |
+| `mod+j` / `mod+k` | next / previous session (visible order) |
+| `mod+1`..`mod+9` | select the nth session |
+| `mod+g` | toggle the grid (agent view) |
+| `mod+enter` | toggle zen mode |
+| `mod+,` | open settings |
+| `mod+=` / `mod+-` / `mod+0` | zoom in / out / reset |
+| `mod+c` / `mod+v` | copy selection / paste into the focused session |
+| `mod+/` | show the shortcut overlay |
+| `esc` | close modals |
+
+everything else on the keyboard goes straight to the focused session's PTY.
 
 ## supported agents
 
