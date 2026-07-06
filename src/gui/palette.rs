@@ -136,3 +136,21 @@ pub fn YELLOW() -> Color {
 pub fn RED() -> Color {
     ic(theme::current().red)
 }
+
+// ── selection (focused Miller column) ──────────────────────────────────────
+// The launcher's active column marks its selected row with a cyan-tinted
+// gradient fill, a cyan ring, and a left accent bar. Derived from the theme's
+// cyan so the treatment tracks theme swaps.
+
+/// Stronger end of the selected-row gradient (left edge).
+pub fn SEL_TINT_STRONG() -> Color {
+    Color { a: 0.22, ..CYAN() }
+}
+/// Softer end of the selected-row gradient (right edge).
+pub fn SEL_TINT_SOFT() -> Color {
+    Color { a: 0.10, ..CYAN() }
+}
+/// Ring outlining the selected row in the focused column.
+pub fn SEL_RING() -> Color {
+    Color { a: 0.5, ..CYAN() }
+}

@@ -823,6 +823,83 @@ pub fn modal_list_row<'a>(
     .into()
 }
 
+/// A selectable row inside the session launcher's Miller columns.
+///
+/// Unlike [`modal_list_row`], selection here is column-aware so focus is
+/// unambiguous across the three columns:
+/// - `active && focused` (the selected row in the column you're driving) gets
+///   the prominent treatment — a cyan-tinted gradient fill, a cyan ring, a
+///   left accent bar, and bright text.
+/// - `active && !focused` (a remembered selection in a resting column) keeps a
+///   quiet `bg_highlight` fill with dimmed text.
+/// - hovered / idle rows match the shared modal treatment.
+pub fn launcher_row<'a>(
+    label: impl Into<Element<'a, Msg>>,
+    active: bool,
+    focused: bool,
+    msg: Msg,
+) -> Element<'a, Msg> {
+    use iced::gradient::{self, Gradient};
+    use iced::Radians;
+
+    // Resting columns (and non-selected rows) match the shared modal treatment.
+    if !(active && focused) {
+        return modal_list_row(label, active, msg);
+    }
+
+    // The selected row in the focused column: cyan gradient fill + ring.
+    let btn = button(
+        container(label)
+            .width(Length::Fill)
+            .height(ROW_H)
+            .align_y(iced::Alignment::Center)
+            .padding(Padding::from([0, 10]))
+            .clip(true),
+    )
+    .on_press(msg)
+    .width(Length::Fill)
+    .padding(0)
+    .style(|_, _| {
+        // Horizontal cyan tint, brighter at the accent-bar edge.
+        let g = gradient::Linear::new(Radians(std::f32::consts::FRAC_PI_2))
+            .add_stop(0.0, c::SEL_TINT_STRONG())
+            .add_stop(1.0, c::SEL_TINT_SOFT());
+        button::Style {
+            background: Some(Background::Gradient(Gradient::Linear(g))),
+            text_color: c::FG(),
+            border: Border {
+                color: c::SEL_RING(),
+                width: 1.0,
+                radius: Radius::from(5.0),
+            },
+            shadow: Shadow::default(),
+        }
+    });
+
+    // Left accent bar, overlaid so it doesn't shift row content.
+    let bar = container(
+        container(Space::with_width(3))
+            .width(3)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(c::CYAN())),
+                border: Border {
+                    color: Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: Radius::from(2.0),
+                },
+                ..Default::default()
+            }),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(iced::Alignment::Start)
+    .align_y(iced::Alignment::Center)
+    .padding(Padding::from([2, 0]));
+
+    iced::widget::stack![btn, bar].into()
+}
+
 pub fn clickable_row<'a>(
     content: impl Into<Element<'a, Msg>>,
     height: f32,

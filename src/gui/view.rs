@@ -15,7 +15,7 @@ use super::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, Sid
 use super::update::{platform_mod_label, GlobalShortcut, Scope, ShortcutDef, SHORTCUTS};
 use super::widgets::{
     control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_workspace, footer_btn,
-    icon_btn, modal_action,
+    icon_btn, launcher_row, modal_action,
     modal_checkbox, modal_list_row, modal_panel, seg_button,
     sidebar_agent_menu_overlay, tool_btn, tool_btn_toggle, truncate_middle, vline, ModalBtn, SegSide,
 };
@@ -2797,24 +2797,28 @@ impl Grove {
         col: u8,
     ) -> Element<'a, Msg> {
         // ── Column 1: projects ──────────────────────────────────────────
+        let proj_focused = col == 0;
         let mut proj_list = Column::new().spacing(0);
         for (i, p) in self.app.store.projects.iter().enumerate() {
             let count = self.launcher_worktrees(i).len();
             let active = i == proj;
+            let bright = active && proj_focused;
             let label_row = row![
-                text(p.name.clone()).size(12).color(if active { c::FG() } else { c::FG_DIM() }),
+                text(p.name.clone()).size(12).color(if bright { c::FG() } else { c::FG_DIM() }),
                 Space::with_width(Length::Fill),
                 text(count.to_string()).size(11).color(c::FG_MUTE()),
             ]
             .align_y(iced::Alignment::Center);
-            proj_list = proj_list.push(modal_list_row(label_row, active, Msg::LauncherSelectProject(i)));
+            proj_list = proj_list.push(launcher_row(label_row, active, proj_focused, Msg::LauncherSelectProject(i)));
         }
 
         // ── Column 2: worktrees ─────────────────────────────────────────
         let worktrees = self.launcher_worktrees(proj);
+        let wt_focused = col == 1;
         let mut wt_list = Column::new().spacing(0);
         for (i, w) in worktrees.iter().enumerate() {
             let active = i == wt;
+            let bright = active && wt_focused;
             let name = if w.branch.is_empty() {
                 crate::app::path_basename(&w.path)
             } else {
@@ -2824,7 +2828,7 @@ impl Grove {
             let name_el = single_line(
                 text(truncate_ellipsis(&name, 28))
                     .size(12)
-                    .color(if active { c::FG() } else { c::FG_DIM() })
+                    .color(if bright { c::FG() } else { c::FG_DIM() })
                     .wrapping(iced::widget::text::Wrapping::None),
                 12.0,
             );
@@ -2834,7 +2838,7 @@ impl Grove {
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center);
-            wt_list = wt_list.push(modal_list_row(label_row, active, Msg::LauncherSelectWorktree(i)));
+            wt_list = wt_list.push(launcher_row(label_row, active, wt_focused, Msg::LauncherSelectWorktree(i)));
         }
         // "+ New worktree…" affordance.
         let add_row = row![text("+ new worktree…").size(12).color(c::MAGENTA())]
@@ -2842,12 +2846,14 @@ impl Grove {
         wt_list = wt_list.push(modal_list_row(add_row, false, Msg::LauncherNewWorktree));
 
         // ── Column 3: agents + options ──────────────────────────────────
+        let agent_focused = col == 2;
         let mut agent_list = Column::new().spacing(0);
         for (i, ag) in self.app.available_agents.iter().enumerate() {
             let active = i == agent;
+            let bright = active && agent_focused;
             let is_default = self.app.store.default_agent == Some(*ag);
             let label_row = row![
-                text(ag.label().to_string()).size(12).color(if active {
+                text(ag.label().to_string()).size(12).color(if bright {
                     c::FG()
                 } else {
                     c::FG_DIM()
@@ -2858,9 +2864,10 @@ impl Grove {
                     .color(c::FG_MUTE()),
             ]
             .align_y(iced::Alignment::Center);
-            agent_list = agent_list.push(modal_list_row(
+            agent_list = agent_list.push(launcher_row(
                 label_row,
                 active,
+                agent_focused,
                 Msg::LauncherSelectAgent(i),
             ));
         }
