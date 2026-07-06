@@ -1,2 +1,5 @@
 /target
 .reports/
+
+# local tooling output
+.impeccable/
