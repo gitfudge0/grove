@@ -34,6 +34,29 @@ pub enum FocusedPane {
     Panel,
 }
 
+/// The three modes the tree header's cycle button steps through, in ring
+/// order `Collapsed → SessionsOnly → All → Collapsed`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeExpand {
+    /// Every project row collapsed — only the project list is visible.
+    Collapsed,
+    /// Projects/worktrees with no sessions collapsed; the rest expanded.
+    SessionsOnly,
+    /// Everything expanded.
+    All,
+}
+
+impl TreeExpand {
+    /// The mode a click advances to from `self`.
+    pub fn next(self) -> Self {
+        match self {
+            TreeExpand::Collapsed => TreeExpand::SessionsOnly,
+            TreeExpand::SessionsOnly => TreeExpand::All,
+            TreeExpand::All => TreeExpand::Collapsed,
+        }
+    }
+}
+
 /// Top-level iced application state.
 pub struct Grove {
     pub app: App,
@@ -41,6 +64,9 @@ pub struct Grove {
     /// Worktrees whose session children are hidden. Independent of the
     /// project-level `collapsed`.
     pub collapsed_wt: HashSet<(usize, usize)>,
+    /// Which mode the tree header's cycle button last applied. Drives the
+    /// glyph (which shows the *next* action) and advances on each click.
+    pub tree_expand: TreeExpand,
     /// Cache of worktrees per project index. Refilled on project expand /
     /// session spawn/kill — never inside `view()`, since `git worktree list`
     /// is a subprocess and `view()` runs on every 33ms tick.
@@ -338,6 +364,8 @@ pub enum Msg {
     /// The OS asked to close the window (exit_on_close_request is off; grove
     /// decides whether running native sessions warrant a confirm first).
     CloseRequested(iced::window::Id),
+    /// Open the keyboard-shortcuts overlay (status-bar chip / cmd+/).
+    OpenShortcutOverlay,
     BackendNative,
     BackendTmux,
     SkipPermissionsEnable,

@@ -96,8 +96,12 @@ In `statusbar()` (`src/gui/view.rs:1670`), add a chip immediately left of the
 
 - Filter `SHORTCUTS` to entries whose `scopes` contain `Global` or
   `Screen(current_screen())`.
-- Render a **"global"** section, then a section titled by the current screen
-  (`"grid"` / `"workspace"` / `"zen"`) only when it has entries (none today).
+- **Only bifurcate when it's meaningful.** If the visible shortcuts span a single
+  scope (the case today — everything is Global), render a **plain flat list with no
+  section headers**, visually identical to the current overlay. Section headers
+  (`"global"` + the current screen's name) appear automatically the first time a
+  screen-scoped shortcut exists for the current screen.
+- Never render an empty section.
 - Preserve the existing two-column layout, header, and "esc to close" footer.
 
 ## Affected files

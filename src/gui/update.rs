@@ -50,6 +50,7 @@ impl Grove {
             app,
             collapsed: Default::default(),
             collapsed_wt: Default::default(),
+            tree_expand: crate::gui::state::TreeExpand::All,
             wt_cache: Default::default(),
             pty_cache: Default::default(),
             pty_rows,
@@ -365,27 +366,8 @@ impl Grove {
             Msg::ToggleCollapseAll => {
                 self.open_agent_menu = None;
                 self.pending_kill = None;
-                if self.is_collapsed_to_sessionful_worktrees() {
-                    // Expand everything.
-                    self.collapsed.clear();
-                    self.collapsed_wt.clear();
-                } else {
-                    // Collapse everything except worktrees that already have
-                    // at least one session running in them.
-                    self.collapsed.clear();
-                    self.collapsed_wt.clear();
-                    for pi in 0..self.app.store.projects.len() {
-                        let has_sessions = self.project_has_sessionful_worktree(pi);
-                        if !has_sessions {
-                            self.collapsed.insert(pi);
-                        }
-                        for wi in 0..self.worktrees_for_project(pi).len() {
-                            if !self.worktree_has_sessions(pi, wi) {
-                                self.collapsed_wt.insert((pi, wi));
-                            }
-                        }
-                    }
-                }
+                self.tree_expand = self.tree_expand.next();
+                self.apply_tree_expand();
             }
             Msg::ProjectClicked(i) => {
                 self.open_agent_menu = None;
@@ -660,13 +642,33 @@ impl Grove {
                 }
             }
             Msg::ToggleZen => {
-                self.app.chrome_visible = !self.app.chrome_visible;
-                if self.app.chrome_visible && self.grid_view_before_zen {
-                    // Exiting zen that was entered from grid view: restore grid.
-                    self.grid_view = true;
-                    self.grid_view_before_zen = false;
+                if !self.app.chrome_visible {
+                    // Exiting zen.
+                    self.app.chrome_visible = true;
+                    if self.grid_view_before_zen {
+                        // Zen was entered from grid view: restore grid.
+                        self.grid_view = true;
+                        self.grid_view_before_zen = false;
+                    }
+                    self.refresh_pty_viewport();
+                } else if self.grid_view {
+                    // Entering zen from the grid: focus the selected tile so zen
+                    // shows that one session, matching the tile's zen button.
+                    if let Some(si) = self
+                        .grid_focused
+                        .or(self.app.active_session)
+                        .or_else(|| self.tile_order.first().copied())
+                    {
+                        return self.update(Msg::GridTileZen(si));
+                    }
+                    self.app.chrome_visible = false;
+                    self.refresh_pty_viewport();
+                } else {
+                    // Entering zen from the single-session workspace: the active
+                    // session is already focused, just hide the chrome.
+                    self.app.chrome_visible = false;
+                    self.refresh_pty_viewport();
                 }
-                self.refresh_pty_viewport();
             }
             Msg::ZoomIn => self.adjust_ui_zoom(PTY_ZOOM_STEP),
             Msg::ZoomOut => self.adjust_ui_zoom(-PTY_ZOOM_STEP),
@@ -959,6 +961,9 @@ impl Grove {
             Msg::OpenSettings => {
                 self.app.open_settings();
                 return self.detect_tools_task();
+            }
+            Msg::OpenShortcutOverlay => {
+                self.app.modal = Modal::ShortcutOverlay;
             }
             Msg::RefreshTools => return self.detect_tools_task(),
             Msg::SetDefaultAgent(agent) => {
@@ -1720,6 +1725,12 @@ impl Grove {
         Task::none()
     }
 
+    /// Coarse current screen, derived from existing flags. Zen wins over grid:
+    /// while chrome is hidden the user is in zen regardless of `grid_view`.
+    pub(crate) fn current_screen(&self) -> Screen {
+        screen_from_flags(self.app.chrome_visible, self.grid_view)
+    }
+
     fn run_global_shortcut(&mut self, sc: GlobalShortcut) -> Task<Msg> {
         match sc {
             GlobalShortcut::NewSession => self.update(Msg::OpenSessionLauncher),
@@ -1741,10 +1752,7 @@ impl Grove {
                 self.select_visible_session(n);
                 Task::none()
             }
-            GlobalShortcut::ShortcutOverlay => {
-                self.app.modal = Modal::ShortcutOverlay;
-                Task::none()
-            }
+            GlobalShortcut::ShortcutOverlay => self.update(Msg::OpenShortcutOverlay),
         }
     }
 
@@ -1789,8 +1797,11 @@ impl Grove {
             }
             return;
         }
-        if n < self.app.sessions.len() {
-            let _ = self.update(Msg::SelectSession(n));
+        // Outside the agent grid, `mod+1..9` follows the sidebar's on-screen
+        // order (activity grouping or tree layout) rather than raw session
+        // index, so the number the user sees is the session they get.
+        if let Some(&si) = self.visible_session_order().get(n) {
+            let _ = self.update(Msg::SelectSession(si));
         }
     }
 
@@ -2438,28 +2449,32 @@ impl Grove {
     /// True when every project without sessionful worktrees is collapsed, and
     /// every worktree without sessions is collapsed. Drives the sidebar's
     /// expand/collapse toggle icon.
-    pub(super) fn is_collapsed_to_sessionful_worktrees(&self) -> bool {
-        let n_proj = self.app.store.projects.len();
-        if n_proj == 0 {
-            return false;
-        }
-        for pi in 0..n_proj {
-            let should_be_collapsed = !self.project_has_sessionful_worktree(pi);
-            if should_be_collapsed && !self.collapsed.contains(&pi) {
-                return false;
+    /// Rewrite `collapsed`/`collapsed_wt` so the tree matches `self.tree_expand`.
+    /// Fully overrides any manual per-row toggles.
+    pub(super) fn apply_tree_expand(&mut self) {
+        use crate::gui::state::TreeExpand;
+        self.collapsed.clear();
+        self.collapsed_wt.clear();
+        match self.tree_expand {
+            TreeExpand::All => {}
+            TreeExpand::Collapsed => {
+                for pi in 0..self.app.store.projects.len() {
+                    self.collapsed.insert(pi);
+                }
             }
-            if !should_be_collapsed && self.collapsed.contains(&pi) {
-                return false;
-            }
-            for (wi, _) in self.worktrees_for_project(pi).iter().enumerate() {
-                let should_be_collapsed = !self.worktree_has_sessions(pi, wi);
-                let is_collapsed = self.collapsed_wt.contains(&(pi, wi));
-                if should_be_collapsed != is_collapsed {
-                    return false;
+            TreeExpand::SessionsOnly => {
+                for pi in 0..self.app.store.projects.len() {
+                    if !self.project_has_sessionful_worktree(pi) {
+                        self.collapsed.insert(pi);
+                    }
+                    for wi in 0..self.worktrees_for_project(pi).len() {
+                        if !self.worktree_has_sessions(pi, wi) {
+                            self.collapsed_wt.insert((pi, wi));
+                        }
+                    }
                 }
             }
         }
-        true
     }
 
     pub(super) fn ensure_wt_cached(&mut self, proj: usize) {
@@ -2888,9 +2903,20 @@ fn global_mods(mods: Modifiers) -> bool {
     return mods.control() && mods.shift();
 }
 
+/// Human-readable label for the global-shortcut modifier, matching
+/// [`global_mods`]. Shown in the status-bar chip and the shortcut overlay so the
+/// displayed text can't drift from the actual chord.
+pub(crate) fn platform_mod_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl+shift"
+    }
+}
+
 /// App-level actions reachable from the global keyboard layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GlobalShortcut {
+pub(crate) enum GlobalShortcut {
     NewSession,
     Settings,
     ToggleZen,
@@ -2904,6 +2930,78 @@ enum GlobalShortcut {
     ShortcutOverlay,
 }
 
+/// Coarse "which screen am I on" model, derived from existing UI flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Screen {
+    Grid,
+    Workspace,
+    Zen,
+}
+
+impl Screen {
+    /// Section header label used in the overlay when >1 scope is visible.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Screen::Grid => "grid",
+            Screen::Workspace => "workspace",
+            Screen::Zen => "zen",
+        }
+    }
+}
+
+/// Where a shortcut applies. A shortcut may list several scopes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scope {
+    Global,
+    Screen(Screen),
+}
+
+/// One row of the shortcut registry — single source of truth for both
+/// `match_global_shortcut` (behavior) and `shortcut_overlay_modal` (display).
+pub(crate) struct ShortcutDef {
+    /// `None` for the display-only `1–9` row (matcher handles it dynamically).
+    pub(crate) action: Option<GlobalShortcut>,
+    /// Key chars matched against iced's modifier-independent `key`. Empty for
+    /// the display-only row. `Enter` is matched separately (see the matcher).
+    pub(crate) triggers: &'static [&'static str],
+    /// Key label shown in the overlay; the platform modifier is prepended at
+    /// render time (e.g. `"n"` -> `"cmd+n"`).
+    pub(crate) display_keys: &'static str,
+    pub(crate) description: &'static str,
+    pub(crate) scopes: &'static [Scope],
+}
+
+const G: &[Scope] = &[Scope::Global];
+
+/// Single source of truth for behavioral matching and overlay display. Order
+/// matches the overlay's reading order. All entries are `Global` per the spec.
+pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
+    ShortcutDef { action: Some(GlobalShortcut::NewSession),      triggers: &["n", "N"],      display_keys: "n",         description: "new session",            scopes: G },
+    ShortcutDef { action: Some(GlobalShortcut::NextSession),     triggers: &["j", "J"],      display_keys: "j",         description: "next session",           scopes: G },
+    ShortcutDef { action: Some(GlobalShortcut::PrevSession),     triggers: &["k", "K"],      display_keys: "k",         description: "previous session",       scopes: G },
+    // Display-only: the matcher handles 1–9 dynamically (see match_global_shortcut).
+    ShortcutDef { action: None,                                  triggers: &[],              display_keys: "1–9",       description: "select nth session",     scopes: G },
+    ShortcutDef { action: Some(GlobalShortcut::ToggleGrid),      triggers: &["g", "G"],      display_keys: "g",         description: "toggle grid view",       scopes: G },
+    ShortcutDef { action: Some(GlobalShortcut::ToggleZen),       triggers: &[],              display_keys: "enter",     description: "toggle zen mode",        scopes: G },
+    ShortcutDef { action: Some(GlobalShortcut::Settings),        triggers: &[","],           display_keys: ",",         description: "settings",               scopes: G },
+    ShortcutDef { action: Some(GlobalShortcut::ZoomIn),          triggers: &["=", "+"],      display_keys: "=",         description: "zoom in",                scopes: G },
+    ShortcutDef { action: Some(GlobalShortcut::ZoomOut),         triggers: &["-", "_"],      display_keys: "-",         description: "zoom out",               scopes: G },
+    ShortcutDef { action: Some(GlobalShortcut::ZoomReset),       triggers: &["0"],           display_keys: "0",         description: "reset zoom",             scopes: G },
+    ShortcutDef { action: Some(GlobalShortcut::ShortcutOverlay), triggers: &["/", "?"],      display_keys: "/",         description: "this overlay",           scopes: G },
+];
+
+/// Derive the coarse screen from UI flags. Zen wins over grid: while chrome is
+/// hidden the user is in zen regardless of `grid_view`.
+pub(crate) fn screen_from_flags(chrome_visible: bool, grid_view: bool) -> Screen {
+    if !chrome_visible {
+        Screen::Zen
+    } else if grid_view {
+        Screen::Grid
+    } else {
+        Screen::Workspace
+    }
+}
+
 /// Map a key event to a global shortcut. Matches iced's modifier-independent
 /// `key`, so Shift in the non-mac Ctrl+Shift chords doesn't change the
 /// character being compared.
@@ -2913,22 +3011,21 @@ fn match_global_shortcut(key: &Key, mods: Modifiers) -> Option<GlobalShortcut> {
     }
     match key {
         Key::Named(Named::Enter) => Some(GlobalShortcut::ToggleZen),
-        Key::Character(s) => match s.as_str() {
-            "n" | "N" => Some(GlobalShortcut::NewSession),
-            "," => Some(GlobalShortcut::Settings),
-            "g" | "G" => Some(GlobalShortcut::ToggleGrid),
-            "=" | "+" => Some(GlobalShortcut::ZoomIn),
-            "-" | "_" => Some(GlobalShortcut::ZoomOut),
-            "0" => Some(GlobalShortcut::ZoomReset),
-            "j" | "J" => Some(GlobalShortcut::NextSession),
-            "k" | "K" => Some(GlobalShortcut::PrevSession),
-            "/" | "?" => Some(GlobalShortcut::ShortcutOverlay),
-            d => d
-                .parse::<usize>()
+        Key::Character(s) => {
+            let s = s.as_str();
+            // Registry-driven character shortcuts.
+            if let Some(def) = SHORTCUTS
+                .iter()
+                .find(|d| d.action.is_some() && d.triggers.contains(&s))
+            {
+                return def.action;
+            }
+            // SelectNth stays special-cased: dynamic n, display-only in registry.
+            s.parse::<usize>()
                 .ok()
                 .filter(|n| (1..=9).contains(n))
-                .map(|n| GlobalShortcut::SelectSession(n - 1)),
-        },
+                .map(|n| GlobalShortcut::SelectSession(n - 1))
+        }
         _ => None,
     }
 }
@@ -3001,6 +3098,19 @@ mod tests {
             match_global_shortcut(&ch("/"), gmods()),
             Some(ShortcutOverlay)
         );
+        // Registry-driven aliases.
+        assert_eq!(match_global_shortcut(&ch("+"), gmods()), Some(ZoomIn));
+        assert_eq!(match_global_shortcut(&ch("_"), gmods()), Some(ZoomOut));
+        assert_eq!(match_global_shortcut(&ch("?"), gmods()), Some(ShortcutOverlay));
+    }
+
+    #[test]
+    fn screen_zen_wins_over_grid() {
+        use super::{screen_from_flags, Screen};
+        assert_eq!(screen_from_flags(false, true), Screen::Zen);
+        assert_eq!(screen_from_flags(false, false), Screen::Zen);
+        assert_eq!(screen_from_flags(true, true), Screen::Grid);
+        assert_eq!(screen_from_flags(true, false), Screen::Workspace);
     }
 
     #[test]

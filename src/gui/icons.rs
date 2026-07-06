@@ -46,6 +46,11 @@ fn svg_for(name: &str) -> String {
         "expand-all" => {
             r#"<path d="M3 4l2 2 2-2"/><path d="M3 10l2 2 2-2"/><path d="M9 5h4M9 11h4"/>"#
         }
+        // One open + one closed chevron + label hatches — "expand only the
+        // ones that matter" (sessions-only, the middle cycle state).
+        "expand-sessions" => {
+            r#"<path d="M3 4l2 2 2-2"/><path d="M4 9l2 2-2 2"/><path d="M9 5h4M9 11h4"/>"#
+        }
         // Two stacked closed chevrons + label hatches — "everything is closed".
         "collapse-all" => {
             r#"<path d="M4 3l2 2-2 2"/><path d="M4 9l2 2-2 2"/><path d="M9 5h4M9 11h4"/>"#

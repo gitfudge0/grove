@@ -12,6 +12,7 @@ use super::rows::{
     session_row, single_line, truncate_ellipsis, worktree_activity_row, worktree_row,
 };
 use super::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, SidebarView, UpgradeState};
+use super::update::{platform_mod_label, GlobalShortcut, Scope, ShortcutDef, SHORTCUTS};
 use super::widgets::{
     control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_workspace, footer_btn,
     icon_btn, modal_action,
@@ -280,11 +281,11 @@ impl Grove {
     }
 
     fn tree_head(&self) -> Element<'_, Msg> {
-        let collapsed = self.is_collapsed_to_sessionful_worktrees();
-        let glyph = if collapsed {
-            "expand-all"
-        } else {
-            "collapse-all"
+        // Glyph shows the *next* action the cycle button will take.
+        let glyph = match self.tree_expand.next() {
+            crate::gui::state::TreeExpand::SessionsOnly => "expand-sessions",
+            crate::gui::state::TreeExpand::All => "expand-all",
+            crate::gui::state::TreeExpand::Collapsed => "collapse-all",
         };
         let toggle = button(
             container(icon(glyph, 13.0, c::FG_MUTE()))
@@ -496,11 +497,89 @@ impl Grove {
         col.into()
     }
 
+    /// Session indices grouped by liveness for the activity view, in the exact
+    /// top-to-bottom order they render: `(waiting, running, idle)`. Idle folds
+    /// in exited sessions. Shared with keyboard navigation so `mod+1..9` maps to
+    /// the same visual order the sidebar shows.
+    fn activity_session_groups(&self) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+        use super::activity::ActivityState;
+        let mut waiting: Vec<usize> = Vec::new();
+        let mut running: Vec<usize> = Vec::new();
+        let mut idle: Vec<(usize, std::time::Instant)> = Vec::new();
+        let mut exited: Vec<(usize, std::time::Instant)> = Vec::new();
+        for (i, s) in self.app.sessions.iter().enumerate() {
+            let t = *s.last_output_at.lock().unwrap_or_else(|e| e.into_inner());
+            match self.activity_state(s) {
+                ActivityState::WaitingForInput => waiting.push(i),
+                ActivityState::Working => running.push(i),
+                ActivityState::Done | ActivityState::Idle => idle.push((i, t)),
+                ActivityState::Exited => exited.push((i, t)),
+            }
+        }
+        // Exited sessions live under "idle" — they're not running, not "live".
+        idle.extend(exited);
+        // Waiting/working sessions sort by creation order (newest first) —
+        // sorting by `last_output_at` made the list reorder on every PTY read,
+        // since a live agent updates its timestamp many times per second.
+        // Why: idle/exited timestamps are frozen by definition, so sorting
+        // those by recency is stable; running ones aren't. The timestamps were
+        // snapshotted above so the sort doesn't re-lock per comparison.
+        waiting.sort_by_key(|i| std::cmp::Reverse(*i));
+        running.sort_by_key(|i| std::cmp::Reverse(*i));
+        idle.sort_by_key(|&(_, t)| std::cmp::Reverse(t));
+        let idle: Vec<usize> = idle.into_iter().map(|(i, _)| i).collect();
+        (waiting, running, idle)
+    }
+
+    /// Session indices in the order they appear in the sidebar for the current
+    /// `sidebar_view`, honoring collapse state in the tree. Drives `mod+1..9`
+    /// while the agent grid is closed so the shortcut follows what's on screen.
+    pub fn visible_session_order(&self) -> Vec<usize> {
+        match self.sidebar_view {
+            SidebarView::Activity => {
+                let (mut order, running, idle) = self.activity_session_groups();
+                order.extend(running);
+                order.extend(idle);
+                order
+            }
+            SidebarView::Tree => self.tree_session_order(),
+            // The terminal sidebar lists no agent sessions; fall back to raw
+            // session order so the shortcut still targets something sane.
+            SidebarView::Terminal => (0..self.app.sessions.len()).collect(),
+        }
+    }
+
+    /// Session indices in the top-to-bottom order `tree_view` renders them,
+    /// skipping sessions hidden under a collapsed project or worktree.
+    fn tree_session_order(&self) -> Vec<usize> {
+        let mut order = Vec::new();
+        for (pi, _p) in self.app.store.projects.iter().enumerate() {
+            if self.collapsed.contains(&pi) {
+                continue;
+            }
+            let wts: &[Worktree] = if pi == self.app.proj_idx {
+                &self.app.worktrees
+            } else {
+                self.wt_cache.get(&pi).map(|v| v.as_slice()).unwrap_or(&[])
+            };
+            for (wi, w) in wts.iter().enumerate() {
+                if self.collapsed_wt.contains(&(pi, wi)) {
+                    continue;
+                }
+                for (si, s) in self.app.sessions.iter().enumerate() {
+                    if s.wt_path == w.path {
+                        order.push(si);
+                    }
+                }
+            }
+        }
+        order
+    }
+
     /// Flat activity-stream rendering of every session across every project /
     /// worktree, grouped by liveness (`running` / `idle` / `worktrees · no
     /// sessions`).
     fn activity_view(&self) -> Element<'_, Msg> {
-        use super::activity::ActivityState;
         let now = std::time::Instant::now();
 
         // Pre-compute lookups used by both the grouping pass and the row
@@ -532,31 +611,7 @@ impl Grove {
             .map(|s| self.resolve_session_wname(s, &project_idx))
             .collect();
 
-        let mut waiting: Vec<usize> = Vec::new();
-        let mut running: Vec<usize> = Vec::new();
-        let mut idle: Vec<(usize, std::time::Instant)> = Vec::new();
-        let mut exited: Vec<(usize, std::time::Instant)> = Vec::new();
-        for (i, s) in self.app.sessions.iter().enumerate() {
-            let t = *s.last_output_at.lock().unwrap_or_else(|e| e.into_inner());
-            match self.activity_state(s) {
-                ActivityState::WaitingForInput => waiting.push(i),
-                ActivityState::Working => running.push(i),
-                ActivityState::Done | ActivityState::Idle => idle.push((i, t)),
-                ActivityState::Exited => exited.push((i, t)),
-            }
-        }
-        // Exited sessions live under "idle" — they're not running, not "live".
-        idle.extend(exited);
-        // Waiting/working sessions sort by creation order (newest first) —
-        // sorting by `last_output_at` made the list reorder on every PTY read,
-        // since a live agent updates its timestamp many times per second.
-        // Why: idle/exited timestamps are frozen by definition, so sorting
-        // those by recency is stable; running ones aren't. The timestamps were
-        // snapshotted above so the sort doesn't re-lock per comparison.
-        waiting.sort_by_key(|i| std::cmp::Reverse(*i));
-        running.sort_by_key(|i| std::cmp::Reverse(*i));
-        idle.sort_by_key(|&(_, t)| std::cmp::Reverse(t));
-        let idle: Vec<usize> = idle.into_iter().map(|(i, _)| i).collect();
+        let (waiting, running, idle) = self.activity_session_groups();
 
         // All worktrees across all projects, listed `project / worktree`.
         // The row shows the session count and lets the user spawn new
@@ -1746,9 +1801,38 @@ impl Grove {
             None => Space::with_width(0).into(),
         };
 
-        let right = row![text(format!("v{}", env!("CARGO_PKG_VERSION")))
-            .size(11)
-            .color(c::FG_DIM()),];
+        let modifier = platform_mod_label();
+        // Pull the key label from the registry (single source of truth).
+        let overlay_key = SHORTCUTS
+            .iter()
+            .find(|d| d.action == Some(GlobalShortcut::ShortcutOverlay))
+            .map(|d| d.display_keys)
+            .unwrap_or("/");
+        let shortcuts_chip = button(
+            text(format!("{modifier}+{overlay_key}  shortcuts"))
+                .size(11)
+                .color(c::FG_DIM()),
+        )
+        .padding(Padding::from([0, 6]))
+        .on_press(Msg::OpenShortcutOverlay)
+        .style(|_, status| button::Style {
+            background: None,
+            text_color: if matches!(status, button::Status::Hovered) {
+                c::FG()
+            } else {
+                c::FG_DIM()
+            },
+            ..Default::default()
+        });
+
+        let right = row![
+            shortcuts_chip,
+            Space::with_width(12),
+            text(format!("v{}", env!("CARGO_PKG_VERSION")))
+                .size(11)
+                .color(c::FG_DIM()),
+        ]
+        .align_y(iced::Alignment::Center);
 
         let bar = row![
             left,
@@ -3263,48 +3347,105 @@ impl Grove {
     /// Two-column keyboard-shortcut reference (mod+/). Text-only key labels:
     /// the bundled fonts have no modifier-symbol glyphs.
     fn shortcut_overlay_modal(&self) -> Element<'_, Msg> {
-        let m = if cfg!(target_os = "macos") {
-            "cmd"
-        } else {
-            "ctrl+shift"
-        };
-        let entries: [(String, &'static str); 11] = [
-            (format!("{m}+n"), "new session"),
-            (format!("{m}+j / {m}+k"), "next / previous session"),
-            (format!("{m}+1..9"), "select nth session"),
-            (format!("{m}+g"), "toggle grid view"),
-            (format!("{m}+enter"), "toggle zen mode"),
-            (format!("{m}+,"), "settings"),
-            (format!("{m}+= / {m}+-"), "zoom in / out"),
-            (format!("{m}+0"), "reset zoom"),
+        let m = platform_mod_label();
+        let screen = self.current_screen();
+
+        // Registry entries visible on this screen: Global or matching current screen.
+        let visible: Vec<&ShortcutDef> = SHORTCUTS
+            .iter()
+            .filter(|d| {
+                d.scopes
+                    .iter()
+                    .any(|s| matches!(s, Scope::Global) || *s == Scope::Screen(screen))
+            })
+            .collect();
+
+        // Does the visible set span more than one scope? (Global vs current-screen)
+        let has_global = visible.iter().any(|d| d.scopes.contains(&Scope::Global));
+        let has_screen = visible
+            .iter()
+            .any(|d| d.scopes.contains(&Scope::Screen(screen)));
+        let grouped = has_global && has_screen;
+
+        // Static display-only rows the behavioral registry deliberately omits.
+        let static_rows: [(String, &'static str); 2] = [
             (format!("{m}+c / {m}+v"), "copy / paste in session"),
-            (format!("{m}+/"), "this overlay"),
             ("esc".into(), "close modals"),
         ];
-        let half = entries.len().div_ceil(2);
-        let mut cols = row![].spacing(24);
-        for chunk in entries.chunks(half) {
-            let mut col = Column::new().spacing(6);
-            for (keys, desc) in chunk {
-                col = col.push(
-                    row![
-                        container(text(keys.clone()).size(11).color(c::CYAN()))
-                            .width(Length::Fixed(170.0)),
-                        text(*desc).size(11).color(c::FG_DIM()),
-                    ]
-                    .spacing(10)
-                    .align_y(iced::Alignment::Center),
-                );
+
+        let make_row = |keys: String, desc: &'static str| {
+            row![
+                container(text(keys).size(11).color(c::CYAN())).width(Length::Fixed(170.0)),
+                text(desc).size(11).color(c::FG_DIM()),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center)
+        };
+
+        // Split a flat list of (keys, desc) rows into the two-column layout.
+        let two_columns = |rows: Vec<(String, &'static str)>| {
+            let mut cols = row![].spacing(24);
+            if rows.is_empty() {
+                return cols; // chunks(0) would panic on an empty list
             }
-            cols = cols.push(col.width(Length::FillPortion(1)));
+            let half = rows.len().div_ceil(2);
+            for chunk in rows.chunks(half) {
+                let mut col = Column::new().spacing(6);
+                for (keys, desc) in chunk {
+                    col = col.push(make_row(keys.clone(), desc));
+                }
+                cols = cols.push(col.width(Length::FillPortion(1)));
+            }
+            cols
+        };
+
+        let mut body = column![text("keyboard shortcuts").size(13).color(c::MAGENTA())].spacing(12);
+
+        if grouped {
+            // Global section: registry Global rows + the static copy/paste/esc rows.
+            let mut global_rows: Vec<(String, &'static str)> = visible
+                .iter()
+                .filter(|d| d.scopes.contains(&Scope::Global))
+                .map(|d| (format!("{m}+{}", d.display_keys), d.description))
+                .collect();
+            for (keys, desc) in static_rows.iter() {
+                global_rows.push((keys.clone(), desc));
+            }
+            // Screen section: registry rows scoped to the current screen.
+            let screen_rows: Vec<(String, &'static str)> = visible
+                .iter()
+                .filter(|d| d.scopes.contains(&Scope::Screen(screen)))
+                .map(|d| (format!("{m}+{}", d.display_keys), d.description))
+                .collect();
+
+            if !global_rows.is_empty() {
+                body = body.push(text("global").size(11).color(c::FG_MUTE()));
+                body = body.push(two_columns(global_rows));
+            }
+            if !screen_rows.is_empty() {
+                body = body.push(text(screen.label()).size(11).color(c::FG_MUTE()));
+                body = body.push(two_columns(screen_rows));
+            }
+        } else {
+            // Single scope (all-Global today): render a flat, headerless list, one
+            // shortcut per row, derived straight from the registry. (The old
+            // hand-authored overlay combined a couple of related pairs onto single
+            // lines; we keep the registry as the sole source of order and text
+            // rather than re-introducing a parallel display layout.)
+            let mut rows: Vec<(String, &'static str)> = visible
+                .iter()
+                .map(|d| (format!("{m}+{}", d.display_keys), d.description))
+                .collect();
+            for (keys, desc) in static_rows.iter() {
+                rows.push((keys.clone(), desc));
+            }
+            body = body.push(two_columns(rows));
         }
-        let body = column![
-            text("keyboard shortcuts").size(13).color(c::MAGENTA()),
-            cols,
-            Space::with_height(4),
-            text("esc to close").size(11).color(c::FG_MUTE()),
-        ]
-        .spacing(12);
+
+        body = body
+            .push(Space::with_height(4))
+            .push(text("esc to close").size(11).color(c::FG_MUTE()));
+
         modal_panel(body.into(), 640.0, c::MAGENTA())
     }
 
