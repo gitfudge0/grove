@@ -122,6 +122,11 @@ fn svg_for(name: &str) -> String {
         "folder-open" => {
             r#"<path d="M2 12V4.5a1 1 0 0 1 1-1h3l1.2 1.5H12a1 1 0 0 1 1 1V7"/><path d="M2 12l1.7-4.2a1 1 0 0 1 .93-.63h9.1a.6.6 0 0 1 .56.82L14 12a1 1 0 0 1-.93.63H3a1 1 0 0 1-1-.63z"/>"#
         }
+        // ⌘ command / place-of-interest mark — macOS shortcut modifier.
+        // Source: Bootstrap Icons (16×16 grid, fill-based like claude/codex).
+        "command" => {
+            r#"<path fill="currentColor" stroke="none" d="M3.5 2A1.5 1.5 0 0 1 5 3.5V5H3.5a1.5 1.5 0 1 1 0-3M6 5V3.5A2.5 2.5 0 1 0 3.5 6H5v4H3.5A2.5 2.5 0 1 0 6 12.5V11h4v1.5a2.5 2.5 0 1 0 2.5-2.5H11V6h1.5A2.5 2.5 0 1 0 10 3.5V5zm4 1v4H6V6zm1-1V3.5A1.5 1.5 0 1 1 12.5 5zm0 6h1.5a1.5 1.5 0 1 1-1.5 1.5zm-6 0v1.5A1.5 1.5 0 1 1 3.5 11zM5 5H3.5A1.5 1.5 0 0 1 5 3.5z"/>"#
+        }
         // Four-point sparkle — initialize / new.
         "sparkle" => {
             r#"<path d="M8 2.5c.6 2.6 1.9 3.9 4.5 4.5C9.9 7.6 8.6 8.9 8 11.5 7.4 8.9 6.1 7.6 3.5 7 6.1 6.4 7.4 5.1 8 2.5z" fill="currentColor" stroke="none"/>"#

@@ -3,7 +3,8 @@
 
 use super::icons::icon;
 use super::metrics::{
-    APPBAR_H, CELL_H, CELL_W, ROW_H, SESSBAR_H, SIDEBAR_DIVIDER_W, STATUS_H, UI_BOLD, UI_FONT,
+    APPBAR_H, CELL_H, CELL_W, MONO_FONT, ROW_H, SESSBAR_H, SIDEBAR_DIVIDER_W, STATUS_H, UI_BOLD,
+    UI_FONT,
 };
 use super::palette as c;
 use super::pty::{rebuild_row_runs, PtyProgram};
@@ -155,35 +156,111 @@ impl Grove {
         } else {
             cog
         };
-        let grid_color = if self.grid_view { c::CYAN() } else { c::FG_MUTE() };
-        let grid_bg = if self.grid_view {
-            Some(Background::Color(c::BG_HL()))
+        // Agent-view toggle. In agent (grid) view it grows a "+" session-launcher
+        // segment on its left, forming a single segmented combo; on every other
+        // screen it is a lone muted button. The combo replaces the floating "+"
+        // FAB that used to hover over the grid.
+        let view_control: Element<'_, Msg> = if self.grid_view {
+            let plus = button(
+                container(icon("plus", 13.0, c::MAGENTA()))
+                    .center_x(26)
+                    .center_y(22),
+            )
+            .on_press(Msg::OpenSessionLauncher)
+            .padding(0)
+            .style(|_, status| button::Style {
+                background: if matches!(status, button::Status::Hovered) {
+                    Some(Background::Color(c::BG_HOVER()))
+                } else {
+                    None
+                },
+                text_color: c::MAGENTA(),
+                // Round the left corners only — the right edge butts the grid seg.
+                border: Border {
+                    color: Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: Radius {
+                        top_left: 4.0,
+                        top_right: 0.0,
+                        bottom_right: 0.0,
+                        bottom_left: 4.0,
+                    },
+                },
+                shadow: Shadow::default(),
+            });
+            let grid_seg = button(
+                container(icon("grid", 13.0, c::CYAN()))
+                    .center_x(26)
+                    .center_y(22),
+            )
+            .on_press(Msg::ToggleGridView)
+            .padding(0)
+            .style(|_, status| button::Style {
+                background: Some(Background::Color(if matches!(status, button::Status::Hovered) {
+                    c::BG_HOVER()
+                } else {
+                    c::BG_HL()
+                })),
+                text_color: c::CYAN(),
+                border: Border {
+                    color: Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: Radius {
+                        top_left: 0.0,
+                        top_right: 4.0,
+                        bottom_right: 4.0,
+                        bottom_left: 0.0,
+                    },
+                },
+                shadow: Shadow::default(),
+            });
+            // A short, fixed-height hairline between the segments. Using a
+            // Fill-height divider here would inherit the appbar's full height and
+            // stretch the combo taller than the lone toggle button.
+            let seg_divider = container(Space::with_width(1))
+                .width(1)
+                .height(Length::Fixed(14.0))
+                .style(|_| container::Style {
+                    background: Some(Background::Color(c::BORDER())),
+                    ..Default::default()
+                });
+            container(row![plus, seg_divider, grid_seg].align_y(iced::Alignment::Center))
+                .style(|_| container::Style {
+                    border: Border {
+                        color: c::BORDER(),
+                        width: 1.0,
+                        radius: Radius::from(5.0),
+                    },
+                    ..Default::default()
+                })
+                .into()
         } else {
-            None
+            let grid_color = c::FG_MUTE();
+            button(
+                container(icon("grid", 13.0, grid_color))
+                    .center_x(22)
+                    .center_y(22),
+            )
+            .on_press(Msg::ToggleGridView)
+            .padding(0)
+            .style(move |_, status| button::Style {
+                background: if matches!(status, button::Status::Hovered) {
+                    Some(Background::Color(c::BG_HOVER()))
+                } else {
+                    None
+                },
+                text_color: grid_color,
+                border: Border {
+                    color: Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: Radius::from(4.0),
+                },
+                shadow: Shadow::default(),
+            })
+            .into()
         };
-        let grid_btn = button(
-            container(icon("grid", 13.0, grid_color))
-                .center_x(22)
-                .center_y(22),
-        )
-        .on_press(Msg::ToggleGridView)
-        .padding(0)
-        .style(move |_, status| button::Style {
-            background: if matches!(status, button::Status::Hovered) {
-                Some(Background::Color(c::BG_HOVER()))
-            } else {
-                grid_bg
-            },
-            text_color: grid_color,
-            border: Border {
-                color: Color::TRANSPARENT,
-                width: 0.0,
-                radius: Radius::from(4.0),
-            },
-            shadow: Shadow::default(),
-        });
 
-        let right = row![grid_btn, cog]
+        let right = row![view_control, cog]
             .spacing(4)
             .padding(Padding::from([0, 16]))
             .align_y(iced::Alignment::Center);
@@ -919,47 +996,10 @@ impl Grove {
                 ..Default::default()
             });
 
-        // Circular "+" button: a fixed square with a fully-rounded border and
-        // the glyph centered.
-        let pill_d = 40.0;
-        let pill = button(
-            container(text("+").size(22).color(c::FG()))
-                .center_x(Length::Fill)
-                .center_y(Length::Fill),
-        )
-        .on_press(Msg::OpenSessionLauncher)
-        .width(Length::Fixed(pill_d))
-        .height(Length::Fixed(pill_d))
-        .padding(0)
-        .style(move |_, status| {
-            let hovered = matches!(status, button::Status::Hovered);
-            button::Style {
-                background: Some(Background::Color(if hovered {
-                    c::BG_HOVER()
-                } else {
-                    c::BG_HL()
-                })),
-                text_color: c::FG(),
-                border: Border {
-                    color: c::MAGENTA(),
-                    width: 1.0,
-                    radius: Radius::from(pill_d / 2.0),
-                },
-                shadow: Shadow::default(),
-            }
-        });
-
-        // Anchor the pill bottom-right without disturbing grid packing: wrap
-        // it in a full-size container aligned to the bottom-right, then
-        // stack it over the grid.
-        let pill_layer = container(pill)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(iced::alignment::Horizontal::Right)
-            .align_y(iced::alignment::Vertical::Bottom)
-            .padding(18);
-
-        stack![grid, pill_layer].into()
+        // The session launcher is opened from the "+" segment of the agent-view
+        // combo in the appbar (see `appbar`); the grid workspace itself is just
+        // the tile grid with no floating action button.
+        grid.into()
     }
 
     fn workspace(&self) -> Element<'_, Msg> {
@@ -1587,6 +1627,45 @@ impl Grove {
             border: Border::default(),
             shadow: Shadow::default(),
         });
+        // Shortcut-number hint: the first 9 tiles (tile_order positions 0..9)
+        // are reachable via the platform modifier + 1..9 (see
+        // select_visible_session). Show the full chord so the key is
+        // unambiguous. On macOS we render the ⌘ glyph as an SVG icon (the
+        // bundled font has no U+2318); elsewhere the modifier is spelled out as
+        // text via platform_mod_label(), matching the overlay.
+        let num_hint: Element<'_, Msg> = if tile_order_idx < 9 {
+            let n = tile_order_idx + 1;
+            let hint_color = if focused { c::FG_DIM() } else { c::FG_MUTE() };
+            let inner: Element<'_, Msg> = if cfg!(target_os = "macos") {
+                row![
+                    icon("command", 9.0, hint_color),
+                    text(n.to_string()).font(MONO_FONT).size(9).color(hint_color),
+                ]
+                .spacing(1)
+                .align_y(iced::Alignment::Center)
+                .into()
+            } else {
+                text(format!("{}+{}", platform_mod_label(), n))
+                    .font(MONO_FONT)
+                    .size(9)
+                    .color(hint_color)
+                    .into()
+            };
+            container(inner)
+            .padding(Padding::from([1, 4]))
+            .style(|_| container::Style {
+                background: Some(Background::Color(c::BG())),
+                border: Border {
+                    color: c::BORDER(),
+                    width: 1.0,
+                    radius: 3.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
+        } else {
+            Space::with_width(0).into()
+        };
         let header_row = row![
             dot(dot_color),
             text(s.agent.label()).font(UI_BOLD).size(10).color(c::FG_DIM()),
@@ -1595,6 +1674,7 @@ impl Grove {
             text("·").size(10).color(c::FG_MUTE()),
             text(s.branch.clone()).size(10).color(c::FG_MUTE()),
             Space::with_width(Length::Fill),
+            num_hint,
             tile_btn("zen", Msg::GridTileZen(si)),
             kill_btn,
         ]
