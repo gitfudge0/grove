@@ -489,6 +489,7 @@ impl Grove {
                 self.pending_kill = None;
                 if i < self.app.sessions.len() {
                     self.app.active_session = Some(i);
+                    self.leave_terminal_tab();
                     self.acknowledge_session(i);
                     self.app.sessions[i].resize(self.pty_rows, self.pty_sess_cols);
                     // The panel re-anchors to the new session's worktree; reset
@@ -1098,6 +1099,7 @@ impl Grove {
                     // Carry the focused tile into the normal workspace.
                     if let Some(si) = self.grid_focused {
                         self.app.active_session = Some(si);
+                        self.leave_terminal_tab();
                     }
                     self.tile_order.clear();
                     self.grid_focused = None;
@@ -1136,6 +1138,7 @@ impl Grove {
             }
             Msg::GridTileZen(si) => {
                 self.app.active_session = Some(si);
+                self.leave_terminal_tab();
                 self.grid_focused = Some(si);
                 // Temporarily exit grid so zen has a single-session workspace.
                 self.grid_view = false;
@@ -2355,6 +2358,16 @@ impl Grove {
     /// project+worktree owns the given session path.  Called after
     /// `active_session` changes so the sidebar cyan-rail always agrees with
     /// what is displayed in the workspace.
+    /// When focusing an agent session, drop out of the terminal tab. `workspace()`
+    /// checks `terminal_tab()` *before* `active_session`, so while `sidebar_view`
+    /// stays `Terminal` the workspace — and zen mode — keep rendering the home
+    /// terminal instead of the session the user just focused.
+    fn leave_terminal_tab(&mut self) {
+        if self.terminal_tab() {
+            self.sidebar_view = SidebarView::Tree;
+        }
+    }
+
     fn sync_wt_to_session(&mut self, proj_name: &str, wt_path: &str) {
         let proj_idx = self
             .app
@@ -2610,6 +2623,7 @@ impl Grove {
             .spawn_session(label, pname, w.path.clone(), ag, args, &w.path, true);
         self.resize_new_sessions(&before);
         if let Some(at) = inserted {
+            self.leave_terminal_tab();
             if self.grid_view {
                 crate::gui::launcher::insert_into_tile_order(&mut self.tile_order, at);
                 self.grid_focused = Some(at);
@@ -2649,6 +2663,7 @@ impl Grove {
                 s.resize(self.pty_rows, self.pty_sess_cols);
                 self.app.sessions.push(s);
                 self.app.active_session = Some(self.app.sessions.len() - 1);
+                self.leave_terminal_tab();
                 // Reveal the freshly spawned session if its worktree was
                 // collapsed in the tree.
                 self.collapsed_wt.remove(&(proj, wt));
