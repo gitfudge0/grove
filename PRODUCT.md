@@ -38,12 +38,12 @@ Emotional goal: the calm of a well-tiled tmux setup, without the configuration. 
 1. **Keyboard is a first-class interface.** Common actions are reachable without leaving the keyboard, while mouse controls stay compact and predictable.
 2. **Sessions are the unit of work, not windows.** The UI exists to spawn, list, and jump between sessions. Everything else (projects, worktrees) is a path to a session.
 3. **Show state, not chrome.** A green ● next to a project means "something is running there." That's the entire status system. No badges, no toast notifications, no progress bars.
-4. **Theme is the user's, not ours.** Grove ships 37 themes because developers already have opinions about terminal colors. The default is a recognizable one (TokyoNight); everything else is the user's choice.
+4. **Theme is the user's, not ours.** Grove ships 40 themes because developers already have opinions about terminal colors. The default is a recognizable one (TokyoNight); everything else is the user's choice.
 5. **One screen, three views.** Tree, activity, and terminal views cover the core workflows without nested navigation stacks.
 
 ## Accessibility & Inclusion
 
 - Color is never the sole carrier of state. The session count `●N` pairs the dot with a numeral; focus is signaled by border emphasis plus title text, not color alone.
-- Both light and dark theme families are first-class: 23 dark themes and 14 light themes. No "dark mode is correct" assumption.
+- Both light and dark theme families are first-class: 30 dark themes and 10 light themes. No "dark mode is correct" assumption.
 - Reduced motion: motion is functional and restrained; nothing pulses, shimmers, or performs decorative animation.
 - All common actions are keyboard-reachable. Embedded PTY accessibility remains bounded by the terminal applications Grove hosts.
