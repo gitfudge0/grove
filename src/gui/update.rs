@@ -1800,6 +1800,19 @@ impl Grove {
                 Task::none()
             }
             GlobalShortcut::ShortcutOverlay => self.update(Msg::OpenShortcutOverlay),
+            GlobalShortcut::CloseFocusedSession => {
+                match close_focused_session_decision(
+                    self.current_screen(),
+                    self.grid_focused,
+                    self.pending_kill,
+                ) {
+                    CloseFocusedDecision::Kill(si) => self.update(Msg::KillSession(si)),
+                    CloseFocusedDecision::Request(si) => {
+                        self.update(Msg::RequestKillSession(si))
+                    }
+                    CloseFocusedDecision::NoOp => Task::none(),
+                }
+            }
         }
     }
 
@@ -2989,6 +3002,7 @@ pub(crate) enum GlobalShortcut {
     PrevSession,
     SelectSession(usize),
     ShortcutOverlay,
+    CloseFocusedSession,
 }
 
 /// Coarse "which screen am I on" model, derived from existing UI flags.
@@ -3054,6 +3068,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
     ShortcutDef { action: Some(GlobalShortcut::ZoomOut),         triggers: &["-", "_"],      display_keys: "-",         description: "zoom out",               scopes: G, requires_alt: false },
     ShortcutDef { action: Some(GlobalShortcut::ZoomReset),       triggers: &["0"],           display_keys: "0",         description: "reset zoom",             scopes: G, requires_alt: false },
     ShortcutDef { action: Some(GlobalShortcut::ShortcutOverlay), triggers: &["/", "?"],      display_keys: "/",         description: "this overlay",           scopes: G, requires_alt: false },
+    ShortcutDef { action: Some(GlobalShortcut::CloseFocusedSession), triggers: &["w", "W"], display_keys: "w",         description: "close focused session",  scopes: &[Scope::Screen(Screen::Grid)], requires_alt: false },
 ];
 
 /// Derive the coarse screen from UI flags. Zen wins over grid: while chrome is
@@ -3104,6 +3119,36 @@ fn match_global_shortcut(key: &Key, mods: Modifiers) -> Option<GlobalShortcut> {
                 .map(|n| GlobalShortcut::SelectSession(n - 1))
         }
         _ => None,
+    }
+}
+
+/// Result of [`close_focused_session_decision`]: what `CloseFocusedSession`
+/// should do given the current screen and confirm-to-kill state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloseFocusedDecision {
+    /// Not in grid view, or no tile is focused.
+    NoOp,
+    /// First press: arm the confirm-to-kill state for this session.
+    Request(usize),
+    /// Second press while armed for this session: actually kill it.
+    Kill(usize),
+}
+
+/// Pure decision logic for `GlobalShortcut::CloseFocusedSession`, mirroring
+/// the grid tile's trash-button toggle (see `grid_tile` in `view.rs`). Kept
+/// as a free function so it's testable without constructing a full `Grove`.
+fn close_focused_session_decision(
+    screen: Screen,
+    grid_focused: Option<usize>,
+    pending_kill: Option<usize>,
+) -> CloseFocusedDecision {
+    if screen != Screen::Grid {
+        return CloseFocusedDecision::NoOp;
+    }
+    match grid_focused {
+        Some(si) if pending_kill == Some(si) => CloseFocusedDecision::Kill(si),
+        Some(si) => CloseFocusedDecision::Request(si),
+        None => CloseFocusedDecision::NoOp,
     }
 }
 
@@ -3179,6 +3224,14 @@ mod tests {
         assert_eq!(match_global_shortcut(&ch("+"), gmods()), Some(ZoomIn));
         assert_eq!(match_global_shortcut(&ch("_"), gmods()), Some(ZoomOut));
         assert_eq!(match_global_shortcut(&ch("?"), gmods()), Some(ShortcutOverlay));
+        assert_eq!(
+            match_global_shortcut(&ch("w"), gmods()),
+            Some(CloseFocusedSession)
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("W"), gmods()),
+            Some(CloseFocusedSession)
+        );
     }
 
     /// The real "new session in worktree" chord: Cmd+Alt (mac) / Ctrl+Alt
@@ -3230,5 +3283,54 @@ mod tests {
             match_global_shortcut(&Key::Named(Named::Tab), gmods()),
             None
         );
+    }
+
+    /// `CloseFocusedSession` is screen-gated at runtime (unlike every other
+    /// registry shortcut, which is global). These exercise the pure decision
+    /// helper directly rather than the full `Grove` state, which is expensive
+    /// to construct for a single match arm.
+    mod close_focused_session_decision {
+        use super::super::{close_focused_session_decision, CloseFocusedDecision, Screen};
+
+        #[test]
+        fn no_op_outside_grid_screen() {
+            assert_eq!(
+                close_focused_session_decision(Screen::Workspace, Some(3), None),
+                CloseFocusedDecision::NoOp
+            );
+            assert_eq!(
+                close_focused_session_decision(Screen::Zen, Some(3), None),
+                CloseFocusedDecision::NoOp
+            );
+        }
+
+        #[test]
+        fn no_op_in_grid_with_no_tile_focused() {
+            assert_eq!(
+                close_focused_session_decision(Screen::Grid, None, None),
+                CloseFocusedDecision::NoOp
+            );
+        }
+
+        #[test]
+        fn requests_kill_when_not_yet_armed() {
+            assert_eq!(
+                close_focused_session_decision(Screen::Grid, Some(2), None),
+                CloseFocusedDecision::Request(2)
+            );
+            // Pending kill armed for a *different* session still requests.
+            assert_eq!(
+                close_focused_session_decision(Screen::Grid, Some(2), Some(5)),
+                CloseFocusedDecision::Request(2)
+            );
+        }
+
+        #[test]
+        fn kills_when_already_armed_for_focused_session() {
+            assert_eq!(
+                close_focused_session_decision(Screen::Grid, Some(2), Some(2)),
+                CloseFocusedDecision::Kill(2)
+            );
+        }
     }
 }
