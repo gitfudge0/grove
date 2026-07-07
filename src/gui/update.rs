@@ -1146,7 +1146,7 @@ impl Grove {
                     let src = drag.source_idx;
                     let dst = drag.hover_idx;
                     if src != dst && src < self.tile_order.len() && dst < self.tile_order.len() {
-                        crate::gui::launcher::reorder_tiles(&mut self.tile_order, src, dst);
+                        crate::gui::launcher::swap_tiles(&mut self.tile_order, src, dst);
                         self.persist_grid_order();
                         // Every tile between src and dst may have changed column, so re-size each tile's PTY to its new column height.
                         self.refresh_pty_viewport();
