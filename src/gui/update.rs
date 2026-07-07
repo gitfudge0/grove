@@ -1097,7 +1097,16 @@ impl Grove {
             Msg::ToggleGridView => {
                 self.grid_view = !self.grid_view;
                 if self.grid_view {
-                    self.tile_order = (0..self.app.sessions.len()).collect();
+                    let live_keys: Vec<String> = self
+                        .app
+                        .sessions
+                        .iter()
+                        .map(|s| crate::gui::launcher::session_grid_key(&s.project, &s.wt_path))
+                        .collect();
+                    self.tile_order = crate::gui::launcher::reconcile_tile_order(
+                        &live_keys,
+                        &self.app.store.grid_order,
+                    );
                     self.grid_focused = None;
                     self.grid_drag = None;
                 } else {
@@ -1106,6 +1115,7 @@ impl Grove {
                         self.app.active_session = Some(si);
                         self.leave_terminal_tab();
                     }
+                    self.persist_grid_order();
                     self.tile_order.clear();
                     self.grid_focused = None;
                     self.grid_drag = None;
@@ -1593,6 +1603,19 @@ impl Grove {
 
     fn persist_sidebar_width(&mut self) {
         self.app.store.sidebar_width = Some(self.sidebar_width);
+        let _ = crate::storage::save(&self.app.store);
+    }
+
+    /// Save the current `tile_order` to `Store::grid_order` (mapped through
+    /// each tile's stable session key) so Agent View reopens in the same
+    /// arrangement, including across app restarts.
+    fn persist_grid_order(&mut self) {
+        self.app.store.grid_order = self
+            .tile_order
+            .iter()
+            .filter_map(|&si| self.app.sessions.get(si))
+            .map(|s| crate::gui::launcher::session_grid_key(&s.project, &s.wt_path))
+            .collect();
         let _ = crate::storage::save(&self.app.store);
     }
 
