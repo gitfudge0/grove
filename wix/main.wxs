@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+    Id="*"
+    Name="Grove (Alpha)"
+    UpgradeCode="8f3b2e0a-6c1d-4a7a-9e3c-2b6a1d4f9c11"
+    Language="1033"
+    Codepage="UTF-8"
+    Version="$(var.Version)"
+    Manufacturer="Grove">
+
+    <Package
+      Id="*"
+      Keywords="Installer"
+      Description="Grove (Alpha) — a worktree launchpad for AI coding agents"
+      Manufacturer="Grove"
+      InstallerVersion="500"
+      Languages="1033"
+      Compressed="yes"
+      InstallScope="perUser"
+      SummaryCodepage="1252" />
+
+    <MajorUpgrade
+      Schedule="afterInstallInitialize"
+      DowngradeErrorMessage="A newer version of Grove is already installed." />
+
+    <Media Id="1" Cabinet="grove.cab" EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="APPLICATIONFOLDER" Name="Grove" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="Grove" />
+      </Directory>
+    </Directory>
+
+    <DirectoryRef Id="APPLICATIONFOLDER">
+      <Component Id="GroveExecutable" Guid="*">
+        <File
+          Id="GroveEXE"
+          Source="target\release\grove.exe"
+          KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="ApplicationShortcut" Guid="*">
+        <Shortcut
+          Id="ApplicationStartMenuShortcut"
+          Name="Grove (Alpha)"
+          Description="A worktree launchpad for AI coding agents"
+          Target="[APPLICATIONFOLDER]grove.exe"
+          WorkingDirectory="APPLICATIONFOLDER" />
+        <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\Grove"
+          Name="installed"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="MainApplication" Title="Grove" Level="1">
+      <ComponentRef Id="GroveExecutable" />
+      <ComponentRef Id="ApplicationShortcut" />
+    </Feature>
+  </Product>
+</Wix>

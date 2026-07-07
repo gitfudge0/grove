@@ -29,6 +29,9 @@ jobs:
           - os: linux
             arch: amd64
             runner: ubuntu-latest
+          - os: windows
+            arch: x86_64
+            runner: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -55,12 +58,23 @@ jobs:
             librsvg2-dev libssl-dev pkg-config dpkg
 
       - name: Install cargo-bundle
+        if: matrix.os != 'windows'
         run: cargo install cargo-bundle --locked || cargo install cargo-bundle
 
-      - name: Build release bundle
+      - name: Install cargo-wix
+        if: matrix.os == 'windows'
+        run: cargo install cargo-wix --locked || cargo install cargo-wix
+
+      - name: Build release bundle (macOS/Linux)
+        if: matrix.os != 'windows'
         run: cargo bundle --release
 
-      - name: Package artifacts
+      - name: Build release binary (Windows)
+        if: matrix.os == 'windows'
+        run: cargo build --release
+
+      - name: Package artifacts (macOS/Linux)
+        if: matrix.os != 'windows'
         id: package
         shell: bash
         run: |
@@ -89,6 +103,16 @@ jobs:
             cp "$DEB" "$OUT/Grove-${VERSION}-linux-amd64.deb"
             echo "Built $OUT/Grove-${VERSION}-linux-amd64.deb"
           fi
+
+      - name: Package artifacts (Windows)
+        if: matrix.os == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+          mkdir -p dist
+          cargo wix --no-build --nocapture -o "dist/Grove-${VERSION}-windows-x86_64-alpha.msi"
+          echo "Built dist/Grove-${VERSION}-windows-x86_64-alpha.msi"
 
       - name: Upload bundles to release
         uses: softprops/action-gh-release@v2
