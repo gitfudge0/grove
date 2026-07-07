@@ -804,6 +804,7 @@ impl Grove {
                             .run_worktree_script(&w.path, self.pty_rows, self.pty_panel_cols);
                         if self.app.sessions.len() > before.len() {
                             self.tile_order.push(self.app.sessions.len() - 1);
+                            self.persist_grid_order();
                         }
                         self.refresh_pty_viewport();
                     } else {
@@ -1146,6 +1147,7 @@ impl Grove {
                     let dst = drag.hover_idx;
                     if src != dst && src < self.tile_order.len() && dst < self.tile_order.len() {
                         crate::gui::launcher::reorder_tiles(&mut self.tile_order, src, dst);
+                        self.persist_grid_order();
                         // Every tile between src and dst may have changed column, so re-size each tile's PTY to its new column height.
                         self.refresh_pty_viewport();
                     }
@@ -1240,6 +1242,7 @@ impl Grove {
                 // If the grid is open, append the new session index so it appears.
                 if self.grid_view && self.app.sessions.len() > before.len() {
                     self.tile_order.push(self.app.sessions.len() - 1);
+                    self.persist_grid_order();
                     self.refresh_pty_viewport();
                 }
                 self.rebuild_wt_cache();
@@ -1657,6 +1660,7 @@ impl Grove {
         // If the grid is open, append the new session index so it appears.
         if self.grid_view && self.app.sessions.len() > before.len() {
             self.tile_order.push(self.app.sessions.len() - 1);
+            self.persist_grid_order();
             self.refresh_pty_viewport();
         }
         self.rebuild_wt_cache();
@@ -1769,6 +1773,7 @@ impl Grove {
                     self.leave_terminal_tab();
                     if self.grid_view {
                         crate::gui::launcher::insert_into_tile_order(&mut self.tile_order, at);
+                        self.persist_grid_order();
                         self.grid_focused = Some(at);
                         self.refresh_pty_viewport();
                     }
@@ -2120,6 +2125,7 @@ impl Grove {
         // If the grid is open, append the new session index so it appears.
         if self.grid_view && self.app.sessions.len() > before.len() {
             self.tile_order.push(self.app.sessions.len() - 1);
+            self.persist_grid_order();
             self.refresh_pty_viewport();
         }
         self.rebuild_wt_cache();
@@ -2175,6 +2181,7 @@ impl Grove {
         // If the grid is open, append the new session index so it appears.
         if self.grid_view && self.app.sessions.len() > before.len() {
             self.tile_order.push(self.app.sessions.len() - 1);
+            self.persist_grid_order();
             self.refresh_pty_viewport();
         }
         // The teardown PTY lives outside `app.sessions`, so resize it directly.
@@ -2683,6 +2690,7 @@ impl Grove {
             self.leave_terminal_tab();
             if self.grid_view {
                 crate::gui::launcher::insert_into_tile_order(&mut self.tile_order, at);
+                self.persist_grid_order();
                 self.grid_focused = Some(at);
                 self.refresh_pty_viewport();
             }
