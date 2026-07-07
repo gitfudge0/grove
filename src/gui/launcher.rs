@@ -80,6 +80,39 @@ pub fn reorder_tiles(order: &mut Vec<usize>, src: usize, dst: usize) {
     order.insert(dst, moved);
 }
 
+/// Stable identity for a session across app restarts, used as the key in
+/// `Store::grid_order`. Not unique if the same worktree somehow has two
+/// sessions (shouldn't happen in practice); reconciliation treats a
+/// duplicate key as "first live match wins".
+pub fn session_grid_key(project: &str, wt_path: &str) -> String {
+    format!("{project}::{wt_path}")
+}
+
+/// Compute a grid `tile_order` from the currently live session keys
+/// (indexed the same as `App::sessions`) and a saved key order loaded from
+/// disk. Live sessions matching a saved key appear first, in saved order;
+/// any live session with no match (new, or never previously seen) is
+/// appended afterward in its current vector order. A saved key with no
+/// live match (a closed session) is simply skipped.
+pub fn reconcile_tile_order(live_keys: &[String], saved_order: &[String]) -> Vec<usize> {
+    let mut order = Vec::with_capacity(live_keys.len());
+    let mut used = vec![false; live_keys.len()];
+    for key in saved_order {
+        if let Some(idx) = live_keys.iter().position(|k| k == key) {
+            if !used[idx] {
+                used[idx] = true;
+                order.push(idx);
+            }
+        }
+    }
+    for (idx, was_used) in used.into_iter().enumerate() {
+        if !was_used {
+            order.push(idx);
+        }
+    }
+    order
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +194,41 @@ mod tests {
         let mut oob = vec![1];
         reorder_tiles(&mut oob, 0, 5);
         assert_eq!(oob, vec![1]);
+    }
+
+    #[test]
+    fn session_grid_key_combines_project_and_wt_path() {
+        assert_eq!(session_grid_key("proj", "/wt/a"), "proj::/wt/a");
+    }
+
+    #[test]
+    fn reconcile_tile_order_uses_saved_order_first() {
+        let live = vec!["p::a".to_string(), "p::b".to_string(), "p::c".to_string()];
+        let saved = vec!["p::c".to_string(), "p::a".to_string()];
+        // c (idx 2) and a (idx 0) come first per saved order; b (idx 1, no
+        // saved entry) is appended last in its live-vector position.
+        assert_eq!(reconcile_tile_order(&live, &saved), vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn reconcile_tile_order_appends_all_when_saved_empty() {
+        let live = vec!["p::a".to_string(), "p::b".to_string()];
+        assert_eq!(reconcile_tile_order(&live, &[]), vec![0, 1]);
+    }
+
+    #[test]
+    fn reconcile_tile_order_ignores_saved_keys_with_no_live_match() {
+        let live = vec!["p::a".to_string()];
+        let saved = vec!["p::stale".to_string(), "p::a".to_string()];
+        assert_eq!(reconcile_tile_order(&live, &saved), vec![0]);
+    }
+
+    #[test]
+    fn reconcile_tile_order_handles_duplicate_saved_keys() {
+        // Defensive: a key appearing twice in `saved` must not duplicate the
+        // matching live index in the output.
+        let live = vec!["p::a".to_string(), "p::b".to_string()];
+        let saved = vec!["p::a".to_string(), "p::a".to_string()];
+        assert_eq!(reconcile_tile_order(&live, &saved), vec![0, 1]);
     }
 }
