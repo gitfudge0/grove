@@ -62,6 +62,13 @@ pub struct Store {
     /// pre-existing hardcoded behavior for upgrading users.
     #[serde(default)]
     pub dangerously_skip_permissions_enabled: Option<bool>,
+    /// User-controlled ordering of Agent View grid tiles, keyed by
+    /// `"{project}::{wt_path}"` (see `crate::gui::launcher::session_grid_key`).
+    /// Sessions not present here (new sessions) are appended after the ones
+    /// listed, in their current in-memory order. `#[serde(default)]` so old
+    /// config files load with an empty order.
+    #[serde(default)]
+    pub grid_order: Vec<String>,
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -177,6 +184,7 @@ mod tests {
             last_update_check: None,
             skipped_version: None,
             dangerously_skip_permissions_enabled: Some(false),
+            grid_order: vec![],
         };
 
         let json = serde_json::to_string_pretty(&original).expect("serialize");
@@ -243,5 +251,21 @@ mod tests {
         let back: Store = serde_json::from_str(&json).unwrap();
         assert_eq!(back.last_update_check, Some(1_700_000_000));
         assert_eq!(back.skipped_version.as_deref(), Some("v0.25.0"));
+    }
+
+    #[test]
+    fn grid_order_round_trips() {
+        let mut store = Store::default();
+        store.grid_order = vec!["proj-a::/wt/a".to_string(), "proj-a::/wt/b".to_string()];
+        let json = serde_json::to_string(&store).expect("serialize");
+        let recovered: Store = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(recovered.grid_order, store.grid_order);
+    }
+
+    #[test]
+    fn grid_order_defaults_empty_for_old_config() {
+        // Simulates loading a config file written before this field existed.
+        let store: Store = serde_json::from_str("{}").expect("deserialize");
+        assert!(store.grid_order.is_empty());
     }
 }
