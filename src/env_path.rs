@@ -21,7 +21,15 @@ use std::time::Duration;
 /// No-op when the PATH already looks rich (the common terminal-launch case) so
 /// running `grove` from a shell is completely unaffected. Set
 /// `GROVE_FORCE_LOGIN_PATH=1` to force resolution regardless of the heuristic.
+///
+/// Always a no-op on Windows, even when forced: Windows PATH comes from the
+/// registry, not a login shell, so the "thin PATH from a GUI launch" problem
+/// this mechanism exists for doesn't apply there, and `GROVE_FORCE_LOGIN_PATH`
+/// has no effect.
 pub fn ensure_login_path() {
+    if cfg!(windows) {
+        return;
+    }
     let force = std::env::var_os("GROVE_FORCE_LOGIN_PATH").is_some();
     if !force && !needs_resolution() {
         return;
