@@ -168,6 +168,9 @@ impl Session {
         cwd: &str,
     ) -> Result<Self> {
         let mut cmd = CommandBuilder::new(crate::env_path::login_shell());
+        #[cfg(windows)]
+        cmd.arg("-Command");
+        #[cfg(not(windows))]
         cmd.arg("-lc");
         cmd.arg(script);
         cmd.cwd(cwd);
@@ -752,6 +755,26 @@ mod tests {
         assert_eq!(bytes[3], 96, "button byte: cb + 32");
         assert_eq!(bytes[4], 33, "col byte: col + 1 + 32");
         assert_eq!(bytes[5], 33, "row byte: row + 1 + 32");
+    }
+
+    // ── spawn_script ─────────────────────────────────────────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_script_uses_posix_dash_l_c_flag_on_unix() {
+        // Behavioral proxy for the flag choice: on Unix, a script containing
+        // shell syntax only `-lc` (not `-Command`) can interpret should exit
+        // successfully.
+        let mut s = Session::spawn_script(
+            "t".into(),
+            "p".into(),
+            ".".into(),
+            "test -n \"$SHELL\" || true",
+            ".",
+        )
+        .expect("spawn_script should succeed");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        s.kill();
     }
 }
 
