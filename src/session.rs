@@ -132,7 +132,11 @@ impl Session {
         args: &[String],
         cwd: &str,
     ) -> Result<Self> {
-        let mut cmd = CommandBuilder::new(agent.program());
+        let (program, prefix_args) = agent.invocation();
+        let mut cmd = CommandBuilder::new(program);
+        for a in prefix_args {
+            cmd.arg(a);
+        }
         for a in args {
             cmd.arg(a);
         }
@@ -773,6 +777,27 @@ mod tests {
             ".",
         )
         .expect("spawn_script should succeed");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        s.kill();
+    }
+
+    // ── spawn_native ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn spawn_native_still_launches_terminal_agent() {
+        // Regression guard for the invocation() rewiring: Agent::Terminal must
+        // keep working exactly as before (it bypasses invocation()'s
+        // Windows-shim branch entirely).
+        let mut s = Session::spawn(
+            "t".into(),
+            "p".into(),
+            ".".into(),
+            Agent::Terminal,
+            &[],
+            ".",
+            false,
+        )
+        .expect("spawn_native via Agent::Terminal should succeed");
         std::thread::sleep(std::time::Duration::from_millis(200));
         s.kill();
     }
