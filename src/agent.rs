@@ -65,22 +65,68 @@ impl Agent {
         }
     }
 
+    /// How to actually invoke this agent's CLI, as a `(program, prefix_args)`
+    /// pair. Callers append their own args after `prefix_args`.
+    ///
+    /// On Unix (and `Terminal` everywhere) this is just `(binary_name, [])` —
+    /// the OS execs it directly. On Windows, npm-installed CLIs like `claude`
+    /// typically install as a `claude.cmd` shim, which `CreateProcess` can't
+    /// execute directly (it isn't a PE binary); when `resolve_on_path` finds a
+    /// `.cmd`/`.bat` match, this wraps it as `cmd.exe /C <resolved-path>`.
+    /// `.exe` matches are run directly, matching Unix behavior.
+    pub fn invocation(self) -> (String, Vec<String>) {
+        match self {
+            Agent::Terminal => (self.program(), vec![]),
+            Agent::Claude | Agent::Codex | Agent::OpenCode => {
+                #[cfg(windows)]
+                {
+                    let name = self.binary_name();
+                    if let Some(path) = resolve_on_path(name) {
+                        let is_script = path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"))
+                            .unwrap_or(false);
+                        if is_script {
+                            return ("cmd.exe".into(), vec!["/C".into(), path.display().to_string()]);
+                        }
+                        return (path.display().to_string(), vec![]);
+                    }
+                    (name.to_string(), vec![])
+                }
+                #[cfg(not(windows))]
+                {
+                    (self.binary_name().to_string(), vec![])
+                }
+            }
+        }
+    }
+
     /// Returns true if the binary for this agent can be found on `$PATH` and
     /// has at least one execute bit set. `Terminal` is always available (it
     /// resolves via `$SHELL`). Returns `false` — never panics — when `$PATH`
     /// is unset.
     ///
     /// # Platform
-    /// The execute-bit check uses `std::os::unix::fs::PermissionsExt` on Unix.
-    /// On other targets it falls back to `is_file()`.
+    /// Unix checks the execute bit via `std::os::unix::fs::PermissionsExt`.
+    /// Windows uses `resolve_on_path`, which applies a `%PATHEXT%`-aware
+    /// search since Windows has no execute-bit concept and CLIs there are
+    /// often extensionless-looking `.cmd` shims.
     pub fn available(self) -> bool {
         match self {
             Agent::Terminal => true,
             Agent::Claude | Agent::Codex | Agent::OpenCode => {
                 let name = self.binary_name();
-                std::env::var_os("PATH").is_some_and(|paths| {
-                    std::env::split_paths(&paths).any(|dir| is_executable(dir.join(name)))
-                })
+                #[cfg(windows)]
+                {
+                    resolve_on_path(name).is_some()
+                }
+                #[cfg(not(windows))]
+                {
+                    std::env::var_os("PATH").is_some_and(|paths| {
+                        std::env::split_paths(&paths).any(|dir| is_executable(dir.join(name)))
+                    })
+                }
             }
         }
     }
@@ -95,11 +141,12 @@ impl Agent {
         if matches!(self, Agent::Terminal) {
             return None;
         }
-        let name = self.binary_name();
-        if name.is_empty() {
+        if self.binary_name().is_empty() {
             return None;
         }
-        let output = std::process::Command::new(name)
+        let (program, prefix_args) = self.invocation();
+        let output = std::process::Command::new(&program)
+            .args(&prefix_args)
             .arg("--version")
             .stdin(std::process::Stdio::null())
             .output()
@@ -117,6 +164,7 @@ impl Agent {
 
 /// Returns true if `path` is a regular file with at least one execute bit set.
 /// Falls back to `is_file()` on non-Unix targets.
+#[cfg(not(windows))]
 fn is_executable(path: std::path::PathBuf) -> bool {
     #[cfg(unix)]
     {
@@ -128,5 +176,111 @@ fn is_executable(path: std::path::PathBuf) -> bool {
     #[cfg(not(unix))]
     {
         path.is_file()
+    }
+}
+
+/// Windows-only: search every `$PATH` directory for `<name><ext>` across each
+/// extension in `%PATHEXT%` (falling back to the standard `.COM;.EXE;.BAT;.CMD`
+/// list if `PATHEXT` is unset), in `PATHEXT` order. Returns the first match,
+/// mirroring how `cmd.exe`/Explorer resolve a bare command name.
+#[cfg(windows)]
+fn resolve_on_path(name: &str) -> Option<std::path::PathBuf> {
+    let paths = std::env::var_os("PATH")?;
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    let exts: Vec<&str> = pathext
+        .split(';')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .collect();
+
+    for dir in std::env::split_paths(&paths) {
+        for ext in &exts {
+            let candidate = dir.join(format!("{name}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_on_path_finds_cmd_shim() {
+        let dir = std::env::temp_dir().join("grove_test_agent_cmd_shim");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("claude.cmd"), b"").unwrap();
+
+        let old_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", &dir);
+        std::env::set_var("PATHEXT", ".COM;.EXE;.BAT;.CMD");
+
+        let resolved = resolve_on_path("claude").expect("should find claude.cmd");
+        assert_eq!(resolved.file_name().unwrap(), "claude.cmd");
+
+        if let Some(p) = old_path {
+            std::env::set_var("PATH", p);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_on_path_prefers_exe_order_in_pathext() {
+        let dir = std::env::temp_dir().join("grove_test_agent_exe_priority");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("codex.cmd"), b"").unwrap();
+        std::fs::write(dir.join("codex.exe"), b"").unwrap();
+
+        let old_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", &dir);
+        // .EXE listed before .CMD: resolve_on_path must return codex.exe.
+        std::env::set_var("PATHEXT", ".COM;.EXE;.BAT;.CMD");
+
+        let resolved = resolve_on_path("codex").expect("should find a match");
+        assert_eq!(resolved.file_name().unwrap(), "codex.exe");
+
+        if let Some(p) = old_path {
+            std::env::set_var("PATH", p);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn invocation_wraps_cmd_shim_with_cmd_exe() {
+        let dir = std::env::temp_dir().join("grove_test_agent_invocation");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("opencode.cmd"), b"").unwrap();
+
+        let old_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", &dir);
+        std::env::set_var("PATHEXT", ".COM;.EXE;.BAT;.CMD");
+
+        let (program, prefix_args) = Agent::OpenCode.invocation();
+        assert_eq!(program, "cmd.exe");
+        assert_eq!(prefix_args.len(), 2);
+        assert_eq!(prefix_args[0], "/C");
+        assert!(prefix_args[1].ends_with("opencode.cmd"));
+
+        if let Some(p) = old_path {
+            std::env::set_var("PATH", p);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invocation_is_plain_binary_name_on_non_windows_or_when_unresolved() {
+        // On non-Windows this is the only branch. On Windows, when nothing on
+        // PATH matches, invocation() falls back to the bare name so the
+        // existing "not found" UX (Agent::available() == false) is preserved.
+        let (program, prefix_args) = Agent::Claude.invocation();
+        assert!(prefix_args.is_empty() || cfg!(windows));
+        #[cfg(not(windows))]
+        assert_eq!(program, "claude");
     }
 }
