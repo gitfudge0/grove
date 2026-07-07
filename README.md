@@ -7,7 +7,7 @@ a worktree launchpad for ai coding agents
 ![grove session view](screenshots/grove-hero.png)
 
 [![license: MIT](https://img.shields.io/badge/license-MIT-9ece6a?style=flat-square)](#license)
-[![platform: linux | macOS](https://img.shields.io/badge/platform-linux%20%7C%20macOS-7aa2f7?style=flat-square)](#requirements)
+[![platform: linux | macOS | Windows (alpha)](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20Windows%20(alpha)-7aa2f7?style=flat-square)](#requirements)
 [![built with: rust](https://img.shields.io/badge/built%20with-rust-bb9af7?style=flat-square)](https://www.rust-lang.org/)
 [![version: 0.14.3](https://img.shields.io/badge/version-0.14.3-e0af68?style=flat-square)](Cargo.toml)
 
@@ -60,8 +60,9 @@ cd grove
 
 - **macOS** — copies `Grove.app` to `/Applications` (or `~/Applications`). launch it from Spotlight or Launchpad.
 - **linux** — installs the generated `.deb` via `dpkg`, or falls back to a binary plus a `grove.desktop` launcher and icon under `~/.local`. launch "Grove" from your application menu.
+- **windows (alpha)** — no `install.sh` support yet; download the `.msi` from the [latest release](https://github.com/gitfudge0/grove/releases/latest) and run it. windows support is new and less battle-tested than macOS/linux — expect rough edges, and please file issues.
 
-when launched from a desktop menu or app launcher, grove recovers your login `PATH` from your shell on startup, so it can still find `claude`, `git`, and your agents. set `GROVE_FORCE_LOGIN_PATH=1` to force this even from a terminal.
+when launched from a desktop menu or app launcher, grove recovers your login `PATH` from your shell on startup, so it can still find `claude`, `git`, and your agents. set `GROVE_FORCE_LOGIN_PATH=1` to force this even from a terminal. on windows, grove uses `pwsh` (PowerShell 7+) when available, falling back to the built-in `powershell.exe`.
 
 [`cargo-bundle`]: https://github.com/burtonageo/cargo-bundle
 
@@ -142,8 +143,8 @@ themes are colorways, not chrome. every screen reads correctly across all 37, be
 
 - rust toolchain (`cargo`) for installation from source
 - `git`
-- linux or macOS with a graphical desktop session
-- `tmux` (optional, recommended for persistent sessions)
+- linux, macOS, or windows (alpha) with a graphical desktop session
+- `tmux` (optional, recommended for persistent sessions — macOS/linux only; windows always runs native sessions)
 
 ## uninstall
 
