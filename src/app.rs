@@ -704,7 +704,7 @@ impl App {
 
     /// Launch the default agent for `wt_path`, or open the picker if no
     /// default is configured or the saved default is no longer available.
-    fn launch_or_pick(&mut self, project: String, wt_path: String) {
+    pub(crate) fn launch_or_pick(&mut self, project: String, wt_path: String) -> Option<usize> {
         self.refresh_available_agents();
         let default = self
             .store
@@ -713,7 +713,7 @@ impl App {
         if let Some(agent) = default {
             let label = path_basename(&wt_path);
             let args = agent.launch_args(self.skip_permissions_enabled());
-            self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path, false);
+            self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path, false)
         } else {
             if let Some(saved) = self.store.default_agent {
                 if !self.available_agents.contains(&saved) {
@@ -725,6 +725,7 @@ impl App {
                 wt_path,
                 sel: self.picker_sel(),
             };
+            None
         }
     }
 

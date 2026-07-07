@@ -1734,6 +1734,25 @@ impl Grove {
     fn run_global_shortcut(&mut self, sc: GlobalShortcut) -> Task<Msg> {
         match sc {
             GlobalShortcut::NewSession => self.update(Msg::OpenSessionLauncher),
+            GlobalShortcut::NewSessionInWorktree => {
+                let Some(s) = self.focused_session() else {
+                    return Task::none();
+                };
+                let project = s.project.clone();
+                let wt_path = s.wt_path.clone();
+                let before = self.session_keys();
+                if let Some(at) = self.app.launch_or_pick(project, wt_path) {
+                    self.resize_new_sessions(&before);
+                    self.leave_terminal_tab();
+                    if self.grid_view {
+                        crate::gui::launcher::insert_into_tile_order(&mut self.tile_order, at);
+                        self.grid_focused = Some(at);
+                        self.refresh_pty_viewport();
+                    }
+                    self.rebuild_wt_cache();
+                }
+                Task::none()
+            }
             GlobalShortcut::Settings => self.update(Msg::OpenSettings),
             GlobalShortcut::ToggleZen => self.update(Msg::ToggleZen),
             GlobalShortcut::ToggleGrid => self.update(Msg::ToggleGridView),
@@ -2903,6 +2922,16 @@ fn global_mods(mods: Modifiers) -> bool {
     return mods.control() && mods.shift();
 }
 
+/// Modifier for "new session in current worktree": Cmd+Alt (mac) / Ctrl+Alt
+/// (elsewhere), independent of [`global_mods`] (which already requires Shift
+/// on non-mac and so can't be reused as a base for an Alt chord there).
+fn new_session_in_worktree_mods(mods: Modifiers) -> bool {
+    #[cfg(target_os = "macos")]
+    return mods.logo() && mods.alt() && !mods.control();
+    #[cfg(not(target_os = "macos"))]
+    return mods.control() && mods.alt() && !mods.shift();
+}
+
 /// Human-readable label for the global-shortcut modifier, matching
 /// [`global_mods`]. Shown in the status-bar chip and the shortcut overlay so the
 /// displayed text can't drift from the actual chord.
@@ -2918,6 +2947,7 @@ pub(crate) fn platform_mod_label() -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GlobalShortcut {
     NewSession,
+    NewSessionInWorktree,
     Settings,
     ToggleZen,
     ToggleGrid,
@@ -2969,6 +2999,10 @@ pub(crate) struct ShortcutDef {
     pub(crate) display_keys: &'static str,
     pub(crate) description: &'static str,
     pub(crate) scopes: &'static [Scope],
+    /// When true, this shortcut layers Alt on top of the platform's global
+    /// modifier (e.g. Cmd+Alt+N / Ctrl+Alt+N) rather than using the plain
+    /// platform modifier. Rendered with an "+alt+" infix by the overlay.
+    pub(crate) requires_alt: bool,
 }
 
 const G: &[Scope] = &[Scope::Global];
@@ -2976,18 +3010,19 @@ const G: &[Scope] = &[Scope::Global];
 /// Single source of truth for behavioral matching and overlay display. Order
 /// matches the overlay's reading order. All entries are `Global` per the spec.
 pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
-    ShortcutDef { action: Some(GlobalShortcut::NewSession),      triggers: &["n", "N"],      display_keys: "n",         description: "new session",            scopes: G },
-    ShortcutDef { action: Some(GlobalShortcut::NextSession),     triggers: &["j", "J"],      display_keys: "j",         description: "next session",           scopes: G },
-    ShortcutDef { action: Some(GlobalShortcut::PrevSession),     triggers: &["k", "K"],      display_keys: "k",         description: "previous session",       scopes: G },
+    ShortcutDef { action: Some(GlobalShortcut::NewSession),      triggers: &["n", "N"],      display_keys: "n",         description: "new session",            scopes: G, requires_alt: false },
+    ShortcutDef { action: Some(GlobalShortcut::NewSessionInWorktree), triggers: &["n", "N"], display_keys: "n",         description: "new session in current worktree", scopes: G, requires_alt: true },
+    ShortcutDef { action: Some(GlobalShortcut::NextSession),     triggers: &["j", "J"],      display_keys: "j",         description: "next session",           scopes: G, requires_alt: false },
+    ShortcutDef { action: Some(GlobalShortcut::PrevSession),     triggers: &["k", "K"],      display_keys: "k",         description: "previous session",       scopes: G, requires_alt: false },
     // Display-only: the matcher handles 1–9 dynamically (see match_global_shortcut).
-    ShortcutDef { action: None,                                  triggers: &[],              display_keys: "1–9",       description: "select nth session",     scopes: G },
-    ShortcutDef { action: Some(GlobalShortcut::ToggleGrid),      triggers: &["g", "G"],      display_keys: "g",         description: "toggle grid view",       scopes: G },
-    ShortcutDef { action: Some(GlobalShortcut::ToggleZen),       triggers: &[],              display_keys: "enter",     description: "toggle zen mode",        scopes: G },
-    ShortcutDef { action: Some(GlobalShortcut::Settings),        triggers: &[","],           display_keys: ",",         description: "settings",               scopes: G },
-    ShortcutDef { action: Some(GlobalShortcut::ZoomIn),          triggers: &["=", "+"],      display_keys: "=",         description: "zoom in",                scopes: G },
-    ShortcutDef { action: Some(GlobalShortcut::ZoomOut),         triggers: &["-", "_"],      display_keys: "-",         description: "zoom out",               scopes: G },
-    ShortcutDef { action: Some(GlobalShortcut::ZoomReset),       triggers: &["0"],           display_keys: "0",         description: "reset zoom",             scopes: G },
-    ShortcutDef { action: Some(GlobalShortcut::ShortcutOverlay), triggers: &["/", "?"],      display_keys: "/",         description: "this overlay",           scopes: G },
+    ShortcutDef { action: None,                                  triggers: &[],              display_keys: "1–9",       description: "select nth session",     scopes: G, requires_alt: false },
+    ShortcutDef { action: Some(GlobalShortcut::ToggleGrid),      triggers: &["g", "G"],      display_keys: "g",         description: "toggle grid view",       scopes: G, requires_alt: false },
+    ShortcutDef { action: Some(GlobalShortcut::ToggleZen),       triggers: &[],              display_keys: "enter",     description: "toggle zen mode",        scopes: G, requires_alt: false },
+    ShortcutDef { action: Some(GlobalShortcut::Settings),        triggers: &[","],           display_keys: ",",         description: "settings",               scopes: G, requires_alt: false },
+    ShortcutDef { action: Some(GlobalShortcut::ZoomIn),          triggers: &["=", "+"],      display_keys: "=",         description: "zoom in",                scopes: G, requires_alt: false },
+    ShortcutDef { action: Some(GlobalShortcut::ZoomOut),         triggers: &["-", "_"],      display_keys: "-",         description: "zoom out",               scopes: G, requires_alt: false },
+    ShortcutDef { action: Some(GlobalShortcut::ZoomReset),       triggers: &["0"],           display_keys: "0",         description: "reset zoom",             scopes: G, requires_alt: false },
+    ShortcutDef { action: Some(GlobalShortcut::ShortcutOverlay), triggers: &["/", "?"],      display_keys: "/",         description: "this overlay",           scopes: G, requires_alt: false },
 ];
 
 /// Derive the coarse screen from UI flags. Zen wins over grid: while chrome is
@@ -3006,6 +3041,17 @@ pub(crate) fn screen_from_flags(chrome_visible: bool, grid_view: bool) -> Screen
 /// `key`, so Shift in the non-mac Ctrl+Shift chords doesn't change the
 /// character being compared.
 fn match_global_shortcut(key: &Key, mods: Modifiers) -> Option<GlobalShortcut> {
+    // Checked ahead of `global_mods`: on non-mac, `global_mods` already
+    // requires Shift, so Ctrl+Alt+N (no Shift) would never reach it. This
+    // chord is Cmd+Alt+N (mac) / Ctrl+Alt+N (elsewhere), independent of the
+    // platform's base global-shortcut modifier.
+    if new_session_in_worktree_mods(mods) {
+        if let Key::Character(s) = key {
+            if s.eq_ignore_ascii_case("n") {
+                return Some(GlobalShortcut::NewSessionInWorktree);
+            }
+        }
+    }
     if !global_mods(mods) {
         return None;
     }
@@ -3102,6 +3148,38 @@ mod tests {
         assert_eq!(match_global_shortcut(&ch("+"), gmods()), Some(ZoomIn));
         assert_eq!(match_global_shortcut(&ch("_"), gmods()), Some(ZoomOut));
         assert_eq!(match_global_shortcut(&ch("?"), gmods()), Some(ShortcutOverlay));
+    }
+
+    /// The real "new session in worktree" chord: Cmd+Alt (mac) / Ctrl+Alt
+    /// (elsewhere) — independent of `gmods()`, which on non-mac already
+    /// includes Shift and would mask a regression back to requiring it.
+    fn alt_mods() -> Modifiers {
+        #[cfg(target_os = "macos")]
+        return Modifiers::LOGO | Modifiers::ALT;
+        #[cfg(not(target_os = "macos"))]
+        return Modifiers::CTRL | Modifiers::ALT;
+    }
+
+    #[test]
+    fn alt_n_maps_to_new_session_in_worktree() {
+        use GlobalShortcut::*;
+        let alt = alt_mods();
+        assert_eq!(
+            match_global_shortcut(&ch("n"), alt),
+            Some(NewSessionInWorktree)
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("N"), alt),
+            Some(NewSessionInWorktree)
+        );
+        // Plain platform modifier (no Alt) still resolves to NewSession —
+        // no regression from adding the alt-chord.
+        assert_eq!(match_global_shortcut(&ch("n"), gmods()), Some(NewSession));
+        // Alt held with an unclaimed key falls through to normal matching.
+        assert_eq!(
+            match_global_shortcut(&ch("g"), alt),
+            Some(ToggleGrid)
+        );
     }
 
     #[test]

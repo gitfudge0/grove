@@ -3435,6 +3435,21 @@ impl Grove {
     /// the bundled fonts have no modifier-symbol glyphs.
     fn shortcut_overlay_modal(&self) -> Element<'_, Msg> {
         let m = platform_mod_label();
+        // Alt-chord rows layer Alt on top of the platform modifier instead of
+        // using it plain, e.g. "cmd+alt+n" / "ctrl+alt+n" (never
+        // "ctrl+shift+alt+n" — see `requires_alt` on `ShortcutDef`).
+        let alt_m = if cfg!(target_os = "macos") {
+            "cmd+alt"
+        } else {
+            "ctrl+alt"
+        };
+        let key_label = |d: &ShortcutDef| {
+            if d.requires_alt {
+                format!("{alt_m}+{}", d.display_keys)
+            } else {
+                format!("{m}+{}", d.display_keys)
+            }
+        };
         let screen = self.current_screen();
 
         // Registry entries visible on this screen: Global or matching current screen.
@@ -3493,7 +3508,7 @@ impl Grove {
             let mut global_rows: Vec<(String, &'static str)> = visible
                 .iter()
                 .filter(|d| d.scopes.contains(&Scope::Global))
-                .map(|d| (format!("{m}+{}", d.display_keys), d.description))
+                .map(|d| (key_label(*d), d.description))
                 .collect();
             for (keys, desc) in static_rows.iter() {
                 global_rows.push((keys.clone(), desc));
@@ -3502,7 +3517,7 @@ impl Grove {
             let screen_rows: Vec<(String, &'static str)> = visible
                 .iter()
                 .filter(|d| d.scopes.contains(&Scope::Screen(screen)))
-                .map(|d| (format!("{m}+{}", d.display_keys), d.description))
+                .map(|d| (key_label(*d), d.description))
                 .collect();
 
             if !global_rows.is_empty() {
@@ -3521,7 +3536,7 @@ impl Grove {
             // rather than re-introducing a parallel display layout.)
             let mut rows: Vec<(String, &'static str)> = visible
                 .iter()
-                .map(|d| (format!("{m}+{}", d.display_keys), d.description))
+                .map(|d| (key_label(*d), d.description))
                 .collect();
             for (keys, desc) in static_rows.iter() {
                 rows.push((keys.clone(), desc));
