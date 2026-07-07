@@ -63,6 +63,11 @@ fn extract_fenced_path(raw: &str) -> Option<&str> {
 ///   2. PATH still looks like a bare system default. Belt-and-suspenders for
 ///      odd launchers that hand us a tty but a stripped PATH.
 fn needs_resolution() -> bool {
+    // Windows GUI launches inherit the full user PATH from the registry —
+    // there is no Finder/.desktop-style "thin PATH" problem to solve here.
+    if cfg!(windows) {
+        return false;
+    }
     launched_without_terminal() || looks_thin()
 }
 
@@ -109,11 +114,43 @@ fn looks_thin() -> bool {
 /// The user's login shell from `$SHELL`, accepted only when it's an absolute
 /// path to an existing file. Anything else (relative path, stale entry, a
 /// value injected by a hostile parent environment) falls back to `/bin/sh`.
+///
+/// On Windows there is no `$SHELL`/login-shell concept; see [`windows_shell`].
 pub fn login_shell() -> String {
-    match std::env::var("SHELL") {
-        Ok(s) if s.starts_with('/') && std::path::Path::new(&s).is_file() => s,
-        _ => "/bin/sh".into(),
+    #[cfg(windows)]
+    {
+        windows_shell()
     }
+    #[cfg(not(windows))]
+    {
+        match std::env::var("SHELL") {
+            Ok(s) if s.starts_with('/') && std::path::Path::new(&s).is_file() => s,
+            _ => "/bin/sh".into(),
+        }
+    }
+}
+
+/// Windows shell choice: prefer `pwsh.exe` (PowerShell 7+, supports `&&`/`||`
+/// chaining in lifecycle scripts) when it's on `PATH`, falling back to the
+/// always-present `powershell.exe` (5.1, no `&&`/`||`) otherwise.
+#[cfg(windows)]
+fn windows_shell() -> String {
+    if find_on_path("pwsh.exe").is_some() {
+        "pwsh.exe".into()
+    } else {
+        "powershell.exe".into()
+    }
+}
+
+/// True if `name` exists as a file in some directory on `$PATH`. Used only
+/// for the pwsh/powershell probe above — this is a plain existence check, not
+/// the PATHEXT-aware search agent binaries need (see `agent::resolve_on_path`).
+#[cfg(windows)]
+fn find_on_path(name: &str) -> Option<std::path::PathBuf> {
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|dir| dir.join(name))
+        .find(|p| p.is_file())
 }
 
 /// Spawn the user's login shell and capture the PATH it produces. Returns
@@ -229,5 +266,46 @@ mod tests {
                 std::env::set_var("SHELL", "/bin/sh");
             }
         }
+    }
+
+    // ── Windows shell resolution ─────────────────────────────────────────────
+    //
+    // These only compile/run on Windows targets. On macOS/Linux dev machines
+    // and in the Linux/macOS CI legs they're simply absent from the build.
+    #[cfg(windows)]
+    #[test]
+    fn windows_shell_prefers_pwsh_when_present() {
+        let dir = std::env::temp_dir().join("grove_test_pwsh_present");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pwsh.exe"), b"").unwrap();
+        std::fs::write(dir.join("powershell.exe"), b"").unwrap();
+
+        let old_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", &dir);
+
+        assert_eq!(windows_shell(), "pwsh.exe");
+
+        if let Some(p) = old_path {
+            std::env::set_var("PATH", p);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_shell_falls_back_to_powershell_without_pwsh() {
+        let dir = std::env::temp_dir().join("grove_test_pwsh_absent");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("powershell.exe"), b"").unwrap();
+
+        let old_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", &dir);
+
+        assert_eq!(windows_shell(), "powershell.exe");
+
+        if let Some(p) = old_path {
+            std::env::set_var("PATH", p);
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
