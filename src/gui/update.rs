@@ -97,6 +97,8 @@ impl Grove {
             upgrade_progress: std::sync::Arc::new(std::sync::Mutex::new(crate::gui::state::UpgradeProgress::default())),
             changelog: ChangelogState::Idle,
             show_changelog: false,
+            git_state: Default::default(),
+            last_git_poll: None,
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -217,6 +219,9 @@ impl Grove {
                 if self.blink_tick.is_multiple_of(8) {
                     self.refresh_activity();
                 }
+                // Throttled background git-status poll for visible worktrees
+                // (dirty / ahead / behind sidebar suffix).
+                self.maybe_poll_git_state();
                 // Advance an in-progress worktree teardown (script exit → git
                 // removal). Cheap no-op when none is running.
                 if self.app.teardown.is_some() {
@@ -2633,6 +2638,64 @@ impl Grove {
                 }
             }
         }
+    }
+
+    /// Every ~5s, shell out to `git status` (one call per worktree) for the
+    /// worktrees currently visible in the tree — i.e. belonging to an
+    /// expanded project — off the UI thread, and stash the results in
+    /// `git_state` for `tree_view` to read on the next frame. Never runs more
+    /// than once per throttle window and never blocks `update()`: the actual
+    /// git calls happen inside the spawned thread.
+    fn maybe_poll_git_state(&mut self) {
+        let now = std::time::Instant::now();
+        let due = self
+            .last_git_poll
+            .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(5));
+        if !due {
+            return;
+        }
+        self.last_git_poll = Some(now);
+
+        let paths = self.visible_worktree_paths();
+        if paths.is_empty() {
+            return;
+        }
+        let handle = self.git_state.clone();
+        std::thread::spawn(move || {
+            let mut fresh = std::collections::HashMap::new();
+            let mut stale = Vec::new();
+            for path in paths {
+                match crate::git::worktree_git_state(&path) {
+                    Some(state) => {
+                        fresh.insert(path, state);
+                    }
+                    // Any failure (no repo, no upstream, git missing, bad
+                    // worktree state) degrades to "no signal" — drop any
+                    // previously cached value rather than showing stale data.
+                    None => stale.push(path),
+                }
+            }
+            if let Ok(mut g) = handle.lock() {
+                g.extend(fresh);
+                for path in stale {
+                    g.remove(&path);
+                }
+            }
+        });
+    }
+
+    /// Paths of every worktree currently rendered in the tree view — i.e.
+    /// every worktree belonging to a non-collapsed project. Matches exactly
+    /// the set `tree_view` iterates when building worktree rows.
+    fn visible_worktree_paths(&self) -> Vec<String> {
+        let mut paths = Vec::new();
+        for pi in 0..self.app.store.projects.len() {
+            if self.collapsed.contains(&pi) {
+                continue;
+            }
+            paths.extend(self.worktrees_for_project(pi).iter().map(|w| w.path.clone()));
+        }
+        paths
     }
 
     pub(super) fn ensure_wt_cached(&mut self, proj: usize) {

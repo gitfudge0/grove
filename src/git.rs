@@ -362,6 +362,159 @@ mod tests {
     }
 }
 
+/// Per-worktree git status snapshot used for the sidebar's compact suffix
+/// (`*` dirty, `↑N`/`↓M` ahead/behind upstream). Populated by
+/// [`worktree_git_state`] via a single `git status --porcelain=v2 -b`
+/// invocation per worktree.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorktreeGitState {
+    pub dirty: bool,
+    pub ahead: u32,
+    pub behind: u32,
+}
+
+/// Query `path`'s git status via one `git status --porcelain=v2 -b` call.
+/// Returns `None` on any failure (not a repo, git missing, etc.) so callers
+/// degrade to showing nothing rather than a stale or error value.
+pub fn worktree_git_state(path: &str) -> Option<WorktreeGitState> {
+    let out = Command::new("git")
+        .args(["-C", path, "status", "--porcelain=v2", "-b"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Parse `git status --porcelain=v2 -b` output into a [`WorktreeGitState`].
+/// The `# branch.ab +N -M` header line (present only when an upstream is
+/// configured) supplies ahead/behind counts; any other non-`#` line means
+/// the worktree has uncommitted changes (tracked, staged, or untracked).
+fn parse_porcelain_v2(out: &str) -> WorktreeGitState {
+    let mut state = WorktreeGitState::default();
+    for line in out.lines() {
+        if let Some(rest) = line.strip_prefix("# branch.ab ") {
+            for tok in rest.split_whitespace() {
+                if let Some(n) = tok.strip_prefix('+') {
+                    state.ahead = n.parse().unwrap_or(0);
+                } else if let Some(n) = tok.strip_prefix('-') {
+                    state.behind = n.parse().unwrap_or(0);
+                }
+            }
+        } else if !line.starts_with('#') && !line.is_empty() {
+            state.dirty = true;
+        }
+    }
+    state
+}
+
+/// Render a [`WorktreeGitState`] as the sidebar's compact suffix (e.g.
+/// `* ↑1 ↓2`), or `None` when the worktree is clean and in sync (nothing to
+/// show).
+pub fn git_state_suffix(state: &WorktreeGitState) -> Option<String> {
+    let mut parts: Vec<String> = Vec::with_capacity(3);
+    if state.dirty {
+        parts.push("*".to_string());
+    }
+    if state.ahead > 0 {
+        parts.push(format!("↑{}", state.ahead));
+    }
+    if state.behind > 0 {
+        parts.push(format!("↓{}", state.behind));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+#[cfg(test)]
+mod git_state_tests {
+    use super::*;
+
+    /// A clean worktree with no upstream configured (no `branch.ab` line):
+    /// nothing dirty, nothing ahead/behind.
+    #[test]
+    fn clean_no_upstream() {
+        let out = "# branch.oid abc123\n# branch.head main\n";
+        let state = parse_porcelain_v2(out);
+        assert_eq!(state, WorktreeGitState::default());
+        assert_eq!(git_state_suffix(&state), None);
+    }
+
+    /// A clean worktree that is even with its upstream: `+0 -0`.
+    #[test]
+    fn clean_with_upstream_in_sync() {
+        let out = "# branch.oid abc123\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +0 -0\n";
+        let state = parse_porcelain_v2(out);
+        assert!(!state.dirty);
+        assert_eq!(state.ahead, 0);
+        assert_eq!(state.behind, 0);
+        assert_eq!(git_state_suffix(&state), None);
+    }
+
+    /// Ahead-only: `+2 -0` shows only `↑2`.
+    #[test]
+    fn ahead_only() {
+        let out = "# branch.ab +2 -0\n";
+        let state = parse_porcelain_v2(out);
+        assert_eq!(state.ahead, 2);
+        assert_eq!(state.behind, 0);
+        assert_eq!(git_state_suffix(&state).as_deref(), Some("↑2"));
+    }
+
+    /// Behind-only: `+0 -3` shows only `↓3`.
+    #[test]
+    fn behind_only() {
+        let out = "# branch.ab +0 -3\n";
+        let state = parse_porcelain_v2(out);
+        assert_eq!(state.ahead, 0);
+        assert_eq!(state.behind, 3);
+        assert_eq!(git_state_suffix(&state).as_deref(), Some("↓3"));
+    }
+
+    /// Ahead and behind combine: `+1 -2` shows `↑1 ↓2`.
+    #[test]
+    fn ahead_and_behind() {
+        let out = "# branch.ab +1 -2\n";
+        let state = parse_porcelain_v2(out);
+        assert_eq!(state.ahead, 1);
+        assert_eq!(state.behind, 2);
+        assert_eq!(git_state_suffix(&state).as_deref(), Some("↑1 ↓2"));
+    }
+
+    /// A non-`#` line (tracked-modified, staged, or untracked entry) marks the
+    /// worktree dirty regardless of ahead/behind.
+    #[test]
+    fn dirty_detection_tracked_change() {
+        let out = "# branch.oid abc123\n1 .M N... 100644 100644 100644 abcd1234 abcd5678 src/main.rs\n";
+        let state = parse_porcelain_v2(out);
+        assert!(state.dirty);
+        assert_eq!(git_state_suffix(&state).as_deref(), Some("*"));
+    }
+
+    /// Untracked files (`?` entries in porcelain v2) count as dirty too.
+    #[test]
+    fn dirty_detection_untracked() {
+        let out = "# branch.oid abc123\n? new_file.txt\n";
+        let state = parse_porcelain_v2(out);
+        assert!(state.dirty);
+        assert_eq!(git_state_suffix(&state).as_deref(), Some("*"));
+    }
+
+    /// Dirty + diverged combine into `* ↑1`.
+    #[test]
+    fn dirty_and_ahead_combine() {
+        let out = "# branch.ab +1 -0\n1 .M N... 100644 100644 100644 abcd1234 abcd5678 src/main.rs\n";
+        let state = parse_porcelain_v2(out);
+        assert!(state.dirty);
+        assert_eq!(state.ahead, 1);
+        assert_eq!(git_state_suffix(&state).as_deref(), Some("* ↑1"));
+    }
+}
+
 pub fn init_if_needed(project_path: &str) -> Result<()> {
     let git_dir = std::path::Path::new(project_path).join(".git");
     if git_dir.exists() {

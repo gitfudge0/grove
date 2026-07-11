@@ -205,6 +205,15 @@ pub struct Grove {
     pub upgrade_method: crate::upgrade::InstallMethod,
     /// Written by the apply thread, drained on `Tick` to drive `UpgradeState`.
     pub upgrade_progress: std::sync::Arc<std::sync::Mutex<UpgradeProgress>>,
+    /// Latest git status (dirty/ahead/behind) per worktree, keyed by worktree
+    /// path. Written by a background thread spawned on the throttled poll in
+    /// `Msg::Tick`; read directly (no message round-trip) by `tree_view` when
+    /// rendering each worktree row's suffix. A missing key means "no signal"
+    /// (never polled yet, or the last poll failed) and renders no suffix.
+    pub git_state: std::sync::Arc<std::sync::Mutex<HashMap<String, crate::git::WorktreeGitState>>>,
+    /// When the last git-status poll was kicked off, for the ~5s throttle in
+    /// `Msg::Tick`. `None` before the first poll.
+    pub last_git_poll: Option<std::time::Instant>,
 }
 
 /// Install + version status for a single coding-agent tool in the Settings

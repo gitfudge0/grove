@@ -530,6 +530,11 @@ impl Grove {
                 let has_run = self.app.store.projects.get(pi).is_some_and(|p| {
                     p.scripts.run.as_deref().is_some_and(|s| !s.trim().is_empty())
                 });
+                let git_suffix = self
+                    .git_state
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.get(&w.path).and_then(crate::git::git_state_suffix));
                 let wt_el = worktree_row(
                     pi,
                     wi,
@@ -544,6 +549,7 @@ impl Grove {
                     wt_rollup,
                     self.blink_tick,
                     &self.app.available_agents,
+                    git_suffix,
                 );
                 col = col.push(
                     iced::widget::mouse_area(wt_el)

@@ -251,6 +251,7 @@ pub fn worktree_row<'a>(
     rollup: Option<ActivityState>,
     tick: u32,
     available: &[Agent],
+    git_suffix: Option<String>,
 ) -> Element<'a, Msg> {
     // (Height logic shared with the agent-menu overlay positioning in view.rs
     // via `worktree_shows_branch` / `worktree_row_height`.)
@@ -364,8 +365,19 @@ pub fn worktree_row<'a>(
         Some(st) => state_glyph(st, tick),
         None => Space::with_width(Length::Fixed(0.0)).into(),
     };
+    // Compact git-state suffix (`*` dirty, `↑N`/`↓M` ahead/behind) — muted so
+    // it reads as secondary metadata, not competing with the name or the
+    // activity glyph.
+    let git_suffix_el: Element<'a, Msg> = match git_suffix {
+        Some(s) => text(s)
+            .size(11)
+            .color(c::FG_MUTE())
+            .wrapping(iced::widget::text::Wrapping::None)
+            .into(),
+        None => Space::with_width(Length::Fixed(0.0)).into(),
+    };
     container(
-        row![left_btn, rollup_el, actions]
+        row![left_btn, git_suffix_el, rollup_el, actions]
             .spacing(4)
             .align_y(iced::Alignment::Center),
     )
