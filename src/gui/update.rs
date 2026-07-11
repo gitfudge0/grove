@@ -122,8 +122,12 @@ impl Grove {
     pub fn subscription(&self) -> Subscription<Msg> {
         let tick = iced::time::every(Duration::from_millis(60)).map(|_| Msg::Tick);
         // Only forward un-captured keys; widgets (search input) handle their own first.
+        // Exception: a focused text_input captures Escape to blur itself
+        // (iced_widget text_input.rs) without telling the app, so Escape would
+        // otherwise need a second press to reach the modal's cancel handler.
+        // Forward it regardless of status; every other captured key stays dropped.
         let keys = event::listen_with(|ev, status, _| {
-            if status == event::Status::Captured {
+            if !should_forward(&ev, status) {
                 return None;
             }
             match ev {
@@ -471,6 +475,7 @@ impl Grove {
                 self.pending_kill = None;
                 if i < self.app.sessions.len() {
                     self.app.active_session = Some(i);
+                    self.sync_grid_focus();
                     self.leave_terminal_tab();
                     self.acknowledge_session(i);
                     self.app.sessions[i].resize(self.pty_rows, self.pty_sess_cols);
@@ -1190,7 +1195,7 @@ impl Grove {
                     }
                 }
             }
-            Msg::LauncherNewWorktree => self.launcher_new_worktree(),
+            Msg::LauncherNewWorktree => return self.launcher_new_worktree(),
             Msg::LauncherStart => self.launcher_start(),
         }
         Task::none()
@@ -1220,6 +1225,7 @@ impl Grove {
                 ..
             }
         ) {
+            self.app.onboard_reset_project_focus();
             return iced::widget::text_input::focus(crate::gui::view::modal_input_id());
         }
         Task::none()
@@ -1678,6 +1684,21 @@ impl Grove {
         if !matches!(self.app.modal, Modal::None) {
             return self.handle_modal_key(key, mods);
         }
+        // No modal open, but a kill-confirmation or split-agent menu can still
+        // be armed — today both are cleared only by a mouse message, so a
+        // keyboard user had no way out. Escape dismisses them here; with
+        // neither armed, Escape falls through to the PTY below (many TUI
+        // programs need it, so it must not be swallowed unconditionally).
+        // Bare Escape only: Alt+Escape is a real readline chord and must reach
+        // the PTY as ESC ESC even while something is armed.
+        if matches!(key, Key::Named(Named::Escape))
+            && mods.is_empty()
+            && escape_should_dismiss(self.pending_kill, self.open_agent_menu)
+        {
+            self.pending_kill = None;
+            self.open_agent_menu = None;
+            return Task::none();
+        }
         // Shortcuts match the modifier-independent `key`: on Linux a Ctrl
         // combo turns `modified_key` into a control char (e.g. Ctrl+V -> \u16).
         // Copy PTY selection with the OS copy shortcut.
@@ -1701,7 +1722,7 @@ impl Grove {
                             sess.send(super::drop::dropped_path_text(path).as_bytes());
                         }
                     }
-                    self.pty_selection = None;
+                    self.clear_pty_selection();
                     return Task::none();
                 }
                 if let Some(text) = crate::clipboard::paste() {
@@ -1714,29 +1735,29 @@ impl Grove {
                         sess.send(&bytes);
                     }
                 }
-                self.pty_selection = None;
+                self.clear_pty_selection();
                 return Task::none();
             }
         }
         // Global app shortcuts (Cmd on macOS, Ctrl+Shift elsewhere). Checked
         // after copy/paste so those keep their exact existing semantics, and
-        // before key_to_bytes so the chords never leak into the PTY.
-        if let Some(sc) = match_global_shortcut(&key, mods) {
+        // before key_to_bytes so the chords never leak into the PTY. Screen-
+        // scoped so a Grid-only (etc.) chord falls through instead of being
+        // swallowed on a screen where it does nothing (see `Scope`).
+        if let Some(sc) = match_global_shortcut(&key, mods, self.current_screen()) {
             return self.run_global_shortcut(sc);
         }
-        // Resize the terminal panel with Ctrl+Shift+Left/Right while it is open.
-        // Intercepted before `key_to_bytes` so the arrows don't reach the PTY.
-        if self.term_panel_open && mods.control() && mods.shift() {
-            match key {
-                Key::Named(Named::ArrowRight) => {
-                    self.adjust_term_panel_portion(TERM_PANEL_PORTION_STEP as i16);
-                    return Task::none();
-                }
-                Key::Named(Named::ArrowLeft) => {
-                    self.adjust_term_panel_portion(-(TERM_PANEL_PORTION_STEP as i16));
-                    return Task::none();
-                }
-                _ => {}
+        // Resize the terminal panel with Ctrl+Shift+Left/Right — matches the
+        // registry's display-only "resize terminal panel" row (Workspace-only),
+        // kept out of `match_global_shortcut` because `term_panel_open` is
+        // runtime state, not scope: unlike every other registry shortcut, a
+        // closed panel must fall through to the PTY rather than being consumed,
+        // so the open-check has to gate the fallthrough itself instead of living
+        // inside an arm that's already committed to returning `Task::none()`.
+        if self.term_panel_open {
+            if let Some(delta) = term_panel_resize_delta(&key, mods, self.current_screen()) {
+                self.adjust_term_panel_portion(delta);
+                return Task::none();
             }
         }
         // Feed the PTY the modifier-independent `key` for Ctrl combos (so the
@@ -1747,9 +1768,17 @@ impl Grove {
             if let Some(s) = self.focused_session_mut() {
                 s.send(&bytes);
             }
-            self.pty_selection = None;
+            self.clear_pty_selection();
         }
         Task::none()
+    }
+
+    /// Clear an in-progress PTY selection together with its drag anchor. A
+    /// keypress mid-drag must kill both, or `tick_drag_autoscroll` keeps
+    /// scrolling the pane with no visible selection until mouse-up (Bug 8).
+    fn clear_pty_selection(&mut self) {
+        self.pty_selection = None;
+        self.pty_drag = None;
     }
 
     /// Coarse current screen, derived from existing flags. Zen wins over grid:
@@ -1801,11 +1830,15 @@ impl Grove {
             }
             GlobalShortcut::ShortcutOverlay => self.update(Msg::OpenShortcutOverlay),
             GlobalShortcut::CloseFocusedSession => {
-                match close_focused_session_decision(
-                    self.current_screen(),
-                    self.grid_focused,
-                    self.pending_kill,
-                ) {
+                // Grid: the focused tile. Everywhere else (tree/activity
+                // sidebar, zen): the active session, whose row renders the same
+                // confirm-to-kill state (`session_row` in rows.rs).
+                let target = if self.grid_view {
+                    self.grid_focused
+                } else {
+                    self.app.active_session
+                };
+                match close_focused_session_decision(target, self.pending_kill) {
                     CloseFocusedDecision::Kill(si) => self.update(Msg::KillSession(si)),
                     CloseFocusedDecision::Request(si) => {
                         self.update(Msg::RequestKillSession(si))
@@ -1813,6 +1846,17 @@ impl Grove {
                     CloseFocusedDecision::NoOp => Task::none(),
                 }
             }
+        }
+    }
+
+    /// Keep `grid_focused` pointed at the active session whenever it changes
+    /// while the grid is showing, or will show again once zen exits
+    /// (`grid_view_before_zen`). Without this, cycling/selecting sessions
+    /// while zenned in from a tile leaves the tile pointer stale, so exiting
+    /// zen restores focus to the wrong tile (Bug 5).
+    fn sync_grid_focus(&mut self) {
+        if should_sync_grid_focus(self.grid_view, self.grid_view_before_zen) {
+            self.grid_focused = self.app.active_session;
         }
     }
 
@@ -1832,8 +1876,8 @@ impl Grove {
                 None => self.tile_order.len() - 1,
             };
             let si = self.tile_order[pos];
-            self.grid_focused = Some(si);
             self.app.active_session = Some(si);
+            self.sync_grid_focus();
             return;
         }
         if self.app.sessions.is_empty() {
@@ -1852,8 +1896,8 @@ impl Grove {
     fn select_visible_session(&mut self, n: usize) {
         if self.grid_view {
             if let Some(&si) = self.tile_order.get(n) {
-                self.grid_focused = Some(si);
                 self.app.active_session = Some(si);
+                self.sync_grid_focus();
             }
             return;
         }
@@ -2100,10 +2144,20 @@ impl Grove {
                     },
                     Key::Named(Named::Tab) => match step {
                         crate::app::OnboardStep::Project => {
+                            if self.app.onboard_toggle_project_focus() {
+                                return iced::widget::text_input::focus(
+                                    crate::gui::view::modal_name_id(),
+                                );
+                            }
                             self.app.onboard_dir_pick();
-                            return iced::widget::text_input::move_cursor_to_end(
-                                crate::gui::view::modal_input_id(),
-                            );
+                            return Task::batch([
+                                iced::widget::text_input::focus(
+                                    crate::gui::view::modal_input_id(),
+                                ),
+                                iced::widget::text_input::move_cursor_to_end(
+                                    crate::gui::view::modal_input_id(),
+                                ),
+                            ]);
                         }
                         crate::app::OnboardStep::Theme => self.app.onboard_theme_switch_tab(),
                         _ => {}
@@ -2113,9 +2167,31 @@ impl Grove {
             }
             Modal::ShortcutOverlay => {
                 if matches!(key, Key::Named(Named::Escape))
-                    || match_global_shortcut(&key, mods) == Some(GlobalShortcut::ShortcutOverlay)
+                    || match_global_shortcut(&key, mods, self.current_screen())
+                        == Some(GlobalShortcut::ShortcutOverlay)
                 {
                     self.app.modal = Modal::None;
+                }
+            }
+            // No handler arm here meant every key, including Escape, was
+            // swallowed by the "any modal open" guard with no way to dismiss
+            // from the keyboard (Bug 10).
+            Modal::ScriptsEditor => {
+                if matches!(key, Key::Named(Named::Escape)) {
+                    // Same path as the Cancel button (`Msg::ScriptsEditorCancel`),
+                    // so unsaved edits are discarded and `scripts_editor` is reset.
+                    self.cancel_modal();
+                }
+            }
+            Modal::Teardown => {
+                if matches!(key, Key::Named(Named::Escape)) {
+                    // `cancel_modal` already gates this by teardown stage: it
+                    // skips a still-running script (mirroring "skip & remove"),
+                    // dismisses once removal has finished (mirroring "close"),
+                    // and is a no-op mid-removal — there's no button for that
+                    // stage either, since an in-flight `git worktree remove`
+                    // can't be safely interrupted.
+                    self.cancel_modal();
                 }
             }
             _ => {}
@@ -2614,18 +2690,19 @@ impl Grove {
     /// "+ New worktree…": remember the launcher's project, switch to it, and
     /// open Grove's standard worktree-name input. After creation,
     /// `submit_modal_input` re-opens the launcher (see `reopen_launcher`).
-    fn launcher_new_worktree(&mut self) {
+    fn launcher_new_worktree(&mut self) -> Task<Msg> {
         let crate::app::Modal::SessionLauncher { proj, .. } = self.app.modal else {
-            return;
+            return Task::none();
         };
         if proj >= self.app.store.projects.len() {
-            return;
+            return Task::none();
         }
         self.pending_launcher_proj = Some(proj);
         self.switch_active_project(proj);
         // Mirror the sidebar "add worktree" entry point.
         self.app.focus = crate::app::Pane::Worktrees;
         self.app.start_add();
+        iced::widget::text_input::focus(crate::gui::view::modal_input_id())
     }
 
     /// Re-open the launcher after a worktree was created from it. Selects the
@@ -3048,27 +3125,40 @@ pub(crate) struct ShortcutDef {
     /// modifier (e.g. Cmd+Alt+N / Ctrl+Alt+N) rather than using the plain
     /// platform modifier. Rendered with an "+alt+" infix by the overlay.
     pub(crate) requires_alt: bool,
+    /// When true, `display_keys` is the complete chord text and the overlay
+    /// renders it verbatim instead of prepending the platform modifier. Used
+    /// by the one shortcut that is the same literal chord on every platform
+    /// (`Ctrl+Shift+Arrow`, unlike `mod`'s Cmd-on-mac / Ctrl+Shift-elsewhere).
+    pub(crate) literal: bool,
 }
 
 const G: &[Scope] = &[Scope::Global];
 
 /// Single source of truth for behavioral matching and overlay display. Order
-/// matches the overlay's reading order. All entries are `Global` per the spec.
+/// matches the overlay's reading order. Most entries are `Global`; a few are
+/// scoped to a single screen (see each row's `scopes`).
 pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
-    ShortcutDef { action: Some(GlobalShortcut::NewSession),      triggers: &["n", "N"],      display_keys: "n",         description: "new session",            scopes: G, requires_alt: false },
-    ShortcutDef { action: Some(GlobalShortcut::NewSessionInWorktree), triggers: &["n", "N"], display_keys: "n",         description: "new session in current worktree", scopes: G, requires_alt: true },
-    ShortcutDef { action: Some(GlobalShortcut::NextSession),     triggers: &["j", "J"],      display_keys: "j",         description: "next session",           scopes: G, requires_alt: false },
-    ShortcutDef { action: Some(GlobalShortcut::PrevSession),     triggers: &["k", "K"],      display_keys: "k",         description: "previous session",       scopes: G, requires_alt: false },
+    ShortcutDef { action: Some(GlobalShortcut::NewSession),      triggers: &["n", "N"],      display_keys: "n",         description: "new session",            scopes: G, requires_alt: false, literal: false },
+    ShortcutDef { action: Some(GlobalShortcut::NewSessionInWorktree), triggers: &["n", "N"], display_keys: "n",         description: "new session in current worktree", scopes: G, requires_alt: true, literal: false },
+    ShortcutDef { action: Some(GlobalShortcut::NextSession),     triggers: &["j", "J"],      display_keys: "j",         description: "next session",           scopes: G, requires_alt: false, literal: false },
+    ShortcutDef { action: Some(GlobalShortcut::PrevSession),     triggers: &["k", "K"],      display_keys: "k",         description: "previous session",       scopes: G, requires_alt: false, literal: false },
     // Display-only: the matcher handles 1–9 dynamically (see match_global_shortcut).
-    ShortcutDef { action: None,                                  triggers: &[],              display_keys: "1–9",       description: "select nth session",     scopes: G, requires_alt: false },
-    ShortcutDef { action: Some(GlobalShortcut::ToggleGrid),      triggers: &["g", "G"],      display_keys: "g",         description: "toggle grid view",       scopes: G, requires_alt: false },
-    ShortcutDef { action: Some(GlobalShortcut::ToggleZen),       triggers: &[],              display_keys: "enter",     description: "toggle zen mode",        scopes: G, requires_alt: false },
-    ShortcutDef { action: Some(GlobalShortcut::Settings),        triggers: &[","],           display_keys: ",",         description: "settings",               scopes: G, requires_alt: false },
-    ShortcutDef { action: Some(GlobalShortcut::ZoomIn),          triggers: &["=", "+"],      display_keys: "=",         description: "zoom in",                scopes: G, requires_alt: false },
-    ShortcutDef { action: Some(GlobalShortcut::ZoomOut),         triggers: &["-", "_"],      display_keys: "-",         description: "zoom out",               scopes: G, requires_alt: false },
-    ShortcutDef { action: Some(GlobalShortcut::ZoomReset),       triggers: &["0"],           display_keys: "0",         description: "reset zoom",             scopes: G, requires_alt: false },
-    ShortcutDef { action: Some(GlobalShortcut::ShortcutOverlay), triggers: &["/", "?"],      display_keys: "/",         description: "this overlay",           scopes: G, requires_alt: false },
-    ShortcutDef { action: Some(GlobalShortcut::CloseFocusedSession), triggers: &["w", "W"], display_keys: "w",         description: "close focused session",  scopes: &[Scope::Screen(Screen::Grid)], requires_alt: false },
+    ShortcutDef { action: None,                                  triggers: &[],              display_keys: "1–9",       description: "select nth session",     scopes: G, requires_alt: false, literal: false },
+    ShortcutDef { action: Some(GlobalShortcut::ToggleGrid),      triggers: &["g", "G"],      display_keys: "g",         description: "toggle grid view",       scopes: G, requires_alt: false, literal: false },
+    ShortcutDef { action: Some(GlobalShortcut::ToggleZen),       triggers: &[],              display_keys: "enter",     description: "toggle zen mode",        scopes: G, requires_alt: false, literal: false },
+    ShortcutDef { action: Some(GlobalShortcut::Settings),        triggers: &[","],           display_keys: ",",         description: "settings",               scopes: G, requires_alt: false, literal: false },
+    ShortcutDef { action: Some(GlobalShortcut::ZoomIn),          triggers: &["=", "+"],      display_keys: "=",         description: "zoom in",                scopes: G, requires_alt: false, literal: false },
+    ShortcutDef { action: Some(GlobalShortcut::ZoomOut),         triggers: &["-", "_"],      display_keys: "-",         description: "zoom out",               scopes: G, requires_alt: false, literal: false },
+    ShortcutDef { action: Some(GlobalShortcut::ZoomReset),       triggers: &["0"],           display_keys: "0",         description: "reset zoom",             scopes: G, requires_alt: false, literal: false },
+    ShortcutDef { action: Some(GlobalShortcut::ShortcutOverlay), triggers: &["/", "?"],      display_keys: "/",         description: "this overlay",           scopes: G, requires_alt: false, literal: false },
+    ShortcutDef { action: Some(GlobalShortcut::CloseFocusedSession), triggers: &["w", "W"], display_keys: "w",         description: "close focused session",  scopes: G, requires_alt: false, literal: false },
+    // Display-only: matched by `term_panel_resize_delta`, not
+    // `match_global_shortcut` — closing the panel must fall through to the
+    // PTY, which a registry-matched shortcut never does (see the guard's
+    // comment in `handle_key`). Listed here purely so it's scoped and
+    // discoverable in the `mod+/` overlay; `scopes` here must track
+    // `term_panel_resize_delta`'s `Screen::Workspace` check by hand.
+    ShortcutDef { action: None,                                  triggers: &[],              display_keys: "ctrl+shift+←/→", description: "resize terminal panel", scopes: &[Scope::Screen(Screen::Workspace)], requires_alt: false, literal: true },
 ];
 
 /// Derive the coarse screen from UI flags. Zen wins over grid: while chrome is
@@ -3083,18 +3173,48 @@ pub(crate) fn screen_from_flags(chrome_visible: bool, grid_view: bool) -> Screen
     }
 }
 
-/// Map a key event to a global shortcut. Matches iced's modifier-independent
-/// `key`, so Shift in the non-mac Ctrl+Shift chords doesn't change the
-/// character being compared.
-fn match_global_shortcut(key: &Key, mods: Modifiers) -> Option<GlobalShortcut> {
+/// True if a shortcut whose registry row lists `scopes` may fire on `screen`:
+/// always for `Global`, otherwise only on its matching `Screen(screen)` entry.
+/// Shared by the matcher (behavior) and `shortcut_overlay_modal` (display) so
+/// the two can never disagree about what's visible/active on a given screen.
+pub(crate) fn scope_allows(scopes: &[Scope], screen: Screen) -> bool {
+    scopes
+        .iter()
+        .any(|s| matches!(s, Scope::Global) || *s == Scope::Screen(screen))
+}
+
+/// Map a key event to a global shortcut, or `None` if the chord doesn't match
+/// or its registry row is out of scope on `screen` — callers must fall
+/// through to the PTY on `None` rather than treat it as consumed. Matches
+/// iced's modifier-independent `key`, so Shift in the non-mac Ctrl+Shift
+/// chords doesn't change the character being compared.
+fn match_global_shortcut(key: &Key, mods: Modifiers, screen: Screen) -> Option<GlobalShortcut> {
     // Checked ahead of `global_mods`: on non-mac, `global_mods` already
     // requires Shift, so Ctrl+Alt+N (no Shift) would never reach it. This
     // chord is Cmd+Alt+N (mac) / Ctrl+Alt+N (elsewhere), independent of the
     // platform's base global-shortcut modifier.
+    //
+    // On mac this early check is technically redundant now that the registry
+    // lookup below honors `requires_alt`: `global_mods` there is just
+    // `logo() && !control()`, which Cmd+Alt+N already satisfies, so the
+    // registry `.find()` alone would resolve it to `NewSessionInWorktree`.
+    // It still has to stay because non-mac needs it — `global_mods` there
+    // requires Shift, which Ctrl+Alt+N (no Shift) never has, so non-mac
+    // can't reach the registry lookup at all for this chord.
     if new_session_in_worktree_mods(mods) {
         if let Key::Character(s) = key {
             if s.eq_ignore_ascii_case("n") {
-                return Some(GlobalShortcut::NewSessionInWorktree);
+                // Global today, but scope-checked like everything else below
+                // rather than bypassing it, so a future rescoping can't be
+                // missed here.
+                let scopes = SHORTCUTS
+                    .iter()
+                    .find(|d| d.action == Some(GlobalShortcut::NewSessionInWorktree))
+                    .map(|d| d.scopes)
+                    .unwrap_or(G);
+                if scope_allows(scopes, screen) {
+                    return Some(GlobalShortcut::NewSessionInWorktree);
+                }
             }
         }
     }
@@ -3102,20 +3222,29 @@ fn match_global_shortcut(key: &Key, mods: Modifiers) -> Option<GlobalShortcut> {
         return None;
     }
     match key {
-        Key::Named(Named::Enter) => Some(GlobalShortcut::ToggleZen),
+        // Not registry-`.find()`-driven like the char rows below (it's a
+        // `Key::Named`, not a `Key::Character`), but still scope-checked
+        // against its row (`G` today) for the same reason as the Alt chord
+        // above.
+        Key::Named(Named::Enter) => scope_allows(G, screen).then_some(GlobalShortcut::ToggleZen),
         Key::Character(s) => {
             let s = s.as_str();
-            // Registry-driven character shortcuts.
-            if let Some(def) = SHORTCUTS
-                .iter()
-                .find(|d| d.action.is_some() && d.triggers.contains(&s))
-            {
-                return def.action;
+            // Registry-driven character shortcuts. `requires_alt` must be part
+            // of the match, not just display metadata: `NewSession` and
+            // `NewSessionInWorktree` share `triggers` and only differ by Alt,
+            // so without this the first row in array order would always win
+            // (Bug 7) — swapping the two rows would silently swap their
+            // meaning with no compiler error and no failing test.
+            if let Some(def) = SHORTCUTS.iter().find(|d| {
+                d.action.is_some() && d.triggers.contains(&s) && d.requires_alt == mods.alt()
+            }) {
+                return def.action.filter(|_| scope_allows(def.scopes, screen));
             }
-            // SelectNth stays special-cased: dynamic n, display-only in registry.
+            // SelectNth stays special-cased: dynamic n, display-only in
+            // registry (`G` — scope-checked for the same reason as above).
             s.parse::<usize>()
                 .ok()
-                .filter(|n| (1..=9).contains(n))
+                .filter(|n| (1..=9).contains(n) && scope_allows(G, screen))
                 .map(|n| GlobalShortcut::SelectSession(n - 1))
         }
         _ => None,
@@ -3123,10 +3252,10 @@ fn match_global_shortcut(key: &Key, mods: Modifiers) -> Option<GlobalShortcut> {
 }
 
 /// Result of [`close_focused_session_decision`]: what `CloseFocusedSession`
-/// should do given the current screen and confirm-to-kill state.
+/// should do given the current confirm-to-kill state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CloseFocusedDecision {
-    /// Not in grid view, or no tile is focused.
+    /// No session is focused.
     NoOp,
     /// First press: arm the confirm-to-kill state for this session.
     Request(usize),
@@ -3134,21 +3263,73 @@ enum CloseFocusedDecision {
     Kill(usize),
 }
 
-/// Pure decision logic for `GlobalShortcut::CloseFocusedSession`, mirroring
-/// the grid tile's trash-button toggle (see `grid_tile` in `view.rs`). Kept
-/// as a free function so it's testable without constructing a full `Grove`.
+/// Pure decision logic for `GlobalShortcut::CloseFocusedSession`, mirroring the
+/// close-button toggle on both the grid tile (`grid_tile`) and the sidebar row
+/// (`session_row`). Kept as a free function so it's testable without
+/// constructing a full `Grove`. `target` is whichever session the current
+/// screen considers focused; the caller resolves it.
 fn close_focused_session_decision(
-    screen: Screen,
-    grid_focused: Option<usize>,
+    target: Option<usize>,
     pending_kill: Option<usize>,
 ) -> CloseFocusedDecision {
-    if screen != Screen::Grid {
-        return CloseFocusedDecision::NoOp;
-    }
-    match grid_focused {
+    match target {
         Some(si) if pending_kill == Some(si) => CloseFocusedDecision::Kill(si),
         Some(si) => CloseFocusedDecision::Request(si),
         None => CloseFocusedDecision::NoOp,
+    }
+}
+
+/// New value for `grid_focused` after the active session changes, given
+/// whether the grid is showing or will show again once zen exits. `None`
+/// means "leave `grid_focused` alone" — outside the grid (and not zenned in
+/// from it) there's no tile to track. Kept as a free function so it's
+/// testable without constructing a full `Grove` (Bug 5).
+fn should_sync_grid_focus(grid_view: bool, grid_view_before_zen: bool) -> bool {
+    grid_view || grid_view_before_zen
+}
+
+/// Whether the event subscription forwards this event to `update()`.
+///
+/// Captured events belong to the widget that consumed them — except Escape: a
+/// focused `text_input` captures it only to blur itself and never tells the
+/// app, so without this carve-out cancelling a modal would take two presses.
+fn should_forward(ev: &Event, status: event::Status) -> bool {
+    if status != event::Status::Captured {
+        return true;
+    }
+    matches!(
+        ev,
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: Key::Named(Named::Escape),
+            ..
+        })
+    )
+}
+
+/// Whether Escape has something to dismiss when no modal is open. `false`
+/// means Escape must reach the PTY — many TUI programs need it, and
+/// swallowing it unconditionally would regress that. The caller clears both
+/// states, so which one is armed doesn't matter.
+fn escape_should_dismiss(
+    pending_kill: Option<usize>,
+    open_agent_menu: Option<(usize, usize)>,
+) -> bool {
+    pending_kill.is_some() || open_agent_menu.is_some()
+}
+
+/// Chord + scope check for the terminal-panel resize (see the registry's
+/// display-only "resize terminal panel" row): Ctrl+Shift+Left/Right, Workspace
+/// only, on every platform (unlike `global_mods`, this isn't Cmd on macOS).
+/// Doesn't know about `term_panel_open` — that's runtime state the caller
+/// gates separately so a closed panel falls through to the PTY.
+fn term_panel_resize_delta(key: &Key, mods: Modifiers, screen: Screen) -> Option<i16> {
+    if screen != Screen::Workspace || !(mods.control() && mods.shift()) {
+        return None;
+    }
+    match key {
+        Key::Named(Named::ArrowRight) => Some(TERM_PANEL_PORTION_STEP as i16),
+        Key::Named(Named::ArrowLeft) => Some(-(TERM_PANEL_PORTION_STEP as i16)),
+        _ => None,
     }
 }
 
@@ -3181,7 +3362,7 @@ fn is_paste_shortcut(mods: Modifiers, s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{match_global_shortcut, GlobalShortcut};
+    use super::{match_global_shortcut, GlobalShortcut, Screen};
     use iced::keyboard::{key::Named, Key, Modifiers};
     use smol_str::SmolStr;
 
@@ -3199,39 +3380,56 @@ mod tests {
 
     #[test]
     fn global_shortcuts_map_with_platform_modifier() {
+        // All of these are `Global`-scoped, so Workspace is an arbitrary pick —
+        // `screen_scoped_shortcuts_respect_scopes` below covers the Grid-only row.
         use GlobalShortcut::*;
-        assert_eq!(match_global_shortcut(&ch("n"), gmods()), Some(NewSession));
-        assert_eq!(match_global_shortcut(&ch(","), gmods()), Some(Settings));
-        assert_eq!(match_global_shortcut(&ch("g"), gmods()), Some(ToggleGrid));
-        assert_eq!(match_global_shortcut(&ch("j"), gmods()), Some(NextSession));
-        assert_eq!(match_global_shortcut(&ch("k"), gmods()), Some(PrevSession));
-        assert_eq!(match_global_shortcut(&ch("="), gmods()), Some(ZoomIn));
-        assert_eq!(match_global_shortcut(&ch("-"), gmods()), Some(ZoomOut));
-        assert_eq!(match_global_shortcut(&ch("0"), gmods()), Some(ZoomReset));
+        let screen = Screen::Workspace;
+        assert_eq!(match_global_shortcut(&ch("n"), gmods(), screen), Some(NewSession));
+        assert_eq!(match_global_shortcut(&ch(","), gmods(), screen), Some(Settings));
+        assert_eq!(match_global_shortcut(&ch("g"), gmods(), screen), Some(ToggleGrid));
+        assert_eq!(match_global_shortcut(&ch("j"), gmods(), screen), Some(NextSession));
+        assert_eq!(match_global_shortcut(&ch("k"), gmods(), screen), Some(PrevSession));
+        assert_eq!(match_global_shortcut(&ch("="), gmods(), screen), Some(ZoomIn));
+        assert_eq!(match_global_shortcut(&ch("-"), gmods(), screen), Some(ZoomOut));
+        assert_eq!(match_global_shortcut(&ch("0"), gmods(), screen), Some(ZoomReset));
         assert_eq!(
-            match_global_shortcut(&ch("3"), gmods()),
+            match_global_shortcut(&ch("3"), gmods(), screen),
             Some(SelectSession(2))
         );
         assert_eq!(
-            match_global_shortcut(&Key::Named(Named::Enter), gmods()),
+            match_global_shortcut(&Key::Named(Named::Enter), gmods(), screen),
             Some(ToggleZen)
         );
         assert_eq!(
-            match_global_shortcut(&ch("/"), gmods()),
+            match_global_shortcut(&ch("/"), gmods(), screen),
             Some(ShortcutOverlay)
         );
         // Registry-driven aliases.
-        assert_eq!(match_global_shortcut(&ch("+"), gmods()), Some(ZoomIn));
-        assert_eq!(match_global_shortcut(&ch("_"), gmods()), Some(ZoomOut));
-        assert_eq!(match_global_shortcut(&ch("?"), gmods()), Some(ShortcutOverlay));
+        assert_eq!(match_global_shortcut(&ch("+"), gmods(), screen), Some(ZoomIn));
+        assert_eq!(match_global_shortcut(&ch("_"), gmods(), screen), Some(ZoomOut));
         assert_eq!(
-            match_global_shortcut(&ch("w"), gmods()),
-            Some(CloseFocusedSession)
+            match_global_shortcut(&ch("?"), gmods(), screen),
+            Some(ShortcutOverlay)
         );
-        assert_eq!(
-            match_global_shortcut(&ch("W"), gmods()),
-            Some(CloseFocusedSession)
-        );
+    }
+
+    /// `mod+w` closes the focused session on every screen: the grid tile in
+    /// Grid, the active session's sidebar row otherwise. It must never fall
+    /// through to the PTY, where `key_to_bytes` would turn Ctrl+Shift+W into
+    /// `0x17` (readline delete-word) on Linux and a literal `w` on macOS.
+    #[test]
+    fn close_focused_session_matches_on_every_screen() {
+        use GlobalShortcut::CloseFocusedSession;
+        for screen in [Screen::Grid, Screen::Workspace, Screen::Zen] {
+            assert_eq!(
+                match_global_shortcut(&ch("w"), gmods(), screen),
+                Some(CloseFocusedSession)
+            );
+            assert_eq!(
+                match_global_shortcut(&ch("W"), gmods(), screen),
+                Some(CloseFocusedSession)
+            );
+        }
     }
 
     /// The real "new session in worktree" chord: Cmd+Alt (mac) / Ctrl+Alt
@@ -3248,27 +3446,47 @@ mod tests {
     fn alt_n_maps_to_new_session_in_worktree() {
         use GlobalShortcut::*;
         let alt = alt_mods();
+        let screen = Screen::Workspace;
         assert_eq!(
-            match_global_shortcut(&ch("n"), alt),
+            match_global_shortcut(&ch("n"), alt, screen),
             Some(NewSessionInWorktree)
         );
         assert_eq!(
-            match_global_shortcut(&ch("N"), alt),
+            match_global_shortcut(&ch("N"), alt, screen),
             Some(NewSessionInWorktree)
         );
         // Plain platform modifier (no Alt) still resolves to NewSession —
         // no regression from adding the alt-chord.
-        assert_eq!(match_global_shortcut(&ch("n"), gmods()), Some(NewSession));
-        // Alt held with an unclaimed key falls through to normal matching.
+        assert_eq!(match_global_shortcut(&ch("n"), gmods(), screen), Some(NewSession));
+        // Alt held on an unclaimed key is *not* a shortcut on either platform:
+        // the registry now requires an exact `requires_alt` match (Bug 7's
+        // fix), and `ToggleGrid`'s row has `requires_alt: false`, so holding
+        // Alt no longer falls through to it even on mac, where `alt_mods()`
+        // (Cmd+Alt) still satisfies `global_mods` (Cmd, no Ctrl). On non-mac,
+        // `alt_mods()` is Ctrl+Alt with no Shift, which `global_mods`
+        // (Ctrl+Shift) rejects outright, so it never even reaches the registry.
+        assert_eq!(match_global_shortcut(&ch("g"), alt, screen), None);
+    }
+
+    /// Pins Bug 7's fix directly, non-mac only: a chord that carries Shift (so
+    /// `new_session_in_worktree_mods`'s `!shift()` fails and the early-check
+    /// never fires) but still satisfies `global_mods` (Ctrl+Shift) and holds
+    /// Alt must still resolve through the registry alone, proving the registry
+    /// lookup — not just the early-check — is `requires_alt`-correct.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn registry_lookup_resolves_worktree_variant_when_early_check_is_bypassed() {
+        use GlobalShortcut::*;
+        let mods = Modifiers::CTRL | Modifiers::SHIFT | Modifiers::ALT;
         assert_eq!(
-            match_global_shortcut(&ch("g"), alt),
-            Some(ToggleGrid)
+            match_global_shortcut(&ch("n"), mods, Screen::Workspace),
+            Some(NewSessionInWorktree)
         );
     }
 
     #[test]
     fn screen_zen_wins_over_grid() {
-        use super::{screen_from_flags, Screen};
+        use super::screen_from_flags;
         assert_eq!(screen_from_flags(false, true), Screen::Zen);
         assert_eq!(screen_from_flags(false, false), Screen::Zen);
         assert_eq!(screen_from_flags(true, true), Screen::Grid);
@@ -3277,37 +3495,81 @@ mod tests {
 
     #[test]
     fn unmodified_or_unmapped_keys_are_not_shortcuts() {
-        assert_eq!(match_global_shortcut(&ch("n"), Modifiers::empty()), None);
-        assert_eq!(match_global_shortcut(&ch("x"), gmods()), None);
+        let screen = Screen::Workspace;
         assert_eq!(
-            match_global_shortcut(&Key::Named(Named::Tab), gmods()),
+            match_global_shortcut(&ch("n"), Modifiers::empty(), screen),
+            None
+        );
+        assert_eq!(match_global_shortcut(&ch("x"), gmods(), screen), None);
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::Tab), gmods(), screen),
             None
         );
     }
 
-    /// `CloseFocusedSession` is screen-gated at runtime (unlike every other
-    /// registry shortcut, which is global). These exercise the pure decision
-    /// helper directly rather than the full `Grove` state, which is expensive
-    /// to construct for a single match arm.
-    mod close_focused_session_decision {
-        use super::super::{close_focused_session_decision, CloseFocusedDecision, Screen};
+    /// The terminal-panel resize chord (see the registry's display-only
+    /// "resize terminal panel" row) is Ctrl+Shift+Left/Right on every
+    /// platform, and scoped to `Screen::Workspace` only — matched by
+    /// `term_panel_resize_delta`, not `match_global_shortcut`, because it has
+    /// an extra runtime gate (`term_panel_open`) that `handle_key` applies
+    /// separately.
+    mod term_panel_resize {
+        use super::super::{term_panel_resize_delta, Screen, TERM_PANEL_PORTION_STEP};
+        use iced::keyboard::{key::Named, Key, Modifiers};
+
+        fn ctrl_shift() -> Modifiers {
+            Modifiers::CTRL | Modifiers::SHIFT
+        }
 
         #[test]
-        fn no_op_outside_grid_screen() {
+        fn matches_only_on_workspace() {
             assert_eq!(
-                close_focused_session_decision(Screen::Workspace, Some(3), None),
-                CloseFocusedDecision::NoOp
+                term_panel_resize_delta(&Key::Named(Named::ArrowRight), ctrl_shift(), Screen::Workspace),
+                Some(TERM_PANEL_PORTION_STEP as i16)
             );
             assert_eq!(
-                close_focused_session_decision(Screen::Zen, Some(3), None),
-                CloseFocusedDecision::NoOp
+                term_panel_resize_delta(&Key::Named(Named::ArrowLeft), ctrl_shift(), Screen::Workspace),
+                Some(-(TERM_PANEL_PORTION_STEP as i16))
+            );
+            assert_eq!(
+                term_panel_resize_delta(&Key::Named(Named::ArrowRight), ctrl_shift(), Screen::Grid),
+                None
+            );
+            assert_eq!(
+                term_panel_resize_delta(&Key::Named(Named::ArrowRight), ctrl_shift(), Screen::Zen),
+                None
             );
         }
 
         #[test]
-        fn no_op_in_grid_with_no_tile_focused() {
+        fn requires_the_literal_ctrl_shift_chord() {
             assert_eq!(
-                close_focused_session_decision(Screen::Grid, None, None),
+                term_panel_resize_delta(
+                    &Key::Named(Named::ArrowRight),
+                    Modifiers::CTRL,
+                    Screen::Workspace
+                ),
+                None
+            );
+            assert_eq!(
+                term_panel_resize_delta(&Key::Named(Named::Tab), ctrl_shift(), Screen::Workspace),
+                None
+            );
+        }
+    }
+
+    /// `CloseFocusedSession`'s decision logic is screen-independent — the
+    /// caller resolves `target` per screen (grid tile vs active session), so
+    /// these exercise the remaining runtime state (whether anything is focused,
+    /// confirm-to-kill arming) directly rather than the full `Grove`, which is
+    /// expensive to construct for a single match arm.
+    mod close_focused_session_decision {
+        use super::super::{close_focused_session_decision, CloseFocusedDecision};
+
+        #[test]
+        fn no_op_with_nothing_focused() {
+            assert_eq!(
+                close_focused_session_decision(None, None),
                 CloseFocusedDecision::NoOp
             );
         }
@@ -3315,12 +3577,12 @@ mod tests {
         #[test]
         fn requests_kill_when_not_yet_armed() {
             assert_eq!(
-                close_focused_session_decision(Screen::Grid, Some(2), None),
+                close_focused_session_decision(Some(2), None),
                 CloseFocusedDecision::Request(2)
             );
             // Pending kill armed for a *different* session still requests.
             assert_eq!(
-                close_focused_session_decision(Screen::Grid, Some(2), Some(5)),
+                close_focused_session_decision(Some(2), Some(5)),
                 CloseFocusedDecision::Request(2)
             );
         }
@@ -3328,9 +3590,104 @@ mod tests {
         #[test]
         fn kills_when_already_armed_for_focused_session() {
             assert_eq!(
-                close_focused_session_decision(Screen::Grid, Some(2), Some(2)),
+                close_focused_session_decision(Some(2), Some(2)),
                 CloseFocusedDecision::Kill(2)
             );
+        }
+    }
+
+    /// `grid_focused` must track the active session whenever the grid is
+    /// showing, or will show again once zen exits — otherwise cycling/
+    /// selecting sessions while zenned in from a tile leaves the tile
+    /// pointer stale for when zen exits (Bug 5).
+    mod should_sync_grid_focus {
+        use super::super::should_sync_grid_focus;
+
+        #[test]
+        fn untouched_outside_grid_and_not_zenned_from_it() {
+            assert!(!should_sync_grid_focus(false, false));
+        }
+
+        #[test]
+        fn syncs_while_grid_is_open() {
+            assert!(should_sync_grid_focus(true, false));
+        }
+
+        #[test]
+        fn syncs_while_zenned_in_from_the_grid() {
+            // grid_view is false during zen (it's temporarily suspended), but
+            // grid_view_before_zen remembers to restore it on exit — that's
+            // exactly the state where the desync used to happen.
+            assert!(should_sync_grid_focus(false, true));
+        }
+    }
+
+    /// The subscription's capture filter. Escape must survive capture (a
+    /// focused text_input eats it to self-blur); nothing else may (Bug 3).
+    mod should_forward {
+        use super::super::should_forward;
+        use iced::keyboard::{key::Named, Key, Modifiers};
+        use iced::{event, keyboard, Event};
+
+        fn press(key: Key) -> Event {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: key.clone(),
+                modified_key: key,
+                physical_key: iced::keyboard::key::Physical::Unidentified(
+                    iced::keyboard::key::NativeCode::Unidentified,
+                ),
+                location: iced::keyboard::Location::Standard,
+                modifiers: Modifiers::empty(),
+                text: None,
+            })
+        }
+
+        #[test]
+        fn uncaptured_events_always_forward() {
+            assert!(should_forward(
+                &press(Key::Character("a".into())),
+                event::Status::Ignored
+            ));
+        }
+
+        #[test]
+        fn captured_escape_still_forwards() {
+            assert!(should_forward(
+                &press(Key::Named(Named::Escape)),
+                event::Status::Captured
+            ));
+        }
+
+        #[test]
+        fn captured_non_escape_is_dropped() {
+            // The load-bearing half: typed characters and Enter belong to the
+            // focused field, not to handle_key.
+            assert!(!should_forward(
+                &press(Key::Character("a".into())),
+                event::Status::Captured
+            ));
+            assert!(!should_forward(
+                &press(Key::Named(Named::Enter)),
+                event::Status::Captured
+            ));
+        }
+    }
+
+    /// Escape with no modal open must dismiss an armed kill-confirmation or
+    /// open agent menu before it ever reaches the PTY (Bug 9).
+    mod escape_should_dismiss {
+        use super::super::escape_should_dismiss;
+
+        #[test]
+        fn false_when_neither_is_set() {
+            assert!(!escape_should_dismiss(None, None));
+        }
+
+        #[test]
+        fn true_when_either_is_set() {
+            assert!(escape_should_dismiss(Some(2), None));
+            assert!(escape_should_dismiss(None, Some((1, 0))));
+            assert!(escape_should_dismiss(Some(2), Some((1, 0))));
         }
     }
 }

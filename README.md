@@ -110,13 +110,16 @@ on first launch with `tmux` installed, grove asks which backend to use. use the 
 | shortcut | action |
 |---|---|
 | `mod+n` | open the new-session launcher |
+| `cmd+alt+n` (macOS) / `ctrl+alt+n` | new session in the current worktree — note: no shift, so this is not `mod+alt+n` |
 | `mod+j` / `mod+k` | next / previous session (visible order) |
 | `mod+1`..`mod+9` | select the nth session |
 | `mod+g` | toggle the grid (agent view) |
 | `mod+enter` | toggle zen mode |
 | `mod+,` | open settings |
 | `mod+=` / `mod+-` / `mod+0` | zoom in / out / reset |
+| `mod+w` | close the focused session (press twice to confirm) |
 | `mod+c` / `mod+v` | copy selection / paste into the focused session |
+| `ctrl+shift+←` / `ctrl+shift+→` | resize the terminal panel (workspace view only) |
 | `mod+/` | show the shortcut overlay |
 | `esc` | close modals |
 

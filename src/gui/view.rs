@@ -3444,7 +3444,11 @@ impl Grove {
             "ctrl+alt"
         };
         let key_label = |d: &ShortcutDef| {
-            if d.requires_alt {
+            if d.literal {
+                // Already the complete chord text (e.g. the terminal-panel
+                // resize, which is Ctrl+Shift on every platform, not `mod`).
+                d.display_keys.to_string()
+            } else if d.requires_alt {
                 format!("{alt_m}+{}", d.display_keys)
             } else {
                 format!("{m}+{}", d.display_keys)
@@ -3455,11 +3459,7 @@ impl Grove {
         // Registry entries visible on this screen: Global or matching current screen.
         let visible: Vec<&ShortcutDef> = SHORTCUTS
             .iter()
-            .filter(|d| {
-                d.scopes
-                    .iter()
-                    .any(|s| matches!(s, Scope::Global) || *s == Scope::Screen(screen))
-            })
+            .filter(|d| super::update::scope_allows(d.scopes, screen))
             .collect();
 
         // Does the visible set span more than one scope? (Global vs current-screen)
@@ -3879,6 +3879,7 @@ impl Grove {
 
                 if let Some(name) = name {
                     let name_input = text_input("project name", name)
+                        .id(modal_name_id())
                         .font(UI_FONT)
                         .size(13)
                         .padding(Padding::from([8, 12]))

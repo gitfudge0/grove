@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="tokyo-night">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grove · Screen-Scoped Shortcuts Plan</title>
+<link rel="stylesheet" href="ppt-assets/fonts.css">
+<link rel="stylesheet" href="ppt-assets/base.css">
+<link rel="stylesheet" id="theme-link" href="ppt-assets/themes/tokyo-night.css">
+<link rel="stylesheet" href="ppt-assets/animations/animations.css">
+<style>
+  .tbl { width:100%; border-collapse:collapse; font-size:19px; }
+  .tbl th, .tbl td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--hair,rgba(255,255,255,.08)); vertical-align:top; }
+  .tbl th { color:var(--text-2,#9aa5ce); font-weight:600; font-size:15px; letter-spacing:.03em; text-transform:uppercase; }
+  .tbl code { font-size:16px; }
+  .bug { color:#f7768e; font-weight:700; }
+  .ok { color:#9ece6a; font-weight:700; }
+  .kbd { display:inline-block; padding:2px 8px; border-radius:6px; border:1px solid var(--hair,rgba(255,255,255,.18)); background:rgba(255,255,255,.04); font-family:var(--mono,monospace); font-size:15px; white-space:nowrap; }
+  .lane { display:grid; grid-template-columns:auto 1fr; gap:10px 16px; align-items:baseline; }
+  .lane .n { font-family:var(--mono,monospace); color:var(--accent,#7aa2f7); font-weight:700; }
+  pre.card code { font-size:16px; line-height:1.5; }
+  .small { font-size:16px; }
+</style>
+</head>
+<body data-themes="tokyo-night,dracula,catppuccin-mocha,blueprint,nord,terminal-green" data-theme-base="ppt-assets/themes/">
+<div class="deck">
+
+  <!-- 1. Cover -->
+  <section class="slide" data-title="Cover">
+    <div class="deck-header"><span class="eyebrow">grove · input</span><span class="eyebrow">design plan</span></div>
+    <p class="kicker">Keyboard subsystem · 2026-07-10</p>
+    <h1 class="h1 anim-fade-up" data-anim="fade-up">Scoping shortcuts to<br><span class="gradient-text">what's on screen</span></h1>
+    <p class="lede">One flat dispatch chain is the root of the bug cluster. This is the plan to make every key resolve against its screen — and fall through cleanly when it doesn't apply.</p>
+    <div class="row wrap mt-l">
+      <span class="pill pill-accent">11 mapped bugs</span>
+      <span class="pill">5 phases</span>
+      <span class="pill">infra already exists</span>
+    </div>
+    <div class="deck-footer"><span class="dim2">src/gui/update.rs</span><span class="slide-number" data-current="1" data-total="11"></span></div>
+    <div class="notes">This deck presents a plan, not a diff. The audit already exists in docs/keyboard-shortcut-map.md. The point here: the fixes aren't 11 unrelated patches — they're one architectural change plus cleanup.</div>
+  </section>
+
+  <!-- 2. The core problem -->
+  <section class="slide" data-title="Root cause">
+    <p class="kicker">Diagnosis</p>
+    <h2 class="h2">There is no per-screen key handling</h2>
+    <p class="lede">Every key funnels through one 80-line <code>handle_key</code> with a 7-guard chain. Screens only change <em>which PTY</em> the fallthrough writes to — never whether a shortcut applies.</p>
+    <div class="grid g2 mt-l">
+      <div class="card">
+        <h4 class="ok">What exists ✓</h4>
+        <p class="dim small"><code>Screen</code> enum (Grid/Workspace/Zen), <code>Scope</code> enum, a <code>SHORTCUTS</code> registry where each row declares its scopes, and <code>current_screen()</code>.</p>
+      </div>
+      <div class="card">
+        <h4 class="bug">What's missing ✗</h4>
+        <p class="dim small"><code>match_global_shortcut</code> <b>never reads <code>scopes</code></b>. Only <code>view.rs</code> reads it — to draw the overlay. Scope is decoration, not enforcement.</p>
+      </div>
+    </div>
+    <p class="dim mt-m small">So the whole class of bugs is one missing wire: <b>the matcher ignores the screen.</b></p>
+    <div class="notes">This is the load-bearing insight. The team already built the scoping vocabulary in commit 8d6968c but only used it for display. The plan is mostly "finish wiring what you already designed."</div>
+  </section>
+
+  <!-- 3. The bug cluster -->
+  <section class="slide" data-title="Symptoms">
+    <p class="kicker">What the user feels</p>
+    <h2 class="h2">The bugs, grouped by cause</h2>
+    <table class="tbl mt-m">
+      <tr><th>#</th><th>Symptom</th><th>Real cause</th></tr>
+      <tr><td class="bug">1</td><td><span class="kbd">mod+w</span> does nothing in workspace/zen — but is swallowed</td><td>scope not enforced at match time</td></tr>
+      <tr><td class="bug">2</td><td><span class="kbd">Ctrl+Shift+←/→</span> resizes an <em>invisible</em> panel in grid/zen</td><td>gated on <code>term_panel_open</code>, not screen</td></tr>
+      <tr><td class="bug">3</td><td>Escape needs <b>two presses</b> in any modal with a text field</td><td>iced captures Esc as self-blur</td></tr>
+      <tr><td class="bug">4</td><td>Launcher's "+ New worktree" opens an input you can't type into</td><td>missing <code>text_input::focus</code></td></tr>
+      <tr><td class="bug">5,8,9</td><td>grid focus desyncs · drag survives keypress · no key-escape from kill/menu</td><td>transient state not reset on key</td></tr>
+      <tr><td class="bug">7,10,11</td><td>dead registry row · trap modals · stale docs</td><td>registry &amp; modal hygiene</td></tr>
+    </table>
+    <div class="notes">Full repros live in docs/keyboard-shortcut-map.md. The grouping matters: phase 1 alone (scope enforcement) kills bugs 1 and 2, the two most visible ones.</div>
+  </section>
+
+  <!-- 4. Target model -->
+  <section class="slide" data-title="Model">
+    <p class="kicker">The design</p>
+    <h2 class="h2">One context in, one decision out</h2>
+    <p class="lede">Compute the active input context once, then resolve every key against it. Out-of-scope keys aren't consumed — they fall through to the PTY.</p>
+    <div class="lane mt-l">
+      <span class="n">1</span><div><b>Modal / captured</b> → <code>handle_modal_key</code> (unchanged path, fixed in phase 3)</div>
+      <span class="n">2</span><div><b>Grid</b> (tile focused?) → grid-scoped shortcuts, else forward to focused tile</div>
+      <span class="n">3</span><div><b>Zen</b> → global shortcuts only, else forward to active session</div>
+      <span class="n">4</span><div><b>Workspace</b> (+ panel focus) → global + workspace shortcuts, else forward</div>
+    </div>
+    <p class="dim mt-m small"><b>The invariant:</b> a shortcut consumes a key <em>only if its scope contains the current screen</em>. No match ⇒ fall through. That single rule is the fix.</p>
+    <div class="notes">Key mental model shift: today the chain asks "is this a known chord?" It should ask "is this a known chord that applies HERE?" The difference is bug 1 and 2.</div>
+  </section>
+
+  <!-- 5. Phase 1 -->
+  <section class="slide" data-title="Phase 1">
+    <p class="kicker">Phase 1 · biggest bang, smallest change</p>
+    <h2 class="h2">Make scope authoritative</h2>
+    <div class="card diff mt-m" style="padding:0">
+      <div class="hd">src/gui/update.rs · match_global_shortcut</div>
+      <span class="ln ctx">fn match_global_shortcut(key, mods, screen) -&gt; Option&lt;GlobalShortcut&gt; {</span>
+      <span class="ln ctx">    // ... find the def by trigger + modifiers ...</span>
+      <span class="ln add">+   // enforce scope: a def only matches on its declared screens</span>
+      <span class="ln add">+   if !def.scopes.iter().any(|s| s.matches(screen)) {</span>
+      <span class="ln add">+       return None;  // out of scope -&gt; caller falls through to PTY</span>
+      <span class="ln add">+   }</span>
+      <span class="ln ctx">    def.action</span>
+      <span class="ln ctx">}</span>
+    </div>
+    <div class="grid g2 mt-m">
+      <div class="card"><h4 class="ok">Fixes 1</h4><p class="dim small"><span class="kbd">mod+w</span> outside grid returns <code>None</code> → falls through instead of dead no-op.</p></div>
+      <div class="card"><h4 class="ok">Fixes 2</h4><p class="dim small">Move term-panel resize <em>into</em> the registry, scoped to <code>Workspace</code> + <code>cfg(macos)</code> mod. No more invisible-panel resize.</p></div>
+    </div>
+    <div class="notes">This phase is small and self-contained. current_screen() already exists so the plumbing is a one-arg thread-through. Do this first — it's the highest-value, lowest-risk change and validates the whole model.</div>
+  </section>
+
+  <!-- 6. Phase 2 -->
+  <section class="slide" data-title="Phase 2">
+    <p class="kicker">Phase 2 · single source of truth</p>
+    <h2 class="h2">Compute context, don't re-derive it</h2>
+    <p class="lede">Today the dispatch reads <code>term_panel_open</code>, <code>grid_view</code>, <code>chrome_visible</code> in scattered guards. Collapse them into one function.</p>
+    <div class="card mt-m" style="padding:0">
+      <div class="hd" style="padding:10px 16px;font-family:var(--mono);font-size:14px;color:var(--text-2)">src/gui/update.rs</div>
+      <pre class="card" style="margin:0;border:0;padding:16px 20px"><code>enum InputContext {
+    Modal { captured: bool },
+    Grid  { tile_focused: bool },
+    Zen,
+    Workspace { pty: PtyTarget },   // Agent | Panel | Home
+}
+
+fn input_context(&self) -&gt; InputContext { /* the ONLY place flags are read */ }</code></pre>
+    </div>
+    <p class="dim mt-m small">Dispatch becomes a <code>match</code> on the context. Every "which screen am I on" question has exactly one answer, computed once per key.</p>
+    <div class="notes">This is the refactor that makes the invariant enforceable. It also naturally documents the PTY routing priority (grid tile > home terminal > panel > agent) that today is buried in focused_session_mut.</div>
+  </section>
+
+  <!-- 7. Phase 3 -->
+  <section class="slide" data-title="Phase 3">
+    <p class="kicker">Phase 3 · the modal / Escape layer</p>
+    <h2 class="h2">Stop losing the first Escape</h2>
+    <div class="grid g2 mt-l">
+      <div class="card bad-side">
+        <h4 class="bug">The trap</h4>
+        <p class="dim small">iced's <code>text_input</code> returns <code>Status::Captured</code> for Escape (it just blurs itself). The subscription drops captured events, so <b>the app never sees the first Escape.</b></p>
+      </div>
+      <div class="card good-side">
+        <h4 class="ok">The carve-out</h4>
+        <p class="dim small">In the subscription, forward Escape <em>even when captured</em> — its only in-field effect is a harmless self-blur:</p>
+        <p class="small"><code>if status == Captured &amp;&amp; key != Escape { return None }</code></p>
+      </div>
+    </div>
+    <p class="dim mt-m small">Same phase: fix <span class="bug">bug 4</span> (launcher missing <code>text_input::focus</code>) and <span class="bug">bug 6</span> (onboarding Tab always targets the wrong field; name field has no <code>.id()</code>).</p>
+    <div class="notes">The Escape carve-out is the one genuinely iced-specific fix. It's surgical: only Escape bypasses the Captured filter, so we don't reintroduce double-handling of typed text. Verified against iced_widget 0.13.4 text_input.rs:1083.</div>
+  </section>
+
+  <!-- 8. Phase 4 -->
+  <section class="slide" data-title="Phase 4">
+    <p class="kicker">Phase 4 · transient state &amp; trap modals</p>
+    <h2 class="h2">Every mode has a working Escape</h2>
+    <div class="steps anim-stagger-list" data-anim-target>
+      <div class="step"><div class="num">5</div><h4>Grid focus sync</h4><p><code>mod+j/k</code> must move <code>grid_focused</code>, not just <code>active_session</code>, so exiting zen restores the right tile.</p><span class="tag">state</span></div>
+      <div class="step"><div class="num">8</div><h4>Drag cleanup</h4><p>A keypress that clears <code>pty_selection</code> must also clear <code>pty_drag</code> — no ghost autoscroll.</p><span class="tag">state</span></div>
+      <div class="step"><div class="num">9</div><h4>Escape dismisses</h4><p>Esc clears <code>pending_kill</code> &amp; <code>open_agent_menu</code> before falling through to the PTY.</p><span class="tag">keys</span></div>
+      <div class="step"><div class="num">10</div><h4>No trap modals</h4><p><code>Teardown</code> &amp; <code>ScriptsEditor</code> get an Esc arm in <code>handle_modal_key</code>.</p><span class="tag">modal</span></div>
+    </div>
+    <div class="notes">These are independent small fixes, but they share a theme: keyboard users must never get stuck. Group them so the "you can always Escape" invariant lands in one reviewable change.</div>
+  </section>
+
+  <!-- 9. Phase 5 -->
+  <section class="slide" data-title="Phase 5">
+    <p class="kicker">Phase 5 · registry hygiene &amp; docs</p>
+    <h2 class="h2">Close the gaps that let it rot</h2>
+    <div class="grid g2 mt-l">
+      <div class="card">
+        <h4 class="bug">Bug 7 · dead row</h4>
+        <p class="dim small"><code>NewSession</code> and <code>NewSessionInWorktree</code> share triggers <code>["n","N"]</code>; the <code>.find()</code> never checks <code>requires_alt</code>, so the second row is unreachable — only a special-case ahead of the lookup saves it. <b>Reorder the rows and <span class="kbd">mod+n</span> silently breaks.</b></p>
+        <p class="dim small">Fix: make the lookup match on <code>requires_alt</code> too; delete the special case.</p>
+      </div>
+      <div class="card">
+        <h4 class="bug">Bug 11 · doc drift</h4>
+        <p class="dim small"><span class="kbd">mod+alt+n</span>, <span class="kbd">mod+w</span>, <span class="kbd">Ctrl+Shift+←/→</span> work but are documented nowhere / in no overlay.</p>
+        <p class="dim small">Fix: generate the README table <em>from</em> the <code>SHORTCUTS</code> registry so prose can't drift from code.</p>
+      </div>
+    </div>
+    <div class="notes">Making docs a projection of the registry is the durable fix — same as making the overlay a projection. Once behavior, overlay, and docs all read one array, they can't disagree.</div>
+  </section>
+
+  <!-- 10. Sequence / payoff -->
+  <section class="slide" data-title="Sequence">
+    <p class="kicker">Order of operations</p>
+    <h2 class="h2">Ship it in this order</h2>
+    <div class="rm">
+      <div class="col now">
+        <span class="tag">FIRST</span>
+        <h4>Phase 1</h4>
+        <ul><li>scope enforcement</li><li>term-resize → registry</li><li>kills bugs 1, 2</li></ul>
+      </div>
+      <div class="col">
+        <span class="tag">THEN</span>
+        <h4>Phase 2</h4>
+        <ul><li><code>InputContext</code></li><li>one place reads flags</li><li>makes rest safe</li></ul>
+      </div>
+      <div class="col">
+        <span class="tag">THEN</span>
+        <h4>Phase 3+4</h4>
+        <ul><li>Escape carve-out</li><li>focus &amp; state fixes</li><li>bugs 3–6, 8–10</li></ul>
+      </div>
+      <div class="col">
+        <span class="tag">LAST</span>
+        <h4>Phase 5</h4>
+        <ul><li>registry hygiene</li><li>docs from registry</li><li>bugs 7, 11</li></ul>
+      </div>
+    </div>
+    <p class="dim mt-m small">Each phase is independently shippable and testable. Phase 1 alone changes how the app <em>feels</em>.</p>
+    <div class="notes">Deliberately front-loaded: the highest-value, lowest-risk change goes first and de-risks the model before the bigger refactor. Nothing here is a big-bang rewrite.</div>
+  </section>
+
+  <!-- 11. Close -->
+  <section class="slide center tc" data-title="Close">
+    <div>
+      <p class="kicker">The whole plan in one line</p>
+      <h1 class="h1 anim-rise-in" data-anim="rise-in">A key is consumed<br><span class="gradient-text">only where it applies.</span></h1>
+      <p class="lede" style="margin:18px auto">Everything else falls through. The infrastructure exists — this finishes wiring it.</p>
+      <p class="dim small">← → navigate · T theme · F fullscreen · O overview · S notes</p>
+    </div>
+    <div class="deck-footer"><span class="dim2">docs/keyboard-shortcut-map.md</span><span class="slide-number" data-current="11" data-total="11"></span></div>
+    <div class="notes">If you take one thing away: the fix is an invariant, not a pile of patches. Enforce scope at match time, fall through otherwise, and the "unexpected behaviour" disappears because keys stop being silently eaten.</div>
+  </section>
+
+</div>
+<script src="ppt-assets/runtime.js"></script>
+</body></html>
