@@ -214,6 +214,9 @@ pub struct Grove {
     /// When the last git-status poll was kicked off, for the ~5s throttle in
     /// `Msg::Tick`. `None` before the first poll.
     pub last_git_poll: Option<std::time::Instant>,
+    /// Set while a git-status poll thread is running; guards against
+    /// spawning an overlapping poll if the previous one is still in flight.
+    pub git_poll_inflight: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Install + version status for a single coding-agent tool in the Settings

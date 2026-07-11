@@ -55,6 +55,32 @@ fn attention_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Delete every file under the attention dir. Call once on startup, before
+/// any session is spawned.
+///
+/// Attention files are keyed by an in-process session id counter
+/// (`NEXT_SESSION_ID`) that resets to 0 each run, so they are only
+/// meaningful within the run that created them: a session reattached from a
+/// previous run never gets hook/notify injection (see `prepare`) and so
+/// never touches its old file, and a *new* session in this run can reuse a
+/// low id and would otherwise read a stale state file left over from a
+/// previous run. Best-effort: a failure here just means leftover files
+/// linger, never a startup error.
+pub fn cleanup_stale_files() {
+    if let Ok(dir) = attention_dir() {
+        clear_dir(&dir);
+    }
+}
+
+fn clear_dir(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let _ = std::fs::remove_file(entry.path());
+    }
+}
+
 /// Prepare hook/notify injection for a freshly spawned session, if this
 /// agent/platform combination supports it. Returns `None` for OpenCode,
 /// Terminal, and (v1) Windows — those sessions keep the existing
@@ -273,6 +299,25 @@ mod tests {
         // The file itself must still exist (truncated, not removed) so hooks
         // can keep appending to the same path.
         assert!(path.exists());
+    }
+
+    // ── clear_dir (startup cleanup) ──────────────────────────────────────────
+
+    #[test]
+    fn clear_dir_removes_files_but_keeps_the_dir() {
+        let dir = tmp_state_file("cleanup").parent().unwrap().to_path_buf();
+        std::fs::write(dir.join("0.state"), "needs-you\n").unwrap();
+        std::fs::write(dir.join("1.claude-settings.json"), "{}").unwrap();
+        clear_dir(&dir);
+        assert!(dir.exists());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn clear_dir_missing_dir_is_a_silent_noop() {
+        let dir = std::env::temp_dir().join("grove_test_attention_missing_dir_xyz");
+        let _ = std::fs::remove_dir_all(&dir);
+        clear_dir(&dir); // must not panic
     }
 
     // ── claude_settings_json ─────────────────────────────────────────────────

@@ -21,6 +21,11 @@ use std::time::Duration;
 
 impl Grove {
     pub fn new() -> Self {
+        // Attention files are only meaningful within the run that created
+        // them (see `attention::cleanup_stale_files`) — clear leftovers from
+        // a previous run before any session is spawned, so a reused id
+        // can't read a stale state file.
+        crate::attention::cleanup_stale_files();
         // Compute initial PTY dimensions from the default window size (1280×800).
         // Corrected on the first `WindowResized` event after startup.
         let window_size = iced::Size::new(1280.0, 800.0);
@@ -99,6 +104,7 @@ impl Grove {
             show_changelog: false,
             git_state: Default::default(),
             last_git_poll: None,
+            git_poll_inflight: Default::default(),
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -587,6 +593,7 @@ impl Grove {
                     // Focus this tile; no selection tracking in grid view.
                     self.grid_focused = Some(si);
                     self.app.active_session = Some(si);
+                    self.acknowledge_session(si);
                     self.pty_selection = None;
                     return Task::none();
                 }
@@ -1140,6 +1147,7 @@ impl Grove {
                 let si = self.tile_order[tile_idx];
                 self.grid_focused = Some(si);
                 self.app.active_session = Some(si);
+                self.acknowledge_session(si);
                 self.grid_drag = Some(GridDrag {
                     source_idx: tile_idx,
                     hover_idx: tile_idx,
@@ -1167,6 +1175,7 @@ impl Grove {
                 self.app.active_session = Some(si);
                 self.leave_terminal_tab();
                 self.grid_focused = Some(si);
+                self.acknowledge_session(si);
                 // Temporarily exit grid so zen has a single-session workspace.
                 self.grid_view = false;
                 self.grid_view_before_zen = true;
@@ -1903,6 +1912,7 @@ impl Grove {
             let si = self.tile_order[pos];
             self.app.active_session = Some(si);
             self.sync_grid_focus();
+            self.acknowledge_session(si);
             return;
         }
         if self.app.sessions.is_empty() {
@@ -1923,6 +1933,7 @@ impl Grove {
             if let Some(&si) = self.tile_order.get(n) {
                 self.app.active_session = Some(si);
                 self.sync_grid_focus();
+                self.acknowledge_session(si);
             }
             return;
         }
@@ -2644,9 +2655,14 @@ impl Grove {
     /// worktrees currently visible in the tree — i.e. belonging to an
     /// expanded project — off the UI thread, and stash the results in
     /// `git_state` for `tree_view` to read on the next frame. Never runs more
-    /// than once per throttle window and never blocks `update()`: the actual
-    /// git calls happen inside the spawned thread.
+    /// than once per throttle window, never overlaps a still-running poll,
+    /// and never blocks `update()`: the actual git calls happen inside the
+    /// spawned thread. Skipped entirely unless the tree view is the active
+    /// sidebar view, since its suffix is the only consumer of `git_state`.
     fn maybe_poll_git_state(&mut self) {
+        if !matches!(self.sidebar_view, SidebarView::Tree) {
+            return;
+        }
         let now = std::time::Instant::now();
         let due = self
             .last_git_poll
@@ -2660,7 +2676,22 @@ impl Grove {
         if paths.is_empty() {
             return;
         }
+        if self
+            .git_poll_inflight
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            // Previous poll is still running — skip this tick rather than
+            // overlap it.
+            return;
+        }
         let handle = self.git_state.clone();
+        let inflight = self.git_poll_inflight.clone();
         std::thread::spawn(move || {
             let mut fresh = std::collections::HashMap::new();
             let mut stale = Vec::new();
@@ -2681,6 +2712,7 @@ impl Grove {
                     g.remove(&path);
                 }
             }
+            inflight.store(false, std::sync::atomic::Ordering::Release);
         });
     }
 
