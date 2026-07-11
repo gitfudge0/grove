@@ -1,4 +1,5 @@
 use crate::agent::Agent;
+use crate::attention::{self, AttentionFiles};
 use crate::session_meta::{self, SessionMeta};
 use crate::tmux;
 use anyhow::Result;
@@ -50,6 +51,11 @@ pub struct Session {
     pub dirty: Arc<AtomicBool>,
     pub status: Arc<Mutex<SessionStatus>>,
     pub last_output_at: Arc<Mutex<Instant>>,
+    /// Claude/Codex attention-signal files (see `attention` module), when the
+    /// hook/notify injection ran for this session. `None` for OpenCode,
+    /// Terminal, Windows (v1), or a reattached session — those sessions
+    /// render the existing plain running/idle baseline.
+    pub attention: Option<AttentionFiles>,
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
@@ -82,30 +88,52 @@ impl Session {
         cwd: &str,
         use_tmux: bool,
     ) -> Result<Self> {
+        // Allocated up front (rather than inside `launch_pty`) so the
+        // attention-signal state file / Claude settings file can be keyed to
+        // this session's id before the agent process is even spawned.
+        let id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+        let attention = attention::prepare(agent, id);
         if use_tmux {
-            Self::spawn_tmux(label, project, wt_path, agent, args, cwd)
+            Self::spawn_tmux(id, label, project, wt_path, agent, args, cwd, attention)
         } else {
-            Self::spawn_native(label, project, wt_path, agent, args, cwd)
+            Self::spawn_native(id, label, project, wt_path, agent, args, cwd, attention)
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_tmux(
+        id: u64,
         label: String,
         project: String,
         wt_path: String,
         agent: Agent,
         args: &[String],
         cwd: &str,
+        attention: Option<(Vec<String>, AttentionFiles)>,
     ) -> Result<Self> {
         let rows = INIT_ROWS;
         let cols = INIT_COLS;
+        let (extra_args, attention) = match attention {
+            Some((extra, files)) => (extra, Some(files)),
+            None => (Vec::new(), None),
+        };
+        let all_args: Vec<String> = args.iter().cloned().chain(extra_args).collect();
+        let env: Vec<(String, String)> = attention
+            .as_ref()
+            .map(|f| {
+                vec![(
+                    attention::STATE_FILE_ENV.to_string(),
+                    f.state_file.display().to_string(),
+                )]
+            })
+            .unwrap_or_default();
 
         // Create the persistent tmux session, then attach a client to it via
         // our embedded PTY. The agent process lives inside tmux, not as a
         // direct child of grove, so it survives grove restarts.
         let n = tmux::next_free_n(&wt_path, agent);
         let tmux_name = tmux::make_name(&wt_path, agent, n);
-        tmux::new_session(&tmux_name, cwd, rows, cols, &agent.program(), args)?;
+        tmux::new_session(&tmux_name, cwd, rows, cols, &agent.program(), &all_args, &env)?;
         // Without the sidecar the session can't be rediscovered after a grove
         // restart — kill the tmux session rather than orphan it.
         if let Err(e) = session_meta::write(
@@ -118,20 +146,30 @@ impl Session {
             },
         ) {
             tmux::kill_session(&tmux_name);
+            if let Some(f) = &attention {
+                attention::cleanup(f);
+            }
             return Err(e.context("failed to write session metadata"));
         }
 
-        Self::attach_tmux(label, project, wt_path, agent, tmux_name, rows, cols)
+        Self::attach_tmux(id, label, project, wt_path, agent, tmux_name, rows, cols, attention)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_native(
+        id: u64,
         label: String,
         project: String,
         wt_path: String,
         agent: Agent,
         args: &[String],
         cwd: &str,
+        attention: Option<(Vec<String>, AttentionFiles)>,
     ) -> Result<Self> {
+        let (extra_args, attention) = match attention {
+            Some((extra, files)) => (extra, Some(files)),
+            None => (Vec::new(), None),
+        };
         let (program, prefix_args) = agent.invocation();
         let mut cmd = CommandBuilder::new(program);
         for a in prefix_args {
@@ -140,13 +178,20 @@ impl Session {
         for a in args {
             cmd.arg(a);
         }
+        for a in &extra_args {
+            cmd.arg(a);
+        }
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
         // Ensure the agent emits UTF-8 even when grove is launched from a macOS
         // .app bundle (which inherits no UTF-8 locale from the shell).
         cmd.env("LC_ALL", "en_US.UTF-8");
+        if let Some(f) = &attention {
+            cmd.env(attention::STATE_FILE_ENV, f.state_file.display().to_string());
+        }
 
         Self::launch_pty(
+            id,
             label,
             project,
             wt_path,
@@ -155,6 +200,7 @@ impl Session {
             cmd,
             INIT_ROWS,
             INIT_COLS,
+            attention,
         )
     }
 
@@ -181,7 +227,9 @@ impl Session {
         cmd.env("TERM", "xterm-256color");
         cmd.env("LC_ALL", "en_US.UTF-8");
 
+        let id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
         Self::launch_pty(
+            id,
             label,
             project,
             wt_path,
@@ -190,17 +238,24 @@ impl Session {
             cmd,
             INIT_ROWS,
             INIT_COLS,
+            None,
         )
     }
 
     /// Re-attach to an existing tmux session previously created by grove.
+    /// Never re-runs hook/notify injection — the backing agent process was
+    /// already spawned (possibly in a prior grove run), so this session shows
+    /// the plain running/idle baseline rather than an attention signal.
     pub fn attach_existing(d: tmux::DiscoveredSession) -> Result<Self> {
+        let id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
         Self::attach_tmux(
-            d.label, d.project, d.wt_path, d.agent, d.name, INIT_ROWS, INIT_COLS,
+            id, d.label, d.project, d.wt_path, d.agent, d.name, INIT_ROWS, INIT_COLS, None,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn attach_tmux(
+        id: u64,
         label: String,
         project: String,
         wt_path: String,
@@ -208,6 +263,7 @@ impl Session {
         tmux_name: String,
         rows: u16,
         cols: u16,
+        attention: Option<AttentionFiles>,
     ) -> Result<Self> {
         tmux::configure_embedded_session(&tmux_name);
 
@@ -228,6 +284,7 @@ impl Session {
         cmd.env("LC_ALL", "en_US.UTF-8");
 
         Self::launch_pty(
+            id,
             label,
             project,
             wt_path,
@@ -236,10 +293,13 @@ impl Session {
             cmd,
             rows,
             cols,
+            attention,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn launch_pty(
+        id: u64,
         label: String,
         project: String,
         wt_path: String,
@@ -248,6 +308,7 @@ impl Session {
         cmd: CommandBuilder,
         rows: u16,
         cols: u16,
+        attention: Option<AttentionFiles>,
     ) -> Result<Self> {
         let pty_system = NativePtySystem::default();
         let pair = pty_system.openpty(PtySize {
@@ -306,7 +367,7 @@ impl Session {
 
         let branch = crate::git::current_branch(&wt_path);
         Ok(Session {
-            id: NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed),
+            id,
             label,
             project,
             wt_path,
@@ -317,6 +378,7 @@ impl Session {
             dirty,
             status,
             last_output_at,
+            attention,
             writer,
             master: pair.master,
             child,
@@ -336,7 +398,9 @@ impl Session {
     }
 
     /// Explicit user kill. Tmux sessions destroy their persistent backing
-    /// session; native sessions kill the direct child process.
+    /// session; native sessions kill the direct child process. Either way the
+    /// session is gone for good, so its attention-signal files (if any) are
+    /// cleaned up here too — best effort, mirroring `session_meta::delete`.
     pub fn kill(&mut self) {
         match &self.backend {
             SessionBackend::Tmux { name } => {
@@ -344,6 +408,9 @@ impl Session {
                 session_meta::delete(name);
             }
             SessionBackend::Native => Self::kill_native(&self.child),
+        }
+        if let Some(f) = &self.attention {
+            attention::cleanup(f);
         }
     }
 
@@ -374,6 +441,23 @@ impl Session {
     #[allow(dead_code)]
     pub fn is_running(&self) -> bool {
         self.status() == SessionStatus::Running
+    }
+
+    /// This session's deterministic attention signal (see `attention`
+    /// module), if a hook/notify state file was wired up for it. `None` means
+    /// "no signal" — the caller falls back to the screen-scraping heuristic.
+    pub fn attention_state(&self) -> Option<attention::AttentionState> {
+        attention::read_state(&self.attention.as_ref()?.state_file)
+    }
+
+    /// Clear this session's recorded attention signal back to baseline —
+    /// called when the user focuses/views it, mirroring
+    /// `gui::activity::Tracker::acknowledge`. No-op if this session has no
+    /// attention-signal file.
+    pub fn acknowledge_attention(&self) {
+        if let Some(f) = &self.attention {
+            attention::acknowledge(&f.state_file);
+        }
     }
 
     pub fn send(&mut self, bytes: &[u8]) {

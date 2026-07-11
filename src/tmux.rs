@@ -64,7 +64,9 @@ fn sh_quote(s: &str) -> String {
     out
 }
 
-/// Create a detached tmux session running `program args...` in `cwd`.
+/// Create a detached tmux session running `program args...` in `cwd`, with
+/// `env` set for that process only (via a shell env-prefix, not a tmux
+/// session option — see `new_session`'s doc comment on `cmdline`).
 pub fn new_session(
     name: &str,
     cwd: &str,
@@ -72,8 +74,19 @@ pub fn new_session(
     cols: u16,
     program: &str,
     args: &[String],
+    env: &[(String, String)],
 ) -> Result<()> {
-    let mut cmdline = sh_quote(program);
+    // tmux runs a single-string command via the user's shell (`$SHELL -c
+    // <cmdline>`), so a leading `KEY='value' ...` env prefix is understood by
+    // any POSIX shell without needing tmux's own (3.2+-only) `-e` flag.
+    let mut cmdline = String::new();
+    for (k, v) in env {
+        cmdline.push_str(k);
+        cmdline.push('=');
+        cmdline.push_str(&sh_quote(v));
+        cmdline.push(' ');
+    }
+    cmdline.push_str(&sh_quote(program));
     for a in args {
         cmdline.push(' ');
         cmdline.push_str(&sh_quote(a));

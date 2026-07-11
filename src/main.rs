@@ -1,5 +1,6 @@
 mod agent;
 mod app;
+mod attention;
 mod clipboard;
 mod env_path;
 mod git;
