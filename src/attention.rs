@@ -58,14 +58,15 @@ fn attention_dir() -> Result<PathBuf> {
 /// Delete every file under the attention dir. Call once on startup, before
 /// any session is spawned.
 ///
-/// Attention files are keyed by an in-process session id counter
-/// (`NEXT_SESSION_ID`) that resets to 0 each run, so they are only
-/// meaningful within the run that created them: a session reattached from a
-/// previous run never gets hook/notify injection (see `prepare`) and so
-/// never touches its old file, and a *new* session in this run can reuse a
-/// low id and would otherwise read a stale state file left over from a
-/// previous run. Best-effort: a failure here just means leftover files
-/// linger, never a startup error.
+/// This is purely garbage collection of previous runs' files. Cross-run
+/// collisions are prevented by the pid prefix in the filenames
+/// (`{run}-{session_id}.state`): `NEXT_SESSION_ID` resets to 0 each run,
+/// but each run's pid is unique, so two runs with the same session id still
+/// produce distinct paths. Surviving tmux agents from prior runs will
+/// recreate their old state files via `>>` appends, but those recreated
+/// files are orphans — nobody in the current run reads them — and they are
+/// collected on the next startup. Best-effort: a failure here just means
+/// leftover files linger, never a startup error.
 pub fn cleanup_stale_files() {
     if let Ok(dir) = attention_dir() {
         clear_dir(&dir);
@@ -126,11 +127,13 @@ pub fn prepare(agent: Agent, session_id: u64) -> Option<(Vec<String>, AttentionF
 }
 
 fn state_file_path(session_id: u64) -> Result<PathBuf> {
-    Ok(attention_dir()?.join(format!("{session_id}.state")))
+    let run = std::process::id();
+    Ok(attention_dir()?.join(format!("{run}-{session_id}.state")))
 }
 
 fn settings_file_path(session_id: u64) -> Result<PathBuf> {
-    Ok(attention_dir()?.join(format!("{session_id}.claude-settings.json")))
+    let run = std::process::id();
+    Ok(attention_dir()?.join(format!("{run}-{session_id}.claude-settings.json")))
 }
 
 /// Shell one-liner that appends `word` to the state file named by
@@ -387,9 +390,12 @@ mod tests {
         let (args, files) = prepare(Agent::Claude, 999_001).expect("claude should prepare");
         assert_eq!(args.len(), 2);
         assert_eq!(args[0], "--settings");
+        let pid = std::process::id().to_string();
+        assert!(args[1].contains(&pid));
         assert!(args[1].ends_with("999001.claude-settings.json"));
         assert!(files.settings_file.is_some());
-        assert!(files.state_file.ends_with("999001.state"));
+        assert!(files.state_file.to_string_lossy().contains(&pid));
+        assert!(files.state_file.ends_with(format!("{pid}-999001.state")));
         // The settings file must actually exist on disk with valid JSON.
         let contents = std::fs::read_to_string(files.settings_file.as_ref().unwrap()).unwrap();
         assert!(serde_json::from_str::<serde_json::Value>(&contents).is_ok());
@@ -419,5 +425,21 @@ mod tests {
     fn prepare_is_disabled_on_windows() {
         assert!(prepare(Agent::Claude, 999_005).is_none());
         assert!(prepare(Agent::Codex, 999_006).is_none());
+    }
+
+    // ── path format ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn state_file_paths_contain_pid_prefix_and_differ_by_session_id() {
+        let pid = std::process::id().to_string();
+        let p1 = state_file_path(1).unwrap();
+        let p2 = state_file_path(2).unwrap();
+        let name1 = p1.file_name().unwrap().to_string_lossy();
+        let name2 = p2.file_name().unwrap().to_string_lossy();
+        // Each name must be "{pid}-{session_id}.state".
+        assert_eq!(name1.as_ref(), format!("{pid}-1.state"));
+        assert_eq!(name2.as_ref(), format!("{pid}-2.state"));
+        // Different session ids must produce different paths.
+        assert_ne!(p1, p2);
     }
 }
