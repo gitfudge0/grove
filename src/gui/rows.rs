@@ -462,7 +462,39 @@ pub fn session_row<'a>(
         })
         .into();
 
-    clickable_row(main_row, ROW_H, active, Msg::SelectSession(idx))
+    let row_el = clickable_row(main_row, ROW_H, active, Msg::SelectSession(idx));
+
+    // WaitingForInput: amber tint background + 3px solid left accent bar.
+    // The bar is overlaid via stack! so it never shifts the row content.
+    if matches!(state, ActivityState::WaitingForInput) {
+        let tint = Color {
+            a: 0.12,
+            ..c::AMBER()
+        };
+        let bar: Element<'a, Msg> = container(
+            container(Space::with_width(3.0))
+                .width(3.0)
+                .height(Length::Fill)
+                .style(|_| container::Style {
+                    background: Some(Background::Color(c::AMBER())),
+                    ..Default::default()
+                }),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(iced::Alignment::Start)
+        .into();
+        container(iced::widget::stack![row_el, bar])
+            .height(ROW_H)
+            .width(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(tint)),
+                ..Default::default()
+            })
+            .into()
+    } else {
+        row_el
+    }
 }
 
 /// One row in the terminal tab's sidebar list. Shows the terminal's label and
@@ -622,8 +654,19 @@ pub fn state_glyph<'a>(state: ActivityState, tick: u32) -> Element<'a, Msg> {
     let inner: Element<'a, Msg> = match state {
         ActivityState::Working => spinner(11.0, c::GREEN(), tick),
         ActivityState::WaitingForInput => {
-            let on = (tick / 8).is_multiple_of(2);
-            icon("question", 11.0, if on { c::AMBER() } else { c::FG_MUTE() })
+            // Gentle opacity pulse (~2s): triangle wave over 32 ticks,
+            // alpha oscillates between 0.55 and 1.0. No on/off blink.
+            let phase = (tick % 32) as f32;
+            let t = (phase - 16.0).abs() / 16.0;
+            let alpha = 0.55 + 0.45 * t;
+            icon(
+                "question",
+                11.0,
+                Color {
+                    a: alpha,
+                    ..c::AMBER()
+                },
+            )
         }
         ActivityState::Done => icon("check", 11.0, c::GREEN()),
         ActivityState::Idle => icon("dot", 11.0, c::FG_MUTE()),
@@ -962,18 +1005,50 @@ fn activity_row_inner<'a>(
         container(inner).height(h).width(Length::Fill).into()
     };
 
-    container(row_btn)
-        .height(h)
+    let waiting = matches!(state, ActivityState::WaitingForInput);
+    let bg = if waiting {
+        Some(Background::Color(Color {
+            a: 0.12,
+            ..c::AMBER()
+        }))
+    } else if active {
+        Some(Background::Color(c::BG_HL()))
+    } else {
+        None
+    };
+
+    if waiting {
+        let bar: Element<'a, Msg> = container(
+            container(Space::with_width(3.0))
+                .width(3.0)
+                .height(Length::Fill)
+                .style(|_| container::Style {
+                    background: Some(Background::Color(c::AMBER())),
+                    ..Default::default()
+                }),
+        )
         .width(Length::Fill)
-        .style(move |_| container::Style {
-            background: if active {
-                Some(Background::Color(c::BG_HL()))
-            } else {
-                None
-            },
-            ..Default::default()
-        })
-        .into()
+        .height(Length::Fill)
+        .align_x(iced::Alignment::Start)
+        .into();
+        container(iced::widget::stack![row_btn, bar])
+            .height(h)
+            .width(Length::Fill)
+            .style(move |_| container::Style {
+                background: bg,
+                ..Default::default()
+            })
+            .into()
+    } else {
+        container(row_btn)
+            .height(h)
+            .width(Length::Fill)
+            .style(move |_| container::Style {
+                background: bg,
+                ..Default::default()
+            })
+            .into()
+    }
 }
 
 /// Format a Duration into the short relative-time labels the activity stream
