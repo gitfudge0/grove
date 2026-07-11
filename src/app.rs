@@ -194,6 +194,7 @@ pub fn onboarding_modal() -> Modal {
         agent_sel: 0,
         backend_tmux: true,
         perms_skip: false,
+        name_focused: false,
     }
 }
 
@@ -321,6 +322,9 @@ pub enum Modal {
         /// prompts. Persisted as an explicit store value on finish; "safe"
         /// (`false`) is preselected.
         perms_skip: bool,
+        /// Project step only: Tab alternates keyboard focus between the path
+        /// and name fields. `false` = path (the default on entering the step).
+        name_focused: bool,
     },
 }
 
@@ -1679,6 +1683,36 @@ impl App {
         }
     }
 
+    /// Reset Tab's toggle target to the path field. Called whenever the
+    /// project step is (re-)entered, so a stale toggle from a previous visit
+    /// doesn't leave the first Tab press landing on the name field.
+    pub fn onboard_reset_project_focus(&mut self) {
+        if let Modal::Onboarding { name_focused, .. } = &mut self.modal {
+            *name_focused = false;
+        }
+    }
+
+    /// Tab in the project step: alternate focus between the path and name
+    /// fields. Returns `true` if focus moved to the name field (the caller
+    /// then skips path-completion); `false` if it's on the path field (where
+    /// the caller runs the existing directory completion). No name field
+    /// (path not yet a valid directory) means there's nothing to alternate
+    /// to, so this always reports the path field.
+    pub fn onboard_toggle_project_focus(&mut self) -> bool {
+        if let Modal::Onboarding {
+            name, name_focused, ..
+        } = &mut self.modal
+        {
+            if name.is_none() {
+                *name_focused = false;
+                return false;
+            }
+            *name_focused = !*name_focused;
+            return *name_focused;
+        }
+        false
+    }
+
     /// Complete the path from the selected directory match (Tab in the project
     /// step).
     pub fn onboard_dir_pick(&mut self) {
@@ -2196,8 +2230,8 @@ fn shellexpand_tilde(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_backend_for, first_run_modal, needs_tmux_choice, App, EffectiveBackend,
-        FirstRunModal, HashMap, Modal, OnboardStep, Pane, Session, Store,
+        effective_backend_for, first_run_modal, needs_tmux_choice, onboarding_modal, App,
+        EffectiveBackend, FirstRunModal, HashMap, Modal, OnboardStep, Pane, Session, Store,
     };
     use super::{Toast, ToastKind};
     use crate::session::{SessionBackend, SessionStatus};
@@ -2328,6 +2362,45 @@ mod tests {
                 assert_eq!(s.index_in(tmux), i);
             }
         }
+    }
+
+    #[test]
+    fn onboard_tab_toggles_project_focus_only_when_name_field_exists() {
+        let mut app = test_app(vec![]);
+        app.modal = onboarding_modal();
+        // Path not yet resolved to a directory: no name field to toggle to.
+        assert!(!app.onboard_toggle_project_focus());
+        assert!(!app.onboard_toggle_project_focus());
+        // Once a name is inferred, Tab alternates path <-> name.
+        if let Modal::Onboarding { name, .. } = &mut app.modal {
+            *name = Some("repo".into());
+        }
+        assert!(app.onboard_toggle_project_focus());
+        assert!(!app.onboard_toggle_project_focus());
+        assert!(app.onboard_toggle_project_focus());
+        // Losing the name field again snaps back to the path field.
+        if let Modal::Onboarding { name, .. } = &mut app.modal {
+            *name = None;
+        }
+        assert!(!app.onboard_toggle_project_focus());
+    }
+
+    #[test]
+    fn onboard_reset_project_focus_clears_stale_toggle() {
+        let mut app = test_app(vec![]);
+        app.modal = onboarding_modal();
+        if let Modal::Onboarding {
+            name, name_focused, ..
+        } = &mut app.modal
+        {
+            *name = Some("repo".into());
+            *name_focused = true;
+        }
+        app.onboard_reset_project_focus();
+        let Modal::Onboarding { name_focused, .. } = &app.modal else {
+            unreachable!()
+        };
+        assert!(!name_focused);
     }
 
     #[test]
