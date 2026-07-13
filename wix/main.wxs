@@ -36,7 +36,9 @@
     </Directory>
 
     <DirectoryRef Id="APPLICATIONFOLDER">
-      <Component Id="GroveExecutable" Guid="*">
+      <!-- Explicit GUID: WiX can't auto-generate one for a component that
+           mixes a file with a registry KeyPath (CNDL0230). -->
+      <Component Id="GroveExecutable" Guid="b721fe54-d3a1-4745-8e9b-d56c78ecc6fa">
         <File
           Id="GroveEXE"
           Source="target\release\grove.exe" />

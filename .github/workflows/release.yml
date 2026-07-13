@@ -110,7 +110,13 @@ jobs:
             codesign --force --deep -s - "$APP"
             # Wrap the .app in a .dmg for distribution.
             DMG="$OUT/Grove-${VERSION}-macos-${{ matrix.arch }}.dmg"
-            hdiutil create -volname "Grove" -srcfolder "$APP" -ov -format UDZO "$DMG"
+            # hdiutil intermittently fails with "Resource busy" on GitHub
+            # runners (Spotlight/quarantine racing on the fresh .app) — retry.
+            for i in 1 2 3 4 5; do
+              hdiutil create -volname "Grove" -srcfolder "$APP" -ov -format UDZO "$DMG" && break
+              [ "$i" = 5 ] && exit 1
+              sleep 10
+            done
             echo "Built $DMG"
           else
             DEB="$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' | head -n1)"
