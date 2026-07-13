@@ -69,6 +69,19 @@ pub struct Store {
     /// config files load with an empty order.
     #[serde(default)]
     pub grid_order: Vec<String>,
+    /// Whether the "system" theme option is active: the active theme tracks
+    /// the OS light/dark setting instead of a fixed choice. When true,
+    /// `theme_dark`/`theme_light` supply the concrete theme for each mode.
+    #[serde(default)]
+    pub theme_follow_system: bool,
+    /// The user's chosen dark-mode theme, used both directly and as the dark
+    /// side of "system" mode. `#[serde(default)]` so old config files load.
+    #[serde(default)]
+    pub theme_dark: Option<String>,
+    /// The user's chosen light-mode theme, used both directly and as the
+    /// light side of "system" mode. `#[serde(default)]` so old config files load.
+    #[serde(default)]
+    pub theme_light: Option<String>,
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -185,6 +198,9 @@ mod tests {
             skipped_version: None,
             dangerously_skip_permissions_enabled: Some(false),
             grid_order: vec![],
+            theme_follow_system: true,
+            theme_dark: Some("tokyonight".into()),
+            theme_light: Some("tokyonight-day".into()),
         };
 
         let json = serde_json::to_string_pretty(&original).expect("serialize");
@@ -200,6 +216,9 @@ mod tests {
         assert!((recovered.sidebar_width.unwrap() - 360.0).abs() < f32::EPSILON);
         assert!(recovered.onboarded);
         assert_eq!(recovered.dangerously_skip_permissions_enabled, Some(false));
+        assert!(recovered.theme_follow_system);
+        assert_eq!(recovered.theme_dark.as_deref(), Some("tokyonight"));
+        assert_eq!(recovered.theme_light.as_deref(), Some("tokyonight-day"));
     }
 
     /// `Store::default()` deserializes from an empty JSON object — the
@@ -213,6 +232,9 @@ mod tests {
         assert!(store.tmux_enabled.is_none());
         assert!(store.ui_zoom.is_none());
         assert!(store.sidebar_width.is_none());
+        assert!(!store.theme_follow_system);
+        assert!(store.theme_dark.is_none());
+        assert!(store.theme_light.is_none());
         assert!(
             !store.onboarded,
             "a fresh config must report onboarded=false so the wizard runs"

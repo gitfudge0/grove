@@ -43,6 +43,7 @@ fn branch_chip<'a>(branch: &str, subtle: bool) -> Element<'a, Msg> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn project_row<'a>(
     idx: usize,
     name: &str,
@@ -51,6 +52,7 @@ pub fn project_row<'a>(
     is_git: bool,
     rollup: Option<ActivityState>,
     tick: u32,
+    pulse: f32,
 ) -> Element<'a, Msg> {
     let twist = if expanded { "chev-down" } else { "chev-right" };
     let has_sessions = count > 0;
@@ -107,6 +109,7 @@ pub fn project_row<'a>(
         text_color: c::FG_DIM(),
         border: Border::default(),
         shadow: Shadow::default(),
+        snap: false,
     });
 
     let add_btn = button(
@@ -131,6 +134,7 @@ pub fn project_row<'a>(
                 radius: Radius::from(4.0),
             },
             shadow: Shadow::default(),
+            snap: false,
         }
     });
 
@@ -156,6 +160,7 @@ pub fn project_row<'a>(
                 radius: Radius::from(4.0),
             },
             shadow: Shadow::default(),
+            snap: false,
         }
     });
 
@@ -181,12 +186,13 @@ pub fn project_row<'a>(
                 radius: Radius::from(4.0),
             },
             shadow: Shadow::default(),
+            snap: false,
         }
     });
 
     let rollup_el: Element<'a, Msg> = match rollup {
-        Some(st) => state_glyph(st, tick),
-        None => Space::with_width(Length::Fixed(0.0)).into(),
+        Some(st) => state_glyph(st, tick, pulse),
+        None => Space::new().width(Length::Fixed(0.0)).into(),
     };
     // Worktrees and worktree-lifecycle scripts are git-only — omit the add and
     // settings buttons for non-git projects.
@@ -250,6 +256,7 @@ pub fn worktree_row<'a>(
     has_run: bool,
     rollup: Option<ActivityState>,
     tick: u32,
+    pulse: f32,
     available: &[Agent],
     git_suffix: Option<String>,
 ) -> Element<'a, Msg> {
@@ -331,6 +338,7 @@ pub fn worktree_row<'a>(
         text_color: if active { c::FG() } else { c::FG_DIM() },
         border: Border::default(),
         shadow: Shadow::default(),
+        snap: false,
     });
 
     // The `main` tag and the hover spawn icons share this one fixed
@@ -358,12 +366,12 @@ pub fn worktree_row<'a>(
             })
             .into()
     } else {
-        Space::with_width(Length::Fixed(0.0)).into()
+        Space::new().width(Length::Fixed(0.0)).into()
     };
 
     let rollup_el: Element<'a, Msg> = match rollup {
-        Some(st) => state_glyph(st, tick),
-        None => Space::with_width(Length::Fixed(0.0)).into(),
+        Some(st) => state_glyph(st, tick, pulse),
+        None => Space::new().width(Length::Fixed(0.0)).into(),
     };
     // Compact git-state suffix (`*` dirty, `↑N`/`↓M` ahead/behind) — muted so
     // it reads as secondary metadata, not competing with the name or the
@@ -374,7 +382,7 @@ pub fn worktree_row<'a>(
             .color(c::FG_MUTE())
             .wrapping(iced::widget::text::Wrapping::None)
             .into(),
-        None => Space::with_width(Length::Fixed(0.0)).into(),
+        None => Space::new().width(Length::Fixed(0.0)).into(),
     };
     container(
         row![left_btn, git_suffix_el, rollup_el, actions]
@@ -394,6 +402,7 @@ pub fn worktree_row<'a>(
     .into()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn session_row<'a>(
     idx: usize,
     s: &Session,
@@ -402,6 +411,7 @@ pub fn session_row<'a>(
     pending_kill: bool,
     state: ActivityState,
     tick: u32,
+    pulse: f32,
 ) -> Element<'a, Msg> {
     let agent_color = if active {
         c::CYAN()
@@ -450,7 +460,7 @@ pub fn session_row<'a>(
         action_mini("close", Msg::RequestKillSession(idx))
     };
 
-    let main_row: Element<'a, Msg> = row![state_glyph(state, tick), meta, close_btn,]
+    let main_row: Element<'a, Msg> = row![state_glyph(state, tick, pulse), meta, close_btn,]
         .spacing(8)
         .align_y(iced::Alignment::Center)
         .padding(Padding {
@@ -472,7 +482,7 @@ pub fn session_row<'a>(
             ..c::AMBER()
         };
         let bar: Element<'a, Msg> = container(
-            container(Space::with_width(3.0))
+            container(Space::new().width(3.0))
                 .width(3.0)
                 .height(Length::Fill)
                 .style(|_| container::Style {
@@ -541,7 +551,7 @@ pub fn terminal_row<'a>(
     let close_btn: Element<'a, Msg> = if show_close {
         action_mini("close", Msg::CloseHomeTerminal(idx))
     } else {
-        Space::with_width(Length::Fixed(0.0)).into()
+        Space::new().width(Length::Fixed(0.0)).into()
     };
 
     let main_row: Element<'a, Msg> = row![meta, close_btn]
@@ -647,18 +657,16 @@ pub(super) fn truncate_ellipsis(s: &str, max_chars: usize) -> String {
 
 /// Status glyph replacing the old state dot. All states render as font-free
 /// SVG icons (the bundled fonts carry no arc/braille/circle glyphs). `tick` is
-/// `Grove::blink_tick` (~60ms): the Working arc spins continuously, and the
-/// waiting glyph blinks at ~1Hz (8 ticks on, 8 off) by dimming — never hiding
-/// — the icon, so row layout stays stable.
-pub fn state_glyph<'a>(state: ActivityState, tick: u32) -> Element<'a, Msg> {
+/// `Grove::blink_tick` (~60ms): the Working arc spins continuously. `pulse`
+/// is `Grove::attention_pulse()` (0 = opaque, 1 = max dim): the waiting glyph
+/// pulses by dimming — never hiding — the icon, so row layout stays stable.
+pub fn state_glyph<'a>(state: ActivityState, tick: u32, pulse: f32) -> Element<'a, Msg> {
     let inner: Element<'a, Msg> = match state {
         ActivityState::Working => spinner(11.0, c::GREEN(), tick),
         ActivityState::WaitingForInput => {
-            // Gentle opacity pulse (~2s): triangle wave over 32 ticks,
-            // alpha oscillates between 0.55 and 1.0. No on/off blink.
-            let phase = (tick % 32) as f32;
-            let t = (phase - 16.0).abs() / 16.0;
-            let alpha = 0.55 + 0.45 * t;
+            // Gentle opacity pulse (~2s round trip): alpha eases between
+            // 1.0 and 0.55, driven by the attention `Animation`.
+            let alpha = 1.0 - 0.45 * pulse;
             icon(
                 "question",
                 11.0,
@@ -687,10 +695,10 @@ pub fn activity_group_header<'a>(
     let chev_el: Element<'a, Msg> = if on_toggle.is_some() {
         container(icon(chev, 9.0, c::FG_MUTE())).width(12).into()
     } else {
-        Space::with_width(Length::Fixed(0.0)).into()
+        Space::new().width(Length::Fixed(0.0)).into()
     };
 
-    let rule: Element<'a, Msg> = container(Space::with_height(1.0))
+    let rule: Element<'a, Msg> = container(Space::new().height(1.0))
         .height(1.0)
         .width(Length::Fill)
         .style(|_| container::Style {
@@ -749,6 +757,7 @@ pub fn activity_group_header<'a>(
                     text_color: c::FG_MUTE(),
                     border: Border::default(),
                     shadow: Shadow::default(),
+                    snap: false,
                 }
             })
             .into()
@@ -773,6 +782,7 @@ pub fn session_activity_row<'a>(
     spawn_coords: Option<(usize, usize)>,
     state: ActivityState,
     tick: u32,
+    pulse: f32,
     available: &[Agent],
 ) -> Element<'a, Msg> {
     activity_row_inner(
@@ -780,6 +790,7 @@ pub fn session_activity_row<'a>(
         Some(s),
         state,
         tick,
+        pulse,
         s.agent.label(),
         project,
         worktree,
@@ -849,6 +860,7 @@ pub fn worktree_activity_row<'a>(
             text_color: c::FG_DIM(),
             border: Border::default(),
             shadow: Shadow::default(),
+            snap: false,
         });
 
     // On hover the spawn chips occupy a fixed slot at the row's right edge
@@ -868,11 +880,11 @@ pub fn worktree_activity_row<'a>(
             })
             .into()
     } else {
-        Space::with_width(Length::Fixed(0.0)).into()
+        Space::new().width(Length::Fixed(0.0)).into()
     };
 
     let inner = row![
-        container(state_glyph(ActivityState::Exited, 0))
+        container(state_glyph(ActivityState::Exited, 0, 0.0))
             .width(14)
             .center_y(Length::Fill),
         label_btn,
@@ -907,6 +919,7 @@ fn activity_row_inner<'a>(
     session: Option<&Session>,
     state: ActivityState,
     tick: u32,
+    pulse: f32,
     agent_label: &str,
     project: &str,
     worktree: &str,
@@ -977,11 +990,11 @@ fn activity_row_inner<'a>(
     let close_btn: Element<'a, Msg> = match session_idx {
         Some(i) if pending_kill => action_mini_danger("check", Msg::KillSession(i)),
         Some(i) => action_mini("close", Msg::RequestKillSession(i)),
-        None => Space::with_width(Length::Fixed(0.0)).into(),
+        None => Space::new().width(Length::Fixed(0.0)).into(),
     };
 
     let inner = row![
-        container(state_glyph(state, tick))
+        container(state_glyph(state, tick, pulse))
             .width(14)
             .center_y(Length::Fill),
         container(body).width(Length::Fill).clip(true),
@@ -1019,7 +1032,7 @@ fn activity_row_inner<'a>(
 
     if waiting {
         let bar: Element<'a, Msg> = container(
-            container(Space::with_width(3.0))
+            container(Space::new().width(3.0))
                 .width(3.0)
                 .height(Length::Fill)
                 .style(|_| container::Style {

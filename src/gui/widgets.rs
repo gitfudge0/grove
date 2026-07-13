@@ -27,7 +27,7 @@ pub fn truncate_middle(s: &str, max: usize) -> String {
 }
 
 pub fn dot<'a>(color: Color) -> Element<'a, Msg> {
-    container(Space::with_width(7))
+    container(Space::new().width(7))
         .width(7)
         .height(7)
         .style(move |_| container::Style {
@@ -43,7 +43,7 @@ pub fn dot<'a>(color: Color) -> Element<'a, Msg> {
 }
 
 pub fn vline<'a>() -> Element<'a, Msg> {
-    container(Space::with_width(1))
+    container(Space::new().width(1))
         .width(1)
         .height(18)
         .style(|_| container::Style {
@@ -54,7 +54,7 @@ pub fn vline<'a>() -> Element<'a, Msg> {
 }
 
 pub fn divider_h<'a>(color: Color) -> Element<'a, Msg> {
-    container(Space::with_height(1))
+    container(Space::new().height(1))
         .width(Length::Fill)
         .height(1)
         .style(move |_| container::Style {
@@ -65,7 +65,7 @@ pub fn divider_h<'a>(color: Color) -> Element<'a, Msg> {
 }
 
 pub fn divider_v<'a>(color: Color) -> Element<'a, Msg> {
-    container(Space::with_width(1))
+    container(Space::new().width(1))
         .width(1)
         .height(Length::Fill)
         .style(move |_| container::Style {
@@ -116,6 +116,7 @@ pub fn seg_button<'a>(label: &str, active: bool, side: SegSide, msg: Msg) -> Ele
                     ..Border::default()
                 },
                 shadow: Shadow::default(),
+                snap: false,
             }
         })
         .into()
@@ -144,6 +145,7 @@ pub fn icon_btn<'a>(name: &'static str, msg: Msg) -> Element<'a, Msg> {
                 radius: Radius::from(4.0),
             },
             shadow: Shadow::default(),
+            snap: false,
         }
     })
     .into()
@@ -257,6 +259,7 @@ fn flat_action_btn<'a>(
                 text_color: if hovered { c::FG() } else { rest_color },
                 border: Border::default(),
                 shadow: Shadow::default(),
+                snap: false,
             }
         })
         .into()
@@ -296,6 +299,7 @@ fn mini_action_btn<'a>(
                 radius: Radius::from(4.0),
             },
             shadow: Shadow::default(),
+            snap: false,
         }
     })
     .into()
@@ -308,7 +312,7 @@ pub fn sidebar_agent_menu_overlay<'a>(
     is_main: bool,
     available: &[Agent],
 ) -> Element<'a, Msg> {
-    let backdrop = button(Space::new(Length::Fill, Length::Fill))
+    let backdrop = button(Space::new().width(Length::Fill).height(Length::Fill))
         .on_press(Msg::CloseAgentMenu)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -318,12 +322,13 @@ pub fn sidebar_agent_menu_overlay<'a>(
             text_color: Color::TRANSPARENT,
             border: Border::default(),
             shadow: Shadow::default(),
+            snap: false,
         });
 
     let positioned = column![
-        Space::with_height(top),
+        Space::new().height(top),
         row![
-            Space::with_width(Length::Fill),
+            Space::new().width(Length::Fill),
             agent_menu(proj, wt, is_main, available)
         ]
         .padding(Padding {
@@ -332,7 +337,7 @@ pub fn sidebar_agent_menu_overlay<'a>(
             left: 0.0,
             right: 8.0,
         }),
-        Space::with_height(Length::Fill),
+        Space::new().height(Length::Fill),
     ]
     .height(Length::Fill);
 
@@ -374,6 +379,7 @@ fn agent_menu<'a>(proj: usize, wt: usize, is_main: bool, available: &[Agent]) ->
                 },
                 border: Border::default(),
                 shadow: Shadow::default(),
+                snap: false,
             }
         })
     };
@@ -457,6 +463,7 @@ fn action_mini_styled<'a>(icon_name: &'static str, msg: Msg, danger: bool) -> El
                 radius: Radius::from(4.0),
             },
             shadow: Shadow::default(),
+            snap: false,
         }
     })
     .into()
@@ -532,6 +539,7 @@ pub fn tool_btn_toggle<'a>(
                 radius: Radius::from(4.0),
             },
             shadow: Shadow::default(),
+            snap: false,
         }
     })
     .into()
@@ -568,6 +576,7 @@ pub fn control_icon_btn<'a>(
                 radius: Radius::from(4.0),
             },
             shadow: Shadow::default(),
+            snap: false,
         }
     })
     .into()
@@ -585,7 +594,7 @@ pub fn control_btn_sized<'a>(
         container(
             text(label)
                 .font(UI_FONT)
-                .size(text_size)
+                .size(iced::Pixels::from(text_size as f32))
                 .line_height(1.0)
                 .height(18)
                 .align_y(iced::alignment::Vertical::Center)
@@ -611,6 +620,7 @@ pub fn control_btn_sized<'a>(
                 radius: Radius::from(4.0),
             },
             shadow: Shadow::default(),
+            snap: false,
         }
     })
     .into()
@@ -644,6 +654,7 @@ pub fn footer_btn<'a>(label: &'static str, msg: Msg) -> Element<'a, Msg> {
                     radius: Radius::from(4.0),
                 },
                 shadow: Shadow::default(),
+                snap: false,
             }
         }),
     )
@@ -732,6 +743,7 @@ pub fn modal_action<'a>(label: &'static str, kind: ModalBtn, msg: Msg) -> Elemen
                     radius: Radius::from(4.0),
                 },
                 shadow: Shadow::default(),
+                snap: false,
             }
         })
         .into()
@@ -747,7 +759,8 @@ pub fn modal_checkbox<'a>(
 ) -> Element<'a, Msg> {
     use iced::widget::checkbox;
     use iced::widget::checkbox::{Status as CheckboxStatus, Style as CheckboxStyle};
-    checkbox(label, checked)
+    checkbox(checked)
+        .label(label)
         .on_toggle_maybe(on_toggle)
         .size(14)
         .spacing(8)
@@ -818,6 +831,7 @@ pub fn modal_list_row<'a>(
             text_color: if active { c::FG() } else { c::FG_DIM() },
             border: Border::default(),
             shadow: Shadow::default(),
+            snap: false,
         }
     })
     .into()
@@ -873,12 +887,13 @@ pub fn launcher_row<'a>(
                 radius: Radius::from(5.0),
             },
             shadow: Shadow::default(),
+            snap: false,
         }
     });
 
     // Left accent bar, overlaid so it doesn't shift row content.
     let bar = container(
-        container(Space::with_width(3))
+        container(Space::new().width(3))
             .width(3)
             .height(Length::Fill)
             .style(|_| container::Style {
@@ -935,6 +950,7 @@ pub fn clickable_row<'a>(
             },
             border: Border::default(),
             shadow: Shadow::default(),
+            snap: false,
         }
     })
     .into()

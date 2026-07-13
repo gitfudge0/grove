@@ -95,10 +95,10 @@ impl canvas::Program<Msg> for PtyProgram {
     fn update(
         &self,
         state: &mut PtyProgramState,
-        event: canvas::Event,
+        event: &canvas::Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
-    ) -> (canvas::event::Status, Option<Msg>) {
+    ) -> Option<canvas::Action<Msg>> {
         let local = |cursor: mouse::Cursor| -> Option<Point> {
             cursor.position_in(bounds).or_else(|| {
                 cursor.position().map(|p| {
@@ -113,47 +113,40 @@ impl canvas::Program<Msg> for PtyProgram {
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 if let Some(p) = cursor.position_in(bounds) {
                     state.dragging = true;
-                    return (
-                        canvas::event::Status::Captured,
-                        Some(Msg::PtyMouseDown(self.pane, p.x, p.y)),
-                    );
+                    return Some(canvas::Action::publish(Msg::PtyMouseDown(
+                        self.pane, p.x, p.y,
+                    )));
                 }
-                (canvas::event::Status::Ignored, None)
+                None
             }
             canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) if state.dragging => {
                 if let Some(p) = local(cursor) {
-                    return (
-                        canvas::event::Status::Captured,
-                        Some(Msg::PtyMouseDrag(self.pane, p.x, p.y)),
-                    );
+                    return Some(canvas::Action::publish(Msg::PtyMouseDrag(
+                        self.pane, p.x, p.y,
+                    )));
                 }
-                (canvas::event::Status::Ignored, None)
+                None
             }
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
                 if state.dragging =>
             {
                 state.dragging = false;
-                (canvas::event::Status::Captured, Some(Msg::PtyMouseUp))
+                Some(canvas::Action::publish(Msg::PtyMouseUp))
             }
             canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                let Some(p) = cursor.position_in(bounds) else {
-                    return (canvas::event::Status::Ignored, None);
-                };
-                match delta {
+                let p = cursor.position_in(bounds)?;
+                match *delta {
                     mouse::ScrollDelta::Lines { y, .. } => {
                         state.scroll_accum = 0.0;
                         if y.abs() < 1.0 {
-                            return (canvas::event::Status::Captured, None);
+                            return Some(canvas::Action::capture());
                         }
-                        (
-                            canvas::event::Status::Captured,
-                            Some(Msg::PtyScroll {
-                                pane: self.pane,
-                                up: y > 0.0,
-                                x: p.x,
-                                y: p.y,
-                            }),
-                        )
+                        Some(canvas::Action::publish(Msg::PtyScroll {
+                            pane: self.pane,
+                            up: y > 0.0,
+                            x: p.x,
+                            y: p.y,
+                        }))
                     }
                     mouse::ScrollDelta::Pixels { y, .. } => {
                         if (state.scroll_accum > 0.0) != (y > 0.0) {
@@ -162,23 +155,20 @@ impl canvas::Program<Msg> for PtyProgram {
                         state.scroll_accum += y;
                         let step = CELL_H;
                         if state.scroll_accum.abs() < step {
-                            return (canvas::event::Status::Captured, None);
+                            return Some(canvas::Action::capture());
                         }
                         let up = state.scroll_accum > 0.0;
                         state.scroll_accum -= step.copysign(state.scroll_accum);
-                        (
-                            canvas::event::Status::Captured,
-                            Some(Msg::PtyScroll {
-                                pane: self.pane,
-                                up,
-                                x: p.x,
-                                y: p.y,
-                            }),
-                        )
+                        Some(canvas::Action::publish(Msg::PtyScroll {
+                            pane: self.pane,
+                            up,
+                            x: p.x,
+                            y: p.y,
+                        }))
                     }
                 }
             }
-            _ => (canvas::event::Status::Ignored, None),
+            _ => None,
         }
     }
 
@@ -242,14 +232,15 @@ impl canvas::Program<Msg> for PtyProgram {
                             frame.fill_text(canvas::Text {
                                 content,
                                 position: Point::new(start as f32 * CELL_W, y),
+                                max_width: f32::INFINITY,
                                 color,
                                 size: Pixels(FONT_SIZE),
                                 line_height: iced::widget::text::LineHeight::Absolute(Pixels(
                                     CELL_H,
                                 )),
                                 font,
-                                horizontal_alignment: iced::alignment::Horizontal::Left,
-                                vertical_alignment: iced::alignment::Vertical::Top,
+                                align_x: iced::advanced::text::Alignment::Left,
+                                align_y: iced::alignment::Vertical::Top,
                                 shaping: if covered {
                                     iced::widget::text::Shaping::Basic
                                 } else {

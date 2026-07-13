@@ -37,21 +37,8 @@ pub fn run() -> Result<()> {
     // minimal PATH; recover the user's login PATH before spawning any PTYs.
     crate::env_path::ensure_login_path();
 
-    iced::application("grove", Grove::update, Grove::view)
-        .theme(|_| match crate::theme::current().kind {
-            crate::theme::ThemeKind::Light => Theme::Light,
-            crate::theme::ThemeKind::Dark => Theme::Dark,
-        })
-        .scale_factor(|state| state.ui_zoom as f64)
-        .subscription(Grove::subscription)
-        .font(metrics::PLEX_SANS_REGULAR)
-        .font(metrics::PLEX_SANS_BOLD)
-        .font(metrics::MONO_REGULAR)
-        .font(metrics::MONO_BOLD)
-        .default_font(metrics::UI_FONT)
-        .window_size(Size::new(1280.0, 800.0))
-        .exit_on_close_request(false)
-        .run_with(|| {
+    iced::application(
+        || {
             // Fire a background update check ~3 s after startup so the UI is
             // fully rendered before the network round-trip begins.
             let launch_check = Task::perform(
@@ -60,7 +47,29 @@ pub fn run() -> Result<()> {
                 },
                 |_| Msg::CheckForUpdates { manual: false },
             );
-            (Grove::new(), launch_check)
-        })
-        .map_err(|e| anyhow::anyhow!(e))
+            // Seed the OS appearance immediately so "follow system" resolves
+            // to the real mode on the first frame rather than waiting for the
+            // next OS theme-change notification.
+            let seed_system_theme = iced::system::theme().map(Msg::SystemThemeChanged);
+            (Grove::new(), Task::batch([launch_check, seed_system_theme]))
+        },
+        Grove::update,
+        Grove::view,
+    )
+    .title("grove")
+    .theme(|_: &Grove| match crate::theme::current().kind {
+        crate::theme::ThemeKind::Light => Theme::Light,
+        crate::theme::ThemeKind::Dark => Theme::Dark,
+    })
+    .scale_factor(|state| state.ui_zoom)
+    .subscription(Grove::subscription)
+    .font(metrics::PLEX_SANS_REGULAR)
+    .font(metrics::PLEX_SANS_BOLD)
+    .font(metrics::MONO_REGULAR)
+    .font(metrics::MONO_BOLD)
+    .default_font(metrics::UI_FONT)
+    .window_size(Size::new(1280.0, 800.0))
+    .exit_on_close_request(false)
+    .run()
+    .map_err(|e: iced::Error| anyhow::anyhow!(e))
 }

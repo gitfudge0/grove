@@ -109,6 +109,11 @@ pub struct Grove {
     /// Used to compute cursor blink state: visible when `blink_tick % 30 < 15`
     /// (≈ 500 ms on / 500 ms off).
     pub blink_tick: u32,
+    /// Needs-attention opacity pulse. Idle (`false`, zero redraw cost) until a
+    /// session enters `WaitingForInput`; then a repeating auto-reversed
+    /// `Animation` drives the amber glyph/scrim alpha via per-frame redraws
+    /// (`window::frames()`), instead of the old `blink_tick` triangle waves.
+    pub attention_anim: iced::animation::Animation<bool>,
     /// Session index awaiting kill confirmation. When set, that session's
     /// close button shows a red tick — clicking it confirms the kill, clicking
     /// anywhere else clears this back to `None`.
@@ -369,6 +374,10 @@ pub struct ScriptsEditorState {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Tick,
+    /// A `window::frames()` redraw fired while the attention pulse is active.
+    /// Carries no state changes — the message itself schedules the next
+    /// frame so the animation keeps interpolating.
+    AnimationFrame,
     /// OS window gained/lost focus (drives dock-bounce gating and
     /// implicit acknowledgment of the visible session).
     WindowFocusChanged(bool),
@@ -568,8 +577,13 @@ pub enum Msg {
     RestartApp,
     ThemePickerSwitchTab,
     ThemePickerSelect(usize),
+    /// Toggle the "follow system appearance" checkbox in the theme picker.
+    ThemePickerToggleSystem(bool),
     ThemePickerSubmit,
     ThemePickerCancel,
+    /// The OS light/dark setting changed (or was queried at startup). Always
+    /// subscribed; only affects the active theme while "follow system" is on.
+    SystemThemeChanged(iced::theme::Mode),
     // ── first-run onboarding wizard ──────────────────────────────────────
     /// Advance one step. On the project step this registers the project first;
     /// on the theme step it persists the previewed theme; on the session step it

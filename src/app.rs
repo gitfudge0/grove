@@ -7,6 +7,11 @@ use crate::tmux;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
+/// Fallback dark/light themes for "system" mode when the user hasn't picked
+/// one explicitly yet (thematic pair: `tokyonight` and its day companion).
+const DEFAULT_DARK_THEME: &str = "tokyonight";
+const DEFAULT_LIGHT_THEME: &str = "tokyonight-day";
+
 pub fn cycle(cur: usize, delta: i32, len: usize) -> usize {
     if len == 0 {
         return 0;
@@ -279,6 +284,10 @@ pub enum Modal {
         /// `Modal::Settings` instead of `Modal::None` — the picker was entered
         /// from the Settings Appearance section.
         return_to_settings: bool,
+        /// Whether the "follow system appearance" checkbox is checked. When
+        /// true, submitting sets `App::theme_follow_system` instead of
+        /// pinning the selected list entry.
+        follow_system: bool,
     },
     /// The consolidated Settings modal (appearance, terminal, tools). Opened
     /// from the appbar cog. All controls persist immediately; there is no
@@ -433,6 +442,13 @@ pub struct App {
     pub bg_status: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// In-progress worktree teardown, when `modal` is `Modal::Teardown`.
     pub teardown: Option<Teardown>,
+    /// Whether the active theme should track the OS light/dark setting
+    /// (mirrors `store.theme_follow_system`, kept in sync on submit).
+    pub theme_follow_system: bool,
+    /// Last-known OS appearance, seeded by an `iced::system::theme()` query
+    /// at startup and kept current by the `system::theme_changes()`
+    /// subscription. Only consulted while `theme_follow_system` is set.
+    pub system_theme_mode: iced::theme::Mode,
 }
 
 impl App {
@@ -469,7 +485,15 @@ impl App {
         let tmux_available = tmux::available();
         // Apply the saved theme before building the initial modal so the
         // onboarding wizard seeds its theme selection from the active theme.
-        if let Some(name) = store.theme.as_deref() {
+        // In "follow system" mode the real OS appearance arrives later via
+        // the seeded `iced::system::theme()` task, but that first frame still
+        // needs a concrete theme, so we seed from the saved dark theme (the
+        // `SystemThemeChanged` handler corrects this once the query answers).
+        let theme_follow_system = store.theme_follow_system;
+        if theme_follow_system {
+            let name = store.theme_dark.as_deref().unwrap_or(DEFAULT_DARK_THEME);
+            theme::set_by_name(name);
+        } else if let Some(name) = store.theme.as_deref() {
             theme::set_by_name(name);
         }
         let initial_modal = match first_run_modal(store.onboarded, tmux_available, store.tmux_enabled)
@@ -511,6 +535,8 @@ impl App {
                 .collect(),
             bg_status: std::sync::Arc::new(std::sync::Mutex::new(None)),
             teardown: None,
+            theme_follow_system,
+            system_theme_mode: iced::theme::Mode::None,
         };
         app.refresh_worktrees();
         Ok(app)
@@ -1413,7 +1439,34 @@ impl App {
             tab,
             original,
             return_to_settings,
+            follow_system: self.theme_follow_system,
         };
+    }
+
+    /// The theme name to use for `mode` under "follow system" — the user's
+    /// saved dark/light theme, falling back to the built-in defaults.
+    pub fn resolve_system_theme_name(&self, mode: iced::theme::Mode) -> &str {
+        match mode {
+            iced::theme::Mode::Light => self
+                .store
+                .theme_light
+                .as_deref()
+                .unwrap_or(DEFAULT_LIGHT_THEME),
+            iced::theme::Mode::Dark | iced::theme::Mode::None => self
+                .store
+                .theme_dark
+                .as_deref()
+                .unwrap_or(DEFAULT_DARK_THEME),
+        }
+    }
+
+    /// Re-applies the active theme from `system_theme_mode` when following
+    /// the OS setting. No-op otherwise.
+    pub fn apply_system_theme(&mut self) {
+        if self.theme_follow_system {
+            let name = self.resolve_system_theme_name(self.system_theme_mode).to_string();
+            theme::set_by_name(&name);
+        }
     }
 
     pub fn theme_picker_move(&mut self, delta: i32) {
@@ -1421,6 +1474,7 @@ impl App {
             sel_dark,
             sel_light,
             tab,
+            follow_system,
             ..
         } = &mut self.modal
         else {
@@ -1435,6 +1489,7 @@ impl App {
             theme::ThemeKind::Light => sel_light,
         };
         *sel = cycle(*sel, delta, themes.len());
+        *follow_system = false;
         theme::set(themes[*sel]);
     }
 
@@ -1443,6 +1498,7 @@ impl App {
             sel_dark,
             sel_light,
             tab,
+            follow_system,
             ..
         } = &mut self.modal
         else {
@@ -1457,7 +1513,17 @@ impl App {
             theme::ThemeKind::Dark => *sel_dark,
             theme::ThemeKind::Light => *sel_light,
         };
-        if let Some(t) = themes.get(sel) {
+        // Switching tabs alone is just browsing, not a selection — leave
+        // `follow_system` as the user set it via the checkbox. But if it's
+        // checked, keep the preview showing the resolved system theme rather
+        // than snapping to the tab's list selection (which would visually
+        // contradict the still-checked checkbox).
+        if *follow_system {
+            let name = self
+                .resolve_system_theme_name(self.system_theme_mode)
+                .to_string();
+            theme::set_by_name(&name);
+        } else if let Some(t) = themes.get(sel) {
             theme::set(*t);
         }
     }
@@ -1469,6 +1535,7 @@ impl App {
             sel_light,
             tab,
             return_to_settings,
+            follow_system,
             ..
         } = modal
         else {
@@ -1477,16 +1544,29 @@ impl App {
         if return_to_settings {
             self.modal = Modal::Settings;
         }
+        self.theme_follow_system = follow_system;
+        self.store.theme_follow_system = follow_system;
+        if follow_system {
+            self.apply_system_theme();
+            storage::save(&self.store)?;
+            self.set_toast("theme: system".to_string());
+            return Ok(());
+        }
         let themes = theme::themes_of(tab);
         let sel = match tab {
             theme::ThemeKind::Dark => sel_dark,
             theme::ThemeKind::Light => sel_light,
         };
         let Some(chosen) = themes.get(sel).copied() else {
+            storage::save(&self.store)?;
             return Ok(());
         };
         theme::set(chosen);
         self.store.theme = Some(chosen.name.to_string());
+        match chosen.kind {
+            theme::ThemeKind::Dark => self.store.theme_dark = Some(chosen.name.to_string()),
+            theme::ThemeKind::Light => self.store.theme_light = Some(chosen.name.to_string()),
+        }
         storage::save(&self.store)?;
         self.set_toast(format!("theme: {}", chosen.name));
         Ok(())
@@ -1810,6 +1890,10 @@ impl App {
         if let Some(c) = chosen {
             theme::set(c);
             self.store.theme = Some(c.name.to_string());
+            match c.kind {
+                theme::ThemeKind::Dark => self.store.theme_dark = Some(c.name.to_string()),
+                theme::ThemeKind::Light => self.store.theme_light = Some(c.name.to_string()),
+            }
             storage::save(&self.store)?;
         }
         Ok(())
@@ -2262,6 +2346,8 @@ mod tests {
             available_agents: vec![],
             bg_status: std::sync::Arc::new(std::sync::Mutex::new(None)),
             teardown: None,
+            theme_follow_system: false,
+            system_theme_mode: iced::theme::Mode::None,
         }
     }
 

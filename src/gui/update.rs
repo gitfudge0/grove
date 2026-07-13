@@ -14,10 +14,38 @@ use crate::agent::Agent;
 use crate::app::{AddProjectStep, App, ConfirmKind, Modal, OnboardStep, Pane};
 use crate::session::Session;
 use iced::keyboard::{key::Named, Key, Modifiers};
+use iced::widget::Id;
 use iced::{event, keyboard, Event, Subscription, Task};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Focuses the widget with the given [`Id`]. Replaces the convenience
+/// `text_input::focus` helper removed in iced 0.14 — 0.14 only exposes the
+/// lower-level `widget::operation` primitives, so we build the equivalent
+/// `Task` ourselves.
+fn focus(id: Id) -> Task<Msg> {
+    iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::focus::<()>(id))
+        .discard()
+}
+
+/// Moves the text-input cursor with the given [`Id`] to the end of its
+/// content. See [`focus`] for why this wrapper exists.
+fn move_cursor_to_end(id: Id) -> Task<Msg> {
+    iced::advanced::widget::operate(
+        iced::advanced::widget::operation::text_input::move_cursor_to_end::<()>(id),
+    )
+    .discard()
+}
+
+/// Scrolls the scrollable with the given [`Id`] to an absolute offset. See
+/// [`focus`] for why this wrapper exists.
+fn scroll_to(id: Id, offset: iced::widget::scrollable::AbsoluteOffset) -> Task<Msg> {
+    iced::advanced::widget::operate(
+        iced::advanced::widget::operation::scrollable::scroll_to::<()>(id, offset.into()),
+    )
+    .discard()
+}
 
 impl Grove {
     pub fn new() -> Self {
@@ -68,6 +96,7 @@ impl Grove {
             pty_selection: None,
             pty_drag: None,
             blink_tick: 0,
+            attention_anim: Self::attention_animation(),
             pending_kill: None,
             hovered_wt: None,
             hovered_activity_row: None,
@@ -127,8 +156,19 @@ impl Grove {
         g
     }
 
+    /// Idle-state constructor for the attention pulse: parked at `false`
+    /// (fully opaque, not animating). `go_mut(true, ..)` starts an endless
+    /// auto-reversed 1s fade; clearing attention swaps a fresh idle instance
+    /// back in so the pulse (and its frame subscription) fully stops.
+    fn attention_animation() -> iced::animation::Animation<bool> {
+        iced::animation::Animation::new(false)
+            .duration(Duration::from_millis(1000))
+            .easing(iced::animation::Easing::EaseInOut)
+            .auto_reverse()
+            .repeat_forever()
+    }
+
     pub fn subscription(&self) -> Subscription<Msg> {
-        let tick = iced::time::every(Duration::from_millis(60)).map(|_| Msg::Tick);
         // Only forward un-captured keys; widgets (search input) handle their own first.
         // Exception: a focused text_input captures Escape to blur itself
         // (iced_widget text_input.rs) without telling the app, so Escape would
@@ -158,8 +198,36 @@ impl Grove {
             }
         });
         let resize = iced::window::resize_events().map(|(_id, size)| Msg::WindowResized(size));
-        let mut subs = vec![tick, keys, resize];
+        let mut subs = vec![keys, resize];
+        // Tick cadence (iced 0.14 only redraws on messages, so the tick both
+        // drives periodic work and repaints):
+        // - 60ms while any PTY exists (session, home terminal, or worktree
+        //   shell) — output streaming, spinner/cursor animation, activity
+        //   classification — or while transient work needs polling (drag
+        //   autoscroll, teardown, upgrade apply).
+        // - 1s fallback while focused — toast TTLs, background-job results,
+        //   git-status polling, the 24h update check.
+        // - no timer at all for an idle unfocused window.
+        let has_ptys = !self.app.sessions.is_empty()
+            || !self.app.home_terminals.is_empty()
+            || self.app.wt_terminals.values().any(|v| !v.is_empty());
+        let busy = self.pty_drag.is_some()
+            || self.app.teardown.is_some()
+            || matches!(self.upgrade, UpgradeState::Updating(_));
+        if has_ptys || busy {
+            subs.push(iced::time::every(Duration::from_millis(60)).map(|_| Msg::Tick));
+        } else if self.window_focused {
+            subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Msg::Tick));
+        }
+        // Needs-attention pulse: while active, let the animation request its
+        // own redraws at frame rate; zero subscriptions otherwise.
+        if self.attention_anim.value() {
+            subs.push(iced::window::frames().map(|_| Msg::AnimationFrame));
+        }
         subs.push(iced::window::close_requests().map(Msg::CloseRequested));
+        // Always-on: drives "system" theme mode, whether or not it's active,
+        // so toggling it on later doesn't need a fresh OS notification first.
+        subs.push(iced::system::theme_changes().map(Msg::SystemThemeChanged));
         // While the divider is held, listen globally for cursor motion and the
         // button-release — the 1px handle can't drive `mouse_area::on_move` once
         // the cursor leaves its bounds, so the drag is tracked at the app level.
@@ -271,22 +339,26 @@ impl Grove {
                     }
                 }
                 // Periodic update check: at most once per 24h while running.
-                {
-                    let due = match self.app.store.last_update_check {
-                        Some(ts) => now_unix() - ts >= 24 * 60 * 60,
-                        None => false, // launch check seeds the timestamp; don't double-fire at boot
-                    };
-                    if due && matches!(self.upgrade, UpgradeState::Idle | UpgradeState::UpToDate) {
-                        return self.check_updates_task(false);
-                    }
+                if let Some(task) = self.maybe_check_updates_due() {
+                    return task;
                 }
             }
+            // No state to mutate — the message exists to trigger a redraw so
+            // the attention pulse can interpolate against a fresh Instant.
+            Msg::AnimationFrame => {}
             Msg::WindowFocusChanged(f) => {
                 self.window_focused = f;
                 // Regaining focus acknowledges the visible session.
                 if f {
                     if let Some(i) = self.app.active_session {
                         self.acknowledge_session(i);
+                    }
+                    // A window that stays idle+unfocused stops ticking (see
+                    // `subscription`), so a due update check would otherwise
+                    // stall until other activity resumes. Evaluate it here
+                    // too so refocus fires it promptly.
+                    if let Some(task) = self.maybe_check_updates_due() {
+                        return task;
                     }
                 }
             }
@@ -788,14 +860,14 @@ impl Grove {
                 self.open_agent_menu = None;
                 self.app.focus_pane(Pane::Projects);
                 self.app.start_add();
-                return iced::widget::text_input::focus(crate::gui::view::modal_input_id());
+                return focus(crate::gui::view::modal_input_id());
             }
             Msg::AddWorktree { proj } => {
                 self.open_agent_menu = None;
                 self.switch_active_project(proj);
                 self.app.focus_pane(Pane::Worktrees);
                 self.app.start_add();
-                return iced::widget::text_input::focus(crate::gui::view::modal_input_id());
+                return focus(crate::gui::view::modal_input_id());
             }
             Msg::DeleteWorktree { proj, wt } => {
                 self.open_agent_menu = None;
@@ -927,7 +999,7 @@ impl Grove {
                             ..
                         } => {
                             self.app.onboard_set_path(format!("{}/", path.display()));
-                            return iced::widget::text_input::move_cursor_to_end(
+                            return move_cursor_to_end(
                                 crate::gui::view::modal_input_id(),
                             );
                         }
@@ -943,7 +1015,7 @@ impl Grove {
             Msg::AddProjectNameChanged(s) => self.app.add_project_set_name(s),
             Msg::AddProjectChangeSource => {
                 self.app.add_project_change_source();
-                return iced::widget::text_input::focus(crate::gui::view::modal_input_id());
+                return focus(crate::gui::view::modal_input_id());
             }
             Msg::AddProjectToggleInitGit(v) => {
                 if let Modal::AddProject { init_git, .. } = &mut self.app.modal {
@@ -965,7 +1037,7 @@ impl Grove {
                     }
                 ) {
                     self.app.add_project_set_path(format!("{path}/"));
-                    return iced::widget::text_input::move_cursor_to_end(
+                    return move_cursor_to_end(
                         crate::gui::view::modal_input_id(),
                     );
                 }
@@ -1094,8 +1166,38 @@ impl Grove {
                 self.theme_picker_select(i);
                 return self.scroll_theme_picker_to_selection();
             }
+            Msg::ThemePickerToggleSystem(enabled) => self.theme_picker_toggle_system(enabled),
             Msg::ThemePickerSubmit => self.theme_picker_submit(),
             Msg::ThemePickerCancel => self.theme_picker_cancel(),
+            Msg::SystemThemeChanged(mode) => {
+                self.app.system_theme_mode = mode;
+                // Re-resolve immediately if the persisted setting follows the
+                // OS, or if the theme picker is open with the "follow
+                // system" checkbox previewed-but-not-yet-submitted — otherwise
+                // an OS appearance change mid-preview would silently freeze
+                // the preview at the mode captured when the checkbox was
+                // ticked.
+                let previewing_system = matches!(
+                    self.app.modal,
+                    crate::app::Modal::ThemePicker {
+                        follow_system: true,
+                        ..
+                    }
+                );
+                if self.app.theme_follow_system {
+                    self.app.apply_system_theme();
+                    self.invalidate_pty_render_cache();
+                } else if previewing_system {
+                    // Not yet submitted, so `apply_system_theme` (gated on
+                    // `theme_follow_system`) would no-op — resolve directly.
+                    let name = self
+                        .app
+                        .resolve_system_theme_name(self.app.system_theme_mode)
+                        .to_string();
+                    crate::theme::set_by_name(&name);
+                    self.invalidate_pty_render_cache();
+                }
+            }
             Msg::OnbNext => return self.onboard_advance(),
             Msg::OnbBack => self.app.onboard_back(),
             Msg::OnbSkip => self.onboard_skip(),
@@ -1103,7 +1205,7 @@ impl Grove {
             Msg::OnbNameChanged(s) => self.app.onboard_set_name(s),
             Msg::OnbPickDir(p) => {
                 self.app.onboard_pick_dir(p);
-                return iced::widget::text_input::move_cursor_to_end(
+                return move_cursor_to_end(
                     crate::gui::view::modal_input_id(),
                 );
             }
@@ -1240,7 +1342,7 @@ impl Grove {
             }
         ) {
             self.app.onboard_reset_project_focus();
-            return iced::widget::text_input::focus(crate::gui::view::modal_input_id());
+            return focus(crate::gui::view::modal_input_id());
         }
         Task::none()
     }
@@ -1329,6 +1431,22 @@ impl Grove {
         )
     }
 
+    /// Returns a `check_updates_task` if the 24h periodic update check is due
+    /// and no check/apply is already in flight. Shared by the tick handler
+    /// and the focus-regained path, since the idle+unfocused window stops
+    /// ticking and would otherwise miss a check that came due while away.
+    fn maybe_check_updates_due(&mut self) -> Option<Task<Msg>> {
+        let due = match self.app.store.last_update_check {
+            Some(ts) => now_unix() - ts >= 24 * 60 * 60,
+            None => false, // launch check seeds the timestamp; don't double-fire at boot
+        };
+        if due && matches!(self.upgrade, UpgradeState::Idle | UpgradeState::UpToDate) {
+            Some(self.check_updates_task(false))
+        } else {
+            None
+        }
+    }
+
     /// Set upgrade state to Checking and dispatch an off-thread release fetch,
     /// which posts back `Msg::UpdateCheckResult`. Mirrors `detect_tools_task`.
     /// `manual` is threaded into the result so the handler can apply the correct
@@ -1355,7 +1473,7 @@ impl Grove {
     fn scroll_theme_picker_to_selection(&self) -> Task<Msg> {
         use super::metrics::ROW_H;
         use crate::app::Modal;
-        use iced::widget::scrollable::{self, AbsoluteOffset};
+        use iced::widget::scrollable::AbsoluteOffset;
         let Modal::ThemePicker {
             sel_dark,
             sel_light,
@@ -1376,7 +1494,7 @@ impl Grove {
         // Center the selection in the viewport, clamped to valid range.
         let max_y = (total as f32 * ROW_H - viewport_h).max(0.0);
         let y = (sel_y - (viewport_h - ROW_H) / 2.0).clamp(0.0, max_y);
-        scrollable::scroll_to(
+        scroll_to(
             super::view::theme_picker_scrollable_id(),
             AbsoluteOffset { x: 0.0, y },
         )
@@ -1388,6 +1506,7 @@ impl Grove {
             sel_dark,
             sel_light,
             tab,
+            follow_system,
             ..
         } = &mut self.app.modal
         else {
@@ -1401,7 +1520,43 @@ impl Grove {
             crate::theme::ThemeKind::Dark => *sel_dark = index,
             crate::theme::ThemeKind::Light => *sel_light = index,
         }
+        // Picking a concrete theme from the list opts back out of "system".
+        *follow_system = false;
         crate::theme::set(themes[index]);
+        self.invalidate_pty_render_cache();
+    }
+
+    /// Toggle the theme picker's "follow system appearance" checkbox and
+    /// preview the result immediately: checking it previews the resolved
+    /// system theme; unchecking it restores the current tab's selection.
+    fn theme_picker_toggle_system(&mut self, enabled: bool) {
+        use crate::app::Modal;
+        let Modal::ThemePicker { follow_system, .. } = &mut self.app.modal else {
+            return;
+        };
+        *follow_system = enabled;
+        if enabled {
+            let name = self
+                .app
+                .resolve_system_theme_name(self.app.system_theme_mode)
+                .to_string();
+            crate::theme::set_by_name(&name);
+        } else if let Modal::ThemePicker {
+            sel_dark,
+            sel_light,
+            tab,
+            ..
+        } = &self.app.modal
+        {
+            let themes = crate::theme::themes_of(*tab);
+            let sel = match tab {
+                crate::theme::ThemeKind::Dark => *sel_dark,
+                crate::theme::ThemeKind::Light => *sel_light,
+            };
+            if let Some(t) = themes.get(sel) {
+                crate::theme::set(*t);
+            }
+        }
         self.invalidate_pty_render_cache();
     }
 
@@ -1527,6 +1682,14 @@ impl Grove {
             super::dock::set_badge(waiting);
             self.last_badge = waiting;
         }
+        // Start/stop the needs-attention pulse to match the waiting set.
+        if (waiting > 0) != self.attention_anim.value() {
+            if waiting > 0 {
+                self.attention_anim.go_mut(true, now);
+            } else {
+                self.attention_anim = Self::attention_animation();
+            }
+        }
         if newly_waiting && !self.window_focused {
             super::dock::request_attention();
         }
@@ -1551,6 +1714,14 @@ impl Grove {
             .get(&s.id)
             .map(|t| t.state)
             .unwrap_or(super::activity::ActivityState::Idle)
+    }
+
+    /// Current needs-attention pulse phase in `[0, 1]` (0 = fully opaque,
+    /// 1 = maximum dim). Constant 0 while no session waits for input, so
+    /// callers can interpolate unconditionally.
+    pub(super) fn attention_pulse(&self) -> f32 {
+        self.attention_anim
+            .interpolate(0.0, 1.0, std::time::Instant::now())
     }
 
     fn invalidate_pty_render_cache(&mut self) {
@@ -2015,7 +2186,7 @@ impl Grove {
                         // inserting where the caret happened to sit before
                         // completion.
                         self.app.add_project_dir_pick();
-                        return iced::widget::text_input::move_cursor_to_end(
+                        return move_cursor_to_end(
                             crate::gui::view::modal_input_id(),
                         );
                     }
@@ -2029,7 +2200,7 @@ impl Grove {
                     // (from step 1) cancels the modal outright.
                     Key::Named(Named::Escape) => {
                         self.app.add_project_change_source();
-                        return iced::widget::text_input::focus(
+                        return focus(
                             crate::gui::view::modal_input_id(),
                         );
                     }
@@ -2181,16 +2352,16 @@ impl Grove {
                     Key::Named(Named::Tab) => match step {
                         crate::app::OnboardStep::Project => {
                             if self.app.onboard_toggle_project_focus() {
-                                return iced::widget::text_input::focus(
+                                return focus(
                                     crate::gui::view::modal_name_id(),
                                 );
                             }
                             self.app.onboard_dir_pick();
                             return Task::batch([
-                                iced::widget::text_input::focus(
+                                focus(
                                     crate::gui::view::modal_input_id(),
                                 ),
-                                iced::widget::text_input::move_cursor_to_end(
+                                move_cursor_to_end(
                                     crate::gui::view::modal_input_id(),
                                 ),
                             ]);
@@ -2390,9 +2561,9 @@ impl Grove {
             Modal::AddProject {
                 step: AddProjectStep::Details,
                 ..
-            } => iced::widget::text_input::focus(crate::gui::view::modal_name_id()),
+            } => focus(crate::gui::view::modal_name_id()),
             Modal::AddProject { .. } => {
-                iced::widget::text_input::focus(crate::gui::view::modal_input_id())
+                focus(crate::gui::view::modal_input_id())
             }
             _ => Task::none(),
         }
@@ -2817,7 +2988,7 @@ impl Grove {
         // Mirror the sidebar "add worktree" entry point.
         self.app.focus = crate::app::Pane::Worktrees;
         self.app.start_add();
-        iced::widget::text_input::focus(crate::gui::view::modal_input_id())
+        focus(crate::gui::view::modal_input_id())
     }
 
     /// Re-open the launcher after a worktree was created from it. Selects the
@@ -3754,6 +3925,7 @@ mod tests {
                 location: iced::keyboard::Location::Standard,
                 modifiers: Modifiers::empty(),
                 text: None,
+                repeat: false,
             })
         }
 
