@@ -39,7 +39,14 @@
       <Component Id="GroveExecutable" Guid="*">
         <File
           Id="GroveEXE"
-          Source="target\release\grove.exe"
+          Source="target\release\grove.exe" />
+        <RemoveFolder Id="APPLICATIONFOLDER" Directory="APPLICATIONFOLDER" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\Grove"
+          Name="exeInstalled"
+          Type="integer"
+          Value="1"
           KeyPath="yes" />
       </Component>
     </DirectoryRef>
