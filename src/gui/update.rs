@@ -662,11 +662,25 @@ impl Grove {
             }
             Msg::PtyMouseDown(pane, x, y) => {
                 if let PtyPane::Tile(si) = pane {
-                    // Focus this tile; no selection tracking in grid view.
+                    // Focus this tile, then anchor a selection the same way
+                    // the Agent/Panel path below does — `grid_focused` is
+                    // already updated, so `pixel_to_abs`/`pty_view_geom`
+                    // (which resolve via `focused_session`) target this
+                    // tile's session.
                     self.grid_focused = Some(si);
                     self.app.active_session = Some(si);
                     self.acknowledge_session(si);
                     self.pty_selection = None;
+                    if let (Some(cell), Some((h, _))) =
+                        (self.pixel_to_abs(x, y), self.pty_view_geom())
+                    {
+                        self.pty_selection = Some((cell, cell));
+                        self.pty_drag = Some(PtyDrag {
+                            last_x: x,
+                            last_y: y,
+                            view_h_px: h as f32 * pty_metrics(1.0).cell_h,
+                        });
+                    }
                     return Task::none();
                 }
                 self.pending_kill = None;
@@ -688,14 +702,12 @@ impl Grove {
                 }
             }
             Msg::PtyMouseDrag(pane, x, y) => {
-                if matches!(pane, PtyPane::Tile(_)) {
-                    // ponytail: no text selection in tiles; drag is a no-op here.
-                    return Task::none();
-                }
                 // Ignore drags from the pane that doesn't own the active
                 // selection (the canvas captures the drag, but focus — and thus
                 // the geometry helpers — belong to the pane the press landed in).
-                if self.focused_input_pane() != pane {
+                // `selection_pane` covers grid tiles too: it resolves to the
+                // focused tile while in grid view.
+                if self.selection_pane() != pane {
                     return Task::none();
                 }
                 if let Some(d) = self.pty_drag.as_mut() {
@@ -1216,6 +1228,9 @@ impl Grove {
             Msg::OnbPermsSelect(skip) => self.app.onboard_set_perms(skip),
             Msg::ToggleGridView => {
                 self.grid_view = !self.grid_view;
+                // Entering/leaving grid changes which pane can own a
+                // selection — drop any stale one rather than mis-render it.
+                self.pty_selection = None;
                 if self.grid_view {
                     let live_keys: Vec<String> = self
                         .app
@@ -1247,7 +1262,7 @@ impl Grove {
                     return Task::none();
                 }
                 let si = self.tile_order[tile_idx];
-                self.grid_focused = Some(si);
+                self.set_grid_focus(Some(si));
                 self.app.active_session = Some(si);
                 self.acknowledge_session(si);
                 self.grid_drag = Some(GridDrag {
@@ -1278,6 +1293,8 @@ impl Grove {
                 self.leave_terminal_tab();
                 self.grid_focused = Some(si);
                 self.acknowledge_session(si);
+                // Switching workspace shape invalidates any tile selection.
+                self.pty_selection = None;
                 // Temporarily exit grid so zen has a single-session workspace.
                 self.grid_view = false;
                 self.grid_view_before_zen = true;
@@ -2008,7 +2025,7 @@ impl Grove {
                     if self.grid_view {
                         crate::gui::launcher::insert_into_tile_order(&mut self.tile_order, at);
                         self.persist_grid_order();
-                        self.grid_focused = Some(at);
+                        self.set_grid_focus(Some(at));
                         self.refresh_pty_viewport();
                     }
                     self.rebuild_wt_cache();
@@ -2061,8 +2078,18 @@ impl Grove {
     /// zen restores focus to the wrong tile (Bug 5).
     fn sync_grid_focus(&mut self) {
         if should_sync_grid_focus(self.grid_view, self.grid_view_before_zen) {
-            self.grid_focused = self.app.active_session;
+            self.set_grid_focus(self.app.active_session);
         }
+    }
+
+    /// Point `grid_focused` at a (possibly different) tile. Any selection
+    /// anchored to the previously focused tile is stale once focus moves —
+    /// it would paint on, and copy from, the wrong session — so clear it.
+    fn set_grid_focus(&mut self, focus: Option<usize>) {
+        if self.grid_focused != focus {
+            self.pty_selection = None;
+        }
+        self.grid_focused = focus;
     }
 
     /// Cycle the focused session in visible order: `tile_order` while the
@@ -3067,7 +3094,7 @@ impl Grove {
             if self.grid_view {
                 crate::gui::launcher::insert_into_tile_order(&mut self.tile_order, at);
                 self.persist_grid_order();
-                self.grid_focused = Some(at);
+                self.set_grid_focus(Some(at));
                 self.refresh_pty_viewport();
             }
         }

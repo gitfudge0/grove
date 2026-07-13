@@ -1544,10 +1544,11 @@ impl Grove {
         let cursor_visible = self.blink_tick % 16 < 8;
         // Translate the scrollback-stable selection into the current viewport.
         // Each endpoint clamps to the visible window; a selection entirely off
-        // one edge isn't painted. The selection lives in the *focused* session,
-        // so only paint it on the PTY that currently owns input — otherwise a
-        // selection in one pane would mis-render against the other's grid.
-        let selection = if pane == self.focused_input_pane() {
+        // one edge isn't painted. The selection lives in the pane that owns
+        // it (Agent/Panel, or the focused tile in grid view), so only paint it
+        // there — otherwise a selection in one pane would mis-render against
+        // another's grid.
+        let selection = if pane == self.selection_pane() {
             self.pty_selection
         } else {
             None
@@ -1755,8 +1756,8 @@ impl Grove {
             header,
             divider_h(c::BORDER_SOFT()),
             // Reuse the existing pty() renderer with PtyPane::Tile(si).
-            // Selection returns None automatically (focused_input_pane won't
-            // match PtyPane::Tile) — that's the intentional no-selection policy.
+            // Selection paints here when this tile is `grid_focused` — see
+            // `selection_pane`.
             self.pty(PtyPane::Tile(si), s),
         ]
         .height(Length::Fill)
@@ -1913,6 +1914,18 @@ impl Grove {
             PtyPane::Panel
         } else {
             PtyPane::Agent
+        }
+    }
+
+    /// The pane that currently owns `pty_selection` — like
+    /// `focused_input_pane`, but grid-view-aware: while grid view is showing,
+    /// the focused tile owns any selection instead of the (unrendered) Agent
+    /// pane.
+    pub(super) fn selection_pane(&self) -> PtyPane {
+        if self.grid_view {
+            self.grid_focused.map(PtyPane::Tile).unwrap_or(PtyPane::Agent)
+        } else {
+            self.focused_input_pane()
         }
     }
 
