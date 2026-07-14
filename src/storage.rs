@@ -62,6 +62,10 @@ pub struct Store {
     /// pre-existing hardcoded behavior for upgrading users.
     #[serde(default)]
     pub dangerously_skip_permissions_enabled: Option<bool>,
+    /// Whether anonymous usage telemetry is sent. None means unset; treated
+    /// as `true` (opt-out model) to match existing settings-field conventions.
+    #[serde(default)]
+    pub telemetry_enabled: Option<bool>,
     /// User-controlled ordering of Agent View grid tiles, keyed by
     /// `"{project}::{wt_path}"` (see `crate::gui::launcher::session_grid_key`).
     /// Sessions not present here (new sessions) are appended after the ones
@@ -197,6 +201,7 @@ mod tests {
             last_update_check: None,
             skipped_version: None,
             dangerously_skip_permissions_enabled: Some(false),
+            telemetry_enabled: Some(true),
             grid_order: vec![],
             theme_follow_system: true,
             theme_dark: Some("tokyonight".into()),

@@ -25,8 +25,10 @@ use std::time::Duration;
 /// lower-level `widget::operation` primitives, so we build the equivalent
 /// `Task` ourselves.
 fn focus(id: Id) -> Task<Msg> {
-    iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::focus::<()>(id))
-        .discard()
+    iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::focus::<()>(
+        id,
+    ))
+    .discard()
 }
 
 /// Moves the text-input cursor with the given [`Id`] to the end of its
@@ -58,6 +60,23 @@ impl Grove {
         // Corrected on the first `WindowResized` event after startup.
         let window_size = iced::Size::new(1280.0, 800.0);
         let mut app = App::new().expect("init app");
+        crate::telemetry::set_enabled(app.telemetry_enabled());
+        crate::telemetry::track(
+            "app_launched",
+            vec![
+                (
+                    "theme",
+                    app.store
+                        .theme
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string())
+                        .into(),
+                ),
+                ("project_count", (app.store.projects.len() as u64).into()),
+                ("tmux_enabled", app.use_tmux().into()),
+            ],
+        );
+        crate::telemetry::start_heartbeat();
         let ui_zoom = app
             .store
             .ui_zoom
@@ -129,7 +148,9 @@ impl Grove {
             settings_tools: Vec::new(),
             upgrade: UpgradeState::Idle,
             upgrade_method: crate::upgrade::detect(),
-            upgrade_progress: std::sync::Arc::new(std::sync::Mutex::new(crate::gui::state::UpgradeProgress::default())),
+            upgrade_progress: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::gui::state::UpgradeProgress::default(),
+            )),
             changelog: ChangelogState::Idle,
             show_changelog: false,
             git_state: Default::default(),
@@ -210,9 +231,7 @@ impl Grove {
                 Event::Window(iced::window::Event::FileDropped(path)) => {
                     Some(Msg::FileDropped(path))
                 }
-                Event::Window(iced::window::Event::Focused) => {
-                    Some(Msg::WindowFocusChanged(true))
-                }
+                Event::Window(iced::window::Event::Focused) => Some(Msg::WindowFocusChanged(true)),
                 Event::Window(iced::window::Event::Unfocused) => {
                     Some(Msg::WindowFocusChanged(false))
                 }
@@ -284,9 +303,9 @@ impl Grove {
         }
         if self.grid_drag.is_some() {
             let drag = event::listen_with(|ev, _status, _| match ev {
-                Event::Mouse(iced::mouse::Event::ButtonReleased(
-                    iced::mouse::Button::Left,
-                )) => Some(Msg::GridDragEnd),
+                Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    Some(Msg::GridDragEnd)
+                }
                 _ => None,
             });
             subs.push(drag);
@@ -477,6 +496,9 @@ impl Grove {
             Msg::SkipPermissionsDisable => {
                 let _ = self.app.set_skip_permissions_enabled(false);
             }
+            Msg::TelemetryToggle(v) => {
+                let _ = self.app.set_telemetry_enabled(v);
+            }
             Msg::ChooseTmux(enabled) => {
                 if let Err(e) = self.app.choose_tmux_enabled(enabled) {
                     self.app.modal = Modal::Message(format!("tmux setup failed: {e}"));
@@ -622,6 +644,18 @@ impl Grove {
                 if i < self.app.sessions.len() {
                     let key = Arc::as_ptr(&self.app.sessions[i].dirty) as usize;
                     self.pty_cache.borrow_mut().remove(&key);
+                    {
+                        let s = &self.app.sessions[i];
+                        let mins = s.created_at.elapsed().as_secs() / 60;
+                        crate::telemetry::track(
+                            "session_ended",
+                            vec![
+                                ("agent", s.agent.label().into()),
+                                ("duration_min", mins.into()),
+                                ("tmux", s.tmux_name().is_some().into()),
+                            ],
+                        );
+                    }
                     self.app.sessions[i].kill();
                     self.app.sessions.remove(i);
                     if let Some(a) = self.app.active_session {
@@ -635,8 +669,12 @@ impl Grove {
                         // Remove the killed session index from tile_order; shift
                         // higher indices down to match the new sessions array.
                         self.tile_order.retain_mut(|si| {
-                            if *si == i { return false; }
-                            if *si > i { *si -= 1; }
+                            if *si == i {
+                                return false;
+                            }
+                            if *si > i {
+                                *si -= 1;
+                            }
                             true
                         });
                         self.grid_focused = match self.grid_focused {
@@ -806,9 +844,18 @@ impl Grove {
                     self.refresh_pty_viewport();
                 }
             }
-            Msg::ZoomIn => self.adjust_ui_zoom(PTY_ZOOM_STEP),
-            Msg::ZoomOut => self.adjust_ui_zoom(-PTY_ZOOM_STEP),
-            Msg::ZoomReset => self.set_ui_zoom(PTY_ZOOM_DEFAULT),
+            Msg::ZoomIn => {
+                crate::telemetry::track("zoom_changed", vec![]);
+                self.adjust_ui_zoom(PTY_ZOOM_STEP);
+            }
+            Msg::ZoomOut => {
+                crate::telemetry::track("zoom_changed", vec![]);
+                self.adjust_ui_zoom(-PTY_ZOOM_STEP);
+            }
+            Msg::ZoomReset => {
+                crate::telemetry::track("zoom_changed", vec![]);
+                self.set_ui_zoom(PTY_ZOOM_DEFAULT);
+            }
             Msg::PtyMouseUp => {
                 self.pty_drag = None;
                 if let Some((a, h)) = self.pty_selection {
@@ -1046,9 +1093,7 @@ impl Grove {
                             ..
                         } => {
                             self.app.onboard_set_path(format!("{}/", path.display()));
-                            return move_cursor_to_end(
-                                crate::gui::view::modal_input_id(),
-                            );
+                            return move_cursor_to_end(crate::gui::view::modal_input_id());
                         }
                         _ => {}
                     }
@@ -1084,9 +1129,7 @@ impl Grove {
                     }
                 ) {
                     self.app.add_project_set_path(format!("{path}/"));
-                    return move_cursor_to_end(
-                        crate::gui::view::modal_input_id(),
-                    );
+                    return move_cursor_to_end(crate::gui::view::modal_input_id());
                 }
             }
             Msg::OpenThemePicker => {
@@ -1096,6 +1139,7 @@ impl Grove {
                 return self.scroll_theme_picker_to_selection();
             }
             Msg::OpenSettings => {
+                crate::telemetry::track("settings_opened", vec![]);
                 self.app.open_settings();
                 return self.detect_tools_task();
             }
@@ -1148,6 +1192,10 @@ impl Grove {
                 if let UpgradeState::Available(release) = &self.upgrade {
                     self.app.store.skipped_version = Some(release.tag.clone());
                     let _ = crate::storage::save(&self.app.store);
+                    crate::telemetry::track(
+                        "update_declined",
+                        vec![("version", release.tag.clone().into())],
+                    );
                 }
                 self.upgrade = UpgradeState::UpToDate;
             }
@@ -1175,6 +1223,12 @@ impl Grove {
                     };
                     let result =
                         crate::upgrade::apply(method, &release, &cb).map_err(|e| e.to_string());
+                    if result.is_ok() {
+                        crate::telemetry::track(
+                            "update_applied",
+                            vec![("to_version", release.tag.clone().into())],
+                        );
+                    }
                     if let Ok(mut g) = handle.lock() {
                         g.finished = Some(result);
                     }
@@ -1252,9 +1306,7 @@ impl Grove {
             Msg::OnbNameChanged(s) => self.app.onboard_set_name(s),
             Msg::OnbPickDir(p) => {
                 self.app.onboard_pick_dir(p);
-                return move_cursor_to_end(
-                    crate::gui::view::modal_input_id(),
-                );
+                return move_cursor_to_end(crate::gui::view::modal_input_id());
             }
             Msg::OnbThemeTab => self.app.onboard_theme_switch_tab(),
             Msg::OnbThemeSelect(i) => self.app.onboard_theme_select(i),
@@ -1351,7 +1403,10 @@ impl Grove {
                 self.app.chrome_visible = false;
                 self.refresh_pty_viewport();
             }
-            Msg::OpenSessionLauncher => self.open_session_launcher(),
+            Msg::OpenSessionLauncher => {
+                crate::telemetry::track("launcher_opened", vec![]);
+                self.open_session_launcher();
+            }
             Msg::LauncherSelectProject(i) => self.launcher_select_project(i),
             Msg::LauncherSelectWorktree(i) => {
                 let proj = match &self.app.modal {
@@ -1680,7 +1735,11 @@ impl Grove {
             let t = *s.last_output_at.lock().unwrap_or_else(|e| e.into_inner());
             let output_age = now.saturating_duration_since(t);
             // Skip the parser lock for sessions that can't need it.
-            let tail = if alive { s.tail_contents(15) } else { String::new() };
+            let tail = if alive {
+                s.tail_contents(15)
+            } else {
+                String::new()
+            };
 
             let scrolling = s
                 .scroll_age()
@@ -1812,8 +1871,7 @@ impl Grove {
             let n = total.max(1);
             let (grid_cols, _) = super::metrics::grid_layout(n);
             // All columns are equal width, so the cell width is uniform.
-            let tile_cols =
-                super::metrics::grid_tile_cols(self.window_size.width, self.ui_zoom, n);
+            let tile_cols = super::metrics::grid_tile_cols(self.window_size.width, self.ui_zoom, n);
             // Height is per-column: a tile's PTY rows depend on how many tiles
             // share its column (column `p % grid_cols` for tile-order slot `p`),
             // so the lone tile in a short column fills the full workspace height.
@@ -2112,13 +2170,12 @@ impl Grove {
                 };
                 match close_focused_session_decision(target, self.pending_kill) {
                     CloseFocusedDecision::Kill(si) => self.update(Msg::KillSession(si)),
-                    CloseFocusedDecision::Request(si) => {
-                        self.update(Msg::RequestKillSession(si))
-                    }
+                    CloseFocusedDecision::Request(si) => self.update(Msg::RequestKillSession(si)),
                     CloseFocusedDecision::NoOp => Task::none(),
                 }
             }
             GlobalShortcut::GridMove(dx, dy) => {
+                crate::telemetry::track("tile_moved", vec![]);
                 self.grid_move(dx, dy);
                 Task::none()
             }
@@ -2322,9 +2379,7 @@ impl Grove {
                         // inserting where the caret happened to sit before
                         // completion.
                         self.app.add_project_dir_pick();
-                        return move_cursor_to_end(
-                            crate::gui::view::modal_input_id(),
-                        );
+                        return move_cursor_to_end(crate::gui::view::modal_input_id());
                     }
                     Key::Character(s) if mods.control() && matches!(s.as_str(), "c" | "C") => {
                         self.cancel_modal()
@@ -2336,9 +2391,7 @@ impl Grove {
                     // (from step 1) cancels the modal outright.
                     Key::Named(Named::Escape) => {
                         self.app.add_project_change_source();
-                        return focus(
-                            crate::gui::view::modal_input_id(),
-                        );
+                        return focus(crate::gui::view::modal_input_id());
                     }
                     Key::Named(Named::Enter) => {
                         if let Err(e) = self.app.submit_add_project() {
@@ -2432,7 +2485,10 @@ impl Grove {
                     if col == 0 && np != proj {
                         self.ensure_wt_cached(np);
                     }
-                    if let Modal::SessionLauncher { proj, wt, agent, .. } = &mut self.app.modal {
+                    if let Modal::SessionLauncher {
+                        proj, wt, agent, ..
+                    } = &mut self.app.modal
+                    {
                         *proj = np;
                         *wt = nw;
                         *agent = na;
@@ -2488,18 +2544,12 @@ impl Grove {
                     Key::Named(Named::Tab) => match step {
                         crate::app::OnboardStep::Project => {
                             if self.app.onboard_toggle_project_focus() {
-                                return focus(
-                                    crate::gui::view::modal_name_id(),
-                                );
+                                return focus(crate::gui::view::modal_name_id());
                             }
                             self.app.onboard_dir_pick();
                             return Task::batch([
-                                focus(
-                                    crate::gui::view::modal_input_id(),
-                                ),
-                                move_cursor_to_end(
-                                    crate::gui::view::modal_input_id(),
-                                ),
+                                focus(crate::gui::view::modal_input_id()),
+                                move_cursor_to_end(crate::gui::view::modal_input_id()),
                             ]);
                         }
                         crate::app::OnboardStep::Theme => self.app.onboard_theme_switch_tab(),
@@ -2698,9 +2748,7 @@ impl Grove {
                 step: AddProjectStep::Details,
                 ..
             } => focus(crate::gui::view::modal_name_id()),
-            Modal::AddProject { .. } => {
-                focus(crate::gui::view::modal_input_id())
-            }
+            Modal::AddProject { .. } => focus(crate::gui::view::modal_input_id()),
             _ => Task::none(),
         }
     }
@@ -3032,7 +3080,11 @@ impl Grove {
             if self.collapsed.contains(&pi) {
                 continue;
             }
-            paths.extend(self.worktrees_for_project(pi).iter().map(|w| w.path.clone()));
+            paths.extend(
+                self.worktrees_for_project(pi)
+                    .iter()
+                    .map(|w| w.path.clone()),
+            );
         }
         paths
     }
@@ -3168,10 +3220,7 @@ impl Grove {
     /// `tile_order` and focus it.
     fn launcher_start(&mut self) {
         let crate::app::Modal::SessionLauncher {
-            proj,
-            wt,
-            agent,
-            ..
+            proj, wt, agent, ..
         } = self.app.modal.clone()
         else {
             return;
@@ -3194,9 +3243,9 @@ impl Grove {
         // `at_end = true`: launcher sessions always land last in the sessions
         // vector so they appear at the end of the Agent View grid, even after a
         // tile_order rebuild (entering Agent View resets it to sessions order).
-        let inserted = self
-            .app
-            .spawn_session(label, pname, w.path.clone(), ag, args, &w.path, true);
+        let inserted =
+            self.app
+                .spawn_session(label, pname, w.path.clone(), ag, args, &w.path, true);
         self.resize_new_sessions(&before);
         if let Some(at) = inserted {
             self.leave_terminal_tab();
@@ -3239,6 +3288,23 @@ impl Grove {
             Ok(mut s) => {
                 s.resize(self.pty_rows, self.pty_sess_cols);
                 self.app.sessions.push(s);
+                let open = self.app.sessions.len();
+                let native = self
+                    .app
+                    .sessions
+                    .iter()
+                    .filter(|s| matches!(s.backend, crate::session::SessionBackend::Native))
+                    .count();
+                crate::telemetry::track(
+                    "session_created",
+                    vec![
+                        ("agent", agent.label().into()),
+                        ("tmux", use_tmux.into()),
+                        ("open_sessions", (open as u64).into()),
+                        ("open_native", (native as u64).into()),
+                        ("open_tmux", ((open - native) as u64).into()),
+                    ],
+                );
                 self.app.active_session = Some(self.app.sessions.len() - 1);
                 self.leave_terminal_tab();
                 // Reveal the freshly spawned session if its worktree was
@@ -3246,6 +3312,7 @@ impl Grove {
                 self.collapsed_wt.remove(&(proj, wt));
             }
             Err(e) => {
+                crate::telemetry::track("error", vec![("kind", "spawn_failed".into())]);
                 self.app
                     .set_error_toast(format!("failed to start session: {e}"));
             }
@@ -3564,32 +3631,160 @@ const G: &[Scope] = &[Scope::Global];
 /// matches the overlay's reading order. Most entries are `Global`; a few are
 /// scoped to a single screen (see each row's `scopes`).
 pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
-    ShortcutDef { action: Some(GlobalShortcut::NewSession),      triggers: &["n", "N"],      display_keys: "n",         description: "new session",            scopes: G, requires_alt: false, literal: false },
-    ShortcutDef { action: Some(GlobalShortcut::NewSessionInWorktree), triggers: &["n", "N"], display_keys: "n",         description: "new session in current worktree", scopes: G, requires_alt: true, literal: false },
-    ShortcutDef { action: Some(GlobalShortcut::NextSession),     triggers: &["j", "J"],      display_keys: "j",         description: "next session",           scopes: G, requires_alt: false, literal: false },
-    ShortcutDef { action: Some(GlobalShortcut::PrevSession),     triggers: &["k", "K"],      display_keys: "k",         description: "previous session",       scopes: G, requires_alt: false, literal: false },
+    ShortcutDef {
+        action: Some(GlobalShortcut::NewSession),
+        triggers: &["n", "N"],
+        display_keys: "n",
+        description: "new session",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::NewSessionInWorktree),
+        triggers: &["n", "N"],
+        display_keys: "n",
+        description: "new session in current worktree",
+        scopes: G,
+        requires_alt: true,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::NextSession),
+        triggers: &["j", "J"],
+        display_keys: "j",
+        description: "next session",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::PrevSession),
+        triggers: &["k", "K"],
+        display_keys: "k",
+        description: "previous session",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
     // Display-only: the matcher handles 1–9 dynamically (see match_global_shortcut).
-    ShortcutDef { action: None,                                  triggers: &[],              display_keys: "1–9",       description: "select nth session",     scopes: G, requires_alt: false, literal: false },
-    ShortcutDef { action: Some(GlobalShortcut::ToggleGrid),      triggers: &["g", "G"],      display_keys: "g",         description: "toggle grid view",       scopes: G, requires_alt: false, literal: false },
-    ShortcutDef { action: Some(GlobalShortcut::ToggleZen),       triggers: &[],              display_keys: "enter",     description: "toggle zen mode",        scopes: G, requires_alt: false, literal: false },
-    ShortcutDef { action: Some(GlobalShortcut::Settings),        triggers: &[","],           display_keys: ",",         description: "settings",               scopes: G, requires_alt: false, literal: false },
-    ShortcutDef { action: Some(GlobalShortcut::ZoomIn),          triggers: &["=", "+"],      display_keys: "=",         description: "zoom in",                scopes: G, requires_alt: false, literal: false },
-    ShortcutDef { action: Some(GlobalShortcut::ZoomOut),         triggers: &["-", "_"],      display_keys: "-",         description: "zoom out",               scopes: G, requires_alt: false, literal: false },
-    ShortcutDef { action: Some(GlobalShortcut::ZoomReset),       triggers: &["0"],           display_keys: "0",         description: "reset zoom",             scopes: G, requires_alt: false, literal: false },
-    ShortcutDef { action: Some(GlobalShortcut::ShortcutOverlay), triggers: &["/", "?"],      display_keys: "/",         description: "this overlay",           scopes: G, requires_alt: false, literal: false },
-    ShortcutDef { action: Some(GlobalShortcut::CloseFocusedSession), triggers: &["w", "W"], display_keys: "w",         description: "close focused session",  scopes: G, requires_alt: false, literal: false },
+    ShortcutDef {
+        action: None,
+        triggers: &[],
+        display_keys: "1–9",
+        description: "select nth session",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::ToggleGrid),
+        triggers: &["g", "G"],
+        display_keys: "g",
+        description: "toggle grid view",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::ToggleZen),
+        triggers: &[],
+        display_keys: "enter",
+        description: "toggle zen mode",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::Settings),
+        triggers: &[","],
+        display_keys: ",",
+        description: "settings",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::ZoomIn),
+        triggers: &["=", "+"],
+        display_keys: "=",
+        description: "zoom in",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::ZoomOut),
+        triggers: &["-", "_"],
+        display_keys: "-",
+        description: "zoom out",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::ZoomReset),
+        triggers: &["0"],
+        display_keys: "0",
+        description: "reset zoom",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::ShortcutOverlay),
+        triggers: &["/", "?"],
+        display_keys: "/",
+        description: "this overlay",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::CloseFocusedSession),
+        triggers: &["w", "W"],
+        display_keys: "w",
+        description: "close focused session",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
     // Display-only: `match_global_shortcut` handles both of these rows ahead
     // of the registry lookup (dynamic dx/dy per key, Alt picks move vs. swap),
     // scoped to Screen::Grid by hand there — keep the three in sync.
-    ShortcutDef { action: None,                                  triggers: &[],              display_keys: "h j k l / ←↓↑→", description: "move focus in grid", scopes: &[Scope::Screen(Screen::Grid)], requires_alt: false, literal: false },
-    ShortcutDef { action: None,                                  triggers: &[],              display_keys: "alt+h j k l / ←↓↑→", description: "move tile in grid", scopes: &[Scope::Screen(Screen::Grid)], requires_alt: true, literal: false },
+    ShortcutDef {
+        action: None,
+        triggers: &[],
+        display_keys: "h j k l / ←↓↑→",
+        description: "move focus in grid",
+        scopes: &[Scope::Screen(Screen::Grid)],
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: None,
+        triggers: &[],
+        display_keys: "alt+h j k l / ←↓↑→",
+        description: "move tile in grid",
+        scopes: &[Scope::Screen(Screen::Grid)],
+        requires_alt: true,
+        literal: false,
+    },
     // Display-only: matched by `term_panel_resize_delta`, not
     // `match_global_shortcut` — closing the panel must fall through to the
     // PTY, which a registry-matched shortcut never does (see the guard's
     // comment in `handle_key`). Listed here purely so it's scoped and
     // discoverable in the `mod+/` overlay; `scopes` here must track
     // `term_panel_resize_delta`'s `Screen::Workspace` check by hand.
-    ShortcutDef { action: None,                                  triggers: &[],              display_keys: "ctrl+shift+←/→", description: "resize terminal panel", scopes: &[Scope::Screen(Screen::Workspace)], requires_alt: false, literal: true },
+    ShortcutDef {
+        action: None,
+        triggers: &[],
+        display_keys: "ctrl+shift+←/→",
+        description: "resize terminal panel",
+        scopes: &[Scope::Screen(Screen::Workspace)],
+        requires_alt: false,
+        literal: true,
+    },
 ];
 
 /// Derive the coarse screen from UI flags. Zen wins over grid: while chrome is
@@ -3910,14 +4105,38 @@ mod tests {
         // `screen_scoped_shortcuts_respect_scopes` below covers the Grid-only row.
         use GlobalShortcut::*;
         let screen = Screen::Workspace;
-        assert_eq!(match_global_shortcut(&ch("n"), gmods(), screen), Some(NewSession));
-        assert_eq!(match_global_shortcut(&ch(","), gmods(), screen), Some(Settings));
-        assert_eq!(match_global_shortcut(&ch("g"), gmods(), screen), Some(ToggleGrid));
-        assert_eq!(match_global_shortcut(&ch("j"), gmods(), screen), Some(NextSession));
-        assert_eq!(match_global_shortcut(&ch("k"), gmods(), screen), Some(PrevSession));
-        assert_eq!(match_global_shortcut(&ch("="), gmods(), screen), Some(ZoomIn));
-        assert_eq!(match_global_shortcut(&ch("-"), gmods(), screen), Some(ZoomOut));
-        assert_eq!(match_global_shortcut(&ch("0"), gmods(), screen), Some(ZoomReset));
+        assert_eq!(
+            match_global_shortcut(&ch("n"), gmods(), screen),
+            Some(NewSession)
+        );
+        assert_eq!(
+            match_global_shortcut(&ch(","), gmods(), screen),
+            Some(Settings)
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("g"), gmods(), screen),
+            Some(ToggleGrid)
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("j"), gmods(), screen),
+            Some(NextSession)
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("k"), gmods(), screen),
+            Some(PrevSession)
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("="), gmods(), screen),
+            Some(ZoomIn)
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("-"), gmods(), screen),
+            Some(ZoomOut)
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("0"), gmods(), screen),
+            Some(ZoomReset)
+        );
         assert_eq!(
             match_global_shortcut(&ch("3"), gmods(), screen),
             Some(SelectSession(2))
@@ -3931,8 +4150,14 @@ mod tests {
             Some(ShortcutOverlay)
         );
         // Registry-driven aliases.
-        assert_eq!(match_global_shortcut(&ch("+"), gmods(), screen), Some(ZoomIn));
-        assert_eq!(match_global_shortcut(&ch("_"), gmods(), screen), Some(ZoomOut));
+        assert_eq!(
+            match_global_shortcut(&ch("+"), gmods(), screen),
+            Some(ZoomIn)
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("_"), gmods(), screen),
+            Some(ZoomOut)
+        );
         assert_eq!(
             match_global_shortcut(&ch("?"), gmods(), screen),
             Some(ShortcutOverlay)
@@ -3983,7 +4208,10 @@ mod tests {
         );
         // Plain platform modifier (no Alt) still resolves to NewSession —
         // no regression from adding the alt-chord.
-        assert_eq!(match_global_shortcut(&ch("n"), gmods(), screen), Some(NewSession));
+        assert_eq!(
+            match_global_shortcut(&ch("n"), gmods(), screen),
+            Some(NewSession)
+        );
         // Alt held on an unclaimed key is *not* a shortcut on either platform:
         // the registry now requires an exact `requires_alt` match (Bug 7's
         // fix), and `ToggleGrid`'s row has `requires_alt: false`, so holding
@@ -4023,10 +4251,22 @@ mod tests {
     fn grid_move_shortcuts_scoped_to_grid_screen() {
         use GlobalShortcut::*;
         let screen = Screen::Grid;
-        assert_eq!(match_global_shortcut(&ch("h"), gmods(), screen), Some(GridMove(-1, 0)));
-        assert_eq!(match_global_shortcut(&ch("l"), gmods(), screen), Some(GridMove(1, 0)));
-        assert_eq!(match_global_shortcut(&ch("k"), gmods(), screen), Some(GridMove(0, -1)));
-        assert_eq!(match_global_shortcut(&ch("j"), gmods(), screen), Some(GridMove(0, 1)));
+        assert_eq!(
+            match_global_shortcut(&ch("h"), gmods(), screen),
+            Some(GridMove(-1, 0))
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("l"), gmods(), screen),
+            Some(GridMove(1, 0))
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("k"), gmods(), screen),
+            Some(GridMove(0, -1))
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("j"), gmods(), screen),
+            Some(GridMove(0, 1))
+        );
         assert_eq!(
             match_global_shortcut(&Key::Named(Named::ArrowLeft), gmods(), screen),
             Some(GridMove(-1, 0))
@@ -4060,10 +4300,22 @@ mod tests {
         use GlobalShortcut::*;
         let screen = Screen::Grid;
         let alt = gmods() | Modifiers::ALT;
-        assert_eq!(match_global_shortcut(&ch("h"), alt, screen), Some(GridSwap(-1, 0)));
-        assert_eq!(match_global_shortcut(&ch("l"), alt, screen), Some(GridSwap(1, 0)));
-        assert_eq!(match_global_shortcut(&ch("k"), alt, screen), Some(GridSwap(0, -1)));
-        assert_eq!(match_global_shortcut(&ch("j"), alt, screen), Some(GridSwap(0, 1)));
+        assert_eq!(
+            match_global_shortcut(&ch("h"), alt, screen),
+            Some(GridSwap(-1, 0))
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("l"), alt, screen),
+            Some(GridSwap(1, 0))
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("k"), alt, screen),
+            Some(GridSwap(0, -1))
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("j"), alt, screen),
+            Some(GridSwap(0, 1))
+        );
         assert_eq!(
             match_global_shortcut(&Key::Named(Named::ArrowLeft), alt, screen),
             Some(GridSwap(-1, 0))
@@ -4082,16 +4334,40 @@ mod tests {
         );
         // Without Alt, the same keys still resolve to GridMove — no regression
         // from layering the Alt dispatch on top.
-        assert_eq!(match_global_shortcut(&ch("h"), gmods(), screen), Some(GridMove(-1, 0)));
-        assert_eq!(match_global_shortcut(&ch("j"), gmods(), screen), Some(GridMove(0, 1)));
-        assert_eq!(match_global_shortcut(&ch("k"), gmods(), screen), Some(GridMove(0, -1)));
-        assert_eq!(match_global_shortcut(&ch("l"), gmods(), screen), Some(GridMove(1, 0)));
+        assert_eq!(
+            match_global_shortcut(&ch("h"), gmods(), screen),
+            Some(GridMove(-1, 0))
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("j"), gmods(), screen),
+            Some(GridMove(0, 1))
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("k"), gmods(), screen),
+            Some(GridMove(0, -1))
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("l"), gmods(), screen),
+            Some(GridMove(1, 0))
+        );
         // Alt+h/j/k/l elsewhere is not GridSwap — the Grid-only shadow must
         // not leak to other screens (mirrors the GridMove scoping check above).
-        assert_eq!(match_global_shortcut(&ch("h"), alt, Screen::Workspace), None);
-        assert_eq!(match_global_shortcut(&ch("j"), alt, Screen::Workspace), None);
-        assert_eq!(match_global_shortcut(&ch("k"), alt, Screen::Workspace), None);
-        assert_eq!(match_global_shortcut(&ch("l"), alt, Screen::Workspace), None);
+        assert_eq!(
+            match_global_shortcut(&ch("h"), alt, Screen::Workspace),
+            None
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("j"), alt, Screen::Workspace),
+            None
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("k"), alt, Screen::Workspace),
+            None
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("l"), alt, Screen::Workspace),
+            None
+        );
     }
 
     #[test]
@@ -4139,11 +4415,19 @@ mod tests {
         #[test]
         fn matches_only_on_workspace() {
             assert_eq!(
-                term_panel_resize_delta(&Key::Named(Named::ArrowRight), ctrl_shift(), Screen::Workspace),
+                term_panel_resize_delta(
+                    &Key::Named(Named::ArrowRight),
+                    ctrl_shift(),
+                    Screen::Workspace
+                ),
                 Some(TERM_PANEL_PORTION_STEP as i16)
             );
             assert_eq!(
-                term_panel_resize_delta(&Key::Named(Named::ArrowLeft), ctrl_shift(), Screen::Workspace),
+                term_panel_resize_delta(
+                    &Key::Named(Named::ArrowLeft),
+                    ctrl_shift(),
+                    Screen::Workspace
+                ),
                 Some(-(TERM_PANEL_PORTION_STEP as i16))
             );
             assert_eq!(

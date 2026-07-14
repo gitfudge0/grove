@@ -1018,7 +1018,8 @@ impl Grove {
                     if let Some(&(_, d_col, d_row)) =
                         slide.tiles.iter().find(|(idx, _, _)| *idx == tile_idx)
                     {
-                        let t = super::update::slide_progress(slide.start, std::time::Instant::now());
+                        let t =
+                            super::update::slide_progress(slide.start, std::time::Instant::now());
                         if t < 1.0 {
                             let (tile_w, tile_h) = super::metrics::grid_tile_size(
                                 self.window_size.width,
@@ -3455,12 +3456,20 @@ impl Grove {
         .height(ROW_H)
         .padding(Padding::from([0, 10]));
 
+        let telemetry_row = modal_checkbox(
+            "Share anonymous usage data".into(),
+            self.app.telemetry_enabled(),
+            c::MAGENTA(),
+            Some(Msg::TelemetryToggle),
+        );
+
         let agents_terminal = column![
             eyebrow("AGENTS / TERMINAL"),
             Space::new().height(2),
             backend_row,
             skip_perms_row,
             caption_promoted("Skip lets agents run any command without asking."),
+            telemetry_row,
         ]
         .spacing(4);
 

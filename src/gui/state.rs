@@ -405,6 +405,8 @@ pub enum Msg {
     BackendTmux,
     SkipPermissionsEnable,
     SkipPermissionsDisable,
+    /// Toggled the "share anonymous usage data" checkbox in settings.
+    TelemetryToggle(bool),
     ProjectClicked(usize),
     /// Toggle button in the sidebar tree header. Collapses everything except
     /// worktrees that currently contain sessions, or — if already in that
@@ -577,7 +579,9 @@ pub enum Msg {
     CloseChangelog,
     /// Trigger an off-thread update check. `manual: true` = user-initiated (surfaces
     /// errors inline); `manual: false` = launch/periodic (fails silently, log only).
-    CheckForUpdates { manual: bool },
+    CheckForUpdates {
+        manual: bool,
+    },
     /// Off-thread check completed; carries the fetched release or an error string.
     /// The `bool` mirrors the `manual` flag from the originating `CheckForUpdates`.
     UpdateCheckResult(Result<crate::upgrade::Release, String>, bool),

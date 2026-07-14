@@ -76,6 +76,9 @@ pub struct Session {
     /// timestamp lets it discount output that immediately follows the user's
     /// own interaction.
     last_input_at: Option<Instant>,
+    /// When this session was spawned, for computing lifetime duration in
+    /// telemetry.
+    pub created_at: Instant,
 }
 
 impl Session {
@@ -133,7 +136,15 @@ impl Session {
         // direct child of grove, so it survives grove restarts.
         let n = tmux::next_free_n(&wt_path, agent);
         let tmux_name = tmux::make_name(&wt_path, agent, n);
-        tmux::new_session(&tmux_name, cwd, rows, cols, &agent.program(), &all_args, &env)?;
+        tmux::new_session(
+            &tmux_name,
+            cwd,
+            rows,
+            cols,
+            &agent.program(),
+            &all_args,
+            &env,
+        )?;
         // Without the sidecar the session can't be rediscovered after a grove
         // restart — kill the tmux session rather than orphan it.
         if let Err(e) = session_meta::write(
@@ -152,7 +163,9 @@ impl Session {
             return Err(e.context("failed to write session metadata"));
         }
 
-        Self::attach_tmux(id, label, project, wt_path, agent, tmux_name, rows, cols, attention)
+        Self::attach_tmux(
+            id, label, project, wt_path, agent, tmux_name, rows, cols, attention,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -187,7 +200,10 @@ impl Session {
         // .app bundle (which inherits no UTF-8 locale from the shell).
         cmd.env("LC_ALL", "en_US.UTF-8");
         if let Some(f) = &attention {
-            cmd.env(attention::STATE_FILE_ENV, f.state_file.display().to_string());
+            cmd.env(
+                attention::STATE_FILE_ENV,
+                f.state_file.display().to_string(),
+            );
         }
 
         Self::launch_pty(
@@ -387,6 +403,7 @@ impl Session {
             tmux_copy_mode: false,
             last_scroll_at: None,
             last_input_at: None,
+            created_at: Instant::now(),
         })
     }
 

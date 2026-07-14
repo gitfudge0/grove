@@ -381,7 +381,9 @@ pub enum GitProbe {
 pub enum ConfirmKind {
     RemoveProject(usize),
     RemoveWorktree(String), // wt path
-    InitAndAddWorktree { name: String },
+    InitAndAddWorktree {
+        name: String,
+    },
     /// Close grove despite running native sessions.
     Quit,
 }
@@ -496,12 +498,12 @@ impl App {
         } else if let Some(name) = store.theme.as_deref() {
             theme::set_by_name(name);
         }
-        let initial_modal = match first_run_modal(store.onboarded, tmux_available, store.tmux_enabled)
-        {
-            FirstRunModal::Onboarding => onboarding_modal(),
-            FirstRunModal::TmuxChoice => Modal::TmuxChoice,
-            FirstRunModal::None => Modal::None,
-        };
+        let initial_modal =
+            match first_run_modal(store.onboarded, tmux_available, store.tmux_enabled) {
+                FirstRunModal::Onboarding => onboarding_modal(),
+                FirstRunModal::TmuxChoice => Modal::TmuxChoice,
+                FirstRunModal::None => Modal::None,
+            };
         // Existing tmux sessions keep their backend even when the saved
         // preference now chooses native sessions for new launches.
         let sessions = if tmux_available {
@@ -582,7 +584,9 @@ impl App {
     }
 
     pub fn skip_permissions_enabled(&self) -> bool {
-        self.store.dangerously_skip_permissions_enabled.unwrap_or(true)
+        self.store
+            .dangerously_skip_permissions_enabled
+            .unwrap_or(true)
     }
 
     pub fn set_skip_permissions_enabled(&mut self, enabled: bool) -> Result<()> {
@@ -593,6 +597,17 @@ impl App {
         } else {
             "permission bypass disabled for new sessions"
         });
+        Ok(())
+    }
+
+    pub fn telemetry_enabled(&self) -> bool {
+        self.store.telemetry_enabled.unwrap_or(true)
+    }
+
+    pub fn set_telemetry_enabled(&mut self, enabled: bool) -> Result<()> {
+        self.store.telemetry_enabled = Some(enabled);
+        storage::save(&self.store)?;
+        crate::telemetry::set_enabled(enabled);
         Ok(())
     }
 
@@ -743,7 +758,15 @@ impl App {
         if let Some(agent) = default {
             let label = path_basename(&wt_path);
             let args = agent.launch_args(self.skip_permissions_enabled());
-            self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path, false)
+            self.spawn_session(
+                label,
+                project,
+                wt_path.clone(),
+                agent,
+                args,
+                &wt_path,
+                false,
+            )
         } else {
             if let Some(saved) = self.store.default_agent {
                 if !self.available_agents.contains(&saved) {
@@ -858,7 +881,13 @@ impl App {
         if script.is_empty() {
             return;
         }
-        match Session::spawn_script(stage.to_string(), project, wt_path.clone(), script, &wt_path) {
+        match Session::spawn_script(
+            stage.to_string(),
+            project,
+            wt_path.clone(),
+            script,
+            &wt_path,
+        ) {
             Ok(s) => {
                 let at = self.session_insert_index(&s);
                 self.sessions.insert(at, s);
@@ -906,6 +935,7 @@ impl App {
         let wt_path = match git::add_worktree(&p.path, &p.name, name) {
             Ok(path) => path,
             Err(e) => {
+                crate::telemetry::track("error", vec![("kind", "worktree_failed".into())]);
                 self.modal = Modal::Message(format!("add worktree failed: {e}"));
                 return;
             }
@@ -913,6 +943,7 @@ impl App {
         if let Err(e) = git::copy_worktree_includes(&p.path, &wt_path) {
             self.set_error_toast(format!("worktreeinclude: {e}"));
         }
+        crate::telemetry::track("worktree_created", vec![]);
         self.refresh_worktrees();
         // Launch the agent first, then the setup script (if any) so the setup
         // tab is spawned last and is the one focused by default — when a setup
@@ -1400,7 +1431,15 @@ impl App {
         };
         let label = path_basename(&wt_path);
         let args = agent.launch_args(self.skip_permissions_enabled());
-        self.spawn_session(label, project, wt_path.clone(), agent, args, &wt_path, false);
+        self.spawn_session(
+            label,
+            project,
+            wt_path.clone(),
+            agent,
+            args,
+            &wt_path,
+            false,
+        );
     }
 
     pub fn open_settings(&mut self) {
@@ -1464,7 +1503,9 @@ impl App {
     /// the OS setting. No-op otherwise.
     pub fn apply_system_theme(&mut self) {
         if self.theme_follow_system {
-            let name = self.resolve_system_theme_name(self.system_theme_mode).to_string();
+            let name = self
+                .resolve_system_theme_name(self.system_theme_mode)
+                .to_string();
             theme::set_by_name(&name);
         }
     }

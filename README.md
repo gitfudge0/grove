@@ -9,7 +9,6 @@ a worktree launchpad for ai coding agents
 [![license: MIT](https://img.shields.io/badge/license-MIT-9ece6a?style=flat-square)](#license)
 [![platform: linux | macOS | Windows (alpha)](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20Windows%20(alpha)-7aa2f7?style=flat-square)](#requirements)
 [![built with: rust](https://img.shields.io/badge/built%20with-rust-bb9af7?style=flat-square)](https://www.rust-lang.org/)
-[![version: 0.14.3](https://img.shields.io/badge/version-0.14.3-e0af68?style=flat-square)](Cargo.toml)
 
 </div>
 
@@ -25,6 +24,7 @@ grove is a native desktop app for managing git worktrees across projects and run
 - [supported agents](#supported-agents)
 - [themes](#themes)
 - [requirements](#requirements)
+- [telemetry](#telemetry)
 - [uninstall](#uninstall)
 - [license](#license)
 
@@ -148,6 +148,14 @@ themes are colorways, not chrome. every screen reads correctly across all 37, be
 - `git`
 - linux, macOS, or windows (alpha) with a graphical desktop session
 - `tmux` (optional, recommended for persistent sessions — macOS/linux only; windows always runs native sessions)
+
+## telemetry
+
+grove sends anonymous usage events: app launch (theme name, project count, tmux setting), an hourly heartbeat, session created/ended (agent type, native vs tmux, duration in minutes, open-session counts), worktree created, update applied/declined (version), error kinds (session spawn or worktree creation failed — the kind only, no details), UI feature pings (launcher/settings opened, zoom changed, grid tile moved), and panic messages — each tagged with app version and OS.
+
+it never sends project names, file paths, git data, prompts, or session/terminal content.
+
+to disable, toggle "share anonymous usage data" off in the settings modal, or set `GROVE_TELEMETRY=off` in your environment.
 
 ## uninstall
 
