@@ -2068,6 +2068,10 @@ impl Grove {
                     CloseFocusedDecision::NoOp => Task::none(),
                 }
             }
+            GlobalShortcut::GridMove(dx, dy) => {
+                self.grid_move(dx, dy);
+                Task::none()
+            }
         }
     }
 
@@ -2123,6 +2127,35 @@ impl Grove {
         };
         // Reuse SelectSession so resize / acknowledge / sidebar sync all apply.
         let _ = self.update(Msg::SelectSession(next));
+    }
+
+    /// Move keyboard focus between grid tiles directionally (mod+h/j/k/l,
+    /// mod+arrows). Grid-only; no-ops if there's nothing to focus or the move
+    /// would fall off the edge of the tile layout (see `grid_neighbor`).
+    fn grid_move(&mut self, dx: i32, dy: i32) {
+        if self.tile_order.is_empty() {
+            return;
+        }
+        let cur = self
+            .grid_focused
+            .and_then(|si| self.tile_order.iter().position(|&x| x == si));
+        let pos = match cur {
+            Some(p) => p,
+            None => {
+                let si = self.tile_order[0];
+                self.app.active_session = Some(si);
+                self.sync_grid_focus();
+                self.acknowledge_session(si);
+                return;
+            }
+        };
+        let Some(target) = grid_neighbor(pos, self.tile_order.len(), dx, dy) else {
+            return;
+        };
+        let si = self.tile_order[target];
+        self.app.active_session = Some(si);
+        self.sync_grid_focus();
+        self.acknowledge_session(si);
     }
 
     /// Select the Nth session in visible order (mod+1..9).
@@ -3393,6 +3426,8 @@ pub(crate) enum GlobalShortcut {
     SelectSession(usize),
     ShortcutOverlay,
     CloseFocusedSession,
+    /// Move keyboard focus between grid tiles by `(dx, dy)`. Grid screen only.
+    GridMove(i32, i32),
 }
 
 /// Coarse "which screen am I on" model, derived from existing UI flags.
@@ -3465,6 +3500,10 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
     ShortcutDef { action: Some(GlobalShortcut::ZoomReset),       triggers: &["0"],           display_keys: "0",         description: "reset zoom",             scopes: G, requires_alt: false, literal: false },
     ShortcutDef { action: Some(GlobalShortcut::ShortcutOverlay), triggers: &["/", "?"],      display_keys: "/",         description: "this overlay",           scopes: G, requires_alt: false, literal: false },
     ShortcutDef { action: Some(GlobalShortcut::CloseFocusedSession), triggers: &["w", "W"], display_keys: "w",         description: "close focused session",  scopes: G, requires_alt: false, literal: false },
+    // Display-only: `match_global_shortcut` handles this ahead of the
+    // registry lookup (dynamic dx/dy per key), scoped to Screen::Grid by hand
+    // there — keep the two in sync.
+    ShortcutDef { action: None,                                  triggers: &[],              display_keys: "h j k l / ←↓↑→", description: "move focus in grid", scopes: &[Scope::Screen(Screen::Grid)], requires_alt: false, literal: false },
     // Display-only: matched by `term_panel_resize_delta`, not
     // `match_global_shortcut` — closing the panel must fall through to the
     // PTY, which a registry-matched shortcut never does (see the guard's
@@ -3534,6 +3573,29 @@ fn match_global_shortcut(key: &Key, mods: Modifiers, screen: Screen) -> Option<G
     if !global_mods(mods) {
         return None;
     }
+    // Grid-only directional focus move. Checked ahead of the registry lookup
+    // so it shadows the global `mod+j`/`mod+k` NextSession/PrevSession
+    // bindings on this screen only — those two rows, and every other screen,
+    // are untouched.
+    if screen == Screen::Grid {
+        let dir = match key {
+            Key::Character(s) => match s.as_str() {
+                "h" | "H" => Some((-1, 0)),
+                "l" | "L" => Some((1, 0)),
+                "k" | "K" => Some((0, -1)),
+                "j" | "J" => Some((0, 1)),
+                _ => None,
+            },
+            Key::Named(Named::ArrowLeft) => Some((-1, 0)),
+            Key::Named(Named::ArrowRight) => Some((1, 0)),
+            Key::Named(Named::ArrowUp) => Some((0, -1)),
+            Key::Named(Named::ArrowDown) => Some((0, 1)),
+            _ => None,
+        };
+        if let Some((dx, dy)) = dir {
+            return Some(GlobalShortcut::GridMove(dx, dy));
+        }
+    }
     match key {
         // Not registry-`.find()`-driven like the char rows below (it's a
         // `Key::Named`, not a `Key::Character`), but still scope-checked
@@ -3599,6 +3661,54 @@ fn close_focused_session_decision(
 /// testable without constructing a full `Grove` (Bug 5).
 fn should_sync_grid_focus(grid_view: bool, grid_view_before_zen: bool) -> bool {
     grid_view || grid_view_before_zen
+}
+
+/// Tile index reached by moving `(dx, dy)` from tile `i` in a grid of `n`
+/// tiles, or `None` if there's no such tile. Tiles are numbered row-major
+/// (`tile_idx = row * cols + col`, see `grid_layout`/`grid_workspace`) but
+/// rendered into per-column containers that skip any `tile_idx >= n`, so a
+/// short column simply stacks the tiles it has, full height. E.g. n=3 gives
+/// cols=2, rows=2: the left column shows tiles 0 (top) and 2 (bottom); the
+/// right column shows only tile 1, spanning the full height.
+///
+/// Vertical moves (`dx == 0`) require the naive target index to exist —
+/// there's no "nearest tile in that column" fallback, since the columns
+/// don't share a row grid. Horizontal moves (`dy == 0`) instead clamp the row
+/// downward to the largest row `<= target_row` that has a tile in the target
+/// column, matching what's visually below the cursor's row.
+pub(crate) fn grid_neighbor(i: usize, n: usize, dx: i32, dy: i32) -> Option<usize> {
+    if n == 0 {
+        return None;
+    }
+    let (cols, _rows) = crate::gui::metrics::grid_layout(n);
+    let cols = cols as i32;
+    let row = i as i32 / cols;
+    let col = i as i32 % cols;
+    let target_col = col + dx;
+    if target_col < 0 || target_col >= cols {
+        return None;
+    }
+    if dx == 0 {
+        let target_row = row + dy;
+        if target_row < 0 {
+            return None;
+        }
+        let idx = target_row * cols + target_col;
+        return (idx >= 0 && (idx as usize) < n).then_some(idx as usize);
+    }
+    // Horizontal move: clamp the row downward to the largest row that still
+    // has a tile in the target column.
+    let mut r = row;
+    loop {
+        if r < 0 {
+            return None;
+        }
+        let idx = r * cols + target_col;
+        if idx >= 0 && (idx as usize) < n {
+            return Some(idx as usize);
+        }
+        r -= 1;
+    }
 }
 
 /// Whether the event subscription forwards this event to `update()`.
@@ -3807,6 +3917,42 @@ mod tests {
     }
 
     #[test]
+    fn grid_move_shortcuts_scoped_to_grid_screen() {
+        use GlobalShortcut::*;
+        let screen = Screen::Grid;
+        assert_eq!(match_global_shortcut(&ch("h"), gmods(), screen), Some(GridMove(-1, 0)));
+        assert_eq!(match_global_shortcut(&ch("l"), gmods(), screen), Some(GridMove(1, 0)));
+        assert_eq!(match_global_shortcut(&ch("k"), gmods(), screen), Some(GridMove(0, -1)));
+        assert_eq!(match_global_shortcut(&ch("j"), gmods(), screen), Some(GridMove(0, 1)));
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::ArrowLeft), gmods(), screen),
+            Some(GridMove(-1, 0))
+        );
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::ArrowRight), gmods(), screen),
+            Some(GridMove(1, 0))
+        );
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::ArrowUp), gmods(), screen),
+            Some(GridMove(0, -1))
+        );
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::ArrowDown), gmods(), screen),
+            Some(GridMove(0, 1))
+        );
+        // Elsewhere, mod+j/mod+k are still NextSession/PrevSession — the Grid
+        // shadow must not leak to other screens.
+        assert_eq!(
+            match_global_shortcut(&ch("j"), gmods(), Screen::Workspace),
+            Some(NextSession)
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("k"), gmods(), Screen::Workspace),
+            Some(PrevSession)
+        );
+    }
+
+    #[test]
     fn unmodified_or_unmapped_keys_are_not_shortcuts() {
         let screen = Screen::Workspace;
         assert_eq!(
@@ -3932,6 +4078,31 @@ mod tests {
             // grid_view_before_zen remembers to restore it on exit — that's
             // exactly the state where the desync used to happen.
             assert!(should_sync_grid_focus(false, true));
+        }
+    }
+
+    /// Pure tile-index arithmetic for directional grid focus movement — see
+    /// `grid_neighbor`'s doc comment for the row-major-but-column-rendered
+    /// geometry this covers.
+    mod grid_neighbor {
+        use super::super::grid_neighbor;
+
+        #[test]
+        fn n3_horizontal_and_vertical_moves() {
+            // n=3 -> cols=2, rows=2. Left column: 0 (top), 2 (bottom).
+            // Right column: 1 only, spanning the full height.
+            assert_eq!(grid_neighbor(2, 3, 1, 0), Some(1));
+            assert_eq!(grid_neighbor(1, 3, -1, 0), Some(0));
+            assert_eq!(grid_neighbor(1, 3, 0, 1), None);
+            assert_eq!(grid_neighbor(0, 3, 0, 1), Some(2));
+            assert_eq!(grid_neighbor(0, 3, -1, 0), None);
+        }
+
+        #[test]
+        fn n4_full_2x2_grid() {
+            assert_eq!(grid_neighbor(0, 4, 1, 0), Some(1));
+            assert_eq!(grid_neighbor(0, 4, 0, 1), Some(2));
+            assert_eq!(grid_neighbor(3, 4, 1, 0), None);
         }
     }
 
