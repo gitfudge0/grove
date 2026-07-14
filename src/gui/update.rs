@@ -3784,16 +3784,20 @@ pub(crate) fn grid_neighbor(i: usize, n: usize, dx: i32, dy: i32) -> Option<usiz
 /// reorder (drag or keyboard swap).
 pub(crate) const GRID_SLIDE: Duration = Duration::from_millis(150);
 
-/// Ease-out progress `[0, 1]` for a `GRID_SLIDE`-duration animation that
-/// started at `start`, evaluated at `now`. Cubic ease-out (`1 - (1-t)^3`)
-/// matches the snappy-then-settling feel used elsewhere in the GUI.
+/// Timing curve of the tile slide. `lilt` (iced's animation crate) exposes
+/// its easings as plain `fn(f32) -> f32`, so the curve is a one-word swap —
+/// see `iced::animation::Easing` for the full set, incl. `Custom` for a
+/// hand-rolled cubic-bezier if a named curve ever stops being enough.
+const GRID_SLIDE_EASING: iced::animation::Easing = iced::animation::Easing::EaseOutCubic;
+
+/// Eased progress `[0, 1]` for a `GRID_SLIDE`-duration animation that started
+/// at `start`, evaluated at `now`.
 pub(crate) fn slide_progress(start: std::time::Instant, now: std::time::Instant) -> f32 {
     let elapsed = now.saturating_duration_since(start);
     if elapsed >= GRID_SLIDE {
         return 1.0;
     }
-    let t = elapsed.as_secs_f32() / GRID_SLIDE.as_secs_f32();
-    1.0 - (1.0 - t).powi(3)
+    GRID_SLIDE_EASING.value(elapsed.as_secs_f32() / GRID_SLIDE.as_secs_f32())
 }
 
 /// Whether the event subscription forwards this event to `update()`.
