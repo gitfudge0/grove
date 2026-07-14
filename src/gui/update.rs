@@ -1277,7 +1277,21 @@ impl Grove {
                         &live_keys,
                         &self.app.store.grid_order,
                     );
-                    self.grid_focused = None;
+                    // Open with a focused tile so the directional shortcuts
+                    // (mod+hjkl to move focus, mod+alt+hjkl to move the tile)
+                    // work on the first keypress. Keep the active session's
+                    // tile if it has one — yanking focus elsewhere on entry
+                    // would be a surprise — otherwise focus the first tile.
+                    let focus = self
+                        .app
+                        .active_session
+                        .filter(|si| self.tile_order.contains(si))
+                        .or_else(|| self.tile_order.first().copied());
+                    self.grid_focused = focus;
+                    if let Some(si) = focus {
+                        self.app.active_session = Some(si);
+                        self.acknowledge_session(si);
+                    }
                     self.grid_drag = None;
                 } else {
                     // Carry the focused tile into the normal workspace.
