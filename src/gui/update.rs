@@ -478,7 +478,7 @@ impl Grove {
                 // Acceptable for now; a modal stack would be needed to do
                 // better.
                 self.app.modal = Modal::Confirm {
-                    title: "quit grove?".into(),
+                    title: "Quit Grove?".into(),
                     prompt: format!("{native_running} running {noun} will end. quit anyway?"),
                     destructive: true,
                     kind: ConfirmKind::Quit,
@@ -501,7 +501,7 @@ impl Grove {
             }
             Msg::ChooseTmux(enabled) => {
                 if let Err(e) = self.app.choose_tmux_enabled(enabled) {
-                    self.app.modal = Modal::Message(format!("tmux setup failed: {e}"));
+                    self.app.modal = Modal::Message(format!("Tmux setup failed: {e}"));
                 }
             }
             Msg::AgentPickerSelect(i) => self.agent_picker_select(i),
@@ -1116,7 +1116,7 @@ impl Grove {
             }
             Msg::AddProjectSubmit => {
                 if let Err(e) = self.app.submit_add_project() {
-                    self.app.modal = Modal::Message(format!("add project failed: {e}"));
+                    self.app.modal = Modal::Message(format!("Add project failed: {e}"));
                 }
                 self.rebuild_wt_cache();
             }
@@ -1471,7 +1471,7 @@ impl Grove {
 
     fn onboard_skip(&mut self) {
         if let Err(e) = self.app.onboard_skip() {
-            self.app.modal = Modal::Message(format!("setup failed: {e}"));
+            self.app.modal = Modal::Message(format!("Setup failed: {e}"));
             return;
         }
         self.after_onboarding();
@@ -1493,7 +1493,7 @@ impl Grove {
             }
             Ok(None) => {}
             Err(e) => {
-                self.app.modal = Modal::Message(format!("setup failed: {e}"));
+                self.app.modal = Modal::Message(format!("Setup failed: {e}"));
                 return Task::none();
             }
         }
@@ -1694,7 +1694,7 @@ impl Grove {
 
     fn theme_picker_submit(&mut self) {
         if let Err(e) = self.app.theme_picker_submit() {
-            self.app.modal = crate::app::Modal::Message(format!("theme failed: {e}"));
+            self.app.modal = crate::app::Modal::Message(format!("Theme failed: {e}"));
         }
         self.invalidate_pty_render_cache();
     }
@@ -1985,7 +1985,7 @@ impl Grove {
 
     fn agent_picker_toggle_default(&mut self) {
         if let Err(e) = self.app.picker_toggle_default() {
-            self.app.modal = Modal::Message(format!("default agent failed: {e}"));
+            self.app.modal = Modal::Message(format!("Default agent failed: {e}"));
         }
     }
 
@@ -2395,7 +2395,7 @@ impl Grove {
                     }
                     Key::Named(Named::Enter) => {
                         if let Err(e) = self.app.submit_add_project() {
-                            self.app.modal = Modal::Message(format!("add project failed: {e}"));
+                            self.app.modal = Modal::Message(format!("Add project failed: {e}"));
                         }
                         self.rebuild_wt_cache();
                     }
@@ -2594,14 +2594,14 @@ impl Grove {
 
     fn choose_tmux(&mut self, enabled: bool) {
         if let Err(e) = self.app.choose_tmux_enabled(enabled) {
-            self.app.modal = Modal::Message(format!("tmux setup failed: {e}"));
+            self.app.modal = Modal::Message(format!("Tmux setup failed: {e}"));
         }
     }
 
     fn submit_modal_input(&mut self) {
         let before = self.session_keys();
         if let Err(e) = self.app.submit_input() {
-            self.app.modal = Modal::Message(format!("input failed: {e}"));
+            self.app.modal = Modal::Message(format!("Input failed: {e}"));
         }
         self.resize_new_sessions(&before);
         // If the grid is open, append the new session index so it appears.
@@ -2657,7 +2657,7 @@ impl Grove {
     fn submit_modal_confirm(&mut self, yes: bool) {
         let before = self.session_keys();
         if let Err(e) = self.app.submit_confirm(yes) {
-            self.app.modal = Modal::Message(format!("action failed: {e}"));
+            self.app.modal = Modal::Message(format!("Action failed: {e}"));
         }
         self.resize_new_sessions(&before);
         // If the grid is open, append the new session index so it appears.
@@ -2732,7 +2732,7 @@ impl Grove {
             p.scripts.teardown = norm(ed.teardown.text());
         }
         if let Err(e) = crate::storage::save(&self.app.store) {
-            self.app.modal = Modal::Message(format!("failed to save scripts: {e}"));
+            self.app.modal = Modal::Message(format!("Failed to save scripts: {e}"));
             return;
         }
         self.app.set_toast("saved project scripts");
@@ -3212,7 +3212,7 @@ impl Grove {
             return;
         };
         if let Err(e) = self.app.set_default_agent(a) {
-            self.app.modal = Modal::Message(format!("default agent failed: {e}"));
+            self.app.modal = Modal::Message(format!("Default agent failed: {e}"));
         }
     }
 
@@ -3635,7 +3635,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::NewSession),
         triggers: &["n", "N"],
         display_keys: "n",
-        description: "new session",
+        description: "New session",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -3644,7 +3644,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::NewSessionInWorktree),
         triggers: &["n", "N"],
         display_keys: "n",
-        description: "new session in current worktree",
+        description: "New session in current worktree",
         scopes: G,
         requires_alt: true,
         literal: false,
@@ -3653,7 +3653,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::NextSession),
         triggers: &["j", "J"],
         display_keys: "j",
-        description: "next session",
+        description: "Next session",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -3662,7 +3662,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::PrevSession),
         triggers: &["k", "K"],
         display_keys: "k",
-        description: "previous session",
+        description: "Previous session",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -3672,7 +3672,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: None,
         triggers: &[],
         display_keys: "1–9",
-        description: "select nth session",
+        description: "Select nth session",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -3681,7 +3681,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::ToggleGrid),
         triggers: &["g", "G"],
         display_keys: "g",
-        description: "toggle grid view",
+        description: "Toggle grid view",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -3690,7 +3690,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::ToggleZen),
         triggers: &[],
         display_keys: "enter",
-        description: "toggle zen mode",
+        description: "Toggle zen mode",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -3699,7 +3699,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::Settings),
         triggers: &[","],
         display_keys: ",",
-        description: "settings",
+        description: "Settings",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -3708,7 +3708,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::ZoomIn),
         triggers: &["=", "+"],
         display_keys: "=",
-        description: "zoom in",
+        description: "Zoom in",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -3717,7 +3717,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::ZoomOut),
         triggers: &["-", "_"],
         display_keys: "-",
-        description: "zoom out",
+        description: "Zoom out",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -3726,7 +3726,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::ZoomReset),
         triggers: &["0"],
         display_keys: "0",
-        description: "reset zoom",
+        description: "Reset zoom",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -3735,7 +3735,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::ShortcutOverlay),
         triggers: &["/", "?"],
         display_keys: "/",
-        description: "this overlay",
+        description: "This overlay",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -3744,7 +3744,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::CloseFocusedSession),
         triggers: &["w", "W"],
         display_keys: "w",
-        description: "close focused session",
+        description: "Close focused session",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -3756,7 +3756,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: None,
         triggers: &[],
         display_keys: "h j k l / ←↓↑→",
-        description: "move focus in grid",
+        description: "Move focus in grid",
         scopes: &[Scope::Screen(Screen::Grid)],
         requires_alt: false,
         literal: false,
@@ -3765,7 +3765,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: None,
         triggers: &[],
         display_keys: "alt+h j k l / ←↓↑→",
-        description: "move tile in grid",
+        description: "Move tile in grid",
         scopes: &[Scope::Screen(Screen::Grid)],
         requires_alt: true,
         literal: false,
@@ -3780,7 +3780,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: None,
         triggers: &[],
         display_keys: "ctrl+shift+←/→",
-        description: "resize terminal panel",
+        description: "Resize terminal panel",
         scopes: &[Scope::Screen(Screen::Workspace)],
         requires_alt: false,
         literal: true,

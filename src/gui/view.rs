@@ -19,8 +19,8 @@ use super::update::{platform_mod_label, GlobalShortcut, Scope, ShortcutDef, SHOR
 use super::widgets::{
     control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_workspace, footer_btn,
     icon_btn, launcher_row, modal_action, modal_action_sized, modal_checkbox, modal_list_row,
-    modal_panel, seg_button, seg_button_danger, sidebar_agent_menu_overlay, tool_btn,
-    tool_btn_toggle, truncate_middle, vline, ModalBtn, SegSide,
+    modal_panel, seg_button, sidebar_agent_menu_overlay, skip_perms_seg, tool_btn, tool_btn_toggle,
+    truncate_middle, vline, ModalBtn, SegSide,
 };
 use crate::app::{AddProjectStep, ConfirmKind, GitProbe, Modal, OnboardStep};
 use crate::git::Worktree;
@@ -2228,7 +2228,7 @@ impl Grove {
 
         body = body
             .push(
-                text("enter to confirm · esc to cancel")
+                text("Enter to confirm · Esc to cancel")
                     .size(11)
                     .color(c::FG_MUTE()),
             )
@@ -2236,8 +2236,8 @@ impl Grove {
             .push(
                 row![
                     Space::new().width(Length::Fill),
-                    modal_action("cancel", ModalBtn::Plain, Msg::ModalCancel),
-                    modal_action("submit", ModalBtn::Primary, Msg::ModalSubmit),
+                    modal_action("Cancel", ModalBtn::Plain, Msg::ModalCancel),
+                    modal_action("Submit", ModalBtn::Primary, Msg::ModalSubmit),
                 ]
                 .spacing(8)
                 .align_y(iced::Alignment::Center),
@@ -2284,7 +2284,7 @@ impl Grove {
             .height(Length::Fixed(rows.max(1) as f32 * ROW_H));
         if entries.is_empty() {
             matches_col = matches_col.push(
-                container(text("no matches").size(12).color(c::FG_MUTE()))
+                container(text("No matches").size(12).color(c::FG_MUTE()))
                     .height(ROW_H)
                     .padding(Padding::from([0, 10]))
                     .align_y(iced::Alignment::Center),
@@ -2355,9 +2355,9 @@ impl Grove {
             AddProjectStep::Details => 2,
         };
         let header = row![
-            text("add project").size(13).color(accent),
+            text("Add project").size(13).color(accent),
             Space::new().width(Length::Fill),
-            text(format!("step {step_no} of 2"))
+            text(format!("Step {step_no} of 2"))
                 .size(11)
                 .color(c::FG_MUTE()),
         ]
@@ -2373,9 +2373,9 @@ impl Grove {
                 let browse = button(
                     container(
                         text(if self.picker_open {
-                            "waiting for the folder picker…"
+                            "Waiting for the folder picker…"
                         } else {
-                            "browse for folder…"
+                            "Browse for folder…"
                         })
                         .size(13),
                     )
@@ -2404,7 +2404,7 @@ impl Grove {
                     }
                 });
                 let drop_hint = container(
-                    text("or drop a folder anywhere in this window")
+                    text("Or drop a folder anywhere in this window")
                         .size(11)
                         .color(c::FG_MUTE()),
                 )
@@ -2413,7 +2413,7 @@ impl Grove {
 
                 let or_divider = row![
                     container(divider_h(c::BORDER_SOFT())).width(Length::Fill),
-                    text("or type a path").size(11).color(c::FG_MUTE()),
+                    text("Or type a path").size(11).color(c::FG_MUTE()),
                     container(divider_h(c::BORDER_SOFT())).width(Length::Fill),
                 ]
                 .spacing(10)
@@ -2442,7 +2442,7 @@ impl Grove {
                 }
                 body = body
                     .push(
-                        text("tab complete · ↑↓ select · enter continue · esc cancel")
+                        text("Tab to complete · ↑↓ to select · Enter to continue · Esc to cancel")
                             .size(11)
                             .color(c::FG_MUTE()),
                     )
@@ -2450,7 +2450,7 @@ impl Grove {
                     .push(
                         row![
                             Space::new().width(Length::Fill),
-                            modal_action("cancel", ModalBtn::Plain, Msg::ModalCancel),
+                            modal_action("Cancel", ModalBtn::Plain, Msg::ModalCancel),
                         ]
                         .spacing(8)
                         .align_y(iced::Alignment::Center),
@@ -2465,7 +2465,7 @@ impl Grove {
                             .color(c::FG())
                             .wrapping(iced::widget::text::Wrapping::None),
                         Space::new().width(Length::Fill),
-                        modal_action("change", ModalBtn::Plain, Msg::AddProjectChangeSource),
+                        modal_action("Change", ModalBtn::Plain, Msg::AddProjectChangeSource),
                     ]
                     .spacing(8)
                     .align_y(iced::Alignment::Center),
@@ -2485,7 +2485,7 @@ impl Grove {
                 let badge: Element<'a, Msg> = match git {
                     GitProbe::Repo { branch } => row![
                         icon("git", 14.0, c::GREEN()),
-                        text(format!("git repository · branch {branch}"))
+                        text(format!("Git repository · branch {branch}"))
                             .size(12)
                             .color(c::GREEN()),
                     ]
@@ -2494,7 +2494,7 @@ impl Grove {
                     .into(),
                     GitProbe::NotRepo => row![
                         icon("no-git", 14.0, c::AMBER()),
-                        text("not a git repository").size(12).color(c::AMBER()),
+                        text("Not a git repository").size(12).color(c::AMBER()),
                     ]
                     .spacing(7)
                     .align_y(iced::Alignment::Center)
@@ -2514,14 +2514,14 @@ impl Grove {
                     .style(input_field_style);
 
                 body = body
-                    .push(text("folder").size(11).color(c::FG_MUTE()))
+                    .push(text("Folder").size(11).color(c::FG_MUTE()))
                     .push(chip)
                     .push(badge)
                     .push(
                         row![
-                            text("name").size(11).color(c::FG_MUTE()),
+                            text("Name").size(11).color(c::FG_MUTE()),
                             Space::new().width(Length::Fill),
-                            text(format!("empty uses '{default_name}'"))
+                            text(format!("Empty uses '{default_name}'"))
                                 .size(11)
                                 .color(c::FG_MUTE()),
                         ]
@@ -2531,14 +2531,14 @@ impl Grove {
 
                 if matches!(git, GitProbe::NotRepo) {
                     body = body.push(modal_checkbox(
-                        "initialize git repository".into(),
+                        "Initialize Git repository".into(),
                         init_git,
                         accent,
                         Some(Msg::AddProjectToggleInitGit),
                     ));
                     if !init_git {
                         body = body.push(
-                            text("sessions will run directly in the project folder, no worktrees")
+                            text("Sessions will run directly in the project folder, no worktrees")
                                 .size(11)
                                 .color(c::FG_MUTE()),
                         );
@@ -2548,13 +2548,17 @@ impl Grove {
                     body = body.push(text(note.to_string()).size(12).color(c::RED()));
                 }
                 body = body
-                    .push(text("enter add · esc back").size(11).color(c::FG_MUTE()))
+                    .push(
+                        text("Enter to add · Esc to back")
+                            .size(11)
+                            .color(c::FG_MUTE()),
+                    )
                     .push(Space::new().height(4))
                     .push(
                         row![
                             Space::new().width(Length::Fill),
-                            modal_action("cancel", ModalBtn::Plain, Msg::ModalCancel),
-                            modal_action("add project", ModalBtn::Primary, Msg::AddProjectSubmit),
+                            modal_action("Cancel", ModalBtn::Plain, Msg::ModalCancel),
+                            modal_action("Add project", ModalBtn::Primary, Msg::AddProjectSubmit),
                         ]
                         .spacing(8)
                         .align_y(iced::Alignment::Center),
@@ -2574,9 +2578,9 @@ impl Grove {
     ) -> Element<'a, Msg> {
         let accent = if destructive { c::RED() } else { c::MAGENTA() };
         let confirm_label = match kind {
-            ConfirmKind::Quit => "quit",
-            _ if destructive => "remove",
-            _ => "confirm",
+            ConfirmKind::Quit => "Quit",
+            _ if destructive => "Remove",
+            _ => "Confirm",
         };
         let body = column![
             text(title.to_string()).size(13).color(accent),
@@ -2587,7 +2591,7 @@ impl Grove {
             Space::new().height(8),
             row![
                 Space::new().width(Length::Fill),
-                modal_action("cancel", ModalBtn::Plain, Msg::ModalConfirm(false)),
+                modal_action("Cancel", ModalBtn::Plain, Msg::ModalConfirm(false)),
                 modal_action(
                     confirm_label,
                     if destructive {
@@ -2623,16 +2627,16 @@ impl Grove {
         let accent = c::RED();
         let total = worktrees.len();
         let prompt = if total == 0 {
-            format!("'{name}' will be unregistered from grove. files on disk stay put.")
+            format!("'{name}' will be unregistered from Grove. Files on disk stay put.")
         } else {
             format!(
-                "'{name}' will be unregistered from grove. non-main worktrees stay on disk unless you opt in below."
+                "'{name}' will be unregistered from Grove. Non-main worktrees stay on disk unless you opt in below."
             )
         };
-        let session_note = "running sessions for this project will be stopped.";
+        let session_note = "Running sessions for this project will be stopped.";
 
         let mut body = column![
-            text("remove project").size(13).color(accent),
+            text("Remove project").size(13).color(accent),
             text(prompt)
                 .size(13)
                 .color(c::FG_DIM())
@@ -2646,9 +2650,9 @@ impl Grove {
 
         if total > 0 {
             let label = if total == 1 {
-                "delete 1 non-main worktree from disk".to_string()
+                "Delete 1 non-main worktree from disk".to_string()
             } else {
-                format!("delete {total} non-main worktrees from disk")
+                format!("Delete {total} non-main worktrees from disk")
             };
             let cb = modal_checkbox(
                 label,
@@ -2660,7 +2664,10 @@ impl Grove {
                     Some(Msg::ToggleRemoveWorktrees)
                 },
             );
-            body = body.push(Space::new().height(2)).push(cb);
+            body = body
+                .push(divider_h(c::BORDER_SOFT()))
+                .push(Space::new().height(2))
+                .push(cb);
         }
 
         if in_progress {
@@ -2670,11 +2677,12 @@ impl Grove {
                 (done as f32 / total as f32).clamp(0.0, 1.0)
             };
             let status = if done >= total {
-                "finishing…".to_string()
+                "Finishing…".to_string()
             } else {
-                format!("removing {} of {}: {}", done + 1, total, current)
+                format!("Removing {} of {}: {}", done + 1, total, current)
             };
             body = body
+                .push(divider_h(c::BORDER_SOFT()))
                 .push(Space::new().height(4))
                 .push(
                     text(status)
@@ -2697,17 +2705,18 @@ impl Grove {
                 );
         } else {
             body = body
+                .push(divider_h(c::BORDER_SOFT()))
                 .push(Space::new().height(4))
                 .push(
-                    text("press y to remove · space toggles delete-from-disk · esc cancels")
+                    text("Y to remove · Space to toggle delete from disk · Esc to cancel")
                         .size(11)
                         .color(c::FG_MUTE()),
                 )
                 .push(
                     row![
                         Space::new().width(Length::Fill),
-                        modal_action("cancel", ModalBtn::Plain, Msg::ModalCancel),
-                        modal_action("remove", ModalBtn::Danger, Msg::ConfirmRemoveProject),
+                        modal_action("Cancel", ModalBtn::Plain, Msg::ModalCancel),
+                        modal_action("Remove", ModalBtn::Danger, Msg::ConfirmRemoveProject),
                     ]
                     .spacing(8)
                     .align_y(iced::Alignment::Center),
@@ -2729,7 +2738,7 @@ impl Grove {
 
     fn message_modal<'a>(&'a self, message: &'a str) -> Element<'a, Msg> {
         let body = column![
-            text("notice").size(13).color(c::CYAN()),
+            text("Notice").size(13).color(c::CYAN()),
             text(message.to_string())
                 .size(13)
                 .color(c::FG_DIM())
@@ -2737,7 +2746,7 @@ impl Grove {
             Space::new().height(8),
             row![
                 Space::new().width(Length::Fill),
-                modal_action("close", ModalBtn::Primary, Msg::ModalCancel),
+                modal_action("Close", ModalBtn::Primary, Msg::ModalCancel),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
@@ -2757,7 +2766,7 @@ impl Grove {
         let done = matches!(td.stage, TeardownStage::Done { .. });
         let running = matches!(td.stage, TeardownStage::RunningScript);
 
-        let mut body = column![text(format!("delete worktree / {wt_name}"))
+        let mut body = column![text(format!("Delete worktree / {wt_name}"))
             .size(13)
             .color(c::RED()),]
         .spacing(12);
@@ -2790,13 +2799,13 @@ impl Grove {
         let buttons = if done {
             row![
                 Space::new().width(Length::Fill),
-                modal_action("close", ModalBtn::Primary, Msg::ModalCancel),
+                modal_action("Close", ModalBtn::Primary, Msg::ModalCancel),
             ]
         } else if running {
             // Let the user proceed without waiting for a hung teardown script.
             row![
                 Space::new().width(Length::Fill),
-                modal_action("skip & remove", ModalBtn::Plain, Msg::ModalCancel),
+                modal_action("Skip & remove", ModalBtn::Plain, Msg::ModalCancel),
             ]
         } else {
             row![Space::new().width(Length::Fill)]
@@ -2861,28 +2870,28 @@ impl Grove {
 
         let fields = column![
             field(
-                "setup",
-                "runs once when a new worktree is created, inside the new worktree's directory. \
-                 use it to install dependencies, copy ignored env files, or start the services \
+                "Setup",
+                "Runs once when a new worktree is created, inside the new worktree's directory. \
+                 Use it to install dependencies, copy ignored env files, or start the services \
                  an agent needs before you begin working.",
                 "npm install",
                 &ed.setup,
                 ScriptField::Setup,
             ),
             field(
-                "run",
-                "runs on demand when you press the play button (worktree row or session header). \
-                 it opens an interactive terminal tab, so it suits dev servers, test watchers, \
+                "Run",
+                "Runs on demand when you press the play button (worktree row or session header). \
+                 It opens an interactive terminal tab, so it suits dev servers, test watchers, \
                  or any command you want to watch and interact with.",
                 "npm run dev",
                 &ed.run,
                 ScriptField::Run,
             ),
             field(
-                "teardown",
-                "runs when you delete the worktree, before it is removed from disk. use it to \
+                "Teardown",
+                "Runs when you delete the worktree, before it is removed from disk. Use it to \
                  stop services, tear down databases, or clean up anything setup created. \
-                 deletion proceeds once it exits.",
+                 Deletion proceeds once it exits.",
                 "docker compose down",
                 &ed.teardown,
                 ScriptField::Teardown,
@@ -2921,18 +2930,18 @@ impl Grove {
         .max_height(480.0);
 
         let body = column![
-            text(format!("scripts / {}", ed.project_name))
+            text(format!("Scripts / {}", ed.project_name))
                 .size(13)
                 .color(c::CYAN()),
-            text("shell snippets shared by every worktree of this project, run via $SHELL -lc. leave a field blank to disable that step.")
+            text("Shell snippets shared by every worktree of this project, run via $SHELL -lc. Leave a field blank to disable that step.")
                 .size(11)
                 .color(c::FG_MUTE())
                 .wrapping(iced::widget::text::Wrapping::Word),
             scroll_area,
             row![
                 Space::new().width(Length::Fill),
-                modal_action("cancel", ModalBtn::Plain, Msg::ScriptsEditorCancel),
-                modal_action("save", ModalBtn::Primary, Msg::ScriptsEditorSave),
+                modal_action("Cancel", ModalBtn::Plain, Msg::ScriptsEditorCancel),
+                modal_action("Save", ModalBtn::Primary, Msg::ScriptsEditorSave),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
@@ -2944,16 +2953,16 @@ impl Grove {
 
     fn tmux_choice_modal(&self) -> Element<'_, Msg> {
         let body = column![
-            text("session backend").size(13).color(c::CYAN()),
-            text("use tmux for new sessions? existing sessions keep their current backend.")
+            text("Session backend").size(13).color(c::CYAN()),
+            text("Use tmux for new sessions? Existing sessions keep their current backend.")
                 .size(13)
                 .color(c::FG_DIM())
                 .wrapping(iced::widget::text::Wrapping::Word),
             Space::new().height(8),
             row![
                 Space::new().width(Length::Fill),
-                modal_action("native", ModalBtn::Plain, Msg::ChooseTmux(false)),
-                modal_action("tmux", ModalBtn::Primary, Msg::ChooseTmux(true)),
+                modal_action("Native", ModalBtn::Plain, Msg::ChooseTmux(false)),
+                modal_action("Tmux", ModalBtn::Primary, Msg::ChooseTmux(true)),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
@@ -2971,9 +2980,9 @@ impl Grove {
     ) -> Element<'a, Msg> {
         let wt_name = crate::app::path_basename(wt_path);
         let title = if project.is_empty() {
-            format!("start session / {wt_name}")
+            format!("Start session / {wt_name}")
         } else {
-            format!("start session / {project} / {wt_name}")
+            format!("Start session / {project} / {wt_name}")
         };
 
         let mut list = Column::new().spacing(0);
@@ -2981,13 +2990,11 @@ impl Grove {
             let active = i == sel;
             let is_default = self.app.store.default_agent == Some(*agent);
             let label = row![
-                text(agent.label().to_string()).size(12).color(if active {
-                    c::FG()
-                } else {
-                    c::FG_DIM()
-                }),
+                text(cap(agent.label()))
+                    .size(12)
+                    .color(if active { c::FG() } else { c::FG_DIM() }),
                 Space::new().width(Length::Fill),
-                text(if is_default { "default" } else { "" })
+                text(if is_default { "Default" } else { "" })
                     .size(11)
                     .color(c::FG_MUTE()),
             ]
@@ -3015,10 +3022,10 @@ impl Grove {
             list_box,
             Space::new().height(8),
             row![
-                modal_action("default", ModalBtn::Plain, Msg::AgentPickerToggleDefault),
+                modal_action("Default", ModalBtn::Plain, Msg::AgentPickerToggleDefault),
                 Space::new().width(Length::Fill),
-                modal_action("cancel", ModalBtn::Plain, Msg::ModalCancel),
-                modal_action("launch", ModalBtn::Primary, Msg::AgentPickerSubmit),
+                modal_action("Cancel", ModalBtn::Plain, Msg::ModalCancel),
+                modal_action("Launch", ModalBtn::Primary, Msg::AgentPickerSubmit),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
@@ -3095,7 +3102,7 @@ impl Grove {
             ));
         }
         // "+ New worktree…" affordance.
-        let add_row = row![text("+ new worktree…").size(12).color(c::MAGENTA())]
+        let add_row = row![text("+ New worktree…").size(12).color(c::MAGENTA())]
             .align_y(iced::Alignment::Center);
         wt_list = wt_list.push(modal_list_row(add_row, false, Msg::LauncherNewWorktree));
 
@@ -3107,13 +3114,11 @@ impl Grove {
             let bright = active && agent_focused;
             let is_default = self.app.store.default_agent == Some(*ag);
             let label_row = row![
-                text(ag.label().to_string()).size(12).color(if bright {
-                    c::FG()
-                } else {
-                    c::FG_DIM()
-                }),
+                text(cap(ag.label()))
+                    .size(12)
+                    .color(if bright { c::FG() } else { c::FG_DIM() }),
                 Space::new().width(Length::Fill),
-                text(if is_default { "default" } else { "" })
+                text(if is_default { "Default" } else { "" })
                     .size(11)
                     .color(c::FG_MUTE()),
             ]
@@ -3131,9 +3136,11 @@ impl Grove {
         let col_h = Length::Fixed(300.0);
         let make_col = |title: &'static str, body: Element<'a, Msg>, focused: bool| {
             column![
-                text(title)
-                    .size(10)
-                    .color(if focused { c::CYAN() } else { c::FG_MUTE() }),
+                text(title).font(UI_BOLD).size(10).color(if focused {
+                    c::CYAN()
+                } else {
+                    c::FG_MUTE()
+                }),
                 container(body).height(col_h).width(Length::Fill),
             ]
             .spacing(6)
@@ -3180,40 +3187,19 @@ impl Grove {
         );
         let footer = row![
             container(crumb_el).width(Length::Fill).clip(true),
-            text("←/→ or h/l columns · ↑/↓ or j/k move · space default · enter start · esc")
+            text("←→ or h/l for columns · ↑↓ or j/k to move · Space to set default · Enter to start · Esc to close")
                 .size(10)
                 .color(c::FG_MUTE()),
-            modal_action("start session", ModalBtn::Primary, Msg::LauncherStart),
+            modal_action("Start session", ModalBtn::Primary, Msg::LauncherStart),
         ]
         .spacing(10)
         .align_y(iced::Alignment::Center);
 
-        // Header: title on the left, close (✕) button on the right.
-        let close_btn = button(
-            container(icon("close", 12.0, c::FG_MUTE()))
-                .center_x(20)
-                .center_y(20),
-        )
-        .on_press(Msg::ModalCancel)
-        .padding(0)
-        .style(|_, status| {
-            let hovered = matches!(status, button::Status::Hovered);
-            button::Style {
-                background: None,
-                text_color: if hovered { c::FG() } else { c::FG_MUTE() },
-                border: Border {
-                    color: Color::TRANSPARENT,
-                    width: 0.0,
-                    radius: Radius::from(3.0),
-                },
-                shadow: Shadow::default(),
-                snap: false,
-            }
-        });
+        // Header: title on the left, close button on the right.
         let header = row![
-            text("new session").size(13).color(c::MAGENTA()),
+            text("New session").size(13).color(c::MAGENTA()),
             Space::new().width(Length::Fill),
-            close_btn,
+            icon_btn("close", Msg::ModalCancel),
         ]
         .align_y(iced::Alignment::Center);
 
@@ -3224,17 +3210,6 @@ impl Grove {
 
     fn settings_modal(&self) -> Element<'_, Msg> {
         use iced::Alignment::Center;
-
-        // Sentence-cases a lowercase identifier (e.g. `Agent::label()`, which
-        // stays lowercase because it's shared with non-UI call sites) for
-        // display here only.
-        fn cap(s: &str) -> String {
-            let mut chars = s.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
-            }
-        }
 
         // A muted, indented one-liner used under section headers and rows to
         // explain what a control does (throwaway caption: 11 · regular ·
@@ -3420,36 +3395,15 @@ impl Grove {
         .padding(Padding::from([0, 10]));
 
         let skip_perms_on = self.app.skip_permissions_enabled();
-        let skip_perms_seg = container(
-            row![
-                seg_button_danger(
-                    "Skip",
-                    skip_perms_on,
-                    SegSide::Left,
-                    Msg::SkipPermissionsEnable
-                ),
-                seg_button(
-                    "Safe",
-                    !skip_perms_on,
-                    SegSide::Right,
-                    Msg::SkipPermissionsDisable
-                ),
-            ]
-            .spacing(0),
-        )
-        .style(|_| container::Style {
-            border: Border {
-                color: c::BORDER(),
-                width: 1.0,
-                radius: Radius::from(6.0),
-            },
-            ..Default::default()
-        });
         let skip_perms_row = container(
             row![
                 text("Permissions").size(12).color(c::FG()),
                 Space::new().width(Length::Fill),
-                skip_perms_seg,
+                skip_perms_seg(
+                    skip_perms_on,
+                    Msg::SkipPermissionsEnable,
+                    Msg::SkipPermissionsDisable
+                ),
             ]
             .align_y(Center),
         )
@@ -3708,8 +3662,8 @@ impl Grove {
 
         // Static display-only rows the behavioral registry deliberately omits.
         let static_rows: [(String, &'static str); 2] = [
-            (format!("{m}+c / {m}+v"), "copy / paste in session"),
-            ("esc".into(), "close modals"),
+            (format!("{m}+c / {m}+v"), "Copy / paste in session"),
+            ("esc".into(), "Close modals"),
         ];
 
         let make_row = |keys: String, desc: &'static str| {
@@ -3738,7 +3692,7 @@ impl Grove {
             cols
         };
 
-        let mut body = column![text("keyboard shortcuts").size(13).color(c::MAGENTA())].spacing(12);
+        let mut body = column![text("Keyboard shortcuts").size(13).color(c::MAGENTA())].spacing(12);
 
         if grouped {
             // Global section: registry Global rows + the static copy/paste/esc rows.
@@ -3758,11 +3712,16 @@ impl Grove {
                 .collect();
 
             if !global_rows.is_empty() {
-                body = body.push(text("global").size(11).color(c::FG_MUTE()));
+                body = body.push(text("GLOBAL").font(UI_BOLD).size(11).color(c::FG_MUTE()));
                 body = body.push(two_columns(global_rows));
             }
             if !screen_rows.is_empty() {
-                body = body.push(text(screen.label()).size(11).color(c::FG_MUTE()));
+                body = body.push(
+                    text(screen.label().to_uppercase())
+                        .font(UI_BOLD)
+                        .size(11)
+                        .color(c::FG_MUTE()),
+                );
                 body = body.push(two_columns(screen_rows));
             }
         } else {
@@ -3783,7 +3742,7 @@ impl Grove {
 
         body = body
             .push(Space::new().height(4))
-            .push(text("esc to close").size(11).color(c::FG_MUTE()));
+            .push(text("Esc to close").size(11).color(c::FG_MUTE()));
 
         modal_panel(body.into(), 640.0, c::MAGENTA())
     }
@@ -3791,15 +3750,15 @@ impl Grove {
     fn updating_modal(&self) -> Element<'_, Msg> {
         use iced::Alignment::Center;
 
-        let header = text("updating grove").size(13).color(c::MAGENTA());
+        let header = text("Updating Grove").size(13).color(c::MAGENTA());
 
         let body: Element<'_, Msg> = match &self.upgrade {
             UpgradeState::Updating(stage) => {
                 let label = match stage {
-                    crate::upgrade::Stage::Downloading => "downloading…",
-                    crate::upgrade::Stage::Building => "building…",
-                    crate::upgrade::Stage::Installing => "installing…",
-                    crate::upgrade::Stage::Done => "finishing…",
+                    crate::upgrade::Stage::Downloading => "Downloading…",
+                    crate::upgrade::Stage::Building => "Building…",
+                    crate::upgrade::Stage::Installing => "Installing…",
+                    crate::upgrade::Stage::Done => "Finishing…",
                 };
                 row![
                     super::icons::spinner(16.0, c::FG_DIM(), self.blink_tick),
@@ -3810,27 +3769,27 @@ impl Grove {
                 .into()
             }
             UpgradeState::Updated => column![
-                text("update installed. restart grove to apply")
+                text("Update installed. Restart Grove to apply")
                     .size(12)
                     .color(c::FG()),
                 Space::new().height(10),
                 row![
-                    modal_action("restart", ModalBtn::Primary, Msg::RestartApp),
+                    modal_action("Restart", ModalBtn::Primary, Msg::RestartApp),
                     Space::new().width(8),
-                    modal_action("later", ModalBtn::Plain, Msg::ModalCancel),
+                    modal_action("Later", ModalBtn::Plain, Msg::ModalCancel),
                 ]
                 .align_y(Center),
             ]
             .into(),
             UpgradeState::UpdateFailed(e) => column![
-                text("update failed").size(12).color(c::FG()),
+                text("Update failed").size(12).color(c::FG()),
                 Space::new().height(6),
                 text(e.clone()).size(11).color(c::FG_MUTE()),
                 Space::new().height(10),
-                modal_action("close", ModalBtn::Plain, Msg::ModalCancel),
+                modal_action("Close", ModalBtn::Plain, Msg::ModalCancel),
             ]
             .into(),
-            _ => text("updating…").size(12).color(c::FG_DIM()).into(),
+            _ => text("Updating…").size(12).color(c::FG_DIM()).into(),
         };
 
         let content = column![header, Space::new().height(12), body].spacing(0);
@@ -3855,13 +3814,13 @@ impl Grove {
         let tabs = container(
             row![
                 seg_button(
-                    "dark",
+                    "Dark",
                     matches!(tab, crate::theme::ThemeKind::Dark),
                     SegSide::Left,
                     Msg::ThemePickerSwitchTab,
                 ),
                 seg_button(
-                    "light",
+                    "Light",
                     matches!(tab, crate::theme::ThemeKind::Light),
                     SegSide::Right,
                     Msg::ThemePickerSwitchTab,
@@ -3906,22 +3865,22 @@ impl Grove {
             });
 
         let system_row = modal_checkbox(
-            "follow system appearance".into(),
+            "Follow system appearance".into(),
             follow_system,
             c::MAGENTA(),
             Some(Msg::ThemePickerToggleSystem),
         );
 
         let body = column![
-            text("theme").size(13).color(c::MAGENTA()),
+            text("Theme").size(13).color(c::MAGENTA()),
             system_row,
             tabs,
             scroller,
             Space::new().height(8),
             row![
                 Space::new().width(Length::Fill),
-                modal_action("cancel", ModalBtn::Plain, Msg::ThemePickerCancel),
-                modal_action("apply", ModalBtn::Primary, Msg::ThemePickerSubmit),
+                modal_action("Cancel", ModalBtn::Plain, Msg::ThemePickerCancel),
+                modal_action("Apply", ModalBtn::Primary, Msg::ThemePickerSubmit),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
@@ -3973,22 +3932,22 @@ impl Grove {
         // ── step body ────────────────────────────────────────────────────────
         let body: Element<'_, Msg> = match step {
             OnboardStep::Welcome => column![
-                text("welcome to grove").size(19).color(c::FG()),
-                text("a worktree launchpad for ai coding agents")
+                text("Welcome to Grove").size(19).color(c::FG()),
+                text("A worktree launchpad for AI coding agents")
                     .size(13)
                     .color(c::FG_DIM()),
                 Space::new().height(6),
                 onboard_point(
-                    "sessions are the unit of work",
-                    "every agent you spawn lives in a managed session that survives navigation; switch between them in two keystrokes.",
+                    "Sessions are the unit of work",
+                    "Every agent you spawn lives in a managed session that survives navigation; switch between them in two keystrokes.",
                 ),
                 onboard_point(
-                    "worktrees, not branches",
-                    "grove treats git worktrees as a first-class primitive: create, list, and run agents inside them.",
+                    "Worktrees, not branches",
+                    "Grove treats Git worktrees as a first-class primitive: create, list, and run agents inside them.",
                 ),
                 onboard_point(
-                    "quiet and keyboard-first",
-                    "the app stays out of the way so terminal output stays primary. this takes about a minute.",
+                    "Quiet and keyboard-first",
+                    "The app stays out of the way so terminal output stays primary. This takes about a minute.",
                 ),
             ]
             .spacing(10)
@@ -3997,38 +3956,38 @@ impl Grove {
             OnboardStep::Environment => {
                 let mut list = Column::new().spacing(6);
                 let rows = [
-                    (on_path("git"), false, "git", "version control"),
+                    (on_path("git"), false, "Git", "Version control"),
                     (
                         crate::agent::Agent::Claude.available(),
                         false,
-                        "claude",
-                        "claude code",
+                        "Claude",
+                        "Claude Code",
                     ),
                     (
                         crate::agent::Agent::Codex.available(),
                         false,
-                        "codex",
-                        "codex cli",
+                        "Codex",
+                        "Codex CLI",
                     ),
                     (
                         crate::agent::Agent::OpenCode.available(),
                         false,
-                        "opencode",
-                        "opencode cli",
+                        "OpenCode",
+                        "OpenCode CLI",
                     ),
                     (
                         self.app.tmux_available,
                         true,
                         "tmux",
-                        "persists sessions across restarts",
+                        "Persists sessions across restarts",
                     ),
                 ];
                 for (found, optional, n, meta) in rows {
                     list = list.push(onboard_env_row(found, optional, n, meta));
                 }
                 column![
-                    text("environment").size(16).color(c::FG()),
-                    text("grove spawns agents from your PATH; it doesn't install or authenticate them. only git is required to get going.")
+                    text("Environment").size(16).color(c::FG()),
+                    text("Grove spawns agents from your PATH; it doesn't install or authenticate them. Only Git is required to get going.")
                         .size(12)
                         .color(c::FG_DIM())
                         .wrapping(iced::widget::text::Wrapping::Word),
@@ -4043,13 +4002,13 @@ impl Grove {
                 let seg = container(
                     row![
                         seg_button(
-                            "native",
+                            "Native",
                             !backend_tmux,
                             SegSide::Left,
                             Msg::OnbBackendSelect(false)
                         ),
                         seg_button(
-                            "tmux",
+                            "Tmux",
                             backend_tmux,
                             SegSide::Right,
                             Msg::OnbBackendSelect(true)
@@ -4066,12 +4025,12 @@ impl Grove {
                     ..Default::default()
                 });
                 column![
-                    text("session backend").size(16).color(c::FG()),
-                    text("use tmux for new sessions? existing sessions keep their current backend.")
+                    text("Session backend").size(16).color(c::FG()),
+                    text("Use tmux for new sessions? Existing sessions keep their current backend.")
                         .size(12)
                         .color(c::FG_DIM())
                         .wrapping(iced::widget::text::Wrapping::Word),
-                    text("native sessions end when grove quits; tmux sessions survive restarts")
+                    text("Native sessions end when Grove quits; tmux sessions survive restarts")
                         .size(12)
                         .color(c::FG_DIM())
                         .wrapping(iced::widget::text::Wrapping::Word),
@@ -4094,21 +4053,21 @@ impl Grove {
 
                 let browse = modal_action(
                     if self.picker_open {
-                        "waiting…"
+                        "Waiting…"
                     } else {
-                        "browse…"
+                        "Browse…"
                     },
                     ModalBtn::Plain,
                     Msg::AddProjectBrowse,
                 );
 
                 let mut col = column![
-                    text("add your first project").size(16).color(c::FG()),
-                    text("point grove at a git repository, or any plain folder for ad-hoc sessions.")
+                    text("Add your first project").size(16).color(c::FG()),
+                    text("Point Grove at a Git repository, or any plain folder for ad-hoc sessions.")
                         .size(12)
                         .color(c::FG_DIM())
                         .wrapping(iced::widget::text::Wrapping::Word),
-                    text("repository or folder").size(11).color(c::FG_MUTE()),
+                    text("Repository or folder").size(11).color(c::FG_MUTE()),
                     row![path_input, browse]
                         .spacing(8)
                         .align_y(iced::Alignment::Center),
@@ -4119,7 +4078,7 @@ impl Grove {
                 // field would list the cwd's directories as noise.
                 if !path.trim().is_empty() {
                     col = col
-                        .push(text("matches").size(11).color(c::FG_MUTE()))
+                        .push(text("Matches").size(11).color(c::FG_MUTE()))
                         .push(self.dir_matches(path, dir_sel, 5, Msg::OnbPickDir));
                 }
 
@@ -4133,7 +4092,7 @@ impl Grove {
                         .on_submit(Msg::OnbNext)
                         .style(input_field_style);
                     col = col
-                        .push(text("name").size(11).color(c::FG_MUTE()))
+                        .push(text("Name").size(11).color(c::FG_MUTE()))
                         .push(name_input);
                 }
 
@@ -4141,7 +4100,7 @@ impl Grove {
                     col = col.push(text(note.to_string()).size(12).color(c::RED()));
                 }
                 col = col.push(
-                    text("tab complete · ↑↓ select · enter continue · or skip setup")
+                    text("Tab to complete · ↑↓ to select · Enter to continue · Or skip setup")
                         .size(11)
                         .color(c::FG_MUTE()),
                 );
@@ -4157,13 +4116,13 @@ impl Grove {
                 let tabs = container(
                     row![
                         seg_button(
-                            "dark",
+                            "Dark",
                             matches!(tab, crate::theme::ThemeKind::Dark),
                             SegSide::Left,
                             Msg::OnbThemeTab,
                         ),
                         seg_button(
-                            "light",
+                            "Light",
                             matches!(tab, crate::theme::ThemeKind::Light),
                             SegSide::Right,
                             Msg::OnbThemeTab,
@@ -4206,8 +4165,8 @@ impl Grove {
                     });
 
                 column![
-                    text("pick a theme").size(16).color(c::FG()),
-                    text("37 colorways, painted by semantic role so every screen reads correctly. change it any time in settings.")
+                    text("Pick a theme").size(16).color(c::FG()),
+                    text("37 colorways, painted by semantic role so every screen reads correctly. Change it any time in settings.")
                         .size(12)
                         .color(c::FG_DIM())
                         .wrapping(iced::widget::text::Wrapping::Word),
@@ -4220,14 +4179,14 @@ impl Grove {
 
             OnboardStep::Session => {
                 let mut col = column![
-                    text("start your first session").size(16).color(c::FG()),
+                    text("Start your first session").size(16).color(c::FG()),
                 ]
                 .spacing(8);
 
                 match self.app.store.projects.last() {
                     Some(p) => {
                         col = col.push(
-                            text(format!("launch an agent inside {}.", p.name))
+                            text(format!("Launch an agent inside {}.", p.name))
                                 .size(12)
                                 .color(c::FG_DIM())
                                 .wrapping(iced::widget::text::Wrapping::Word),
@@ -4236,7 +4195,7 @@ impl Grove {
                         for (i, agent) in self.app.available_agents.iter().enumerate() {
                             let active = i == agent_sel;
                             list = list.push(modal_list_row(
-                                text(agent.label().to_string())
+                                text(cap(agent.label()))
                                     .size(12)
                                     .color(if active { c::FG() } else { c::FG_DIM() }),
                                 active,
@@ -4261,43 +4220,32 @@ impl Grove {
                     }
                     None => {
                         col = col.push(
-                            text("no project added. you can add one any time from the sidebar. finish to start using grove.")
+                            text("No project added. You can add one any time from the sidebar. Finish to start using Grove.")
                                 .size(12)
                                 .color(c::FG_DIM())
                                 .wrapping(iced::widget::text::Wrapping::Word),
                         );
                     }
                 }
-                let perms_seg = container(
-                    row![
-                        seg_button("safe", !perms_skip, SegSide::Left, Msg::OnbPermsSelect(false)),
-                        seg_button("skip", perms_skip, SegSide::Right, Msg::OnbPermsSelect(true)),
-                    ]
-                    .spacing(0),
-                )
-                .style(|_| container::Style {
-                    border: Border {
-                        color: c::BORDER(),
-                        width: 1.0,
-                        radius: Radius::from(6.0),
-                    },
-                    ..Default::default()
-                });
                 col = col
                     .push(Space::new().height(4))
                     .push(
                         row![
-                            text("permissions").size(11).color(c::FG_MUTE()),
+                            text("Permissions").size(11).color(c::FG_MUTE()),
                             Space::new().width(Length::Fill),
-                            perms_seg,
+                            skip_perms_seg(
+                                perms_skip,
+                                Msg::OnbPermsSelect(true),
+                                Msg::OnbPermsSelect(false)
+                            ),
                         ]
                         .align_y(iced::Alignment::Center),
                     )
                     .push(
                         text(if perms_skip {
-                            "skip: agents run any command without asking"
+                            "Skip: agents run any command without asking"
                         } else {
-                            "safe: agents ask before running commands"
+                            "Safe: agents ask before running commands"
                         })
                         .size(11)
                         .color(if perms_skip { c::YELLOW() } else { c::FG_MUTE() }),
@@ -4308,9 +4256,9 @@ impl Grove {
 
         // ── footer ────────────────────────────────────────────────────────────
         let next_label = match step {
-            OnboardStep::Welcome => "get started",
-            OnboardStep::Session => "launch session",
-            _ => "continue",
+            OnboardStep::Welcome => "Get started",
+            OnboardStep::Session => "Launch session",
+            _ => "Continue",
         };
         let count = format!(
             "{} / {}",
@@ -4320,12 +4268,12 @@ impl Grove {
         let mut footer = row![
             text(count).size(11).color(c::FG_MUTE()),
             Space::new().width(Length::Fill),
-            modal_action("skip setup", ModalBtn::Plain, Msg::OnbSkip),
+            modal_action("Skip setup", ModalBtn::Plain, Msg::OnbSkip),
         ]
         .spacing(8)
         .align_y(Center);
         if step.prev(tmux).is_some() {
-            footer = footer.push(modal_action("back", ModalBtn::Plain, Msg::OnbBack));
+            footer = footer.push(modal_action("Back", ModalBtn::Plain, Msg::OnbBack));
         }
         footer = footer.push(modal_action(next_label, ModalBtn::Primary, Msg::OnbNext));
 
@@ -4348,7 +4296,7 @@ impl Grove {
         use iced::Alignment::Center;
 
         let header = row![
-            text("changelog").size(13).color(c::MAGENTA()),
+            text("Changelog").size(13).color(c::MAGENTA()),
             Space::new().width(Length::Fill),
             icon_btn("close", Msg::CloseChangelog),
         ]
@@ -4358,16 +4306,16 @@ impl Grove {
             ChangelogState::Idle | ChangelogState::Loading => row![
                 super::icons::spinner(16.0, c::FG_DIM(), self.blink_tick),
                 Space::new().width(10),
-                text("loading\u{2026}").size(12).color(c::FG_MUTE()),
+                text("Loading\u{2026}").size(12).color(c::FG_MUTE()),
             ]
             .align_y(Center)
             .into(),
-            ChangelogState::Error(e) => text(format!("couldn't load changelog: {e}"))
+            ChangelogState::Error(e) => text(format!("Couldn't load changelog: {e}"))
                 .size(12)
                 .color(c::FG_MUTE())
                 .into(),
             ChangelogState::Loaded(notes) if notes.is_empty() => {
-                text("no releases yet.").size(12).color(c::FG_MUTE()).into()
+                text("No releases yet.").size(12).color(c::FG_MUTE()).into()
             }
             ChangelogState::Loaded(notes) => {
                 let mut list = Column::new().spacing(18);
@@ -4430,6 +4378,16 @@ impl Grove {
     }
 }
 
+/// Sentence-cases a lowercase identifier (e.g. `Agent::label()`, which stays
+/// lowercase because it's shared with non-UI call sites) for display only.
+fn cap(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
 /// One bulleted value-prop line on the welcome step: a magenta mark, a bold
 /// lead, and a muted explanation that wraps.
 fn onboard_point<'a>(lead: &'a str, body: &'a str) -> Element<'a, Msg> {
@@ -4465,11 +4423,11 @@ fn onboard_env_row<'a>(
     meta: &'a str,
 ) -> Element<'a, Msg> {
     let (dotc, tag, tagc) = if found {
-        (c::GREEN(), "found", c::GREEN())
+        (c::GREEN(), "Found", c::GREEN())
     } else if optional {
-        (c::AMBER(), "optional", c::AMBER())
+        (c::AMBER(), "Optional", c::AMBER())
     } else {
-        (c::FG_MUTE(), "missing", c::FG_MUTE())
+        (c::FG_MUTE(), "Missing", c::FG_MUTE())
     };
     container(
         row![

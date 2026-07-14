@@ -683,7 +683,7 @@ impl App {
             Pane::Worktrees => {
                 if self.selected_project().is_some() {
                     self.modal = Modal::Input {
-                        title: "worktree name".into(),
+                        title: "Worktree name".into(),
                         buffer: String::new(),
                         note: None,
                     };
@@ -710,9 +710,9 @@ impl App {
             Pane::Projects => {
                 if let Some(p) = self.selected_project() {
                     self.modal = Modal::Confirm {
-                        title: "remove project?".into(),
+                        title: "Remove project?".into(),
                         prompt: format!(
-                            "'{}' will be unregistered. files on disk stay put.",
+                            "'{}' will be unregistered. Files on disk stay put.",
                             p.name
                         ),
                         destructive: true,
@@ -724,12 +724,12 @@ impl App {
                 if let Some(wt) = self.worktrees.get(self.wt_idx) {
                     if wt.is_main {
                         self.modal =
-                            Modal::Message("can't remove the project's main checkout".into());
+                            Modal::Message("Can't remove the project's main checkout".into());
                         return;
                     }
                     let path = wt.path.clone();
                     self.modal = Modal::Confirm {
-                        title: "remove worktree?".into(),
+                        title: "Remove worktree?".into(),
                         prompt: format!("git worktree remove --force {}", path),
                         destructive: true,
                         kind: ConfirmKind::RemoveWorktree(path),
@@ -862,7 +862,7 @@ impl App {
                 Some(at)
             }
             Err(e) => {
-                self.modal = Modal::Message(format!("failed to start agent: {e}"));
+                self.modal = Modal::Message(format!("Failed to start agent: {e}"));
                 None
             }
         }
@@ -936,7 +936,7 @@ impl App {
             Ok(path) => path,
             Err(e) => {
                 crate::telemetry::track("error", vec![("kind", "worktree_failed".into())]);
-                self.modal = Modal::Message(format!("add worktree failed: {e}"));
+                self.modal = Modal::Message(format!("Add worktree failed: {e}"));
                 return;
             }
         };
@@ -2020,7 +2020,7 @@ impl App {
         self.modal = Modal::None;
         if !git::valid_worktree_name(&value) {
             self.modal =
-                Modal::Message("invalid name: use letters, digits, '-', '_' or '.'".into());
+                Modal::Message("Invalid name: use letters, digits, '-', '_' or '.'".into());
             return Ok(());
         }
         let Some(p) = self.selected_project().cloned() else {
@@ -2028,9 +2028,9 @@ impl App {
         };
         if !git::is_repo(&p.path) {
             self.modal = Modal::Confirm {
-                title: "initialize git repo?".into(),
+                title: "Initialize Git repo?".into(),
                 prompt: format!(
-                    "'{}' is not a git repo. run `git init`, then create worktree '{}'.",
+                    "'{}' is not a Git repo. Run `git init`, then create worktree '{}'.",
                     p.path, value
                 ),
                 destructive: false,
@@ -2265,7 +2265,7 @@ impl App {
                     return Ok(());
                 };
                 if let Err(e) = git::init_if_needed(&p.path) {
-                    self.modal = Modal::Message(format!("git init failed: {e}"));
+                    self.modal = Modal::Message(format!("Git init failed: {e}"));
                     return Ok(());
                 }
                 self.create_worktree(&p, &name);

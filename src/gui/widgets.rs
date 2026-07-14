@@ -158,6 +158,30 @@ fn seg_button_inner<'a>(
         .into()
 }
 
+/// The shared "Skip / Safe" permissions segmented control used by both
+/// `settings_modal` and the onboarding permissions step. `skip_on` selects
+/// which side is active; `on_skip` / `on_safe` are the messages each call
+/// site emits (they differ per caller, so behavior stays identical to what
+/// each site had before this was extracted).
+pub fn skip_perms_seg<'a>(skip_on: bool, on_skip: Msg, on_safe: Msg) -> Element<'a, Msg> {
+    container(
+        row![
+            seg_button_danger("Skip", skip_on, SegSide::Left, on_skip),
+            seg_button("Safe", !skip_on, SegSide::Right, on_safe),
+        ]
+        .spacing(0),
+    )
+    .style(|_| container::Style {
+        border: Border {
+            color: c::BORDER(),
+            width: 1.0,
+            radius: Radius::from(6.0),
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
 pub fn icon_btn<'a>(name: &'static str, msg: Msg) -> Element<'a, Msg> {
     button(
         container(icon(name, 15.0, c::FG_DIM()))
