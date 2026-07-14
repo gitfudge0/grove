@@ -12,6 +12,7 @@
 //! - [`drop`]     — dropped file paths → PTY text
 //! - [`metrics`]  — layout constants
 //! - [`palette`]  — color tokens
+//! - [`slide`]    — draw-only translation wrapper for the grid slide animation
 
 mod activity;
 mod dock;
@@ -23,6 +24,7 @@ mod metrics;
 mod palette;
 mod pty;
 mod rows;
+mod slide;
 mod state;
 mod update;
 mod view;

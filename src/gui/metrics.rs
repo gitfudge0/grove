@@ -364,6 +364,21 @@ pub fn grid_tile_rows_for_col(win_h: f32, zoom: f32, tiles_in_col: usize) -> u16
     (pty_h / CELL_H).max(4.0) as u16
 }
 
+/// Nominal (equal-cell) grid tile size in logical pixels, ignoring the
+/// column-height stacking that ragged grids do (see `grid_tile_rows_for_col`).
+/// Used only to size the slide-animation's draw offset, where an
+/// equal-cell approximation is good enough — see the `ponytail:` note at
+/// its call site in `view.rs`.
+pub fn grid_tile_size(win_w: f32, win_h: f32, zoom: f32, n: usize) -> (f32, f32) {
+    let (grid_cols, grid_rows) = grid_layout(n);
+    let zoom = zoom.max(0.1);
+    let workspace_w = win_w / zoom;
+    let workspace_h = win_h / zoom - APPBAR_H - STATUS_H;
+    let tile_w = (workspace_w - (grid_cols as f32 - 1.0)) / grid_cols as f32;
+    let tile_h = (workspace_h - (grid_rows as f32 - 1.0)) / grid_rows as f32;
+    (tile_w, tile_h)
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -581,5 +596,16 @@ mod tests {
         assert!(full > half, "fewer tiles in a column → taller PTY");
         assert!(full >= 2 * half - 4, "single-tile column ≈ full height");
         assert!(half >= 4, "never below floor");
+    }
+
+    #[test]
+    fn grid_tile_size_shrinks_with_more_tiles() {
+        use super::grid_tile_size;
+        // n=1 is one full-screen tile; n=4 splits into a 2×2 grid, so each
+        // tile is roughly a quarter of the area.
+        let (w1, h1) = grid_tile_size(1280.0, 800.0, 1.0, 1);
+        let (w4, h4) = grid_tile_size(1280.0, 800.0, 1.0, 4);
+        assert!(w1 > w4 && h1 > h4, "more tiles → smaller nominal tile size");
+        assert!(w4 > 0.0 && h4 > 0.0);
     }
 }

@@ -7,8 +7,8 @@ use super::metrics::{
     TERM_PANEL_PORTION, TERM_PANEL_PORTION_MAX, TERM_PANEL_PORTION_MIN, TERM_PANEL_PORTION_STEP,
 };
 use super::state::{
-    AbsCell, ChangelogState, FocusedPane, GridDrag, Grove, Msg, PtyCell, PtyDrag, PtyPane,
-    ScriptField, ScriptsEditorState, SidebarDrag, SidebarView, ToolStatus, UpgradeState,
+    AbsCell, ChangelogState, FocusedPane, GridDrag, GridSlide, Grove, Msg, PtyCell, PtyDrag,
+    PtyPane, ScriptField, ScriptsEditorState, SidebarDrag, SidebarView, ToolStatus, UpgradeState,
 };
 use crate::agent::Agent;
 use crate::app::{AddProjectStep, App, ConfirmKind, Modal, OnboardStep, Pane};
@@ -119,6 +119,7 @@ impl Grove {
             tile_order: Vec::new(),
             grid_focused: None,
             grid_drag: None,
+            grid_slide: None,
             pending_launcher_proj: None,
             grid_view_before_zen: false,
             last_divider_press: None,
@@ -166,6 +167,27 @@ impl Grove {
             .easing(iced::animation::Easing::EaseInOut)
             .auto_reverse()
             .repeat_forever()
+    }
+
+    /// Records a slide animation for the two tiles that just swapped places
+    /// in `tile_order`, so `grid_workspace` can translate their drawing back
+    /// toward where they came from and ease it out to zero. Must be called
+    /// AFTER `swap_tiles`, so `src`/`dst` are the tile-order indices the two
+    /// tiles now occupy (post-swap).
+    fn begin_grid_slide(&mut self, src: usize, dst: usize) {
+        let n = self.tile_order.len();
+        let (cols, _) = super::metrics::grid_layout(n);
+        let cols = cols.max(1);
+        let cell = |i: usize| ((i % cols) as i32, (i / cols) as i32);
+        let (src_col, src_row) = cell(src);
+        let (dst_col, dst_row) = cell(dst);
+        self.grid_slide = Some(GridSlide {
+            tiles: [
+                (dst, src_col - dst_col, src_row - dst_row),
+                (src, dst_col - src_col, dst_row - src_row),
+            ],
+            start: std::time::Instant::now(),
+        });
     }
 
     pub fn subscription(&self) -> Subscription<Msg> {
@@ -222,6 +244,11 @@ impl Grove {
         // Needs-attention pulse: while active, let the animation request its
         // own redraws at frame rate; zero subscriptions otherwise.
         if self.attention_anim.value() {
+            subs.push(iced::window::frames().map(|_| Msg::AnimationFrame));
+        }
+        // Tile-slide reorder animation: same frame-rate redraw trick, active
+        // only for the ~150ms window after a grid swap.
+        if self.grid_slide.is_some() {
             subs.push(iced::window::frames().map(|_| Msg::AnimationFrame));
         }
         subs.push(iced::window::close_requests().map(Msg::CloseRequested));
@@ -343,9 +370,17 @@ impl Grove {
                     return task;
                 }
             }
-            // No state to mutate — the message exists to trigger a redraw so
-            // the attention pulse can interpolate against a fresh Instant.
-            Msg::AnimationFrame => {}
+            // No state to mutate for the attention pulse — the message exists
+            // to trigger a redraw so it can interpolate against a fresh
+            // Instant. The tile-slide animation, if active, self-clears once
+            // its 150ms window elapses so its frame subscription stops.
+            Msg::AnimationFrame => {
+                if let Some(slide) = &self.grid_slide {
+                    if slide_progress(slide.start, std::time::Instant::now()) >= 1.0 {
+                        self.grid_slide = None;
+                    }
+                }
+            }
             Msg::WindowFocusChanged(f) => {
                 self.window_focused = f;
                 // Regaining focus acknowledges the visible session.
@@ -1282,6 +1317,7 @@ impl Grove {
                     let dst = drag.hover_idx;
                     if src != dst && src < self.tile_order.len() && dst < self.tile_order.len() {
                         crate::gui::launcher::swap_tiles(&mut self.tile_order, src, dst);
+                        self.begin_grid_slide(src, dst);
                         self.persist_grid_order();
                         // Every tile between src and dst may have changed column, so re-size each tile's PTY to its new column height.
                         self.refresh_pty_viewport();
@@ -2072,6 +2108,10 @@ impl Grove {
                 self.grid_move(dx, dy);
                 Task::none()
             }
+            GlobalShortcut::GridSwap(dx, dy) => {
+                self.grid_swap(dx, dy);
+                Task::none()
+            }
         }
     }
 
@@ -2156,6 +2196,28 @@ impl Grove {
         self.app.active_session = Some(si);
         self.sync_grid_focus();
         self.acknowledge_session(si);
+    }
+
+    /// Swap the focused tile with its neighbor (mod+alt+h/j/k/l, mod+alt+
+    /// arrows). Grid-only; no-ops if there's nothing to focus or the swap
+    /// would fall off the edge of the tile layout (see `grid_neighbor`).
+    /// Leaves `grid_focused`/`active_session` untouched — both hold a session
+    /// index, not a tile-order position, so focus stays on the same session
+    /// after its tile moves.
+    fn grid_swap(&mut self, dx: i32, dy: i32) {
+        let Some(pos) = self
+            .grid_focused
+            .and_then(|si| self.tile_order.iter().position(|&x| x == si))
+        else {
+            return;
+        };
+        let Some(target) = grid_neighbor(pos, self.tile_order.len(), dx, dy) else {
+            return;
+        };
+        crate::gui::launcher::swap_tiles(&mut self.tile_order, pos, target);
+        self.begin_grid_slide(pos, target);
+        self.persist_grid_order();
+        self.refresh_pty_viewport();
     }
 
     /// Select the Nth session in visible order (mod+1..9).
@@ -3428,6 +3490,8 @@ pub(crate) enum GlobalShortcut {
     CloseFocusedSession,
     /// Move keyboard focus between grid tiles by `(dx, dy)`. Grid screen only.
     GridMove(i32, i32),
+    /// Swap the focused tile with its neighbor by `(dx, dy)`. Grid screen only.
+    GridSwap(i32, i32),
 }
 
 /// Coarse "which screen am I on" model, derived from existing UI flags.
@@ -3500,10 +3564,11 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
     ShortcutDef { action: Some(GlobalShortcut::ZoomReset),       triggers: &["0"],           display_keys: "0",         description: "reset zoom",             scopes: G, requires_alt: false, literal: false },
     ShortcutDef { action: Some(GlobalShortcut::ShortcutOverlay), triggers: &["/", "?"],      display_keys: "/",         description: "this overlay",           scopes: G, requires_alt: false, literal: false },
     ShortcutDef { action: Some(GlobalShortcut::CloseFocusedSession), triggers: &["w", "W"], display_keys: "w",         description: "close focused session",  scopes: G, requires_alt: false, literal: false },
-    // Display-only: `match_global_shortcut` handles this ahead of the
-    // registry lookup (dynamic dx/dy per key), scoped to Screen::Grid by hand
-    // there — keep the two in sync.
+    // Display-only: `match_global_shortcut` handles both of these rows ahead
+    // of the registry lookup (dynamic dx/dy per key, Alt picks move vs. swap),
+    // scoped to Screen::Grid by hand there — keep the three in sync.
     ShortcutDef { action: None,                                  triggers: &[],              display_keys: "h j k l / ←↓↑→", description: "move focus in grid", scopes: &[Scope::Screen(Screen::Grid)], requires_alt: false, literal: false },
+    ShortcutDef { action: None,                                  triggers: &[],              display_keys: "alt+h j k l / ←↓↑→", description: "move tile in grid", scopes: &[Scope::Screen(Screen::Grid)], requires_alt: true, literal: false },
     // Display-only: matched by `term_panel_resize_delta`, not
     // `match_global_shortcut` — closing the panel must fall through to the
     // PTY, which a registry-matched shortcut never does (see the guard's
@@ -3593,7 +3658,11 @@ fn match_global_shortcut(key: &Key, mods: Modifiers, screen: Screen) -> Option<G
             _ => None,
         };
         if let Some((dx, dy)) = dir {
-            return Some(GlobalShortcut::GridMove(dx, dy));
+            return Some(if mods.alt() {
+                GlobalShortcut::GridSwap(dx, dy)
+            } else {
+                GlobalShortcut::GridMove(dx, dy)
+            });
         }
     }
     match key {
@@ -3711,6 +3780,22 @@ pub(crate) fn grid_neighbor(i: usize, n: usize, dx: i32, dy: i32) -> Option<usiz
     }
 }
 
+/// Duration of the draw-only tile-slide animation triggered by a grid
+/// reorder (drag or keyboard swap).
+pub(crate) const GRID_SLIDE: Duration = Duration::from_millis(150);
+
+/// Ease-out progress `[0, 1]` for a `GRID_SLIDE`-duration animation that
+/// started at `start`, evaluated at `now`. Cubic ease-out (`1 - (1-t)^3`)
+/// matches the snappy-then-settling feel used elsewhere in the GUI.
+pub(crate) fn slide_progress(start: std::time::Instant, now: std::time::Instant) -> f32 {
+    let elapsed = now.saturating_duration_since(start);
+    if elapsed >= GRID_SLIDE {
+        return 1.0;
+    }
+    let t = elapsed.as_secs_f32() / GRID_SLIDE.as_secs_f32();
+    1.0 - (1.0 - t).powi(3)
+}
+
 /// Whether the event subscription forwards this event to `update()`.
 ///
 /// Captured events belong to the widget that consumed them — except Escape: a
@@ -3785,7 +3870,7 @@ fn is_paste_shortcut(mods: Modifiers, s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{match_global_shortcut, GlobalShortcut, Screen};
+    use super::{match_global_shortcut, slide_progress, GlobalShortcut, Screen, GRID_SLIDE};
     use iced::keyboard::{key::Named, Key, Modifiers};
     use smol_str::SmolStr;
 
@@ -3953,6 +4038,45 @@ mod tests {
     }
 
     #[test]
+    fn grid_swap_shortcuts_scoped_to_grid_screen() {
+        use GlobalShortcut::*;
+        let screen = Screen::Grid;
+        let alt = gmods() | Modifiers::ALT;
+        assert_eq!(match_global_shortcut(&ch("h"), alt, screen), Some(GridSwap(-1, 0)));
+        assert_eq!(match_global_shortcut(&ch("l"), alt, screen), Some(GridSwap(1, 0)));
+        assert_eq!(match_global_shortcut(&ch("k"), alt, screen), Some(GridSwap(0, -1)));
+        assert_eq!(match_global_shortcut(&ch("j"), alt, screen), Some(GridSwap(0, 1)));
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::ArrowLeft), alt, screen),
+            Some(GridSwap(-1, 0))
+        );
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::ArrowRight), alt, screen),
+            Some(GridSwap(1, 0))
+        );
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::ArrowUp), alt, screen),
+            Some(GridSwap(0, -1))
+        );
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::ArrowDown), alt, screen),
+            Some(GridSwap(0, 1))
+        );
+        // Without Alt, the same keys still resolve to GridMove — no regression
+        // from layering the Alt dispatch on top.
+        assert_eq!(match_global_shortcut(&ch("h"), gmods(), screen), Some(GridMove(-1, 0)));
+        assert_eq!(match_global_shortcut(&ch("j"), gmods(), screen), Some(GridMove(0, 1)));
+        assert_eq!(match_global_shortcut(&ch("k"), gmods(), screen), Some(GridMove(0, -1)));
+        assert_eq!(match_global_shortcut(&ch("l"), gmods(), screen), Some(GridMove(1, 0)));
+        // Alt+h/j/k/l elsewhere is not GridSwap — the Grid-only shadow must
+        // not leak to other screens (mirrors the GridMove scoping check above).
+        assert_eq!(match_global_shortcut(&ch("h"), alt, Screen::Workspace), None);
+        assert_eq!(match_global_shortcut(&ch("j"), alt, Screen::Workspace), None);
+        assert_eq!(match_global_shortcut(&ch("k"), alt, Screen::Workspace), None);
+        assert_eq!(match_global_shortcut(&ch("l"), alt, Screen::Workspace), None);
+    }
+
+    #[test]
     fn unmodified_or_unmapped_keys_are_not_shortcuts() {
         let screen = Screen::Workspace;
         assert_eq!(
@@ -3964,6 +4088,20 @@ mod tests {
             match_global_shortcut(&Key::Named(Named::Tab), gmods(), screen),
             None
         );
+    }
+
+    #[test]
+    fn slide_progress_eases_out_from_zero_to_one() {
+        let start = std::time::Instant::now();
+        assert_eq!(slide_progress(start, start), 0.0);
+        // Halfway through, the cubic ease-out has already covered more than
+        // half the distance (front-loaded motion).
+        let half = start + GRID_SLIDE / 2;
+        let p = slide_progress(start, half);
+        assert!(p > 0.5 && p < 1.0, "expected ease-out progress, got {p}");
+        // At and beyond the duration, progress clamps to 1.0.
+        assert_eq!(slide_progress(start, start + GRID_SLIDE), 1.0);
+        assert_eq!(slide_progress(start, start + GRID_SLIDE * 10), 1.0);
     }
 
     /// The terminal-panel resize chord (see the registry's display-only

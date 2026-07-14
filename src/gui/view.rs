@@ -998,7 +998,7 @@ impl Grove {
                     continue;
                 }
                 let si = self.tile_order[tile_idx];
-                let el: Element<'_, Msg> = if si < self.app.sessions.len() {
+                let mut el: Element<'_, Msg> = if si < self.app.sessions.len() {
                     self.grid_tile(tile_idx, si, &self.app.sessions[si])
                 } else {
                     // Stale index: render blank until KillSession prunes tile_order.
@@ -1011,6 +1011,35 @@ impl Grove {
                         })
                         .into()
                 };
+                // Draw-only slide for a tile that just swapped places: ease
+                // its rendered position back from where it came from, in
+                // grid cells, to zero. Layout is untouched (see slide.rs).
+                if let Some(slide) = &self.grid_slide {
+                    if let Some(&(_, d_col, d_row)) =
+                        slide.tiles.iter().find(|(idx, _, _)| *idx == tile_idx)
+                    {
+                        let t = super::update::slide_progress(slide.start, std::time::Instant::now());
+                        if t < 1.0 {
+                            let (tile_w, tile_h) = super::metrics::grid_tile_size(
+                                self.window_size.width,
+                                self.window_size.height,
+                                self.ui_zoom,
+                                n,
+                            );
+                            let remaining = 1.0 - t;
+                            // ponytail: uses the nominal equal-cell tile size, so a
+                            // horizontal swap between columns of unequal tile
+                            // heights (ragged grid) is approximate — it settles
+                            // exactly at t=1. Upgrade path is a real per-tile rect
+                            // calc if it ever reads wrong.
+                            let offset = iced::Vector::new(
+                                d_col as f32 * (tile_w + 1.0) * remaining,
+                                d_row as f32 * (tile_h + 1.0) * remaining,
+                            );
+                            el = super::slide::slide(el, offset);
+                        }
+                    }
+                }
                 col_el = col_el.push(el);
             }
             cols_row = cols_row.push(col_el);

@@ -179,6 +179,10 @@ pub struct Grove {
     /// a tile is clicked. All keystrokes route here while set.
     pub grid_focused: Option<usize>,
     pub grid_drag: Option<GridDrag>,
+    /// In-flight tile-slide animation: post-swap tile-order indices of the two
+    /// swapped tiles, each with the (col, row) cell delta it travelled, plus
+    /// when the slide started. Drives a draw-only offset in `grid_workspace`.
+    pub grid_slide: Option<GridSlide>,
     /// Set while the worktree-name input was opened from the session launcher;
     /// on successful worktree creation the launcher re-opens into this project.
     pub pending_launcher_proj: Option<usize>,
@@ -256,6 +260,16 @@ pub struct GridDrag {
     pub source_idx: usize,
     /// Index into `tile_order` of the tile currently under the cursor.
     pub hover_idx: usize,
+}
+
+/// Draw-only tile-slide animation state for a just-completed grid reorder.
+/// `tiles` holds `(tile_order_idx, d_col, d_row)` for the two swapped tiles,
+/// where the delta is FROM-cell minus TO-cell (where the tile came from, in
+/// grid cells) so the offset shrinks to zero as the slide progresses.
+#[derive(Clone, Copy, Debug)]
+pub struct GridSlide {
+    pub tiles: [(usize, i32, i32); 2],
+    pub start: std::time::Instant,
 }
 
 /// Identifies which on-screen PTY a mouse event originated from. The home
