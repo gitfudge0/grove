@@ -137,6 +137,13 @@ pub fn RED() -> Color {
     ic(theme::current().red)
 }
 
+/// A 16% wash of RED over BG — the active fill for a danger-flavored
+/// segmented control (e.g. "skip permissions"), distinct from the neutral
+/// `BG_HL()` used by ordinary active segments.
+pub fn RED_WASH() -> Color {
+    mix(RED(), BG(), 0.84)
+}
+
 // ── selection (focused Miller column) ──────────────────────────────────────
 // The launcher's active column marks its selected row with a cyan-tinted
 // gradient fill, a cyan ring, and a left accent bar. Derived from the theme's

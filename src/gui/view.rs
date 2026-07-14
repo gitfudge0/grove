@@ -18,9 +18,9 @@ use super::state::{
 use super::update::{platform_mod_label, GlobalShortcut, Scope, ShortcutDef, SHORTCUTS};
 use super::widgets::{
     control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_workspace, footer_btn,
-    icon_btn, launcher_row, modal_action, modal_checkbox, modal_list_row, modal_panel, seg_button,
-    sidebar_agent_menu_overlay, tool_btn, tool_btn_toggle, truncate_middle, vline, ModalBtn,
-    SegSide,
+    icon_btn, launcher_row, modal_action, modal_action_sized, modal_checkbox, modal_list_row,
+    modal_panel, seg_button, seg_button_danger, sidebar_agent_menu_overlay, tool_btn,
+    tool_btn_toggle, truncate_middle, vline, ModalBtn, SegSide,
 };
 use crate::app::{AddProjectStep, ConfirmKind, GitProbe, Modal, OnboardStep};
 use crate::git::Worktree;
@@ -1923,7 +1923,9 @@ impl Grove {
     /// pane.
     pub(super) fn selection_pane(&self) -> PtyPane {
         if self.grid_view {
-            self.grid_focused.map(PtyPane::Tile).unwrap_or(PtyPane::Agent)
+            self.grid_focused
+                .map(PtyPane::Tile)
+                .unwrap_or(PtyPane::Agent)
         } else {
             self.focused_input_pane()
         }
@@ -3193,26 +3195,119 @@ impl Grove {
     fn settings_modal(&self) -> Element<'_, Msg> {
         use iced::Alignment::Center;
 
+        // Sentence-cases a lowercase identifier (e.g. `Agent::label()`, which
+        // stays lowercase because it's shared with non-UI call sites) for
+        // display here only.
+        fn cap(s: &str) -> String {
+            let mut chars = s.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        }
+
         // A muted, indented one-liner used under section headers and rows to
-        // explain what a control does.
+        // explain what a control does (throwaway caption: 11 · regular ·
+        // fg-mute).
         let caption = |s: &'static str| -> Element<'_, Msg> {
             container(text(s).size(11).color(c::FG_MUTE()))
                 .padding(Padding::from([0, 10]))
                 .into()
         };
+        // One shade up from a throwaway caption — reserved for the single
+        // safety-relevant caption (skip-permissions).
+        let caption_promoted = |s: &'static str| -> Element<'_, Msg> {
+            container(text(s).size(11).color(c::FG_DIM()))
+                .padding(Padding::from([0, 10]))
+                .into()
+        };
+        // Section eyebrow: the one deliberate UPPERCASE exception (structural
+        // grouping, not shouting).
+        let eyebrow = |label: &'static str| -> Element<'_, Msg> {
+            container(text(label).font(UI_BOLD).size(11).color(c::FG_MUTE()))
+                .padding(Padding::from([0, 10]))
+                .into()
+        };
+
+        // The "Default" badge and "Set default" button share an identical
+        // footprint (fixed width, same padding/radius) so the action-cell
+        // column stays aligned regardless of which state a row is in.
+        const SLOT_W: f32 = 84.0;
+        let slot_badge = |label: &'static str| -> Element<'_, Msg> {
+            container(
+                text(label)
+                    .size(11)
+                    .color(c::FG())
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .width(Length::Fill),
+            )
+            .width(Length::Fixed(SLOT_W))
+            .padding(Padding::from([4, 12]))
+            .style(|_| container::Style {
+                background: Some(Background::Color(c::BG_HL())),
+                border: Border {
+                    color: Color::TRANSPARENT,
+                    width: 1.0,
+                    radius: Radius::from(4.0),
+                },
+                ..Default::default()
+            })
+            .into()
+        };
+        let slot_action = |label: &'static str, msg: Msg| -> Element<'_, Msg> {
+            button(
+                text(label)
+                    .size(11)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .width(Length::Fill),
+            )
+            .on_press(msg)
+            .width(Length::Fixed(SLOT_W))
+            .padding(Padding::from([4, 12]))
+            .style(|_, status| {
+                let hovered = matches!(status, button::Status::Hovered);
+                button::Style {
+                    background: if hovered {
+                        Some(Background::Color(c::BG_HOVER()))
+                    } else {
+                        Some(Background::Color(c::BG()))
+                    },
+                    text_color: c::FG_DIM(),
+                    border: Border {
+                        color: c::BORDER(),
+                        width: 1.0,
+                        radius: Radius::from(4.0),
+                    },
+                    shadow: Shadow::default(),
+                    snap: false,
+                }
+            })
+            .into()
+        };
+        // Missing tools reserve the same fixed-width, same-padding footprint
+        // as a real slot but render nothing, so the column of badges/buttons
+        // above and below it doesn't shift.
+        let slot_none = || -> Element<'_, Msg> {
+            container(Space::new().width(Length::Fill))
+                .width(Length::Fixed(SLOT_W))
+                .padding(Padding::from([4, 12]))
+                .into()
+        };
 
         // ── header ─────────────────────────────────────────────────────────
         let header = row![
-            text("settings").size(13).color(c::MAGENTA()),
+            text("Settings").size(13).color(c::MAGENTA()),
             Space::new().width(Length::Fill),
             icon_btn("close", Msg::ModalCancel),
         ]
         .align_y(Center);
 
+        let head = column![header, caption("Changes save automatically.")].spacing(3);
+
         // ── appearance ───────────────────────────────────────────────────────
         let theme_row = modal_list_row(
             row![
-                text("app theme").size(12).color(c::FG()),
+                text("App theme").size(12).color(c::FG()),
                 Space::new().width(Length::Fill),
                 text(crate::theme::current().name.to_string())
                     .size(12)
@@ -3249,7 +3344,7 @@ impl Grove {
         });
         let app_size_row = container(
             row![
-                text("app size").size(12).color(c::FG()),
+                text("App size").size(12).color(c::FG()),
                 Space::new().width(Length::Fill),
                 zoom,
             ]
@@ -3258,12 +3353,20 @@ impl Grove {
         .height(ROW_H)
         .padding(Padding::from([0, 10]));
 
-        // ── terminal ──────────────────────────────────────────────────────
+        let appearance = column![
+            eyebrow("APPEARANCE"),
+            Space::new().height(2),
+            theme_row,
+            app_size_row,
+        ]
+        .spacing(4);
+
+        // ── agents / terminal ────────────────────────────────────────────
         let tmux_on = self.app.use_tmux();
         let backend_seg = container(
             row![
-                seg_button("native", !tmux_on, SegSide::Left, Msg::BackendNative),
-                seg_button("tmux", tmux_on, SegSide::Right, Msg::BackendTmux),
+                seg_button("Native", !tmux_on, SegSide::Left, Msg::BackendNative),
+                seg_button("Tmux", tmux_on, SegSide::Right, Msg::BackendTmux),
             ]
             .spacing(0),
         )
@@ -3277,7 +3380,7 @@ impl Grove {
         });
         let backend_row = container(
             row![
-                text("backend").size(12).color(c::FG()),
+                text("Backend").size(12).color(c::FG()),
                 Space::new().width(Length::Fill),
                 backend_seg,
             ]
@@ -3285,28 +3388,18 @@ impl Grove {
         )
         .height(ROW_H)
         .padding(Padding::from([0, 10]));
-        let backend_caption = container(
-            text(if self.app.tmux_available {
-                "applies to new sessions only · tmux: detected"
-            } else {
-                "applies to new sessions only · tmux not found"
-            })
-            .size(11)
-            .color(c::FG_MUTE()),
-        )
-        .padding(Padding::from([0, 10]));
 
         let skip_perms_on = self.app.skip_permissions_enabled();
         let skip_perms_seg = container(
             row![
-                seg_button(
-                    "skip",
+                seg_button_danger(
+                    "Skip",
                     skip_perms_on,
                     SegSide::Left,
                     Msg::SkipPermissionsEnable
                 ),
                 seg_button(
-                    "safe",
+                    "Safe",
                     !skip_perms_on,
                     SegSide::Right,
                     Msg::SkipPermissionsDisable
@@ -3324,7 +3417,7 @@ impl Grove {
         });
         let skip_perms_row = container(
             row![
-                text("permissions").size(12).color(c::FG()),
+                text("Permissions").size(12).color(c::FG()),
                 Space::new().width(Length::Fill),
                 skip_perms_seg,
             ]
@@ -3332,12 +3425,15 @@ impl Grove {
         )
         .height(ROW_H)
         .padding(Padding::from([0, 10]));
-        let skip_perms_caption = container(
-            text("applies to new claude/codex sessions only. skip means agents run any command without asking.")
-                .size(11)
-                .color(c::FG_MUTE()),
-        )
-        .padding(Padding::from([0, 10]));
+
+        let agents_terminal = column![
+            eyebrow("AGENTS / TERMINAL"),
+            Space::new().height(2),
+            backend_row,
+            skip_perms_row,
+            caption_promoted("Skip lets agents run any command without asking."),
+        ]
+        .spacing(4);
 
         // ── tools ─────────────────────────────────────────────────────────
         let tools_header = container(
@@ -3372,11 +3468,13 @@ impl Grove {
                     .into()
             };
             // Missing tools recede: dim the label and mute the status. Present
-            // tools keep full-strength labels; version numbers read as data.
+            // tools keep full-strength labels; version numbers read as data —
+            // status text stays FG_MUTE (not FG_DIM, which is reserved for
+            // live values like version strings).
             let (status, status_color) = if st.detecting {
-                ("detecting…".to_string(), c::FG_MUTE())
+                ("Detecting…".to_string(), c::FG_MUTE())
             } else if !st.installed {
-                ("not installed".to_string(), c::FG_MUTE())
+                ("Not installed".to_string(), c::FG_MUTE())
             } else {
                 (
                     st.version
@@ -3386,48 +3484,29 @@ impl Grove {
                 )
             };
             let label_color = if st.installed { c::FG() } else { c::FG_DIM() };
+            let agent_label = cap(st.agent.label());
             let is_default = self.app.store.default_agent == Some(st.agent);
             let selector: Element<'_, Msg> = if is_default {
                 // The chosen default reads as a selected control (filled
                 // highlight), not a category tag — magenta stays reserved for
                 // the modal's identity accent.
-                container(text("default").size(12).color(c::FG()))
-                    .padding(Padding::from([4, 12]))
-                    .style(|_| container::Style {
-                        background: Some(Background::Color(c::BG_HL())),
-                        border: Border {
-                            radius: Radius::from(4.0),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    })
-                    .into()
+                slot_badge("Default")
             } else if st.installed {
-                modal_action(
-                    "set default",
-                    ModalBtn::Plain,
-                    Msg::SetDefaultAgent(st.agent),
-                )
+                slot_action("Set default", Msg::SetDefaultAgent(st.agent))
             } else {
-                Space::new().width(0).into()
+                slot_none()
             };
-            // A fixed-width, right-aligned action cell keeps the badge and the
-            // buttons in one column, so the version strings to their left also
-            // align — even on missing rows, where the cell stays reserved.
-            let action_cell = container(selector)
-                .width(Length::Fixed(108.0))
-                .align_x(iced::alignment::Horizontal::Right);
             let row = container(
                 row![
                     status_dot,
                     Space::new().width(8),
                     icon(st.agent.icon_name(), 14.0, label_color),
                     Space::new().width(8),
-                    text(st.agent.label()).size(12).color(label_color),
+                    text(agent_label).size(12).color(label_color),
                     Space::new().width(Length::Fill),
                     text(status).size(12).color(status_color),
                     Space::new().width(16),
-                    action_cell,
+                    selector,
                 ]
                 .align_y(Center),
             )
@@ -3435,138 +3514,99 @@ impl Grove {
             .padding(Padding::from([0, 10]));
             tools = tools.push(row);
         }
-        let tools_caption = container(
-            text("the default launches for new worktrees.")
-                .size(11)
-                .color(c::FG_MUTE()),
-        )
-        .padding(Padding::from([0, 10]));
 
-        // Each section groups its eyebrow, description, and rows tightly; the
-        // outer column spaces the groups apart so the hierarchy reads as
-        // section → controls rather than one undifferentiated list.
-        let eyebrow = |label: &'static str| -> Element<'_, Msg> {
-            container(text(label).font(UI_BOLD).size(11).color(c::FG_MUTE()))
-                .padding(Padding::from([0, 10]))
-                .into()
-        };
+        let tools_section = column![tools_header, Space::new().height(2), tools].spacing(4);
 
-        let head = column![header, caption("changes save automatically."),].spacing(3);
-
-        let appearance = column![
-            eyebrow("APPEARANCE"),
-            caption("theme colors and how large the interface renders."),
-            Space::new().height(2),
-            theme_row,
-            app_size_row,
+        // ── body (scrolls once content exceeds the cap) ─────────────────────
+        let sections = column![
+            appearance,
+            divider_h(c::BORDER_SOFT()),
+            agents_terminal,
+            divider_h(c::BORDER_SOFT()),
+            tools_section,
         ]
-        .spacing(4);
+        .spacing(8);
 
-        let terminal = column![
-            eyebrow("TERMINAL"),
-            backend_row,
-            backend_caption,
-            skip_perms_row,
-            skip_perms_caption,
-        ]
-        .spacing(4);
+        let scroll_body = container(scrollable(sections)).max_height(420.0);
 
-        let tools_section = column![
-            tools_header,
-            caption("coding agents grove can launch. versions read from each cli."),
-            Space::new().height(2),
-            tools,
-            tools_caption,
-        ]
-        .spacing(4);
-
-        // ── updates ──────────────────────────────────────────────────────────
+        // ── updates — demoted into a quiet footer strip below the scroll
+        // body, always visible (not part of the scrollable content). ───────
         let current_ver = env!("CARGO_PKG_VERSION");
         let status_line: Element<'_, Msg> = match &self.upgrade {
-            UpgradeState::Idle => text("not checked yet").size(12).color(c::FG_MUTE()).into(),
+            UpgradeState::Idle => text("Not checked yet").size(11).color(c::FG_MUTE()).into(),
             UpgradeState::Checking => row![
-                super::icons::spinner(12.0, c::FG_MUTE(), self.blink_tick),
-                Space::new().width(8),
-                text("checking…").size(12).color(c::FG_MUTE()),
+                super::icons::spinner(11.0, c::FG_MUTE(), self.blink_tick),
+                Space::new().width(6),
+                text("Checking…").size(11).color(c::FG_MUTE()),
             ]
             .align_y(Center)
             .into(),
-            UpgradeState::UpToDate => text("up to date").size(12).color(c::FG_DIM()).into(),
-            UpgradeState::Error(e) => text(format!("check failed: {e}"))
-                .size(12)
+            UpgradeState::UpToDate => text("Up to date").size(11).color(c::FG_DIM()).into(),
+            UpgradeState::Error(e) => text(format!("Check failed: {e}"))
+                .size(11)
                 .color(c::FG_MUTE())
                 .into(),
-            UpgradeState::Available(r) => text(format!("update available: {}", r.tag))
-                .size(12)
+            UpgradeState::Available(r) => text(format!("Update available: {}", r.tag))
+                .size(11)
                 .color(c::GREEN())
                 .into(),
             // Updating/Updated/UpdateFailed are shown in the progress modal.
-            _ => text("updating…").size(12).color(c::FG_DIM()).into(),
+            _ => text("Updating…").size(11).color(c::FG_DIM()).into(),
+        };
+        let refresh: Element<'_, Msg> = if matches!(self.upgrade, UpgradeState::Checking) {
+            container(super::icons::spinner(12.0, c::FG_MUTE(), self.blink_tick)).into()
+        } else {
+            icon_btn("restart", Msg::CheckForUpdates { manual: true })
         };
 
-        let updates_header = container(
+        let footer_row = container(
             row![
-                text("UPDATES").font(UI_BOLD).size(11).color(c::FG_MUTE()),
-                Space::new().width(Length::Fill),
-                if matches!(self.upgrade, UpgradeState::Checking) {
-                    container(super::icons::spinner(13.0, c::FG_MUTE(), self.blink_tick)).into()
-                } else {
-                    icon_btn("restart", Msg::CheckForUpdates { manual: true })
-                },
-            ]
-            .align_y(Center),
-        )
-        .padding(Padding::from([0, 10]));
-
-        let current_row = container(
-            row![
-                text("current version").size(12).color(c::FG()),
-                Space::new().width(Length::Fill),
-                text(format!("v{current_ver}")).size(12).color(c::FG_DIM()),
-            ]
-            .align_y(Center),
-        )
-        .height(ROW_H)
-        .padding(Padding::from([0, 10]));
-
-        let status_row = container(
-            row![
-                text("status").size(12).color(c::FG()),
-                Space::new().width(Length::Fill),
+                text(format!("v{current_ver}")).size(11).color(c::FG_DIM()),
                 status_line,
+                refresh,
+                Space::new().width(Length::Fill),
+                modal_action_sized("View changelog", ModalBtn::Plain, 11, Msg::OpenChangelog),
             ]
+            .spacing(10)
             .align_y(Center),
         )
-        .height(ROW_H)
         .padding(Padding::from([0, 10]));
 
-        let mut updates_col = column![updates_header, current_row, status_row].spacing(4);
+        let mut footer = column![
+            divider_h(c::BORDER_SOFT()),
+            Space::new().height(8),
+            footer_row
+        ]
+        .spacing(0);
 
         if let UpgradeState::Available(r) = &self.upgrade {
             let mut actions = row![].spacing(8).align_y(Center);
             // Hide "update now" for Unknown installs (notify-only).
             if !matches!(self.upgrade_method, crate::upgrade::InstallMethod::Unknown) {
-                actions = actions.push(modal_action(
-                    "update now",
+                actions = actions.push(modal_action_sized(
+                    "Update now",
                     ModalBtn::Primary,
+                    11,
                     Msg::StartUpdate,
                 ));
             }
-            actions = actions.push(modal_action(
-                "skip this version",
+            actions = actions.push(modal_action_sized(
+                "Skip version",
                 ModalBtn::Plain,
+                11,
                 Msg::SkipVersion,
             ));
             // No opener crate exists in this codebase; offer the URL as a
             // clipboard action instead of dead text.
-            actions = actions.push(modal_action(
-                "copy url",
+            actions = actions.push(modal_action_sized(
+                "Copy URL",
                 ModalBtn::Plain,
+                11,
                 Msg::CopyReleaseUrl,
             ));
-
-            let action_row = container(actions).padding(Padding::from([4, 10]));
-            updates_col = updates_col.push(action_row);
+            footer = footer
+                .push(Space::new().height(6))
+                .push(container(actions).padding(Padding::from([0, 10])));
 
             if !r.body.is_empty() {
                 let truncated: String = r
@@ -3578,23 +3618,14 @@ impl Grove {
                     .chars()
                     .take(300)
                     .collect();
-                let notes_row = container(text(truncated).size(11).color(c::FG_MUTE()))
-                    .padding(Padding::from([2, 10]));
-                updates_col = updates_col.push(notes_row);
+                footer = footer.push(Space::new().height(4)).push(
+                    container(text(truncated).size(11).color(c::FG_MUTE()))
+                        .padding(Padding::from([0, 10])),
+                );
             }
         }
 
-        let changelog_row = container(modal_action(
-            "view changelog",
-            ModalBtn::Plain,
-            Msg::OpenChangelog,
-        ))
-        .padding(Padding::from([4, 10]));
-        updates_col = updates_col.push(changelog_row);
-
-        let updates_section = updates_col;
-
-        let body = column![head, appearance, terminal, tools_section, updates_section].spacing(16);
+        let body = column![head, scroll_body, footer].spacing(10);
 
         modal_panel(body.into(), 580.0, c::MAGENTA())
     }

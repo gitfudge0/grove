@@ -82,6 +82,30 @@ pub enum SegSide {
 }
 
 pub fn seg_button<'a>(label: &str, active: bool, side: SegSide, msg: Msg) -> Element<'a, Msg> {
+    seg_button_inner(label, active, side, msg, false)
+}
+
+/// Danger-flavored variant of [`seg_button`]: when `active`, fills with
+/// [`c::RED_WASH()`] and colors text [`c::RED()`] instead of the neutral
+/// `BG_HL()` / `FG()` treatment. Used for the "skip permissions" side of the
+/// permissions segmented control, so it reads as a safety signal rather than
+/// an ordinary selection.
+pub fn seg_button_danger<'a>(
+    label: &str,
+    active: bool,
+    side: SegSide,
+    msg: Msg,
+) -> Element<'a, Msg> {
+    seg_button_inner(label, active, side, msg, true)
+}
+
+fn seg_button_inner<'a>(
+    label: &str,
+    active: bool,
+    side: SegSide,
+    msg: Msg,
+    danger: bool,
+) -> Element<'a, Msg> {
     button(text(label.to_string()).size(11))
         .on_press(msg)
         .padding(Padding::from([4, 12]))
@@ -104,13 +128,25 @@ pub fn seg_button<'a>(label: &str, active: bool, side: SegSide, msg: Msg) -> Ele
             };
             button::Style {
                 background: if active {
-                    Some(Background::Color(c::BG_HL()))
+                    Some(Background::Color(if danger {
+                        c::RED_WASH()
+                    } else {
+                        c::BG_HL()
+                    }))
                 } else if hovered {
                     Some(Background::Color(c::BG_HOVER()))
                 } else {
                     None
                 },
-                text_color: if active { c::FG() } else { c::FG_DIM() },
+                text_color: if active {
+                    if danger {
+                        c::RED()
+                    } else {
+                        c::FG()
+                    }
+                } else {
+                    c::FG_DIM()
+                },
                 border: Border {
                     radius,
                     ..Border::default()
@@ -713,7 +749,18 @@ pub enum ModalBtn {
 }
 
 pub fn modal_action<'a>(label: &'static str, kind: ModalBtn, msg: Msg) -> Element<'a, Msg> {
-    button(text(label).size(12))
+    modal_action_sized(label, kind, 12, msg)
+}
+
+/// [`modal_action`] with an explicit text size, for spots (e.g. a demoted
+/// footer strip) where the default 12px button reads too loud.
+pub fn modal_action_sized<'a>(
+    label: &'static str,
+    kind: ModalBtn,
+    size: u16,
+    msg: Msg,
+) -> Element<'a, Msg> {
+    button(text(label).size(iced::Pixels::from(size as f32)))
         .on_press(msg)
         .padding(Padding::from([6, 12]))
         .style(move |_, status| {
