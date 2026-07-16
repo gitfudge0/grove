@@ -1436,6 +1436,7 @@ impl Grove {
         };
 
         let mut identity = row![
+            icon(s.agent.icon_name(), 13.0, c::FG()),
             single(s.label.clone(), 13.0, c::FG(), true),
             single("·".to_string(), 13.0, c::FG_MUTE(), false),
             single(s.branch.clone(), 12.0, c::FG_DIM(), false),
