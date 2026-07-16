@@ -1788,6 +1788,7 @@ impl Grove {
             Space::new().width(0).into()
         };
         let header_row = row![
+            icon(s.agent.icon_name(), 11.0, c::FG_DIM()),
             dot(dot_color),
             text(s.agent.label())
                 .font(UI_BOLD)
