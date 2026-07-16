@@ -1693,11 +1693,6 @@ impl Grove {
         });
 
         // ── tile header ────────────────────────────────────────────────
-        let running = matches!(
-            *s.status.lock().unwrap_or_else(|e| e.into_inner()),
-            SessionStatus::Running
-        );
-        let dot_color = if running { c::GREEN() } else { c::FG_MUTE() };
         let tile_btn = |icon_name, msg| {
             button(
                 container(icon(icon_name, 10.0, c::FG_MUTE()))
@@ -1789,7 +1784,6 @@ impl Grove {
         };
         let header_row = row![
             icon(s.agent.icon_name(), 11.0, c::FG_DIM()),
-            dot(dot_color),
             text(s.agent.label())
                 .font(UI_BOLD)
                 .size(10)
