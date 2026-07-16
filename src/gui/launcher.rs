@@ -14,13 +14,6 @@ pub fn clamp(v: usize, delta: i32, len: usize) -> usize {
     next as usize
 }
 
-/// Move the focused column left (`delta < 0`) or right, clamped to `[0, 2]`
-/// (0 = project, 1 = worktree, 2 = agent).
-pub fn move_column(col: u8, delta: i32) -> u8 {
-    let next = (col as i32 + delta).clamp(0, 2);
-    next as u8
-}
-
 /// Default session label following Grove's spawn convention: the project name
 /// for the main checkout, otherwise the worktree path basename.
 pub fn default_label(is_main: bool, project_name: &str, wt_path: &str) -> String {
@@ -28,31 +21,6 @@ pub fn default_label(is_main: bool, project_name: &str, wt_path: &str) -> String
         project_name.to_string()
     } else {
         crate::app::path_basename(wt_path)
-    }
-}
-
-/// Footer breadcrumb text: `project › branch › agent`.
-pub fn breadcrumb(project_name: &str, branch: &str, agent_label: &str) -> String {
-    format!("{project_name} › {branch} › {agent_label}")
-}
-
-/// Compute `(proj, wt, agent)` after an up/down (`delta = ±1`) move in the
-/// focused column. Moving within the project column resets `wt` to 0 (the
-/// worktree list changes with the project). Lengths are clamped independently.
-pub fn nav_within_column(
-    col: u8,
-    proj: usize,
-    wt: usize,
-    agent: usize,
-    delta: i32,
-    proj_len: usize,
-    wt_len: usize,
-    agent_len: usize,
-) -> (usize, usize, usize) {
-    match col {
-        0 => (clamp(proj, delta, proj_len), 0, agent),
-        1 => (proj, clamp(wt, delta, wt_len), agent),
-        _ => (proj, wt, clamp(agent, delta, agent_len)),
     }
 }
 
@@ -112,6 +80,103 @@ pub fn reconcile_tile_order(live_keys: &[String], saved_order: &[String]) -> Vec
     order
 }
 
+/// Push a launch to the front of `recent`, deduping by (project, wt_path,
+/// agent) — i.e. re-launching the same target moves it to the front instead
+/// of creating a duplicate entry — then truncate to 6.
+pub fn push_recent_launch(
+    recent: &mut Vec<crate::storage::RecentLaunch>,
+    launch: crate::storage::RecentLaunch,
+) {
+    recent.retain(|r| {
+        !(r.project == launch.project && r.wt_path == launch.wt_path && r.agent == launch.agent)
+    });
+    recent.insert(0, launch);
+    recent.truncate(6);
+}
+
+/// Fuzzy filter: split `query` on whitespace, lowercase every term, require
+/// each term to substring-match at least one of `project`/`worktree`/
+/// `agent_label` (also lowercased). Empty query matches everything.
+pub fn fuzzy_match(query: &str, project: &str, worktree: &str, agent_label: &str) -> bool {
+    fuzzy_match_indices(query, project, worktree, agent_label).matched
+}
+
+/// Result of [`fuzzy_match_indices`]: whether the row matched, plus the
+/// **character** index ranges (not byte offsets — see [`ci_find_range`])
+/// within each field where a query term was found, for the typing-state
+/// cyan-highlight render in `view.rs`. Each matched term contributes at most
+/// one range per field (its first occurrence); a term that matches nowhere
+/// makes `matched` false for the whole (AND-across-terms) query, same as the
+/// original bool-only `fuzzy_match`.
+#[derive(Debug, Default, PartialEq)]
+pub struct FuzzyMatch {
+    pub matched: bool,
+    pub project: Vec<(usize, usize)>,
+    pub worktree: Vec<(usize, usize)>,
+    pub agent: Vec<(usize, usize)>,
+}
+
+/// Case-insensitive substring search returning the **char** index range
+/// `(start, end)` (end-exclusive) of the first occurrence of `needle` in
+/// `haystack`. Compares character-by-character via `char::to_lowercase`
+/// rather than searching byte offsets of a separately-lowercased string, so
+/// callers can slice the *original* string by `chars()` without worrying
+/// about a lowercase transform changing UTF-8 byte lengths. Returns `None`
+/// for an empty needle or no match.
+fn ci_find_range(haystack: &str, needle: &str) -> Option<(usize, usize)> {
+    if needle.is_empty() {
+        return None;
+    }
+    let hay: Vec<char> = haystack.chars().collect();
+    let need: Vec<char> = needle.chars().collect();
+    if need.len() > hay.len() {
+        return None;
+    }
+    for start in 0..=(hay.len() - need.len()) {
+        let matches = need
+            .iter()
+            .enumerate()
+            .all(|(i, nc)| hay[start + i].to_lowercase().eq(nc.to_lowercase()));
+        if matches {
+            return Some((start, start + need.len()));
+        }
+    }
+    None
+}
+
+/// Same matching semantics as [`fuzzy_match`], but also reports the matched
+/// char ranges per field for highlighting.
+pub fn fuzzy_match_indices(
+    query: &str,
+    project: &str,
+    worktree: &str,
+    agent_label: &str,
+) -> FuzzyMatch {
+    let mut out = FuzzyMatch {
+        matched: true,
+        ..Default::default()
+    };
+    for term in query.split_whitespace() {
+        let mut hit = false;
+        if let Some(r) = ci_find_range(project, term) {
+            out.project.push(r);
+            hit = true;
+        }
+        if let Some(r) = ci_find_range(worktree, term) {
+            out.worktree.push(r);
+            hit = true;
+        }
+        if let Some(r) = ci_find_range(agent_label, term) {
+            out.agent.push(r);
+            hit = true;
+        }
+        if !hit {
+            out.matched = false;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,37 +192,12 @@ mod tests {
     }
 
     #[test]
-    fn move_column_is_bounded() {
-        assert_eq!(move_column(0, -1), 0);
-        assert_eq!(move_column(0, 1), 1);
-        assert_eq!(move_column(2, 1), 2);
-        assert_eq!(move_column(1, -1), 0);
-    }
-
-    #[test]
     fn default_label_follows_spawn_convention() {
         assert_eq!(default_label(true, "grove", "/home/u/grove"), "grove");
         assert_eq!(
             default_label(false, "grove", "/home/u/grove/.wt/fix-scroll"),
             "fix-scroll"
         );
-    }
-
-    #[test]
-    fn breadcrumb_joins_with_chevrons() {
-        assert_eq!(breadcrumb("grove", "main", "claude"), "grove › main › claude");
-    }
-
-    #[test]
-    fn nav_within_column_moves_focused_axis() {
-        // project column: moving resets wt to 0
-        assert_eq!(nav_within_column(0, 0, 3, 1, 1, 3, 5, 4), (1, 0, 1));
-        // worktree column: only wt changes
-        assert_eq!(nav_within_column(1, 1, 2, 1, 1, 3, 5, 4), (1, 3, 1));
-        assert_eq!(nav_within_column(1, 1, 4, 1, 1, 3, 5, 4), (1, 4, 1)); // clamp top
-        // agent column: only agent changes
-        assert_eq!(nav_within_column(2, 1, 2, 0, -1, 3, 5, 4), (1, 2, 0)); // clamp bottom
-        assert_eq!(nav_within_column(2, 1, 2, 1, 1, 3, 5, 4), (1, 2, 2));
     }
 
     #[test]
@@ -226,5 +266,75 @@ mod tests {
         let live = vec!["p::a".to_string(), "p::b".to_string()];
         let saved = vec!["p::a".to_string(), "p::a".to_string()];
         assert_eq!(reconcile_tile_order(&live, &saved), vec![0, 1]);
+    }
+
+    fn recent(
+        project: &str,
+        wt_path: &str,
+        agent: crate::agent::Agent,
+    ) -> crate::storage::RecentLaunch {
+        crate::storage::RecentLaunch {
+            project: project.to_string(),
+            wt_path: wt_path.to_string(),
+            agent,
+        }
+    }
+
+    #[test]
+    fn push_recent_launch_dedups_and_moves_to_front() {
+        use crate::agent::Agent;
+        let mut recents = vec![
+            recent("a", "/a", Agent::Claude),
+            recent("b", "/b", Agent::Codex),
+        ];
+        push_recent_launch(&mut recents, recent("a", "/a", Agent::Claude));
+        assert_eq!(recents.len(), 2);
+        assert_eq!(recents[0], recent("a", "/a", Agent::Claude));
+        assert_eq!(recents[1], recent("b", "/b", Agent::Codex));
+    }
+
+    #[test]
+    fn push_recent_launch_truncates_beyond_six() {
+        use crate::agent::Agent;
+        let mut recents: Vec<crate::storage::RecentLaunch> = (0..6)
+            .map(|i| recent(&format!("p{i}"), &format!("/p{i}"), Agent::Claude))
+            .collect();
+        push_recent_launch(&mut recents, recent("new", "/new", Agent::Terminal));
+        assert_eq!(recents.len(), 6);
+        assert_eq!(recents[0], recent("new", "/new", Agent::Terminal));
+        // The oldest entry (p5) fell off the end.
+        assert!(!recents.iter().any(|r| r.project == "p5"));
+    }
+
+    #[test]
+    fn fuzzy_match_is_multi_term_and_across_fields_case_insensitive() {
+        assert!(fuzzy_match("grove fix", "Grove", "fix-scroll", "claude"));
+        assert!(fuzzy_match("CLAUDE", "grove", "main", "claude"));
+        assert!(fuzzy_match("", "anything", "anything", "anything"));
+        assert!(!fuzzy_match("nomatch", "grove", "main", "claude"));
+        // A term matching nothing fails the whole (AND-across-terms) query,
+        // even when the other term matches.
+        assert!(!fuzzy_match("grove nomatch", "grove", "main", "claude"));
+    }
+
+    #[test]
+    fn fuzzy_match_indices_reports_matched_char_ranges() {
+        let m = fuzzy_match_indices("gro", "grove", "main", "claude");
+        assert!(m.matched);
+        assert_eq!(m.project, vec![(0, 3)]);
+        assert!(m.worktree.is_empty());
+        assert!(m.agent.is_empty());
+
+        // Multi-term query: each term contributes its own range, possibly in
+        // different fields.
+        let m2 = fuzzy_match_indices("grove main", "Grove", "main", "claude");
+        assert!(m2.matched);
+        assert_eq!(m2.project, vec![(0, 5)]);
+        assert_eq!(m2.worktree, vec![(0, 4)]);
+
+        // No match anywhere: not matched, and no ranges recorded.
+        let m3 = fuzzy_match_indices("zzz", "grove", "main", "claude");
+        assert!(!m3.matched);
+        assert!(m3.project.is_empty() && m3.worktree.is_empty() && m3.agent.is_empty());
     }
 }

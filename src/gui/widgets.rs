@@ -77,7 +77,6 @@ pub fn divider_v<'a>(color: Color) -> Element<'a, Msg> {
 
 pub enum SegSide {
     Left,
-    Middle,
     Right,
 }
 
@@ -118,7 +117,6 @@ fn seg_button_inner<'a>(
                     bottom_right: 0.0,
                     bottom_left: 5.0,
                 },
-                SegSide::Middle => Radius::from(0.0),
                 SegSide::Right => Radius {
                     top_left: 0.0,
                     top_right: 5.0,
@@ -219,32 +217,6 @@ pub fn split_start_button<'a>(
     available: &[Agent],
 ) -> Element<'a, Msg> {
     split_start_button_inner(proj, wt, is_main, 12.0, false, true, has_run, available)
-}
-
-/// Flat variant: no per-chip background or border on hover (just an icon
-/// color shift) and a tight padding-only hit box so the row doesn't grow
-/// vertically when the chips appear.
-pub fn split_start_button_flat<'a>(
-    proj: usize,
-    wt: usize,
-    is_main: bool,
-    icon_size: f32,
-    available: &[Agent],
-) -> Element<'a, Msg> {
-    split_start_button_inner(proj, wt, is_main, icon_size, true, true, false, available)
-}
-
-/// Flat spawn chips for an activity-stream session row: same agent / terminal
-/// launchers as `split_start_button_flat`, but the destructive delete-worktree
-/// chip is never shown. Deleting a worktree from a row that still has a live
-/// session is the wrong gesture; that action belongs to the worktree row.
-pub fn session_spawn_chips_flat<'a>(
-    proj: usize,
-    wt: usize,
-    icon_size: f32,
-    available: &[Agent],
-) -> Element<'a, Msg> {
-    split_start_button_inner(proj, wt, false, icon_size, true, false, false, available)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -872,18 +844,37 @@ pub fn modal_checkbox<'a>(
 
 /// One selectable row inside a modal list (agent picker, theme picker,
 /// directory matches). Shared so every list uses the same active/hover
-/// treatment: active rows get `bg_highlight`, hovered rows `bg_hover`.
+/// treatment: active rows get `bg_highlight`, hovered rows `bg_hover`. Fixed
+/// at the shared 28px `ROW_H` with square corners — see
+/// [`modal_list_row_sized`] for the command palette's taller, rounded rows.
 pub fn modal_list_row<'a>(
     label: impl Into<Element<'a, Msg>>,
     active: bool,
     msg: Msg,
 ) -> Element<'a, Msg> {
+    modal_list_row_sized(label, active, msg, ROW_H, 0.0, 10.0)
+}
+
+/// Generalized form of [`modal_list_row`]: same active/hover fill logic
+/// (`bg_highlight` / `bg_hover`), but with caller-chosen height, corner
+/// radius, and horizontal padding. The command palette uses this directly
+/// for its 44px main rows and 36px single-line action rows, both with a 6px
+/// radius (`modal_list_row` itself keeps 0 radius so every other list's
+/// square-cornered rows are unaffected).
+pub fn modal_list_row_sized<'a>(
+    label: impl Into<Element<'a, Msg>>,
+    active: bool,
+    msg: Msg,
+    height: f32,
+    radius: f32,
+    pad_x: f32,
+) -> Element<'a, Msg> {
     button(
         container(label)
             .width(Length::Fill)
-            .height(ROW_H)
+            .height(height)
             .align_y(iced::Alignment::Center)
-            .padding(Padding::from([0, 10]))
+            .padding(Padding::from([0.0, pad_x]))
             .clip(true),
     )
     .on_press(msg)
@@ -900,7 +891,11 @@ pub fn modal_list_row<'a>(
                 None
             },
             text_color: if active { c::FG() } else { c::FG_DIM() },
-            border: Border::default(),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: Radius::from(radius),
+            },
             shadow: Shadow::default(),
             snap: false,
         }
@@ -908,37 +903,55 @@ pub fn modal_list_row<'a>(
     .into()
 }
 
-/// A selectable row inside the session launcher's Miller columns.
+/// Command palette row height (recents/combo rows) — taller than the shared
+/// 28px `ROW_H` used elsewhere, per the palette redesign. Kept local to this
+/// module rather than added to `metrics.rs`, which stays a global constant
+/// other lists depend on.
+pub const PALETTE_ROW_H: f32 = 44.0;
+const PALETTE_ROW_RADIUS: f32 = 6.0;
+const PALETTE_ROW_PAD_X: f32 = 12.0;
+
+/// A selectable row inside the session launcher's palette.
 ///
-/// Unlike [`modal_list_row`], selection here is column-aware so focus is
-/// unambiguous across the three columns:
-/// - `active && focused` (the selected row in the column you're driving) gets
-///   the prominent treatment — a cyan-tinted gradient fill, a cyan ring, a
-///   left accent bar, and bright text.
-/// - `active && !focused` (a remembered selection in a resting column) keeps a
-///   quiet `bg_highlight` fill with dimmed text.
+/// - `active && focused` (the selected row, keyboard-driven) gets the
+///   prominent treatment — a cyan-tinted gradient fill, a cyan ring, a left
+///   accent bar, and bright text.
+/// - `active && !focused` keeps a quiet `bg_highlight` fill with dimmed text.
 /// - hovered / idle rows match the shared modal treatment.
+///
+/// `height` lets callers pick their row size: recents/combo rows use
+/// [`PALETTE_ROW_H`] (44px), the options-state agent list uses 36px. Corners
+/// are always [`PALETTE_ROW_RADIUS`] (6px).
 pub fn launcher_row<'a>(
     label: impl Into<Element<'a, Msg>>,
     active: bool,
     focused: bool,
     msg: Msg,
+    height: f32,
 ) -> Element<'a, Msg> {
     use iced::gradient::{self, Gradient};
     use iced::Radians;
 
-    // Resting columns (and non-selected rows) match the shared modal treatment.
+    // Resting/idle rows match the shared modal treatment, just taller and
+    // rounded to match the palette's row idiom.
     if !(active && focused) {
-        return modal_list_row(label, active, msg);
+        return modal_list_row_sized(
+            label,
+            active,
+            msg,
+            height,
+            PALETTE_ROW_RADIUS,
+            PALETTE_ROW_PAD_X,
+        );
     }
 
-    // The selected row in the focused column: cyan gradient fill + ring.
+    // The selected, focused row: cyan gradient fill + ring.
     let btn = button(
         container(label)
             .width(Length::Fill)
-            .height(ROW_H)
+            .height(height)
             .align_y(iced::Alignment::Center)
-            .padding(Padding::from([0, 10]))
+            .padding(Padding::from([0.0, PALETTE_ROW_PAD_X]))
             .clip(true),
     )
     .on_press(msg)
@@ -955,7 +968,7 @@ pub fn launcher_row<'a>(
             border: Border {
                 color: c::SEL_RING(),
                 width: 1.0,
-                radius: Radius::from(5.0),
+                radius: Radius::from(PALETTE_ROW_RADIUS),
             },
             shadow: Shadow::default(),
             snap: false,
@@ -981,7 +994,7 @@ pub fn launcher_row<'a>(
     .height(Length::Fill)
     .align_x(iced::Alignment::Start)
     .align_y(iced::Alignment::Center)
-    .padding(Padding::from([2, 0]));
+    .padding(Padding::from([6, 0]));
 
     iced::widget::stack![btn, bar].into()
 }

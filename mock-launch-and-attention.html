@@ -1,0 +1,844 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8" />
+<title>Grove — Launch &amp; Attention, v2</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #e1e2e7;
+    --bg-highlight: #c4c8da;
+    --fg: #3760bf;
+    --fg-dark: #6172b0;
+    --muted: #848cb5;
+    --blue: #2e7de9;
+    --cyan: #007197;
+    --cyan-rgb: 0,113,151;
+    --magenta: #9854f1;
+    --green: #587539;
+    --yellow: #8c6c3e;
+    --red: #f52a65;
+    --amber: #a65c47;
+    --amber-rgb: 166,92,71;
+    --rail: #d5d6dd;
+    --strip: #cacbd4;
+    --border: #b7bad0;
+    --border-soft: #d3d5e2;
+    --hover: #cdd0dd;
+
+    --board-bg: #eceef2;
+    --surface: #f4f5f8;
+    --primary: var(--blue);
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  html.dark {
+    --bg: #1a1b26;
+    --bg-highlight: #292e42;
+    --fg: #c0caf5;
+    --fg-dark: #a9b1d6;
+    --muted: #565f89;
+    --blue: #7aa2f7;
+    --cyan: #7dcfff;
+    --cyan-rgb: 125,207,255;
+    --magenta: #bb9af7;
+    --green: #9ece6a;
+    --yellow: #e0af68;
+    --red: #f7768e;
+    --amber: #e6a172;
+    --amber-rgb: 230,161,114;
+    --rail: #15161f;
+    --strip: #12121a;
+    --border: #2b2d3d;
+    --border-soft: #21222f;
+    --hover: #22243a;
+
+    --board-bg: #101116;
+    --surface: #1e2030;
+  }
+  html.dark #viewport { background-image: radial-gradient(circle, #23252f 1px, transparent 1px); }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--board-bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow: hidden;
+  }
+
+  #viewport {
+    position: fixed; inset: 0; overflow: hidden; cursor: grab;
+    background-image: radial-gradient(circle, #cfd1da 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  #viewport.panning { cursor: grabbing; }
+  #canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; padding: 60px; width: max-content; }
+
+  .hud {
+    position: fixed; right: 16px; bottom: 16px; z-index: 10; display: flex; gap: 6px; align-items: center;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px;
+    font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.25); color: var(--fg);
+  }
+  .hud button { border: 1px solid var(--border); background: var(--surface); color: var(--fg); border-radius: 5px; padding: 3px 9px; font: inherit; cursor: pointer; }
+  .hud .zoom-pct { min-width: 42px; text-align: center; color: var(--muted); }
+  .theme-toggle {
+    position: fixed; right: 16px; top: 16px; z-index: 10; border: 1px solid var(--border);
+    background: var(--surface); color: var(--fg); border-radius: 9999px; padding: 7px 14px;
+    font: inherit; font-size: 13px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+  }
+
+  .page-header { margin-bottom: 36px; }
+  .page-header h1 { font-size: 26px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .page-header .subtitle { font-size: 14px; color: var(--muted); margin: 0 0 18px; max-width: 760px; }
+  .legend {
+    display: inline-flex; gap: 18px; flex-wrap: wrap; align-items: center;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px 16px; font-size: 12px; color: var(--muted);
+  }
+  .legend b { color: var(--fg); }
+  .legend .tag { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .swatch.before { background: var(--red); }
+  .swatch.after { background: var(--green); }
+
+  .section-heading {
+    font-size: 18px; font-weight: 700; margin: 56px 0 6px; padding-bottom: 8px;
+    border-bottom: 2px solid var(--border); display: flex; align-items: baseline; gap: 10px;
+  }
+  .section-letter {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; border-radius: 6px;
+    background: var(--primary); color: #08090c; font-size: 13px; font-weight: 700;
+  }
+
+  .frame-row { display: flex; gap: 28px; margin-top: 22px; align-items: flex-start; position: relative; }
+  .frame { position: relative; }
+  .frame-caption { margin-bottom: 10px; max-width: 340px; }
+  .frame-id {
+    display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
+    color: var(--board-bg); background: var(--fg); border-radius: 4px; padding: 2px 7px; margin-right: 8px;
+  }
+  .frame-name { font-size: 14px; font-weight: 600; color: var(--fg); }
+  .frame-desc { font-size: 12px; color: var(--muted); margin: 4px 0 0; line-height: 1.5; }
+
+  .frame-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15), 0 8px 24px rgba(0,0,0,0.12); overflow: hidden;
+  }
+
+  .connector-row { display: flex; align-items: center; color: var(--muted); font-size: 22px; align-self: center; padding-top: 120px; }
+
+  .sticky-note {
+    display: inline-block; background: #fff8c5; border: 1px solid #e6d97a; color: #4a4320;
+    font-size: 12.5px; line-height: 1.55; padding: 14px 16px; max-width: 460px; border-radius: 3px;
+    box-shadow: 0 6px 16px rgba(0,0,0,0.3); transform: rotate(-1.2deg); margin: 40px 0;
+  }
+  .sticky-note b { color: #2c2810; }
+
+  @keyframes pulse { 0%,100%{opacity:.45} 50%{opacity:1} }
+  @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+  .pulse-el { animation: pulse 1.2s ease-in-out infinite; }
+  .spinner { display:inline-block; animation: spin 1s linear infinite; }
+
+  /* ---- Grove sidebar / row language ---- */
+  .sidebar { width: 260px; background: var(--rail); font-size: 12px; color: var(--fg-dark); display: flex; flex-direction: column; }
+  .sb-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid var(--border-soft); }
+  .pill-group { display: flex; background: var(--strip); border-radius: 6px; padding: 2px; gap: 2px; }
+  .pill { padding: 3px 8px; border-radius: 4px; font-size: 11px; color: var(--muted); }
+  .pill.active { background: var(--bg-highlight); color: var(--cyan); }
+  .icon-btn { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; color: var(--muted); border-radius: 4px; }
+  .sb-label { font-family: var(--mono); font-size: 10px; letter-spacing: .04em; color: var(--muted); }
+
+  .group-header { font-family: var(--mono); font-size: 10px; letter-spacing: .05em; color: var(--muted); text-transform: uppercase; padding: 8px 10px 4px; }
+  .group-header.amber { color: var(--amber); }
+
+  .row { display: flex; align-items: center; gap: 6px; padding: 0 10px; height: 27px; position: relative; }
+  .row.project { font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; color: var(--fg-dark); }
+  .row.worktree { padding-left: 22px; color: var(--fg-dark); }
+  .row.session { padding-left: 34px; }
+  .row.active { background: var(--bg-highlight); color: var(--cyan); }
+  .row.amber-row { background: rgba(var(--amber-rgb),0.08); }
+  .row.amber-row::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background: var(--amber); }
+  .chevron { width: 10px; color: var(--muted); font-size: 9px; flex-shrink:0; }
+  .row-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); display: block; margin-top: -1px; }
+  .tag-chip { font-family: var(--mono); font-size: 10px; border: 1px solid var(--border-soft); border-radius: 4px; padding: 1px 5px; color: var(--muted); }
+  .glyph { width: 12px; height: 12px; flex-shrink: 0; display:flex; align-items:center; justify-content:center; }
+  .glyph.green { color: var(--green); }
+  .glyph.amber { color: var(--amber); }
+  .glyph.muted { color: var(--muted); }
+  .hairline { border-top: 1px solid var(--border-soft); margin: 4px 0; }
+  .sb-footer { margin-top: auto; padding: 8px 10px; border-top: 1px solid var(--border-soft); display:flex; gap:6px; }
+  .sb-footer-btn { flex:1; font-size: 11px; color: var(--muted); border: 1px dashed var(--border); border-radius: 6px; padding: 5px 0; text-align:center; }
+  .term-row { display:flex; align-items:center; gap:6px; padding: 0 10px; height: 27px; color: var(--fg-dark); }
+  .term-row.active { color: var(--cyan); }
+  .term-row.indent { padding-left: 26px; }
+
+  /* ---- desktop app chrome ---- */
+  .desktop { background: var(--bg); display: flex; flex-direction: column; position: relative; overflow: hidden; }
+  .appbar { height: 34px; background: var(--strip); display: flex; align-items: center; padding: 0 12px; gap: 12px; flex-shrink: 0; border-bottom: 1px solid var(--border-soft); }
+  .appbar .app-name { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .appbar .seg { display:flex; background: var(--rail); border-radius: 6px; padding: 2px; gap: 2px; margin: 0 auto; }
+  .appbar .seg .pill { font-size: 11px; }
+  .appbar .right { display:flex; align-items:center; gap: 10px; color: var(--muted); font-size: 12px; }
+  .attn-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--amber);
+    background: rgba(var(--amber-rgb),0.08);
+    border: 1px solid var(--amber); border-radius: 9999px; padding: 2px 10px;
+    white-space: nowrap;
+  }
+  .attn-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
+  .statusbar { height: 26px; background: var(--strip); display:flex; align-items:center; justify-content: space-between; padding: 0 12px; flex-shrink:0; border-top: 1px solid var(--border-soft); font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  .statusbar .running { color: var(--green); }
+  .app-body { flex: 1; display: flex; min-height: 0; }
+  .workspace { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+  .session-bar { height: 28px; background: var(--rail); display:flex; align-items:center; gap: 6px; padding: 0 10px; font-size: 11px; color: var(--fg-dark); border-bottom: 1px solid var(--border-soft); flex-shrink:0; }
+  .pty { flex: 1; background: #1a1b26; font-family: var(--mono); font-size: 11px; color: #565f89; line-height: 1.65; padding: 10px 14px; overflow: hidden; }
+  .pty .q { color: #c0caf5; }
+  .pty .ok { color: #9ece6a; }
+
+  /* ---- launcher modal (BEFORE) ---- */
+  .dim-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; }
+  .launcher-modal { width: 820px; height: 460px; background: var(--rail); border: 1px solid var(--border); border-radius: 10px; display:flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+  .miller { flex: 1; display: flex; gap: 1px; background: var(--border-soft); min-height: 0; }
+  .miller-col { flex: 1; background: var(--rail); display:flex; flex-direction: column; padding: 8px 0; }
+  .miller-col .col-title { font-family: var(--mono); font-size: 10px; letter-spacing: .05em; color: var(--muted); text-transform: uppercase; padding: 4px 12px 8px; }
+  .mrow { display:flex; align-items:center; gap: 8px; height: 30px; padding: 0 12px; font-size: 12px; color: var(--fg-dark); position: relative; margin: 1px 6px; border-radius: 5px; }
+  .mrow.sel {
+    background: linear-gradient(to right, rgba(var(--cyan-rgb),0.22), rgba(var(--cyan-rgb),0.10));
+    box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb),0.5);
+    color: var(--cyan);
+  }
+  .mrow.sel::before { content:""; position:absolute; left:0; top:4px; bottom:4px; width:3px; border-radius:2px; background: var(--cyan); }
+  .launcher-footer { padding: 12px 16px; border-top: 1px solid var(--border-soft); display: flex; justify-content: flex-end; }
+  .btn-start { background: var(--blue); color: var(--bg); font-size: 12px; font-weight: 600; border-radius: 6px; padding: 7px 16px; border: 0; }
+
+  /* ---- command bar (AFTER) ---- */
+  .palette-stage { background: var(--bg); padding: 44px 0 40px; display: flex; justify-content: center; position: relative; }
+  .palette { width: 640px; background: var(--rail); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); overflow: hidden; }
+  .palette-input { display:flex; align-items:center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--border-soft); font-size: 13px; }
+  .palette-input .ph { color: var(--muted); }
+  .palette-input .typed { color: var(--fg); font-family: var(--mono); }
+  .caret { display:inline-block; width: 1px; height: 14px; background: var(--cyan); margin-left: 1px; vertical-align: middle; }
+  .pal-section { font-family: var(--mono); font-size: 10px; letter-spacing: .05em; color: var(--muted); padding: 10px 14px 4px; }
+  .prow { display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 14px; font-size: 12.5px; color: var(--fg-dark); position: relative; margin: 1px 6px; border-radius: 6px; }
+  .prow.sel {
+    background: linear-gradient(to right, rgba(var(--cyan-rgb),0.22), rgba(var(--cyan-rgb),0.10));
+    box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb),0.5);
+    color: var(--cyan);
+  }
+  .prow.sel::before { content:""; position:absolute; left:0; top:5px; bottom:5px; width:3px; border-radius:2px; background: var(--cyan); }
+  .prow .combo { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .prow .rhs { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  .prow .sub { font-family: var(--mono); font-size: 10px; color: var(--muted); display: block; line-height: 1.2; }
+  .prow.tall { height: 44px; }
+  .kbd-chip { font-family: var(--mono); font-size: 10px; border: 1px solid var(--border-soft); border-radius: 4px; padding: 1px 5px; color: var(--muted); }
+  .pal-footer { border-top: 1px solid var(--border-soft); padding: 7px 14px; font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  .refine-strip { display: flex; align-items: center; gap: 6px; padding: 6px 14px 8px 30px; }
+  .refine-strip .lbl { font-family: var(--mono); font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; width: 58px; flex-shrink: 0; }
+  .rchip { font-family: var(--mono); font-size: 10px; border: 1px solid var(--border-soft); border-radius: 4px; padding: 2px 8px; color: var(--muted); }
+  .rchip.sel { border-color: var(--cyan); color: var(--cyan); background: rgba(var(--cyan-rgb),0.12); }
+
+  /* ---- attention dropdown ---- */
+  .attn-dropdown { width: 340px; background: var(--rail); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 14px 40px rgba(0,0,0,0.5); overflow: hidden; }
+  .attn-drow { display:flex; align-items:flex-start; gap: 8px; padding: 8px 12px; position: relative; background: rgba(var(--amber-rgb),0.08); border-bottom: 1px solid var(--border-soft); }
+  .attn-drow::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background: var(--amber); }
+  .attn-drow .who { font-size: 12px; color: var(--fg-dark); font-weight: 600; }
+  .attn-drow .what { font-size: 11.5px; color: var(--fg-dark); }
+  .attn-drow .meta { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  .attn-dfooter { padding: 7px 12px; font-family: var(--mono); font-size: 10px; color: var(--muted); }
+
+  /* ---- grid tiles ---- */
+  .grid2 { flex: 1; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 10px; padding: 10px; min-height: 0; background: var(--bg); }
+  .gtile { background: #1a1b26; border: 1px solid var(--border-soft); border-radius: 6px; display:flex; flex-direction: column; overflow: hidden; min-height: 0; }
+  .gtile.amber { border: 2px solid var(--amber); }
+  .gtile.focus { border: 2px solid var(--cyan); }
+  .gtile-header { height: 26px; background: var(--strip); display:flex; align-items:center; gap: 6px; padding: 0 8px; font-size: 10.5px; color: var(--fg-dark); flex-shrink:0; }
+  .gtile-header .rhs { margin-left: auto; display:flex; align-items:center; gap: 6px; }
+  .respond-chip { font-family: var(--mono); font-size: 9px; color: var(--amber); border: 1px solid var(--amber); border-radius: 4px; padding: 0 5px; }
+  .gtile-body { flex: 1; font-family: var(--mono); font-size: 10px; color: #565f89; line-height: 1.6; padding: 6px 10px; overflow: hidden; }
+  .gtile-body .q { color: #c0caf5; }
+
+  /* zen */
+  .zen { background: #1a1b26; position: relative; display: flex; flex-direction: column; }
+  .zen .pty { padding: 16px 20px; font-size: 12px; }
+  .zen-pill {
+    position: absolute; top: 12px; right: 14px;
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; color: var(--amber);
+    background: rgba(var(--amber-rgb),0.1);
+    border: 1px solid var(--amber); border-radius: 9999px; padding: 2px 9px;
+  }
+  .zen-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
+
+  .kbd-float { position: absolute; font-family: var(--mono); font-size: 10px; color: var(--cyan); border: 1px solid var(--cyan); border-radius: 4px; padding: 1px 6px; background: rgba(var(--cyan-rgb),0.1); }
+</style>
+</head>
+<body>
+<button class="theme-toggle" id="themeToggle" type="button">☀ Light</button>
+<div class="hud">
+  <button type="button" id="zoomOut">−</button>
+  <span class="zoom-pct" id="zoomPct">100%</span>
+  <button type="button" id="zoomIn">+</button>
+  <button type="button" id="zoomFit">Fit</button>
+</div>
+<div id="viewport">
+<div id="canvas">
+
+  <div class="page-header">
+    <h1>Grove — Launch &amp; Attention, v2</h1>
+    <p class="subtitle">Attention is a queue, not a view. Launching is a keystroke, not a form.</p>
+    <div class="legend">
+      <span class="tag"><span class="swatch before"></span><b>BEFORE</b> = current UI</span>
+      <span class="tag"><span class="swatch after"></span><b>AFTER</b> = proposed</span>
+      <span class="tag">Frame IDs (e.g. <b>A1</b>, <b>B3</b>) group related states</span>
+    </div>
+  </div>
+
+  <!-- ================= SECTION A ================= -->
+  <div class="section-heading"><span class="section-letter">A</span> Launcher: Miller form &rarr; recents-first command bar</div>
+  <div class="frame-row">
+
+    <!-- A1 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">A1</span><span class="frame-name">Current launcher modal (BEFORE)</span>
+        <p class="frame-desc">4&ndash;5 interactions every time; no memory of what you launched last.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="desktop" style="width:1100px; height:700px;">
+          <div class="appbar">
+            <span class="app-name">grove</span>
+            <div class="seg"><span class="pill active">projects</span><span class="pill">grid</span></div>
+            <div class="right"><span>&#9881;</span><span>&#9673;</span></div>
+          </div>
+          <div class="app-body">
+            <div class="sidebar" style="opacity:.55;">
+              <div class="row project"><span class="chevron">&#9662;</span><span class="row-name">GROVE</span></div>
+              <div class="row worktree"><span class="chevron">&#9662;</span><span class="row-name">main</span></div>
+              <div class="row session"><span class="glyph green">&#9679;</span><span class="row-name">claude</span></div>
+              <div class="row project"><span class="chevron">&#9656;</span><span class="row-name">DOTFILES</span></div>
+            </div>
+            <div class="workspace" style="opacity:.55;"><div class="pty">$ _</div></div>
+          </div>
+          <div class="statusbar"><span class="running">&#9679; 2 running</span><span>v0.38.0</span></div>
+          <div class="dim-overlay">
+            <div class="launcher-modal">
+              <div class="miller">
+                <div class="miller-col">
+                  <div class="col-title">Project</div>
+                  <div class="mrow sel">grove</div>
+                  <div class="mrow">dotfiles</div>
+                  <div class="mrow">blog</div>
+                </div>
+                <div class="miller-col">
+                  <div class="col-title">Worktree</div>
+                  <div class="mrow sel">main</div>
+                  <div class="mrow">exp</div>
+                  <div class="mrow" style="margin-top:auto; color:var(--muted);">&#65291; new worktree</div>
+                </div>
+                <div class="miller-col">
+                  <div class="col-title">Agent</div>
+                  <div class="mrow sel">&#10022; claude</div>
+                  <div class="mrow">&lt;&gt; codex</div>
+                  <div class="mrow">&#9670; opencode</div>
+                  <div class="mrow">&#9656;_ terminal</div>
+                </div>
+              </div>
+              <div class="launcher-footer"><button class="btn-start">Start session</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">&rarr;</div>
+
+    <!-- A2 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">A2</span><span class="frame-name">Command bar &mdash; recents (AFTER)</span>
+        <p class="frame-desc">Enter&middot;Enter = back to work. Recents are complete launches, not history.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="palette-stage" style="width:760px;">
+          <div class="palette">
+            <div class="palette-input">
+              <span style="color:var(--muted);">&#9906;</span>
+              <span class="ph">project, worktree, agent &mdash; or just Enter</span>
+            </div>
+            <div class="pal-section">RECENT</div>
+            <div class="prow sel">
+              <span style="color:var(--yellow);">&#10022;</span>
+              <span>claude</span>
+              <span class="combo">grove / main</span>
+              <span class="rhs">&#9166;</span>
+            </div>
+            <div class="prow">
+              <span class="glyph muted">&lt;&gt;</span>
+              <span>codex</span>
+              <span class="combo">grove / exp</span>
+            </div>
+            <div class="prow">
+              <span style="color:var(--muted);">&#10022;</span>
+              <span>claude</span>
+              <span class="combo">dotfiles / main</span>
+            </div>
+            <div class="pal-section">ACTIONS</div>
+            <div class="prow">
+              <span class="glyph muted">&#65291;</span>
+              <span>new session&hellip;</span>
+              <span class="rhs">opens columns &rarr;</span>
+            </div>
+            <div class="prow">
+              <span class="glyph muted">&#9656;_</span>
+              <span>Terminal at ~</span>
+              <span class="rhs"><span class="kbd-chip">&#8984;T</span></span>
+            </div>
+            <div class="prow">
+              <span class="glyph muted">&#9656;_</span>
+              <span>Terminal in grove/main</span>
+            </div>
+            <div class="pal-footer">&#9166; launch &middot; &rarr; refine &middot; &#8984;1&ndash;9 pick</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">&rarr;</div>
+
+    <!-- A3 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">A3</span><span class="frame-name">Command bar &mdash; typing (AFTER)</span>
+        <p class="frame-desc">Fuzzy across project+worktree; agent defaults to last-used.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="palette-stage" style="width:760px;">
+          <div class="palette">
+            <div class="palette-input">
+              <span style="color:var(--muted);">&#9906;</span>
+              <span class="typed">gro ex</span><span class="caret pulse-el"></span>
+            </div>
+            <div class="prow sel tall" style="margin-top:8px;">
+              <span style="color:var(--yellow);">&#10022;</span>
+              <div>
+                <span>claude &middot; grove / exp</span>
+                <span class="sub">last agent for this worktree &mdash; &rarr; to change</span>
+              </div>
+              <span class="rhs">&#9166;</span>
+            </div>
+            <div class="prow" style="margin-bottom:10px;">
+              <span class="glyph muted">&lt;&gt;</span>
+              <span>codex &middot; grove / exp</span>
+            </div>
+            <div class="pal-footer">&#9166; launch &middot; &rarr; refine &middot; &#8984;1&ndash;9 pick</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">&rarr;</div>
+
+    <!-- A4 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">A4</span><span class="frame-name">Command bar &mdash; &rarr; refine (AFTER)</span>
+        <p class="frame-desc">Miller columns demoted to an inline refine step &mdash; the escape hatch, not the path.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="palette-stage" style="width:760px;">
+          <div class="palette">
+            <div class="palette-input">
+              <span style="color:var(--muted);">&#9906;</span>
+              <span class="ph">project, worktree, agent &mdash; or just Enter</span>
+            </div>
+            <div class="pal-section">RECENT</div>
+            <div class="prow sel">
+              <span style="color:var(--yellow);">&#10022;</span>
+              <span>claude</span>
+              <span class="combo">grove / main</span>
+              <span class="rhs">&#9166;</span>
+            </div>
+            <div class="refine-strip">
+              <span class="lbl">agent</span>
+              <span class="rchip sel">&#10022; claude</span>
+              <span class="rchip">&lt;&gt; codex</span>
+              <span class="rchip">&#9670; opencode</span>
+              <span class="rchip">&#9656;_ terminal</span>
+            </div>
+            <div class="refine-strip" style="padding-top:0;">
+              <span class="lbl">worktree</span>
+              <span class="rchip sel">main</span>
+              <span class="rchip">exp</span>
+              <span class="rchip">&#65291; new</span>
+            </div>
+            <div class="prow" style="margin-top:4px;">
+              <span class="glyph muted">&lt;&gt;</span>
+              <span>codex</span>
+              <span class="combo">grove / exp</span>
+            </div>
+            <div class="prow" style="margin-bottom:8px;">
+              <span style="color:var(--muted);">&#10022;</span>
+              <span>claude</span>
+              <span class="combo">dotfiles / main</span>
+            </div>
+            <div class="pal-footer">&#9166; launch &middot; &larr; collapse &middot; tab switch strip</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="sticky-note">
+    <b>Keystroke math</b> &mdash; repeat last session: 5 clicks &rarr; 2 keys. New-ish session: type 3 chars + &#9166;. The 3-column modal survives inside &rarr; refine.
+  </div>
+
+  <!-- ================= SECTION B ================= -->
+  <div class="section-heading"><span class="section-letter">B</span> Attention queue in the chrome</div>
+  <div class="frame-row">
+
+    <!-- B1 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B1</span><span class="frame-name">Activity view (BEFORE)</span>
+        <p class="frame-desc">A whole sidebar view whose only job is &ldquo;who&rsquo;s waiting?&rdquo; &mdash; requires switching to it.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="sidebar" style="height:420px;">
+          <div class="sb-header">
+            <div class="pill-group">
+              <span class="pill">tree</span>
+              <span class="pill active">activity</span>
+              <span class="pill">term</span>
+            </div>
+            <div class="icon-btn">&#8645;</div>
+          </div>
+          <div class="group-header amber">WAITING</div>
+          <div class="row session amber-row">
+            <span class="glyph amber pulse-el">?</span>
+            <div style="flex:1; overflow:hidden;">
+              <span class="row-name">codex</span>
+              <span class="row-sub">grove / main &middot; main</span>
+            </div>
+            <span class="tag-chip">2m</span>
+          </div>
+          <div class="group-header">RUNNING</div>
+          <div class="row session">
+            <span class="glyph green"><span class="spinner">&#9679;</span></span>
+            <div style="flex:1; overflow:hidden;">
+              <span class="row-name">claude</span>
+              <span class="row-sub">grove / main</span>
+            </div>
+          </div>
+          <div class="group-header">IDLE</div>
+          <div class="row session">
+            <span class="glyph muted">&#10003;</span>
+            <span class="row-name">claude &mdash; dotfiles / main</span>
+          </div>
+          <div class="row session">
+            <span class="glyph muted">&#9675;</span>
+            <span class="row-name">opencode &mdash; grove / exp</span>
+          </div>
+          <div class="sb-footer"><div class="sb-footer-btn">+ new session</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">&rarr;</div>
+
+    <!-- B2 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B2</span><span class="frame-name">Queue pill in the appbar (AFTER)</span>
+        <p class="frame-desc">The queue lives in the chrome &mdash; visible in every view. Tree stays structural.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="desktop" style="width:1100px; height:700px;">
+          <div class="appbar">
+            <span class="app-name">grove</span>
+            <div class="seg"><span class="pill active">projects</span><span class="pill">grid</span></div>
+            <span class="attn-pill"><span class="dot pulse-el"></span>2 need you</span>
+            <div class="right"><span>&#9881;</span><span>&#9673;</span></div>
+          </div>
+          <div class="app-body">
+            <div class="sidebar">
+              <div class="sb-header"><span class="sb-label">sessions</span><div class="icon-btn">&#8645;</div></div>
+              <div class="row project"><span class="chevron">&#9662;</span><span class="row-name">GROVE</span></div>
+              <div class="row worktree"><span class="chevron">&#9662;</span><span class="row-name">main</span><span class="tag-chip">main</span></div>
+              <div class="row session active"><span class="glyph green"><span class="spinner">&#9679;</span></span><span class="row-name">claude &mdash; fix attention pulse</span></div>
+              <div class="row session amber-row"><span class="glyph amber pulse-el">?</span><span class="row-name">codex &mdash; refactor rows</span></div>
+              <div class="row project" style="margin-top:6px;"><span class="chevron">&#9656;</span><span class="row-name">DOTFILES</span><span class="glyph amber pulse-el" style="margin-left:4px;">&#9650;</span></div>
+              <div class="sb-footer"><div class="sb-footer-btn">+ new session</div></div>
+            </div>
+            <div class="workspace">
+              <div class="session-bar"><span style="color:var(--yellow);">&#10022;</span> claude <span style="font-family:var(--mono); font-size:10px; color:var(--muted);">grove / main &middot; main</span></div>
+              <div class="pty">
+                <div>$ cargo build --release</div>
+                <div>Compiling grove v0.38.0</div>
+                <div>warning: unused variable `tx`</div>
+                <div class="ok">Finished release [optimized] target(s) in 41.2s</div>
+                <div>$ ./install.sh</div>
+                <div>installing grove to ~/.local/bin</div>
+                <div class="q">&#9679; running tests&hellip;</div>
+              </div>
+            </div>
+          </div>
+          <div class="statusbar"><span class="running">&#9679; 2 running</span><span>v0.38.0</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">&rarr;</div>
+
+    <!-- B3 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B3</span><span class="frame-name">Queue expanded (AFTER)</span>
+        <p class="frame-desc">Click a row to jump; &#8984;' drains the queue oldest-first without opening anything.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="desktop" style="width:700px; height:220px; overflow:visible;">
+          <div class="appbar">
+            <span class="app-name">grove</span>
+            <div class="seg"><span class="pill active">projects</span><span class="pill">grid</span></div>
+            <span class="attn-pill"><span class="dot pulse-el"></span>2 need you</span>
+            <div class="right"><span>&#9881;</span><span>&#9673;</span></div>
+          </div>
+          <div style="position:relative; flex:1;">
+            <div class="attn-dropdown" style="position:absolute; right:64px; top:4px;">
+              <div class="attn-drow">
+                <span class="glyph amber pulse-el" style="margin-top:2px;">&lt;&gt;</span>
+                <div>
+                  <span class="who">codex</span> <span class="what">&mdash; &ldquo;permission to run cargo test?&rdquo;</span>
+                  <div class="meta">grove / main &middot; 4m</div>
+                </div>
+              </div>
+              <div class="attn-drow">
+                <span class="glyph amber pulse-el" style="margin-top:2px;">&#10022;</span>
+                <div>
+                  <span class="who">claude</span> <span class="what">&mdash; &ldquo;apply this edit? (y/n)&rdquo;</span>
+                  <div class="meta">dotfiles / main &middot; 1m</div>
+                </div>
+              </div>
+              <div class="attn-dfooter">&#8984;' jump to next &middot; focusing acknowledges</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="frame-row">
+
+    <!-- B4 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B4</span><span class="frame-name">Zen mode (AFTER)</span>
+        <p class="frame-desc">Zen stays zen; the queue shrinks to a dot count.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="zen" style="width:900px; height:560px;">
+          <span class="zen-pill"><span class="dot pulse-el"></span>2</span>
+          <div class="pty">
+            <div>$ claude</div>
+            <div>&#10022; Reading src/gui/update.rs&hellip;</div>
+            <div>&#10022; Editing src/gui/view.rs (3 hunks)</div>
+            <div class="ok">&#10003; cargo check passed</div>
+            <div>&#10022; Writing tests for attention rollup&hellip;</div>
+            <div class="q">&#9679; thinking&hellip;</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row" style="padding-top:0; align-self:center;">&nbsp;</div>
+
+    <!-- B5 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B5</span><span class="frame-name">Grid view (AFTER)</span>
+        <p class="frame-desc">Grid keeps its border language; &#8984;' works here too.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="desktop" style="width:1100px; height:700px;">
+          <div class="appbar">
+            <span class="app-name">grove</span>
+            <div class="seg"><span class="pill">projects</span><span class="pill active">grid</span></div>
+            <span class="attn-pill"><span class="dot pulse-el"></span>2 need you</span>
+            <div class="right"><span>&#9881;</span><span>&#9673;</span></div>
+          </div>
+          <div class="grid2">
+            <div class="gtile amber">
+              <div class="gtile-header">
+                <span style="color:var(--yellow);">&#10022;</span> claude
+                <div class="rhs"><span class="respond-chip pulse-el">respond &middot; &#8984;2</span><span style="color:var(--muted);">&#9673;</span><span style="color:var(--muted);">&times;</span></div>
+              </div>
+              <div class="gtile-body">
+                <div>$ git diff src/gui/rows.rs</div>
+                <div>+ 42 lines changed</div>
+                <div class="q">Do you want to apply this edit? (y/n)</div>
+              </div>
+            </div>
+            <div class="gtile focus">
+              <div class="gtile-header"><span style="color:var(--yellow);">&#10022;</span> claude &middot; grove/exp</div>
+              <div class="gtile-body">
+                <div>$ npm test</div>
+                <div>12 passing</div>
+                <div>&#9679; running&hellip;</div>
+              </div>
+            </div>
+            <div class="gtile">
+              <div class="gtile-header">&#9656;_ zsh</div>
+              <div class="gtile-body">
+                <div>$ ls -la</div>
+                <div>total 42</div>
+                <div>drwxr-xr-x &hellip;</div>
+              </div>
+            </div>
+            <div class="gtile">
+              <div class="gtile-header">&lt;&gt; codex</div>
+              <div class="gtile-body">
+                <div>$ pytest</div>
+                <div>&#10003; 8 passed</div>
+                <div>done.</div>
+              </div>
+            </div>
+          </div>
+          <div class="statusbar"><span class="running">&#9679; 2 running</span><span>v0.38.0</span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="sticky-note">
+    <b>Note:</b> Activity view deleted (~160 lines + a sidebar mode). Its signal was &ldquo;cross-project waiting&rdquo; &mdash; now ambient. Acknowledge-on-focus already exists; the queue is just a rendering of it.
+  </div>
+
+  <!-- ================= SECTION C ================= -->
+  <div class="section-heading"><span class="section-letter">C</span> Terminals: tab &rarr; tree node + hotkey</div>
+  <div class="frame-row">
+
+    <!-- C1 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">C1</span><span class="frame-name">Terminal view (BEFORE)</span>
+        <p class="frame-desc">A third sidebar mode that exists only because ~ isn&rsquo;t a project.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="sidebar" style="height:360px;">
+          <div class="sb-header">
+            <div class="pill-group">
+              <span class="pill">tree</span>
+              <span class="pill">activity</span>
+              <span class="pill active">term</span>
+            </div>
+            <div class="icon-btn">&#8645;</div>
+          </div>
+          <div class="term-row active">
+            <span class="glyph">&#9656;_</span>
+            <span class="row-name">~/dev/grove &mdash; nvim</span>
+          </div>
+          <div class="term-row">
+            <span class="glyph muted">&#9656;_</span>
+            <span class="row-name">~</span>
+          </div>
+          <div class="sb-footer"><div class="sb-footer-btn">+ new terminal</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">&rarr;</div>
+
+    <!-- C2 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">C2</span><span class="frame-name">Terminals as ~ tree node (AFTER)</span>
+        <p class="frame-desc">Terminals are sessions at ~. One tree, zero sidebar modes.</p>
+      </div>
+      <div class="frame-card" style="padding:0; overflow:visible;">
+        <div class="sidebar" style="height:420px; position:relative;">
+          <div class="sb-header"><span class="sb-label">sessions</span><div class="icon-btn">&#8645;</div></div>
+          <div class="row project"><span class="chevron">&#9662;</span><span class="row-name">GROVE</span></div>
+          <div class="row worktree"><span class="chevron">&#9662;</span><span class="row-name">main</span><span class="tag-chip">main</span></div>
+          <div class="row session"><span class="glyph green"><span class="spinner">&#9679;</span></span><span class="row-name">claude &mdash; fix attention pulse</span></div>
+          <div class="row session amber-row"><span class="glyph amber pulse-el">?</span><span class="row-name">codex &mdash; refactor rows</span></div>
+          <div class="row project" style="margin-top:6px;"><span class="chevron">&#9656;</span><span class="row-name">DOTFILES</span><span class="glyph amber pulse-el" style="margin-left:4px;">&#9650;</span></div>
+          <div class="hairline" style="margin-top:10px;"></div>
+          <div class="term-row" style="font-family:var(--mono);">
+            <span class="glyph muted">&#9656;_</span>
+            <span class="row-name">~</span>
+          </div>
+          <span class="kbd-float" style="right:-46px; top:213px;">&#8984;T</span>
+          <div class="term-row indent active">
+            <span class="glyph">&#9656;_</span>
+            <span class="row-name">nvim</span>
+          </div>
+          <div class="term-row indent">
+            <span class="glyph muted">&#9656;_</span>
+            <span class="row-name">zsh</span>
+          </div>
+          <div class="sb-footer"><div class="sb-footer-btn">+ new session</div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="sticky-note">
+    <b>Note:</b> &#8984;T = terminal at ~ instantly, no launcher. The per-worktree term panel (split view) is untouched &mdash; different job.
+  </div>
+
+</div><!-- /#canvas -->
+</div><!-- /#viewport -->
+
+<script>
+(function () {
+  var vp = document.getElementById('viewport'), cv = document.getElementById('canvas');
+  var x = 0, y = 0, z = 1, MIN = 0.1, MAX = 2.5;
+  function apply() {
+    cv.style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + z + ')';
+    document.getElementById('zoomPct').textContent = Math.round(z * 100) + '%';
+  }
+  function fit() {
+    var w = cv.scrollWidth, h = cv.scrollHeight;
+    z = Math.min(MAX, Math.max(MIN, Math.min(innerWidth / w, innerHeight / h) * 0.95));
+    x = (innerWidth - w * z) / 2; y = Math.max(20, (innerHeight - h * z) / 2);
+    apply();
+  }
+  vp.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var nz = Math.min(MAX, Math.max(MIN, z * Math.exp(-e.deltaY * 0.0015)));
+    x = e.clientX - (e.clientX - x) * (nz / z);
+    y = e.clientY - (e.clientY - y) * (nz / z);
+    z = nz; apply();
+  }, { passive: false });
+  var panning = false, px = 0, py = 0;
+  vp.addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    panning = true; px = e.clientX - x; py = e.clientY - y;
+    vp.classList.add('panning'); vp.setPointerCapture(e.pointerId);
+  });
+  vp.addEventListener('pointermove', function (e) {
+    if (panning) { x = e.clientX - px; y = e.clientY - py; apply(); }
+  });
+  vp.addEventListener('pointerup', function () { panning = false; vp.classList.remove('panning'); });
+  document.getElementById('zoomIn').onclick = function () { z = Math.min(MAX, z * 1.25); apply(); };
+  document.getElementById('zoomOut').onclick = function () { z = Math.max(MIN, z / 1.25); apply(); };
+  document.getElementById('zoomFit').onclick = fit;
+  document.getElementById('themeToggle').onclick = function () {
+    var dark = document.documentElement.classList.toggle('dark');
+    this.textContent = dark ? '☀ Light' : '☾ Dark';
+  };
+  fit();
+})();
+</script>
+</body>
+</html>

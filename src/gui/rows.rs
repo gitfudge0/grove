@@ -2,7 +2,7 @@
 
 use super::activity::ActivityState;
 use super::icons::{icon, spinner};
-use super::metrics::{ROW_H, SUBTITLE_H, UI_BOLD, UI_FONT};
+use super::metrics::{ROW_H, UI_BOLD, UI_FONT};
 use super::palette as c;
 use super::state::Msg;
 use super::widgets::{action_mini, action_mini_danger, clickable_row, split_start_button};
@@ -11,7 +11,6 @@ use crate::session::{Session, SessionStatus};
 use iced::border::Radius;
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Background, Border, Color, Element, Length, Padding, Shadow};
-use std::time::Duration;
 
 /// Branch "chip" — pill for feature branches, plain mono text for `main`.
 fn branch_chip<'a>(branch: &str, subtle: bool) -> Element<'a, Msg> {
@@ -584,6 +583,40 @@ pub fn terminal_row<'a>(
     clickable_row(main_row, ROW_H, active, Msg::SelectHomeTerminal(idx))
 }
 
+/// Pinned header above the home-terminal rows at the bottom of the tree: a
+/// terminal icon + muted mono `~` label (not a collapsible project row — no
+/// chevron, no click target) with an always-visible "+" button that spawns
+/// another home terminal.
+pub fn home_terminals_header<'a>() -> Element<'a, Msg> {
+    let label = row![
+        icon("term", 12.0, c::FG_MUTE()),
+        text("~").font(UI_FONT).size(12).color(c::FG_MUTE()),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+
+    let add_btn = action_mini("plus", Msg::NewHomeTerminal);
+
+    row![
+        container(label).width(Length::Fill).padding(Padding {
+            top: 0.0,
+            bottom: 0.0,
+            left: 16.0,
+            right: 0.0,
+        }),
+        add_btn,
+    ]
+    .align_y(iced::Alignment::Center)
+    .height(ROW_H)
+    .padding(Padding {
+        top: 0.0,
+        bottom: 0.0,
+        left: 0.0,
+        right: 8.0,
+    })
+    .into()
+}
+
 /// Contextual title for a home terminal: its OSC window title (typically the
 /// current directory or running command), with the redundant terminal label
 /// stripped and unrenderable characters removed.
@@ -697,402 +730,6 @@ pub fn state_glyph<'a>(state: ActivityState, tick: u32, pulse: f32) -> Element<'
         ActivityState::Exited => icon("ring", 11.0, c::FG_MUTE()),
     };
     container(inner).width(14).center_x(14).into()
-}
-
-/// Group header row used between activity-stream sections: mono uppercase
-/// label, dim count, and a 1px BORDER_SOFT rule extending to the right.
-pub fn activity_group_header<'a>(
-    label: &str,
-    count: usize,
-    expanded: bool,
-    on_toggle: Option<Msg>,
-) -> Element<'a, Msg> {
-    let chev = if expanded { "chev-down" } else { "chev-right" };
-    let chev_el: Element<'a, Msg> = if on_toggle.is_some() {
-        container(icon(chev, 9.0, c::FG_MUTE())).width(12).into()
-    } else {
-        Space::new().width(Length::Fixed(0.0)).into()
-    };
-
-    let rule: Element<'a, Msg> = container(Space::new().height(1.0))
-        .height(1.0)
-        .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(Background::Color(c::BORDER_SOFT())),
-            ..Default::default()
-        })
-        .into();
-
-    let inner = row![
-        chev_el,
-        text(label.to_uppercase())
-            .font(UI_BOLD)
-            .size(10)
-            .color(c::FG_MUTE())
-            .wrapping(iced::widget::text::Wrapping::None),
-        text(format!("{count}"))
-            .font(UI_FONT)
-            .size(10)
-            .color(c::FG_MUTE()),
-        container(rule).width(Length::Fill).padding(Padding {
-            top: 0.0,
-            bottom: 0.0,
-            left: 6.0,
-            right: 0.0,
-        }),
-    ]
-    .spacing(6)
-    .align_y(iced::Alignment::Center)
-    .padding(Padding {
-        top: 0.0,
-        bottom: 0.0,
-        left: 12.0,
-        right: 12.0,
-    });
-
-    let h = 26.0;
-    let body: Element<'a, Msg> = container(inner)
-        .height(h)
-        .width(Length::Fill)
-        .align_y(iced::Alignment::Center)
-        .into();
-
-    if let Some(msg) = on_toggle {
-        button(body)
-            .on_press(msg)
-            .width(Length::Fill)
-            .padding(0)
-            .style(|_, status| {
-                let hovered = matches!(status, button::Status::Hovered);
-                button::Style {
-                    background: if hovered {
-                        Some(Background::Color(c::BG_HOVER()))
-                    } else {
-                        None
-                    },
-                    text_color: c::FG_MUTE(),
-                    border: Border::default(),
-                    shadow: Shadow::default(),
-                    snap: false,
-                }
-            })
-            .into()
-    } else {
-        body
-    }
-}
-
-/// Render a session as a two-line activity row: agent + label up top,
-/// `project / worktree · branch` subtitle below, relative time on the right.
-/// Active state paints `bg_hl` plus a 2px cyan left-rail.
-#[allow(clippy::too_many_arguments)]
-pub fn session_activity_row<'a>(
-    idx: usize,
-    s: &Session,
-    project: &str,
-    worktree: &str,
-    active: bool,
-    pending_kill: bool,
-    last_activity: Option<Duration>,
-    hovered: bool,
-    spawn_coords: Option<(usize, usize)>,
-    state: ActivityState,
-    tick: u32,
-    pulse: f32,
-    available: &[Agent],
-) -> Element<'a, Msg> {
-    activity_row_inner(
-        Some(idx),
-        Some(s),
-        state,
-        tick,
-        pulse,
-        s.agent.label(),
-        project,
-        worktree,
-        Some(&s.branch),
-        active,
-        pending_kill,
-        last_activity,
-        hovered,
-        spawn_coords,
-        available,
-    )
-}
-
-/// Activity-stream row representing a worktree itself: shows
-/// `project / worktree` with a session-count subtitle. On hover the
-/// new-session action chips appear at the row's right edge; the label fills
-/// the remaining width and clips, so a long name never wraps to a second line.
-#[allow(clippy::too_many_arguments)]
-pub fn worktree_activity_row<'a>(
-    proj: usize,
-    wt: usize,
-    project: &str,
-    worktree: &str,
-    is_main: bool,
-    is_git: bool,
-    session_count: usize,
-    hovered: bool,
-    available: &[Agent],
-) -> Element<'a, Msg> {
-    let label = format!("{project} / {worktree}");
-
-    let top = text(label)
-        .font(UI_FONT)
-        .size(12)
-        .color(c::FG_DIM())
-        .wrapping(iced::widget::text::Wrapping::None);
-
-    let count_label = match session_count {
-        0 => "no sessions".to_string(),
-        1 => "1 session".to_string(),
-        n => format!("{n} sessions"),
-    };
-    let count_text = text(count_label)
-        .font(UI_FONT)
-        .size(10)
-        .color(c::FG_MUTE())
-        .wrapping(iced::widget::text::Wrapping::None);
-
-    let h = ROW_H + SUBTITLE_H;
-
-    // The label fills the row and clips, so a long `project / worktree` name
-    // never reflows onto a second line. The session-count subtitle sits below.
-    let body = column![
-        container(top).width(Length::Fill).clip(true),
-        container(count_text).width(Length::Fill).clip(true),
-    ]
-    .spacing(0);
-
-    // The clickable label is itself the fill target — clicking anywhere left of
-    // the (right-edge) chips jumps to the worktree.
-    let label_btn = button(body)
-        .on_press(Msg::WorktreeClicked { proj, wt })
-        .width(Length::Fill)
-        .padding(0)
-        .style(move |_, _status| button::Style {
-            background: None,
-            text_color: c::FG_DIM(),
-            border: Border::default(),
-            shadow: Shadow::default(),
-            snap: false,
-        });
-
-    // On hover the spawn chips occupy a fixed slot at the row's right edge
-    // (matching the session rows) rather than growing inline next to the count,
-    // which previously pushed long labels into a second line. At rest, the
-    // git main worktree shows a `main` tag in that same slot instead — the
-    // two never render at once, so there's no collision on hover.
-    let right_chips: Element<'a, Msg> = if hovered {
-        super::widgets::split_start_button_flat(proj, wt, is_main, 10.0, available)
-    } else if is_main && is_git {
-        container(main_tag())
-            .padding(Padding {
-                top: 0.0,
-                bottom: 0.0,
-                left: 4.0,
-                right: 4.0,
-            })
-            .into()
-    } else {
-        Space::new().width(Length::Fixed(0.0)).into()
-    };
-
-    let inner = row![
-        container(state_glyph(ActivityState::Exited, 0, 0.0))
-            .width(14)
-            .center_y(Length::Fill),
-        label_btn,
-        right_chips,
-    ]
-    .spacing(8)
-    .align_y(iced::Alignment::Center)
-    .padding(Padding {
-        top: 4.0,
-        bottom: 4.0,
-        left: 12.0,
-        right: 12.0,
-    });
-
-    container(inner)
-        .height(h)
-        .width(Length::Fill)
-        .style(move |_| container::Style {
-            background: if hovered {
-                Some(Background::Color(c::BG_HOVER()))
-            } else {
-                None
-            },
-            ..Default::default()
-        })
-        .into()
-}
-
-#[allow(clippy::too_many_arguments)]
-fn activity_row_inner<'a>(
-    session_idx: Option<usize>,
-    session: Option<&Session>,
-    state: ActivityState,
-    tick: u32,
-    pulse: f32,
-    agent_label: &str,
-    project: &str,
-    worktree: &str,
-    branch: Option<&str>,
-    active: bool,
-    pending_kill: bool,
-    last_activity: Option<Duration>,
-    hovered: bool,
-    spawn_coords: Option<(usize, usize)>,
-    available: &[Agent],
-) -> Element<'a, Msg> {
-    let agent_color = match state {
-        ActivityState::Working | ActivityState::WaitingForInput => c::FG(),
-        ActivityState::Done | ActivityState::Idle => c::FG_DIM(),
-        ActivityState::Exited => c::FG_MUTE(),
-    };
-    let agent_color = if active { c::CYAN() } else { agent_color };
-
-    // Line 1 is just the agent: the session label is almost always the branch,
-    // which already appears in the `project / worktree · branch` subtitle, so
-    // repeating it here is noise and steals width from the hover spawn chips.
-    let mut top_row = row![].spacing(6).align_y(iced::Alignment::Center);
-    if let Some(s) = session {
-        top_row = top_row.push(icon(s.agent.icon_name(), 12.0, agent_color));
-    }
-    top_row = top_row.push(
-        text(agent_label.to_string())
-            .font(UI_FONT)
-            .size(12)
-            .color(agent_color)
-            .wrapping(iced::widget::text::Wrapping::None),
-    );
-
-    // Subtitle: mono "project / worktree" plus optional " · branch" when
-    // the branch isn't redundant with the worktree folder name.
-    let mut subtitle = format!("{project} / {worktree}");
-    if let Some(b) = branch {
-        if !b.is_empty() && b != worktree {
-            subtitle.push_str(" · ");
-            subtitle.push_str(b);
-        }
-    }
-
-    let sub = text(subtitle)
-        .font(UI_FONT)
-        .size(10)
-        .color(c::FG_MUTE())
-        .wrapping(iced::widget::text::Wrapping::None);
-
-    let body = column![container(top_row).clip(true), container(sub).clip(true)].spacing(0);
-
-    let time_label = last_activity.map(format_relative).unwrap_or_default();
-    let time_el: Element<'a, Msg> = text(time_label)
-        .font(UI_FONT)
-        .size(10)
-        .color(c::FG_MUTE())
-        .into();
-
-    // On hover, the relative time yields its slot to the inline spawn chips —
-    // "start another agent in this session's worktree" (play / agent picker /
-    // terminal), the same control the worktree rows reveal. Off-hover the time
-    // shows, so the row keeps full label width at rest.
-    let right_el: Element<'a, Msg> = match (hovered, spawn_coords) {
-        (true, Some((pi, wi))) => super::widgets::session_spawn_chips_flat(pi, wi, 10.0, available),
-        _ => time_el,
-    };
-
-    let close_btn: Element<'a, Msg> = match session_idx {
-        Some(i) if pending_kill => action_mini_danger("check", Msg::KillSession(i)),
-        Some(i) => action_mini("close", Msg::RequestKillSession(i)),
-        None => Space::new().width(Length::Fixed(0.0)).into(),
-    };
-
-    let inner = row![
-        container(state_glyph(state, tick, pulse))
-            .width(14)
-            .center_y(Length::Fill),
-        container(body).width(Length::Fill).clip(true),
-        right_el,
-        close_btn,
-    ]
-    .spacing(8)
-    .align_y(iced::Alignment::Center)
-    .padding(Padding {
-        top: 4.0,
-        bottom: 4.0,
-        left: 12.0,
-        right: 12.0,
-    });
-
-    let h = ROW_H + SUBTITLE_H;
-
-    let row_btn: Element<'a, Msg> = if let Some(i) = session_idx {
-        clickable_row(inner, h, active, Msg::SelectSession(i))
-    } else {
-        container(inner).height(h).width(Length::Fill).into()
-    };
-
-    let waiting = matches!(state, ActivityState::WaitingForInput);
-    let bg = if waiting {
-        Some(Background::Color(Color {
-            a: 0.12,
-            ..c::AMBER()
-        }))
-    } else if active {
-        Some(Background::Color(c::BG_HL()))
-    } else {
-        None
-    };
-
-    if waiting {
-        let bar: Element<'a, Msg> = container(
-            container(Space::new().width(3.0))
-                .width(3.0)
-                .height(Length::Fill)
-                .style(|_| container::Style {
-                    background: Some(Background::Color(c::AMBER())),
-                    ..Default::default()
-                }),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .align_x(iced::Alignment::Start)
-        .into();
-        container(iced::widget::stack![row_btn, bar])
-            .height(h)
-            .width(Length::Fill)
-            .style(move |_| container::Style {
-                background: bg,
-                ..Default::default()
-            })
-            .into()
-    } else {
-        container(row_btn)
-            .height(h)
-            .width(Length::Fill)
-            .style(move |_| container::Style {
-                background: bg,
-                ..Default::default()
-            })
-            .into()
-    }
-}
-
-/// Format a Duration into the short relative-time labels the activity stream
-/// uses: `now`, `2m`, `1h`, `3h`, `2d`.
-fn format_relative(d: Duration) -> String {
-    let s = d.as_secs();
-    if s < 30 {
-        "now".to_string()
-    } else if s < 60 * 60 {
-        format!("{}m", (s / 60).max(1))
-    } else if s < 60 * 60 * 24 {
-        format!("{}h", s / 3600)
-    } else {
-        format!("{}d", s / 86_400)
-    }
 }
 
 #[cfg(test)]

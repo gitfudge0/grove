@@ -8,10 +8,10 @@ use super::metrics::{
 };
 use super::state::{
     AbsCell, ChangelogState, FocusedPane, GridDrag, GridSlide, Grove, Msg, PtyCell, PtyDrag,
-    PtyPane, ScriptField, ScriptsEditorState, SidebarDrag, SidebarView, ToolStatus, UpgradeState,
+    PtyPane, ScriptField, ScriptsEditorState, SidebarDrag, ToolStatus, UpgradeState,
 };
 use crate::agent::Agent;
-use crate::app::{AddProjectStep, App, ConfirmKind, Modal, OnboardStep, Pane};
+use crate::app::{AddProjectStep, App, ConfirmKind, LauncherOptions, Modal, OnboardStep, Pane};
 use crate::session::Session;
 use iced::keyboard::{key::Named, Key, Modifiers};
 use iced::widget::Id;
@@ -112,15 +112,14 @@ impl Grove {
             ui_zoom,
             window_size,
             open_agent_menu: None,
+            attention_open: false,
             pty_selection: None,
             pty_drag: None,
             blink_tick: 0,
             attention_anim: Self::attention_animation(),
             pending_kill: None,
             hovered_wt: None,
-            hovered_activity_row: None,
-            sidebar_view: SidebarView::Activity,
-            activity_no_sessions_expanded: None,
+            terminal_focused: false,
             term_panel_open: false,
             term_panel_portion: TERM_PANEL_PORTION,
             focused_pane: FocusedPane::Agent,
@@ -139,7 +138,6 @@ impl Grove {
             grid_focused: None,
             grid_drag: None,
             grid_slide: None,
-            pending_launcher_proj: None,
             grid_view_before_zen: false,
             last_divider_press: None,
             term_panel_dragging: false,
@@ -163,6 +161,10 @@ impl Grove {
         for i in 0..n {
             g.ensure_wt_cached(i);
         }
+        // The pinned home-terminal section at the bottom of the tree is
+        // always visible now (no separate "switch to terminal view" step to
+        // trigger this lazily), so make sure at least one terminal exists.
+        g.app.ensure_home_terminal(g.pty_rows, g.pty_cols);
         // Default tree state: collapse projects/worktrees with no live sessions,
         // matching the "collapse all" toggle's terminal state.
         for pi in 0..n {
@@ -416,13 +418,6 @@ impl Grove {
                     }
                 }
             }
-            Msg::SidebarSetView(v) => {
-                self.sidebar_view = v;
-                if matches!(v, SidebarView::Terminal) {
-                    self.app.ensure_home_terminal(self.pty_rows, self.pty_cols);
-                    self.invalidate_pty_render_cache();
-                }
-            }
             Msg::RestartHomeTerminal => {
                 self.app
                     .restart_active_terminal(self.pty_rows, self.pty_cols);
@@ -437,6 +432,7 @@ impl Grove {
                 if i < self.app.home_terminals.len() {
                     self.app.active_terminal = Some(i);
                     self.app.home_terminals[i].resize(self.pty_rows, self.pty_cols);
+                    self.terminal_focused = true;
                     self.pty_selection = None;
                     // Symmetry with new/close/restart: don't rely on `resize`
                     // happening to dirty the target to surface the right frame.
@@ -448,10 +444,6 @@ impl Grove {
                     .close_home_terminal(i, self.pty_rows, self.pty_cols);
                 self.pty_selection = None;
                 self.invalidate_pty_render_cache();
-            }
-            Msg::ToggleActivityNoSessionsGroup => {
-                let cur = self.activity_no_sessions_expanded.unwrap_or(false);
-                self.activity_no_sessions_expanded = Some(!cur);
             }
             Msg::WindowResized(size) => {
                 self.window_size =
@@ -548,9 +540,6 @@ impl Grove {
             Msg::HoverWorktree(target) => {
                 self.hovered_wt = target;
             }
-            Msg::HoverActivityRow(target) => {
-                self.hovered_activity_row = target;
-            }
             Msg::StartSession { proj, wt, agent } => {
                 self.open_agent_menu = None;
                 self.spawn(proj, wt, agent);
@@ -616,9 +605,24 @@ impl Grove {
             Msg::CloseAgentMenu => {
                 self.open_agent_menu = None;
             }
+            Msg::ToggleAttentionQueue => {
+                self.attention_open = !self.attention_open;
+                return Task::none();
+            }
+            Msg::CloseAttentionQueue => {
+                self.attention_open = false;
+                return Task::none();
+            }
+            Msg::JumpToWaitingSession => {
+                if let Some(&first) = self.waiting_sessions().first() {
+                    return self.update(Msg::SelectSession(first));
+                }
+                return Task::none();
+            }
             Msg::SelectSession(i) => {
                 self.open_agent_menu = None;
                 self.pending_kill = None;
+                self.attention_open = false;
                 if i < self.app.sessions.len() {
                     self.app.active_session = Some(i);
                     self.sync_grid_focus();
@@ -1422,35 +1426,30 @@ impl Grove {
             Msg::OpenSessionLauncher => {
                 crate::telemetry::track("launcher_opened", vec![]);
                 self.open_session_launcher();
+                return focus(crate::gui::view::modal_input_id());
             }
-            Msg::LauncherSelectProject(i) => self.launcher_select_project(i),
-            Msg::LauncherSelectWorktree(i) => {
-                let proj = match &self.app.modal {
-                    crate::app::Modal::SessionLauncher { proj, .. } => Some(*proj),
-                    _ => None,
-                };
-                if let Some(proj) = proj {
-                    let max = self.launcher_worktrees(proj).len();
-                    if let crate::app::Modal::SessionLauncher { wt, col, .. } = &mut self.app.modal
-                    {
-                        if i < max {
-                            *wt = i;
-                            *col = 1;
-                        }
-                    }
+            Msg::LauncherInputChanged(s) => {
+                if let Modal::SessionLauncher {
+                    input, selected, ..
+                } = &mut self.app.modal
+                {
+                    *input = s;
+                    *selected = 0;
                 }
             }
-            Msg::LauncherSelectAgent(i) => {
-                let max = self.app.available_agents.len();
-                if let crate::app::Modal::SessionLauncher { agent, col, .. } = &mut self.app.modal {
-                    if i < max {
-                        *agent = i;
-                        *col = 2;
+            Msg::LauncherActivate(i) => return self.launcher_activate(i),
+            Msg::LauncherOptionsPick(i) => {
+                let len = self.app.available_agents.len();
+                if let Modal::SessionLauncher {
+                    options: Some(r), ..
+                } = &mut self.app.modal
+                {
+                    if i < len {
+                        r.agent = i;
                     }
                 }
+                self.launcher_start();
             }
-            Msg::LauncherNewWorktree => return self.launcher_new_worktree(),
-            Msg::LauncherStart => self.launcher_start(),
         }
         Task::none()
     }
@@ -1876,6 +1875,23 @@ impl Grove {
             .interpolate(0.0, 1.0, std::time::Instant::now())
     }
 
+    /// Session indices currently waiting for input, in tree/on-screen order —
+    /// the "attention queue". Drives the appbar pill/dropdown, the zen pill,
+    /// and `mod+'`.
+    pub(crate) fn waiting_sessions(&self) -> Vec<usize> {
+        self.visible_session_order()
+            .into_iter()
+            .filter(|&si| {
+                self.app.sessions.get(si).map_or(false, |s| {
+                    matches!(
+                        self.activity_state(s),
+                        super::activity::ActivityState::WaitingForInput
+                    )
+                })
+            })
+            .collect()
+    }
+
     fn invalidate_pty_render_cache(&mut self) {
         self.pty_cache.borrow_mut().clear();
         for s in &self.app.sessions {
@@ -2049,10 +2065,11 @@ impl Grove {
         // the PTY as ESC ESC even while something is armed.
         if matches!(key, Key::Named(Named::Escape))
             && mods.is_empty()
-            && escape_should_dismiss(self.pending_kill, self.open_agent_menu)
+            && escape_should_dismiss(self.pending_kill, self.open_agent_menu, self.attention_open)
         {
             self.pending_kill = None;
             self.open_agent_menu = None;
+            self.attention_open = false;
             return Task::none();
         }
         // Shortcuts match the modifier-independent `key`: on Linux a Ctrl
@@ -2200,8 +2217,8 @@ impl Grove {
             }
             GlobalShortcut::ShortcutOverlay => self.update(Msg::OpenShortcutOverlay),
             GlobalShortcut::CloseFocusedSession => {
-                // Grid: the focused tile. Everywhere else (tree/activity
-                // sidebar, zen): the active session, whose row renders the same
+                // Grid: the focused tile. Everywhere else (tree sidebar,
+                // zen): the active session, whose row renders the same
                 // confirm-to-kill state (`session_row` in rows.rs).
                 let target = if self.grid_view {
                     self.grid_focused
@@ -2214,6 +2231,12 @@ impl Grove {
                     CloseFocusedDecision::NoOp => Task::none(),
                 }
             }
+            GlobalShortcut::NewHomeTerminal => {
+                let _ = self.update(Msg::NewHomeTerminal);
+                self.terminal_focused = true;
+                Task::none()
+            }
+            GlobalShortcut::JumpToWaitingSession => self.update(Msg::JumpToWaitingSession),
             GlobalShortcut::GridMove(dx, dy) => {
                 crate::telemetry::track("tile_moved", vec![]);
                 self.grid_move(dx, dy);
@@ -2349,8 +2372,8 @@ impl Grove {
             return;
         }
         // Outside the agent grid, `mod+1..9` follows the sidebar's on-screen
-        // order (activity grouping or tree layout) rather than raw session
-        // index, so the number the user sees is the session they get.
+        // tree layout rather than raw session index, so the number the user
+        // sees is the session they get.
         if let Some(&si) = self.visible_session_order().get(n) {
             let _ = self.update(Msg::SelectSession(si));
         }
@@ -2495,57 +2518,79 @@ impl Grove {
                 _ => {}
             },
             Modal::SessionLauncher {
-                proj,
-                wt,
-                agent,
-                col,
-                ..
+                input,
+                selected,
+                browse_all,
+                options,
             } => {
-                let (proj, wt, agent, col) = (*proj, *wt, *agent, *col);
-                // Vim parity: h/l mirror ←/→, j/k mirror ↓/↑.
-                let nav_h: Option<i32> = match &key {
-                    Key::Named(Named::ArrowLeft) => Some(-1),
-                    Key::Named(Named::ArrowRight) => Some(1),
-                    Key::Character(s) if matches!(s.as_str(), "h" | "H") => Some(-1),
-                    Key::Character(s) if matches!(s.as_str(), "l" | "L") => Some(1),
-                    _ => None,
-                };
-                let nav_v: Option<i32> = match &key {
-                    Key::Named(Named::ArrowDown) => Some(1),
-                    Key::Named(Named::ArrowUp) => Some(-1),
-                    Key::Character(s) if matches!(s.as_str(), "j" | "J") => Some(1),
-                    Key::Character(s) if matches!(s.as_str(), "k" | "K") => Some(-1),
-                    _ => None,
-                };
-                if let Some(delta) = nav_h {
-                    if let Modal::SessionLauncher { col, .. } = &mut self.app.modal {
-                        *col = crate::gui::launcher::move_column(*col, delta);
-                    }
-                } else if let Some(delta) = nav_v {
-                    let proj_len = self.app.store.projects.len();
-                    let wt_len = self.launcher_worktrees(proj).len();
-                    let agent_len = self.app.available_agents.len();
-                    let (np, nw, na) = crate::gui::launcher::nav_within_column(
-                        col, proj, wt, agent, delta, proj_len, wt_len, agent_len,
-                    );
-                    // A project change reloads that project's worktrees.
-                    if col == 0 && np != proj {
-                        self.ensure_wt_cached(np);
-                    }
-                    if let Modal::SessionLauncher {
-                        proj, wt, agent, ..
-                    } = &mut self.app.modal
-                    {
-                        *proj = np;
-                        *wt = nw;
-                        *agent = na;
+                let (input, selected, browse_all) = (input.clone(), *selected, *browse_all);
+                if let Some(r) = options.clone() {
+                    // Options state: ↑↓ move the agent selection (clamped, no
+                    // wrap). ←→ are no-ops. Plain letters are never bound —
+                    // the search input keeps keyboard focus and owns them
+                    // (same convention as Modal::Input / AddProject).
+                    let list_delta: Option<i32> = match &key {
+                        Key::Named(Named::ArrowDown) => Some(1),
+                        Key::Named(Named::ArrowUp) => Some(-1),
+                        _ => None,
+                    };
+                    if let Some(delta) = list_delta {
+                        let len = self.app.available_agents.len();
+                        let new_agent = crate::gui::launcher::clamp(r.agent, delta, len);
+                        if let Modal::SessionLauncher {
+                            options: Some(rr), ..
+                        } = &mut self.app.modal
+                        {
+                            rr.agent = new_agent;
+                        }
+                    } else {
+                        match key {
+                            Key::Named(Named::Escape) => {
+                                if let Modal::SessionLauncher { options, .. } = &mut self.app.modal
+                                {
+                                    *options = None;
+                                }
+                            }
+                            Key::Named(Named::Enter) => self.launcher_start(),
+                            _ => {}
+                        }
                     }
                 } else {
-                    match key {
-                        Key::Named(Named::Escape) => self.cancel_modal(),
-                        Key::Named(Named::Enter) => self.launcher_start(),
-                        Key::Named(Named::Space) => self.launcher_toggle_default(),
-                        _ => {}
+                    // Root or typing/browse-all: ↑↓ move the list selection;
+                    // Tab enters options on a Recent/Combo row (arrows can't:
+                    // ←→ move the caret in the focused search input). Plain
+                    // letters belong to the input too, never to nav.
+                    let rows_len = self.palette_rows(&input, browse_all).len();
+                    let list_delta: Option<i32> = match &key {
+                        Key::Named(Named::ArrowDown) => Some(1),
+                        Key::Named(Named::ArrowUp) => Some(-1),
+                        _ => None,
+                    };
+                    if let Some(delta) = list_delta {
+                        let new_selected = crate::gui::launcher::clamp(selected, delta, rows_len);
+                        if let Modal::SessionLauncher { selected, .. } = &mut self.app.modal {
+                            *selected = new_selected;
+                        }
+                    } else {
+                        let enter_options = matches!(&key, Key::Named(Named::Tab));
+                        if enter_options {
+                            self.launcher_enter_options(selected, &input, browse_all);
+                        } else {
+                            match key {
+                                Key::Named(Named::Escape) => self.cancel_modal(),
+                                Key::Named(Named::Enter) => {
+                                    return self.launcher_activate(selected)
+                                }
+                                Key::Character(s) if global_mods(mods) => {
+                                    if let Some(n) =
+                                        s.parse::<usize>().ok().filter(|n| (1..=9).contains(n))
+                                    {
+                                        return self.launcher_activate(n - 1);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                 }
             }
@@ -2658,27 +2703,6 @@ impl Grove {
             self.refresh_pty_viewport();
         }
         self.rebuild_wt_cache();
-        // If the worktree-name input was launched from the session launcher,
-        // and a new worktree/session was actually created, re-open the launcher.
-        if self.pending_launcher_proj.is_some() {
-            match &self.app.modal {
-                Modal::None => self.reopen_launcher(),
-                Modal::Input { .. } => {
-                    // Validation note re-showed the input: keep the target
-                    // parked so a later successful submit still re-opens the
-                    // launcher.
-                }
-                _ => {
-                    // Landed on some other modal (e.g. AgentPicker, or an
-                    // init-git confirm prompt): that's no longer a plain
-                    // worktree-name round-trip, so don't leave the launcher
-                    // parked indefinitely — an unrelated later modal
-                    // resolving to `Modal::None` must not spuriously re-open
-                    // the launcher.
-                    self.pending_launcher_proj = None;
-                }
-            }
-        }
     }
 
     /// Resolve a Confirm modal. `ConfirmKind::Quit` is handled here (it needs
@@ -2812,11 +2836,6 @@ impl Grove {
         }
         self.scripts_editor = None;
         self.app.modal = Modal::None;
-        // Cancelling any modal abandons the launcher "+ New worktree…"
-        // round-trip if one was in flight; otherwise a later unrelated
-        // `submit_modal_input` that lands on `Modal::None` would spuriously
-        // re-open the session launcher.
-        self.pending_launcher_proj = None;
     }
 
     /// Begin executing a confirmed remove-project action. If the user opted
@@ -2945,14 +2964,11 @@ impl Grove {
     /// project+worktree owns the given session path.  Called after
     /// `active_session` changes so the sidebar cyan-rail always agrees with
     /// what is displayed in the workspace.
-    /// When focusing an agent session, drop out of the terminal tab. `workspace()`
-    /// checks `terminal_tab()` *before* `active_session`, so while `sidebar_view`
-    /// stays `Terminal` the workspace — and zen mode — keep rendering the home
-    /// terminal instead of the session the user just focused.
+    /// When focusing an agent session, drop out of the home-terminal focus so
+    /// `workspace()` (which checks `terminal_tab()` before `active_session`)
+    /// renders the session instead of the terminal.
     fn leave_terminal_tab(&mut self) {
-        if self.terminal_tab() {
-            self.sidebar_view = SidebarView::Tree;
-        }
+        self.terminal_focused = false;
     }
 
     fn sync_wt_to_session(&mut self, proj_name: &str, wt_path: &str) {
@@ -3059,12 +3075,8 @@ impl Grove {
     /// `git_state` for `tree_view` to read on the next frame. Never runs more
     /// than once per throttle window, never overlaps a still-running poll,
     /// and never blocks `update()`: the actual git calls happen inside the
-    /// spawned thread. Skipped entirely unless the tree view is the active
-    /// sidebar view, since its suffix is the only consumer of `git_state`.
+    /// spawned thread. The tree is always visible now, so this always runs.
     fn maybe_poll_git_state(&mut self) {
-        if !matches!(self.sidebar_view, SidebarView::Tree) {
-            return;
-        }
         let now = std::time::Instant::now();
         let due = self
             .last_git_poll
@@ -3168,110 +3180,42 @@ impl Grove {
         }
     }
 
-    /// Open the session launcher with a sensible default selection: the active
-    /// project + worktree, agent index 0, skip-perms from the global default.
+    /// Open the command palette at root state (recents + actions). Warms the
+    /// worktree cache for every project since the typing/browse-all list
+    /// needs it, and refreshes `available_agents` for the same reason.
     fn open_session_launcher(&mut self) {
-        if self.app.store.projects.is_empty() {
-            self.app.set_toast("add a project first");
-            return;
-        }
         self.app.refresh_available_agents();
         let n = self.app.store.projects.len();
         for i in 0..n {
             self.ensure_wt_cached(i);
         }
-        let proj = self.app.proj_idx.min(n - 1);
-        let wt = self
-            .app
-            .wt_idx
-            .min(self.launcher_worktrees(proj).len().saturating_sub(1));
-        self.app.modal = crate::app::Modal::SessionLauncher {
-            proj,
-            wt,
-            agent: 0,
-            col: 0,
+        self.app.modal = Modal::SessionLauncher {
+            input: String::new(),
+            selected: 0,
+            browse_all: false,
+            options: None,
         };
     }
 
-    /// Select a launcher project: reset the worktree selection and ensure that
-    /// project's worktrees are loaded.
-    fn launcher_select_project(&mut self, index: usize) {
-        let n = self.app.store.projects.len();
-        if index >= n {
-            return;
-        }
-        self.ensure_wt_cached(index);
-        if let crate::app::Modal::SessionLauncher { proj, wt, col, .. } = &mut self.app.modal {
-            *proj = index;
-            *wt = 0;
-            *col = 0;
-        }
-    }
-
-    /// "+ New worktree…": remember the launcher's project, switch to it, and
-    /// open Grove's standard worktree-name input. After creation,
-    /// `submit_modal_input` re-opens the launcher (see `reopen_launcher`).
-    fn launcher_new_worktree(&mut self) -> Task<Msg> {
-        let crate::app::Modal::SessionLauncher { proj, .. } = self.app.modal else {
-            return Task::none();
-        };
-        if proj >= self.app.store.projects.len() {
-            return Task::none();
-        }
-        self.pending_launcher_proj = Some(proj);
-        self.switch_active_project(proj);
-        // Mirror the sidebar "add worktree" entry point.
-        self.app.focus = crate::app::Pane::Worktrees;
-        self.app.start_add();
-        focus(crate::gui::view::modal_input_id())
-    }
-
-    /// Re-open the launcher after a worktree was created from it. Selects the
-    /// newly-created worktree (the last non-main entry) in the stashed project.
-    fn reopen_launcher(&mut self) {
-        let Some(proj) = self.pending_launcher_proj.take() else {
-            return;
-        };
-        if proj >= self.app.store.projects.len() {
-            return;
-        }
-        self.app.refresh_available_agents();
-        self.ensure_wt_cached(proj);
-        let worktrees = self.launcher_worktrees(proj);
-        // The newest worktree is the last entry (git lists main first).
-        let wt = worktrees.len().saturating_sub(1);
-        self.app.modal = crate::app::Modal::SessionLauncher {
-            proj,
-            wt,
-            agent: 0,
-            col: 1,
-        };
-    }
-
-    /// Space in the launcher: set (or clear, when re-selecting the current)
-    /// the global default agent from the agent-column selection — the same
-    /// affordance as Modal::AgentPicker's Space.
-    fn launcher_toggle_default(&mut self) {
-        let Modal::SessionLauncher { agent, .. } = self.app.modal else {
-            return;
-        };
-        let Some(a) = self.app.available_agents.get(agent).copied() else {
-            return;
-        };
-        if let Err(e) = self.app.set_default_agent(a) {
-            self.app.modal = Modal::Message(format!("Default agent failed: {e}"));
-        }
-    }
-
-    /// Start the selected session, then (grid always open here) append it to
-    /// `tile_order` and focus it.
+    /// Start the session for the current options-state selection: Enter, or
+    /// an agent row click (`Msg::LauncherOptionsPick`, which sets the
+    /// selection then calls this). No-op outside options state, or if the
+    /// selection no longer resolves.
     fn launcher_start(&mut self) {
-        let crate::app::Modal::SessionLauncher {
-            proj, wt, agent, ..
+        let Modal::SessionLauncher {
+            options: Some(r), ..
         } = self.app.modal.clone()
         else {
             return;
         };
+        self.launcher_launch(r.proj, r.wt, r.agent);
+    }
+
+    /// Spawn the session for `(proj, wt, agent_idx)`, close the palette, and
+    /// (grid always open here) append it to `tile_order` and focus it. Shared
+    /// by `launcher_activate`'s Recent/Combo case and `launcher_start`'s
+    /// options path.
+    fn launcher_launch(&mut self, proj: usize, wt: usize, agent_idx: usize) {
         let Some(project) = self.app.store.projects.get(proj) else {
             return;
         };
@@ -3280,13 +3224,13 @@ impl Grove {
         let Some(w) = worktrees.get(wt).cloned() else {
             return;
         };
-        let Some(ag) = self.app.available_agents.get(agent).copied() else {
+        let Some(ag) = self.app.available_agents.get(agent_idx).copied() else {
             return;
         };
         let label = crate::gui::launcher::default_label(w.is_main, &pname, &w.path);
         let args = ag.launch_args(self.app.skip_permissions_enabled());
         let before = self.session_keys();
-        self.app.modal = crate::app::Modal::None;
+        self.app.modal = Modal::None;
         // `at_end = true`: launcher sessions always land last in the sessions
         // vector so they appear at the end of the Agent View grid, even after a
         // tile_order rebuild (entering Agent View resets it to sessions order).
@@ -3304,6 +3248,190 @@ impl Grove {
             }
         }
         self.rebuild_wt_cache();
+    }
+
+    /// Activate the row at `i` in the currently-rendered root/typing/
+    /// browse-all list: launch a `Recent`/`Combo` row directly, or run the
+    /// effect of an action row.
+    fn launcher_activate(&mut self, i: usize) -> Task<Msg> {
+        let (input, browse_all) = match &self.app.modal {
+            Modal::SessionLauncher {
+                input, browse_all, ..
+            } => (input.clone(), *browse_all),
+            _ => return Task::none(),
+        };
+        let rows = self.palette_rows(&input, browse_all);
+        let Some(row) = rows.get(i) else {
+            return Task::none();
+        };
+        match row {
+            PaletteRow::Recent { proj, wt_path, .. } | PaletteRow::Combo { proj, wt_path, .. } => {
+                let proj = *proj;
+                let agent = match row {
+                    PaletteRow::Recent { agent, .. } | PaletteRow::Combo { agent, .. } => *agent,
+                    _ => unreachable!(),
+                };
+                let Some(wt) = self
+                    .launcher_worktrees(proj)
+                    .iter()
+                    .position(|w| &w.path == wt_path)
+                else {
+                    return Task::none();
+                };
+                let Some(agent_idx) = self.app.available_agents.iter().position(|a| *a == agent)
+                else {
+                    return Task::none();
+                };
+                self.launcher_launch(proj, wt, agent_idx);
+                Task::none()
+            }
+            PaletteRow::NewSession => {
+                if let Modal::SessionLauncher {
+                    browse_all,
+                    selected,
+                    ..
+                } = &mut self.app.modal
+                {
+                    *browse_all = true;
+                    *selected = 0;
+                }
+                Task::none()
+            }
+            PaletteRow::TerminalHome => {
+                let _ = self.update(Msg::NewHomeTerminal);
+                self.terminal_focused = true;
+                self.app.modal = Modal::None;
+                Task::none()
+            }
+            PaletteRow::TerminalWt => {
+                if !self.term_panel_open {
+                    let _ = self.update(Msg::ToggleTermPanel);
+                } else {
+                    let _ = self.update(Msg::NewWtTerminal);
+                }
+                self.app.modal = Modal::None;
+                Task::none()
+            }
+            PaletteRow::AddProject => {
+                self.app.modal = Modal::None;
+                self.update(Msg::AddProject)
+            }
+        }
+    }
+
+    /// Tab in root/typing state: if the row at `i` is a
+    /// `Recent`/`Combo`, enter options state preselecting the row's agent.
+    fn launcher_enter_options(&mut self, i: usize, input: &str, browse_all: bool) {
+        let rows = self.palette_rows(input, browse_all);
+        let Some(row) = rows.get(i) else { return };
+        let (proj, wt_path, agent) = match row {
+            PaletteRow::Recent {
+                proj,
+                wt_path,
+                agent,
+            }
+            | PaletteRow::Combo {
+                proj,
+                wt_path,
+                agent,
+            } => (*proj, wt_path.clone(), *agent),
+            _ => return,
+        };
+        let Some(wt) = self
+            .launcher_worktrees(proj)
+            .iter()
+            .position(|w| w.path == wt_path)
+        else {
+            return;
+        };
+        let agent_idx = self
+            .app
+            .available_agents
+            .iter()
+            .position(|a| *a == agent)
+            .unwrap_or(0);
+        if let Modal::SessionLauncher { options, .. } = &mut self.app.modal {
+            *options = Some(LauncherOptions {
+                proj,
+                wt,
+                agent: agent_idx,
+            });
+        }
+    }
+
+    /// Build the current root or typing/browse-all row list for the command
+    /// palette. Root (`input` empty, `!browse_all`): up to 6 valid recents
+    /// (skipping any whose project name or worktree path no longer resolves)
+    /// plus action rows. Zero projects: only `AddProject` + `TerminalHome`.
+    /// Typing/browse-all: every `(proj, wt)` combo across every project,
+    /// fuzzy-filtered by `input`.
+    pub(super) fn palette_rows(&self, input: &str, browse_all: bool) -> Vec<PaletteRow> {
+        if self.app.store.projects.is_empty() {
+            return vec![PaletteRow::AddProject, PaletteRow::TerminalHome];
+        }
+        if input.is_empty() && !browse_all {
+            let mut rows = Vec::new();
+            for r in self.app.store.recent_launches.iter().take(6) {
+                let Some(proj) = self
+                    .app
+                    .store
+                    .projects
+                    .iter()
+                    .position(|p| p.name == r.project)
+                else {
+                    continue;
+                };
+                if !self
+                    .launcher_worktrees(proj)
+                    .iter()
+                    .any(|w| w.path == r.wt_path)
+                {
+                    continue;
+                }
+                rows.push(PaletteRow::Recent {
+                    proj,
+                    wt_path: r.wt_path.clone(),
+                    agent: r.agent,
+                });
+            }
+            rows.push(PaletteRow::NewSession);
+            rows.push(PaletteRow::TerminalHome);
+            if self.app.active_session.is_some() && !self.terminal_focused {
+                rows.push(PaletteRow::TerminalWt);
+            }
+            rows
+        } else {
+            if self.app.available_agents.is_empty() {
+                return Vec::new();
+            }
+            let mut rows = Vec::new();
+            for (proj, p) in self.app.store.projects.iter().enumerate() {
+                for w in self.launcher_worktrees(proj) {
+                    let name = if w.branch.is_empty() {
+                        crate::app::path_basename(&w.path)
+                    } else {
+                        w.branch.clone()
+                    };
+                    let agent = self
+                        .app
+                        .store
+                        .recent_launches
+                        .iter()
+                        .find(|r| r.project == p.name && r.wt_path == w.path)
+                        .map(|r| r.agent)
+                        .unwrap_or(self.app.available_agents[0]);
+                    if !crate::gui::launcher::fuzzy_match(input, &p.name, &name, agent.label()) {
+                        continue;
+                    }
+                    rows.push(PaletteRow::Combo {
+                        proj,
+                        wt_path: w.path.clone(),
+                        agent,
+                    });
+                }
+            }
+            rows
+        }
     }
 
     fn spawn(&mut self, proj: usize, wt: usize, agent: Agent) {
@@ -3325,7 +3453,7 @@ impl Grove {
         let use_tmux = self.app.use_tmux();
         match Session::spawn(
             label,
-            pname,
+            pname.clone(),
             w.path.clone(),
             agent,
             &args,
@@ -3335,6 +3463,15 @@ impl Grove {
             Ok(mut s) => {
                 s.resize(self.pty_rows, self.pty_sess_cols);
                 self.app.sessions.push(s);
+                crate::gui::launcher::push_recent_launch(
+                    &mut self.app.store.recent_launches,
+                    crate::storage::RecentLaunch {
+                        project: pname,
+                        wt_path: w.path.clone(),
+                        agent,
+                    },
+                );
+                let _ = crate::storage::save(&self.app.store);
                 let open = self.app.sessions.len();
                 let native = self
                     .app
@@ -3369,9 +3506,10 @@ impl Grove {
     /// Extract text inside the current PTY selection. The selection is stored
     /// in scrollback-stable absolute rows, so this may span content that is not
     /// currently visible — extraction walks the session's scrollback to read it.
-    /// Whether the persistent home-terminal tab is the active sidebar view.
+    /// Whether the workspace is currently focused on a home terminal rather
+    /// than the active agent session.
     pub(super) fn terminal_tab(&self) -> bool {
-        matches!(self.sidebar_view, SidebarView::Terminal)
+        self.terminal_focused
     }
 
     /// Reset the input-focus target after the active session (and hence the
@@ -3534,6 +3672,25 @@ impl Grove {
     }
 }
 
+/// One row of the command palette's list, in display order.
+#[derive(Clone)]
+pub(super) enum PaletteRow {
+    Recent {
+        proj: usize,
+        wt_path: String,
+        agent: Agent,
+    },
+    Combo {
+        proj: usize,
+        wt_path: String,
+        agent: Agent,
+    },
+    NewSession,
+    TerminalHome,
+    TerminalWt,
+    AddProject,
+}
+
 /// Spawn a tokio blocking task that runs `git worktree remove --force` for
 /// `path` inside `project_path`, then emits `Msg::WorktreeRemovedStep` with
 /// the outcome and the still-unprocessed `remaining` queue.
@@ -3630,6 +3787,10 @@ pub(crate) enum GlobalShortcut {
     SelectSession(usize),
     ShortcutOverlay,
     CloseFocusedSession,
+    /// Spawn a new home terminal and focus it.
+    NewHomeTerminal,
+    /// Select the first session currently waiting for input, in tree order.
+    JumpToWaitingSession,
     /// Move keyboard focus between grid tiles by `(dx, dy)`. Grid screen only.
     GridMove(i32, i32),
     /// Swap the focused tile with its neighbor by `(dx, dy)`. Grid screen only.
@@ -3808,6 +3969,24 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         triggers: &["w", "W"],
         display_keys: "w",
         description: "Close focused session",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::NewHomeTerminal),
+        triggers: &["t", "T"],
+        display_keys: "t",
+        description: "New home terminal",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::JumpToWaitingSession),
+        triggers: &["'"],
+        display_keys: "'",
+        description: "Jump to session needing you",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -4149,8 +4328,9 @@ fn should_forward(ev: &Event, status: event::Status) -> bool {
 fn escape_should_dismiss(
     pending_kill: Option<usize>,
     open_agent_menu: Option<(usize, usize)>,
+    attention_open: bool,
 ) -> bool {
-    pending_kill.is_some() || open_agent_menu.is_some()
+    pending_kill.is_some() || open_agent_menu.is_some() || attention_open
 }
 
 /// Chord + scope check for the terminal-panel resize (see the registry's
@@ -4902,14 +5082,19 @@ mod tests {
 
         #[test]
         fn false_when_neither_is_set() {
-            assert!(!escape_should_dismiss(None, None));
+            assert!(!escape_should_dismiss(None, None, false));
         }
 
         #[test]
         fn true_when_either_is_set() {
-            assert!(escape_should_dismiss(Some(2), None));
-            assert!(escape_should_dismiss(None, Some((1, 0))));
-            assert!(escape_should_dismiss(Some(2), Some((1, 0))));
+            assert!(escape_should_dismiss(Some(2), None, false));
+            assert!(escape_should_dismiss(None, Some((1, 0)), false));
+            assert!(escape_should_dismiss(Some(2), Some((1, 0)), false));
+        }
+
+        #[test]
+        fn true_when_attention_queue_is_open() {
+            assert!(escape_should_dismiss(None, None, true));
         }
     }
 }

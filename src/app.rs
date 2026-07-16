@@ -277,17 +277,23 @@ pub enum Modal {
         wt_path: String,
         sel: usize,
     },
-    /// Agent View "+ New session" launcher: three Miller columns
-    /// (project → worktree → agent). `proj` indexes `store.projects`; `wt`
-    /// indexes the selected project's worktrees (`app.worktrees` when it is the
-    /// active project, else `Grove::wt_cache[proj]`); `agent` indexes
-    /// `available_agents`; `col` is the focused column (0=project 1=worktree
-    /// 2=agent). Reachable from any view (grid pill, mod+n).
+    /// Recents-first command palette (Agent View "+ New session", mod+n, grid
+    /// pill). Three states, all driven by this payload:
+    /// - root: `input` empty and `browse_all` false — recents + actions list.
+    /// - typing/browse-all: `input` non-empty OR `browse_all` true — every
+    ///   project×worktree combo, fuzzy-filtered by `input` (unfiltered if empty
+    ///   and `browse_all` is what got us here via "+ new session…").
+    /// - options: `options` is `Some` — a plain list of agents to launch the
+    ///   selected row's project/worktree with.
     SessionLauncher {
-        proj: usize,
-        wt: usize,
-        agent: usize,
-        col: u8,
+        input: String,
+        /// Selected row index into whatever list is currently rendered (root's
+        /// combined recents+actions list, or the typing/browse-all list).
+        selected: usize,
+        /// Set once the root "+ new session…" action row is activated: forces
+        /// the unfiltered every-combo list even while `input` is empty.
+        browse_all: bool,
+        options: Option<LauncherOptions>,
     },
     ThemePicker {
         sel_dark: usize,
@@ -356,6 +362,17 @@ pub enum Modal {
         /// and name fields. `false` = path (the default on entering the step).
         name_focused: bool,
     },
+}
+
+/// The command palette's "options" state: a resolved (project, worktree)
+/// selection with a plain list of agents to pick from before launch.
+#[derive(Clone)]
+pub struct LauncherOptions {
+    pub proj: usize,
+    /// Index into `launcher_worktrees(proj)`.
+    pub wt: usize,
+    /// Index into `App::available_agents`.
+    pub agent: usize,
 }
 
 /// Stage of an in-progress worktree teardown.
@@ -932,9 +949,20 @@ impl App {
                 } else {
                     self.session_insert_index(&s)
                 };
+                let project = s.project.clone();
+                let wt_path = s.wt_path.clone();
                 self.sessions.insert(at, s);
                 self.active_session = Some(at);
                 self.set_toast(format!("started {label}"));
+                crate::gui::launcher::push_recent_launch(
+                    &mut self.store.recent_launches,
+                    crate::storage::RecentLaunch {
+                        project,
+                        wt_path,
+                        agent,
+                    },
+                );
+                let _ = crate::storage::save(&self.store);
                 Some(at)
             }
             Err(e) => {

@@ -5,9 +5,6 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 pub const ROW_H: f32 = 28.0;
-/// Extra height appended to `ROW_H` for sidebar rows that render a second
-/// (subtitle) line — used by the activity-stream view's session rows.
-pub const SUBTITLE_H: f32 = 16.0;
 /// Default sidebar width, also the reset target for a divider double-click.
 pub const RAIL_W: f32 = 320.0;
 /// Lower bound for the drag-resizable sidebar.
@@ -379,7 +376,6 @@ pub fn grid_tile_size(win_w: f32, win_h: f32, zoom: f32, n: usize) -> (f32, f32)
     (tile_w, tile_h)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -517,7 +513,10 @@ mod tests {
         assert_eq!(clamp_sidebar_width(1000.0, win), win * 0.5);
         // Workspace-minimum is the binding cap on a narrow window.
         let narrow = 700.0;
-        assert_eq!(clamp_sidebar_width(1000.0, narrow), narrow - WORKSPACE_MIN_W);
+        assert_eq!(
+            clamp_sidebar_width(1000.0, narrow),
+            narrow - WORKSPACE_MIN_W
+        );
         // Degenerate tiny window never returns below the minimum.
         assert_eq!(clamp_sidebar_width(500.0, 100.0), SIDEBAR_MIN_W);
     }
@@ -561,14 +560,14 @@ mod tests {
     #[test]
     fn grid_layout_picks_sensible_dimensions() {
         use super::grid_layout;
-        assert_eq!(grid_layout(1),  (1, 1));
-        assert_eq!(grid_layout(2),  (2, 1));
-        assert_eq!(grid_layout(3),  (2, 2));
-        assert_eq!(grid_layout(4),  (2, 2));
-        assert_eq!(grid_layout(5),  (3, 2));
-        assert_eq!(grid_layout(6),  (3, 2));
-        assert_eq!(grid_layout(7),  (3, 3));
-        assert_eq!(grid_layout(9),  (3, 3));
+        assert_eq!(grid_layout(1), (1, 1));
+        assert_eq!(grid_layout(2), (2, 1));
+        assert_eq!(grid_layout(3), (2, 2));
+        assert_eq!(grid_layout(4), (2, 2));
+        assert_eq!(grid_layout(5), (3, 2));
+        assert_eq!(grid_layout(6), (3, 2));
+        assert_eq!(grid_layout(7), (3, 3));
+        assert_eq!(grid_layout(9), (3, 3));
         assert_eq!(grid_layout(10), (4, 3));
         assert_eq!(grid_layout(16), (4, 4));
         assert_eq!(grid_layout(20), (4, 4)); // capped at 4×4

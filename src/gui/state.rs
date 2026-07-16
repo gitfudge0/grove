@@ -11,19 +11,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-/// Which top-level rendering the sidebar uses. `Tree` is the original
-/// project → worktree → session hierarchy; `Activity` is a flat list of
-/// every session across every worktree, grouped by liveness.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SidebarView {
-    Tree,
-    Activity,
-    /// A single persistent local shell rooted at `~`. Not tied to any
-    /// worktree, never appears in the session lists, and can't be killed —
-    /// only restarted (always back at `~`) if its shell exits.
-    Terminal,
-}
-
 /// Which of the two PTYs receives keyboard input, scroll, and selection while
 /// the right-docked terminal slide-over panel is open. Meaningless (and ignored
 /// by `focused_session*`) when the panel is closed. Clicking a PTY sets this to
@@ -96,6 +83,8 @@ pub struct Grove {
     pub window_size: Size,
     /// Worktree whose split-start agent menu is open.
     pub open_agent_menu: Option<(usize, usize)>,
+    /// Whether the appbar's attention-queue dropdown is open.
+    pub attention_open: bool,
     /// Mouse-drag selection in the active session's PTY, stored in
     /// scrollback-stable absolute cells (see [`AbsCell`]) so it survives
     /// auto-scrolling and can span more than one viewport. Un-normalized so we
@@ -121,16 +110,10 @@ pub struct Grove {
     /// Worktree currently under the mouse — drives reveal of the per-row
     /// action buttons (play / terminal / more). `None` when no row is hovered.
     pub hovered_wt: Option<(usize, usize)>,
-    /// Session-index of the activity-stream row currently under the mouse.
-    /// Drives the hover-reveal of the inline spawn chips on session rows in
-    /// the activity view. `None` when no session row is hovered.
-    pub hovered_activity_row: Option<usize>,
-    /// Selected sidebar rendering mode (tree vs activity stream). In-memory
-    /// only — no persisted prefs pattern exists for transient view state.
-    pub sidebar_view: SidebarView,
-    /// User-toggled expansion of the `worktrees · no sessions` activity-view
-    /// group. `None` means "use default" (expanded iff non-empty).
-    pub activity_no_sessions_expanded: Option<bool>,
+    /// True while the workspace/focus is showing a home terminal rather than
+    /// the tree's agent sessions. Flipped by `SelectHomeTerminal` and cleared
+    /// by `leave_terminal_tab()`.
+    pub terminal_focused: bool,
     /// Whether the right-docked terminal slide-over panel is open. The panel
     /// belongs to the active session's worktree; toggled by the `term` button
     /// in the session header. Closing it leaves the worktree's shells alive
@@ -183,9 +166,6 @@ pub struct Grove {
     /// swapped tiles, each with the (col, row) cell delta it travelled, plus
     /// when the slide started. Drives a draw-only offset in `grid_workspace`.
     pub grid_slide: Option<GridSlide>,
-    /// Set while the worktree-name input was opened from the session launcher;
-    /// on successful worktree creation the launcher re-opens into this project.
-    pub pending_launcher_proj: Option<usize>,
     /// True when zen was entered from grid view; exiting zen re-enters grid.
     pub grid_view_before_zen: bool,
     /// Timestamp of the last divider press, for double-click reset detection.
@@ -414,9 +394,6 @@ pub enum Msg {
     /// worktrees that currently contain sessions, or — if already in that
     /// state — expands every project and worktree.
     ToggleCollapseAll,
-    /// Switch the sidebar between the tree view, the activity stream, and the
-    /// persistent home terminal.
-    SidebarSetView(SidebarView),
     /// Relaunch the active home terminal's shell at `~` (e.g. after it exited).
     RestartHomeTerminal,
     /// Spawn an additional home terminal and focus it.
@@ -425,16 +402,11 @@ pub enum Msg {
     SelectHomeTerminal(usize),
     /// Close the home terminal at this index.
     CloseHomeTerminal(usize),
-    /// Toggle the collapsed-state of the `worktrees · no sessions` group in
-    /// activity view.
-    ToggleActivityNoSessionsGroup,
     WorktreeClicked {
         proj: usize,
         wt: usize,
     },
     HoverWorktree(Option<(usize, usize)>),
-    /// Mouse entered/left an activity-stream session row (by session index).
-    HoverActivityRow(Option<usize>),
     StartSession {
         proj: usize,
         wt: usize,
@@ -457,6 +429,12 @@ pub enum Msg {
     /// Close the panel shell at this index in the active worktree's panel.
     CloseWtTerminal(usize),
     CloseAgentMenu,
+    /// Toggle the appbar's attention-queue dropdown open/closed.
+    ToggleAttentionQueue,
+    /// Close the appbar's attention-queue dropdown.
+    CloseAttentionQueue,
+    /// Select the first session currently waiting for input, in tree order.
+    JumpToWaitingSession,
     SelectSession(usize),
     KillSession(usize),
     RequestKillSession(usize),
@@ -650,18 +628,16 @@ pub enum Msg {
     /// remember to return to grid on exit.
     GridTileZen(usize),
 
-    // ── Agent View session launcher ──────────────────────────────────────
-    /// Open the launcher (pill click or Cmd/Ctrl+N while the grid is open).
+    // ── Command palette (session launcher) ───────────────────────────────
+    /// Open the palette (pill click or Cmd/Ctrl+N while the grid is open).
     OpenSessionLauncher,
-    /// Select the project at this index; resets worktree selection to 0 and
-    /// lazily loads that project's worktrees.
-    LauncherSelectProject(usize),
-    /// Select the worktree at this index within the current project.
-    LauncherSelectWorktree(usize),
-    /// Select the agent at this index within `available_agents`.
-    LauncherSelectAgent(usize),
-    /// "+ New worktree…" row: hand off to the worktree-name input flow.
-    LauncherNewWorktree,
-    /// Start the session with the current selection.
-    LauncherStart,
+    /// Live edit of the palette's search field. Resets `selected` to 0.
+    LauncherInputChanged(String),
+    /// Activate (launch/act on) the row at this index in the currently
+    /// rendered root/typing/browse-all list; driven by both row click and the
+    /// Enter/mod+digit keyboard paths.
+    LauncherActivate(usize),
+    /// Click an agent row by index into `available_agents`, in options state:
+    /// picks it and immediately launches the session.
+    LauncherOptionsPick(usize),
 }

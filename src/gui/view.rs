@@ -8,29 +8,26 @@ use super::metrics::{
 };
 use super::palette as c;
 use super::pty::{rebuild_row_runs, PtyProgram};
-use super::rows::{
-    activity_group_header, project_row, session_activity_row, session_row, single_line,
-    truncate_ellipsis, worktree_activity_row, worktree_row,
+use super::rows::{project_row, session_row, single_line, state_glyph, worktree_row};
+use super::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, UpgradeState};
+use super::update::{
+    platform_mod_label, GlobalShortcut, PaletteRow, Scope, ShortcutDef, SHORTCUTS,
 };
-use super::state::{
-    FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, SidebarView, UpgradeState,
-};
-use super::update::{platform_mod_label, GlobalShortcut, Scope, ShortcutDef, SHORTCUTS};
 use super::widgets::{
     control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_workspace, footer_btn,
     icon_btn, launcher_row, modal_action, modal_action_sized, modal_checkbox, modal_list_row,
-    modal_panel, seg_button, sidebar_agent_menu_overlay, skip_perms_seg, tool_btn, tool_btn_toggle,
-    truncate_middle, vline, ModalBtn, SegSide,
+    modal_list_row_sized, modal_panel, seg_button, sidebar_agent_menu_overlay, skip_perms_seg,
+    tool_btn, tool_btn_toggle, vline, ModalBtn, SegSide, PALETTE_ROW_H,
 };
-use crate::app::{AddProjectStep, ConfirmKind, GitProbe, Modal, OnboardStep};
+use crate::app::{AddProjectStep, ConfirmKind, GitProbe, LauncherOptions, Modal, OnboardStep};
 use crate::git::Worktree;
 use crate::session::{Session, SessionStatus};
 use iced::border::Radius;
 use iced::widget::{
-    button, canvas as canvas_widget, column, container, row, scrollable, stack, text, text_input,
-    Column, Id, Row, Space,
+    button, canvas as canvas_widget, column, container, rich_text, row, scrollable, span, stack,
+    text, text_input, Column, Id, Row, Space,
 };
-use iced::{Background, Border, Color, Element, Length, Padding, Shadow};
+use iced::{Background, Border, Color, Element, Length, Padding, Shadow, Vector};
 use std::sync::atomic::Ordering;
 
 /// Stable id for the add-project / add-worktree primary text input, used to
@@ -68,6 +65,189 @@ fn input_field_style(_t: &iced::Theme, status: text_input::Status) -> text_input
 pub fn theme_picker_scrollable_id() -> Id {
     Id::new("theme-picker-list")
 }
+
+/// Keycap chip shell shared by every footer hint, the palette's ⌘T/digit
+/// chips (via [`mod_key_chip`]), and the ⏎ chips on active rows: mono, 2px/6px
+/// padding, radius 4, filled `BG_HL` background. Deliberately filled rather
+/// than border-reliant — a light-theme contrast fix over the old
+/// border+transparent-bg chip. `inner` carries its own text color so callers
+/// can pick the muted "quiet digit" shade vs. the regular hint shade.
+fn keycap<'a>(inner: Element<'a, Msg>) -> Element<'a, Msg> {
+    container(inner)
+        .padding(Padding::from([2, 6]))
+        .style(|_| container::Style {
+            background: Some(Background::Color(c::BG_HL())),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: Radius::from(4.0),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A plain-label keycap (e.g. "⏎", "↑↓", "esc", "←→") in the given text color.
+fn keycap_text<'a>(label: impl Into<String>, color: Color) -> Element<'a, Msg> {
+    keycap(
+        text(label.into())
+            .font(MONO_FONT)
+            .size(11)
+            .color(color)
+            .into(),
+    )
+}
+
+/// A mod+key hint chip: on macOS the modifier renders as the ⌘ glyph icon,
+/// elsewhere as `platform_mod_label()`. Used for the palette's ⌘T action-row
+/// chip (`color` = `FG_DIM`) and its ⌘1…⌘N recent-row digit chips (`color` =
+/// `FG_MUTE`, a quieter shade so they recede behind the row text).
+fn mod_key_chip<'a>(key: &'static str, color: Color) -> Element<'a, Msg> {
+    let inner: Element<'a, Msg> = if cfg!(target_os = "macos") {
+        row![
+            icon("command", 10.0, color),
+            text(key).font(MONO_FONT).size(11).color(color),
+        ]
+        .spacing(1)
+        .align_y(iced::Alignment::Center)
+        .into()
+    } else {
+        text(format!("{}+{}", platform_mod_label(), key))
+            .font(MONO_FONT)
+            .size(11)
+            .color(color)
+            .into()
+    };
+    keycap(inner)
+}
+
+/// A mono, uppercase, letter-tracked section label ("RECENT", "ACTIONS",
+/// "OPEN WITH") used by both the root/typing list's section headers and the
+/// options state's header. Iced has no letter-spacing property, so tracking
+/// is faked by joining every character with a U+2009 thin space (confirmed
+/// present in the bundled BlexMono Nerd Font's `cmap`, so it renders as real
+/// spacing rather than a tofu glyph). `top`/`bottom` are the caller's margin
+/// above/below (the list's first header uses `top: 0.0`).
+fn section_header<'a>(label: &str, top: f32, bottom: f32) -> Element<'a, Msg> {
+    let tracked = label
+        .chars()
+        .map(String::from)
+        .collect::<Vec<_>>()
+        .join("\u{2009}");
+    container(text(tracked).font(MONO_FONT).size(10).color(c::FG_MUTE()))
+        .padding(Padding {
+            top,
+            bottom,
+            left: 12.0,
+            right: 0.0,
+        })
+        .into()
+}
+
+/// Render `s` as rich text, coloring the character ranges in `ranges` cyan
+/// (the typing-state fuzzy-match highlight) and everything else
+/// `base_color`. `ranges` are **char** indices from
+/// `launcher::fuzzy_match_indices`, not byte offsets. Falls back to a plain
+/// `text` widget when there's nothing to highlight.
+fn highlighted_line<'a>(
+    s: &str,
+    ranges: &[(usize, usize)],
+    base_color: Color,
+    font: iced::Font,
+    size: f32,
+) -> Element<'a, Msg> {
+    if ranges.is_empty() {
+        return text(s.to_string())
+            .font(font)
+            .size(size)
+            .color(base_color)
+            .into();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let mut sorted: Vec<(usize, usize)> = ranges.to_vec();
+    sorted.sort_by_key(|r| r.0);
+    let mut spans: Vec<iced::widget::text::Span<'static>> = Vec::new();
+    let mut cursor = 0usize;
+    for (start, end) in sorted {
+        let start = start.min(chars.len());
+        let end = end.min(chars.len()).max(start);
+        if start > cursor {
+            spans.push(span(chars[cursor..start].iter().collect::<String>()).color(base_color));
+        }
+        if end > start {
+            spans.push(span(chars[start..end].iter().collect::<String>()).color(c::CYAN()));
+        }
+        cursor = cursor.max(end);
+    }
+    if cursor < chars.len() {
+        spans.push(span(chars[cursor..].iter().collect::<String>()).color(base_color));
+    }
+    rich_text(spans).font(font).size(size).into()
+}
+
+/// Borderless, transparent-background `text_input` style for the palette's
+/// input zone (the zone's own container carries no visible field chrome —
+/// just the leading glyph/options chip and the typed text).
+fn palette_input_style(_t: &iced::Theme, _status: text_input::Status) -> text_input::Style {
+    text_input::Style {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: Radius::from(0.0),
+        },
+        icon: c::FG_MUTE(),
+        placeholder: c::FG_MUTE(),
+        value: c::FG(),
+        selection: c::CYAN(),
+    }
+}
+
+/// The ⌘-digit key bound to root-mode recent-row `i` (0-based), if any.
+/// `update.rs`'s mod+digit handler accepts any digit 1-9, but `palette_rows`
+/// caps recents at 6 (`.take(6)`), so only the first 6 rows ever get a real
+/// binding — this is why the palette shows at most ⌘1…⌘6, not ⌘1…⌘9.
+fn digit_label(i: usize) -> Option<&'static str> {
+    ["1", "2", "3", "4", "5", "6"].get(i).copied()
+}
+
+/// One `keycap` + muted label pair in the palette's footer hint strip (e.g.
+/// "[↑↓] navigate").
+fn footer_hint<'a>(key: &'static str, label: &'static str) -> Element<'a, Msg> {
+    row![
+        keycap_text(key, c::FG_DIM()),
+        text(label).font(MONO_FONT).size(10).color(c::FG_MUTE()),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center)
+    .into()
+}
+
+/// The palette's full-bleed footer strip: `BG_STRIP` fill, `[8, 16]` padding,
+/// bottom corners rounded to stay flush with the panel's own 12px radius
+/// (containers don't clip children, so the footer must carry its own bottom
+/// radius rather than relying on the panel's).
+fn footer_container<'a>(content: Element<'a, Msg>) -> Element<'a, Msg> {
+    container(content)
+        .padding(Padding::from([8, 16]))
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Background::Color(c::BG_STRIP())),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: Radius {
+                    top_left: 0.0,
+                    top_right: 0.0,
+                    bottom_left: 12.0,
+                    bottom_right: 12.0,
+                },
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
 use std::sync::Arc;
 
 fn session_context_title(s: &Session) -> Option<String> {
@@ -112,24 +292,37 @@ impl Grove {
             .width(Length::Fill)
             .height(Length::Fill)
         } else {
-            column![self.workspace()]
-                .width(Length::Fill)
-                .height(Length::Fill)
+            let waiting = self.waiting_sessions();
+            let workspace: Element<'_, Msg> = if waiting.is_empty() {
+                self.workspace()
+            } else {
+                stack![self.workspace(), self.zen_attention_pill(waiting.len())]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
+            };
+            column![workspace].width(Length::Fill).height(Length::Fill)
         };
 
-        let content: Element<'_, Msg> =
-            if matches!(self.app.modal, Modal::None) && !self.show_changelog {
-                body.into()
-            } else {
-                let mut layers = stack![body];
-                if !matches!(self.app.modal, Modal::None) {
-                    layers = layers.push(self.modal_layer());
-                }
-                if self.show_changelog {
-                    layers = layers.push(self.changelog_modal());
-                }
-                layers.width(Length::Fill).height(Length::Fill).into()
-            };
+        let show_attention_dropdown = self.attention_open && self.app.chrome_visible;
+        let content: Element<'_, Msg> = if matches!(self.app.modal, Modal::None)
+            && !self.show_changelog
+            && !show_attention_dropdown
+        {
+            body.into()
+        } else {
+            let mut layers = stack![body];
+            if !matches!(self.app.modal, Modal::None) {
+                layers = layers.push(self.modal_layer());
+            }
+            if self.show_changelog {
+                layers = layers.push(self.changelog_modal());
+            }
+            if show_attention_dropdown {
+                layers = layers.push(self.attention_dropdown());
+            }
+            layers.width(Length::Fill).height(Length::Fill).into()
+        };
 
         container(content)
             .style(|_| container::Style {
@@ -142,6 +335,7 @@ impl Grove {
 
     // ── appbar ────────────────────────────────────────────────────────────
     fn appbar(&self) -> Element<'_, Msg> {
+        let waiting = self.waiting_sessions();
         let brand = row![text("grove").font(UI_BOLD).size(14).color(c::MAGENTA()),]
             .spacing(8)
             .padding(Padding::from([0, 16]))
@@ -272,7 +466,71 @@ impl Grove {
             .into()
         };
 
-        let right = row![view_control, cog]
+        // Attention-queue pill: only rendered while at least one session is
+        // waiting for input. Pulses in sync with the grid tile's amber accent
+        // (see `attention_pulse`) and toggles the dropdown on click.
+        let attention_pill: Option<Element<'_, Msg>> = if waiting.is_empty() {
+            None
+        } else {
+            let dot_alpha = 1.0 - 0.4 * self.attention_pulse();
+            let dot_color = Color {
+                a: dot_alpha,
+                ..c::AMBER()
+            };
+            let label = if waiting.len() == 1 {
+                "1 needs you".to_string()
+            } else {
+                format!("{} need you", waiting.len())
+            };
+            let content = row![
+                dot(dot_color),
+                text(label).font(UI_FONT).size(11).color(c::AMBER()),
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center);
+            Some(
+                button(
+                    container(content)
+                        .padding(Padding::from([4, 10]))
+                        .style(|_| container::Style {
+                            background: Some(Background::Color(Color {
+                                a: 0.08,
+                                ..c::AMBER()
+                            })),
+                            border: Border {
+                                color: c::AMBER(),
+                                width: 1.0,
+                                radius: Radius::from(999.0),
+                            },
+                            ..Default::default()
+                        }),
+                )
+                .on_press(Msg::ToggleAttentionQueue)
+                .padding(0)
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Background::Color(Color {
+                            a: 0.14,
+                            ..c::AMBER()
+                        }))
+                    } else {
+                        None
+                    },
+                    text_color: c::AMBER(),
+                    border: Border::default(),
+                    shadow: Shadow::default(),
+                    snap: false,
+                })
+                .into(),
+            )
+        };
+
+        let mut right = row![view_control];
+        if let Some(pill) = attention_pill {
+            right = right.push(pill);
+        }
+        let right = right
+            .push(cog)
             .spacing(4)
             .padding(Padding::from([0, 16]))
             .align_y(iced::Alignment::Center);
@@ -296,6 +554,208 @@ impl Grove {
         column![bar, divider_h(c::BORDER())].into()
     }
 
+    /// Small floating badge shown top-right over the zen workspace while at
+    /// least one session waits for input — chrome (and thus the appbar pill)
+    /// is hidden in zen, so this is the only always-visible attention signal
+    /// there. Clicking it jumps straight to the first waiting session; it is
+    /// not a dropdown, so no backdrop/dismiss handling is needed.
+    fn zen_attention_pill(&self, count: usize) -> Element<'_, Msg> {
+        let dot_alpha = 1.0 - 0.4 * self.attention_pulse();
+        let dot_color = Color {
+            a: dot_alpha,
+            ..c::AMBER()
+        };
+        let content = row![
+            dot(dot_color),
+            text(count.to_string())
+                .font(UI_FONT)
+                .size(11)
+                .color(c::AMBER()),
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+
+        let pill = button(
+            container(content)
+                .padding(Padding::from([2, 8]))
+                .style(|_| container::Style {
+                    background: Some(Background::Color(Color {
+                        a: 0.08,
+                        ..c::AMBER()
+                    })),
+                    border: Border {
+                        color: c::AMBER(),
+                        width: 1.0,
+                        radius: Radius::from(999.0),
+                    },
+                    ..Default::default()
+                }),
+        )
+        .on_press(Msg::JumpToWaitingSession)
+        .padding(0)
+        .style(|_, status| button::Style {
+            background: if matches!(status, button::Status::Hovered) {
+                Some(Background::Color(Color {
+                    a: 0.14,
+                    ..c::AMBER()
+                }))
+            } else {
+                None
+            },
+            text_color: c::AMBER(),
+            border: Border::default(),
+            shadow: Shadow::default(),
+            snap: false,
+        });
+
+        column![
+            Space::new().height(12.0),
+            row![Space::new().width(Length::Fill), pill].padding(Padding {
+                top: 0.0,
+                bottom: 0.0,
+                left: 0.0,
+                right: 12.0,
+            }),
+            Space::new().height(Length::Fill),
+        ]
+        .height(Length::Fill)
+        .into()
+    }
+
+    /// Anchored top-right dropdown listing every session currently waiting
+    /// for input, opened via the appbar pill (`Msg::ToggleAttentionQueue`).
+    /// Same backdrop-dismiss idiom as `sidebar_agent_menu_overlay`.
+    fn attention_dropdown(&self) -> Element<'_, Msg> {
+        let waiting = self.waiting_sessions();
+
+        let backdrop = button(Space::new().width(Length::Fill).height(Length::Fill))
+            .on_press(Msg::CloseAttentionQueue)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(0)
+            .style(|_, _| button::Style {
+                background: None,
+                text_color: Color::TRANSPARENT,
+                border: Border::default(),
+                shadow: Shadow::default(),
+                snap: false,
+            });
+
+        let mut rows_col = column![].spacing(0);
+        for &si in &waiting {
+            let s = &self.app.sessions[si];
+            let state = self.activity_state(s);
+            let subtitle = format!("{} / {}", s.project, crate::app::path_basename(&s.wt_path));
+            let content = row![
+                state_glyph(state, self.blink_tick, self.attention_pulse()),
+                column![
+                    text(s.agent.label()).font(UI_FONT).size(11).color(c::FG()),
+                    text(subtitle).font(MONO_FONT).size(10).color(c::FG_MUTE()),
+                ]
+                .spacing(1),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .padding(Padding {
+                top: 6.0,
+                bottom: 6.0,
+                left: 12.0,
+                right: 10.0,
+            });
+
+            let row_btn = button(content)
+                .on_press(Msg::SelectSession(si))
+                .width(Length::Fill)
+                .padding(0)
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Background::Color(c::BG_HOVER()))
+                    } else {
+                        None
+                    },
+                    text_color: c::FG(),
+                    border: Border::default(),
+                    shadow: Shadow::default(),
+                    snap: false,
+                });
+
+            // 3px amber left accent bar, same idiom as the waiting sidebar row.
+            let bar: Element<'_, Msg> = container(
+                container(Space::new().width(3.0))
+                    .width(3.0)
+                    .height(Length::Fill)
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(c::AMBER())),
+                        ..Default::default()
+                    }),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(iced::Alignment::Start)
+            .into();
+
+            rows_col = rows_col.push(stack![row_btn, bar]);
+        }
+
+        let footer_hint: Element<'_, Msg> = if cfg!(target_os = "macos") {
+            row![
+                icon("command", 10.0, c::FG_MUTE()),
+                text("'").font(MONO_FONT).size(10).color(c::FG_MUTE()),
+                text(" jump to next")
+                    .font(UI_FONT)
+                    .size(10)
+                    .color(c::FG_MUTE()),
+            ]
+            .spacing(1)
+            .align_y(iced::Alignment::Center)
+            .into()
+        } else {
+            text(format!("{}+' jump to next", platform_mod_label()))
+                .font(UI_FONT)
+                .size(10)
+                .color(c::FG_MUTE())
+                .into()
+        };
+        let footer = container(footer_hint).width(Length::Fill).padding(Padding {
+            top: 6.0,
+            bottom: 6.0,
+            left: 12.0,
+            right: 10.0,
+        });
+
+        let panel = container(
+            column![rows_col, divider_h(c::BORDER()), footer]
+                .spacing(0)
+                .width(Length::Fixed(280.0)),
+        )
+        .style(|_| container::Style {
+            background: Some(Background::Color(c::BG_STRIP())),
+            border: Border {
+                color: c::BORDER(),
+                width: 1.0,
+                radius: Radius::from(6.0),
+            },
+            ..Default::default()
+        });
+
+        let positioned = column![
+            Space::new().height(APPBAR_H + 1.0),
+            row![Space::new().width(Length::Fill), panel].padding(Padding {
+                top: 0.0,
+                bottom: 0.0,
+                left: 0.0,
+                right: 16.0,
+            }),
+            Space::new().height(Length::Fill),
+        ]
+        .height(Length::Fill);
+
+        stack![backdrop, positioned]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
     /// The draggable divider between the sidebar and the workspace. A 1px line
     /// centered in a `SIDEBAR_DIVIDER_W`-wide hit zone, with a resize cursor on
     /// hover. The press starts a drag; cursor moves and the release are tracked
@@ -314,11 +774,7 @@ impl Grove {
     // ── sidebar ───────────────────────────────────────────────────────────
     fn sidebar(&self) -> Element<'_, Msg> {
         let tree_head = self.tree_head();
-        let content: Element<'_, Msg> = match self.sidebar_view {
-            SidebarView::Tree => self.tree_view(),
-            SidebarView::Activity => self.activity_view(),
-            SidebarView::Terminal => self.terminal_sidebar(),
-        };
+        let content: Element<'_, Msg> = self.tree_view();
         let tree_area = container(scrollable(content).height(Length::Fill))
             .height(Length::Fill)
             .padding(Padding {
@@ -327,11 +783,7 @@ impl Grove {
                 left: 0.0,
                 right: 0.0,
             });
-        let agent_menu_top = if matches!(self.sidebar_view, SidebarView::Tree) {
-            self.open_agent_menu_top()
-        } else {
-            None
-        };
+        let agent_menu_top = self.open_agent_menu_top();
         let tree_layer: Element<'_, Msg> = match agent_menu_top {
             Some((proj, wt, top, is_main)) => stack![
                 tree_area,
@@ -343,13 +795,7 @@ impl Grove {
             None => tree_area.into(),
         };
 
-        // The footer is view-specific: project-oriented views get "+ add
-        // project"; the terminal tab gets "+ new terminal".
-        let footer: Element<'_, Msg> = if matches!(self.sidebar_view, SidebarView::Terminal) {
-            footer_btn("+ new terminal", Msg::NewHomeTerminal)
-        } else {
-            footer_btn("+ add project", Msg::AddProject)
-        };
+        let footer: Element<'_, Msg> = footer_btn("+ add project", Msg::AddProject);
         let stack_col = column![
             tree_head,
             divider_h(c::BORDER_SOFT()),
@@ -402,67 +848,22 @@ impl Grove {
             }
         });
 
-        let activity_active = matches!(self.sidebar_view, SidebarView::Activity);
-        let tree_active = matches!(self.sidebar_view, SidebarView::Tree);
-        let terminal_active = matches!(self.sidebar_view, SidebarView::Terminal);
-        let pillset = container(
-            row![
-                seg_button(
-                    "activity",
-                    activity_active,
-                    SegSide::Left,
-                    Msg::SidebarSetView(SidebarView::Activity),
-                ),
-                seg_button(
-                    "tree",
-                    tree_active,
-                    SegSide::Middle,
-                    Msg::SidebarSetView(SidebarView::Tree),
-                ),
-                seg_button(
-                    "terminal",
-                    terminal_active,
-                    SegSide::Right,
-                    Msg::SidebarSetView(SidebarView::Terminal),
-                ),
-            ]
-            .spacing(0),
-        )
-        .style(|_| container::Style {
-            border: Border {
-                color: c::BORDER(),
-                width: 1.0,
-                radius: Radius::from(6.0),
-            },
-            ..Default::default()
-        });
-
-        // The collapse-all toggle only belongs to tree mode.
-        let right_tools: Element<'_, Msg> = if tree_active {
-            container(toggle)
-                .height(Length::Fill)
-                .align_y(iced::Alignment::Center)
-                .into()
-        } else {
-            Space::new().width(Length::Fixed(0.0)).into()
-        };
+        // Tree is always active now, so the collapse-all toggle is always shown.
+        let right_tools: Element<'_, Msg> = container(toggle)
+            .height(Length::Fill)
+            .align_y(iced::Alignment::Center)
+            .into();
 
         container(
-            row![
-                container(pillset)
-                    .height(Length::Fill)
-                    .align_y(iced::Alignment::Center),
-                Space::new().width(Length::Fill),
-                right_tools,
-            ]
-            .align_y(iced::Alignment::Center)
-            .height(Length::Fill)
-            .padding(Padding {
-                top: 0.0,
-                bottom: 0.0,
-                left: 14.0,
-                right: 8.0,
-            }),
+            row![Space::new().width(Length::Fill), right_tools,]
+                .align_y(iced::Alignment::Center)
+                .height(Length::Fill)
+                .padding(Padding {
+                    top: 0.0,
+                    bottom: 0.0,
+                    left: 14.0,
+                    right: 8.0,
+                }),
         )
         .height(SESSBAR_H)
         .width(Length::Fill)
@@ -580,7 +981,11 @@ impl Grove {
                 }
                 for (si, s) in self.app.sessions.iter().enumerate() {
                     if s.wt_path == w.path {
-                        let active = self.app.active_session == Some(si);
+                        // The tree and the pinned terminals now render
+                        // simultaneously, so a session must not show the
+                        // "active" highlight while the workspace is actually
+                        // showing a home terminal.
+                        let active = !self.terminal_focused && self.app.active_session == Some(si);
                         let pending_kill = self.pending_kill == Some(si);
                         col = col.push(session_row(
                             si,
@@ -596,59 +1001,23 @@ impl Grove {
                 }
             }
         }
+
+        col = col.push(divider_h(c::BORDER_SOFT()));
+        col = col.push(crate::gui::rows::home_terminals_header());
+        let show_close = self.app.home_terminals.len() > 1;
+        for (i, s) in self.app.home_terminals.iter().enumerate() {
+            let active = self.terminal_focused && self.app.active_terminal == Some(i);
+            col = col.push(crate::gui::rows::terminal_row(i, s, active, show_close));
+        }
+
         col.into()
     }
 
-    /// Session indices grouped by liveness for the activity view, in the exact
-    /// top-to-bottom order they render: `(waiting, running, idle)`. Idle folds
-    /// in exited sessions. Shared with keyboard navigation so `mod+1..9` maps to
-    /// the same visual order the sidebar shows.
-    fn activity_session_groups(&self) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
-        use super::activity::ActivityState;
-        let mut waiting: Vec<usize> = Vec::new();
-        let mut running: Vec<usize> = Vec::new();
-        let mut idle: Vec<(usize, std::time::Instant)> = Vec::new();
-        let mut exited: Vec<(usize, std::time::Instant)> = Vec::new();
-        for (i, s) in self.app.sessions.iter().enumerate() {
-            let t = *s.last_output_at.lock().unwrap_or_else(|e| e.into_inner());
-            match self.activity_state(s) {
-                ActivityState::WaitingForInput => waiting.push(i),
-                ActivityState::Working => running.push(i),
-                ActivityState::Done | ActivityState::Idle => idle.push((i, t)),
-                ActivityState::Exited => exited.push((i, t)),
-            }
-        }
-        // Exited sessions live under "idle" — they're not running, not "live".
-        idle.extend(exited);
-        // Waiting/working sessions sort by creation order (newest first) —
-        // sorting by `last_output_at` made the list reorder on every PTY read,
-        // since a live agent updates its timestamp many times per second.
-        // Why: idle/exited timestamps are frozen by definition, so sorting
-        // those by recency is stable; running ones aren't. The timestamps were
-        // snapshotted above so the sort doesn't re-lock per comparison.
-        waiting.sort_by_key(|i| std::cmp::Reverse(*i));
-        running.sort_by_key(|i| std::cmp::Reverse(*i));
-        idle.sort_by_key(|&(_, t)| std::cmp::Reverse(t));
-        let idle: Vec<usize> = idle.into_iter().map(|(i, _)| i).collect();
-        (waiting, running, idle)
-    }
-
-    /// Session indices in the order they appear in the sidebar for the current
-    /// `sidebar_view`, honoring collapse state in the tree. Drives `mod+1..9`
-    /// while the agent grid is closed so the shortcut follows what's on screen.
+    /// Session indices in the order `tree_view` renders them, honoring
+    /// collapse state. Kept as a separate method (identical to
+    /// `tree_session_order`) because `mod+1..9` calls it by this name.
     pub fn visible_session_order(&self) -> Vec<usize> {
-        match self.sidebar_view {
-            SidebarView::Activity => {
-                let (mut order, running, idle) = self.activity_session_groups();
-                order.extend(running);
-                order.extend(idle);
-                order
-            }
-            SidebarView::Tree => self.tree_session_order(),
-            // The terminal sidebar lists no agent sessions; fall back to raw
-            // session order so the shortcut still targets something sane.
-            SidebarView::Terminal => (0..self.app.sessions.len()).collect(),
-        }
+        self.tree_session_order()
     }
 
     /// Session indices in the top-to-bottom order `tree_view` renders them,
@@ -676,234 +1045,6 @@ impl Grove {
             }
         }
         order
-    }
-
-    /// Flat activity-stream rendering of every session across every project /
-    /// worktree, grouped by liveness (`running` / `idle` / `worktrees · no
-    /// sessions`).
-    fn activity_view(&self) -> Element<'_, Msg> {
-        let now = std::time::Instant::now();
-
-        // Pre-compute lookups used by both the grouping pass and the row
-        // renderer below — folded once per frame instead of O(N) per row.
-        let project_idx: std::collections::HashMap<&str, usize> = self
-            .app
-            .store
-            .projects
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (p.name.as_str(), i))
-            .collect();
-        let wt_paths_with_sessions: std::collections::HashSet<&str> = self
-            .app
-            .sessions
-            .iter()
-            .map(|s| s.wt_path.as_str())
-            .collect();
-        let mut session_count_by_wt: std::collections::HashMap<&str, usize> =
-            std::collections::HashMap::new();
-        for s in &self.app.sessions {
-            *session_count_by_wt.entry(s.wt_path.as_str()).or_insert(0) += 1;
-        }
-        // Resolved worktree display name per session, indexed by session index.
-        let session_wnames: Vec<String> = self
-            .app
-            .sessions
-            .iter()
-            .map(|s| self.resolve_session_wname(s, &project_idx))
-            .collect();
-
-        let (waiting, running, idle) = self.activity_session_groups();
-
-        // All worktrees across all projects, listed `project / worktree`.
-        // The row shows the session count and lets the user spawn new
-        // sessions inline regardless of whether sessions already exist.
-        let mut worktree_rows: Vec<(usize, usize, String, String, bool, bool, usize)> = Vec::new();
-        for (pi, p) in self.app.store.projects.iter().enumerate() {
-            let is_git = crate::git::is_repo(&p.path);
-            let wts: &[Worktree] = if pi == self.app.proj_idx {
-                &self.app.worktrees
-            } else {
-                self.wt_cache.get(&pi).map(|v| v.as_slice()).unwrap_or(&[])
-            };
-            for (wi, w) in wts.iter().enumerate() {
-                let wname = if w.is_main {
-                    p.name.clone()
-                } else {
-                    crate::app::path_basename(&w.path)
-                };
-                let count = session_count_by_wt
-                    .get(w.path.as_str())
-                    .copied()
-                    .unwrap_or(0);
-                worktree_rows.push((pi, wi, p.name.clone(), wname, w.is_main, is_git, count));
-            }
-        }
-        let _ = wt_paths_with_sessions; // retained above for symmetry; not used now
-
-        let no_sessions_expanded = self
-            .activity_no_sessions_expanded
-            .unwrap_or(!worktree_rows.is_empty());
-
-        let mut col: Column<'_, Msg> = Column::new().spacing(0);
-
-        // "waiting" is an attention group: shown on top, hidden when empty
-        // (unlike the always-visible running/idle scaffolding).
-        if !waiting.is_empty() {
-            col = col.push(activity_group_header("waiting", waiting.len(), true, None));
-            for si in waiting {
-                col =
-                    col.push(self.activity_row_wrapped(si, &session_wnames[si], now, &project_idx));
-            }
-        }
-
-        col = col.push(activity_group_header("running", running.len(), true, None));
-        if running.is_empty() {
-            col = col.push(self.activity_empty_hint("no live sessions"));
-        }
-        for si in running {
-            col = col.push(self.activity_row_wrapped(si, &session_wnames[si], now, &project_idx));
-        }
-
-        col = col.push(activity_group_header("idle", idle.len(), true, None));
-        if idle.is_empty() {
-            col = col.push(self.activity_empty_hint("nothing paused"));
-        }
-        for si in idle {
-            col = col.push(self.activity_row_wrapped(si, &session_wnames[si], now, &project_idx));
-        }
-
-        col = col.push(activity_group_header(
-            "worktrees",
-            worktree_rows.len(),
-            no_sessions_expanded,
-            Some(Msg::ToggleActivityNoSessionsGroup),
-        ));
-        if no_sessions_expanded {
-            for (pi, wi, pname, wname, is_main, is_git, count) in worktree_rows {
-                let hovered = self.hovered_wt == Some((pi, wi));
-                let row_el = worktree_activity_row(
-                    pi,
-                    wi,
-                    &pname,
-                    &wname,
-                    is_main,
-                    is_git,
-                    count,
-                    hovered,
-                    &self.app.available_agents,
-                );
-                col = col.push(
-                    iced::widget::mouse_area(row_el)
-                        .on_enter(Msg::HoverWorktree(Some((pi, wi))))
-                        .on_exit(Msg::HoverWorktree(None)),
-                );
-            }
-        }
-
-        col.into()
-    }
-
-    /// Build one activity-stream session row and wrap it in a `mouse_area` so
-    /// hovering reveals the inline spawn chips (mirrors how `tree_view` wraps
-    /// worktree rows for `HoverWorktree`).
-    fn activity_row_wrapped<'a>(
-        &'a self,
-        si: usize,
-        wname: &str,
-        now: std::time::Instant,
-        project_idx: &std::collections::HashMap<&str, usize>,
-    ) -> Element<'a, Msg> {
-        let s = &self.app.sessions[si];
-        let active = self.app.active_session == Some(si);
-        let pending_kill = self.pending_kill == Some(si);
-        let t = *s.last_output_at.lock().unwrap_or_else(|e| e.into_inner());
-        let last = Some(now.saturating_duration_since(t));
-        let hovered = self.hovered_activity_row == Some(si);
-        let coords = self.resolve_session_wt_coords(s, project_idx);
-        let row_el = session_activity_row(
-            si,
-            s,
-            &s.project,
-            wname,
-            active,
-            pending_kill,
-            last,
-            hovered,
-            coords,
-            self.activity_state(s),
-            self.blink_tick,
-            self.attention_pulse(),
-            &self.app.available_agents,
-        );
-        iced::widget::mouse_area(row_el)
-            .on_enter(Msg::HoverActivityRow(Some(si)))
-            .on_exit(Msg::HoverActivityRow(None))
-            .into()
-    }
-
-    /// Resolve a session's `(project, worktree)` indices for the spawn chips.
-    /// Returns `None` when the worktree list for that project isn't cached
-    /// (e.g. a collapsed, never-expanded project) — the row then falls back to
-    /// showing the relative time with no spawn affordance.
-    fn resolve_session_wt_coords(
-        &self,
-        s: &Session,
-        project_idx: &std::collections::HashMap<&str, usize>,
-    ) -> Option<(usize, usize)> {
-        let &pi = project_idx.get(s.project.as_str())?;
-        let wts: &[Worktree] = if pi == self.app.proj_idx {
-            &self.app.worktrees
-        } else {
-            self.wt_cache.get(&pi).map(|v| v.as_slice())?
-        };
-        let wi = wts.iter().position(|w| w.path == s.wt_path)?;
-        Some((pi, wi))
-    }
-
-    /// Resolve a session's worktree display name using a pre-built project
-    /// name → index map, so we avoid a linear scan over `store.projects` per
-    /// session row in `activity_view`.
-    fn resolve_session_wname(
-        &self,
-        s: &Session,
-        project_idx: &std::collections::HashMap<&str, usize>,
-    ) -> String {
-        let Some(&pi) = project_idx.get(s.project.as_str()) else {
-            return crate::app::path_basename(&s.wt_path);
-        };
-        let wts: &[Worktree] = if pi == self.app.proj_idx {
-            &self.app.worktrees
-        } else {
-            self.wt_cache.get(&pi).map(|v| v.as_slice()).unwrap_or(&[])
-        };
-        let pname = &self.app.store.projects[pi].name;
-        wts.iter()
-            .find(|w| w.path == s.wt_path)
-            .map(|w| {
-                if w.is_main {
-                    pname.clone()
-                } else {
-                    crate::app::path_basename(&w.path)
-                }
-            })
-            .unwrap_or_else(|| crate::app::path_basename(&s.wt_path))
-    }
-
-    fn activity_empty_hint<'a>(&self, label: &'a str) -> Element<'a, Msg> {
-        container(
-            text(label.to_string())
-                .font(UI_FONT)
-                .size(11)
-                .color(c::FG_MUTE()),
-        )
-        .height(ROW_H)
-        .width(Length::Fill)
-        .align_y(iced::Alignment::Center)
-        // 12px row padding + 14px dot column + 8px spacing = 34, so the hint
-        // text lines up with the activity rows' titles.
-        .padding(Padding::from([0, 34]))
-        .into()
     }
 
     /// Find the y-pixel offset of the open agent menu, if any, so the overlay
@@ -1382,21 +1523,6 @@ impl Grove {
         column![bar_container, divider_h(c::BORDER_SOFT())].into()
     }
 
-    /// Sidebar body for the terminal tab — one row per home terminal, showing
-    /// its label and contextual title (the shell's OSC window title, e.g. the
-    /// current directory or running command). The active terminal is
-    /// highlighted; the close affordance is hidden when only one remains so the
-    /// tab always keeps a shell.
-    fn terminal_sidebar(&self) -> Element<'_, Msg> {
-        let mut col: Column<'_, Msg> = Column::new();
-        let show_close = self.app.home_terminals.len() > 1;
-        for (i, s) in self.app.home_terminals.iter().enumerate() {
-            let active = self.app.active_terminal == Some(i);
-            col = col.push(crate::gui::rows::terminal_row(i, s, active, show_close));
-        }
-        col.into()
-    }
-
     fn sess_bar(&self, si: usize, s: &Session) -> Element<'_, Msg> {
         let running = matches!(
             *s.status.lock().unwrap_or_else(|e| e.into_inner()),
@@ -1752,6 +1878,64 @@ impl Grove {
             shadow: Shadow::default(),
             snap: false,
         });
+        // Waiting-for-input: drives both the header's "respond" chip below and
+        // (later) the tile border. Attention wins over the focused-cyan border.
+        use super::activity::ActivityState;
+        let waiting = matches!(self.activity_state(s), ActivityState::WaitingForInput);
+
+        // "respond" chip: only shown while this tile is waiting for input.
+        // Pulses via `attention_pulse` so it stays visible without demanding
+        // constant attention. Placed left of `num_hint` in the header.
+        let respond_chip: Element<'_, Msg> = if waiting {
+            let a = 1.0 - 0.35 * self.attention_pulse();
+            let amber = Color { a, ..c::AMBER() };
+            let amber_bg = Color {
+                a: a * 0.08,
+                ..c::AMBER()
+            };
+            let inner: Element<'_, Msg> = if tile_order_idx >= 9 {
+                text("respond").font(MONO_FONT).size(9).color(amber).into()
+            } else {
+                let n = tile_order_idx + 1;
+                let chord: Element<'_, Msg> = if cfg!(target_os = "macos") {
+                    row![
+                        icon("command", 9.0, amber),
+                        text(n.to_string()).font(MONO_FONT).size(9).color(amber),
+                    ]
+                    .spacing(1)
+                    .align_y(iced::Alignment::Center)
+                    .into()
+                } else {
+                    text(format!("{}+{}", platform_mod_label(), n))
+                        .font(MONO_FONT)
+                        .size(9)
+                        .color(amber)
+                        .into()
+                };
+                row![
+                    text("respond · ").font(MONO_FONT).size(9).color(amber),
+                    chord,
+                ]
+                .spacing(1)
+                .align_y(iced::Alignment::Center)
+                .into()
+            };
+            container(inner)
+                .padding(Padding::from([1, 4]))
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(amber_bg)),
+                    border: Border {
+                        color: amber,
+                        width: 1.0,
+                        radius: 3.0.into(),
+                    },
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            Space::new().width(0).into()
+        };
+
         // Shortcut-number hint: the first 9 tiles (tile_order positions 0..9)
         // are reachable via the platform modifier + 1..9 (see
         // select_visible_session). Show the full chord so the key is
@@ -1805,6 +1989,7 @@ impl Grove {
             text("·").size(10).color(c::FG_MUTE()),
             text(s.branch.clone()).size(10).color(c::FG_MUTE()),
             Space::new().width(Length::Fill),
+            respond_chip,
             num_hint,
             tile_btn("zen", Msg::GridTileZen(si)),
             kill_btn,
@@ -1890,8 +2075,6 @@ impl Grove {
 
         // Waiting-for-input: solid amber 1.5px border (no blink).
         // Overrides the focused-cyan border — attention wins.
-        use super::activity::ActivityState;
-        let waiting = matches!(self.activity_state(s), ActivityState::WaitingForInput);
         let (border_color, border_width) = if waiting {
             (c::AMBER(), 1.5f32)
         } else if focused {
@@ -1900,93 +2083,10 @@ impl Grove {
             (Color::TRANSPARENT, 0.0)
         };
 
-        // Full-tile scrim overlay when waiting for input.
-        let with_scrim: Element<'_, Msg> = if waiting {
-            // Opacity pulse (~2s round trip): alpha eases between 1.0 and
-            // 0.7, driven by the attention `Animation`.
-            let text_alpha = 1.0 - 0.3 * self.attention_pulse();
-            let amber_pulsed = Color {
-                a: text_alpha,
-                ..c::AMBER()
-            };
-
-            let sub_line: Element<'_, Msg> = if tile_order_idx < 9 {
-                let n = tile_order_idx + 1;
-                if cfg!(target_os = "macos") {
-                    row![
-                        text("click to respond · ")
-                            .font(UI_FONT)
-                            .size(10)
-                            .color(c::FG_MUTE()),
-                        icon("command", 10.0, c::FG_MUTE()),
-                        text(n.to_string())
-                            .font(UI_FONT)
-                            .size(10)
-                            .color(c::FG_MUTE()),
-                    ]
-                    .spacing(1)
-                    .align_y(iced::Alignment::Center)
-                    .into()
-                } else {
-                    text(format!("click to respond · {}+{}", platform_mod_label(), n))
-                        .font(UI_FONT)
-                        .size(10)
-                        .color(c::FG_MUTE())
-                        .into()
-                }
-            } else {
-                text("click to respond")
-                    .font(UI_FONT)
-                    .size(10)
-                    .color(c::FG_MUTE())
-                    .into()
-            };
-
-            let scrim_content: Element<'_, Msg> = container(
-                column![
-                    text("N E E D S   A T T E N T I O N")
-                        .font(UI_BOLD)
-                        .size(20)
-                        .color(amber_pulsed),
-                    sub_line,
-                ]
-                .spacing(8)
-                .align_x(iced::Alignment::Center),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(iced::Alignment::Center)
-            .align_y(iced::Alignment::Center)
-            .style(|_| container::Style {
-                // Darker theme-derived scrim: BG_STRIP is the theme's deepest
-                // surface, so the wash tracks the active theme (iced has no
-                // backdrop blur, so opacity does the softening).
-                background: Some(Background::Color(Color {
-                    a: 0.92,
-                    ..c::BG_STRIP()
-                })),
-                ..Default::default()
-            })
-            .into();
-
-            // Wrap in mouse_area so clicking the scrim focuses/acknowledges the tile.
-            let focus_msg = Msg::GridDragStart(tile_order_idx);
-            let clickable_scrim: Element<'_, Msg> = iced::widget::mouse_area(scrim_content)
-                .on_press(focus_msg)
-                .into();
-
-            stack![with_dim, clickable_scrim]
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
-        } else {
-            with_dim
-        };
-
         // on_enter fires even while a button is held — the GridDragHover handler
         // ignores it when no drag is active.
         iced::widget::mouse_area(
-            container(with_scrim)
+            container(with_dim)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .style(move |_| container::Style {
@@ -2270,12 +2370,18 @@ impl Grove {
                 *backend_tmux,
                 *perms_skip,
             ),
+            // The palette already returns a `Length::Fill` x `Length::Fill`
+            // element that top-aligns itself internally (see
+            // `session_launcher_modal`), so wrapping it in the shared
+            // center_x/center_y container below is a no-op — it stays
+            // top-dropped instead of vertically centered like every other
+            // modal.
             Modal::SessionLauncher {
-                proj,
-                wt,
-                agent,
-                col,
-            } => self.session_launcher_modal(*proj, *wt, *agent, *col),
+                input,
+                selected,
+                browse_all,
+                options,
+            } => self.session_launcher_modal(input, *selected, *browse_all, options.as_ref()),
             _ => Space::new().width(0).into(),
         };
 
@@ -3200,177 +3306,457 @@ impl Grove {
         modal_panel(body.into(), 500.0, c::MAGENTA())
     }
 
-    /// Agent View "+ New session" launcher: three Miller columns (project →
-    /// worktree → agent) and a footer breadcrumb + Start button. See
-    /// `mock.html` for the approved visual source of truth.
+    /// Recents-first command palette (Agent View "+ New session", mod+n, grid
+    /// pill). Three states driven by `Modal::SessionLauncher`: root (empty
+    /// input, no options) shows recents + actions; typing/browse-all shows
+    /// every project×worktree combo fuzzy-filtered by `input`; options shows
+    /// the resolved row plus a plain list of agents to launch it with. Esc is
+    /// the only way to close — no header, no close button.
+    ///
+    /// Zoned layout: input zone / 1px divider / list zone (fits content, up
+    /// to a 380px cap, then scrolls) / 1px divider / footer hint strip — the
+    /// footer's own bottom corners are rounded to stay flush with the panel.
     fn session_launcher_modal<'a>(
         &'a self,
-        proj: usize,
-        wt: usize,
-        agent: usize,
-        col: u8,
+        input: &'a str,
+        selected: usize,
+        browse_all: bool,
+        options: Option<&'a LauncherOptions>,
     ) -> Element<'a, Msg> {
-        // ── Column 1: projects ──────────────────────────────────────────
-        let proj_focused = col == 0;
-        let mut proj_list = Column::new().spacing(0);
-        for (i, p) in self.app.store.projects.iter().enumerate() {
-            let count = self.launcher_worktrees(i).len();
-            let active = i == proj;
-            let bright = active && proj_focused;
-            let label_row = row![
-                text(p.name.clone())
-                    .size(12)
-                    .color(if bright { c::FG() } else { c::FG_DIM() }),
-                Space::new().width(Length::Fill),
-                text(count.to_string()).size(11).color(c::FG_MUTE()),
-            ]
-            .align_y(iced::Alignment::Center);
-            proj_list = proj_list.push(launcher_row(
-                label_row,
-                active,
-                proj_focused,
-                Msg::LauncherSelectProject(i),
-            ));
-        }
-
-        // ── Column 2: worktrees ─────────────────────────────────────────
-        let worktrees = self.launcher_worktrees(proj);
-        let wt_focused = col == 1;
-        let mut wt_list = Column::new().spacing(0);
-        for (i, w) in worktrees.iter().enumerate() {
-            let active = i == wt;
-            let bright = active && wt_focused;
-            let name = if w.branch.is_empty() {
-                crate::app::path_basename(&w.path)
-            } else {
-                w.branch.clone()
-            };
-            let tag = if w.is_main { "main" } else { "" };
-            let name_el = single_line(
-                text(truncate_ellipsis(&name, 28))
-                    .size(12)
-                    .color(if bright { c::FG() } else { c::FG_DIM() })
-                    .wrapping(iced::widget::text::Wrapping::None),
-                12.0,
-            );
-            let label_row = row![
-                container(name_el).width(Length::Fill).clip(true),
-                text(tag.to_string()).size(10).color(c::GREEN()),
-            ]
-            .spacing(6)
-            .align_y(iced::Alignment::Center);
-            wt_list = wt_list.push(launcher_row(
-                label_row,
-                active,
-                wt_focused,
-                Msg::LauncherSelectWorktree(i),
-            ));
-        }
-        // "+ New worktree…" affordance.
-        let add_row = row![text("+ New worktree…").size(12).color(c::MAGENTA())]
-            .align_y(iced::Alignment::Center);
-        wt_list = wt_list.push(modal_list_row(add_row, false, Msg::LauncherNewWorktree));
-
-        // ── Column 3: agents + options ──────────────────────────────────
-        let agent_focused = col == 2;
-        let mut agent_list = Column::new().spacing(0);
-        for (i, ag) in self.app.available_agents.iter().enumerate() {
-            let active = i == agent;
-            let bright = active && agent_focused;
-            let is_default = self.app.store.default_agent == Some(*ag);
-            let label_row = row![
-                text(cap(ag.label()))
-                    .size(12)
-                    .color(if bright { c::FG() } else { c::FG_DIM() }),
-                Space::new().width(Length::Fill),
-                text(if is_default { "Default" } else { "" })
-                    .size(11)
-                    .color(c::FG_MUTE()),
-            ]
-            .align_y(iced::Alignment::Center);
-            agent_list = agent_list.push(launcher_row(
-                label_row,
-                active,
-                agent_focused,
-                Msg::LauncherSelectAgent(i),
-            ));
-        }
-        let agent_col = agent_list;
-
-        // Fixed-height columns so the modal keeps the mock's proportions.
-        let col_h = Length::Fixed(300.0);
-        let make_col = |title: &'static str, body: Element<'a, Msg>, focused: bool| {
-            column![
-                text(title).font(UI_BOLD).size(10).color(if focused {
-                    c::CYAN()
-                } else {
-                    c::FG_MUTE()
-                }),
-                container(body).height(col_h).width(Length::Fill),
-            ]
-            .spacing(6)
-            .width(Length::FillPortion(1))
+        // In options state, the leading glyph slot becomes a static "options"
+        // cue chip instead of the search icon; the typed text underneath is
+        // unchanged.
+        let leading: Element<'a, Msg> = if options.is_some() {
+            container(text("options").font(MONO_FONT).size(10).color(c::CYAN()))
+                .padding(Padding::from([2, 6]))
+                .style(|_| container::Style {
+                    background: Some(Background::Color(c::SEL_TINT_SOFT())),
+                    border: Border {
+                        color: Color::TRANSPARENT,
+                        width: 0.0,
+                        radius: Radius::from(4.0),
+                    },
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            icon("search", 16.0, c::FG_MUTE())
         };
-        let cols = row![
-            make_col("PROJECT", proj_list.into(), col == 0),
-            make_col("WORKTREE", wt_list.into(), col == 1),
-            make_col("AGENT", agent_col.into(), col == 2),
-        ]
-        .spacing(12);
+        let field = text_input("Search projects, worktrees, agents…", input)
+            .id(modal_input_id())
+            .font(UI_FONT)
+            .size(14)
+            .padding(0)
+            .on_input(Msg::LauncherInputChanged)
+            .style(palette_input_style);
+        let input_zone = container(
+            row![leading, field]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+        )
+        .padding(Padding::from([14, 16]));
 
-        // ── Footer: breadcrumb + Start ──────────────────────────────────
-        let pname = self
-            .app
-            .store
-            .projects
-            .get(proj)
-            .map(|p| p.name.clone())
-            .unwrap_or_default();
-        let branch = worktrees
-            .get(wt)
-            .map(|w| {
-                if w.branch.is_empty() {
-                    crate::app::path_basename(&w.path)
-                } else {
-                    w.branch.clone()
+        let mut body = column![input_zone, divider_h(c::BORDER_SOFT())];
+
+        if let Some(r) = options {
+            let worktrees = self.launcher_worktrees(r.proj);
+            let agent = self
+                .app
+                .available_agents
+                .get(r.agent)
+                .copied()
+                .unwrap_or(crate::agent::Agent::Terminal);
+            let pname = self
+                .app
+                .store
+                .projects
+                .get(r.proj)
+                .map(|p| p.name.clone())
+                .unwrap_or_default();
+            let wt_name = worktrees
+                .get(r.wt)
+                .map(|w| {
+                    if w.branch.is_empty() {
+                        crate::app::path_basename(&w.path)
+                    } else {
+                        w.branch.clone()
+                    }
+                })
+                .unwrap_or_default();
+            let subtitle = format!("{pname} / {wt_name}");
+
+            // Pinned context row: quiet, non-interactive — just the currently
+            // selected agent's icon/label live-updating as ↑↓ moves.
+            let context_row =
+                container(self.palette_agent_content(agent, subtitle, &[], &[], None, true))
+                    .width(Length::Fill)
+                    .height(PALETTE_ROW_H)
+                    .padding(Padding::from([0.0, 12.0]))
+                    .align_y(iced::Alignment::Center)
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(c::BG_HL())),
+                        border: Border {
+                            color: Color::TRANSPARENT,
+                            width: 0.0,
+                            radius: Radius::from(6.0),
+                        },
+                        ..Default::default()
+                    });
+
+            // Plain agent list: one 36px row per available agent.
+            let mut agent_list = Column::new().spacing(2);
+            for (i, ag) in self.app.available_agents.iter().enumerate() {
+                let active = i == r.agent;
+                let icon_color = if active { c::YELLOW() } else { c::FG_MUTE() };
+                let icon_slot = container(icon(ag.icon_name(), 16.0, icon_color))
+                    .width(24.0)
+                    .align_x(iced::alignment::Horizontal::Center);
+                let label_color = if active { c::FG() } else { c::FG_DIM() };
+                let mut content = row![
+                    icon_slot,
+                    text(cap(ag.label()))
+                        .font(UI_FONT)
+                        .size(13)
+                        .color(label_color),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center);
+                if active {
+                    content = content
+                        .push(Space::new().width(Length::Fill))
+                        .push(keycap_text("⏎", c::FG_DIM()));
                 }
+                agent_list = agent_list.push(launcher_row(
+                    content,
+                    active,
+                    true,
+                    Msg::LauncherOptionsPick(i),
+                    36.0,
+                ));
+            }
+
+            let list_zone = container(
+                column![
+                    context_row,
+                    section_header("OPEN WITH", 12.0, 6.0),
+                    agent_list,
+                ]
+                .spacing(0),
+            )
+            .padding(8)
+            .width(Length::Fill);
+            body = body.push(list_zone);
+            body = body.push(divider_h(c::BORDER_SOFT()));
+            body = body.push(footer_container(
+                row![
+                    footer_hint("↑↓", "choose"),
+                    footer_hint("⏎", "launch"),
+                    footer_hint("esc", "back"),
+                ]
+                .spacing(14)
+                .into(),
+            ));
+        } else {
+            let rows = self.palette_rows(input, browse_all);
+            let zero_projects = self.app.store.projects.is_empty();
+            let root_mode = input.is_empty() && !browse_all && !zero_projects;
+
+            let list_zone: Element<'a, Msg> = if rows.is_empty() {
+                container(text("No matches").size(12).color(c::FG_MUTE()))
+                    .padding(Padding::from([30, 16]))
+                    .width(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .into()
+            } else {
+                let mut list = Column::new().spacing(2);
+                let mut printed_recent = false;
+                let mut printed_actions = false;
+                for (i, row) in rows.iter().enumerate() {
+                    if root_mode {
+                        let is_recent = matches!(row, PaletteRow::Recent { .. });
+                        if is_recent && !printed_recent {
+                            list = list.push(section_header("RECENT", 0.0, 6.0));
+                            printed_recent = true;
+                        } else if !is_recent && !printed_actions {
+                            let top = if printed_recent { 12.0 } else { 0.0 };
+                            list = list.push(section_header("ACTIONS", top, 6.0));
+                            printed_actions = true;
+                        }
+                    }
+                    list =
+                        list.push(self.palette_row_view(i, row, i == selected, input, root_mode));
+                }
+                container(scrollable(list).height(Length::Shrink))
+                    .padding(8)
+                    .max_height(380.0)
+                    .width(Length::Fill)
+                    .into()
+            };
+            body = body.push(list_zone);
+            body = body.push(divider_h(c::BORDER_SOFT()));
+            body = body.push(footer_container(
+                row![
+                    footer_hint("↑↓", "navigate"),
+                    footer_hint("⏎", "launch"),
+                    footer_hint("tab", "options"),
+                    footer_hint("esc", "close"),
+                ]
+                .spacing(14)
+                .into(),
+            ));
+        }
+
+        let panel = container(body)
+            .width(Length::Fixed(640.0))
+            .style(|_| container::Style {
+                background: Some(Background::Color(c::BG_RAIL())),
+                text_color: Some(c::FG()),
+                border: Border {
+                    color: c::BORDER(),
+                    width: 1.0,
+                    radius: Radius::from(12.0),
+                },
+                shadow: Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
+                    offset: Vector::new(0.0, 12.0),
+                    blur_radius: 40.0,
+                },
+                ..Default::default()
+            });
+
+        container(panel)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .align_y(iced::alignment::Vertical::Top)
+            .padding(Padding {
+                top: 96.0,
+                ..Default::default()
             })
-            .unwrap_or_default();
-        let ag_label = self
-            .app
-            .available_agents
-            .get(agent)
-            .map(|a| a.label().to_string())
-            .unwrap_or_default();
-        let crumb = crate::gui::launcher::breadcrumb(&pname, &branch, &ag_label);
-        let crumb_el = single_line(
-            text(truncate_middle(&crumb, 60))
-                .size(12)
-                .color(c::FG_DIM())
-                .wrapping(iced::widget::text::Wrapping::None),
-            12.0,
-        );
-        let footer = row![
-            container(crumb_el).width(Length::Fill).clip(true),
-            text("←→ or h/l for columns · ↑↓ or j/k to move · Space to set default · Enter to start · Esc to close")
-                .size(10)
-                .color(c::FG_MUTE()),
-            modal_action("Start session", ModalBtn::Primary, Msg::LauncherStart),
-        ]
-        .spacing(10)
-        .align_y(iced::Alignment::Center);
+            .into()
+    }
 
-        // Header: title on the left, close button on the right.
-        let header = row![
-            text("New session").size(13).color(c::MAGENTA()),
-            Space::new().width(Length::Fill),
-            icon_btn("close", Msg::ModalCancel),
-        ]
-        .align_y(iced::Alignment::Center);
+    /// Icon (in a fixed 24px slot, so titles align across rows regardless of
+    /// icon glyph width) + agent label + mono-muted "project / worktree"
+    /// subtitle — the visual idiom shared by `Recent`/`Combo` rows and the
+    /// options-state pinned context row (same idiom as `attention_dropdown`).
+    /// `agent_ranges`/`subtitle_ranges` are typing-state fuzzy-match char
+    /// ranges to render cyan (pass `&[]` where nothing should highlight, e.g.
+    /// root-state `Recent` rows and the options-state context row). `trailing`,
+    /// if given, right-aligns after a filling gap — the row's ⌘-digit or ⏎
+    /// keycap.
+    fn palette_agent_content<'a>(
+        &'a self,
+        agent: crate::agent::Agent,
+        subtitle: String,
+        agent_ranges: &[(usize, usize)],
+        subtitle_ranges: &[(usize, usize)],
+        trailing: Option<Element<'a, Msg>>,
+        active: bool,
+    ) -> Element<'a, Msg> {
+        let title = cap(agent.label());
+        let title_el = highlighted_line(&title, agent_ranges, c::FG(), UI_FONT, 13.0);
+        let subtitle_el =
+            highlighted_line(&subtitle, subtitle_ranges, c::FG_MUTE(), MONO_FONT, 10.5);
+        // The agent glyph lights up yellow on the selected row (and the
+        // options-state context row); resting rows keep it muted.
+        let icon_color = if active { c::YELLOW() } else { c::FG_MUTE() };
+        let icon_slot = container(icon(agent.icon_name(), 16.0, icon_color))
+            .width(24.0)
+            .align_x(iced::alignment::Horizontal::Center);
 
-        let body = column![header, cols, Space::new().height(8), footer,].spacing(12);
+        let mut content = row![icon_slot, column![title_el, subtitle_el].spacing(2)]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
+        if let Some(t) = trailing {
+            content = content.push(Space::new().width(Length::Fill)).push(t);
+        }
+        content.into()
+    }
 
-        modal_panel(body.into(), 760.0, c::MAGENTA())
+    /// Render one row of the root/typing/browse-all list. `input` recomputes
+    /// the typing-state fuzzy-match highlight ranges for `Combo` rows
+    /// (root-state `Recent` rows never highlight, since the query is empty
+    /// there); `root_mode` gates the ⌘-digit chip on `Recent` rows — hidden
+    /// while typing/browsing, per the redesign. Every row, active or not,
+    /// swaps its natural trailing chip (digit / ⌘T) for a ⏎ keycap when it's
+    /// the current selection.
+    fn palette_row_view<'a>(
+        &'a self,
+        i: usize,
+        row: &super::update::PaletteRow,
+        active: bool,
+        input: &str,
+        root_mode: bool,
+    ) -> Element<'a, Msg> {
+        let enter_chip = || keycap_text("⏎", c::FG_DIM());
+        // Action rows share the session rows' 24px icon rail so titles align.
+        let icon_slot = |name: &'static str, color: Color| {
+            container(icon(name, 16.0, color))
+                .width(24.0)
+                .align_x(iced::alignment::Horizontal::Center)
+        };
+        match row {
+            PaletteRow::Recent {
+                proj,
+                wt_path,
+                agent,
+            }
+            | PaletteRow::Combo {
+                proj,
+                wt_path,
+                agent,
+            } => {
+                let pname = self
+                    .app
+                    .store
+                    .projects
+                    .get(*proj)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_default();
+                let wt_name = self
+                    .launcher_worktrees(*proj)
+                    .iter()
+                    .find(|w| &w.path == wt_path)
+                    .map(|w| {
+                        if w.branch.is_empty() {
+                            crate::app::path_basename(&w.path)
+                        } else {
+                            w.branch.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| crate::app::path_basename(wt_path));
+                let subtitle = format!("{pname} / {wt_name}");
+                let is_recent = matches!(row, PaletteRow::Recent { .. });
+
+                let m = (!input.is_empty()).then(|| {
+                    crate::gui::launcher::fuzzy_match_indices(
+                        input,
+                        &pname,
+                        &wt_name,
+                        agent.label(),
+                    )
+                });
+                let agent_ranges: &[(usize, usize)] =
+                    m.as_ref().map(|m| m.agent.as_slice()).unwrap_or(&[]);
+                // The subtitle is "{pname} / {wt_name}"; the worktree match's
+                // ranges (computed against `wt_name` alone) need shifting by
+                // that prefix's char length to land in the right place.
+                let prefix_len = pname.chars().count() + 3;
+                let subtitle_ranges: Vec<(usize, usize)> = m
+                    .as_ref()
+                    .map(|m| {
+                        m.project
+                            .iter()
+                            .copied()
+                            .chain(
+                                m.worktree
+                                    .iter()
+                                    .map(|(s, e)| (s + prefix_len, e + prefix_len)),
+                            )
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let trailing = if active {
+                    Some(enter_chip())
+                } else if is_recent && root_mode {
+                    digit_label(i).map(|d| mod_key_chip(d, c::FG_MUTE()))
+                } else {
+                    None
+                };
+
+                launcher_row(
+                    self.palette_agent_content(
+                        *agent,
+                        subtitle,
+                        agent_ranges,
+                        &subtitle_ranges,
+                        trailing,
+                        active,
+                    ),
+                    active,
+                    true,
+                    Msg::LauncherActivate(i),
+                    PALETTE_ROW_H,
+                )
+            }
+            PaletteRow::NewSession => {
+                let mut content = row![
+                    icon_slot("plus", c::MAGENTA()),
+                    text("New session…").size(13).color(c::MAGENTA()),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center);
+                if active {
+                    content = content
+                        .push(Space::new().width(Length::Fill))
+                        .push(enter_chip());
+                }
+                modal_list_row_sized(content, active, Msg::LauncherActivate(i), 36.0, 6.0, 12.0)
+            }
+            PaletteRow::TerminalHome => {
+                let content = row![
+                    icon_slot("term", c::FG_MUTE()),
+                    text("Terminal at ~").size(13).color(if active {
+                        c::FG()
+                    } else {
+                        c::FG_DIM()
+                    }),
+                    Space::new().width(Length::Fill),
+                    if active {
+                        enter_chip()
+                    } else {
+                        mod_key_chip("t", c::FG_DIM())
+                    },
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center);
+                modal_list_row_sized(content, active, Msg::LauncherActivate(i), 36.0, 6.0, 12.0)
+            }
+            PaletteRow::TerminalWt => {
+                let label = self
+                    .app
+                    .active_session
+                    .and_then(|si| self.app.sessions.get(si))
+                    .map(|s| {
+                        format!(
+                            "Terminal in {}/{}",
+                            s.project,
+                            crate::app::path_basename(&s.wt_path)
+                        )
+                    })
+                    .unwrap_or_else(|| "Terminal in worktree".to_string());
+                let mut content = row![
+                    icon_slot("term", c::FG_MUTE()),
+                    text(label)
+                        .size(13)
+                        .color(if active { c::FG() } else { c::FG_DIM() }),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center);
+                if active {
+                    content = content
+                        .push(Space::new().width(Length::Fill))
+                        .push(enter_chip());
+                }
+                modal_list_row_sized(content, active, Msg::LauncherActivate(i), 36.0, 6.0, 12.0)
+            }
+            PaletteRow::AddProject => {
+                let mut content = row![
+                    icon_slot("plus", c::MAGENTA()),
+                    text("Add project…").size(13).color(c::MAGENTA()),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center);
+                if active {
+                    content = content
+                        .push(Space::new().width(Length::Fill))
+                        .push(enter_chip());
+                }
+                modal_list_row_sized(content, active, Msg::LauncherActivate(i), 36.0, 6.0, 12.0)
+            }
+        }
     }
 
     fn settings_modal(&self) -> Element<'_, Msg> {

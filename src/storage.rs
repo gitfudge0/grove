@@ -19,6 +19,18 @@ pub struct ProjectScripts {
     pub teardown: Option<String>,
 }
 
+/// A single past session launch, recorded for the command palette's "recent"
+/// list. Kept as a flat, denormalized record (rather than an index) so it
+/// survives project/worktree reordering across restarts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecentLaunch {
+    /// Project name (matches `Session::project` / the `grid_order` key convention — NOT the path).
+    pub project: String,
+    /// Worktree absolute path (stable identity within a project).
+    pub wt_path: String,
+    pub agent: Agent,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
@@ -96,6 +108,11 @@ pub struct Store {
     /// app chrome always stays on the global theme regardless of this flag.
     #[serde(default)]
     pub project_themes_enabled: bool,
+    /// Recent session-palette launches, most recent first, capped at 6 (see
+    /// `crate::gui::launcher::push_recent_launch`). `#[serde(default)]` so old
+    /// config files load with an empty history.
+    #[serde(default)]
+    pub recent_launches: Vec<RecentLaunch>,
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -219,6 +236,18 @@ mod tests {
             theme_dark: Some("tokyonight".into()),
             theme_light: Some("tokyonight-day".into()),
             project_themes_enabled: true,
+            recent_launches: vec![
+                RecentLaunch {
+                    project: "myapp".into(),
+                    wt_path: "/home/user/myapp".into(),
+                    agent: Agent::Claude,
+                },
+                RecentLaunch {
+                    project: "other".into(),
+                    wt_path: "/tmp/other/.wt/fix".into(),
+                    agent: Agent::Terminal,
+                },
+            ],
         };
 
         let json = serde_json::to_string_pretty(&original).expect("serialize");
@@ -239,6 +268,7 @@ mod tests {
         assert_eq!(recovered.theme_light.as_deref(), Some("tokyonight-day"));
         assert!(recovered.project_themes_enabled);
         assert_eq!(recovered.projects[1].theme.as_deref(), Some("dracula"));
+        assert_eq!(recovered.recent_launches, original.recent_launches);
     }
 
     /// `Store::default()` deserializes from an empty JSON object — the
@@ -261,6 +291,7 @@ mod tests {
             "a fresh config must report onboarded=false so the wizard runs"
         );
         assert!(store.dangerously_skip_permissions_enabled.is_none());
+        assert!(store.recent_launches.is_empty());
     }
 
     /// A corrupted JSON file must make `write_atomic` + a subsequent manual

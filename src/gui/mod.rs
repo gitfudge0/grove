@@ -19,7 +19,7 @@ mod dock;
 mod drop;
 mod icons;
 mod keys;
-mod launcher;
+pub(crate) mod launcher;
 mod metrics;
 mod palette;
 mod pty;
