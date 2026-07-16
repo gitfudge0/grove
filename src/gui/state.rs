@@ -407,6 +407,8 @@ pub enum Msg {
     SkipPermissionsDisable,
     /// Toggled the "share anonymous usage data" checkbox in settings.
     TelemetryToggle(bool),
+    /// Toggle the universal "Project themes" setting (Settings → Appearance).
+    ProjectThemesToggle(bool),
     ProjectClicked(usize),
     /// Toggle button in the sidebar tree header. Collapses everything except
     /// worktrees that currently contain sessions, or — if already in that
@@ -511,6 +513,11 @@ pub enum Msg {
     EditScripts {
         proj: usize,
     },
+    /// Open the theme picker scoped to one project's pinned "Project theme"
+    /// (from the Project Settings modal's "Project theme" row).
+    OpenProjectThemePicker {
+        proj: usize,
+    },
     /// Edit one of the three script buffers in the scripts editor.
     ScriptsEditorAction(ScriptField, iced::widget::text_editor::Action),
     /// Persist the edited scripts back to the project and close the editor.
@@ -595,6 +602,9 @@ pub enum Msg {
     RestartApp,
     ThemePickerSwitchTab,
     ThemePickerSelect(usize),
+    /// Project-scoped theme picker only: select the "Default (follow app)"
+    /// row, pinning nothing.
+    ThemePickerSelectDefault,
     /// Toggle the "follow system appearance" checkbox in the theme picker.
     ThemePickerToggleSystem(bool),
     ThemePickerSubmit,

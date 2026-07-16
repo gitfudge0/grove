@@ -12,6 +12,20 @@ use std::collections::{HashMap, HashSet};
 const DEFAULT_DARK_THEME: &str = "tokyonight";
 const DEFAULT_LIGHT_THEME: &str = "tokyonight-day";
 
+/// Which theme the picker modal is editing: the global app theme, or a
+/// single project's pinned "Project theme" (see `Store::project_themes_enabled`
+/// / `storage::Project::theme`). Project scope never touches the global
+/// active theme — hovering/selecting only updates local picker state, and
+/// submitting writes `Project::theme` instead of `theme::set` + `Store::theme`.
+#[derive(Clone, PartialEq)]
+pub enum ThemePickerScope {
+    App,
+    /// Keyed by project name (unique, like the rest of this feature) rather
+    /// than index — indices can shift under project add/remove while a
+    /// picker is theoretically open, names don't.
+    Project(String),
+}
+
 pub fn cycle(cur: usize, delta: i32, len: usize) -> usize {
     if len == 0 {
         return 0;
@@ -288,6 +302,13 @@ pub enum Modal {
         /// true, submitting sets `App::theme_follow_system` instead of
         /// pinning the selected list entry.
         follow_system: bool,
+        /// Whether this picker edits the global app theme or one project's
+        /// pinned "Project theme".
+        scope: ThemePickerScope,
+        /// Project scope only: the "Default (follow app)" row is selected
+        /// (equivalent to `Project::theme == None`). Picking a concrete
+        /// theme from the list clears this.
+        project_use_default: bool,
     },
     /// The consolidated Settings modal (appearance, terminal, tools). Opened
     /// from the appbar cog. All controls persist immediately; there is no
@@ -598,6 +619,61 @@ impl App {
             "permission bypass disabled for new sessions"
         });
         Ok(())
+    }
+
+    /// Whether the universal "Project themes" toggle is on (Settings →
+    /// Appearance).
+    pub fn project_themes_enabled(&self) -> bool {
+        self.store.project_themes_enabled
+    }
+
+    pub fn set_project_themes_enabled(&mut self, enabled: bool) -> Result<()> {
+        self.store.project_themes_enabled = enabled;
+        storage::save(&self.store)
+    }
+
+    /// Resolve the theme a PTY belonging to `project_name` should render its
+    /// *content* in: `None` when Project themes is off, the project has no
+    /// pinned theme, or its pinned name no longer matches a builtin — in
+    /// every such case the caller falls back to the global active theme.
+    pub fn project_theme_override(&self, project_name: &str) -> Option<theme::Theme> {
+        // Live preview: while the project-scoped theme picker is open for
+        // this project, its current highlight wins over the persisted pin —
+        // this is the only path that lets a PTY preview a theme that hasn't
+        // been saved yet. It never touches the global active theme (no
+        // `theme::set` here), so other projects' tiles and app chrome are
+        // unaffected. Cancel/submit both drop back to the persisted state
+        // (cancel via the modal closing + an explicit cache invalidation,
+        // submit because the pin is now saved).
+        if let Modal::ThemePicker {
+            scope: ThemePickerScope::Project(name),
+            tab,
+            sel_dark,
+            sel_light,
+            project_use_default,
+            ..
+        } = &self.modal
+        {
+            if name == project_name {
+                if *project_use_default {
+                    return None; // preview the global theme
+                }
+                let sel = match tab {
+                    theme::ThemeKind::Dark => *sel_dark,
+                    theme::ThemeKind::Light => *sel_light,
+                };
+                return theme::themes_of(*tab).get(sel).copied();
+            }
+        }
+        if !self.store.project_themes_enabled {
+            return None;
+        }
+        self.store
+            .projects
+            .iter()
+            .find(|p| p.name == project_name)
+            .and_then(|p| p.theme.as_deref())
+            .and_then(theme::by_name)
     }
 
     pub fn telemetry_enabled(&self) -> bool {
@@ -1479,6 +1555,41 @@ impl App {
             original,
             return_to_settings,
             follow_system: self.theme_follow_system,
+            scope: ThemePickerScope::App,
+            project_use_default: false,
+        };
+    }
+
+    /// Open the theme picker scoped to a single project's pinned "Project
+    /// theme" (opened from the Project Settings modal's "Project theme"
+    /// row). Unlike the app-scoped picker, hovering/selecting here never
+    /// touches the global active theme — only `theme_picker_submit` writes
+    /// anything, and it writes `Project::theme`, not `theme::set`.
+    pub fn open_project_theme_picker(&mut self, proj: usize) {
+        let Some(project) = self.store.projects.get(proj) else {
+            return;
+        };
+        let name = project.name.clone();
+        let original = theme::current();
+        let pinned = project.theme.as_deref().and_then(theme::by_name);
+        let project_use_default = pinned.is_none();
+        let tab = pinned.map(|t| t.kind).unwrap_or(original.kind);
+        let sel = pinned
+            .and_then(|t| theme::themes_of(tab).iter().position(|x| x.name == t.name))
+            .unwrap_or(0);
+        let (sel_dark, sel_light) = match tab {
+            theme::ThemeKind::Dark => (sel, 0),
+            theme::ThemeKind::Light => (0, sel),
+        };
+        self.modal = Modal::ThemePicker {
+            sel_dark,
+            sel_light,
+            tab,
+            original,
+            return_to_settings: false,
+            follow_system: false,
+            scope: ThemePickerScope::Project(name),
+            project_use_default,
         };
     }
 
@@ -1516,6 +1627,8 @@ impl App {
             sel_light,
             tab,
             follow_system,
+            scope,
+            project_use_default,
             ..
         } = &mut self.modal
         else {
@@ -1530,8 +1643,17 @@ impl App {
             theme::ThemeKind::Light => sel_light,
         };
         *sel = cycle(*sel, delta, themes.len());
-        *follow_system = false;
-        theme::set(themes[*sel]);
+        match scope {
+            ThemePickerScope::App => {
+                *follow_system = false;
+                theme::set(themes[*sel]);
+            }
+            ThemePickerScope::Project(_) => {
+                // Project scope only edits local picker state — never the
+                // global active theme.
+                *project_use_default = false;
+            }
+        }
     }
 
     pub fn theme_picker_switch_tab(&mut self) {
@@ -1540,6 +1662,7 @@ impl App {
             sel_light,
             tab,
             follow_system,
+            scope,
             ..
         } = &mut self.modal
         else {
@@ -1549,6 +1672,9 @@ impl App {
             theme::ThemeKind::Dark => theme::ThemeKind::Light,
             theme::ThemeKind::Light => theme::ThemeKind::Dark,
         };
+        if *scope != ThemePickerScope::App {
+            return;
+        }
         let themes = theme::themes_of(*tab);
         let sel = match tab {
             theme::ThemeKind::Dark => *sel_dark,
@@ -1569,6 +1695,19 @@ impl App {
         }
     }
 
+    /// Project scope only: select the "Default (follow app)" row, deselecting
+    /// any concrete theme in the list. No-op in app scope.
+    pub fn theme_picker_select_default(&mut self) {
+        if let Modal::ThemePicker {
+            scope: ThemePickerScope::Project(_),
+            project_use_default,
+            ..
+        } = &mut self.modal
+        {
+            *project_use_default = true;
+        }
+    }
+
     pub fn theme_picker_submit(&mut self) -> Result<()> {
         let modal = std::mem::replace(&mut self.modal, Modal::None);
         let Modal::ThemePicker {
@@ -1577,11 +1716,46 @@ impl App {
             tab,
             return_to_settings,
             follow_system,
+            scope,
+            project_use_default,
             ..
         } = modal
         else {
             return Ok(());
         };
+        if let ThemePickerScope::Project(name) = scope {
+            // Project scope never touches the global active theme or
+            // `Store::theme*` — it only pins/clears this project's override.
+            let chosen = if project_use_default {
+                None
+            } else {
+                let themes = theme::themes_of(tab);
+                let sel = match tab {
+                    theme::ThemeKind::Dark => sel_dark,
+                    theme::ThemeKind::Light => sel_light,
+                };
+                themes.get(sel).map(|t| t.name.to_string())
+            };
+            // The project may have been removed while the picker was open
+            // (e.g. via a remove-project flow elsewhere) — only save/toast
+            // when the write actually lands somewhere.
+            match self.store.projects.iter_mut().find(|p| p.name == name) {
+                Some(p) => {
+                    p.theme = chosen.clone();
+                    storage::save(&self.store)?;
+                    let label = chosen.unwrap_or_else(|| "default".to_string());
+                    self.set_toast(format!("project theme: {label}"));
+                }
+                None => {
+                    self.set_error_toast(format!("project \"{name}\" no longer exists"));
+                }
+            }
+            // Return to the Project Settings modal (`Modal::ScriptsEditor`);
+            // its live editor state lives outside `Modal` in the GUI layer
+            // and survives this round-trip untouched.
+            self.modal = Modal::ScriptsEditor;
+            return Ok(());
+        }
         if return_to_settings {
             self.modal = Modal::Settings;
         }
@@ -1618,9 +1792,16 @@ impl App {
         if let Modal::ThemePicker {
             original,
             return_to_settings,
+            scope,
             ..
         } = modal
         {
+            if let ThemePickerScope::Project(_) = scope {
+                // Project scope never previewed into the global theme, so
+                // there's nothing to restore — just return to Project Settings.
+                self.modal = Modal::ScriptsEditor;
+                return;
+            }
             theme::set(original);
             if return_to_settings {
                 self.modal = Modal::Settings;
@@ -2230,6 +2411,7 @@ impl App {
             name: name.clone(),
             path,
             scripts: Default::default(),
+            theme: None,
         });
         storage::save(&self.store)?;
         self.proj_idx = self.store.projects.len() - 1;

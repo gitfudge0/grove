@@ -499,6 +499,12 @@ impl Grove {
             Msg::TelemetryToggle(v) => {
                 let _ = self.app.set_telemetry_enabled(v);
             }
+            Msg::ProjectThemesToggle(v) => {
+                let _ = self.app.set_project_themes_enabled(v);
+                // Every open PTY's baked-in colors may now need to switch
+                // between the global theme and a project override.
+                self.invalidate_pty_render_cache();
+            }
             Msg::ChooseTmux(enabled) => {
                 if let Err(e) = self.app.choose_tmux_enabled(enabled) {
                     self.app.modal = Modal::Message(format!("Tmux setup failed: {e}"));
@@ -1138,6 +1144,10 @@ impl Grove {
                 self.app.open_theme_picker(true);
                 return self.scroll_theme_picker_to_selection();
             }
+            Msg::OpenProjectThemePicker { proj } => {
+                self.app.open_project_theme_picker(proj);
+                return self.scroll_theme_picker_to_selection();
+            }
             Msg::OpenSettings => {
                 crate::telemetry::track("settings_opened", vec![]);
                 self.app.open_settings();
@@ -1266,6 +1276,12 @@ impl Grove {
             Msg::ThemePickerSelect(i) => {
                 self.theme_picker_select(i);
                 return self.scroll_theme_picker_to_selection();
+            }
+            Msg::ThemePickerSelectDefault => {
+                self.app.theme_picker_select_default();
+                // Preview: this project's visible PTYs must immediately
+                // switch to showing the global theme.
+                self.invalidate_pty_render_cache();
             }
             Msg::ThemePickerToggleSystem(enabled) => self.theme_picker_toggle_system(enabled),
             Msg::ThemePickerSubmit => self.theme_picker_submit(),
@@ -1623,12 +1639,14 @@ impl Grove {
     }
 
     fn theme_picker_select(&mut self, index: usize) {
-        use crate::app::Modal;
+        use crate::app::{Modal, ThemePickerScope};
         let Modal::ThemePicker {
             sel_dark,
             sel_light,
             tab,
             follow_system,
+            scope,
+            project_use_default,
             ..
         } = &mut self.app.modal
         else {
@@ -1642,9 +1660,17 @@ impl Grove {
             crate::theme::ThemeKind::Dark => *sel_dark = index,
             crate::theme::ThemeKind::Light => *sel_light = index,
         }
-        // Picking a concrete theme from the list opts back out of "system".
-        *follow_system = false;
-        crate::theme::set(themes[index]);
+        match scope {
+            ThemePickerScope::App => {
+                // Picking a concrete theme from the list opts back out of "system".
+                *follow_system = false;
+                crate::theme::set(themes[index]);
+            }
+            ThemePickerScope::Project(_) => {
+                // Project scope never previews into the global active theme.
+                *project_use_default = false;
+            }
+        }
         self.invalidate_pty_render_cache();
     }
 

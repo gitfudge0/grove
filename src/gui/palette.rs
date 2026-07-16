@@ -161,3 +161,53 @@ pub fn SEL_TINT_SOFT() -> Color {
 pub fn SEL_RING() -> Color {
     Color { a: 0.5, ..CYAN() }
 }
+
+// ── theme-parameterized variants ────────────────────────────────────────────
+// Used to render PTY *content* (background fill, default fg, cursor, ANSI
+// 0-15) under a per-project "Project theme" override, decoupled from the
+// global `theme::current()` that the `c::*` accessors above read. App chrome
+// (tile header, borders, rail, appbar) always uses the plain accessors above
+// and is unaffected by a project's pinned theme.
+
+fn is_dark_of(t: &theme::Theme) -> bool {
+    matches!(t.kind, theme::ThemeKind::Dark)
+}
+
+pub fn bg_of(t: &theme::Theme) -> Color {
+    ic(t.bg)
+}
+pub fn fg_of(t: &theme::Theme) -> Color {
+    ic(t.fg)
+}
+pub fn fg_mute_of(t: &theme::Theme) -> Color {
+    ic(t.comment)
+}
+pub fn blue_of(t: &theme::Theme) -> Color {
+    ic(t.blue)
+}
+pub fn cyan_of(t: &theme::Theme) -> Color {
+    ic(t.cyan)
+}
+pub fn magenta_of(t: &theme::Theme) -> Color {
+    ic(t.magenta)
+}
+pub fn green_of(t: &theme::Theme) -> Color {
+    ic(t.green)
+}
+pub fn yellow_of(t: &theme::Theme) -> Color {
+    ic(t.yellow)
+}
+pub fn red_of(t: &theme::Theme) -> Color {
+    ic(t.red)
+}
+
+/// Themed variant of `BG_STRIP` — used for ANSI color 0 inside PTY content
+/// rendered under a per-project override theme.
+pub fn bg_strip_of(t: &theme::Theme) -> Color {
+    let bg = ic(t.bg);
+    if is_dark_of(t) {
+        mix(bg, Color::BLACK, 0.32)
+    } else {
+        mix(bg, Color::BLACK, 0.08)
+    }
+}

@@ -1561,6 +1561,16 @@ impl Grove {
         // free that address and a newly spawned one reuse it — safe only
         // because every session add/remove (incl. home-terminal new/close/
         // restart) fully clears this cache, so no stale entry can alias.
+        // Resolve once per tile per frame: a pinned "Project theme" makes
+        // this PTY's *content* (fill, default fg, cursor, ANSI 0-15) render
+        // in that theme instead of the global one. App chrome (header,
+        // borders, rail, appbar) is untouched — it always uses `c::*`
+        // against the global active theme.
+        let pty_theme = self
+            .app
+            .project_theme_override(&s.project)
+            .unwrap_or_else(crate::theme::current);
+
         let key = Arc::as_ptr(&s.dirty) as usize;
         let (rows, cache, cursor_pos) = {
             let mut map = self.pty_cache.borrow_mut();
@@ -1585,7 +1595,7 @@ impl Grove {
                 let (h, w) = screen.size();
                 let mut new_rows = Vec::with_capacity(h as usize);
                 for r in 0..h {
-                    new_rows.push(rebuild_row_runs(screen, r, w));
+                    new_rows.push(rebuild_row_runs(screen, r, w, &pty_theme));
                 }
                 entry.rows = Arc::new(new_rows);
                 entry.cache.clear();
@@ -1650,6 +1660,8 @@ impl Grove {
             selection,
             cursor: cursor_pos,
             cursor_visible,
+            default_fg: c::fg_of(&pty_theme),
+            cursor_color: c::fg_of(&pty_theme),
         };
         let body: Element<'_, Msg> = canvas_widget(program)
             .width(Length::Fixed((cols * CELL_W).max(CELL_W)))
@@ -1665,7 +1677,7 @@ impl Grove {
             .width(Length::Fill)
             .height(Length::Fill)
             .style(move |_| container::Style {
-                background: Some(Background::Color(c::BG())),
+                background: Some(Background::Color(c::bg_of(&pty_theme))),
                 border: if focused {
                     Border {
                         color: c::CYAN(),
@@ -2216,13 +2228,22 @@ impl Grove {
                 sel_light,
                 tab,
                 follow_system,
+                scope,
+                project_use_default,
                 ..
-            } => self.theme_picker_modal(*sel_dark, *sel_light, *tab, *follow_system),
+            } => self.theme_picker_modal(
+                *sel_dark,
+                *sel_light,
+                *tab,
+                *follow_system,
+                scope.clone(),
+                *project_use_default,
+            ),
             Modal::Settings => self.settings_modal(),
             Modal::ShortcutOverlay => self.shortcut_overlay_modal(),
             Modal::Updating => self.updating_modal(),
             Modal::Teardown => self.teardown_modal(),
-            Modal::ScriptsEditor => self.scripts_editor_modal(),
+            Modal::ScriptsEditor => self.project_settings_modal(),
             Modal::Onboarding {
                 step,
                 path,
@@ -2883,12 +2904,80 @@ impl Grove {
         modal_panel(body.into(), 560.0, c::RED())
     }
 
-    fn scripts_editor_modal(&self) -> Element<'_, Msg> {
+    /// Per-project modal: lifecycle scripts editor plus (new) the "Project
+    /// theme" row. Still backed by `Modal::ScriptsEditor` / `self.scripts_editor`
+    /// — only the presentation grew a second section.
+    fn project_settings_modal(&self) -> Element<'_, Msg> {
         use super::state::ScriptField;
         let ed = match &self.scripts_editor {
             Some(ed) => ed,
             None => return Space::new().width(0).into(),
         };
+
+        let eyebrow = |label: &'static str| -> Element<'_, Msg> {
+            container(text(label).font(UI_BOLD).size(11).color(c::FG_MUTE()))
+                .padding(Padding::from([0, 10]))
+                .into()
+        };
+
+        // ── PROJECT THEME ────────────────────────────────────────────────
+        let themes_enabled = self.app.project_themes_enabled();
+        let project = self.app.store.projects.get(ed.proj);
+        // The pin itself always stays persisted regardless of the toggle —
+        // but while Project themes is off nothing actually applies it, so
+        // the displayed value must show "Default" rather than the stale
+        // pinned name (which would otherwise look active when it isn't).
+        let pinned_name = if themes_enabled {
+            project.and_then(|p| p.theme.as_deref())
+        } else {
+            None
+        };
+        let value_text = pinned_name.unwrap_or("Default (follow app)");
+        let value_color = if pinned_name.is_some() {
+            c::CYAN()
+        } else {
+            c::FG_DIM()
+        };
+
+        let theme_row: Element<'_, Msg> = if themes_enabled {
+            modal_list_row(
+                row![
+                    text("Project theme").size(12).color(c::FG()),
+                    Space::new().width(Length::Fill),
+                    text(value_text.to_string()).size(12).color(value_color),
+                    Space::new().width(8),
+                    icon("chev-right", 12.0, c::FG_MUTE()),
+                ]
+                .align_y(iced::Alignment::Center),
+                false,
+                Msg::OpenProjectThemePicker { proj: ed.proj },
+            )
+        } else {
+            container(
+                row![
+                    text("Project theme").size(12).color(c::FG_MUTE()),
+                    Space::new().width(Length::Fill),
+                    text(value_text.to_string()).size(12).color(c::FG_MUTE()),
+                ]
+                .align_y(iced::Alignment::Center),
+            )
+            .height(ROW_H)
+            .padding(Padding::from([0, 10]))
+            .into()
+        };
+        let theme_caption = if themes_enabled {
+            "Pin every PTY in this project to a specific theme"
+        } else {
+            "Enable Project themes in Settings to use this"
+        };
+        let project_theme_section = column![
+            eyebrow("PROJECT THEME"),
+            Space::new().height(2),
+            theme_row,
+            container(text(theme_caption).size(11).color(c::FG_MUTE()))
+                .padding(Padding::from([0, 10])),
+        ]
+        .spacing(4);
 
         let field = |label: &str, desc: &str, placeholder: &str, content, which: ScriptField| {
             // Shrink height grows the editor with its content (Iced sizes a
@@ -2980,7 +3069,7 @@ impl Grove {
             },
         };
         let scroll_area = container(
-            scrollable(fields)
+            scrollable(container(fields).padding(Padding::from([0, 10])))
                 .height(Length::Shrink)
                 .direction(Direction::Vertical(
                     Scrollbar::new().width(0).scroller_width(0),
@@ -2996,14 +3085,24 @@ impl Grove {
         .max_height(480.0);
 
         let body = column![
-            text(format!("Scripts / {}", ed.project_name))
+            text(format!("Project Settings — {}", ed.project_name))
                 .size(13)
                 .color(c::CYAN()),
-            text("Shell snippets shared by every worktree of this project, run via $SHELL -lc. Leave a field blank to disable that step.")
-                .size(11)
-                .color(c::FG_MUTE())
-                .wrapping(iced::widget::text::Wrapping::Word),
-            scroll_area,
+            project_theme_section,
+            column![
+                eyebrow("LIFECYCLE SCRIPTS"),
+                Space::new().height(2),
+                container(
+                    text("Shell snippets shared by every worktree of this project, run via $SHELL -lc. Leave a field blank to disable that step.")
+                        .size(11)
+                        .color(c::FG_MUTE())
+                        .wrapping(iced::widget::text::Wrapping::Word),
+                )
+                .padding(Padding::from([0, 10])),
+                Space::new().height(4),
+                scroll_area,
+            ]
+            .spacing(4),
             row![
                 Space::new().width(Length::Fill),
                 modal_action("Cancel", ModalBtn::Plain, Msg::ScriptsEditorCancel),
@@ -3424,11 +3523,23 @@ impl Grove {
         .height(ROW_H)
         .padding(Padding::from([0, 10]));
 
+        let project_themes_row = container(modal_checkbox(
+            "Project themes".into(),
+            self.app.project_themes_enabled(),
+            c::MAGENTA(),
+            Some(Msg::ProjectThemesToggle),
+        ))
+        .height(ROW_H)
+        .align_y(Center)
+        .padding(Padding::from([0, 10]));
+
         let appearance = column![
             eyebrow("APPEARANCE"),
             Space::new().height(2),
             theme_row,
             app_size_row,
+            project_themes_row,
+            caption("Let each project pin its PTYs to a specific theme"),
         ]
         .spacing(4);
 
@@ -3476,12 +3587,15 @@ impl Grove {
         .height(ROW_H)
         .padding(Padding::from([0, 10]));
 
-        let telemetry_row = modal_checkbox(
+        let telemetry_row = container(modal_checkbox(
             "Share anonymous usage data".into(),
             self.app.telemetry_enabled(),
             c::MAGENTA(),
             Some(Msg::TelemetryToggle),
-        );
+        ))
+        .height(ROW_H)
+        .align_y(Center)
+        .padding(Padding::from([0, 10]));
 
         let agents_terminal = column![
             eyebrow("AGENTS / TERMINAL"),
@@ -3899,7 +4013,11 @@ impl Grove {
         sel_light: usize,
         tab: crate::theme::ThemeKind,
         follow_system: bool,
+        scope: crate::app::ThemePickerScope,
+        project_use_default: bool,
     ) -> Element<'_, Msg> {
+        use crate::app::ThemePickerScope;
+        let is_project = matches!(scope, ThemePickerScope::Project(_));
         let themes = crate::theme::themes_of(tab);
         let sel = match tab {
             crate::theme::ThemeKind::Dark => sel_dark,
@@ -3935,8 +4053,21 @@ impl Grove {
         });
 
         let mut list = Column::new().spacing(0);
+        if is_project {
+            list = list.push(modal_list_row(
+                text("Default (follow app)")
+                    .size(12)
+                    .color(if project_use_default {
+                        c::FG()
+                    } else {
+                        c::FG_DIM()
+                    }),
+                project_use_default,
+                Msg::ThemePickerSelectDefault,
+            ));
+        }
         for (i, th) in themes.iter().enumerate() {
-            let active = i == sel;
+            let active = i == sel && !(is_project && project_use_default);
             let name = th.name.to_string();
             list = list.push(modal_list_row(
                 text(name)
@@ -3947,7 +4078,7 @@ impl Grove {
             ));
         }
 
-        let list_h = (themes.len().min(12) as f32) * ROW_H;
+        let list_h = ((themes.len() + if is_project { 1 } else { 0 }).min(12) as f32) * ROW_H;
         let scroller = container(scrollable(list).id(theme_picker_scrollable_id()))
             .width(Length::Fill)
             .height(Length::Fixed(list_h))
@@ -3961,28 +4092,43 @@ impl Grove {
                 ..Default::default()
             });
 
-        let system_row = modal_checkbox(
-            "Follow system appearance".into(),
-            follow_system,
-            c::MAGENTA(),
-            Some(Msg::ThemePickerToggleSystem),
-        );
+        let title = match &scope {
+            ThemePickerScope::App => "Theme".to_string(),
+            ThemePickerScope::Project(name) => {
+                // Resolve by name (projects are keyed by unique name, not a
+                // stable index) — fall back gracefully if it was removed
+                // while the picker was open.
+                let still_exists = self.app.store.projects.iter().any(|p| &p.name == name);
+                if still_exists {
+                    format!("Project theme — {name}")
+                } else {
+                    "Project theme".to_string()
+                }
+            }
+        };
 
-        let body = column![
-            text("Theme").size(13).color(c::MAGENTA()),
-            system_row,
-            tabs,
-            scroller,
-            Space::new().height(8),
-            row![
-                Space::new().width(Length::Fill),
-                modal_action("Cancel", ModalBtn::Plain, Msg::ThemePickerCancel),
-                modal_action("Apply", ModalBtn::Primary, Msg::ThemePickerSubmit),
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
-        ]
-        .spacing(12);
+        let mut body = column![text(title).size(13).color(c::MAGENTA())].spacing(12);
+        if !is_project {
+            body = body.push(modal_checkbox(
+                "Follow system appearance".into(),
+                follow_system,
+                c::MAGENTA(),
+                Some(Msg::ThemePickerToggleSystem),
+            ));
+        }
+        body = body
+            .push(tabs)
+            .push(scroller)
+            .push(Space::new().height(8))
+            .push(
+                row![
+                    Space::new().width(Length::Fill),
+                    modal_action("Cancel", ModalBtn::Plain, Msg::ThemePickerCancel),
+                    modal_action("Apply", ModalBtn::Primary, Msg::ThemePickerSubmit),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            );
 
         modal_panel(body.into(), 460.0, c::MAGENTA())
     }

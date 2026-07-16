@@ -9,7 +9,18 @@ use iced::{mouse, Color, Font, Pixels, Point, Rectangle, Renderer, Size, Theme};
 use std::sync::Arc;
 
 /// Build a single row's styled runs directly from the vt100 screen.
-pub fn rebuild_row_runs(screen: &vt100::Screen, row: u16, cols: u16) -> Vec<StyledRun> {
+///
+/// `theme` resolves the colors used for this row: normally the global active
+/// theme, but a PTY belonging to a project with a pinned "Project theme"
+/// (see `Store::project_themes_enabled` / `Project::theme`) passes that
+/// theme instead, so terminal *content* renders in it while app chrome stays
+/// on the global theme.
+pub fn rebuild_row_runs(
+    screen: &vt100::Screen,
+    row: u16,
+    cols: u16,
+    theme: &crate::theme::Theme,
+) -> Vec<StyledRun> {
     let mut runs: Vec<StyledRun> = Vec::new();
     let mut buf = String::new();
     let mut cur_fg: Option<Color> = None;
@@ -21,15 +32,15 @@ pub fn rebuild_row_runs(screen: &vt100::Screen, row: u16, cols: u16) -> Vec<Styl
         let (ch, fg, bg, bold) = match screen.cell(row, col) {
             Some(cell) => {
                 let ch = cell.contents().chars().next().unwrap_or(' ');
-                let mut fg = vt_color_opt(cell.fgcolor());
-                let mut bg = vt_color_opt(cell.bgcolor());
+                let mut fg = vt_color_opt(cell.fgcolor(), theme);
+                let mut bg = vt_color_opt(cell.bgcolor(), theme);
                 if cell.inverse() {
                     std::mem::swap(&mut fg, &mut bg);
                     if fg.is_none() {
-                        fg = Some(c::BG());
+                        fg = Some(c::bg_of(theme));
                     }
                     if bg.is_none() {
-                        bg = Some(c::FG());
+                        bg = Some(c::fg_of(theme));
                     }
                 }
                 (ch, fg, bg, cell.bold())
@@ -77,6 +88,11 @@ pub struct PtyProgram {
     pub cursor: Option<(u16, u16)>,
     /// Whether the cursor should be visible in this frame (drives blinking).
     pub cursor_visible: bool,
+    /// Fallback text color for cells with no explicit fg (vt100 "default"),
+    /// and the cursor block color. Resolved once per frame in `pty()` from
+    /// either the global active theme or this session's project override.
+    pub default_fg: Color,
+    pub cursor_color: Color,
 }
 
 #[derive(Default)]
@@ -211,7 +227,7 @@ impl canvas::Program<Msg> for PtyProgram {
                             frame.fill_rectangle(Point::new(x, y), Size::new(w, CELL_H), bg);
                         }
                         let font = if run.bold { bold_font } else { MONO_FONT };
-                        let color = run.fg.unwrap_or(c::FG());
+                        let color = run.fg.unwrap_or(self.default_fg);
                         // Split the run into segments of consecutive characters
                         // the bundled mono font covers vs. doesn't. Covered
                         // segments keep fast basic shaping; uncovered ones use
@@ -269,7 +285,11 @@ impl canvas::Program<Msg> for PtyProgram {
                 let mut cursor_frame = Frame::new(renderer, bounds.size());
                 let x = ccol as f32 * CELL_W;
                 let y = crow as f32 * CELL_H;
-                cursor_frame.fill_rectangle(Point::new(x, y), Size::new(CELL_W, CELL_H), c::FG());
+                cursor_frame.fill_rectangle(
+                    Point::new(x, y),
+                    Size::new(CELL_W, CELL_H),
+                    self.cursor_color,
+                );
                 out.push(cursor_frame.into_geometry());
             }
         }
@@ -327,25 +347,25 @@ pub fn normalize_selection(a: PtyCell, b: PtyCell) -> (usize, usize, usize, usiz
     }
 }
 
-fn vt_color_opt(c: vt100::Color) -> Option<Color> {
+fn vt_color_opt(c: vt100::Color, theme: &crate::theme::Theme) -> Option<Color> {
     match c {
         vt100::Color::Default => None,
-        vt100::Color::Idx(i) => Some(ansi_idx(i)),
+        vt100::Color::Idx(i) => Some(ansi_idx(i, theme)),
         vt100::Color::Rgb(r, g, b) => Some(Color::from_rgb8(r, g, b)),
     }
 }
 
-fn ansi_idx(i: u8) -> Color {
+fn ansi_idx(i: u8, theme: &crate::theme::Theme) -> Color {
     match i {
-        0 => c::BG_STRIP(),
-        1 | 9 => c::RED(),
-        2 | 10 => c::GREEN(),
-        3 | 11 => c::YELLOW(),
-        4 | 12 => c::BLUE(),
-        5 | 13 => c::MAGENTA(),
-        6 | 14 => c::CYAN(),
-        7 | 15 => c::FG(),
-        8 => c::FG_MUTE(),
+        0 => c::bg_strip_of(theme),
+        1 | 9 => c::red_of(theme),
+        2 | 10 => c::green_of(theme),
+        3 | 11 => c::yellow_of(theme),
+        4 | 12 => c::blue_of(theme),
+        5 | 13 => c::magenta_of(theme),
+        6 | 14 => c::cyan_of(theme),
+        7 | 15 => c::fg_of(theme),
+        8 => c::fg_mute_of(theme),
         16..=231 => {
             // 6×6×6 cube
             let n = i - 16;

@@ -484,7 +484,6 @@ pub const TOKYONIGHT_DAY: Theme = Theme {
     red: rgb(0xf5, 0x2a, 0x65),
 };
 
-
 // New (curated additions)
 pub const MATERIAL_THEME: Theme = Theme {
     name: "material-theme",
@@ -729,6 +728,14 @@ pub fn current() -> Theme {
     // Recover from poisoning: a Theme is plain data, so a panic elsewhere
     // can't leave it half-written.
     *ACTIVE.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Look up a builtin theme by name without touching the global `ACTIVE`
+/// theme. Used to resolve a project's pinned "Project theme" for PTY
+/// rendering; an unknown/stale name yields `None` so callers fall back to
+/// the global theme.
+pub fn by_name(name: &str) -> Option<Theme> {
+    BUILTINS.iter().copied().find(|t| t.name == name)
 }
 
 pub fn set_by_name(name: &str) -> bool {

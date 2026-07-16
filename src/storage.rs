@@ -25,6 +25,11 @@ pub struct Project {
     pub path: String,
     #[serde(default)]
     pub scripts: ProjectScripts,
+    /// Pinned "Project theme" (see `Store::project_themes_enabled`): when
+    /// `Some`, every PTY belonging to this project renders using this theme
+    /// instead of the global one. `None` means "Default (follow app)".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -86,6 +91,11 @@ pub struct Store {
     /// light side of "system" mode. `#[serde(default)]` so old config files load.
     #[serde(default)]
     pub theme_light: Option<String>,
+    /// Universal "Project themes" toggle (Settings → Appearance). When true,
+    /// each project may pin its PTYs to a specific theme via `Project::theme`;
+    /// app chrome always stays on the global theme regardless of this flag.
+    #[serde(default)]
+    pub project_themes_enabled: bool,
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -185,11 +195,13 @@ mod tests {
                     name: "myapp".into(),
                     path: "/home/user/myapp".into(),
                     scripts: Default::default(),
+                    theme: None,
                 },
                 Project {
                     name: "other".into(),
                     path: "/tmp/other".into(),
                     scripts: Default::default(),
+                    theme: Some("dracula".into()),
                 },
             ],
             default_agent: Some(Agent::Claude),
@@ -206,6 +218,7 @@ mod tests {
             theme_follow_system: true,
             theme_dark: Some("tokyonight".into()),
             theme_light: Some("tokyonight-day".into()),
+            project_themes_enabled: true,
         };
 
         let json = serde_json::to_string_pretty(&original).expect("serialize");
@@ -224,6 +237,8 @@ mod tests {
         assert!(recovered.theme_follow_system);
         assert_eq!(recovered.theme_dark.as_deref(), Some("tokyonight"));
         assert_eq!(recovered.theme_light.as_deref(), Some("tokyonight-day"));
+        assert!(recovered.project_themes_enabled);
+        assert_eq!(recovered.projects[1].theme.as_deref(), Some("dracula"));
     }
 
     /// `Store::default()` deserializes from an empty JSON object — the
@@ -240,6 +255,7 @@ mod tests {
         assert!(!store.theme_follow_system);
         assert!(store.theme_dark.is_none());
         assert!(store.theme_light.is_none());
+        assert!(!store.project_themes_enabled);
         assert!(
             !store.onboarded,
             "a fresh config must report onboarded=false so the wizard runs"
