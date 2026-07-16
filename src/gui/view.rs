@@ -1898,14 +1898,36 @@ impl Grove {
                 ..c::AMBER()
             };
 
-            let sub_line: String = if tile_order_idx < 9 {
-                format!(
-                    "click to respond · {}+{}",
-                    platform_mod_label(),
-                    tile_order_idx + 1
-                )
+            let sub_line: Element<'_, Msg> = if tile_order_idx < 9 {
+                let n = tile_order_idx + 1;
+                if cfg!(target_os = "macos") {
+                    row![
+                        text("click to respond · ")
+                            .font(UI_FONT)
+                            .size(10)
+                            .color(c::FG_MUTE()),
+                        icon("command", 10.0, c::FG_MUTE()),
+                        text(n.to_string())
+                            .font(UI_FONT)
+                            .size(10)
+                            .color(c::FG_MUTE()),
+                    ]
+                    .spacing(1)
+                    .align_y(iced::Alignment::Center)
+                    .into()
+                } else {
+                    text(format!("click to respond · {}+{}", platform_mod_label(), n))
+                        .font(UI_FONT)
+                        .size(10)
+                        .color(c::FG_MUTE())
+                        .into()
+                }
             } else {
-                "click to respond".to_string()
+                text("click to respond")
+                    .font(UI_FONT)
+                    .size(10)
+                    .color(c::FG_MUTE())
+                    .into()
             };
 
             let scrim_content: Element<'_, Msg> = container(
@@ -1914,7 +1936,7 @@ impl Grove {
                         .font(UI_BOLD)
                         .size(20)
                         .color(amber_pulsed),
-                    text(sub_line).font(UI_FONT).size(10).color(c::FG_MUTE()),
+                    sub_line,
                 ]
                 .spacing(8)
                 .align_x(iced::Alignment::Center),
@@ -2081,22 +2103,33 @@ impl Grove {
             .find(|d| d.action == Some(GlobalShortcut::ShortcutOverlay))
             .map(|d| d.display_keys)
             .unwrap_or("/");
-        let shortcuts_chip = button(
+        let shortcuts_chip_content: Element<'_, Msg> = if cfg!(target_os = "macos") {
+            row![
+                icon("command", 10.0, c::FG_DIM()),
+                text(overlay_key).size(11).color(c::FG_DIM()),
+                text("  shortcuts").size(11).color(c::FG_DIM()),
+            ]
+            .spacing(1)
+            .align_y(iced::Alignment::Center)
+            .into()
+        } else {
             text(format!("{modifier}+{overlay_key}  shortcuts"))
                 .size(11)
-                .color(c::FG_DIM()),
-        )
-        .padding(Padding::from([0, 6]))
-        .on_press(Msg::OpenShortcutOverlay)
-        .style(|_, status| button::Style {
-            background: None,
-            text_color: if matches!(status, button::Status::Hovered) {
-                c::FG()
-            } else {
-                c::FG_DIM()
-            },
-            ..Default::default()
-        });
+                .color(c::FG_DIM())
+                .into()
+        };
+        let shortcuts_chip = button(shortcuts_chip_content)
+            .padding(Padding::from([0, 6]))
+            .on_press(Msg::OpenShortcutOverlay)
+            .style(|_, status| button::Style {
+                background: None,
+                text_color: if matches!(status, button::Status::Hovered) {
+                    c::FG()
+                } else {
+                    c::FG_DIM()
+                },
+                ..Default::default()
+            });
 
         let right = row![
             shortcuts_chip,
@@ -3655,8 +3688,10 @@ impl Grove {
         modal_panel(body.into(), 580.0, c::MAGENTA())
     }
 
-    /// Two-column keyboard-shortcut reference (mod+/). Text-only key labels:
-    /// the bundled fonts have no modifier-symbol glyphs.
+    /// Two-column keyboard-shortcut reference (mod+/). On macOS the ⌘ is
+    /// rendered as the SVG `command` icon (the bundled fonts have no
+    /// U+2318 glyph); elsewhere key labels stay plain text via
+    /// `platform_mod_label()`.
     fn shortcut_overlay_modal(&self) -> Element<'_, Msg> {
         let m = platform_mod_label();
         // Alt-chord rows layer Alt on top of the platform modifier instead of
@@ -3699,9 +3734,38 @@ impl Grove {
             ("esc".into(), "Close modals"),
         ];
 
+        // Render a key-chord string as an Element, swapping any "cmd"
+        // occurrence for the SVG ⌘ icon on macOS (with the "+" right after
+        // it dropped, e.g. "cmd+alt+n" -> ⌘ "alt+n", "cmd+c / cmd+v" ->
+        // ⌘ "c / " ⌘ "v"). Non-mac and literal chords (no "cmd" substring)
+        // render unchanged as plain text.
+        let chord_keys = |keys: &str| -> Element<'_, Msg> {
+            if !cfg!(target_os = "macos") || !keys.contains("cmd") {
+                return text(keys.to_string()).size(11).color(c::CYAN()).into();
+            }
+            let mut parts = keys.split("cmd");
+            let mut els: Vec<Element<'_, Msg>> = Vec::new();
+            if let Some(first) = parts.next() {
+                if !first.is_empty() {
+                    els.push(text(first.to_string()).size(11).color(c::CYAN()).into());
+                }
+            }
+            for part in parts {
+                els.push(icon("command", 10.0, c::CYAN()));
+                let rest = part.strip_prefix('+').unwrap_or(part);
+                if !rest.is_empty() {
+                    els.push(text(rest.to_string()).size(11).color(c::CYAN()).into());
+                }
+            }
+            Row::with_children(els)
+                .spacing(1)
+                .align_y(iced::Alignment::Center)
+                .into()
+        };
+
         let make_row = |keys: String, desc: &'static str| {
             row![
-                container(text(keys).size(11).color(c::CYAN())).width(Length::Fixed(170.0)),
+                container(chord_keys(&keys)).width(Length::Fixed(170.0)),
                 text(desc).size(11).color(c::FG_DIM()),
             ]
             .spacing(10)
