@@ -1153,9 +1153,15 @@ impl Grove {
             }),
         );
 
-        // Close the whole slide-over (same effect as the header term toggle),
-        // so the panel is always dismissable from itself.
-        let close_panel = icon_btn("close", Msg::ToggleTermPanel);
+        // Collapse the whole slide-over (same effect as the header term
+        // toggle), so the panel is always dismissable from itself. Uses a
+        // distinct "collapse-right" glyph (rather than the per-tab ×) so the
+        // two affordances don't read as the same action, plus a tooltip to
+        // disambiguate at a glance.
+        let close_panel = Self::hint(
+            icon_btn("collapse-right", Msg::ToggleTermPanel),
+            "collapse panel",
+        );
 
         let strip = container(
             row![
@@ -1190,6 +1196,27 @@ impl Grove {
             .into()
     }
 
+    /// Wrap `content` with a small hint label shown on hover. Styled to match
+    /// the app's other floating surfaces (BG_STRIP background, BORDER border).
+    fn hint<'a>(content: impl Into<Element<'a, Msg>>, label: &'a str) -> Element<'a, Msg> {
+        iced::widget::tooltip(
+            content,
+            container(text(label).font(UI_FONT).size(11).color(c::FG_DIM()))
+                .padding(Padding::from([4, 8]))
+                .style(|_| container::Style {
+                    background: Some(Background::Color(c::BG_STRIP())),
+                    border: Border {
+                        color: c::BORDER(),
+                        width: 1.0,
+                        radius: Radius::from(4.0),
+                    },
+                    ..Default::default()
+                }),
+            iced::widget::tooltip::Position::Top,
+        )
+        .into()
+    }
+
     /// A single tab in the terminal panel's tab strip.
     fn term_panel_tab<'a>(&self, idx: usize, s: &Session, active: bool) -> Element<'a, Msg> {
         let running = matches!(
@@ -1199,7 +1226,7 @@ impl Grove {
         let dot_color = if running { c::GREEN() } else { c::FG_MUTE() };
         let name_color = if active { c::CYAN() } else { c::FG_DIM() };
 
-        let close = button(
+        let close_btn = button(
             container(icon("close", 11.0, c::FG_MUTE()))
                 .center_x(16)
                 .center_y(18),
@@ -1220,10 +1247,17 @@ impl Grove {
                 snap: false,
             }
         });
+        let close = container(Self::hint(close_btn, "close shell")).padding(Padding {
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 2.0,
+        });
 
         // Tabs are identified by a terminal icon (status conveyed by the dot
         // and the active highlight), not a textual name — cleaner when several
-        // shells share a worktree.
+        // shells share a worktree. Spacing widened so the dot / icon / × read
+        // as distinct controls rather than one blob.
         let label = row![dot(dot_color), icon("term", 13.0, name_color), close,]
             .spacing(6)
             .align_y(iced::Alignment::Center);
@@ -1389,6 +1423,33 @@ impl Grove {
                 .color(color)
         };
 
+        // Three-step visual hierarchy: session/project label is the strongest
+        // (13px, weight-600, FG), the context title is secondary (12px, FG_DIM),
+        // and the working-dir path is the weakest (11px, FG_MUTE).
+        let sess_text_sized = |content: String, size: f32, color: Color, bold: bool| {
+            let t = text(content)
+                .font(UI_FONT)
+                .size(size)
+                .line_height(1.0)
+                .align_y(iced::alignment::Vertical::Center)
+                .color(color);
+            if bold {
+                t.font(iced::Font {
+                    weight: iced::font::Weight::Semibold,
+                    ..UI_FONT
+                })
+            } else {
+                t
+            }
+        };
+        // Force single-line rendering (see rows::single_line docs): iced 0.13's
+        // text widget ignores wrapping::None, so long labels word-wrap to a
+        // second line inside the outer clip(true) container unless each text
+        // is itself clipped to exactly one line height.
+        let single = |content: String, size: f32, color: Color, bold: bool| -> Element<'_, Msg> {
+            single_line(sess_text_sized(content, size, color, bold), size)
+        };
+
         let status: Element<'_, Msg> =
             row![dot(dot_color), sess_text(label.to_string(), dot_color),]
                 .spacing(6)
@@ -1396,9 +1457,9 @@ impl Grove {
                 .into();
 
         let mut identity = row![
-            sess_text(s.label.clone(), c::FG()),
-            sess_text("·".to_string(), c::FG_MUTE()),
-            sess_text(s.branch.clone(), c::FG_MUTE()),
+            single(s.label.clone(), 13.0, c::FG(), true),
+            single("·".to_string(), 13.0, c::FG_MUTE(), false),
+            single(s.branch.clone(), 12.0, c::FG_DIM(), false),
         ]
         .spacing(6)
         .align_y(iced::Alignment::Center);
@@ -1412,16 +1473,16 @@ impl Grove {
                     step_dot(0),
                     step_dot(1),
                     step_dot(2),
-                    sess_text("in progress".to_string(), c::GREEN()),
+                    single("in progress".to_string(), 12.0, c::GREEN(), false),
                 ]
                 .spacing(4)
                 .align_y(iced::Alignment::Center)
                 .into()
             } else {
-                sess_text(title, c::FG_MUTE()).into()
+                single(title, 12.0, c::FG_DIM(), false)
             };
             identity = identity
-                .push(sess_text("·".to_string(), c::FG_MUTE()))
+                .push(single("·".to_string(), 12.0, c::FG_MUTE(), false))
                 .push(session_context);
         }
 
@@ -1461,7 +1522,7 @@ impl Grove {
             status,
             vline(),
             container(identity).width(Length::Fill).clip(true),
-            sess_text(s.wt_path.clone(), c::FG_MUTE()),
+            single(s.wt_path.clone(), 11.0, c::FG_MUTE(), false),
             vline(),
             run_btn,
             tool_btn_toggle(

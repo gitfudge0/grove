@@ -20,9 +20,8 @@ pub fn icon<'a>(name: &str, size: f32, color: Color) -> Element<'a, Msg> {
 pub fn spinner<'a>(size: f32, color: Color, tick: u32) -> Element<'a, Msg> {
     let deg = (tick.wrapping_mul(12) % 360) as f32;
     // Open ~270° arc, gapped at the top-left, so the rotation is visible.
-    let inner = format!(
-        r#"<path d="M8 1.5a6.5 6.5 0 1 1-4.6 1.9" transform="rotate({deg} 8 8)"/>"#
-    );
+    let inner =
+        format!(r#"<path d="M8 1.5a6.5 6.5 0 1 1-4.6 1.9" transform="rotate({deg} 8 8)"/>"#);
     let s = format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{inner}</svg>"#
     );
@@ -42,6 +41,8 @@ fn svg_for(name: &str) -> String {
         "play" => r#"<path d="M4.5 3.5l8 4.5-8 4.5z" fill="currentColor" stroke="none"/>"#,
         "chev-down" => r#"<path d="M4 6l4 4 4-4"/>"#,
         "chev-right" => r#"<path d="M6 4l4 4-4 4"/>"#,
+        // Chevron pointing into a vertical bar — "collapse panel to the right".
+        "collapse-right" => r#"<path d="M6 4l4 4-4 4"/><path d="M13 3v10"/>"#,
         // Two stacked open chevrons + label hatches — "everything is open".
         "expand-all" => {
             r#"<path d="M3 4l2 2 2-2"/><path d="M3 10l2 2 2-2"/><path d="M9 5h4M9 11h4"/>"#
@@ -107,9 +108,7 @@ fn svg_for(name: &str) -> String {
             r#"<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="3.5" r="1.5"/><path d="M11.5 5v1.5a3 3 0 0 1-3 3H4.5M4.5 5v6"/>"#
         }
         // Generic git commit — a node on a horizontal line.
-        "git" => {
-            r#"<circle cx="8" cy="8" r="2.5"/><path d="M1.5 8h4M10.5 8h4"/>"#
-        }
+        "git" => r#"<circle cx="8" cy="8" r="2.5"/><path d="M1.5 8h4M10.5 8h4"/>"#,
         // Git branch with a slash through it — git disabled.
         "no-git" => {
             r#"<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="3.5" r="1.5"/><path d="M11.5 5v1.5a3 3 0 0 1-3 3H4.5M4.5 5v6"/><path d="M2.5 13.5l11-11"/>"#

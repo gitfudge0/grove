@@ -164,6 +164,9 @@ pub fn project_row<'a>(
         }
     });
 
+    // Trash recedes until intent: dimmed by default, red-tinted background on
+    // hover reads as the affordance without the icon itself screaming red at
+    // rest (project_row has no row-hover flag to key off, unlike worktree_row).
     let remove_btn = button(
         container(icon("trash", 12.0, c::FG_MUTE()))
             .center_x(22)
@@ -175,7 +178,10 @@ pub fn project_row<'a>(
         let hovered = matches!(status, button::Status::Hovered);
         button::Style {
             background: if hovered {
-                Some(Background::Color(c::BG_HOVER()))
+                Some(Background::Color(Color {
+                    a: 0.16,
+                    ..c::RED()
+                }))
             } else {
                 None
             },
@@ -199,6 +205,16 @@ pub fn project_row<'a>(
     let mut right = row![rollup_el].spacing(6).align_y(iced::Alignment::Center);
     if is_git {
         right = right.push(add_btn).push(scripts_btn);
+    } else {
+        // Same "no git" tag visual as worktree_row's non-git marker, reused
+        // in the slot where add/scripts buttons would otherwise sit.
+        let no_git_tag = row![
+            icon("no-git", 11.0, c::FG_MUTE()),
+            text("no git").size(10).color(c::FG_MUTE()),
+        ]
+        .spacing(5)
+        .align_y(iced::Alignment::Center);
+        right = right.push(no_git_tag);
     }
     right = right.push(remove_btn).padding(Padding {
         top: 0.0,
@@ -676,7 +692,7 @@ pub fn state_glyph<'a>(state: ActivityState, tick: u32, pulse: f32) -> Element<'
                 },
             )
         }
-        ActivityState::Done => icon("check", 11.0, c::GREEN()),
+        ActivityState::Done => icon("check", 11.0, c::FG_MUTE()),
         ActivityState::Idle => icon("dot", 11.0, c::FG_MUTE()),
         ActivityState::Exited => icon("ring", 11.0, c::FG_MUTE()),
     };
