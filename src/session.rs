@@ -13,7 +13,7 @@ const INIT_COLS: u16 = 80;
 /// Lines moved per wheel notch when scrolling grove's own scrollback buffer.
 const SCROLL_STEP: usize = 3;
 /// Max scrollback lines retained by the vt100 parser per session.
-const SCROLLBACK_LINES: usize = 5000;
+pub const SCROLLBACK_LINES: usize = 5000;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -517,45 +517,15 @@ impl Session {
     pub fn scroll(&mut self, up: bool, col: u16, row: u16) {
         self.last_scroll_at = Some(Instant::now());
 
-        let mut p = match self.parser.lock() {
+        let p = match self.parser.lock() {
             Ok(p) => p,
             Err(_) => return,
         };
 
         if p.screen().mouse_protocol_mode() == MouseProtocolMode::None {
             // Inner app doesn't handle the mouse — scroll the terminal view.
-            match &self.backend {
-                SessionBackend::Tmux { name } => {
-                    // The agent runs on the alternate screen inside tmux, so
-                    // grove's vt100 scrollback is empty. Drive tmux copy-mode
-                    // instead; the re-render arrives through the reader thread.
-                    let name = name.clone();
-                    drop(p);
-                    tmux::scroll(&name, up, SCROLL_STEP);
-                    if up {
-                        self.tmux_copy_mode = true;
-                    }
-                }
-                SessionBackend::Native => {
-                    // Cap at the configured scrollback size. vt100 0.15.2's
-                    // `set_scrollback` clamps to the actually-filled scrollback
-                    // internally, so reading `scrollback()` back gives the
-                    // effective offset (and avoids the `rows_len - offset`
-                    // underflow in `visible_rows` when the buffer isn't full).
-                    let cur = p.screen().scrollback();
-                    let target = if up {
-                        (cur + SCROLL_STEP).min(SCROLLBACK_LINES)
-                    } else {
-                        cur.saturating_sub(SCROLL_STEP)
-                    };
-                    if target != cur {
-                        p.set_scrollback(target);
-                        if p.screen().scrollback() != cur {
-                            self.dirty.store(true, Ordering::Relaxed);
-                        }
-                    }
-                }
-            }
+            drop(p);
+            self.scroll_view(up, SCROLL_STEP);
             return;
         }
 
@@ -566,8 +536,99 @@ impl Session {
         // For the tmux backend, writing to the PTY reaches the agent through
         // tmux's input forwarding (unaffected by the `mouse off` session option,
         // which only suppresses tmux's own terminal mouse interception).
+        self.send_wheel_notch(up, encoding, col, row);
+    }
+
+    /// Forward a single wheel notch to the inner app at `(col, row)` using
+    /// its negotiated mouse-protocol `encoding`. Shared by `scroll` and
+    /// `scroll_lines` so the encode-and-send logic lives in one place.
+    fn send_wheel_notch(&mut self, up: bool, encoding: MouseProtocolEncoding, col: u16, row: u16) {
         let cb: u32 = if up { 64 } else { 65 };
         self.send(&encode_mouse(encoding, cb, col, row, true));
+    }
+
+    /// Scroll the terminal's own view (grove's vt100 scrollback, or tmux
+    /// copy-mode) by `lines`, ignoring the inner app's mouse-reporting mode.
+    /// Shared by `scroll`'s non-mouse path and `scroll_lines`.
+    fn scroll_view(&mut self, up: bool, lines: usize) {
+        match &self.backend {
+            SessionBackend::Tmux { name } => {
+                // The agent runs on the alternate screen inside tmux, so
+                // grove's vt100 scrollback is empty. Drive tmux copy-mode
+                // instead; the re-render arrives through the reader thread.
+                let name = name.clone();
+                tmux::scroll(&name, up, lines);
+                if up {
+                    self.tmux_copy_mode = true;
+                }
+            }
+            SessionBackend::Native => {
+                let mut p = match self.parser.lock() {
+                    Ok(p) => p,
+                    Err(_) => return,
+                };
+                // Cap at the configured scrollback size. vt100 0.15.2's
+                // `set_scrollback` clamps to the actually-filled scrollback
+                // internally, so reading `scrollback()` back gives the
+                // effective offset (and avoids the `rows_len - offset`
+                // underflow in `visible_rows` when the buffer isn't full).
+                let cur = p.screen().scrollback();
+                let target = if up {
+                    (cur + lines).min(SCROLLBACK_LINES)
+                } else {
+                    cur.saturating_sub(lines)
+                };
+                if target != cur {
+                    p.set_scrollback(target);
+                    if p.screen().scrollback() != cur {
+                        self.dirty.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Scroll the session's own view via keyboard chords (Shift+PageUp/Down,
+    /// Shift+Home/End). Mirrors `scroll`'s dispatch exactly: when the inner
+    /// app doesn't handle the mouse, drives grove's/tmux's own scroll view;
+    /// otherwise the agent is on tmux's alternate screen (or otherwise has
+    /// mouse reporting on) and needs wheel notches forwarded like the mouse
+    /// wheel path does — tmux copy-mode has no history there, so driving it
+    /// directly would show an empty `[0/0]` and scroll nothing. The wheel
+    /// events are sent at the viewport center and capped at 200 notches as a
+    /// flood guard (relevant for the Shift+Home/End full-scrollback jump).
+    pub fn scroll_lines(&mut self, up: bool, lines: usize) {
+        self.last_scroll_at = Some(Instant::now());
+
+        let p = match self.parser.lock() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+
+        if p.screen().mouse_protocol_mode() == MouseProtocolMode::None {
+            drop(p);
+            self.scroll_view(up, lines);
+            return;
+        }
+
+        let encoding = p.screen().mouse_protocol_encoding();
+        drop(p);
+
+        let (col, row) = (self.cols / 2, self.rows / 2);
+        for _ in 0..scroll_notch_count(lines) {
+            self.send_wheel_notch(up, encoding, col, row);
+        }
+    }
+
+    /// Page size used for Shift+PageUp/PageDown keyboard scrolling: the
+    /// session's current viewport height minus one line of overlap, falling
+    /// back to a sane default if the viewport size is unavailable.
+    pub fn scroll_page_lines(&self) -> usize {
+        if self.rows > 1 {
+            (self.rows - 1) as usize
+        } else {
+            20
+        }
     }
 
     /// Extract the selected text between two endpoints given in scrollback-
@@ -738,6 +799,15 @@ fn clean_selection(raw: String) -> Option<String> {
     }
 }
 
+/// Number of wheel notches to forward for a `scroll_lines` request of `lines`
+/// terminal lines, when the inner app has mouse reporting on: one notch per
+/// `SCROLL_STEP` lines (matching the granularity `scroll`'s wheel path already
+/// uses), capped at 200 as a flood guard — relevant for the Shift+Home/End
+/// jump, which requests the full `SCROLLBACK_LINES`.
+fn scroll_notch_count(lines: usize) -> usize {
+    lines.div_ceil(SCROLL_STEP).min(200)
+}
+
 /// Encode a single mouse report (`cb` = button/wheel code) at a pane-relative
 /// 0-based cell, in whichever protocol the inner app negotiated. `press` picks
 /// the press vs. release form (SGR final byte `M`/`m`; X10 release uses button
@@ -784,6 +854,26 @@ fn encode_mouse(
 mod tests {
     use super::*;
     use vt100::MouseProtocolEncoding;
+
+    // ── scroll_notch_count ───────────────────────────────────────────────────
+
+    /// One notch per `SCROLL_STEP` lines, rounding up.
+    #[test]
+    fn scroll_notch_count_rounds_up_by_step() {
+        assert_eq!(scroll_notch_count(0), 0);
+        assert_eq!(scroll_notch_count(1), 1);
+        assert_eq!(scroll_notch_count(SCROLL_STEP), 1);
+        assert_eq!(scroll_notch_count(SCROLL_STEP + 1), 2);
+        assert_eq!(scroll_notch_count(SCROLL_STEP * 2), 2);
+    }
+
+    /// The 5000-line Shift+Home/End jump (`SCROLLBACK_LINES`) is capped at
+    /// 200 notches rather than flooding the PTY.
+    #[test]
+    fn scroll_notch_count_caps_at_200() {
+        assert_eq!(scroll_notch_count(SCROLLBACK_LINES), 200);
+        assert_eq!(scroll_notch_count(usize::MAX), 200);
+    }
 
     // ── clean_selection ──────────────────────────────────────────────────────
 

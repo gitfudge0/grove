@@ -2090,6 +2090,20 @@ impl Grove {
                 return Task::none();
             }
         }
+        // Keyboard scrollback for the focused session: Shift+PageUp/PageDown
+        // scrolls by a page, Shift+Home/End jumps to the top/bottom. Checked
+        // before key_to_bytes so these chords never reach the PTY; plain
+        // PageUp/PageDown/Home/End (no Shift) fall through unchanged.
+        if let Some((up, amount)) = keyboard_scroll_intent(&key, mods) {
+            if let Some(sess) = self.focused_session_mut() {
+                let lines = match amount {
+                    ScrollAmount::Page => sess.scroll_page_lines(),
+                    ScrollAmount::All => crate::session::SCROLLBACK_LINES,
+                };
+                sess.scroll_lines(up, lines);
+            }
+            return Task::none();
+        }
         // Feed the PTY the modifier-independent `key` for Ctrl combos (so the
         // control-byte math sees the base letter), and `modified_key` otherwise
         // so Shift/AltGr text is preserved.
@@ -2181,6 +2195,13 @@ impl Grove {
             }
             GlobalShortcut::GridSwap(dx, dy) => {
                 self.grid_swap(dx, dy);
+                Task::none()
+            }
+            GlobalShortcut::ScrollHalfPage(up) => {
+                if let Some(sess) = self.focused_session_mut() {
+                    let lines = sess.scroll_page_lines().div_ceil(2).max(1);
+                    sess.scroll_lines(up, lines);
+                }
                 Task::none()
             }
         }
@@ -3542,6 +3563,20 @@ fn new_session_in_worktree_mods(mods: Modifiers) -> bool {
     return mods.control() && mods.alt() && !mods.shift();
 }
 
+/// Whether `mods` carries the grid tile-swap modifier on top of
+/// [`global_mods`]. On mac this is Alt *or* Shift: Cmd+Opt+H collides with the
+/// OS-level "Hide Others" shortcut, so Shift is accepted as an equivalent
+/// swap modifier there (Cmd+Shift+h/j/k/l/arrows), and is what's displayed.
+/// Cmd+Alt keeps working too, since some layouts/users already rely on it.
+/// On non-mac, `global_mods` already requires Shift as part of its base
+/// chord, so only Alt distinguishes swap from move there.
+fn grid_swap_mods(mods: Modifiers) -> bool {
+    #[cfg(target_os = "macos")]
+    return mods.alt() || mods.shift();
+    #[cfg(not(target_os = "macos"))]
+    return mods.alt();
+}
+
 /// Human-readable label for the global-shortcut modifier, matching
 /// [`global_mods`]. Shown in the status-bar chip and the shortcut overlay so the
 /// displayed text can't drift from the actual chord.
@@ -3573,6 +3608,8 @@ pub(crate) enum GlobalShortcut {
     GridMove(i32, i32),
     /// Swap the focused tile with its neighbor by `(dx, dy)`. Grid screen only.
     GridSwap(i32, i32),
+    /// Scroll the focused session by half a page (`true` = up).
+    ScrollHalfPage(bool),
 }
 
 /// Coarse "which screen am I on" model, derived from existing UI flags.
@@ -3749,9 +3786,54 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         requires_alt: false,
         literal: false,
     },
+    // Display-only: matched by `keyboard_scroll_intent` in `handle_key`, not
+    // `match_global_shortcut` — plain PageUp/PageDown/Home/End (no Shift) must
+    // fall through to the PTY, so these live outside the registry lookup.
+    // Applies on every screen: `focused_session_mut()` resolves the grid's
+    // focused tile too.
+    ShortcutDef {
+        action: None,
+        triggers: &[],
+        display_keys: "shift+pgup/pgdn",
+        description: "Scroll session by page",
+        scopes: G,
+        requires_alt: false,
+        literal: true,
+    },
+    ShortcutDef {
+        action: None,
+        triggers: &[],
+        display_keys: "shift+home/end",
+        description: "Scroll to top / bottom",
+        scopes: G,
+        requires_alt: false,
+        literal: true,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::ScrollHalfPage(true)),
+        triggers: &["u", "U"],
+        display_keys: "u",
+        description: "Scroll half page up",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::ScrollHalfPage(false)),
+        triggers: &["d", "D"],
+        display_keys: "d",
+        description: "Scroll half page down",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
     // Display-only: `match_global_shortcut` handles both of these rows ahead
-    // of the registry lookup (dynamic dx/dy per key, Alt picks move vs. swap),
-    // scoped to Screen::Grid by hand there — keep the three in sync.
+    // of the registry lookup (dynamic dx/dy per key, `grid_swap_mods` picks
+    // move vs. swap), scoped to Screen::Grid by hand there — keep the three
+    // in sync. The swap row's `display_keys` differs per platform: mac shows
+    // the Shift chord (Cmd+Opt collides with the OS "Hide Others" shortcut on
+    // H), non-mac keeps Alt (Cmd+Alt still works on mac too, just isn't the
+    // one advertised).
     ShortcutDef {
         action: None,
         triggers: &[],
@@ -3764,10 +3846,17 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
     ShortcutDef {
         action: None,
         triggers: &[],
-        display_keys: "alt+h j k l / ←↓↑→",
+        display_keys: if cfg!(target_os = "macos") {
+            "shift+h j k l / ←↓↑→"
+        } else {
+            "alt+h j k l / ←↓↑→"
+        },
         description: "Move tile in grid",
         scopes: &[Scope::Screen(Screen::Grid)],
-        requires_alt: true,
+        // On mac this row displays as `{platform_mod_label()}+shift+...` (no
+        // Alt infix — see `shortcut_overlay_modal`'s `key_label`); non-mac
+        // keeps the Alt infix as before.
+        requires_alt: !cfg!(target_os = "macos"),
         literal: false,
     },
     // Display-only: matched by `term_panel_resize_delta`, not
@@ -3867,7 +3956,7 @@ fn match_global_shortcut(key: &Key, mods: Modifiers, screen: Screen) -> Option<G
             _ => None,
         };
         if let Some((dx, dy)) = dir {
-            return Some(if mods.alt() {
+            return Some(if grid_swap_mods(mods) {
                 GlobalShortcut::GridSwap(dx, dy)
             } else {
                 GlobalShortcut::GridMove(dx, dy)
@@ -4043,6 +4132,34 @@ fn escape_should_dismiss(
 /// only, on every platform (unlike `global_mods`, this isn't Cmd on macOS).
 /// Doesn't know about `term_panel_open` — that's runtime state the caller
 /// gates separately so a closed panel falls through to the PTY.
+/// How far a keyboard scroll chord should move the view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScrollAmount {
+    /// One page (the session's viewport height, minus a line of overlap).
+    Page,
+    /// The full scrollback, i.e. jump to the top or back to the bottom.
+    All,
+}
+
+/// Maps a key event to a keyboard-scroll intent: `Some((up, amount))` when
+/// the classic terminal scroll chords are pressed — Shift+PageUp/PageDown
+/// (page) or Shift+Home/End (top/bottom) — and `None` otherwise, including
+/// when Ctrl/Logo/Alt are also held (so readline/TUI chords like
+/// Ctrl+Shift+PageUp aren't stolen) or when Shift isn't held at all (so plain
+/// PageUp/PageDown/Home/End keep reaching the PTY).
+fn keyboard_scroll_intent(key: &Key, mods: Modifiers) -> Option<(bool, ScrollAmount)> {
+    if !mods.shift() || mods.control() || mods.logo() || mods.alt() {
+        return None;
+    }
+    match key {
+        Key::Named(Named::PageUp) => Some((true, ScrollAmount::Page)),
+        Key::Named(Named::PageDown) => Some((false, ScrollAmount::Page)),
+        Key::Named(Named::Home) => Some((true, ScrollAmount::All)),
+        Key::Named(Named::End) => Some((false, ScrollAmount::All)),
+        _ => None,
+    }
+}
+
 fn term_panel_resize_delta(key: &Key, mods: Modifiers, screen: Screen) -> Option<i16> {
     if screen != Screen::Workspace || !(mods.control() && mods.shift()) {
         return None;
@@ -4161,6 +4278,31 @@ mod tests {
         assert_eq!(
             match_global_shortcut(&ch("?"), gmods(), screen),
             Some(ShortcutOverlay)
+        );
+    }
+
+    /// `mod+u`/`mod+d` scroll the focused session by half a page; plain
+    /// "u"/"d" (no platform modifier) must not be treated as shortcuts, so
+    /// they keep reaching the PTY (e.g. Ctrl+U/D line-kill / EOF).
+    #[test]
+    fn scroll_half_page_requires_platform_modifier() {
+        use GlobalShortcut::ScrollHalfPage;
+        let screen = Screen::Workspace;
+        assert_eq!(
+            match_global_shortcut(&ch("u"), gmods(), screen),
+            Some(ScrollHalfPage(true))
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("d"), gmods(), screen),
+            Some(ScrollHalfPage(false))
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("u"), Modifiers::empty(), screen),
+            None
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("d"), Modifiers::empty(), screen),
+            None
         );
     }
 
@@ -4370,6 +4512,55 @@ mod tests {
         );
     }
 
+    /// Mac-only: Cmd+Opt+H collides with the OS "Hide Others" shortcut, so
+    /// Cmd+Shift is also accepted (and is what's displayed) for the swap
+    /// chord there. Cmd+Alt must keep working too (checked above by the
+    /// shared `alt` chord in `grid_swap_shortcuts_scoped_to_grid_screen`).
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn grid_swap_shortcuts_accept_shift_on_mac() {
+        use GlobalShortcut::*;
+        let screen = Screen::Grid;
+        let shift = gmods() | Modifiers::SHIFT;
+        assert_eq!(
+            match_global_shortcut(&ch("h"), shift, screen),
+            Some(GridSwap(-1, 0))
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("l"), shift, screen),
+            Some(GridSwap(1, 0))
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("k"), shift, screen),
+            Some(GridSwap(0, -1))
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("j"), shift, screen),
+            Some(GridSwap(0, 1))
+        );
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::ArrowLeft), shift, screen),
+            Some(GridSwap(-1, 0))
+        );
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::ArrowRight), shift, screen),
+            Some(GridSwap(1, 0))
+        );
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::ArrowUp), shift, screen),
+            Some(GridSwap(0, -1))
+        );
+        assert_eq!(
+            match_global_shortcut(&Key::Named(Named::ArrowDown), shift, screen),
+            Some(GridSwap(0, 1))
+        );
+        // Cmd alone (no Alt, no Shift) is still GridMove, not GridSwap.
+        assert_eq!(
+            match_global_shortcut(&ch("h"), gmods(), screen),
+            Some(GridMove(-1, 0))
+        );
+    }
+
     #[test]
     fn unmodified_or_unmapped_keys_are_not_shortcuts() {
         let screen = Screen::Workspace;
@@ -4452,6 +4643,86 @@ mod tests {
             );
             assert_eq!(
                 term_panel_resize_delta(&Key::Named(Named::Tab), ctrl_shift(), Screen::Workspace),
+                None
+            );
+        }
+    }
+
+    /// Keyboard scrollback chords (Shift+PageUp/PageDown/Home/End) are
+    /// matched by `keyboard_scroll_intent` ahead of `key_to_bytes` in
+    /// `handle_key`, screen-independent (applies on Workspace/Zen/Grid alike
+    /// via `focused_session_mut`), and must require Shift alone — no
+    /// Ctrl/Logo/Alt — so readline/TUI chords like Ctrl+Shift+PageUp aren't
+    /// stolen and plain PageUp/PageDown/Home/End keep reaching the PTY.
+    mod keyboard_scroll {
+        use super::super::{keyboard_scroll_intent, ScrollAmount};
+        use iced::keyboard::{key::Named, Key, Modifiers};
+
+        #[test]
+        fn shift_page_up_down_scroll_by_page() {
+            assert_eq!(
+                keyboard_scroll_intent(&Key::Named(Named::PageUp), Modifiers::SHIFT),
+                Some((true, ScrollAmount::Page))
+            );
+            assert_eq!(
+                keyboard_scroll_intent(&Key::Named(Named::PageDown), Modifiers::SHIFT),
+                Some((false, ScrollAmount::Page))
+            );
+        }
+
+        #[test]
+        fn shift_home_end_jump_top_and_bottom() {
+            assert_eq!(
+                keyboard_scroll_intent(&Key::Named(Named::Home), Modifiers::SHIFT),
+                Some((true, ScrollAmount::All))
+            );
+            assert_eq!(
+                keyboard_scroll_intent(&Key::Named(Named::End), Modifiers::SHIFT),
+                Some((false, ScrollAmount::All))
+            );
+        }
+
+        #[test]
+        fn plain_page_up_down_fall_through_to_the_pty() {
+            assert_eq!(
+                keyboard_scroll_intent(&Key::Named(Named::PageUp), Modifiers::empty()),
+                None
+            );
+            assert_eq!(
+                keyboard_scroll_intent(&Key::Named(Named::PageDown), Modifiers::empty()),
+                None
+            );
+            assert_eq!(
+                keyboard_scroll_intent(&Key::Named(Named::Home), Modifiers::empty()),
+                None
+            );
+            assert_eq!(
+                keyboard_scroll_intent(&Key::Named(Named::End), Modifiers::empty()),
+                None
+            );
+        }
+
+        #[test]
+        fn extra_modifiers_are_not_stolen_from_readline_or_tui_chords() {
+            assert_eq!(
+                keyboard_scroll_intent(
+                    &Key::Named(Named::PageUp),
+                    Modifiers::CTRL | Modifiers::SHIFT
+                ),
+                None
+            );
+            assert_eq!(
+                keyboard_scroll_intent(
+                    &Key::Named(Named::PageUp),
+                    Modifiers::LOGO | Modifiers::SHIFT
+                ),
+                None
+            );
+            assert_eq!(
+                keyboard_scroll_intent(
+                    &Key::Named(Named::PageUp),
+                    Modifiers::ALT | Modifiers::SHIFT
+                ),
                 None
             );
         }
