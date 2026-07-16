@@ -1402,30 +1402,15 @@ impl Grove {
             *s.status.lock().unwrap_or_else(|e| e.into_inner()),
             SessionStatus::Running
         );
-        let (dot_color, label) = if running {
-            (c::GREEN(), "running")
-        } else {
-            (c::FG_MUTE(), "exited")
-        };
         let context = session_context_title(s);
         let show_progress = running
             && context
                 .as_deref()
                 .map(is_in_progress_title)
                 .unwrap_or(false);
-        let sess_text = |content: String, color: Color| {
-            text(content)
-                .font(UI_FONT)
-                .size(12)
-                .line_height(1.0)
-                .height(18)
-                .align_y(iced::alignment::Vertical::Center)
-                .color(color)
-        };
-
-        // Three-step visual hierarchy: session/project label is the strongest
-        // (13px, weight-600, FG), the context title is secondary (12px, FG_DIM),
-        // and the working-dir path is the weakest (11px, FG_MUTE).
+        // Visual hierarchy: session/project label is the strongest (13px,
+        // weight-600, FG); the branch and context title are secondary
+        // (12px, FG_DIM).
         let sess_text_sized = |content: String, size: f32, color: Color, bold: bool| {
             let t = text(content)
                 .font(UI_FONT)
@@ -1449,12 +1434,6 @@ impl Grove {
         let single = |content: String, size: f32, color: Color, bold: bool| -> Element<'_, Msg> {
             single_line(sess_text_sized(content, size, color, bold), size)
         };
-
-        let status: Element<'_, Msg> =
-            row![dot(dot_color), sess_text(label.to_string(), dot_color),]
-                .spacing(6)
-                .align_y(iced::Alignment::Center)
-                .into();
 
         let mut identity = row![
             single(s.label.clone(), 13.0, c::FG(), true),
@@ -1519,10 +1498,7 @@ impl Grove {
         };
 
         let bar = row![
-            status,
-            vline(),
             container(identity).width(Length::Fill).clip(true),
-            single(s.wt_path.clone(), 11.0, c::FG_MUTE(), false),
             vline(),
             run_btn,
             tool_btn_toggle(
