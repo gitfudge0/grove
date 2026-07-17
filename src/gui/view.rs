@@ -15,10 +15,12 @@ use super::update::{
 };
 use super::widgets::{
     control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_terminals_workspace,
-    empty_workspace, icon_btn, launcher_row, modal_action, modal_action_sized, modal_checkbox,
-    modal_list_row,
-    modal_list_row_sized, modal_panel, seg_button, sidebar_agent_menu_overlay, skip_perms_seg,
-    tool_btn, tool_btn_toggle, vline, ModalBtn, SegSide, PALETTE_ROW_H,
+    empty_workspace, footer_container, footer_hint, icon_btn, keycap, keycap_text, launcher_row,
+    modal_action, modal_action_sized, modal_checkbox, modal_footer_hints, modal_footer_row,
+    modal_header, modal_header_row, modal_list_row, modal_list_row_sized, modal_panel,
+    palette_input_style,
+    section_header, seg_button, sidebar_agent_menu_overlay, skip_perms_seg, tool_btn,
+    tool_btn_toggle, vline, ModalBtn, SegSide, PALETTE_ROW_H,
 };
 use crate::app::{AddProjectStep, ConfirmKind, GitProbe, LauncherOptions, Modal, OnboardStep};
 use crate::git::Worktree;
@@ -67,38 +69,6 @@ pub fn theme_picker_scrollable_id() -> Id {
     Id::new("theme-picker-list")
 }
 
-/// Keycap chip shell shared by every footer hint, the palette's ⌘T/digit
-/// chips (via [`mod_key_chip`]), and the ⏎ chips on active rows: mono, 2px/6px
-/// padding, radius 4, filled `BG_HL` background. Deliberately filled rather
-/// than border-reliant — a light-theme contrast fix over the old
-/// border+transparent-bg chip. `inner` carries its own text color so callers
-/// can pick the muted "quiet digit" shade vs. the regular hint shade.
-fn keycap<'a>(inner: Element<'a, Msg>) -> Element<'a, Msg> {
-    container(inner)
-        .padding(Padding::from([2, 6]))
-        .style(|_| container::Style {
-            background: Some(Background::Color(c::BG_HL())),
-            border: Border {
-                color: Color::TRANSPARENT,
-                width: 0.0,
-                radius: Radius::from(4.0),
-            },
-            ..Default::default()
-        })
-        .into()
-}
-
-/// A plain-label keycap (e.g. "⏎", "↑↓", "esc", "←→") in the given text color.
-fn keycap_text<'a>(label: impl Into<String>, color: Color) -> Element<'a, Msg> {
-    keycap(
-        text(label.into())
-            .font(MONO_FONT)
-            .size(11)
-            .color(color)
-            .into(),
-    )
-}
-
 /// A mod+key hint chip: on macOS the modifier renders as the ⌘ glyph icon,
 /// elsewhere as `platform_mod_label()`. Used for the palette's ⌘T action-row
 /// chip (`color` = `FG_DIM`) and its ⌘1…⌘N recent-row digit chips (`color` =
@@ -120,29 +90,6 @@ fn mod_key_chip<'a>(key: &'static str, color: Color) -> Element<'a, Msg> {
             .into()
     };
     keycap(inner)
-}
-
-/// A mono, uppercase, letter-tracked section label ("RECENT", "ACTIONS",
-/// "OPEN WITH") used by both the root/typing list's section headers and the
-/// options state's header. Iced has no letter-spacing property, so tracking
-/// is faked by joining every character with a U+2009 thin space (confirmed
-/// present in the bundled BlexMono Nerd Font's `cmap`, so it renders as real
-/// spacing rather than a tofu glyph). `top`/`bottom` are the caller's margin
-/// above/below (the list's first header uses `top: 0.0`).
-fn section_header<'a>(label: &str, top: f32, bottom: f32) -> Element<'a, Msg> {
-    let tracked = label
-        .chars()
-        .map(String::from)
-        .collect::<Vec<_>>()
-        .join("\u{2009}");
-    container(text(tracked).font(MONO_FONT).size(10).color(c::FG_MUTE()))
-        .padding(Padding {
-            top,
-            bottom,
-            left: 12.0,
-            right: 0.0,
-        })
-        .into()
 }
 
 /// Render `s` as rich text, coloring the character ranges in `ranges` cyan
@@ -186,67 +133,12 @@ fn highlighted_line<'a>(
     rich_text(spans).font(font).size(size).into()
 }
 
-/// Borderless, transparent-background `text_input` style for the palette's
-/// input zone (the zone's own container carries no visible field chrome —
-/// just the leading glyph/options chip and the typed text).
-fn palette_input_style(_t: &iced::Theme, _status: text_input::Status) -> text_input::Style {
-    text_input::Style {
-        background: Background::Color(Color::TRANSPARENT),
-        border: Border {
-            color: Color::TRANSPARENT,
-            width: 0.0,
-            radius: Radius::from(0.0),
-        },
-        icon: c::FG_MUTE(),
-        placeholder: c::FG_MUTE(),
-        value: c::FG(),
-        selection: c::CYAN(),
-    }
-}
-
 /// The ⌘-digit key bound to root-mode recent-row `i` (0-based), if any.
 /// `update.rs`'s mod+digit handler accepts any digit 1-9, but `palette_rows`
 /// caps recents at 6 (`.take(6)`), so only the first 6 rows ever get a real
 /// binding — this is why the palette shows at most ⌘1…⌘6, not ⌘1…⌘9.
 fn digit_label(i: usize) -> Option<&'static str> {
     ["1", "2", "3", "4", "5", "6"].get(i).copied()
-}
-
-/// One `keycap` + muted label pair in the palette's footer hint strip (e.g.
-/// "[↑↓] navigate").
-fn footer_hint<'a>(key: &'static str, label: &'static str) -> Element<'a, Msg> {
-    row![
-        keycap_text(key, c::FG_DIM()),
-        text(label).font(MONO_FONT).size(10).color(c::FG_MUTE()),
-    ]
-    .spacing(6)
-    .align_y(iced::Alignment::Center)
-    .into()
-}
-
-/// The palette's full-bleed footer strip: `BG_STRIP` fill, `[8, 16]` padding,
-/// bottom corners rounded to stay flush with the panel's own 12px radius
-/// (containers don't clip children, so the footer must carry its own bottom
-/// radius rather than relying on the panel's).
-fn footer_container<'a>(content: Element<'a, Msg>) -> Element<'a, Msg> {
-    container(content)
-        .padding(Padding::from([8, 16]))
-        .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(Background::Color(c::BG_STRIP())),
-            border: Border {
-                color: Color::TRANSPARENT,
-                width: 0.0,
-                radius: Radius {
-                    top_left: 0.0,
-                    top_right: 0.0,
-                    bottom_left: 12.0,
-                    bottom_right: 12.0,
-                },
-            },
-            ..Default::default()
-        })
-        .into()
 }
 
 use std::sync::Arc;
@@ -2227,41 +2119,39 @@ impl Grove {
                 } else {
                     c::FG_MUTE()
                 }),
-                text(format!("{running} running"))
-                    .size(11)
+                text(format!("{running}"))
+                    .font(MONO_FONT)
+                    .size(10)
                     .color(c::FG_DIM()),
+                text("running").font(MONO_FONT).size(10).color(c::FG_MUTE()),
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center),
             row![
-                text("backend").size(11).color(c::FG_MUTE()),
-                text(backend).size(11).color(c::FG_DIM()),
+                text("backend").font(MONO_FONT).size(10).color(c::FG_MUTE()),
+                text(backend).font(MONO_FONT).size(10).color(c::FG_DIM()),
             ]
             .spacing(6),
             row![
-                text("theme").size(11).color(c::FG_MUTE()),
-                text(theme_name).size(11).color(c::FG_DIM()),
+                text("theme").font(MONO_FONT).size(10).color(c::FG_MUTE()),
+                text(theme_name)
+                    .font(MONO_FONT)
+                    .size(10)
+                    .color(c::FG_DIM()),
             ]
             .spacing(6),
         ]
-        .spacing(16)
+        .spacing(14)
         .align_y(iced::Alignment::Center);
 
         if self.app.skip_permissions_enabled() {
-            let mut chip_border = c::YELLOW();
-            chip_border.a = 0.45;
-            left = left.push(
-                container(text("bypass").size(10).color(c::YELLOW()))
-                    .padding(Padding::from([1, 6]))
-                    .style(move |_| container::Style {
-                        border: Border {
-                            color: chip_border,
-                            width: 1.0,
-                            radius: Radius::from(3.0),
-                        },
-                        ..Default::default()
-                    }),
-            );
+            left = left.push(keycap(
+                text("bypass")
+                    .font(MONO_FONT)
+                    .size(10)
+                    .color(c::YELLOW())
+                    .into(),
+            ));
         }
 
         let toast: Element<'_, Msg> = match &self.app.toast {
@@ -2270,87 +2160,77 @@ impl Grove {
                     crate::app::ToastKind::Error => c::RED(),
                     crate::app::ToastKind::Info => c::GREEN(),
                 };
-                text(t.message.clone()).size(11).color(color).into()
+                text(t.message.clone())
+                    .font(MONO_FONT)
+                    .size(10)
+                    .color(color)
+                    .into()
             }
             None => Space::new().width(0).into(),
         };
 
         let modifier = platform_mod_label();
-        // Pull the key label from the registry (single source of truth).
+        // Build a footer-hint style button: a keycap chip (mod icon + key on
+        // macOS, "{mod}+{key}" text elsewhere) followed by a muted mono
+        // label, matching the palette footer's `footer_hint` chrome — but
+        // wrapped in a button since these still need `on_press`.
+        let hint_button = |key: &str, label: &'static str, msg: Msg| -> Element<'_, Msg> {
+            let keycap_content: Element<'_, Msg> = if cfg!(target_os = "macos") {
+                row![
+                    icon("command", 9.0, c::FG_DIM()),
+                    text(key.to_string()).font(MONO_FONT).size(10).color(c::FG_DIM()),
+                ]
+                .spacing(1)
+                .align_y(iced::Alignment::Center)
+                .into()
+            } else {
+                text(format!("{modifier}+{key}"))
+                    .font(MONO_FONT)
+                    .size(10)
+                    .color(c::FG_DIM())
+                    .into()
+            };
+            let content = row![keycap(keycap_content), text(label).font(MONO_FONT).size(10)]
+                .spacing(6)
+                .align_y(iced::Alignment::Center);
+            button(content)
+                .padding(0)
+                .on_press(msg)
+                .style(|_, status| button::Style {
+                    background: None,
+                    text_color: if matches!(status, button::Status::Hovered) {
+                        c::FG()
+                    } else {
+                        c::FG_MUTE()
+                    },
+                    ..Default::default()
+                })
+                .into()
+        };
+
         let overlay_key = SHORTCUTS
             .iter()
             .find(|d| d.action == Some(GlobalShortcut::ShortcutOverlay))
             .map(|d| d.display_keys)
             .unwrap_or("/");
-        let shortcuts_chip_content: Element<'_, Msg> = if cfg!(target_os = "macos") {
-            row![
-                icon("command", 10.0, c::FG_DIM()),
-                text(overlay_key).size(11).color(c::FG_DIM()),
-                text("  shortcuts").size(11).color(c::FG_DIM()),
-            ]
-            .spacing(1)
-            .align_y(iced::Alignment::Center)
-            .into()
-        } else {
-            text(format!("{modifier}+{overlay_key}  shortcuts"))
-                .size(11)
-                .color(c::FG_DIM())
-                .into()
-        };
-        let shortcuts_chip = button(shortcuts_chip_content)
-            .padding(Padding::from([0, 6]))
-            .on_press(Msg::OpenShortcutOverlay)
-            .style(|_, status| button::Style {
-                background: None,
-                text_color: if matches!(status, button::Status::Hovered) {
-                    c::FG()
-                } else {
-                    c::FG_DIM()
-                },
-                ..Default::default()
-            });
+        let shortcuts_chip = hint_button(overlay_key, "shortcuts", Msg::OpenShortcutOverlay);
 
         let palette_key = SHORTCUTS
             .iter()
             .find(|d| d.action == Some(GlobalShortcut::NewSession))
             .map(|d| d.display_keys)
             .unwrap_or("p");
-        let palette_chip_content: Element<'_, Msg> = if cfg!(target_os = "macos") {
-            row![
-                icon("command", 10.0, c::FG_DIM()),
-                text(palette_key).size(11).color(c::FG_DIM()),
-                text("  palette").size(11).color(c::FG_DIM()),
-            ]
-            .spacing(1)
-            .align_y(iced::Alignment::Center)
-            .into()
-        } else {
-            text(format!("{modifier}+{palette_key}  palette"))
-                .size(11)
-                .color(c::FG_DIM())
-                .into()
-        };
-        let palette_chip = button(palette_chip_content)
-            .padding(Padding::from([0, 6]))
-            .on_press(Msg::OpenSessionLauncher)
-            .style(|_, status| button::Style {
-                background: None,
-                text_color: if matches!(status, button::Status::Hovered) {
-                    c::FG()
-                } else {
-                    c::FG_DIM()
-                },
-                ..Default::default()
-            });
+        let palette_chip = hint_button(palette_key, "palette", Msg::OpenSessionLauncher);
 
         let right = row![
             palette_chip,
-            Space::new().width(12),
+            Space::new().width(14),
             shortcuts_chip,
-            Space::new().width(12),
+            Space::new().width(14),
             text(format!("v{}", env!("CARGO_PKG_VERSION")))
-                .size(11)
-                .color(c::FG_DIM()),
+                .font(MONO_FONT)
+                .size(10)
+                .color(c::FG_MUTE()),
         ]
         .align_y(iced::Alignment::Center);
 
@@ -2365,13 +2245,17 @@ impl Grove {
         .align_y(iced::Alignment::Center)
         .height(Length::Fill);
 
-        container(bar)
-            .height(STATUS_H)
+        let bar_container = container(bar)
+            .height(STATUS_H - 1.0)
             .width(Length::Fill)
             .style(|_| container::Style {
                 background: Some(Background::Color(c::BG_STRIP())),
                 ..Default::default()
-            })
+            });
+
+        column![divider_h(c::BORDER_SOFT()), bar_container]
+            .width(Length::Fill)
+            .height(STATUS_H)
             .into()
     }
 
@@ -2517,37 +2401,44 @@ impl Grove {
         let field = text_input("", buffer)
             .id(modal_input_id())
             .font(UI_FONT)
-            .size(13)
-            .padding(Padding::from([8, 12]))
+            .size(14)
+            .padding(0)
             .on_input(Msg::InputPathChanged)
             .on_submit(Msg::ModalSubmit)
-            .style(input_field_style);
+            .style(palette_input_style);
 
-        let mut body =
-            column![text(title.to_string()).size(13).color(c::MAGENTA()), field].spacing(12);
-
-        if let Some(note) = note {
-            body = body.push(text(note.to_string()).size(12).color(c::RED()));
-        }
-
-        body = body
-            .push(
-                text("Enter to confirm · Esc to cancel")
-                    .size(11)
-                    .color(c::FG_MUTE()),
-            )
-            .push(Space::new().height(4))
-            .push(
-                row![
-                    Space::new().width(Length::Fill),
-                    modal_action("Cancel", ModalBtn::Plain, Msg::ModalCancel),
-                    modal_action("Submit", ModalBtn::Primary, Msg::ModalSubmit),
-                ]
+        let input_zone = container(
+            row![icon("git-branch", 16.0, c::FG_MUTE()), field]
                 .spacing(8)
                 .align_y(iced::Alignment::Center),
-            );
+        )
+        .padding(Padding::from([14, 16]));
 
-        modal_panel(body.into(), 480.0, c::MAGENTA())
+        let mut buttons_zone = column![].spacing(8);
+        if let Some(note) = note {
+            buttons_zone = buttons_zone.push(text(note.to_string()).size(12).color(c::RED()));
+        }
+        buttons_zone = buttons_zone.push(
+            row![
+                Space::new().width(Length::Fill),
+                modal_action("Cancel", ModalBtn::Plain, Msg::ModalCancel),
+                modal_action("Submit", ModalBtn::Primary, Msg::ModalSubmit),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        );
+
+        let body = column![
+            modal_header(title, c::MAGENTA()),
+            divider_h(c::BORDER_SOFT()),
+            input_zone,
+            divider_h(c::BORDER_SOFT()),
+            container(buttons_zone).padding(Padding::from([12, 16])),
+            divider_h(c::BORDER_SOFT()),
+            modal_footer_hints(&[("⏎", "confirm"), ("esc", "cancel")]),
+        ];
+
+        modal_panel(body.into(), 480.0)
     }
 
     /// The windowed directory-match list shared by the add-project pick step
@@ -2612,14 +2503,16 @@ impl Grove {
                 // Rows show just the directory name — the buffer above already
                 // carries the parent path, and full paths wrap illegibly.
                 let label = format!("{}/", crate::app::path_basename(&path));
-                matches_col = matches_col.push(modal_list_row(
+                matches_col = matches_col.push(launcher_row(
                     text(label)
                         .font(UI_FONT)
                         .size(12)
                         .color(if active { c::FG() } else { c::FG_DIM() })
                         .wrapping(iced::widget::text::Wrapping::None),
                     active,
+                    true,
                     on_pick(path),
+                    ROW_H,
                 ));
             }
             if below > 0 {
@@ -2658,16 +2551,21 @@ impl Grove {
             AddProjectStep::PickSource => 1,
             AddProjectStep::Details => 2,
         };
-        let header = row![
-            text("Add project").size(13).color(accent),
-            Space::new().width(Length::Fill),
-            text(format!("Step {step_no} of 2"))
-                .size(11)
-                .color(c::FG_MUTE()),
-        ]
-        .align_y(iced::Alignment::Center);
+        let header = modal_header_row(
+            row![
+                text("Add project").size(13).color(accent),
+                Space::new().width(Length::Fill),
+                text(format!("Step {step_no} of 2"))
+                    .size(11)
+                    .color(c::FG_MUTE()),
+            ]
+            .align_y(iced::Alignment::Center)
+            .into(),
+        );
 
-        let mut body = column![header].spacing(12);
+        let mut body = column![].spacing(12);
+        #[allow(unused_assignments)]
+        let mut footer: Option<Element<'a, Msg>> = None;
 
         match step {
             AddProjectStep::PickSource => {
@@ -2744,21 +2642,20 @@ impl Grove {
                 if let Some(note) = note {
                     body = body.push(text(note.to_string()).size(12).color(c::RED()));
                 }
-                body = body
-                    .push(
-                        text("Tab to complete · ↑↓ to select · Enter to continue · Esc to cancel")
-                            .size(11)
-                            .color(c::FG_MUTE()),
-                    )
-                    .push(Space::new().height(4))
-                    .push(
-                        row![
-                            Space::new().width(Length::Fill),
-                            modal_action("Cancel", ModalBtn::Plain, Msg::ModalCancel),
-                        ]
-                        .spacing(8)
-                        .align_y(iced::Alignment::Center),
-                    );
+                body = body.push(
+                    row![
+                        Space::new().width(Length::Fill),
+                        modal_action("Cancel", ModalBtn::Plain, Msg::ModalCancel),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                );
+                footer = Some(modal_footer_hints(&[
+                    ("tab", "complete"),
+                    ("↑↓", "select"),
+                    ("⏎", "continue"),
+                    ("esc", "cancel"),
+                ]));
             }
             AddProjectStep::Details => {
                 let chip = container(
@@ -2851,26 +2748,29 @@ impl Grove {
                 if let Some(note) = note {
                     body = body.push(text(note.to_string()).size(12).color(c::RED()));
                 }
-                body = body
-                    .push(
-                        text("Enter to add · Esc to back")
-                            .size(11)
-                            .color(c::FG_MUTE()),
-                    )
-                    .push(Space::new().height(4))
-                    .push(
-                        row![
-                            Space::new().width(Length::Fill),
-                            modal_action("Cancel", ModalBtn::Plain, Msg::ModalCancel),
-                            modal_action("Add project", ModalBtn::Primary, Msg::AddProjectSubmit),
-                        ]
-                        .spacing(8)
-                        .align_y(iced::Alignment::Center),
-                    );
+                body = body.push(
+                    row![
+                        Space::new().width(Length::Fill),
+                        modal_action("Cancel", ModalBtn::Plain, Msg::ModalCancel),
+                        modal_action("Add project", ModalBtn::Primary, Msg::AddProjectSubmit),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                );
+                footer = Some(modal_footer_hints(&[("⏎", "add"), ("esc", "back")]));
             }
         }
 
-        modal_panel(body.into(), 640.0, accent)
+        let mut panel_body = column![
+            header,
+            divider_h(c::BORDER_SOFT()),
+            container(body).padding(Padding::from([14, 16])),
+        ];
+        if let Some(footer) = footer {
+            panel_body = panel_body.push(divider_h(c::BORDER_SOFT())).push(footer);
+        }
+
+        modal_panel(panel_body.into(), 640.0)
     }
 
     fn confirm_modal<'a>(
@@ -2886,8 +2786,12 @@ impl Grove {
             _ if destructive => "Remove",
             _ => "Confirm",
         };
-        let body = column![
-            text(title.to_string()).size(13).color(accent),
+        let confirm_label_lower = match kind {
+            ConfirmKind::Quit => "quit",
+            _ if destructive => "remove",
+            _ => "confirm",
+        };
+        let body_zone = column![
             text(prompt.to_string())
                 .size(13)
                 .color(c::FG_DIM())
@@ -2911,7 +2815,21 @@ impl Grove {
         ]
         .spacing(12);
 
-        modal_panel(body.into(), 480.0, accent)
+        let footer = if destructive {
+            modal_footer_hints(&[("Y", confirm_label_lower), ("esc", "cancel")])
+        } else {
+            modal_footer_hints(&[("⏎", "confirm"), ("esc", "cancel")])
+        };
+
+        let body = column![
+            modal_header(title, accent),
+            divider_h(c::BORDER_SOFT()),
+            container(body_zone).padding(Padding::from([14, 16])),
+            divider_h(c::BORDER_SOFT()),
+            footer,
+        ];
+
+        modal_panel(body.into(), 480.0)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2940,7 +2858,6 @@ impl Grove {
         let session_note = "Running sessions for this project will be stopped.";
 
         let mut body = column![
-            text("Remove project").size(13).color(accent),
             text(prompt)
                 .size(13)
                 .color(c::FG_DIM())
@@ -3008,23 +2925,15 @@ impl Grove {
                         }),
                 );
         } else {
-            body = body
-                .push(divider_h(c::BORDER_SOFT()))
-                .push(Space::new().height(4))
-                .push(
-                    text("Y to remove · Space to toggle delete from disk · Esc to cancel")
-                        .size(11)
-                        .color(c::FG_MUTE()),
-                )
-                .push(
-                    row![
-                        Space::new().width(Length::Fill),
-                        modal_action("Cancel", ModalBtn::Plain, Msg::ModalCancel),
-                        modal_action("Remove", ModalBtn::Danger, Msg::ConfirmRemoveProject),
-                    ]
-                    .spacing(8)
-                    .align_y(iced::Alignment::Center),
-                );
+            body = body.push(divider_h(c::BORDER_SOFT())).push(
+                row![
+                    Space::new().width(Length::Fill),
+                    modal_action("Cancel", ModalBtn::Plain, Msg::ModalCancel),
+                    modal_action("Remove", ModalBtn::Danger, Msg::ConfirmRemoveProject),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            );
         }
 
         if !errors.is_empty() {
@@ -3037,12 +2946,22 @@ impl Grove {
             );
         }
 
-        modal_panel(body.into(), 520.0, accent)
+        let mut panel_body = column![
+            modal_header("Remove project", accent),
+            divider_h(c::BORDER_SOFT()),
+            container(body).padding(Padding::from([14, 16])),
+        ];
+        if !in_progress {
+            panel_body = panel_body.push(divider_h(c::BORDER_SOFT())).push(
+                modal_footer_hints(&[("Y", "remove"), ("space", "toggle delete"), ("esc", "cancel")]),
+            );
+        }
+
+        modal_panel(panel_body.into(), 520.0)
     }
 
     fn message_modal<'a>(&'a self, message: &'a str) -> Element<'a, Msg> {
-        let body = column![
-            text("Notice").size(13).color(c::CYAN()),
+        let body_zone = column![
             text(message.to_string())
                 .size(13)
                 .color(c::FG_DIM())
@@ -3057,7 +2976,15 @@ impl Grove {
         ]
         .spacing(12);
 
-        modal_panel(body.into(), 480.0, c::CYAN())
+        let body = column![
+            modal_header("Notice", c::CYAN()),
+            divider_h(c::BORDER_SOFT()),
+            container(body_zone).padding(Padding::from([14, 16])),
+            divider_h(c::BORDER_SOFT()),
+            modal_footer_hints(&[("esc", "close")]),
+        ];
+
+        modal_panel(body.into(), 480.0)
     }
 
     fn teardown_modal(&self) -> Element<'_, Msg> {
@@ -3070,10 +2997,9 @@ impl Grove {
         let done = matches!(td.stage, TeardownStage::Done { .. });
         let running = matches!(td.stage, TeardownStage::RunningScript);
 
-        let mut body = column![text(format!("Delete worktree / {wt_name}"))
-            .size(13)
-            .color(c::RED()),]
-        .spacing(12);
+        let header = modal_header(&format!("Delete worktree / {wt_name}"), c::RED());
+
+        let mut body = column![].spacing(12);
 
         // Embedded teardown-script PTY (read-only) while it runs / after it
         // exits, until removal completes and the session is dropped.
@@ -3118,7 +3044,29 @@ impl Grove {
         .align_y(iced::Alignment::Center);
 
         body = body.push(Space::new().height(4)).push(buttons);
-        modal_panel(body.into(), 560.0, c::RED())
+
+        // Esc always dismisses here (`cancel_modal` gates by stage): skip &
+        // remove while the teardown script runs, close once removal is done.
+        // Mid-removal there's no dismissal (an in-flight `git worktree
+        // remove` can't be safely interrupted), so the hint is omitted then.
+        let footer = if done {
+            Some(modal_footer_hints(&[("esc", "close")]))
+        } else if running {
+            Some(modal_footer_hints(&[("esc", "skip & remove")]))
+        } else {
+            None
+        };
+
+        let mut panel_body = column![
+            header,
+            divider_h(c::BORDER_SOFT()),
+            container(body).padding(Padding::from([14, 16])),
+        ];
+        if let Some(footer) = footer {
+            panel_body = panel_body.push(divider_h(c::BORDER_SOFT())).push(footer);
+        }
+
+        modal_panel(panel_body.into(), 560.0)
     }
 
     /// Per-project modal: lifecycle scripts editor plus (new) the "Project
@@ -3129,12 +3077,6 @@ impl Grove {
         let ed = match &self.scripts_editor {
             Some(ed) => ed,
             None => return Space::new().width(0).into(),
-        };
-
-        let eyebrow = |label: &'static str| -> Element<'_, Msg> {
-            container(text(label).font(UI_BOLD).size(11).color(c::FG_MUTE()))
-                .padding(Padding::from([0, 10]))
-                .into()
         };
 
         // ── PROJECT THEME ────────────────────────────────────────────────
@@ -3188,7 +3130,7 @@ impl Grove {
             "Enable Project themes in Settings to use this"
         };
         let project_theme_section = column![
-            eyebrow("PROJECT THEME"),
+            section_header("PROJECT THEME", 0.0, 0.0),
             Space::new().height(2),
             theme_row,
             container(text(theme_caption).size(11).color(c::FG_MUTE()))
@@ -3301,13 +3243,15 @@ impl Grove {
         )
         .max_height(480.0);
 
-        let body = column![
-            text(format!("Project Settings — {}", ed.project_name))
-                .size(13)
-                .color(c::CYAN()),
+        let header = modal_header(
+            &format!("Project Settings — {}", ed.project_name),
+            c::CYAN(),
+        );
+
+        let body_zone = column![
             project_theme_section,
             column![
-                eyebrow("LIFECYCLE SCRIPTS"),
+                section_header("LIFECYCLE SCRIPTS", 0.0, 0.0),
                 Space::new().height(2),
                 container(
                     text("Shell snippets shared by every worktree of this project, run via $SHELL -lc. Leave a field blank to disable that step.")
@@ -3330,12 +3274,19 @@ impl Grove {
         ]
         .spacing(12);
 
-        modal_panel(body.into(), 560.0, c::CYAN())
+        let body = column![
+            header,
+            divider_h(c::BORDER_SOFT()),
+            container(body_zone).padding(Padding::from([14, 16])),
+            divider_h(c::BORDER_SOFT()),
+            modal_footer_hints(&[("esc", "cancel")]),
+        ];
+
+        modal_panel(body.into(), 560.0)
     }
 
     fn tmux_choice_modal(&self) -> Element<'_, Msg> {
-        let body = column![
-            text("Session backend").size(13).color(c::CYAN()),
+        let body_zone = column![
             text("Use tmux for new sessions? Existing sessions keep their current backend.")
                 .size(13)
                 .color(c::FG_DIM())
@@ -3351,7 +3302,15 @@ impl Grove {
         ]
         .spacing(12);
 
-        modal_panel(body.into(), 480.0, c::CYAN())
+        let body = column![
+            modal_header("Session backend", c::CYAN()),
+            divider_h(c::BORDER_SOFT()),
+            container(body_zone).padding(Padding::from([14, 16])),
+            divider_h(c::BORDER_SOFT()),
+            modal_footer_hints(&[("⏎", "tmux"), ("n", "native"), ("esc", "close")]),
+        ];
+
+        modal_panel(body.into(), 480.0)
     }
 
     fn agent_picker_modal<'a>(
@@ -3367,11 +3326,17 @@ impl Grove {
             format!("Start session / {project} / {wt_name}")
         };
 
-        let mut list = Column::new().spacing(0);
+        const AGENT_ROW_H: f32 = 32.0;
+        let mut list = Column::new().spacing(2);
         for (i, agent) in self.app.available_agents.iter().enumerate() {
             let active = i == sel;
             let is_default = self.app.store.default_agent == Some(*agent);
+            let icon_color = if active { c::YELLOW() } else { c::FG_MUTE() };
+            let icon_slot = container(icon(agent.icon_name(), 16.0, icon_color))
+                .width(24.0)
+                .align_x(iced::alignment::Horizontal::Center);
             let label = row![
+                icon_slot,
                 text(cap(agent.label()))
                     .size(12)
                     .color(if active { c::FG() } else { c::FG_DIM() }),
@@ -3380,28 +3345,22 @@ impl Grove {
                     .size(11)
                     .color(c::FG_MUTE()),
             ]
+            .spacing(8)
             .align_y(iced::Alignment::Center);
 
-            list = list.push(modal_list_row(label, active, Msg::AgentPickerSelect(i)));
+            list = list.push(launcher_row(
+                label,
+                active,
+                true,
+                Msg::AgentPickerSelect(i),
+                AGENT_ROW_H,
+            ));
         }
 
-        let list_h = (self.app.available_agents.len() as f32) * ROW_H;
-        let list_box = container(list)
-            .width(Length::Fill)
-            .height(Length::Fixed(list_h))
-            .style(|_| container::Style {
-                background: Some(Background::Color(c::BG_STRIP())),
-                border: Border {
-                    color: c::BORDER(),
-                    width: 1.0,
-                    radius: Radius::from(4.0),
-                },
-                ..Default::default()
-            });
+        let list_zone = container(list).padding(8).width(Length::Fill);
 
-        let body = column![
-            text(title).size(13).color(c::MAGENTA()),
-            list_box,
+        let body_zone = column![
+            list_zone,
             Space::new().height(8),
             row![
                 modal_action("Default", ModalBtn::Plain, Msg::AgentPickerToggleDefault),
@@ -3414,7 +3373,15 @@ impl Grove {
         ]
         .spacing(12);
 
-        modal_panel(body.into(), 500.0, c::MAGENTA())
+        let body = column![
+            modal_header(&title, c::MAGENTA()),
+            divider_h(c::BORDER_SOFT()),
+            container(body_zone).padding(Padding::from([14, 16])),
+            divider_h(c::BORDER_SOFT()),
+            modal_footer_hints(&[("↑↓", "choose"), ("⏎", "launch"), ("esc", "cancel")]),
+        ];
+
+        modal_panel(body.into(), 500.0)
     }
 
     /// Recents-first command palette (Agent View "+ New session", mod+n, grid
@@ -3809,6 +3776,9 @@ impl Grove {
 
         let panel = container(body)
             .width(Length::Fixed(640.0))
+            // Same 1px inset as `modal_panel`: keeps the footer strip from
+            // painting over the panel's border.
+            .padding(1.0)
             .style(|_| container::Style {
                 background: Some(Background::Color(c::BG_RAIL())),
                 text_color: Some(c::FG()),
@@ -4170,14 +4140,6 @@ impl Grove {
                 .padding(Padding::from([0, 10]))
                 .into()
         };
-        // Section eyebrow: the one deliberate UPPERCASE exception (structural
-        // grouping, not shouting).
-        let eyebrow = |label: &'static str| -> Element<'_, Msg> {
-            container(text(label).font(UI_BOLD).size(11).color(c::FG_MUTE()))
-                .padding(Padding::from([0, 10]))
-                .into()
-        };
-
         // The "Default" badge and "Set default" button share an identical
         // footprint (fixed width, same padding/radius) so the action-cell
         // column stays aligned regardless of which state a row is in.
@@ -4244,14 +4206,19 @@ impl Grove {
         };
 
         // ── header ─────────────────────────────────────────────────────────
-        let header = row![
-            text("Settings").size(13).color(c::MAGENTA()),
-            Space::new().width(Length::Fill),
-            icon_btn("close", Msg::ModalCancel),
-        ]
-        .align_y(Center);
-
-        let head = column![header, caption("Changes save automatically.")].spacing(3);
+        let header = modal_header_row(
+            row![
+                text("Settings").size(13).color(c::MAGENTA()),
+                Space::new().width(Length::Fill),
+                text("Changes save automatically.")
+                    .size(11)
+                    .color(c::FG_MUTE()),
+                Space::new().width(10),
+                icon_btn("close", Msg::ModalCancel),
+            ]
+            .align_y(Center)
+            .into(),
+        );
 
         // ── appearance ───────────────────────────────────────────────────────
         let theme_row = modal_list_row(
@@ -4313,7 +4280,7 @@ impl Grove {
         .padding(Padding::from([0, 10]));
 
         let appearance = column![
-            eyebrow("APPEARANCE"),
+            section_header("APPEARANCE", 0.0, 0.0),
             Space::new().height(2),
             theme_row,
             app_size_row,
@@ -4377,7 +4344,7 @@ impl Grove {
         .padding(Padding::from([0, 10]));
 
         let agents_terminal = column![
-            eyebrow("AGENTS / TERMINAL"),
+            section_header("AGENTS / TERMINAL", 0.0, 0.0),
             Space::new().height(2),
             backend_row,
             skip_perms_row,
@@ -4389,13 +4356,18 @@ impl Grove {
         // ── tools ─────────────────────────────────────────────────────────
         let tools_header = container(
             row![
-                text("TOOLS").font(UI_BOLD).size(11).color(c::FG_MUTE()),
+                section_header("TOOLS", 0.0, 0.0),
                 Space::new().width(Length::Fill),
                 icon_btn("restart", Msg::RefreshTools),
             ]
             .align_y(Center),
         )
-        .padding(Padding::from([0, 10]));
+        .padding(Padding {
+            top: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+            right: 10.0,
+        });
 
         let mut tools = Column::new().spacing(0);
         for st in &self.settings_tools {
@@ -4480,8 +4452,9 @@ impl Grove {
 
         let scroll_body = container(scrollable(sections)).max_height(420.0);
 
-        // ── updates — demoted into a quiet footer strip below the scroll
-        // body, always visible (not part of the scrollable content). ───────
+        // ── updates — the version/status strip merges into the shared
+        // footer chrome below; update-available actions and the release
+        // notes preview stay in the body, right under the scroll area. ────
         let current_ver = env!("CARGO_PKG_VERSION");
         let status_line: Element<'_, Msg> = match &self.upgrade {
             UpgradeState::Idle => text("Not checked yet").size(11).color(c::FG_MUTE()).into(),
@@ -4510,26 +4483,7 @@ impl Grove {
             icon_btn("restart", Msg::CheckForUpdates { manual: true })
         };
 
-        let footer_row = container(
-            row![
-                text(format!("v{current_ver}")).size(11).color(c::FG_DIM()),
-                status_line,
-                refresh,
-                Space::new().width(Length::Fill),
-                modal_action_sized("View changelog", ModalBtn::Plain, 11, Msg::OpenChangelog),
-            ]
-            .spacing(10)
-            .align_y(Center),
-        )
-        .padding(Padding::from([0, 10]));
-
-        let mut footer = column![
-            divider_h(c::BORDER_SOFT()),
-            Space::new().height(8),
-            footer_row
-        ]
-        .spacing(0);
-
+        let mut extra = column![].spacing(4);
         if let UpgradeState::Available(r) = &self.upgrade {
             let mut actions = row![].spacing(8).align_y(Center);
             // Hide "update now" for Unknown installs (notify-only).
@@ -4555,9 +4509,7 @@ impl Grove {
                 11,
                 Msg::CopyReleaseUrl,
             ));
-            footer = footer
-                .push(Space::new().height(6))
-                .push(container(actions).padding(Padding::from([0, 10])));
+            extra = extra.push(Space::new().height(2)).push(actions);
 
             if !r.body.is_empty() {
                 let truncated: String = r
@@ -4569,16 +4521,40 @@ impl Grove {
                     .chars()
                     .take(300)
                     .collect();
-                footer = footer.push(Space::new().height(4)).push(
-                    container(text(truncated).size(11).color(c::FG_MUTE()))
-                        .padding(Padding::from([0, 10])),
-                );
+                extra = extra
+                    .push(Space::new().height(4))
+                    .push(text(truncated).size(11).color(c::FG_MUTE()));
             }
         }
 
-        let body = column![head, scroll_body, footer].spacing(10);
+        let body_zone = column![scroll_body, extra].spacing(10);
 
-        modal_panel(body.into(), 580.0, c::MAGENTA())
+        // The version/status strip merges into the shared footer chrome,
+        // with an [esc] close hint trailing on the right.
+        let footer = modal_footer_row(
+            row![
+                text(format!("v{current_ver}")).size(11).color(c::FG_DIM()),
+                status_line,
+                refresh,
+                Space::new().width(Length::Fill),
+                modal_action_sized("View changelog", ModalBtn::Plain, 11, Msg::OpenChangelog),
+                Space::new().width(10),
+                footer_hint("esc", "close"),
+            ]
+            .spacing(10)
+            .align_y(Center)
+            .into(),
+        );
+
+        let body = column![
+            header,
+            divider_h(c::BORDER_SOFT()),
+            container(body_zone).padding(Padding::from([14, 16])),
+            divider_h(c::BORDER_SOFT()),
+            footer,
+        ];
+
+        modal_panel(body.into(), 580.0)
     }
 
     /// Two-column keyboard-shortcut reference (mod+/). On macOS the ⌘ is
@@ -4634,26 +4610,40 @@ impl Grove {
         // render unchanged as plain text.
         let chord_keys = |keys: &str| -> Element<'_, Msg> {
             if !cfg!(target_os = "macos") || !keys.contains("cmd") {
-                return text(keys.to_string()).size(11).color(c::CYAN()).into();
+                return keycap_text(keys.to_string(), c::CYAN());
             }
             let mut parts = keys.split("cmd");
             let mut els: Vec<Element<'_, Msg>> = Vec::new();
             if let Some(first) = parts.next() {
                 if !first.is_empty() {
-                    els.push(text(first.to_string()).size(11).color(c::CYAN()).into());
+                    els.push(
+                        text(first.to_string())
+                            .font(MONO_FONT)
+                            .size(11)
+                            .color(c::CYAN())
+                            .into(),
+                    );
                 }
             }
             for part in parts {
                 els.push(icon("command", 10.0, c::CYAN()));
                 let rest = part.strip_prefix('+').unwrap_or(part);
                 if !rest.is_empty() {
-                    els.push(text(rest.to_string()).size(11).color(c::CYAN()).into());
+                    els.push(
+                        text(rest.to_string())
+                            .font(MONO_FONT)
+                            .size(11)
+                            .color(c::CYAN())
+                            .into(),
+                    );
                 }
             }
-            Row::with_children(els)
-                .spacing(1)
-                .align_y(iced::Alignment::Center)
-                .into()
+            keycap(
+                Row::with_children(els)
+                    .spacing(1)
+                    .align_y(iced::Alignment::Center)
+                    .into(),
+            )
         };
 
         let make_row = |keys: String, desc: &'static str| {
@@ -4682,7 +4672,7 @@ impl Grove {
             cols
         };
 
-        let mut body = column![text("Keyboard shortcuts").size(13).color(c::MAGENTA())].spacing(12);
+        let mut body = column![].spacing(12);
 
         if grouped {
             // Global section: registry Global rows + the static copy/paste/esc rows.
@@ -4702,16 +4692,11 @@ impl Grove {
                 .collect();
 
             if !global_rows.is_empty() {
-                body = body.push(text("GLOBAL").font(UI_BOLD).size(11).color(c::FG_MUTE()));
+                body = body.push(section_header("GLOBAL", 0.0, 0.0));
                 body = body.push(two_columns(global_rows));
             }
             if !screen_rows.is_empty() {
-                body = body.push(
-                    text(screen.label().to_uppercase())
-                        .font(UI_BOLD)
-                        .size(11)
-                        .color(c::FG_MUTE()),
-                );
+                body = body.push(section_header(&screen.label().to_uppercase(), 0.0, 0.0));
                 body = body.push(two_columns(screen_rows));
             }
         } else {
@@ -4730,17 +4715,31 @@ impl Grove {
             body = body.push(two_columns(rows));
         }
 
-        body = body
-            .push(Space::new().height(4))
-            .push(text("Esc to close").size(11).color(c::FG_MUTE()));
+        let panel_body = column![
+            modal_header("Keyboard shortcuts", c::MAGENTA()),
+            divider_h(c::BORDER_SOFT()),
+            container(body).padding(Padding::from([14, 16])),
+            divider_h(c::BORDER_SOFT()),
+            modal_footer_hints(&[("esc", "close")]),
+        ];
 
-        modal_panel(body.into(), 640.0, c::MAGENTA())
+        modal_panel(panel_body.into(), 640.0)
     }
 
     fn updating_modal(&self) -> Element<'_, Msg> {
         use iced::Alignment::Center;
 
-        let header = text("Updating Grove").size(13).color(c::MAGENTA());
+        let header = modal_header("Updating Grove", c::MAGENTA());
+
+        // Keys are blocked while the update is in flight (see
+        // `Modal::Updating` in update.rs), so no footer hint appears then;
+        // once it lands on Updated/Failed, Esc is wired to dismiss.
+        let footer = match &self.upgrade {
+            UpgradeState::Updating(_) => None,
+            UpgradeState::Updated => Some(modal_footer_hints(&[("esc", "later")])),
+            UpgradeState::UpdateFailed(_) => Some(modal_footer_hints(&[("esc", "close")])),
+            _ => None,
+        };
 
         let body: Element<'_, Msg> = match &self.upgrade {
             UpgradeState::Updating(stage) => {
@@ -4782,8 +4781,15 @@ impl Grove {
             _ => text("Updating…").size(12).color(c::FG_DIM()).into(),
         };
 
-        let content = column![header, Space::new().height(12), body].spacing(0);
-        modal_panel(content.into(), 420.0, c::MAGENTA())
+        let mut content = column![
+            header,
+            divider_h(c::BORDER_SOFT()),
+            container(body).padding(Padding::from([14, 16])),
+        ];
+        if let Some(footer) = footer {
+            content = content.push(divider_h(c::BORDER_SOFT())).push(footer);
+        }
+        modal_panel(content.into(), 420.0)
     }
 
     fn theme_picker_modal(
@@ -4886,7 +4892,7 @@ impl Grove {
             }
         };
 
-        let mut body = column![text(title).size(13).color(c::MAGENTA())].spacing(12);
+        let mut body = column![].spacing(12);
         if !is_project {
             body = body.push(modal_checkbox(
                 "Follow system appearance".into(),
@@ -4909,7 +4915,12 @@ impl Grove {
                 .align_y(iced::Alignment::Center),
             );
 
-        modal_panel(body.into(), 460.0, c::MAGENTA())
+        let panel_body = column![
+            modal_header(&title, c::MAGENTA()),
+            container(body).padding(Padding::from([16, 20])),
+        ];
+
+        modal_panel(panel_body.into(), 460.0)
     }
 
     /// The first-run onboarding wizard. A single modal that walks the user
@@ -5308,7 +5319,10 @@ impl Grove {
         ]
         .spacing(14);
 
-        modal_panel(content.into(), 600.0, c::MAGENTA())
+        modal_panel(
+            container(content).padding(Padding::from([16, 20])).into(),
+            600.0,
+        )
     }
 
     // ── changelog modal ───────────────────────────────────────────────────
@@ -5317,12 +5331,15 @@ impl Grove {
         use super::state::ChangelogState;
         use iced::Alignment::Center;
 
-        let header = row![
-            text("Changelog").size(13).color(c::MAGENTA()),
-            Space::new().width(Length::Fill),
-            icon_btn("close", Msg::CloseChangelog),
-        ]
-        .align_y(Center);
+        let header = modal_header_row(
+            row![
+                text("Changelog").size(13).color(c::MAGENTA()),
+                Space::new().width(Length::Fill),
+                icon_btn("close", Msg::CloseChangelog),
+            ]
+            .align_y(Center)
+            .into(),
+        );
 
         let inner: Element<'_, Msg> = match &self.changelog {
             ChangelogState::Idle | ChangelogState::Loading => row![
@@ -5377,14 +5394,17 @@ impl Grove {
 
         let body = column![
             header,
-            Space::new().height(12),
+            divider_h(c::BORDER_SOFT()),
             container(inner)
                 .width(Length::Fill)
-                .height(Length::Fixed(420.0)),
+                .height(Length::Fixed(420.0))
+                .padding(Padding::from([14, 16])),
+            divider_h(c::BORDER_SOFT()),
+            modal_footer_hints(&[("esc", "close")]),
         ]
         .spacing(0);
 
-        let panel = modal_panel(body.into(), 600.0, c::MAGENTA());
+        let panel = modal_panel(body.into(), 600.0);
 
         // Centered overlay on a dim backdrop, matching the settings modal.
         container(panel)
