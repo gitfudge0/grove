@@ -477,6 +477,21 @@ impl Session {
         }
     }
 
+    /// Snap this session's view back to the live screen, discarding any
+    /// scrollback offset. Mirrors the reset `send` does on typing, for
+    /// callers that want to land on the live bottom without the user having
+    /// typed anything — e.g. jumping to a session that needs attention,
+    /// where the whole point is to show the live prompt, not wherever the
+    /// view happened to be scrolled.
+    pub fn snap_to_bottom(&mut self) {
+        if let Ok(mut p) = self.parser.lock() {
+            if p.screen().scrollback() != 0 {
+                p.set_scrollback(0);
+                self.dirty.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
     pub fn send(&mut self, bytes: &[u8]) {
         self.last_input_at = Some(Instant::now());
         // Typing snaps the view back to the live screen, like a real terminal.

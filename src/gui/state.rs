@@ -107,6 +107,10 @@ pub struct Grove {
     /// close button shows a red tick — clicking it confirms the kill, clicking
     /// anywhere else clears this back to `None`.
     pub pending_kill: Option<usize>,
+    /// Home-terminal index awaiting close confirmation — same two-step
+    /// confirm idiom as `pending_kill`, kept separate since it indexes
+    /// `App::home_terminals` rather than `App::sessions`.
+    pub pending_kill_terminal: Option<usize>,
     /// Worktree currently under the mouse — drives reveal of the per-row
     /// action buttons (play / terminal / more). `None` when no row is hovered.
     pub hovered_wt: Option<(usize, usize)>,
@@ -120,6 +124,10 @@ pub struct Grove {
     /// (they reattach when reopened); they only die when the worktree is
     /// removed.
     pub term_panel_open: bool,
+    /// Whether the docked home-terminals section of the sidebar tree is
+    /// collapsed. Session-only (not persisted, same as `collapsed`/
+    /// `collapsed_wt`); toggled by `Msg::ToggleTerminalsSection`.
+    pub terminals_collapsed: bool,
     /// The terminal panel's share of the workspace width, in percent (the agent
     /// view gets `100 - term_panel_portion`). Adjusted live with
     /// Ctrl+Shift+Left/Right between `TERM_PANEL_PORTION_MIN` and
@@ -394,13 +402,21 @@ pub enum Msg {
     /// worktrees that currently contain sessions, or — if already in that
     /// state — expands every project and worktree.
     ToggleCollapseAll,
+    /// Toggle collapse of the docked TERMINALS section at the bottom of the
+    /// sidebar tree.
+    ToggleTerminalsSection,
     /// Relaunch the active home terminal's shell at `~` (e.g. after it exited).
     RestartHomeTerminal,
     /// Spawn an additional home terminal and focus it.
     NewHomeTerminal,
     /// Focus the home terminal at this index.
     SelectHomeTerminal(usize),
-    /// Close the home terminal at this index.
+    /// Arm the close-confirm for the home terminal at this index (first
+    /// press/click of the two-step confirm — mirrors `RequestKillSession`).
+    RequestCloseHomeTerminal(usize),
+    /// Close the home terminal at this index (the confirmed action — mirrors
+    /// `KillSession`). Also reachable directly, e.g. from the second mod+w
+    /// press once armed.
     CloseHomeTerminal(usize),
     WorktreeClicked {
         proj: usize,
@@ -640,4 +656,11 @@ pub enum Msg {
     /// Click an agent row by index into `available_agents`, in options state:
     /// picks it and immediately launches the session.
     LauncherOptionsPick(usize),
+    /// Click a session row by index into `App::sessions`, in the "switch to
+    /// session" drill-in: switches focus to it and closes the palette.
+    LauncherSwitchSessionPick(usize),
+    /// Click one of the two inline contextual-action rows revealed by Tab
+    /// under a highlighted `Recent`/`Combo` row (`0` = "Launch session…",
+    /// `1` = "Delete worktree").
+    LauncherRowActionPick(usize),
 }

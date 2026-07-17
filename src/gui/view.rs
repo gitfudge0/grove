@@ -14,8 +14,9 @@ use super::update::{
     platform_mod_label, GlobalShortcut, PaletteRow, Scope, ShortcutDef, SHORTCUTS,
 };
 use super::widgets::{
-    control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_workspace, footer_btn,
-    icon_btn, launcher_row, modal_action, modal_action_sized, modal_checkbox, modal_list_row,
+    control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_terminals_workspace,
+    empty_workspace, icon_btn, launcher_row, modal_action, modal_action_sized, modal_checkbox,
+    modal_list_row,
     modal_list_row_sized, modal_panel, seg_button, sidebar_agent_menu_overlay, skip_perms_seg,
     tool_btn, tool_btn_toggle, vline, ModalBtn, SegSide, PALETTE_ROW_H,
 };
@@ -267,6 +268,19 @@ fn is_in_progress_title(title: &str) -> bool {
 }
 
 impl Grove {
+    /// Whether any home terminal has a live process running — the signal
+    /// behind the "TERMINALS" header's collapsed-state activity dot. Shared
+    /// by the docked (collapsed) and inline (expanded, forced `false` — see
+    /// call site) header renders so the scan isn't duplicated.
+    fn home_terminals_activity(&self) -> bool {
+        self.app.home_terminals.iter().any(|s| {
+            matches!(
+                *s.status.lock().unwrap_or_else(|e| e.into_inner()),
+                SessionStatus::Running
+            )
+        })
+    }
+
     pub fn view(&self) -> Element<'_, Msg> {
         let body = if self.app.chrome_visible {
             let workspace_row: Element<'_, Msg> = if self.grid_view {
@@ -795,15 +809,24 @@ impl Grove {
             None => tree_area.into(),
         };
 
-        let footer: Element<'_, Msg> = footer_btn("+ add project", Msg::AddProject);
-        let stack_col = column![
-            tree_head,
-            divider_h(c::BORDER_SOFT()),
-            tree_layer,
-            divider_h(c::BORDER_SOFT()),
-            footer,
-        ]
-        .height(Length::Fill);
+        // When the TERMINALS section is collapsed, its header+rows no longer
+        // render inside the scrollable tree — dock a standalone copy of the
+        // header at the very bottom instead so it's always reachable.
+        let docked_terminals: Option<Element<'_, Msg>> = if self.terminals_collapsed {
+            Some(crate::gui::rows::home_terminals_header(
+                false,
+                self.app.home_terminals.len(),
+                self.home_terminals_activity(),
+            ))
+        } else {
+            None
+        };
+
+        let mut stack_col = column![tree_head, divider_h(c::BORDER_SOFT()), tree_layer,].height(Length::Fill);
+        if let Some(docked) = docked_terminals {
+            stack_col = stack_col.push(divider_h(c::BORDER_SOFT()));
+            stack_col = stack_col.push(docked);
+        }
 
         container(stack_col)
             .width(self.sidebar_width)
@@ -848,14 +871,42 @@ impl Grove {
             }
         });
 
+        let add_btn = button(
+            container(icon("plus", 12.0, c::FG_MUTE()))
+                .center_x(22)
+                .center_y(22),
+        )
+        .on_press(Msg::AddProject)
+        .padding(0)
+        .style(|_, status| {
+            let hovered = matches!(status, button::Status::Hovered);
+            button::Style {
+                background: if hovered {
+                    Some(Background::Color(c::BG_HOVER()))
+                } else {
+                    None
+                },
+                text_color: if hovered { c::FG() } else { c::FG_MUTE() },
+                border: Border {
+                    color: Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: Radius::from(4.0),
+                },
+                shadow: Shadow::default(),
+                snap: false,
+            }
+        });
+
         // Tree is always active now, so the collapse-all toggle is always shown.
-        let right_tools: Element<'_, Msg> = container(toggle)
+        let right_tools: Element<'_, Msg> = container(row![add_btn, toggle].align_y(iced::Alignment::Center))
             .height(Length::Fill)
             .align_y(iced::Alignment::Center)
             .into();
 
+        let section_label = section_header("PROJECTS", 0.0, 0.0);
+
         container(
-            row![Space::new().width(Length::Fill), right_tools,]
+            row![section_label, Space::new().width(Length::Fill), right_tools,]
                 .align_y(iced::Alignment::Center)
                 .height(Length::Fill)
                 .padding(Padding {
@@ -1002,12 +1053,21 @@ impl Grove {
             }
         }
 
-        col = col.push(divider_h(c::BORDER_SOFT()));
-        col = col.push(crate::gui::rows::home_terminals_header());
-        let show_close = self.app.home_terminals.len() > 1;
-        for (i, s) in self.app.home_terminals.iter().enumerate() {
-            let active = self.terminal_focused && self.app.active_terminal == Some(i);
-            col = col.push(crate::gui::rows::terminal_row(i, s, active, show_close));
+        if !self.terminals_collapsed {
+            // Expanded: every terminal already renders its own row below, so
+            // the header's activity dot (a "something's running in here" cue
+            // for the *collapsed* state) would be redundant — always off.
+            col = col.push(divider_h(c::BORDER_SOFT()));
+            col = col.push(crate::gui::rows::home_terminals_header(
+                true,
+                self.app.home_terminals.len(),
+                false,
+            ));
+            for (i, s) in self.app.home_terminals.iter().enumerate() {
+                let active = self.terminal_focused && self.app.active_terminal == Some(i);
+                let pending_kill = self.pending_kill_terminal == Some(i);
+                col = col.push(crate::gui::rows::terminal_row(i, s, active, pending_kill));
+            }
         }
 
         col.into()
@@ -1441,7 +1501,7 @@ impl Grove {
             Some(s) => column![self.home_terminal_bar(s), self.pty(PtyPane::Agent, s)]
                 .height(Length::Fill)
                 .into(),
-            None => empty_workspace(),
+            None => empty_terminals_workspace(),
         };
 
         container(inner)
@@ -1798,11 +1858,18 @@ impl Grove {
         // which terminal will receive keystrokes. Suppressed when the panel is
         // closed (only one PTY is interactive then).
         let focused = self.term_panel_open && pane == self.focused_input_pane();
-        container(scrollable(body).width(Length::Fill).height(Length::Fill))
-            .padding(Padding::from([12, 16]))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(move |_| container::Style {
+        container(
+            scrollable(body)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .direction(scrollable::Direction::Vertical(
+                    scrollable::Scrollbar::new().width(0).scroller_width(0),
+                )),
+        )
+        .padding(Padding::from([12, 16]))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(move |_| container::Style {
                 background: Some(Background::Color(c::bg_of(&pty_theme))),
                 border: if focused {
                     Border {
@@ -2243,7 +2310,42 @@ impl Grove {
                 ..Default::default()
             });
 
+        let palette_key = SHORTCUTS
+            .iter()
+            .find(|d| d.action == Some(GlobalShortcut::NewSession))
+            .map(|d| d.display_keys)
+            .unwrap_or("p");
+        let palette_chip_content: Element<'_, Msg> = if cfg!(target_os = "macos") {
+            row![
+                icon("command", 10.0, c::FG_DIM()),
+                text(palette_key).size(11).color(c::FG_DIM()),
+                text("  palette").size(11).color(c::FG_DIM()),
+            ]
+            .spacing(1)
+            .align_y(iced::Alignment::Center)
+            .into()
+        } else {
+            text(format!("{modifier}+{palette_key}  palette"))
+                .size(11)
+                .color(c::FG_DIM())
+                .into()
+        };
+        let palette_chip = button(palette_chip_content)
+            .padding(Padding::from([0, 6]))
+            .on_press(Msg::OpenSessionLauncher)
+            .style(|_, status| button::Style {
+                background: None,
+                text_color: if matches!(status, button::Status::Hovered) {
+                    c::FG()
+                } else {
+                    c::FG_DIM()
+                },
+                ..Default::default()
+            });
+
         let right = row![
+            palette_chip,
+            Space::new().width(12),
             shortcuts_chip,
             Space::new().width(12),
             text(format!("v{}", env!("CARGO_PKG_VERSION")))
@@ -2381,7 +2483,16 @@ impl Grove {
                 selected,
                 browse_all,
                 options,
-            } => self.session_launcher_modal(input, *selected, *browse_all, options.as_ref()),
+                switch,
+                row_actions,
+            } => self.session_launcher_modal(
+                input,
+                *selected,
+                *browse_all,
+                options.as_ref(),
+                *switch,
+                row_actions.as_ref(),
+            ),
             _ => Space::new().width(0).into(),
         };
 
@@ -3322,12 +3433,13 @@ impl Grove {
         selected: usize,
         browse_all: bool,
         options: Option<&'a LauncherOptions>,
+        switch: Option<usize>,
+        row_actions: Option<&'a crate::app::RowActionsState>,
     ) -> Element<'a, Msg> {
-        // In options state, the leading glyph slot becomes a static "options"
-        // cue chip instead of the search icon; the typed text underneath is
-        // unchanged.
-        let leading: Element<'a, Msg> = if options.is_some() {
-            container(text("options").font(MONO_FONT).size(10).color(c::CYAN()))
+        // A cue chip shell shared by the "options" and "switch to session"
+        // states' leading slot: mono, cyan text over a soft cyan tint.
+        let cue_chip = |label: &'static str| -> Element<'a, Msg> {
+            container(text(label).font(MONO_FONT).size(10).color(c::CYAN()))
                 .padding(Padding::from([2, 6]))
                 .style(|_| container::Style {
                     background: Some(Background::Color(c::SEL_TINT_SOFT())),
@@ -3339,10 +3451,23 @@ impl Grove {
                     ..Default::default()
                 })
                 .into()
+        };
+        // In options/switch state, the leading glyph slot becomes a static
+        // cue chip instead of the search icon; the typed text underneath is
+        // unchanged.
+        let leading: Element<'a, Msg> = if options.is_some() {
+            cue_chip("options")
+        } else if switch.is_some() {
+            cue_chip("SWITCH TO SESSION")
         } else {
             icon("search", 16.0, c::FG_MUTE())
         };
-        let field = text_input("Search projects, worktrees, agents…", input)
+        let placeholder = if switch.is_some() {
+            "Filter sessions…"
+        } else {
+            "Search projects, worktrees, agents…"
+        };
+        let field = text_input(placeholder, input)
             .id(modal_input_id())
             .font(UI_FONT)
             .size(14)
@@ -3358,7 +3483,120 @@ impl Grove {
 
         let mut body = column![input_zone, divider_h(c::BORDER_SOFT())];
 
-        if let Some(r) = options {
+        if let Some(sel) = switch {
+            // "Switch to session" drill-in: every active session across
+            // every project/worktree. Waiting sessions keep the sidebar's
+            // amber tint/left bar; the currently-focused session's icon
+            // renders yellow (same idiom as the recents' active-row accent).
+            let session_ids = self.switch_session_rows(input);
+            let list_zone: Element<'a, Msg> = if session_ids.is_empty() {
+                container(text("No matching sessions").size(12).color(c::FG_MUTE()))
+                    .padding(Padding::from([30, 16]))
+                    .width(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .into()
+            } else {
+                let mut list = Column::new().spacing(2);
+                for (i, &si) in session_ids.iter().enumerate() {
+                    let Some(s) = self.app.sessions.get(si) else {
+                        continue;
+                    };
+                    let highlighted = i == sel;
+                    let waiting = matches!(
+                        self.activity_state(s),
+                        crate::gui::activity::ActivityState::WaitingForInput
+                    );
+                    let is_active = self.app.active_session == Some(si);
+                    let icon_color = if is_active { c::YELLOW() } else { c::FG_MUTE() };
+                    let label = if waiting {
+                        format!("{} (waiting)", cap(s.agent.label()))
+                    } else {
+                        cap(s.agent.label())
+                    };
+                    let subtitle =
+                        format!("{} / {}", s.project, crate::app::path_basename(&s.wt_path));
+                    let icon_slot = container(icon(s.agent.icon_name(), 16.0, icon_color))
+                        .width(24.0)
+                        .align_x(iced::alignment::Horizontal::Center);
+                    let title_color = if highlighted { c::FG() } else { c::FG_DIM() };
+                    let mut content = row![
+                        icon_slot,
+                        column![
+                            text(label).font(UI_FONT).size(13).color(title_color),
+                            text(subtitle).font(MONO_FONT).size(10.5).color(c::FG_MUTE()),
+                        ]
+                        .spacing(2),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center);
+                    if highlighted {
+                        content = content
+                            .push(Space::new().width(Length::Fill))
+                            .push(keycap_text("⏎", c::FG_DIM()));
+                    }
+                    let row_el = launcher_row(
+                        content,
+                        highlighted,
+                        true,
+                        Msg::LauncherSwitchSessionPick(si),
+                        PALETTE_ROW_H,
+                    );
+                    // Waiting sessions keep the sidebar's amber tint + 3px
+                    // left accent bar, same idiom as `rows.rs`'s waiting row.
+                    let row_el = if waiting {
+                        let tint = Color {
+                            a: 0.12,
+                            ..c::AMBER()
+                        };
+                        let bar: Element<'a, Msg> = container(
+                            container(Space::new().width(3.0))
+                                .width(3.0)
+                                .height(Length::Fill)
+                                .style(|_| container::Style {
+                                    background: Some(Background::Color(c::AMBER())),
+                                    ..Default::default()
+                                }),
+                        )
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .align_x(iced::Alignment::Start)
+                        .into();
+                        container(stack![row_el, bar])
+                            .height(PALETTE_ROW_H)
+                            .width(Length::Fill)
+                            .style(move |_| container::Style {
+                                background: Some(Background::Color(tint)),
+                                border: Border {
+                                    color: Color::TRANSPARENT,
+                                    width: 0.0,
+                                    radius: Radius::from(6.0),
+                                },
+                                ..Default::default()
+                            })
+                            .into()
+                    } else {
+                        row_el
+                    };
+                    list = list.push(row_el);
+                }
+                container(scrollable(list).height(Length::Shrink))
+                    .padding(8)
+                    .max_height(380.0)
+                    .width(Length::Fill)
+                    .into()
+            };
+            body = body.push(list_zone);
+            body = body.push(divider_h(c::BORDER_SOFT()));
+            body = body.push(footer_container(
+                row![
+                    footer_hint("↑↓", "choose"),
+                    footer_hint("⏎", "switch"),
+                    footer_hint("esc", "back"),
+                ]
+                .spacing(14)
+                .into(),
+            ));
+        } else if let Some(r) = options {
             let worktrees = self.launcher_worktrees(r.proj);
             let agent = self
                 .app
@@ -3485,6 +3723,22 @@ impl Grove {
                     }
                     list =
                         list.push(self.palette_row_view(i, row, i == selected, input, root_mode));
+                    let row_identity = match row {
+                        PaletteRow::Recent { proj, wt_path, .. }
+                        | PaletteRow::Combo { proj, wt_path, .. } => Some((*proj, wt_path.as_str())),
+                        _ => None,
+                    };
+                    if let (Some((rp, rw)), Some(ra)) = (row_identity, row_actions) {
+                        if rp == ra.proj && rw == ra.wt_path {
+                            let is_main = self
+                                .launcher_worktrees(rp)
+                                .iter()
+                                .find(|w| w.path == rw)
+                                .map(|w| w.is_main)
+                                .unwrap_or(false);
+                            list = list.push(self.palette_row_actions_strip(ra.action, is_main));
+                        }
+                    }
                 }
                 container(scrollable(list).height(Length::Shrink))
                     .padding(8)
@@ -3494,16 +3748,63 @@ impl Grove {
             };
             body = body.push(list_zone);
             body = body.push(divider_h(c::BORDER_SOFT()));
-            body = body.push(footer_container(
-                row![
-                    footer_hint("↑↓", "navigate"),
-                    footer_hint("⏎", "launch"),
-                    footer_hint("tab", "options"),
-                    footer_hint("esc", "close"),
-                ]
-                .spacing(14)
-                .into(),
-            ));
+            body = body.push(if row_actions.is_some() {
+                // Row-actions strip open: the footer reflects that sub-state
+                // directly rather than the underlying highlighted row — ⏎
+                // runs the selected strip action (e.g. "Delete worktree"),
+                // not "open/launch".
+                footer_container(
+                    row![
+                        footer_hint("↑↓", "choose"),
+                        footer_hint("⏎", "run"),
+                        footer_hint("esc", "back"),
+                    ]
+                    .spacing(14)
+                    .into(),
+                )
+            } else {
+                // Recent/Combo (project/worktree) rows expose the
+                // tab->actions strip; every other row keeps the plain
+                // tab->options hint.
+                let highlighted_is_row = matches!(
+                    rows.get(selected),
+                    Some(PaletteRow::Recent { .. }) | Some(PaletteRow::Combo { .. })
+                );
+                let tab_label: &'static str = if highlighted_is_row {
+                    "actions"
+                } else {
+                    "options"
+                };
+                let enter_label: &'static str = if highlighted_is_row {
+                    "open/launch"
+                } else {
+                    "launch"
+                };
+                // Row-highlighted footer orders tab before ⏎ ("navigate · tab
+                // actions · ⏎ open/launch · close"); every other state keeps
+                // ⏎ before tab ("navigate · ⏎ launch · tab options · close")
+                // — matches the palette redesign mock's D1 vs. D2/D3 ordering.
+                let mid: Element<'a, Msg> = if highlighted_is_row {
+                    row![
+                        footer_hint("tab", tab_label),
+                        footer_hint("⏎", enter_label),
+                    ]
+                    .spacing(14)
+                    .into()
+                } else {
+                    row![
+                        footer_hint("⏎", enter_label),
+                        footer_hint("tab", tab_label),
+                    ]
+                    .spacing(14)
+                    .into()
+                };
+                footer_container(
+                    row![footer_hint("↑↓", "navigate"), mid, footer_hint("esc", "close"),]
+                        .spacing(14)
+                        .into(),
+                )
+            });
         }
 
         let panel = container(body)
@@ -3756,7 +4057,99 @@ impl Grove {
                 }
                 modal_list_row_sized(content, active, Msg::LauncherActivate(i), 36.0, 6.0, 12.0)
             }
+            PaletteRow::SwitchToSession => {
+                // Neutral FG (never magenta — that's reserved for create
+                // actions): a "swap sessions" idiom via the restart glyph,
+                // plus a tab-hint chip and chevron drill-in affordance.
+                // Outside zen the row is visible but inert — forced muted
+                // regardless of keyboard highlight, with a "zen only" hint
+                // in place of the tab/chevron affordance; Enter/Tab on it
+                // are swallowed (see `launcher_activate`/
+                // `launcher_enter_row_actions`).
+                let switchable = self.switch_to_session_active();
+                let label_color = if !switchable {
+                    c::FG_MUTE()
+                } else if active {
+                    c::FG()
+                } else {
+                    c::FG_DIM()
+                };
+                let icon_color = if switchable { c::FG_DIM() } else { c::FG_MUTE() };
+                let mut content = row![
+                    icon_slot("restart", icon_color),
+                    text("Switch to session…").size(13).color(label_color),
+                    Space::new().width(Length::Fill),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center);
+                if !switchable {
+                    content = content.push(
+                        text("zen only")
+                            .font(MONO_FONT)
+                            .size(10.5)
+                            .color(c::FG_MUTE()),
+                    );
+                } else if active {
+                    content = content.push(enter_chip());
+                } else {
+                    content = content
+                        .push(keycap_text("tab", c::FG_MUTE()))
+                        .push(icon("chev-right", 12.0, c::FG_MUTE()));
+                }
+                modal_list_row_sized(content, active, Msg::LauncherActivate(i), 36.0, 6.0, 12.0)
+            }
         }
+    }
+
+    /// The inline contextual-action strip revealed by Tab under a
+    /// highlighted `Recent`/`Combo` row: "Launch session…" (magenta, plus
+    /// OPEN WITH agent picker) and "Delete worktree" (red, trash). `action`
+    /// (`0`/`1`) is the currently-selected action within the strip.
+    /// The inline row-actions strip. `is_main` selects the second action:
+    /// the project's default/base checkout can't be deleted (`start_delete`
+    /// bounces it to a "can't remove the project's main checkout" message),
+    /// so its strip offers "Create worktree…" there instead of "Delete
+    /// worktree". `0.0` left/right padding here is deliberate — the strip
+    /// must render exactly as wide as the highlighted row card above it, and
+    /// `modal_list_row_sized`'s own row buttons are already `Length::Fill`
+    /// with their own internal `pad_x`, so any outer horizontal padding here
+    /// would inset the strip relative to that row.
+    fn palette_row_actions_strip<'a>(&'a self, action: usize, is_main: bool) -> Element<'a, Msg> {
+        let icon_slot = |name: &'static str, color: Color| {
+            container(icon(name, 13.0, color))
+                .width(20.0)
+                .align_x(iced::alignment::Horizontal::Center)
+        };
+        let action_row = |idx: usize, name: &'static str, label: &'static str, color: Color| {
+            let active = idx == action;
+            let content = row![icon_slot(name, color), text(label).size(12).color(color),]
+                .spacing(8)
+                .align_y(iced::Alignment::Center);
+            modal_list_row_sized(
+                content,
+                active,
+                Msg::LauncherRowActionPick(idx),
+                30.0,
+                4.0,
+                12.0,
+            )
+        };
+        let second = if is_main {
+            action_row(1, "plus", "Create worktree…", c::MAGENTA())
+        } else {
+            action_row(1, "trash", "Delete worktree", c::RED())
+        };
+        container(
+            column![action_row(0, "play", "Launch session…", c::MAGENTA()), second].spacing(1),
+        )
+        .padding(Padding {
+            top: 0.0,
+            bottom: 4.0,
+            left: 0.0,
+            right: 0.0,
+        })
+        .width(Length::Fill)
+        .into()
     }
 
     fn settings_modal(&self) -> Element<'_, Msg> {

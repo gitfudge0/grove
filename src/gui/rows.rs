@@ -2,7 +2,7 @@
 
 use super::activity::ActivityState;
 use super::icons::{icon, spinner};
-use super::metrics::{ROW_H, UI_BOLD, UI_FONT};
+use super::metrics::{MONO_FONT, ROW_H, UI_BOLD, UI_FONT};
 use super::palette as c;
 use super::state::Msg;
 use super::widgets::{action_mini, action_mini_danger, clickable_row, split_start_button};
@@ -524,12 +524,12 @@ pub fn session_row<'a>(
 
 /// One row in the terminal tab's sidebar list. Shows the terminal's label and
 /// its contextual title (the shell's OSC window title); highlights the active
-/// terminal and reveals a close button when `show_close` is set.
+/// terminal and always shows a close button.
 pub fn terminal_row<'a>(
     idx: usize,
     s: &Session,
     active: bool,
-    show_close: bool,
+    pending_kill: bool,
 ) -> Element<'a, Msg> {
     let running = matches!(
         *s.status.lock().unwrap_or_else(|e| e.into_inner()),
@@ -563,10 +563,12 @@ pub fn terminal_row<'a>(
 
     let meta: Element<'a, Msg> = container(meta_row).width(Length::Fill).clip(true).into();
 
-    let close_btn: Element<'a, Msg> = if show_close {
-        action_mini("close", Msg::CloseHomeTerminal(idx))
+    // Two-step confirm, same idiom as `session_row`'s close button: first
+    // press arms it (red tick shown here), second press/click confirms.
+    let close_btn: Element<'a, Msg> = if pending_kill {
+        action_mini_danger("check", Msg::CloseHomeTerminal(idx))
     } else {
-        Space::new().width(Length::Fixed(0.0)).into()
+        action_mini("close", Msg::RequestCloseHomeTerminal(idx))
     };
 
     let main_row: Element<'a, Msg> = row![meta, close_btn]
@@ -583,25 +585,84 @@ pub fn terminal_row<'a>(
     clickable_row(main_row, ROW_H, active, Msg::SelectHomeTerminal(idx))
 }
 
-/// Pinned header above the home-terminal rows at the bottom of the tree: a
-/// terminal icon + muted mono `~` label (not a collapsible project row — no
-/// chevron, no click target) with an always-visible "+" button that spawns
-/// another home terminal.
-pub fn home_terminals_header<'a>() -> Element<'a, Msg> {
-    let label = row![
+/// Collapsible "TERMINALS" section header docked above the home-terminal
+/// rows: chevron + terminal icon + tracked mono label + count badge, with an
+/// activity dot when collapsed and any hidden terminal is running, and an
+/// always-visible "+" button that spawns another home terminal. The whole
+/// row (except the "+" button) toggles the section via
+/// `Msg::ToggleTerminalsSection`.
+pub fn home_terminals_header<'a>(
+    expanded: bool,
+    count: usize,
+    show_activity_dot: bool,
+) -> Element<'a, Msg> {
+    let twist = if expanded { "chev-down" } else { "chev-right" };
+    let tracked: String = "TERMINALS"
+        .chars()
+        .map(String::from)
+        .collect::<Vec<_>>()
+        .join("\u{2009}");
+
+    let badge = container(
+        text(format!("{count}"))
+            .font(UI_FONT)
+            .size(10)
+            .color(c::FG_MUTE()),
+    )
+    .padding(Padding {
+        top: 1.0,
+        bottom: 1.0,
+        left: 6.0,
+        right: 6.0,
+    })
+    .style(|_| container::Style {
+        background: Some(Background::Color(c::BORDER_SOFT())),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: Radius::from(3.0),
+        },
+        ..Default::default()
+    });
+
+    let mut label_row = row![
+        container(icon(twist, 10.0, c::FG_MUTE()))
+            .width(14)
+            .center_y(Length::Fill),
         icon("term", 12.0, c::FG_MUTE()),
-        text("~").font(UI_FONT).size(12).color(c::FG_MUTE()),
+        text(tracked).font(MONO_FONT).size(10).color(c::FG_MUTE()),
+        badge,
     ]
     .spacing(6)
     .align_y(iced::Alignment::Center);
 
+    if show_activity_dot {
+        label_row = label_row.push(super::widgets::dot(c::CYAN()));
+    }
+
+    let toggle_btn = button(
+        container(label_row)
+            .height(ROW_H)
+            .align_y(iced::Alignment::Center),
+    )
+    .width(Length::Fill)
+    .on_press(Msg::ToggleTerminalsSection)
+    .padding(0)
+    .style(|_, _status| button::Style {
+        background: None,
+        text_color: c::FG_DIM(),
+        border: Border::default(),
+        shadow: Shadow::default(),
+        snap: false,
+    });
+
     let add_btn = action_mini("plus", Msg::NewHomeTerminal);
 
     row![
-        container(label).width(Length::Fill).padding(Padding {
+        container(toggle_btn).width(Length::Fill).padding(Padding {
             top: 0.0,
             bottom: 0.0,
-            left: 16.0,
+            left: 12.0,
             right: 0.0,
         }),
         add_btn,

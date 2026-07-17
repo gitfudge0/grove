@@ -11,7 +11,9 @@ use super::state::{
     PtyPane, ScriptField, ScriptsEditorState, SidebarDrag, ToolStatus, UpgradeState,
 };
 use crate::agent::Agent;
-use crate::app::{AddProjectStep, App, ConfirmKind, LauncherOptions, Modal, OnboardStep, Pane};
+use crate::app::{
+    AddProjectStep, App, ConfirmKind, LauncherOptions, Modal, OnboardStep, Pane, RowActionsState,
+};
 use crate::session::Session;
 use iced::keyboard::{key::Named, Key, Modifiers};
 use iced::widget::Id;
@@ -118,9 +120,11 @@ impl Grove {
             blink_tick: 0,
             attention_anim: Self::attention_animation(),
             pending_kill: None,
+            pending_kill_terminal: None,
             hovered_wt: None,
             terminal_focused: false,
             term_panel_open: false,
+            terminals_collapsed: false,
             term_panel_portion: TERM_PANEL_PORTION,
             focused_pane: FocusedPane::Agent,
             dir_cache: Default::default(),
@@ -434,16 +438,30 @@ impl Grove {
                     self.app.home_terminals[i].resize(self.pty_rows, self.pty_cols);
                     self.terminal_focused = true;
                     self.pty_selection = None;
+                    self.pending_kill_terminal = None;
                     // Symmetry with new/close/restart: don't rely on `resize`
                     // happening to dirty the target to surface the right frame.
                     self.invalidate_pty_render_cache();
                 }
             }
+            Msg::RequestCloseHomeTerminal(i) => {
+                self.pending_kill_terminal = Some(i);
+            }
             Msg::CloseHomeTerminal(i) => {
-                self.app
-                    .close_home_terminal(i, self.pty_rows, self.pty_cols);
+                // Shift any pending confirmation index across the removal so
+                // it can't end up pointing at a different terminal (mirrors
+                // `KillSession`'s handling of `pending_kill`).
+                self.pending_kill_terminal = match self.pending_kill_terminal {
+                    Some(p) if p == i => None,
+                    Some(p) if p > i => Some(p - 1),
+                    other => other,
+                };
+                self.app.close_home_terminal(i);
                 self.pty_selection = None;
                 self.invalidate_pty_render_cache();
+            }
+            Msg::ToggleTerminalsSection => {
+                self.terminals_collapsed = !self.terminals_collapsed;
             }
             Msg::WindowResized(size) => {
                 self.window_size =
@@ -508,12 +526,14 @@ impl Grove {
             Msg::ToggleCollapseAll => {
                 self.open_agent_menu = None;
                 self.pending_kill = None;
+                self.pending_kill_terminal = None;
                 self.tree_expand = self.tree_expand.next();
                 self.apply_tree_expand();
             }
             Msg::ProjectClicked(i) => {
                 self.open_agent_menu = None;
                 self.pending_kill = None;
+                self.pending_kill_terminal = None;
                 if self.collapsed.contains(&i) {
                     self.collapsed.remove(&i);
                 } else {
@@ -525,6 +545,7 @@ impl Grove {
             Msg::WorktreeClicked { proj, wt } => {
                 self.open_agent_menu = None;
                 self.pending_kill = None;
+                self.pending_kill_terminal = None;
                 self.switch_active_project(proj);
                 self.app.wt_idx = wt;
                 let key = (proj, wt);
@@ -615,6 +636,13 @@ impl Grove {
             }
             Msg::JumpToWaitingSession => {
                 if let Some(&first) = self.waiting_sessions().first() {
+                    // Jumping here is meant to show the live prompt that's
+                    // waiting on the user, not wherever the view happened to
+                    // be scrolled — unlike a manual mod+j/k switch, which
+                    // should preserve a scroll position left on purpose.
+                    if let Some(s) = self.app.sessions.get_mut(first) {
+                        s.snap_to_bottom();
+                    }
                     return self.update(Msg::SelectSession(first));
                 }
                 return Task::none();
@@ -622,6 +650,7 @@ impl Grove {
             Msg::SelectSession(i) => {
                 self.open_agent_menu = None;
                 self.pending_kill = None;
+                self.pending_kill_terminal = None;
                 self.attention_open = false;
                 if i < self.app.sessions.len() {
                     self.app.active_session = Some(i);
@@ -767,6 +796,7 @@ impl Grove {
                     return Task::none();
                 }
                 self.pending_kill = None;
+                self.pending_kill_terminal = None;
                 // Clicking a PTY focuses its pane (so subsequent keystrokes,
                 // scroll, and this very selection route there). Honored only
                 // while the panel is open; otherwise the agent always owns input.
@@ -1429,12 +1459,31 @@ impl Grove {
                 return focus(crate::gui::view::modal_input_id());
             }
             Msg::LauncherInputChanged(s) => {
+                // The switch-to-session drill-in filters live by `input`
+                // (same idiom as OPEN WITH's agent list, which also keeps
+                // its own state open while the query underneath changes) —
+                // computed before the mutable borrow below so the cursor can
+                // be reclamped to the new filtered length in the same pass.
+                let switch_len = self.switch_session_rows(&s).len();
                 if let Modal::SessionLauncher {
-                    input, selected, ..
+                    input,
+                    selected,
+                    switch,
+                    row_actions,
+                    ..
                 } = &mut self.app.modal
                 {
                     *input = s;
                     *selected = 0;
+                    // `row_actions` is pinned to a specific (proj, wt_path)
+                    // resolved from the root/typing list; once that list is
+                    // re-derived for the new query, the row it was anchored
+                    // to may no longer be rendered (or may have moved) —
+                    // collapse the strip rather than risk it going stale.
+                    *row_actions = None;
+                    if let Some(sel) = switch {
+                        *sel = crate::gui::launcher::clamp(*sel, 0, switch_len);
+                    }
                 }
             }
             Msg::LauncherActivate(i) => return self.launcher_activate(i),
@@ -1449,6 +1498,19 @@ impl Grove {
                     }
                 }
                 self.launcher_start();
+            }
+            Msg::LauncherSwitchSessionPick(si) => return self.launcher_switch_to(si),
+            Msg::LauncherRowActionPick(action) => {
+                let row_actions = match &self.app.modal {
+                    Modal::SessionLauncher {
+                        row_actions: Some(r),
+                        ..
+                    } => Some(r.clone()),
+                    _ => None,
+                };
+                if let Some(r) = row_actions {
+                    return self.launcher_run_row_action(r.proj, r.wt_path, action);
+                }
             }
         }
         Task::none()
@@ -2065,9 +2127,15 @@ impl Grove {
         // the PTY as ESC ESC even while something is armed.
         if matches!(key, Key::Named(Named::Escape))
             && mods.is_empty()
-            && escape_should_dismiss(self.pending_kill, self.open_agent_menu, self.attention_open)
+            && escape_should_dismiss(
+                self.pending_kill,
+                self.pending_kill_terminal,
+                self.open_agent_menu,
+                self.attention_open,
+            )
         {
             self.pending_kill = None;
+            self.pending_kill_terminal = None;
             self.open_agent_menu = None;
             self.attention_open = false;
             return Task::none();
@@ -2177,6 +2245,20 @@ impl Grove {
     fn run_global_shortcut(&mut self, sc: GlobalShortcut) -> Task<Msg> {
         match sc {
             GlobalShortcut::NewSession => self.update(Msg::OpenSessionLauncher),
+            GlobalShortcut::SwitchSession => {
+                // Zen-only: outside zen the workspace/grid already shows
+                // every session, so opening straight into the drill-in would
+                // be redundant (`switch_to_session_active` is the same gate
+                // `PaletteRow::SwitchToSession`'s active/inert split uses).
+                // The modal-open guard above already keeps this from firing
+                // while the palette itself is open.
+                if self.switch_to_session_active() {
+                    self.open_session_launcher();
+                    self.launcher_enter_switch();
+                    return focus(crate::gui::view::modal_input_id());
+                }
+                Task::none()
+            }
             GlobalShortcut::NewSessionInWorktree => {
                 let Some(s) = self.focused_session() else {
                     return Task::none();
@@ -2217,6 +2299,21 @@ impl Grove {
             }
             GlobalShortcut::ShortcutOverlay => self.update(Msg::OpenShortcutOverlay),
             GlobalShortcut::CloseFocusedSession => {
+                // A focused home terminal takes priority, and goes through
+                // the same two-step confirm-to-kill flow as an agent session
+                // (`pending_kill_terminal` mirrors `pending_kill`).
+                if self.terminal_focused {
+                    return match close_focused_session_decision(
+                        self.app.active_terminal,
+                        self.pending_kill_terminal,
+                    ) {
+                        CloseFocusedDecision::Kill(idx) => self.update(Msg::CloseHomeTerminal(idx)),
+                        CloseFocusedDecision::Request(idx) => {
+                            self.update(Msg::RequestCloseHomeTerminal(idx))
+                        }
+                        CloseFocusedDecision::NoOp => Task::none(),
+                    };
+                }
                 // Grid: the focused tile. Everywhere else (tree sidebar,
                 // zen): the active session, whose row renders the same
                 // confirm-to-kill state (`session_row` in rows.rs).
@@ -2522,6 +2619,8 @@ impl Grove {
                 selected,
                 browse_all,
                 options,
+                switch,
+                row_actions,
             } => {
                 let (input, selected, browse_all) = (input.clone(), *selected, *browse_all);
                 if let Some(r) = options.clone() {
@@ -2546,18 +2645,102 @@ impl Grove {
                     } else {
                         match key {
                             Key::Named(Named::Escape) => {
-                                if let Modal::SessionLauncher { options, .. } = &mut self.app.modal
+                                // Options is only ever entered via the
+                                // row-actions strip's "Launch session…"
+                                // action — Esc returns to that strip rather
+                                // than dropping all the way to bare root.
+                                if let Modal::SessionLauncher {
+                                    options,
+                                    row_actions,
+                                    ..
+                                } = &mut self.app.modal
                                 {
-                                    *options = None;
+                                    let origin = options.take().map(|o| o.origin);
+                                    *row_actions = origin;
                                 }
                             }
                             Key::Named(Named::Enter) => self.launcher_start(),
                             _ => {}
                         }
                     }
+                } else if let Some(sel) = *switch {
+                    // "Switch to session" drill-in: ↑↓ move the session
+                    // selection (clamped, no wrap); Enter switches focus and
+                    // closes the palette; Esc backs out to the root list.
+                    let len = self.switch_session_rows(&input).len();
+                    let list_delta: Option<i32> = match &key {
+                        Key::Named(Named::ArrowDown) => Some(1),
+                        Key::Named(Named::ArrowUp) => Some(-1),
+                        _ => None,
+                    };
+                    if let Some(delta) = list_delta {
+                        let new_sel = crate::gui::launcher::clamp(sel, delta, len);
+                        if let Modal::SessionLauncher { switch, .. } = &mut self.app.modal {
+                            *switch = Some(new_sel);
+                        }
+                    } else {
+                        match key {
+                            Key::Named(Named::Escape) => {
+                                if let Modal::SessionLauncher {
+                                    switch, selected, ..
+                                } = &mut self.app.modal
+                                {
+                                    *switch = None;
+                                    // The root list was recomputed against the cleared
+                                    // input when the drill-in opened; the old cursor no
+                                    // longer points at the row it was on.
+                                    *selected = 0;
+                                }
+                            }
+                            Key::Named(Named::Enter) => {
+                                if let Some(&si) = self.switch_session_rows(&input).get(sel) {
+                                    return self.launcher_switch_to(si);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                } else if let Some(ra) = row_actions.clone() {
+                    // Inline row-actions strip: ↑↓ move between the two
+                    // actions (clamped, no wrap); Enter runs the selected
+                    // action; Esc collapses the strip back to the plain list.
+                    let list_delta: Option<i32> = match &key {
+                        Key::Named(Named::ArrowDown) => Some(1),
+                        Key::Named(Named::ArrowUp) => Some(-1),
+                        _ => None,
+                    };
+                    if let Some(delta) = list_delta {
+                        let new_action = crate::gui::launcher::clamp(ra.action, delta, 2);
+                        if let Modal::SessionLauncher {
+                            row_actions: Some(rr),
+                            ..
+                        } = &mut self.app.modal
+                        {
+                            rr.action = new_action;
+                        }
+                    } else {
+                        match key {
+                            Key::Named(Named::Escape) => {
+                                if let Modal::SessionLauncher { row_actions, .. } =
+                                    &mut self.app.modal
+                                {
+                                    *row_actions = None;
+                                }
+                            }
+                            Key::Named(Named::Enter) => {
+                                return self.launcher_run_row_action(
+                                    ra.proj,
+                                    ra.wt_path,
+                                    ra.action,
+                                )
+                            }
+                            _ => {}
+                        }
+                    }
                 } else {
                     // Root or typing/browse-all: ↑↓ move the list selection;
-                    // Tab enters options on a Recent/Combo row (arrows can't:
+                    // Tab reveals contextual actions (Recent/Combo rows) or
+                    // opens the switch-to-session drill-in (arrows can't:
                     // ←→ move the caret in the focused search input). Plain
                     // letters belong to the input too, never to nav.
                     let rows_len = self.palette_rows(&input, browse_all).len();
@@ -2572,9 +2755,9 @@ impl Grove {
                             *selected = new_selected;
                         }
                     } else {
-                        let enter_options = matches!(&key, Key::Named(Named::Tab));
-                        if enter_options {
-                            self.launcher_enter_options(selected, &input, browse_all);
+                        let enter_actions = matches!(&key, Key::Named(Named::Tab));
+                        if enter_actions {
+                            self.launcher_enter_row_actions(selected, &input, browse_all);
                         } else {
                             match key {
                                 Key::Named(Named::Escape) => self.cancel_modal(),
@@ -3194,6 +3377,8 @@ impl Grove {
             selected: 0,
             browse_all: false,
             options: None,
+            switch: None,
+            row_actions: None,
         };
     }
 
@@ -3316,27 +3501,66 @@ impl Grove {
                 self.app.modal = Modal::None;
                 self.update(Msg::AddProject)
             }
+            PaletteRow::SwitchToSession => {
+                // Inert outside zen (row still shows, muted, with a "zen
+                // only" hint — see `palette_row_view`): swallow the Enter,
+                // keep the palette open, no state change.
+                if self.switch_to_session_active() {
+                    self.launcher_enter_switch();
+                }
+                Task::none()
+            }
         }
     }
 
-    /// Tab in root/typing state: if the row at `i` is a
-    /// `Recent`/`Combo`, enter options state preselecting the row's agent.
-    fn launcher_enter_options(&mut self, i: usize, input: &str, browse_all: bool) {
+    /// Enter the "switch to session" drill-in: selects the first row and
+    /// clears the search input so the full session list is visible
+    /// immediately, rather than still filtered by whatever root/typing query
+    /// was active (e.g. "swi", which is how the row itself was found).
+    /// Typing afterward re-filters as normal (`Msg::LauncherInputChanged`).
+    /// Esc backs out without restoring that query — same as OPEN WITH, which
+    /// doesn't touch `input` at all going in or coming out.
+    fn launcher_enter_switch(&mut self) {
+        if let Modal::SessionLauncher { switch, input, .. } = &mut self.app.modal {
+            *switch = Some(0);
+            input.clear();
+        }
+    }
+
+    /// Tab in root/typing state: if the row at `i` is a `Recent`/`Combo`,
+    /// reveal its inline contextual-action strip (Launch session…/Delete
+    /// worktree); if it's `SwitchToSession`, open the switch-to-session
+    /// drill-in directly (Tab behaves the same as Enter there). Any other row
+    /// is a no-op, same as before.
+    fn launcher_enter_row_actions(&mut self, i: usize, input: &str, browse_all: bool) {
         let rows = self.palette_rows(input, browse_all);
         let Some(row) = rows.get(i) else { return };
-        let (proj, wt_path, agent) = match row {
-            PaletteRow::Recent {
-                proj,
-                wt_path,
-                agent,
+        match row {
+            PaletteRow::Recent { proj, wt_path, .. } | PaletteRow::Combo { proj, wt_path, .. } => {
+                let ra = crate::app::RowActionsState {
+                    proj: *proj,
+                    wt_path: wt_path.clone(),
+                    action: 0,
+                };
+                if let Modal::SessionLauncher { row_actions, .. } = &mut self.app.modal {
+                    *row_actions = Some(ra);
+                }
             }
-            | PaletteRow::Combo {
-                proj,
-                wt_path,
-                agent,
-            } => (*proj, wt_path.clone(), *agent),
-            _ => return,
-        };
+            PaletteRow::SwitchToSession => {
+                // Tab is inert outside zen too — same gate as Enter.
+                if self.switch_to_session_active() {
+                    self.launcher_enter_switch();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Enter the "Launch session…" flow for `(proj, wt_path)`: the full OPEN
+    /// WITH agent-picker state (`Modal::SessionLauncher::options`). Used by
+    /// the row-actions strip's "Launch session…" action (action `0`); `origin`
+    /// is that strip's state, restored on Esc from options.
+    fn launcher_open_options_for(&mut self, proj: usize, wt_path: String, origin: RowActionsState) {
         let Some(wt) = self
             .launcher_worktrees(proj)
             .iter()
@@ -3344,18 +3568,46 @@ impl Grove {
         else {
             return;
         };
+        let pname = self
+            .app
+            .store
+            .projects
+            .get(proj)
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        let agent = self
+            .app
+            .store
+            .recent_launches
+            .iter()
+            .find(|r| r.project == pname && r.wt_path == wt_path)
+            .map(|r| r.agent)
+            .unwrap_or_else(|| {
+                self.app
+                    .available_agents
+                    .first()
+                    .copied()
+                    .unwrap_or(Agent::Terminal)
+            });
         let agent_idx = self
             .app
             .available_agents
             .iter()
             .position(|a| *a == agent)
             .unwrap_or(0);
-        if let Modal::SessionLauncher { options, .. } = &mut self.app.modal {
+        if let Modal::SessionLauncher {
+            options,
+            row_actions,
+            ..
+        } = &mut self.app.modal
+        {
             *options = Some(LauncherOptions {
                 proj,
                 wt,
                 agent: agent_idx,
+                origin,
             });
+            *row_actions = None;
         }
     }
 
@@ -3399,6 +3651,10 @@ impl Grove {
             if self.app.active_session.is_some() && !self.terminal_focused {
                 rows.push(PaletteRow::TerminalWt);
             }
+            rows.push(PaletteRow::AddProject);
+            if self.switch_to_session_row_visible() {
+                rows.push(PaletteRow::SwitchToSession);
+            }
             rows
         } else {
             if self.app.available_agents.is_empty() {
@@ -3430,8 +3686,103 @@ impl Grove {
                     });
                 }
             }
+            // Typing (not the "+ new session…" browse-all list): the ACTIONS
+            // rows stay reachable by keyword, e.g. "swi" -> "Switch to
+            // session…" (D5 in the palette redesign mock).
+            if !browse_all {
+                if crate::gui::launcher::fuzzy_match(input, "add project", "", "") {
+                    rows.push(PaletteRow::AddProject);
+                }
+                if self.switch_to_session_row_visible()
+                    && crate::gui::launcher::fuzzy_match(input, "switch to session", "", "")
+                {
+                    rows.push(PaletteRow::SwitchToSession);
+                }
+            }
             rows
         }
+    }
+
+    /// Whether `PaletteRow::SwitchToSession` should be *rendered* at all
+    /// (root and typed lists alike): just needs a session to switch to.
+    /// Outside zen the row still shows, but inert — see
+    /// `switch_to_session_active`.
+    pub(super) fn switch_to_session_row_visible(&self) -> bool {
+        // At least one session you could actually switch *to* — the active
+        // one is hidden from the drill-in list, so it doesn't count.
+        (0..self.app.sessions.len()).any(|i| self.app.active_session != Some(i))
+    }
+
+    /// Whether `PaletteRow::SwitchToSession` is *actionable*: also requires
+    /// zen (`!chrome_visible` — the flag `Msg::ToggleZen`/mod+enter flips).
+    /// Outside zen the workspace/grid already shows every session, so
+    /// opening the drill-in would be redundant there; the row still renders
+    /// (muted, "zen only") but Enter/Tab on it are no-ops.
+    pub(super) fn switch_to_session_active(&self) -> bool {
+        self.switch_to_session_row_visible() && !self.app.chrome_visible
+    }
+
+    /// Active sessions across every project/worktree, for the "switch to
+    /// session" drill-in list: every index into `App::sessions` (in their
+    /// existing display order) fuzzy-filtered by `input` against the
+    /// session's project/worktree/agent — same matching used by the
+    /// typing-state Combo list. Empty `input` matches everything.
+    pub(super) fn switch_session_rows(&self, input: &str) -> Vec<usize> {
+        (0..self.app.sessions.len())
+            // Switching to the session already on screen is a no-op; hide it.
+            .filter(|&i| self.app.active_session != Some(i))
+            .filter(|&i| {
+                let s = &self.app.sessions[i];
+                let wt_name = crate::app::path_basename(&s.wt_path);
+                crate::gui::launcher::fuzzy_match(input, &s.project, &wt_name, s.agent.label())
+            })
+            .collect()
+    }
+
+    /// Switch focus to `App::sessions[si]` and close the palette. Shared by
+    /// the drill-in's Enter key and row-click paths.
+    fn launcher_switch_to(&mut self, si: usize) -> Task<Msg> {
+        self.app.modal = Modal::None;
+        self.update(Msg::SelectSession(si))
+    }
+
+    /// Run the row-actions strip action `action` for the `(proj, wt_path)`
+    /// identity it's pinned to: `0` enters the existing OPEN WITH agent-picker
+    /// ("Launch session…"); `1` closes the palette and routes through the
+    /// sidebar's own delete-worktree confirmation flow (`Msg::DeleteWorktree`,
+    /// the same message the sidebar trash icon sends — reusing it means the
+    /// existing teardown-script/confirm modal applies here too, rather than
+    /// duplicating that flow in the palette). Resolving straight from the
+    /// identity (rather than re-deriving `palette_rows()` and indexing into
+    /// it) means a query/list change since the strip was opened can't make
+    /// this act on the wrong row.
+    fn launcher_run_row_action(&mut self, proj: usize, wt_path: String, action: usize) -> Task<Msg> {
+        if action == 0 {
+            let origin = RowActionsState {
+                proj,
+                wt_path: wt_path.clone(),
+                action: 0,
+            };
+            self.launcher_open_options_for(proj, wt_path, origin);
+            return Task::none();
+        }
+        let worktrees = self.launcher_worktrees(proj);
+        let Some(w) = worktrees.iter().find(|w| w.path == wt_path) else {
+            return Task::none();
+        };
+        // The strip's second action is worktree-dependent: the project's
+        // default/base checkout can't be removed (`App::start_delete` bounces
+        // it to a "can't remove the project's main checkout" message), so its
+        // strip offers "Create worktree…" there instead of "Delete worktree".
+        if w.is_main {
+            self.app.modal = Modal::None;
+            return self.update(Msg::AddWorktree { proj });
+        }
+        let Some(wt) = worktrees.iter().position(|w| w.path == wt_path) else {
+            return Task::none();
+        };
+        self.app.modal = Modal::None;
+        self.update(Msg::DeleteWorktree { proj, wt })
     }
 
     fn spawn(&mut self, proj: usize, wt: usize, agent: Agent) {
@@ -3689,6 +4040,9 @@ pub(super) enum PaletteRow {
     TerminalHome,
     TerminalWt,
     AddProject,
+    /// ACTIONS row: Enter or Tab opens the "switch to session" drill-in
+    /// (`Modal::SessionLauncher::switch`).
+    SwitchToSession,
 }
 
 /// Spawn a tokio blocking task that runs `git worktree remove --force` for
@@ -3797,6 +4151,9 @@ pub(crate) enum GlobalShortcut {
     GridSwap(i32, i32),
     /// Scroll the focused session by half a page (`true` = up).
     ScrollHalfPage(bool),
+    /// Open the command palette straight into the "switch to session"
+    /// drill-in. Zen-only (a no-op outside zen) — see `PaletteRow::SwitchToSession`.
+    SwitchSession,
 }
 
 /// Coarse "which screen am I on" model, derived from existing UI flags.
@@ -3857,8 +4214,8 @@ const G: &[Scope] = &[Scope::Global];
 pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
     ShortcutDef {
         action: Some(GlobalShortcut::NewSession),
-        triggers: &["n", "N"],
-        display_keys: "n",
+        triggers: &["p", "P"],
+        display_keys: "p",
         description: "New session",
         scopes: G,
         requires_alt: false,
@@ -3871,6 +4228,15 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         description: "New session in current worktree",
         scopes: G,
         requires_alt: true,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::SwitchSession),
+        triggers: &["s", "S"],
+        display_keys: "s",
+        description: "Switch to session",
+        scopes: G,
+        requires_alt: false,
         literal: false,
     },
     ShortcutDef {
@@ -3968,7 +4334,7 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::CloseFocusedSession),
         triggers: &["w", "W"],
         display_keys: "w",
-        description: "Close focused session",
+        description: "close focused session / terminal",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -4327,10 +4693,14 @@ fn should_forward(ev: &Event, status: event::Status) -> bool {
 /// states, so which one is armed doesn't matter.
 fn escape_should_dismiss(
     pending_kill: Option<usize>,
+    pending_kill_terminal: Option<usize>,
     open_agent_menu: Option<(usize, usize)>,
     attention_open: bool,
 ) -> bool {
-    pending_kill.is_some() || open_agent_menu.is_some() || attention_open
+    pending_kill.is_some()
+        || pending_kill_terminal.is_some()
+        || open_agent_menu.is_some()
+        || attention_open
 }
 
 /// Chord + scope check for the terminal-panel resize (see the registry's
@@ -4429,7 +4799,7 @@ mod tests {
         use GlobalShortcut::*;
         let screen = Screen::Workspace;
         assert_eq!(
-            match_global_shortcut(&ch("n"), gmods(), screen),
+            match_global_shortcut(&ch("p"), gmods(), screen),
             Some(NewSession)
         );
         assert_eq!(
@@ -4554,10 +4924,11 @@ mod tests {
             match_global_shortcut(&ch("N"), alt, screen),
             Some(NewSessionInWorktree)
         );
-        // Plain platform modifier (no Alt) still resolves to NewSession —
-        // no regression from adding the alt-chord.
+        // Plain platform modifier (no Alt) on `n` is no longer a shortcut —
+        // NewSession moved to `p`; only the alt-chord claims `n` now.
+        assert_eq!(match_global_shortcut(&ch("n"), gmods(), screen), None);
         assert_eq!(
-            match_global_shortcut(&ch("n"), gmods(), screen),
+            match_global_shortcut(&ch("p"), gmods(), screen),
             Some(NewSession)
         );
         // Alt held on an unclaimed key is *not* a shortcut on either platform:
@@ -5082,19 +5453,20 @@ mod tests {
 
         #[test]
         fn false_when_neither_is_set() {
-            assert!(!escape_should_dismiss(None, None, false));
+            assert!(!escape_should_dismiss(None, None, None, false));
         }
 
         #[test]
         fn true_when_either_is_set() {
-            assert!(escape_should_dismiss(Some(2), None, false));
-            assert!(escape_should_dismiss(None, Some((1, 0)), false));
-            assert!(escape_should_dismiss(Some(2), Some((1, 0)), false));
+            assert!(escape_should_dismiss(Some(2), None, None, false));
+            assert!(escape_should_dismiss(None, Some(3), None, false));
+            assert!(escape_should_dismiss(None, None, Some((1, 0)), false));
+            assert!(escape_should_dismiss(Some(2), None, Some((1, 0)), false));
         }
 
         #[test]
         fn true_when_attention_queue_is_open() {
-            assert!(escape_should_dismiss(None, None, true));
+            assert!(escape_should_dismiss(None, None, None, true));
         }
     }
 }

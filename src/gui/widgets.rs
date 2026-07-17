@@ -658,42 +658,6 @@ pub fn control_btn_sized<'a>(
     .into()
 }
 
-/// Full-width outlined footer button used at the bottom of the sidebar
-/// (`+ add project`, `+ new terminal`). Shared so both footers get the same
-/// rest / hover treatment.
-pub fn footer_btn<'a>(label: &'static str, msg: Msg) -> Element<'a, Msg> {
-    container(
-        button(
-            container(text(label).size(12))
-                .center_x(Length::Fill)
-                .center_y(Length::Fill),
-        )
-        .on_press(msg)
-        .width(Length::Fill)
-        .height(28.0)
-        .style(|_, status| {
-            let hovered = matches!(status, button::Status::Hovered);
-            button::Style {
-                background: if hovered {
-                    Some(Background::Color(c::BG_HOVER()))
-                } else {
-                    None
-                },
-                text_color: if hovered { c::FG() } else { c::FG_DIM() },
-                border: Border {
-                    color: c::BORDER(),
-                    width: 1.0,
-                    radius: Radius::from(4.0),
-                },
-                shadow: Shadow::default(),
-                snap: false,
-            }
-        }),
-    )
-    .padding(Padding::from([12, 12]))
-    .into()
-}
-
 pub fn empty_workspace<'a>() -> Element<'a, Msg> {
     container(
         column![
@@ -701,6 +665,49 @@ pub fn empty_workspace<'a>() -> Element<'a, Msg> {
             text("click a worktree's start button to spawn an agent")
                 .size(12)
                 .color(c::FG_MUTE()),
+        ]
+        .spacing(6)
+        .align_x(iced::Alignment::Center),
+    )
+    .center_x(Length::Fill)
+    .center_y(Length::Fill)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(|_| container::Style {
+        background: Some(Background::Color(c::BG())),
+        ..Default::default()
+    })
+    .into()
+}
+
+/// Same chrome as `empty_workspace()`, shown in the terminal tab when every
+/// home terminal has been closed. The subtitle's mod+key hint renders the
+/// actual ⌘ glyph on macOS (mirroring `mod_key_chip` in view.rs) and
+/// `platform_mod_label()+t` elsewhere.
+pub fn empty_terminals_workspace<'a>() -> Element<'a, Msg> {
+    let hint: Element<'a, Msg> = if cfg!(target_os = "macos") {
+        row![
+            text("press ").size(12).color(c::FG_MUTE()),
+            icon("command", 11.0, c::FG_MUTE()),
+            text("t to open a terminal").size(12).color(c::FG_MUTE()),
+        ]
+        .spacing(2)
+        .align_y(iced::Alignment::Center)
+        .into()
+    } else {
+        text(format!(
+            "press {}+t to open a terminal",
+            super::update::platform_mod_label()
+        ))
+        .size(12)
+        .color(c::FG_MUTE())
+        .into()
+    };
+
+    container(
+        column![
+            text("no terminals open").size(14).color(c::FG_DIM()),
+            hint,
         ]
         .spacing(6)
         .align_x(iced::Alignment::Center),

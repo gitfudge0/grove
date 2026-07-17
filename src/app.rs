@@ -294,6 +294,14 @@ pub enum Modal {
         /// the unfiltered every-combo list even while `input` is empty.
         browse_all: bool,
         options: Option<LauncherOptions>,
+        /// "Switch to session…" drill-in: `Some(selected)` lists every active
+        /// session (index into `App::sessions`-derived display order = the
+        /// selection cursor within that list). `None` outside this state.
+        switch: Option<usize>,
+        /// Inline contextual actions revealed by Tab under a highlighted
+        /// `Recent`/`Combo` row (root or typing/browse-all list). `None` when
+        /// no action strip is open.
+        row_actions: Option<RowActionsState>,
     },
     ThemePicker {
         sel_dark: usize,
@@ -373,6 +381,25 @@ pub struct LauncherOptions {
     pub wt: usize,
     /// Index into `App::available_agents`.
     pub agent: usize,
+    /// The row-actions strip this options state was entered from (always set —
+    /// `options` is only ever entered via the strip's "Launch session…"
+    /// action). Esc restores this strip instead of dropping to bare root.
+    pub origin: RowActionsState,
+}
+
+/// The command palette's inline contextual-action strip, revealed by Tab
+/// under a highlighted `Recent`/`Combo` row. Identifies the row by
+/// `(proj, wt_path)` rather than a list index, so it stays valid even if the
+/// rendered row list is rebuilt out from under it (e.g. `browse_all` flips,
+/// or the query changes) — the strip is simply not found/collapsed rather
+/// than silently acting on a different row. `action` is the selected action
+/// within the strip (`0` = primary/"Launch session…", `1` = danger/"Delete
+/// worktree").
+#[derive(Clone)]
+pub struct RowActionsState {
+    pub proj: usize,
+    pub wt_path: String,
+    pub action: usize,
 }
 
 /// Stage of an in-progress worktree teardown.
@@ -1112,9 +1139,10 @@ impl App {
         }
     }
 
-    /// Close the terminal at `idx`. The terminal tab always keeps at least one
-    /// shell, so closing the last one immediately spawns a replacement.
-    pub fn close_home_terminal(&mut self, idx: usize, rows: u16, cols: u16) {
+    /// Close the terminal at `idx`. The terminal count may reach zero; the
+    /// workspace shows an empty state and `ensure_home_terminal`/
+    /// `Msg::NewHomeTerminal` spawn a fresh one on demand.
+    pub fn close_home_terminal(&mut self, idx: usize) {
         if idx >= self.home_terminals.len() {
             return;
         }
@@ -1131,9 +1159,6 @@ impl App {
             Some(a) if a > idx => Some(a - 1),
             other => other,
         };
-        if self.home_terminals.is_empty() {
-            self.spawn_home_terminal(rows, cols);
-        }
     }
 
     fn spawn_home_terminal(&mut self, rows: u16, cols: u16) {
