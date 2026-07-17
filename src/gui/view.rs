@@ -15,7 +15,8 @@ use super::update::{
 };
 use super::widgets::{
     control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_terminals_workspace,
-    empty_workspace, footer_container, footer_hint, icon_btn, keycap, keycap_text, launcher_row,
+    empty_workspace, footer_container, footer_hint, ghost_scrollable, icon_btn, keycap,
+    keycap_text, launcher_row,
     modal_action, modal_action_sized, modal_checkbox, modal_footer_hints, modal_footer_row,
     modal_header, modal_header_row, modal_list_row, modal_list_row_sized, modal_panel,
     palette_input_style,
@@ -681,7 +682,7 @@ impl Grove {
     fn sidebar(&self) -> Element<'_, Msg> {
         let tree_head = self.tree_head();
         let content: Element<'_, Msg> = self.tree_view();
-        let tree_area = container(scrollable(content).height(Length::Fill))
+        let tree_area = container(ghost_scrollable(content).height(Length::Fill))
             .height(Length::Fill)
             .padding(Padding {
                 top: 8.0,
@@ -1516,11 +1517,16 @@ impl Grove {
         let mut identity = row![
             icon(s.agent.icon_name(), 13.0, c::FG()),
             single(s.label.clone(), 13.0, c::FG(), true),
-            single("·".to_string(), 13.0, c::FG_MUTE(), false),
-            single(s.branch.clone(), 12.0, c::FG_DIM(), false),
         ]
         .spacing(6)
         .align_y(iced::Alignment::Center);
+        // Branchless sessions (e.g. host terminals) skip the branch segment
+        // entirely — otherwise the header shows two dots with nothing between.
+        if !s.branch.trim().is_empty() {
+            identity = identity
+                .push(single("·".to_string(), 13.0, c::FG_MUTE(), false))
+                .push(single(s.branch.clone(), 12.0, c::FG_DIM(), false));
+        }
 
         if let Some(title) = context {
             let title = crate::gui::widgets::truncate_middle(&title, 80);
@@ -1937,6 +1943,19 @@ impl Grove {
         } else {
             Space::new().width(0).into()
         };
+        // Branchless sessions (e.g. host terminals) skip the branch segment
+        // entirely — otherwise the header shows a trailing dot with nothing after.
+        let branch_seg: Element<'_, Msg> = if s.branch.trim().is_empty() {
+            Space::new().width(0).into()
+        } else {
+            row![
+                text("·").size(10).color(c::FG_MUTE()),
+                text(s.branch.clone()).size(10).color(c::FG_MUTE()),
+            ]
+            .spacing(4)
+            .align_y(iced::Alignment::Center)
+            .into()
+        };
         let header_row = row![
             icon(s.agent.icon_name(), 11.0, c::FG_DIM()),
             text(s.agent.label())
@@ -1945,8 +1964,7 @@ impl Grove {
                 .color(c::FG_DIM()),
             text("·").size(10).color(c::FG_MUTE()),
             text(s.project.clone()).size(10).color(c::FG_MUTE()),
-            text("·").size(10).color(c::FG_MUTE()),
-            text(s.branch.clone()).size(10).color(c::FG_MUTE()),
+            branch_seg,
             Space::new().width(Length::Fill),
             respond_chip,
             num_hint,
@@ -2123,23 +2141,34 @@ impl Grove {
                     .font(MONO_FONT)
                     .size(10)
                     .color(c::FG_DIM()),
-                text("running").font(MONO_FONT).size(10).color(c::FG_MUTE()),
+                text("RUNNING")
+                    .font(MONO_FONT)
+                    .size(10)
+                    .color(c::FG_MUTE()),
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center),
             row![
-                text("backend").font(MONO_FONT).size(10).color(c::FG_MUTE()),
+                text("BACKEND")
+                    .font(MONO_FONT)
+                    .size(10)
+                    .color(c::FG_MUTE()),
                 text(backend).font(MONO_FONT).size(10).color(c::FG_DIM()),
             ]
-            .spacing(6),
+            .spacing(6)
+            .align_y(iced::Alignment::Center),
             row![
-                text("theme").font(MONO_FONT).size(10).color(c::FG_MUTE()),
+                text("THEME")
+                    .font(MONO_FONT)
+                    .size(10)
+                    .color(c::FG_MUTE()),
                 text(theme_name)
                     .font(MONO_FONT)
                     .size(10)
                     .color(c::FG_DIM()),
             ]
-            .spacing(6),
+            .spacing(6)
+            .align_y(iced::Alignment::Center),
         ]
         .spacing(14)
         .align_y(iced::Alignment::Center);
@@ -2190,9 +2219,12 @@ impl Grove {
                     .color(c::FG_DIM())
                     .into()
             };
-            let content = row![keycap(keycap_content), text(label).font(MONO_FONT).size(10)]
-                .spacing(6)
-                .align_y(iced::Alignment::Center);
+            let content = row![
+                keycap(keycap_content),
+                text(label).font(MONO_FONT).size(10),
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center);
             button(content)
                 .padding(0)
                 .on_press(msg)
@@ -2816,7 +2848,7 @@ impl Grove {
         .spacing(12);
 
         let footer = if destructive {
-            modal_footer_hints(&[("Y", confirm_label_lower), ("esc", "cancel")])
+            modal_footer_hints(&[("y", confirm_label_lower), ("esc", "cancel")])
         } else {
             modal_footer_hints(&[("⏎", "confirm"), ("esc", "cancel")])
         };
@@ -2953,7 +2985,7 @@ impl Grove {
         ];
         if !in_progress {
             panel_body = panel_body.push(divider_h(c::BORDER_SOFT())).push(
-                modal_footer_hints(&[("Y", "remove"), ("space", "toggle delete"), ("esc", "cancel")]),
+                modal_footer_hints(&[("y", "remove"), ("space", "toggle delete"), ("esc", "cancel")]),
             );
         }
 
@@ -3215,31 +3247,10 @@ impl Grove {
 
         // The fields size to their content (min-height) and only scroll once
         // they exceed `max_height` — so on a tall enough window no scrollbar
-        // appears at all. The scrollbar itself is invisible (zero-width,
-        // transparent): scrolling still works via wheel/trackpad, but nothing
-        // is drawn over the editors.
-        use iced::widget::scrollable::{Direction, Rail, Scrollbar, Scroller};
-        let invisible_rail = Rail {
-            background: None,
-            border: Border::default(),
-            scroller: Scroller {
-                background: Background::Color(Color::TRANSPARENT),
-                border: Border::default(),
-            },
-        };
+        // appears at all.
         let scroll_area = container(
-            scrollable(container(fields).padding(Padding::from([0, 10])))
-                .height(Length::Shrink)
-                .direction(Direction::Vertical(
-                    Scrollbar::new().width(0).scroller_width(0),
-                ))
-                .style(move |theme, status| iced::widget::scrollable::Style {
-                    container: container::Style::default(),
-                    vertical_rail: invisible_rail,
-                    horizontal_rail: invisible_rail,
-                    gap: None,
-                    ..iced::widget::scrollable::default(theme, status)
-                }),
+            ghost_scrollable(container(fields).padding(Padding::from([0, 10])))
+                .height(Length::Shrink),
         )
         .max_height(480.0);
 
@@ -3546,7 +3557,7 @@ impl Grove {
                     };
                     list = list.push(row_el);
                 }
-                container(scrollable(list).height(Length::Shrink))
+                container(ghost_scrollable(list).height(Length::Shrink))
                     .padding(8)
                     .max_height(380.0)
                     .width(Length::Fill)
@@ -3707,7 +3718,7 @@ impl Grove {
                         }
                     }
                 }
-                container(scrollable(list).height(Length::Shrink))
+                container(ghost_scrollable(list).height(Length::Shrink))
                     .padding(8)
                     .max_height(380.0)
                     .width(Length::Fill)
@@ -4450,7 +4461,8 @@ impl Grove {
         ]
         .spacing(8);
 
-        let scroll_body = container(scrollable(sections)).max_height(420.0);
+        let scroll_cap = (self.window_size.height - 220.0).max(160.0);
+        let scroll_body = container(ghost_scrollable(sections)).max_height(scroll_cap);
 
         // ── updates — the version/status strip merges into the shared
         // footer chrome below; update-available actions and the release
@@ -4610,7 +4622,7 @@ impl Grove {
         // render unchanged as plain text.
         let chord_keys = |keys: &str| -> Element<'_, Msg> {
             if !cfg!(target_os = "macos") || !keys.contains("cmd") {
-                return keycap_text(keys.to_string(), c::CYAN());
+                return keycap_text(keys.to_string(), c::FG_DIM());
             }
             let mut parts = keys.split("cmd");
             let mut els: Vec<Element<'_, Msg>> = Vec::new();
@@ -4620,20 +4632,20 @@ impl Grove {
                         text(first.to_string())
                             .font(MONO_FONT)
                             .size(11)
-                            .color(c::CYAN())
+                            .color(c::FG_DIM())
                             .into(),
                     );
                 }
             }
             for part in parts {
-                els.push(icon("command", 10.0, c::CYAN()));
+                els.push(icon("command", 10.0, c::FG_DIM()));
                 let rest = part.strip_prefix('+').unwrap_or(part);
                 if !rest.is_empty() {
                     els.push(
                         text(rest.to_string())
                             .font(MONO_FONT)
                             .size(11)
-                            .color(c::CYAN())
+                            .color(c::FG_DIM())
                             .into(),
                     );
                 }
@@ -4864,7 +4876,7 @@ impl Grove {
         }
 
         let list_h = ((themes.len() + if is_project { 1 } else { 0 }).min(12) as f32) * ROW_H;
-        let scroller = container(scrollable(list).id(theme_picker_scrollable_id()))
+        let scroller = container(ghost_scrollable(list).id(theme_picker_scrollable_id()))
             .width(Length::Fill)
             .height(Length::Fixed(list_h))
             .style(|_| container::Style {
@@ -5184,7 +5196,7 @@ impl Grove {
                     ));
                 }
                 let list_h = (themes.len().min(7) as f32) * ROW_H;
-                let scroller = container(scrollable(list))
+                let scroller = container(ghost_scrollable(list))
                     .width(Length::Fill)
                     .height(Length::Fixed(list_h))
                     .style(|_| container::Style {
@@ -5378,17 +5390,10 @@ impl Grove {
                     .spacing(0);
                     list = list.push(entry);
                 }
-                // Right padding leaves a gap between the text and the
-                // scrollbar so they don't crowd each other.
-                scrollable(container(list).padding(Padding {
-                    top: 0.0,
-                    right: 12.0,
-                    bottom: 0.0,
-                    left: 0.0,
-                }))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
+                ghost_scrollable(container(list))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
             }
         };
 

@@ -747,6 +747,7 @@ pub(super) fn single_line<'a>(
 ) -> Element<'a, Msg> {
     container(elem)
         .height(Length::Fixed(text_size * 1.3))
+        .align_y(iced::alignment::Vertical::Center)
         .clip(true)
         .into()
 }

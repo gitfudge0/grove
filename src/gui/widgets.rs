@@ -685,24 +685,32 @@ pub fn empty_workspace<'a>() -> Element<'a, Msg> {
 /// actual ⌘ glyph on macOS (mirroring `mod_key_chip` in view.rs) and
 /// `platform_mod_label()+t` elsewhere.
 pub fn empty_terminals_workspace<'a>() -> Element<'a, Msg> {
-    let hint: Element<'a, Msg> = if cfg!(target_os = "macos") {
+    let keycap_content: Element<'a, Msg> = if cfg!(target_os = "macos") {
         row![
-            text("press ").size(12).color(c::FG_MUTE()),
-            icon("command", 11.0, c::FG_MUTE()),
-            text("t to open a terminal").size(12).color(c::FG_MUTE()),
+            icon("command", 10.0, c::FG_DIM()),
+            text("t").font(MONO_FONT).size(11).color(c::FG_DIM()),
         ]
-        .spacing(2)
+        .spacing(1)
         .align_y(iced::Alignment::Center)
         .into()
     } else {
-        text(format!(
-            "press {}+t to open a terminal",
-            super::update::platform_mod_label()
-        ))
-        .size(12)
-        .color(c::FG_MUTE())
-        .into()
+        text(format!("{}+t", super::update::platform_mod_label()))
+            .font(MONO_FONT)
+            .size(11)
+            .color(c::FG_DIM())
+            .into()
     };
+
+    let hint: Element<'a, Msg> = row![
+        keycap(keycap_content),
+        text("open a terminal")
+            .font(MONO_FONT)
+            .size(10)
+            .color(c::FG_MUTE()),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center)
+    .into();
 
     container(
         column![
@@ -780,18 +788,25 @@ pub fn keycap_text<'a>(label: impl Into<String>, color: Color) -> Element<'a, Ms
     )
 }
 
+/// Fake letter-spacing by joining every character with a U+2009 thin space
+/// (confirmed present in the bundled BlexMono Nerd Font's `cmap`) — Iced has
+/// no letter-spacing property. Uppercases the input.
+pub fn tracked(label: &str) -> String {
+    label
+        .to_uppercase()
+        .chars()
+        .map(String::from)
+        .collect::<Vec<_>>()
+        .join("\u{2009}")
+}
+
 /// A mono, uppercase, letter-tracked section label ("RECENT", "ACTIONS",
 /// "OPEN WITH") used by both the command palette and modal lists. Iced has no
 /// letter-spacing property, so tracking is faked by joining every character
 /// with a U+2009 thin space (confirmed present in the bundled BlexMono Nerd
 /// Font's `cmap`). `top`/`bottom` are the caller's margin above/below.
 pub fn section_header<'a>(label: &str, top: f32, bottom: f32) -> Element<'a, Msg> {
-    let tracked = label
-        .chars()
-        .map(String::from)
-        .collect::<Vec<_>>()
-        .join("\u{2009}");
-    container(text(tracked).font(MONO_FONT).size(10).color(c::FG_MUTE()))
+    container(text(tracked(label)).font(MONO_FONT).size(10).color(c::FG_MUTE()))
         .padding(Padding {
             top,
             bottom,
@@ -1199,4 +1214,33 @@ pub fn clickable_row<'a>(
         }
     })
     .into()
+}
+
+/// Vertical scrollable with an invisible scrollbar: zero-width rail and a
+/// transparent scroller, so wheel/trackpad scrolling works but nothing is
+/// drawn over the content. Shared by the sidebar tree, palette lists, theme
+/// pickers, settings body, and changelog.
+pub fn ghost_scrollable<'a>(
+    content: impl Into<Element<'a, Msg>>,
+) -> iced::widget::Scrollable<'a, Msg> {
+    use iced::widget::scrollable::{self, Direction, Rail, Scrollbar, Scroller};
+    let invisible_rail = Rail {
+        background: None,
+        border: Border::default(),
+        scroller: Scroller {
+            background: Background::Color(Color::TRANSPARENT),
+            border: Border::default(),
+        },
+    };
+    iced::widget::scrollable(content)
+        .direction(Direction::Vertical(
+            Scrollbar::new().width(0).scroller_width(0),
+        ))
+        .style(move |theme, status| scrollable::Style {
+            container: container::Style::default(),
+            vertical_rail: invisible_rail,
+            horizontal_rail: invisible_rail,
+            gap: None,
+            ..scrollable::default(theme, status)
+        })
 }
