@@ -646,6 +646,47 @@ impl Session {
         }
     }
 
+    /// A plain (non-dragging) click at pane-relative viewport cell
+    /// `(col, row)`: forwarded to the inner app as a mouse click if it wants
+    /// mouse reporting, otherwise synthesized as arrow keys so the caret
+    /// follows the click like iTerm2's option-click. No-op while scrolled
+    /// back — clicking history must never poke the live screen — and, on the
+    /// arrow path, while the caret is hidden (nothing to visibly move).
+    pub fn click(&mut self, col: u16, row: u16) {
+        let p = match self.parser.lock() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        if p.screen().scrollback() != 0 {
+            return;
+        }
+        let (rows, cols) = p.screen().size();
+        let col = col.min(cols.saturating_sub(1));
+        // The row was derived from geometry captured at press time; a resize
+        // mid-gesture can leave it past the live screen, so clamp like col.
+        let row = row.min(rows.saturating_sub(1));
+
+        if p.screen().mouse_protocol_mode() != MouseProtocolMode::None {
+            let encoding = p.screen().mouse_protocol_encoding();
+            drop(p);
+            // Left button (cb = 0): press then release at the same cell.
+            self.send(&encode_mouse(encoding, 0, col, row, true));
+            self.send(&encode_mouse(encoding, 0, col, row, false));
+            return;
+        }
+
+        if p.screen().hide_cursor() {
+            return;
+        }
+        let cur = p.screen().cursor_position();
+        let app_cursor = p.screen().application_cursor();
+        drop(p);
+        let bytes = arrow_moves(cur, (row, col), app_cursor);
+        if !bytes.is_empty() {
+            self.send(&bytes);
+        }
+    }
+
     /// Extract the selected text between two endpoints given in scrollback-
     /// stable absolute coordinates (`(a_row, col)`, where larger `a_row` is
     /// older — see `gui::state::AbsCell`). The selection may extend beyond the
@@ -865,6 +906,40 @@ fn encode_mouse(
     }
 }
 
+/// Synthesize arrow-key bytes to move the caret from `cur` to `target`
+/// (both `(row, col)`, viewport-relative). Row delta is sent first as
+/// repeated Up/Down, then column delta as repeated Right/Left — an
+/// arbitrary but consistent order, since the inner app (typically a line
+/// editor or shell) only cares about the net effect of each axis, not the
+/// interleaving. `app_cursor` selects the `\x1bO`-prefixed SS3 forms an app
+/// gets after enabling DECCKM, vs. the default `\x1b[` CSI forms.
+fn arrow_moves(cur: (u16, u16), target: (u16, u16), app_cursor: bool) -> Vec<u8> {
+    let (cur_row, cur_col) = cur;
+    let (t_row, t_col) = target;
+    let prefix: &[u8] = if app_cursor { b"\x1bO" } else { b"\x1b[" };
+
+    let mut out = Vec::new();
+    let (row_ch, row_n) = if t_row > cur_row {
+        (b'B', t_row - cur_row) // Down
+    } else {
+        (b'A', cur_row - t_row) // Up
+    };
+    for _ in 0..row_n {
+        out.extend_from_slice(prefix);
+        out.push(row_ch);
+    }
+    let (col_ch, col_n) = if t_col > cur_col {
+        (b'C', t_col - cur_col) // Right
+    } else {
+        (b'D', cur_col - t_col) // Left
+    };
+    for _ in 0..col_n {
+        out.extend_from_slice(prefix);
+        out.push(col_ch);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -952,6 +1027,54 @@ mod tests {
             bytes.is_empty(),
             "X10 must return empty vec when row >= 223"
         );
+    }
+
+    // ── arrow_moves ──────────────────────────────────────────────────────────
+
+    /// Same cell → no bytes at all.
+    #[test]
+    fn arrow_moves_same_cell_is_empty() {
+        assert_eq!(arrow_moves((3, 4), (3, 4), false), Vec::<u8>::new());
+    }
+
+    /// Pure rightward move: repeated CSI Right, no row bytes.
+    #[test]
+    fn arrow_moves_right() {
+        assert_eq!(arrow_moves((0, 0), (0, 3), false), b"\x1b[C\x1b[C\x1b[C");
+    }
+
+    /// Pure leftward move: repeated CSI Left.
+    #[test]
+    fn arrow_moves_left() {
+        assert_eq!(arrow_moves((0, 3), (0, 0), false), b"\x1b[D\x1b[D\x1b[D");
+    }
+
+    /// Pure downward move: repeated CSI Down.
+    #[test]
+    fn arrow_moves_down() {
+        assert_eq!(arrow_moves((0, 0), (2, 0), false), b"\x1b[B\x1b[B");
+    }
+
+    /// Pure upward move: repeated CSI Up.
+    #[test]
+    fn arrow_moves_up() {
+        assert_eq!(arrow_moves((2, 0), (0, 0), false), b"\x1b[A\x1b[A");
+    }
+
+    /// Mixed row+col move: row bytes come first, then column bytes.
+    #[test]
+    fn arrow_moves_mixed_row_first() {
+        assert_eq!(
+            arrow_moves((0, 0), (1, 2), false),
+            b"\x1b[B\x1b[C\x1b[C"
+        );
+    }
+
+    /// `app_cursor` selects the SS3 (`\x1bO`) forms instead of CSI (`\x1b[`).
+    #[test]
+    fn arrow_moves_application_cursor_uses_ss3() {
+        assert_eq!(arrow_moves((0, 0), (1, 0), true), b"\x1bOB");
+        assert_eq!(arrow_moves((0, 1), (0, 0), true), b"\x1bOD");
     }
 
     /// X10 encoding for small coordinates produces the classic 6-byte packet:

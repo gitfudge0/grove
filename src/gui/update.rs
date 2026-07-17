@@ -901,6 +901,18 @@ impl Grove {
                 if let Some((a, h)) = self.pty_selection {
                     if a == h {
                         self.pty_selection = None;
+                        // No drag happened — treat it as a click-to-move-caret.
+                        // `pixel_to_abs` only clamps into the visible window
+                        // when scrollback is 0, so bail if the view has been
+                        // scrolled: clicking history must be inert.
+                        if let Some((h_rows, sb)) = self.pty_view_geom() {
+                            if sb == 0 && h_rows > 0 {
+                                let row = (h_rows - 1).saturating_sub(a.a_row) as u16;
+                                if let Some(s) = self.focused_session_mut() {
+                                    s.click(a.col as u16, row);
+                                }
+                            }
+                        }
                     }
                 }
             }
