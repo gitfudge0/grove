@@ -11,19 +11,22 @@ use super::pty::{rebuild_row_runs, PtyProgram};
 use super::rows::{project_row, session_row, single_line, state_glyph, worktree_row};
 use super::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, UpgradeState};
 use super::update::{
-    platform_mod_label, GlobalShortcut, PaletteRow, Scope, ShortcutDef, SHORTCUTS,
+    platform_mod_label, project_theme_pane_rows, theme_pane_rows, update_available_actions,
+    GlobalShortcut, PaletteRow, Scope, SettingRow, ShortcutDef, UpdateAction, SHORTCUTS,
 };
 use super::widgets::{
     control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_terminals_workspace,
     empty_workspace, footer_container, footer_hint, ghost_scrollable, icon_btn, keycap,
-    keycap_text, launcher_row,
-    modal_action, modal_action_sized, modal_checkbox, modal_footer_hints, modal_footer_row,
-    modal_header, modal_header_row, modal_list_row, modal_list_row_sized, modal_panel,
-    palette_input_style,
-    section_header, seg_button, sidebar_agent_menu_overlay, skip_perms_seg, tool_btn,
-    tool_btn_toggle, vline, ModalBtn, SegSide, PALETTE_ROW_H,
+    keycap_text, launcher_row, modal_action, modal_action_sized, modal_checkbox,
+    modal_footer_hints, modal_footer_row, modal_header, modal_header_row, modal_list_row,
+    modal_list_row_sized, modal_panel, palette_input_style, section_header, seg_button,
+    sidebar_agent_menu_overlay, skip_perms_seg, slot_badge, tool_btn, tool_btn_toggle, vline,
+    ModalBtn, SegSide, PALETTE_ROW_H,
 };
-use crate::app::{AddProjectStep, ConfirmKind, GitProbe, LauncherOptions, Modal, OnboardStep};
+use crate::app::{
+    AddProjectStep, ConfirmKind, GitProbe, LauncherOptions, LauncherSettings, Modal, OnboardStep,
+    SettingsPane,
+};
 use crate::git::Worktree;
 use crate::session::{Session, SessionStatus};
 use iced::border::Radius;
@@ -68,6 +71,22 @@ fn input_field_style(_t: &iced::Theme, status: text_input::Status) -> text_input
 /// selection into view from `update`.
 pub fn theme_picker_scrollable_id() -> Id {
     Id::new("theme-picker-list")
+}
+
+/// Stable id for the palette Theme sub-pane's list scrollable — same idiom
+/// as [`theme_picker_scrollable_id`], for the same reason: `themes_of` is
+/// alphabetical, so the current theme usually sits below the pane's 280px
+/// fold and must be scrolled into view from `update`.
+pub fn launcher_theme_scrollable_id() -> Id {
+    Id::new("launcher-theme-list")
+}
+
+/// Stable id for the palette Settings drill-in's Root list scrollable —
+/// same idiom again: 8 rows plus section headers overflow the 380px cap, so
+/// cursor moves (and sub-pane exits landing near the bottom) must scroll
+/// the selection into view from `update`.
+pub fn launcher_settings_scrollable_id() -> Id {
+    Id::new("launcher-settings-list")
 }
 
 /// A mod+key hint chip: on macOS the modifier renders as the ⌘ glyph icon,
@@ -715,7 +734,8 @@ impl Grove {
             None
         };
 
-        let mut stack_col = column![tree_head, divider_h(c::BORDER_SOFT()), tree_layer,].height(Length::Fill);
+        let mut stack_col =
+            column![tree_head, divider_h(c::BORDER_SOFT()), tree_layer,].height(Length::Fill);
         if let Some(docked) = docked_terminals {
             stack_col = stack_col.push(divider_h(c::BORDER_SOFT()));
             stack_col = stack_col.push(docked);
@@ -791,10 +811,11 @@ impl Grove {
         });
 
         // Tree is always active now, so the collapse-all toggle is always shown.
-        let right_tools: Element<'_, Msg> = container(row![add_btn, toggle].align_y(iced::Alignment::Center))
-            .height(Length::Fill)
-            .align_y(iced::Alignment::Center)
-            .into();
+        let right_tools: Element<'_, Msg> =
+            container(row![add_btn, toggle].align_y(iced::Alignment::Center))
+                .height(Length::Fill)
+                .align_y(iced::Alignment::Center)
+                .into();
 
         let section_label = section_header("PROJECTS", 0.0, 0.0);
 
@@ -1768,19 +1789,19 @@ impl Grove {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(move |_| container::Style {
-                background: Some(Background::Color(c::bg_of(&pty_theme))),
-                border: if focused {
-                    Border {
-                        color: c::CYAN(),
-                        width: 1.0,
-                        radius: Radius::from(0.0),
-                    }
-                } else {
-                    Border::default()
-                },
-                ..Default::default()
-            })
-            .into()
+            background: Some(Background::Color(c::bg_of(&pty_theme))),
+            border: if focused {
+                Border {
+                    color: c::CYAN(),
+                    width: 1.0,
+                    radius: Radius::from(0.0),
+                }
+            } else {
+                Border::default()
+            },
+            ..Default::default()
+        })
+        .into()
     }
 
     fn grid_tile(&self, tile_order_idx: usize, si: usize, s: &Session) -> Element<'_, Msg> {
@@ -2141,31 +2162,19 @@ impl Grove {
                     .font(MONO_FONT)
                     .size(10)
                     .color(c::FG_DIM()),
-                text("RUNNING")
-                    .font(MONO_FONT)
-                    .size(10)
-                    .color(c::FG_MUTE()),
+                text("RUNNING").font(MONO_FONT).size(10).color(c::FG_MUTE()),
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center),
             row![
-                text("BACKEND")
-                    .font(MONO_FONT)
-                    .size(10)
-                    .color(c::FG_MUTE()),
+                text("BACKEND").font(MONO_FONT).size(10).color(c::FG_MUTE()),
                 text(backend).font(MONO_FONT).size(10).color(c::FG_DIM()),
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center),
             row![
-                text("THEME")
-                    .font(MONO_FONT)
-                    .size(10)
-                    .color(c::FG_MUTE()),
-                text(theme_name)
-                    .font(MONO_FONT)
-                    .size(10)
-                    .color(c::FG_DIM()),
+                text("THEME").font(MONO_FONT).size(10).color(c::FG_MUTE()),
+                text(theme_name).font(MONO_FONT).size(10).color(c::FG_DIM()),
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center),
@@ -2207,7 +2216,10 @@ impl Grove {
             let keycap_content: Element<'_, Msg> = if cfg!(target_os = "macos") {
                 row![
                     icon("command", 9.0, c::FG_DIM()),
-                    text(key.to_string()).font(MONO_FONT).size(10).color(c::FG_DIM()),
+                    text(key.to_string())
+                        .font(MONO_FONT)
+                        .size(10)
+                        .color(c::FG_DIM()),
                 ]
                 .spacing(1)
                 .align_y(iced::Alignment::Center)
@@ -2219,12 +2231,9 @@ impl Grove {
                     .color(c::FG_DIM())
                     .into()
             };
-            let content = row![
-                keycap(keycap_content),
-                text(label).font(MONO_FONT).size(10),
-            ]
-            .spacing(6)
-            .align_y(iced::Alignment::Center);
+            let content = row![keycap(keycap_content), text(label).font(MONO_FONT).size(10),]
+                .spacing(6)
+                .align_y(iced::Alignment::Center);
             button(content)
                 .padding(0)
                 .on_press(msg)
@@ -2401,6 +2410,7 @@ impl Grove {
                 options,
                 switch,
                 row_actions,
+                settings,
             } => self.session_launcher_modal(
                 input,
                 *selected,
@@ -2408,6 +2418,7 @@ impl Grove {
                 options.as_ref(),
                 *switch,
                 row_actions.as_ref(),
+                *settings,
             ),
             _ => Space::new().width(0).into(),
         };
@@ -2984,9 +2995,13 @@ impl Grove {
             container(body).padding(Padding::from([14, 16])),
         ];
         if !in_progress {
-            panel_body = panel_body.push(divider_h(c::BORDER_SOFT())).push(
-                modal_footer_hints(&[("y", "remove"), ("space", "toggle delete"), ("esc", "cancel")]),
-            );
+            panel_body = panel_body
+                .push(divider_h(c::BORDER_SOFT()))
+                .push(modal_footer_hints(&[
+                    ("y", "remove"),
+                    ("space", "toggle delete"),
+                    ("esc", "cancel"),
+                ]));
         }
 
         modal_panel(panel_body.into(), 520.0)
@@ -3413,6 +3428,7 @@ impl Grove {
         options: Option<&'a LauncherOptions>,
         switch: Option<usize>,
         row_actions: Option<&'a crate::app::RowActionsState>,
+        settings: Option<LauncherSettings>,
     ) -> Element<'a, Msg> {
         // A cue chip shell shared by the "options" and "switch to session"
         // states' leading slot: mono, cyan text over a soft cyan tint.
@@ -3430,18 +3446,22 @@ impl Grove {
                 })
                 .into()
         };
-        // In options/switch state, the leading glyph slot becomes a static
-        // cue chip instead of the search icon; the typed text underneath is
-        // unchanged.
+        // In options/switch/settings state, the leading glyph slot becomes a
+        // static cue chip instead of the search icon; the typed text
+        // underneath is unchanged.
         let leading: Element<'a, Msg> = if options.is_some() {
             cue_chip("options")
         } else if switch.is_some() {
             cue_chip("SWITCH TO SESSION")
+        } else if let Some(ls) = settings {
+            cue_chip(settings_pane_cue(&ls.pane))
         } else {
             icon("search", 16.0, c::FG_MUTE())
         };
         let placeholder = if switch.is_some() {
             "Filter sessions…"
+        } else if let Some(ls) = settings {
+            settings_pane_placeholder(&ls.pane)
         } else {
             "Search projects, worktrees, agents…"
         };
@@ -3461,7 +3481,643 @@ impl Grove {
 
         let mut body = column![input_zone, divider_h(c::BORDER_SOFT())];
 
-        if let Some(sel) = switch {
+        // The inline warning under a *selected* Permissions row (B3) — the
+        // same string E1's Permissions pane promotes, one shade up from a
+        // throwaway caption (11 · FG_DIM), left-padded past the 24px icon
+        // slot so it aligns with the row's label column. Shared by the
+        // drill-in Root list and the root/typing direct-match list.
+        let danger_caption = || -> Element<'a, Msg> {
+            container(
+                text("Skip lets agents run any command without asking.")
+                    .size(11)
+                    .color(c::FG_DIM()),
+            )
+            .padding(Padding {
+                top: 4.0,
+                bottom: 2.0,
+                left: 44.0,
+                right: 12.0,
+            })
+            .into()
+        };
+
+        if let Some(ls) = settings {
+            match ls.pane {
+                SettingsPane::Root => {
+                    // Settings drill-in root: every `SettingRow`, grouped
+                    // under its 4 section headers (C1 in the palette
+                    // redesign mock), fuzzy-filtered by `input` — headers
+                    // for a section with zero remaining rows are dropped
+                    // (C2). While `resizing` (D4), the App-size row's value
+                    // slot swaps for the live zoom stepper.
+                    let rows = self.settings_rows_filtered(input);
+                    let list_zone: Element<'a, Msg> = if rows.is_empty() {
+                        container(text("No matching settings").size(12).color(c::FG_MUTE()))
+                            .padding(Padding::from([30, 16]))
+                            .width(Length::Fill)
+                            .align_x(iced::alignment::Horizontal::Center)
+                            .into()
+                    } else {
+                        let mut list = Column::new().spacing(2);
+                        let mut printed_section: Option<&'static str> = None;
+                        for (i, s) in rows.iter().enumerate() {
+                            let section = s.section();
+                            if printed_section != Some(section) {
+                                let top = if printed_section.is_none() { 0.0 } else { 12.0 };
+                                list = list.push(section_header(section, top, 6.0));
+                                printed_section = Some(section);
+                            }
+                            let active = i == ls.selected;
+                            let content: Element<'a, Msg> =
+                                if ls.resizing && *s == SettingRow::AppSize {
+                                    self.appsize_stepper_row_content()
+                                } else {
+                                    self.setting_row_content(*s, input)
+                                };
+                            list = list.push(launcher_row(
+                                content,
+                                active,
+                                true,
+                                Msg::LauncherSettingActivate(i),
+                                PALETTE_ROW_H,
+                            ));
+                            // Danger settings warn inline before you ever
+                            // change them (B3, same string E1's pane
+                            // promotes) — only under the selected row, so
+                            // the list doesn't permanently grow a caption.
+                            if active && *s == SettingRow::Permissions {
+                                list = list.push(danger_caption());
+                            }
+                            // Update-available actions expand in place under
+                            // the CheckUpdates row (E3). Guarded on the live
+                            // upgrade state, not just the flag: SkipVersion
+                            // (or a background re-check) can invalidate the
+                            // strip while it's open.
+                            if *s == SettingRow::CheckUpdates {
+                                if let (Some(strip_sel), UpgradeState::Available(_)) =
+                                    (ls.update_actions, &self.upgrade)
+                                {
+                                    list = list.push(self.update_actions_strip(strip_sel));
+                                }
+                            }
+                        }
+                        container(
+                            ghost_scrollable(list)
+                                .id(launcher_settings_scrollable_id())
+                                .height(Length::Shrink),
+                        )
+                        .padding(8)
+                        .max_height(380.0)
+                        .width(Length::Fill)
+                        .into()
+                    };
+                    body = body.push(list_zone);
+                    body = body.push(divider_h(c::BORDER_SOFT()));
+                    let footer_row: Element<'a, Msg> = if rows.is_empty() {
+                        // Nothing to choose or change (E4) — only the way
+                        // back is worth hinting.
+                        row![footer_hint("esc", "back")]
+                            .spacing(14)
+                            .align_y(iced::Alignment::Center)
+                            .into()
+                    } else if ls.resizing {
+                        row![
+                            footer_hint("←/→", "adjust"),
+                            footer_hint("0", "reset"),
+                            footer_hint("⏎", "done"),
+                            footer_hint("esc", "done"),
+                        ]
+                        .spacing(14)
+                        .align_y(iced::Alignment::Center)
+                        .into()
+                    } else if ls.update_actions.is_some() {
+                        row![
+                            footer_hint("←→", "choose"),
+                            footer_hint("⏎", "run"),
+                            footer_hint("esc", "back"),
+                        ]
+                        .spacing(14)
+                        .align_y(iced::Alignment::Center)
+                        .into()
+                    } else {
+                        row![
+                            footer_hint("↑↓", "choose"),
+                            footer_hint("⏎", "change"),
+                            footer_hint("esc", "back"),
+                            Space::new().width(Length::Fill),
+                            text("Changes save automatically.")
+                                .size(11)
+                                .color(c::FG_MUTE()),
+                        ]
+                        .spacing(14)
+                        .align_y(iced::Alignment::Center)
+                        .into()
+                    };
+                    body = body.push(footer_container(footer_row));
+                }
+                SettingsPane::Theme {
+                    kind,
+                    follow_system,
+                    ..
+                } => {
+                    // Theme sub-pane (D1): pinned context row + Dark/Light/
+                    // System mode row above a fuzzy-filtered, live-previewing
+                    // theme list — see `Grove::theme_pane_select`/
+                    // `theme_pane_set_kind`/`theme_pane_set_system`.
+                    let context_row = container(
+                        row![
+                            text("App theme").size(13).color(c::FG()),
+                            Space::new().width(Length::Fill),
+                            text(crate::theme::current().name.to_string())
+                                .size(12)
+                                .color(c::FG_DIM()),
+                        ]
+                        .align_y(iced::Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .height(PALETTE_ROW_H)
+                    .padding(Padding::from([0.0, 12.0]))
+                    .align_y(iced::Alignment::Center)
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(c::BG_HL())),
+                        border: Border {
+                            color: Color::TRANSPARENT,
+                            width: 0.0,
+                            radius: Radius::from(6.0),
+                        },
+                        ..Default::default()
+                    });
+
+                    let mode_seg = container(
+                        row![
+                            seg_button(
+                                "Dark",
+                                !follow_system && kind == crate::theme::ThemeKind::Dark,
+                                SegSide::Left,
+                                Msg::LauncherThemePaneDark,
+                            ),
+                            seg_button(
+                                "Light",
+                                !follow_system && kind == crate::theme::ThemeKind::Light,
+                                SegSide::Mid,
+                                Msg::LauncherThemePaneLight,
+                            ),
+                            seg_button(
+                                "System",
+                                follow_system,
+                                SegSide::Right,
+                                Msg::LauncherThemePaneSystem,
+                            ),
+                        ]
+                        .spacing(0),
+                    )
+                    .style(|_| container::Style {
+                        border: Border {
+                            color: c::BORDER(),
+                            width: 1.0,
+                            radius: Radius::from(6.0),
+                        },
+                        ..Default::default()
+                    });
+                    let mode_row = container(
+                        row![
+                            text("Mode").size(11).color(c::FG_MUTE()),
+                            Space::new().width(Length::Fill),
+                            mode_seg,
+                        ]
+                        .align_y(iced::Alignment::Center),
+                    )
+                    .padding(Padding::from([8, 12]));
+
+                    let theme_rows = theme_pane_rows(kind, input);
+                    let current_name = crate::theme::current().name;
+                    let theme_list: Element<'a, Msg> = if theme_rows.is_empty() {
+                        container(text("No matching themes").size(12).color(c::FG_MUTE()))
+                            .padding(Padding::from([30, 16]))
+                            .width(Length::Fill)
+                            .align_x(iced::alignment::Horizontal::Center)
+                            .into()
+                    } else {
+                        let mut list = Column::new().spacing(2);
+                        for (i, t) in theme_rows.iter().enumerate() {
+                            let active = i == ls.selected;
+                            let m = (!input.is_empty()).then(|| {
+                                crate::gui::launcher::fuzzy_match_indices(input, t.name, "", "")
+                            });
+                            let ranges: &[(usize, usize)] =
+                                m.as_ref().map(|m| m.project.as_slice()).unwrap_or(&[]);
+                            let label_el = highlighted_line(t.name, ranges, c::FG(), UI_FONT, 13.0);
+                            let mut content = row![label_el]
+                                .spacing(8)
+                                .align_y(iced::Alignment::Center)
+                                .push(Space::new().width(Length::Fill));
+                            if t.name == current_name {
+                                content = content.push(icon("check", 12.0, c::CYAN()));
+                            }
+                            list = list.push(launcher_row(
+                                content,
+                                active,
+                                true,
+                                Msg::LauncherThemePaneSelect(i),
+                                36.0,
+                            ));
+                        }
+                        container(
+                            ghost_scrollable(list)
+                                .id(launcher_theme_scrollable_id())
+                                .height(Length::Shrink),
+                        )
+                        .max_height(280.0)
+                        .width(Length::Fill)
+                        .into()
+                    };
+
+                    body = body.push(
+                        container(column![context_row, mode_row, theme_list].spacing(0))
+                            .padding(8)
+                            .width(Length::Fill),
+                    );
+                    body = body.push(divider_h(c::BORDER_SOFT()));
+                    body = body.push(footer_container(
+                        row![
+                            footer_hint("↑↓", "preview"),
+                            footer_hint("tab", "mode"),
+                            footer_hint("⏎", "apply"),
+                            footer_hint("esc", "back"),
+                        ]
+                        .spacing(14)
+                        .align_y(iced::Alignment::Center)
+                        .into(),
+                    ));
+                }
+                SettingsPane::ProjectTheme {
+                    proj,
+                    kind,
+                    preview,
+                } => {
+                    // Project theme sub-pane: same shape as the app Theme
+                    // pane above, minus the System segment (a project
+                    // override is always a concrete pick or "Use app
+                    // theme") — see `Grove::project_theme_pane_select`/
+                    // `_set_kind`.
+                    let proj_name = self
+                        .app
+                        .store
+                        .projects
+                        .get(proj)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or("(project removed)");
+                    let context_row = container(
+                        row![
+                            text("Project theme").size(13).color(c::FG()),
+                            Space::new().width(Length::Fill),
+                            text(proj_name).size(12).color(c::FG_DIM()),
+                        ]
+                        .align_y(iced::Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .height(PALETTE_ROW_H)
+                    .padding(Padding::from([0.0, 12.0]))
+                    .align_y(iced::Alignment::Center)
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(c::BG_HL())),
+                        border: Border {
+                            color: Color::TRANSPARENT,
+                            width: 0.0,
+                            radius: Radius::from(6.0),
+                        },
+                        ..Default::default()
+                    });
+
+                    let mode_seg = container(
+                        row![
+                            seg_button(
+                                "Dark",
+                                kind == crate::theme::ThemeKind::Dark,
+                                SegSide::Left,
+                                Msg::LauncherThemePaneDark,
+                            ),
+                            seg_button(
+                                "Light",
+                                kind == crate::theme::ThemeKind::Light,
+                                SegSide::Right,
+                                Msg::LauncherThemePaneLight,
+                            ),
+                        ]
+                        .spacing(0),
+                    )
+                    .style(|_| container::Style {
+                        border: Border {
+                            color: c::BORDER(),
+                            width: 1.0,
+                            radius: Radius::from(6.0),
+                        },
+                        ..Default::default()
+                    });
+                    let mode_row = container(
+                        row![
+                            text("Mode").size(11).color(c::FG_MUTE()),
+                            Space::new().width(Length::Fill),
+                            mode_seg,
+                        ]
+                        .align_y(iced::Alignment::Center),
+                    )
+                    .padding(Padding::from([8, 12]));
+
+                    let rows = project_theme_pane_rows(kind, input);
+                    let theme_list: Element<'a, Msg> = if rows.is_empty() {
+                        container(text("No matching themes").size(12).color(c::FG_MUTE()))
+                            .padding(Padding::from([30, 16]))
+                            .width(Length::Fill)
+                            .align_x(iced::alignment::Horizontal::Center)
+                            .into()
+                    } else {
+                        let mut list = Column::new().spacing(2);
+                        for (i, row_theme) in rows.iter().enumerate() {
+                            let active = i == ls.selected;
+                            let is_current = row_theme.map(|t| t.name) == preview.map(|t| t.name);
+                            let content: Element<'a, Msg> = match row_theme {
+                                Some(t) => {
+                                    let m = (!input.is_empty()).then(|| {
+                                        crate::gui::launcher::fuzzy_match_indices(
+                                            input, t.name, "", "",
+                                        )
+                                    });
+                                    let ranges: &[(usize, usize)] =
+                                        m.as_ref().map(|m| m.project.as_slice()).unwrap_or(&[]);
+                                    let label_el =
+                                        highlighted_line(t.name, ranges, c::FG(), UI_FONT, 13.0);
+                                    let mut c = row![label_el]
+                                        .spacing(8)
+                                        .align_y(iced::Alignment::Center)
+                                        .push(Space::new().width(Length::Fill));
+                                    if is_current {
+                                        c = c.push(icon("check", 12.0, c::CYAN()));
+                                    }
+                                    c.into()
+                                }
+                                None => {
+                                    let mut c =
+                                        row![text("Use app theme").size(13).color(c::FG_MUTE())]
+                                            .spacing(8)
+                                            .align_y(iced::Alignment::Center)
+                                            .push(Space::new().width(Length::Fill));
+                                    if is_current {
+                                        c = c.push(icon("check", 12.0, c::CYAN()));
+                                    }
+                                    c.into()
+                                }
+                            };
+                            list = list.push(launcher_row(
+                                content,
+                                active,
+                                true,
+                                Msg::LauncherThemePaneSelect(i),
+                                36.0,
+                            ));
+                        }
+                        container(
+                            ghost_scrollable(list)
+                                .id(launcher_theme_scrollable_id())
+                                .height(Length::Shrink),
+                        )
+                        .max_height(280.0)
+                        .width(Length::Fill)
+                        .into()
+                    };
+
+                    body = body.push(
+                        container(column![context_row, mode_row, theme_list].spacing(0))
+                            .padding(8)
+                            .width(Length::Fill),
+                    );
+                    body = body.push(divider_h(c::BORDER_SOFT()));
+                    let footer_row: Element<'a, Msg> = if rows.is_empty() {
+                        row![footer_hint("esc", "back")]
+                            .spacing(14)
+                            .align_y(iced::Alignment::Center)
+                            .into()
+                    } else {
+                        row![
+                            footer_hint("↑↓", "preview"),
+                            footer_hint("tab", "dark/light"),
+                            footer_hint("⏎", "apply"),
+                            footer_hint("esc", "back"),
+                        ]
+                        .spacing(14)
+                        .align_y(iced::Alignment::Center)
+                        .into()
+                    };
+                    body = body.push(footer_container(footer_row));
+                }
+                SettingsPane::Backend => {
+                    // Binary enum picker (D2): no filtering, 2 fixed rows.
+                    let tmux_on = self.app.use_tmux();
+                    let current = if tmux_on { 1 } else { 0 };
+                    let rows: [(&str, &str); 2] = [
+                        ("Native", "spawn PTYs directly"),
+                        ("Tmux", "sessions survive restarts"),
+                    ];
+                    let mut list = Column::new().spacing(2);
+                    for (i, (label, desc)) in rows.iter().enumerate() {
+                        let active = i == ls.selected;
+                        let mut content = row![
+                            text(*label).size(13).color(c::FG()),
+                            text(format!("— {desc}")).size(11).color(c::FG_MUTE()),
+                        ]
+                        .spacing(6)
+                        .align_y(iced::Alignment::Center)
+                        .push(Space::new().width(Length::Fill));
+                        if i == current {
+                            content = content.push(icon("check", 12.0, c::CYAN()));
+                        }
+                        list = list.push(launcher_row(
+                            content,
+                            active,
+                            true,
+                            Msg::LauncherSettingsPaneActivate(i),
+                            PALETTE_ROW_H,
+                        ));
+                    }
+                    let note = container(
+                        text("Applies to new sessions; running sessions keep their backend.")
+                            .size(11)
+                            .color(c::FG_MUTE()),
+                    )
+                    .padding(Padding::from([6, 12]));
+                    body = body.push(
+                        container(column![list, note].spacing(0))
+                            .padding(8)
+                            .width(Length::Fill),
+                    );
+                    body = body.push(divider_h(c::BORDER_SOFT()));
+                    body = body.push(footer_container(
+                        row![
+                            footer_hint("↑↓", "choose"),
+                            footer_hint("⏎", "apply"),
+                            footer_hint("esc", "back"),
+                        ]
+                        .spacing(14)
+                        .align_y(iced::Alignment::Center)
+                        .into(),
+                    ));
+                }
+                SettingsPane::Permissions => {
+                    // Skip permissions confirms first (E1): no filtering, 2
+                    // fixed rows; the highlighted Skip row promotes to a red
+                    // wash + a warning caption instead of the usual cyan
+                    // selection tint.
+                    let skip_on = self.app.skip_permissions_enabled();
+                    let current = if skip_on { 1 } else { 0 };
+                    let rows: [(&str, &str); 2] = [
+                        ("Ask", "agents ask before running commands"),
+                        ("Skip", "run any command without asking"),
+                    ];
+                    let mut list = Column::new().spacing(2);
+                    for (i, (label, desc)) in rows.iter().enumerate() {
+                        let active = i == ls.selected;
+                        let is_skip = i == 1;
+                        let danger = is_skip && active;
+                        let label_color = if danger { c::RED() } else { c::FG() };
+                        let mut content = row![
+                            text(*label).size(13).color(label_color),
+                            text(format!("— {desc}")).size(11).color(c::FG_MUTE()),
+                        ]
+                        .spacing(6)
+                        .align_y(iced::Alignment::Center)
+                        .push(Space::new().width(Length::Fill));
+                        if i == current {
+                            content = content.push(icon("check", 12.0, c::CYAN()));
+                        }
+                        let msg = Msg::LauncherSettingsPaneActivate(i);
+                        let row_el: Element<'a, Msg> = if danger {
+                            button(
+                                container(content)
+                                    .width(Length::Fill)
+                                    .height(PALETTE_ROW_H)
+                                    .align_y(iced::Alignment::Center)
+                                    .padding(Padding::from([0.0, 12.0])),
+                            )
+                            .on_press(msg)
+                            .width(Length::Fill)
+                            .padding(0)
+                            .style(|_, _| button::Style {
+                                background: Some(Background::Color(c::RED_WASH())),
+                                text_color: c::FG(),
+                                border: Border {
+                                    color: Color::TRANSPARENT,
+                                    width: 0.0,
+                                    radius: Radius::from(6.0),
+                                },
+                                shadow: Shadow::default(),
+                                snap: false,
+                            })
+                            .into()
+                        } else {
+                            launcher_row(content, active, true, msg, PALETTE_ROW_H)
+                        };
+                        list = list.push(row_el);
+                    }
+                    let mut pane_col = column![list].spacing(0);
+                    if ls.selected == 1 {
+                        pane_col = pane_col.push(
+                            container(
+                                text("Skip lets agents run any command without asking.")
+                                    .size(11)
+                                    .color(c::FG_DIM()),
+                            )
+                            .padding(Padding::from([6, 12])),
+                        );
+                    }
+                    body = body.push(container(pane_col).padding(8).width(Length::Fill));
+                    body = body.push(divider_h(c::BORDER_SOFT()));
+                    body = body.push(footer_container(
+                        row![
+                            footer_hint("↑↓", "choose"),
+                            footer_hint("⏎", "confirm"),
+                            footer_hint("esc", "back"),
+                        ]
+                        .spacing(14)
+                        .align_y(iced::Alignment::Center)
+                        .into(),
+                    ));
+                }
+                SettingsPane::DefaultAgent => {
+                    // Default agent picker (D3): mirrors OPEN WITH's list —
+                    // uninstalled tools are visible but inert (see
+                    // `Grove::default_agent_pane_row_installed`).
+                    let mut list = Column::new().spacing(2);
+                    for (i, &agent) in crate::agent::Agent::ALL.iter().enumerate() {
+                        let active = i == ls.selected;
+                        let installed = self.default_agent_pane_row_installed(agent);
+                        let is_default = self.app.store.default_agent == Some(agent);
+                        let label_color = if installed { c::FG() } else { c::FG_MUTE() };
+                        let icon_color = if active { c::YELLOW() } else { c::FG_MUTE() };
+                        let icon_slot = container(icon(agent.icon_name(), 16.0, icon_color))
+                            .width(24.0)
+                            .align_x(iced::alignment::Horizontal::Center);
+                        let status_text = if agent == crate::agent::Agent::Terminal
+                            || self.settings_tools.is_empty()
+                        {
+                            None
+                        } else {
+                            self.settings_tools
+                                .iter()
+                                .find(|t| t.agent == agent)
+                                .map(|st| {
+                                    if st.detecting {
+                                        ("Detecting…".to_string(), c::FG_MUTE())
+                                    } else if !st.installed {
+                                        ("Not installed".to_string(), c::FG_MUTE())
+                                    } else {
+                                        (
+                                            st.version
+                                                .clone()
+                                                .unwrap_or_else(|| "installed".to_string()),
+                                            c::FG_DIM(),
+                                        )
+                                    }
+                                })
+                        };
+                        let mut content = row![
+                            icon_slot,
+                            text(cap(agent.label())).size(13).color(label_color),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center)
+                        .push(Space::new().width(Length::Fill));
+                        if let Some((text_s, color)) = status_text {
+                            content = content.push(text(text_s).size(12).color(color));
+                            content = content.push(Space::new().width(10));
+                        }
+                        if is_default {
+                            content = content.push(slot_badge("Default"));
+                            content = content.push(Space::new().width(6));
+                            content = content.push(icon("check", 12.0, c::CYAN()));
+                        }
+                        list = list.push(launcher_row(
+                            content,
+                            active,
+                            true,
+                            Msg::LauncherSettingsPaneActivate(i),
+                            36.0,
+                        ));
+                    }
+                    body = body.push(container(list).padding(8).width(Length::Fill));
+                    body = body.push(divider_h(c::BORDER_SOFT()));
+                    body = body.push(footer_container(
+                        row![
+                            footer_hint("↑↓", "choose"),
+                            footer_hint("⏎", "set default"),
+                            footer_hint("esc", "back"),
+                        ]
+                        .spacing(14)
+                        .align_y(iced::Alignment::Center)
+                        .into(),
+                    ));
+                }
+            }
+        } else if let Some(sel) = switch {
             // "Switch to session" drill-in: every active session across
             // every project/worktree. Waiting sessions keep the sidebar's
             // amber tint/left bar; the currently-focused session's icon
@@ -3501,7 +4157,10 @@ impl Grove {
                         icon_slot,
                         column![
                             text(label).font(UI_FONT).size(13).color(title_color),
-                            text(subtitle).font(MONO_FONT).size(10.5).color(c::FG_MUTE()),
+                            text(subtitle)
+                                .font(MONO_FONT)
+                                .size(10.5)
+                                .color(c::FG_MUTE()),
                         ]
                         .spacing(2),
                     ]
@@ -3687,6 +4346,13 @@ impl Grove {
                 let mut list = Column::new().spacing(2);
                 let mut printed_recent = false;
                 let mut printed_actions = false;
+                // Typed list only: settings matches sort first (see
+                // `palette_rows`), and their presence labels the two groups —
+                // SETTINGS above, SESSIONS below (B2 in the palette redesign
+                // mock). A pure session list stays headerless as before.
+                let has_settings = rows.iter().any(|r| matches!(r, PaletteRow::Setting(_)));
+                let mut printed_settings = false;
+                let mut printed_sessions = false;
                 for (i, row) in rows.iter().enumerate() {
                     if root_mode {
                         let is_recent = matches!(row, PaletteRow::Recent { .. });
@@ -3698,12 +4364,30 @@ impl Grove {
                             list = list.push(section_header("ACTIONS", top, 6.0));
                             printed_actions = true;
                         }
+                    } else if has_settings {
+                        let is_setting = matches!(row, PaletteRow::Setting(_));
+                        if is_setting && !printed_settings {
+                            list = list.push(section_header("SETTINGS", 0.0, 6.0));
+                            printed_settings = true;
+                        } else if !is_setting && !printed_sessions {
+                            let top = if printed_settings { 12.0 } else { 0.0 };
+                            list = list.push(section_header("SESSIONS", top, 6.0));
+                            printed_sessions = true;
+                        }
                     }
                     list =
                         list.push(self.palette_row_view(i, row, i == selected, input, root_mode));
+                    // Danger settings warn inline in the direct-match list
+                    // too (B3), before the user ever drills in.
+                    if i == selected && matches!(row, PaletteRow::Setting(SettingRow::Permissions))
+                    {
+                        list = list.push(danger_caption());
+                    }
                     let row_identity = match row {
                         PaletteRow::Recent { proj, wt_path, .. }
-                        | PaletteRow::Combo { proj, wt_path, .. } => Some((*proj, wt_path.as_str())),
+                        | PaletteRow::Combo { proj, wt_path, .. } => {
+                            Some((*proj, wt_path.as_str()))
+                        }
                         _ => None,
                     };
                     if let (Some((rp, rw)), Some(ra)) = (row_identity, row_actions) {
@@ -3742,45 +4426,48 @@ impl Grove {
                 )
             } else {
                 // Recent/Combo (project/worktree) rows expose the
-                // tab->actions strip; every other row keeps the plain
+                // tab->actions strip; settings rows get their own ⏎ verb
+                // (toggle / open) with no tab hint at all, since tab just
+                // mirrors enter there; every other row keeps the plain
                 // tab->options hint.
+                let highlighted = rows.get(selected);
                 let highlighted_is_row = matches!(
-                    rows.get(selected),
+                    highlighted,
                     Some(PaletteRow::Recent { .. }) | Some(PaletteRow::Combo { .. })
                 );
-                let tab_label: &'static str = if highlighted_is_row {
-                    "actions"
-                } else {
-                    "options"
-                };
-                let enter_label: &'static str = if highlighted_is_row {
-                    "open/launch"
-                } else {
-                    "launch"
+                let setting_enter_label: Option<&'static str> = match highlighted {
+                    Some(PaletteRow::Setting(
+                        SettingRow::ProjectThemes | SettingRow::Telemetry,
+                    )) => Some("toggle"),
+                    Some(PaletteRow::Setting(_)) | Some(PaletteRow::Settings) => Some("open"),
+                    _ => None,
                 };
                 // Row-highlighted footer orders tab before ⏎ ("navigate · tab
                 // actions · ⏎ open/launch · close"); every other state keeps
                 // ⏎ before tab ("navigate · ⏎ launch · tab options · close")
                 // — matches the palette redesign mock's D1 vs. D2/D3 ordering.
-                let mid: Element<'a, Msg> = if highlighted_is_row {
+                let mid: Element<'a, Msg> = if let Some(enter_label) = setting_enter_label {
+                    row![footer_hint("⏎", enter_label)].spacing(14).into()
+                } else if highlighted_is_row {
                     row![
-                        footer_hint("tab", tab_label),
-                        footer_hint("⏎", enter_label),
+                        footer_hint("tab", "actions"),
+                        footer_hint("⏎", "open/launch"),
                     ]
                     .spacing(14)
                     .into()
                 } else {
-                    row![
-                        footer_hint("⏎", enter_label),
-                        footer_hint("tab", tab_label),
-                    ]
-                    .spacing(14)
-                    .into()
+                    row![footer_hint("⏎", "launch"), footer_hint("tab", "options"),]
+                        .spacing(14)
+                        .into()
                 };
                 footer_container(
-                    row![footer_hint("↑↓", "navigate"), mid, footer_hint("esc", "close"),]
-                        .spacing(14)
-                        .into(),
+                    row![
+                        footer_hint("↑↓", "navigate"),
+                        mid,
+                        footer_hint("esc", "close"),
+                    ]
+                    .spacing(14)
+                    .into(),
                 )
             });
         }
@@ -3854,6 +4541,202 @@ impl Grove {
             content = content.push(Space::new().width(Length::Fill)).push(t);
         }
         content.into()
+    }
+
+    /// Row content shared by a root-mode `PaletteRow::Setting` match and a
+    /// Settings-drill-in row: icon slot + label (cyan fuzzy-highlighted
+    /// against `input`) + right-aligned live value, plus a trailing chevron
+    /// on the rows that drill into a deeper level (the two toggles flip in
+    /// place, so they go without).
+    fn setting_row_content<'a>(&'a self, s: SettingRow, input: &str) -> Element<'a, Msg> {
+        let label = s.label();
+        let value = self.setting_value(s);
+        let m = (!input.is_empty())
+            .then(|| crate::gui::launcher::fuzzy_match_indices(input, label, &value, s.section()));
+        let label_ranges: &[(usize, usize)] =
+            m.as_ref().map(|m| m.project.as_slice()).unwrap_or(&[]);
+        let label_el = highlighted_line(label, label_ranges, c::FG(), UI_FONT, 13.0);
+
+        let icon_slot: Element<'a, Msg> =
+            if matches!(s, SettingRow::ProjectThemes | SettingRow::Telemetry) {
+                // A non-interactive checkbox glyph modeled on
+                // `modal_checkbox`'s checked-state border/background colors
+                // (`settings_modal`'s own toggle rows) — the whole row is
+                // already the click target here, so this isn't the real
+                // `checkbox` widget, just its visual idiom.
+                let checked = value == "On";
+                let box_el = container(if checked {
+                    icon("check", 10.0, c::MAGENTA())
+                } else {
+                    Space::new().width(10.0).height(10.0).into()
+                })
+                .width(14.0)
+                .height(14.0)
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::Alignment::Center)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(if checked {
+                        c::BG_HL()
+                    } else {
+                        c::BG()
+                    })),
+                    border: Border {
+                        color: if checked { c::MAGENTA() } else { c::BORDER() },
+                        width: 1.0,
+                        radius: Radius::from(4.0),
+                    },
+                    ..Default::default()
+                });
+                container(box_el)
+                    .width(24.0)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .into()
+            } else {
+                container(icon(s.icon_name(), 16.0, c::FG_MUTE()))
+                    .width(24.0)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .into()
+            };
+
+        // Async status renders inline in the value slot (E2): CheckUpdates
+        // mirrors `settings_modal`'s status line — a spinner while checking,
+        // green once a release is known to be available. Every other state
+        // (and every other setting) keeps the plain FG_DIM value.
+        let value_el: Element<'a, Msg> = if s == SettingRow::CheckUpdates {
+            match &self.upgrade {
+                UpgradeState::Checking => row![
+                    super::icons::spinner(11.0, c::FG_MUTE(), self.blink_tick),
+                    Space::new().width(6),
+                    text(value).size(12).color(c::FG_MUTE()),
+                ]
+                .align_y(iced::Alignment::Center)
+                .into(),
+                UpgradeState::Available(_) => text(value).size(12).color(c::GREEN()).into(),
+                _ => text(value).size(12).color(c::FG_DIM()).into(),
+            }
+        } else {
+            text(value).size(12).color(c::FG_DIM()).into()
+        };
+
+        let mut content = row![
+            icon_slot,
+            label_el,
+            Space::new().width(Length::Fill),
+            value_el,
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+        // The chevron promises a deeper level — toggles flip in place and
+        // never open one, so they don't get it.
+        if !matches!(s, SettingRow::ProjectThemes | SettingRow::Telemetry) {
+            content =
+                content
+                    .push(Space::new().width(8))
+                    .push(icon("chev-right", 12.0, c::FG_MUTE()));
+        }
+        content.into()
+    }
+
+    /// The App-size row's value slot while `LauncherSettings::resizing` is
+    /// set (D4): the same live zoom stepper trio `settings_modal` uses
+    /// (view.rs's own `app_size_row`), instead of `setting_row_content`'s
+    /// usual right-aligned value + chevron.
+    fn appsize_stepper_row_content<'a>(&'a self) -> Element<'a, Msg> {
+        let icon_slot = container(icon(SettingRow::AppSize.icon_name(), 16.0, c::FG_MUTE()))
+            .width(24.0)
+            .align_x(iced::alignment::Horizontal::Center);
+        let stepper = container(
+            row![
+                control_icon_btn("minus", Msg::ZoomOut, 20.0, 13.0),
+                control_btn_sized(
+                    format!("{:.0}%", self.ui_zoom * 100.0),
+                    Msg::ZoomReset,
+                    12,
+                    2
+                ),
+                control_icon_btn("plus", Msg::ZoomIn, 20.0, 13.0),
+            ]
+            .spacing(0)
+            .align_y(iced::Alignment::Center),
+        )
+        .style(|_| container::Style {
+            border: Border {
+                color: c::BORDER(),
+                width: 1.0,
+                radius: Radius::from(6.0),
+            },
+            ..Default::default()
+        });
+        row![
+            icon_slot,
+            text(SettingRow::AppSize.label()).size(13).color(c::FG()),
+            Space::new().width(Length::Fill),
+            stepper,
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center)
+        .into()
+    }
+
+    /// The update-available actions strip expanded under the drill-in's
+    /// Check-for-updates row (E3): the same pill-button treatment
+    /// `settings_modal`'s update-actions row uses (`modal_action_sized`'s
+    /// visual language), laid out horizontally, plus a cyan selection ring
+    /// on the keyboard-selected action (←→/Tab move it — the palette rows'
+    /// ↑↓ stay reserved for the list cursor). The action list comes from
+    /// `update_available_actions` so the render and the keyboard nav can
+    /// never disagree about what index N runs.
+    fn update_actions_strip<'a>(&'a self, sel: usize) -> Element<'a, Msg> {
+        let method_unknown = matches!(self.upgrade_method, crate::upgrade::InstallMethod::Unknown);
+        let mut strip = row![].spacing(8).align_y(iced::Alignment::Center);
+        for (i, action) in update_available_actions(method_unknown)
+            .into_iter()
+            .enumerate()
+        {
+            let active = i == sel;
+            let primary = matches!(action, UpdateAction::UpdateNow);
+            strip = strip.push(
+                button(text(action.label()).size(11))
+                    .on_press(Msg::LauncherUpdateActionPick(i))
+                    .padding(Padding::from([5, 12]))
+                    .style(move |_, status| {
+                        let hovered = matches!(status, button::Status::Hovered);
+                        let bg = if active {
+                            c::SEL_TINT_SOFT()
+                        } else if hovered {
+                            c::BG_HOVER()
+                        } else if primary {
+                            c::BG_HL()
+                        } else {
+                            c::BG()
+                        };
+                        button::Style {
+                            background: Some(Background::Color(bg)),
+                            text_color: if active || primary {
+                                c::FG()
+                            } else {
+                                c::FG_DIM()
+                            },
+                            border: Border {
+                                color: if active { c::SEL_RING() } else { c::BORDER() },
+                                width: 1.0,
+                                radius: Radius::from(4.0),
+                            },
+                            shadow: Shadow::default(),
+                            snap: false,
+                        }
+                    }),
+            );
+        }
+        container(strip)
+            .padding(Padding {
+                top: 4.0,
+                bottom: 4.0,
+                left: 12.0,
+                right: 12.0,
+            })
+            .width(Length::Fill)
+            .into()
     }
 
     /// Render one row of the root/typing/browse-all list. `input` recomputes
@@ -4055,7 +4938,11 @@ impl Grove {
                 } else {
                     c::FG_DIM()
                 };
-                let icon_color = if switchable { c::FG_DIM() } else { c::FG_MUTE() };
+                let icon_color = if switchable {
+                    c::FG_DIM()
+                } else {
+                    c::FG_MUTE()
+                };
                 let mut content = row![
                     icon_slot("restart", icon_color),
                     text("Switch to session…").size(13).color(label_color),
@@ -4073,11 +4960,43 @@ impl Grove {
                 } else if active {
                     content = content.push(enter_chip());
                 } else {
-                    content = content
-                        .push(keycap_text("tab", c::FG_MUTE()))
-                        .push(icon("chev-right", 12.0, c::FG_MUTE()));
+                    content = content.push(keycap_text("tab", c::FG_MUTE())).push(icon(
+                        "chev-right",
+                        12.0,
+                        c::FG_MUTE(),
+                    ));
                 }
                 modal_list_row_sized(content, active, Msg::LauncherActivate(i), 36.0, 6.0, 12.0)
+            }
+            PaletteRow::Settings => {
+                // Unlike the other ACTIONS rows, this one shows no ⏎ chip
+                // when selected — Tab (not Enter, though Enter also works;
+                // see `launcher_activate`) is the primary gesture into the
+                // drill-in, so the selected row surfaces a "tab" keycap
+                // instead (B1 in the palette redesign mock).
+                let mut content = row![
+                    icon_slot("cog", c::FG_MUTE()),
+                    text("Settings…")
+                        .size(13)
+                        .color(if active { c::FG() } else { c::FG_DIM() }),
+                    Space::new().width(Length::Fill),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center);
+                if active {
+                    content = content.push(keycap_text("tab", c::FG_DIM()));
+                }
+                modal_list_row_sized(content, active, Msg::LauncherActivate(i), 36.0, 6.0, 12.0)
+            }
+            PaletteRow::Setting(s) => {
+                let content = self.setting_row_content(*s, input);
+                launcher_row(
+                    content,
+                    active,
+                    true,
+                    Msg::LauncherActivate(i),
+                    PALETTE_ROW_H,
+                )
             }
         }
     }
@@ -4120,17 +5039,26 @@ impl Grove {
         } else {
             action_row(1, "trash", "Delete worktree", c::RED())
         };
-        container(
-            column![action_row(0, "play", "Launch session…", c::MAGENTA()), second].spacing(1),
-        )
-        .padding(Padding {
-            top: 0.0,
-            bottom: 4.0,
-            left: 0.0,
-            right: 0.0,
-        })
-        .width(Length::Fill)
-        .into()
+        let mut rows = column![
+            action_row(0, "play", "Launch session…", c::MAGENTA()),
+            second
+        ]
+        .spacing(1);
+        if self.app.project_themes_enabled() {
+            // "contrast" mirrors `SettingRow::Theme::icon_name()` — the app
+            // theme row's own icon, reused here since this is the same idea
+            // scoped to one project.
+            rows = rows.push(action_row(2, "contrast", "Project theme…", c::CYAN()));
+        }
+        container(rows)
+            .padding(Padding {
+                top: 0.0,
+                bottom: 4.0,
+                left: 0.0,
+                right: 0.0,
+            })
+            .width(Length::Fill)
+            .into()
     }
 
     fn settings_modal(&self) -> Element<'_, Msg> {
@@ -5422,6 +6350,33 @@ impl Grove {
                 ..Default::default()
             })
             .into()
+    }
+}
+
+/// The Settings drill-in's leading cue-chip label for the current pane —
+/// shared by the input zone's chip and (indirectly, via the same match
+/// shape) nothing else, kept as a free function since it needs no `self`.
+fn settings_pane_cue(pane: &SettingsPane) -> &'static str {
+    match pane {
+        SettingsPane::Root => "SETTINGS",
+        SettingsPane::Theme { .. } => "THEME",
+        SettingsPane::Backend => "BACKEND",
+        SettingsPane::Permissions => "PERMISSIONS",
+        SettingsPane::DefaultAgent => "DEFAULT AGENT",
+        SettingsPane::ProjectTheme { .. } => "PROJECT THEME",
+    }
+}
+
+/// The Settings drill-in's search-field placeholder for the current pane.
+/// Root and Theme actually filter on it; Backend/Permissions/DefaultAgent
+/// show it but ignore what's typed (see `handle_modal_key`'s settings
+/// branch) — their lists are short and fixed, nothing to filter.
+fn settings_pane_placeholder(pane: &SettingsPane) -> &'static str {
+    match pane {
+        SettingsPane::Root => "Search settings…",
+        SettingsPane::Theme { .. } => "Search themes…",
+        SettingsPane::Backend | SettingsPane::Permissions | SettingsPane::DefaultAgent => "Search…",
+        SettingsPane::ProjectTheme { .. } => "Search themes…",
     }
 }
 

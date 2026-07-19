@@ -302,6 +302,10 @@ pub enum Modal {
         /// `Recent`/`Combo` row (root or typing/browse-all list). `None` when
         /// no action strip is open.
         row_actions: Option<RowActionsState>,
+        /// "Settings…" drill-in: `Some` shows the scoped settings list in
+        /// place of the root/typing list. Entered via the root "Settings…"
+        /// action row (Enter or Tab); `None` outside this state.
+        settings: Option<LauncherSettings>,
     },
     ThemePicker {
         sel_dark: usize,
@@ -400,6 +404,59 @@ pub struct RowActionsState {
     pub proj: usize,
     pub wt_path: String,
     pub action: usize,
+}
+
+/// Which pane the palette's Settings drill-in is showing. `Root` is the
+/// sectioned all-settings list; the others are one-level-deeper pickers for
+/// enum-shaped settings, entered via `Grove::activate_setting`. Esc pops one
+/// level back to `Root` (and `Root`'s own Esc closes the whole drill-in).
+#[derive(Clone, Copy)]
+pub enum SettingsPane {
+    Root,
+    /// Theme picker with live preview, mirroring `Modal::ThemePicker`:
+    /// `original` restores the pre-entry theme when Esc backs out without
+    /// applying. `kind` is which theme list is currently shown (System mode
+    /// still lists the dark set, like the real picker's own tab). `follow_system`
+    /// is a local draft of "follow system appearance" — toggled and previewed
+    /// by the System segment, only written to `Store::theme_follow_system` on
+    /// Enter, exactly like `Modal::ThemePicker::follow_system`.
+    Theme {
+        original: crate::theme::Theme,
+        kind: theme::ThemeKind,
+        follow_system: bool,
+    },
+    Backend,
+    Permissions,
+    DefaultAgent,
+    /// Project-scoped theme picker entered from a session row's actions strip.
+    /// `preview` is the pane's whole state: Some = highlighted theme (live-
+    /// previewed on that project's tiles only), None = "Use app theme".
+    /// Nothing persists until Enter commits.
+    ProjectTheme {
+        proj: usize,
+        kind: theme::ThemeKind,
+        preview: Option<crate::theme::Theme>,
+    },
+}
+
+/// "Settings" drill-in state for the session-launcher palette: a `pane`
+/// (root list or a one-level-deeper enum picker) plus a selection cursor into
+/// whatever that pane currently renders.
+#[derive(Clone, Copy)]
+pub struct LauncherSettings {
+    pub pane: SettingsPane,
+    /// Selection cursor into the current pane's rendered list.
+    pub selected: usize,
+    /// Root pane only: the App-size row is in inline-edit mode (←/→ or the
+    /// on-row stepper adjust zoom; ⏎ or Esc leaves the mode without popping
+    /// out of the drill-in).
+    pub resizing: bool,
+    /// Root pane only: the update-available actions strip expanded under the
+    /// Check-for-updates row — `Some(selected strip index)` while open. ⏎ on
+    /// that row expands this instead of re-firing a check whenever an update
+    /// is already known to be available; Esc closes just the strip, not the
+    /// drill-in.
+    pub update_actions: Option<usize>,
 }
 
 /// Stage of an in-progress worktree teardown.
@@ -707,6 +764,24 @@ impl App {
                     theme::ThemeKind::Light => *sel_light,
                 };
                 return theme::themes_of(*tab).get(sel).copied();
+            }
+        }
+        // Same live-preview idea for the in-palette project-theme pane
+        // (Settings drill-in entered from a session row's actions strip):
+        // `preview` is the pane's whole draft state, so it wins outright —
+        // `None` means "preview the global theme", matching
+        // `project_use_default` above.
+        if let Modal::SessionLauncher {
+            settings:
+                Some(LauncherSettings {
+                    pane: SettingsPane::ProjectTheme { proj, preview, .. },
+                    ..
+                }),
+            ..
+        } = &self.modal
+        {
+            if self.store.projects.get(*proj).map(|p| p.name.as_str()) == Some(project_name) {
+                return *preview;
             }
         }
         if !self.store.project_themes_enabled {

@@ -177,6 +177,22 @@ pub fn fuzzy_match_indices(
     out
 }
 
+/// Filter+order settings rows for the command palette's Settings features
+/// (root-mode direct matches and the Settings drill-in's own list): each
+/// candidate is `(id, label, value, section)`; `id` is returned, in
+/// candidate order, for every row whose label/value/section 3-way
+/// fuzzy-matches `input` (same match semantics as `fuzzy_match` — an empty
+/// query matches everything). Generic over the id type so this stays free of
+/// `crate::gui::update::SettingRow` (and any Iced dependency); callers own
+/// the mapping from id back to that enum.
+pub fn matching_settings<T: Copy>(input: &str, candidates: &[(T, &str, &str, &str)]) -> Vec<T> {
+    candidates
+        .iter()
+        .filter(|(_, label, value, section)| fuzzy_match(input, label, value, section))
+        .map(|&(id, ..)| id)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +352,60 @@ mod tests {
         let m3 = fuzzy_match_indices("zzz", "grove", "main", "claude");
         assert!(!m3.matched);
         assert!(m3.project.is_empty() && m3.worktree.is_empty() && m3.agent.is_empty());
+    }
+
+    // `palette_rows` needs a full `Grove` (sessions, PTYs, store, …) to
+    // construct — impractical to build in a unit test — so the settings
+    // portion of its matching logic is exercised here directly against the
+    // pure `matching_settings` helper it calls into, using the real
+    // `SettingRow` enum (visible here: `pub(super)` in `gui::update` is
+    // visible throughout `gui`, including this sibling module).
+    #[test]
+    fn matching_settings_filters_by_label_value_or_section_and_preserves_order() {
+        use crate::gui::update::SettingRow;
+        let candidates: Vec<(SettingRow, &str, &str, &str)> = vec![
+            (SettingRow::Theme, "App theme", "tokyonight", "APPEARANCE"),
+            (
+                SettingRow::Telemetry,
+                "Telemetry",
+                "On",
+                "AGENTS / TERMINAL",
+            ),
+            (
+                SettingRow::CheckUpdates,
+                "Check for updates",
+                "v0.9.4 · Up to date",
+                "UPDATES",
+            ),
+        ];
+
+        // "telem" matches Telemetry's label — a stand-in for this repo's
+        // `palette_rows` test (c): a typed input matching a setting's label
+        // resolves to exactly that `SettingRow`, and nothing else.
+        assert_eq!(
+            matching_settings("telem", &candidates),
+            vec![SettingRow::Telemetry]
+        );
+        // Matches by current *value*, not just label/section.
+        assert_eq!(
+            matching_settings("tokyonight", &candidates),
+            vec![SettingRow::Theme]
+        );
+        // Matches by section keyword.
+        assert_eq!(
+            matching_settings("appearance", &candidates),
+            vec![SettingRow::Theme]
+        );
+        // Empty query matches everything, in candidate order.
+        assert_eq!(
+            matching_settings("", &candidates),
+            vec![
+                SettingRow::Theme,
+                SettingRow::Telemetry,
+                SettingRow::CheckUpdates
+            ]
+        );
+        // No match anywhere.
+        assert!(matching_settings("zzz", &candidates).is_empty());
     }
 }

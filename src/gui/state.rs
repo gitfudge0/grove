@@ -663,4 +663,34 @@ pub enum Msg {
     /// under a highlighted `Recent`/`Combo` row (`0` = "Launch session…",
     /// `1` = "Delete worktree").
     LauncherRowActionPick(usize),
+    /// Click a row by index into `Grove::settings_rows_filtered`'s current
+    /// list, in the Settings drill-in: distinct from `LauncherActivate`
+    /// because the drill-in's row list is unrelated to `palette_rows`'s
+    /// root/typing list, so the same index would mean a different row.
+    /// Selects the row, then applies the same activation Enter would.
+    LauncherSettingActivate(usize),
+    /// Theme sub-pane: click (or the equivalent of hover) on list row `i` —
+    /// selects it and live-previews the theme, same as ↑↓. Distinct from
+    /// `LauncherSettingsPaneActivate` because the Theme pane defers the
+    /// actual persist to a separate ⏎ (`Msg::KeyPress`), not the click.
+    LauncherThemePaneSelect(usize),
+    /// Theme sub-pane: "Dark"/"Light" segment click — switches which kind's
+    /// theme list is shown and opts out of "follow system" (mirrors picking
+    /// a concrete theme in `Modal::ThemePicker`). Two unit variants rather
+    /// than one carrying `theme::ThemeKind` since `Msg` derives `Debug` and
+    /// that type doesn't.
+    LauncherThemePaneDark,
+    LauncherThemePaneLight,
+    /// Theme sub-pane: "System" segment click — previews the resolved system
+    /// theme and marks "follow system" as a local draft, persisted on ⏎
+    /// (mirrors `Modal::ThemePicker`'s follow-system checkbox).
+    LauncherThemePaneSystem,
+    /// Backend/Permissions/DefaultAgent sub-pane: click on row `i` — selects
+    /// and immediately commits (mirrors ⏎). Unlike the Theme pane, these
+    /// panes have no live-preview step to defer.
+    LauncherSettingsPaneActivate(usize),
+    /// Click action `i` in the update-available strip expanded under the
+    /// Settings drill-in's Check-for-updates row: selects it and runs it
+    /// (mirrors ⏎ there).
+    LauncherUpdateActionPick(usize),
 }

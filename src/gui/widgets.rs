@@ -78,6 +78,10 @@ pub fn divider_v<'a>(color: Color) -> Element<'a, Msg> {
 pub enum SegSide {
     Left,
     Right,
+    /// A middle segment in a 3-way (or more) joined group — square on both
+    /// sides; only the group's outer edges round. Used by the Theme
+    /// sub-pane's Dark/Light/System mode row.
+    Mid,
 }
 
 pub fn seg_button<'a>(label: &str, active: bool, side: SegSide, msg: Msg) -> Element<'a, Msg> {
@@ -123,6 +127,7 @@ fn seg_button_inner<'a>(
                     bottom_right: 5.0,
                     bottom_left: 0.0,
                 },
+                SegSide::Mid => Radius::default(),
             };
             button::Style {
                 background: if active {
@@ -713,12 +718,9 @@ pub fn empty_terminals_workspace<'a>() -> Element<'a, Msg> {
     .into();
 
     container(
-        column![
-            text("no terminals open").size(14).color(c::FG_DIM()),
-            hint,
-        ]
-        .spacing(6)
-        .align_x(iced::Alignment::Center),
+        column![text("no terminals open").size(14).color(c::FG_DIM()), hint,]
+            .spacing(6)
+            .align_x(iced::Alignment::Center),
     )
     .center_x(Length::Fill)
     .center_y(Length::Fill)
@@ -806,14 +808,19 @@ pub fn tracked(label: &str) -> String {
 /// with a U+2009 thin space (confirmed present in the bundled BlexMono Nerd
 /// Font's `cmap`). `top`/`bottom` are the caller's margin above/below.
 pub fn section_header<'a>(label: &str, top: f32, bottom: f32) -> Element<'a, Msg> {
-    container(text(tracked(label)).font(MONO_FONT).size(10).color(c::FG_MUTE()))
-        .padding(Padding {
-            top,
-            bottom,
-            left: 12.0,
-            right: 0.0,
-        })
-        .into()
+    container(
+        text(tracked(label))
+            .font(MONO_FONT)
+            .size(10)
+            .color(c::FG_MUTE()),
+    )
+    .padding(Padding {
+        top,
+        bottom,
+        left: 12.0,
+        right: 0.0,
+    })
+    .into()
 }
 
 /// One `keycap` + muted label pair in a modal's footer hint strip (e.g.
@@ -1243,4 +1250,29 @@ pub fn ghost_scrollable<'a>(
             gap: None,
             ..scrollable::default(theme, status)
         })
+}
+
+/// A small filled pill marking the current default among a list of choices —
+/// same visual idiom as `settings_modal`'s Tools-section "Default" badge
+/// (view.rs), extracted here so the palette's DefaultAgent sub-pane can reuse
+/// it without touching that modal's own (deliberately untouched) code.
+pub fn slot_badge<'a>(label: &'static str) -> Element<'a, Msg> {
+    container(
+        text(label)
+            .size(11)
+            .color(c::FG())
+            .align_x(iced::alignment::Horizontal::Center)
+            .width(Length::Fill),
+    )
+    .padding(Padding::from([4, 12]))
+    .style(|_| container::Style {
+        background: Some(Background::Color(c::BG_HL())),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 1.0,
+            radius: Radius::from(4.0),
+        },
+        ..Default::default()
+    })
+    .into()
 }

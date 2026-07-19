@@ -12,7 +12,8 @@ use super::state::{
 };
 use crate::agent::Agent;
 use crate::app::{
-    AddProjectStep, App, ConfirmKind, LauncherOptions, Modal, OnboardStep, Pane, RowActionsState,
+    AddProjectStep, App, ConfirmKind, LauncherOptions, LauncherSettings, Modal, OnboardStep, Pane,
+    RowActionsState, SettingsPane,
 };
 use crate::session::Session;
 use iced::keyboard::{key::Named, Key, Modifiers};
@@ -1482,6 +1483,7 @@ impl Grove {
                     selected,
                     switch,
                     row_actions,
+                    settings,
                     ..
                 } = &mut self.app.modal
                 {
@@ -1496,6 +1498,45 @@ impl Grove {
                     if let Some(sel) = switch {
                         *sel = crate::gui::launcher::clamp(*sel, 0, switch_len);
                     }
+                    // Settings drill-in stays open across a query edit (only
+                    // Esc backs out). Only the panes that actually filter on
+                    // the query (Root, Theme) reset their cursor — the input
+                    // stays focused in every pane, so a stray keystroke in
+                    // Backend/Permissions/DefaultAgent must not snap their
+                    // (unfiltered) cursor to 0. The update-actions strip
+                    // collapses for the same reason `row_actions` does: the
+                    // row it hangs under may no longer be rendered. Typing
+                    // also leaves App-size resize mode — the user is
+                    // searching now, and the filtered list may not even
+                    // contain the App-size row anymore.
+                    if let Some(st) = settings {
+                        if matches!(
+                            st.pane,
+                            SettingsPane::Root
+                                | SettingsPane::Theme { .. }
+                                | SettingsPane::ProjectTheme { .. }
+                        ) {
+                            st.selected = 0;
+                            st.update_actions = None;
+                            st.resizing = false;
+                        }
+                    }
+                }
+                // Theme sub-pane / drill-in Root: the new query reshapes
+                // the list and the cursor just snapped to 0 — scroll the
+                // list back with it.
+                if let Modal::SessionLauncher {
+                    settings: Some(ls), ..
+                } = &self.app.modal
+                {
+                    return match ls.pane {
+                        SettingsPane::Theme { .. } => self.scroll_launcher_theme_to_selection(),
+                        SettingsPane::ProjectTheme { .. } => {
+                            self.scroll_launcher_project_theme_to_selection()
+                        }
+                        SettingsPane::Root => self.scroll_launcher_settings_to_selection(),
+                        _ => Task::none(),
+                    };
                 }
             }
             Msg::LauncherActivate(i) => return self.launcher_activate(i),
@@ -1522,6 +1563,76 @@ impl Grove {
                 };
                 if let Some(r) = row_actions {
                     return self.launcher_run_row_action(r.proj, r.wt_path, action);
+                }
+            }
+            Msg::LauncherSettingActivate(i) => {
+                let input = match &self.app.modal {
+                    Modal::SessionLauncher {
+                        input,
+                        settings: Some(_),
+                        ..
+                    } => input.clone(),
+                    _ => return Task::none(),
+                };
+                let rows = self.settings_rows_filtered(&input);
+                if let Some(&s) = rows.get(i) {
+                    if let Modal::SessionLauncher {
+                        settings: Some(ls), ..
+                    } = &mut self.app.modal
+                    {
+                        ls.selected = i;
+                        // Clicking any row while the update-actions strip is
+                        // expanded collapses it first — activating the
+                        // CheckUpdates row itself just re-opens it below.
+                        ls.update_actions = None;
+                    }
+                    return self.activate_setting(s);
+                }
+            }
+            Msg::LauncherThemePaneSelect(i) => {
+                if self.launcher_pane_is_project_theme() {
+                    return self.project_theme_pane_select(i);
+                }
+                return self.theme_pane_select(i);
+            }
+            Msg::LauncherThemePaneDark => {
+                if self.launcher_pane_is_project_theme() {
+                    return self.project_theme_pane_set_kind(crate::theme::ThemeKind::Dark);
+                }
+                return self.theme_pane_set_kind(crate::theme::ThemeKind::Dark);
+            }
+            Msg::LauncherThemePaneLight => {
+                if self.launcher_pane_is_project_theme() {
+                    return self.project_theme_pane_set_kind(crate::theme::ThemeKind::Light);
+                }
+                return self.theme_pane_set_kind(crate::theme::ThemeKind::Light);
+            }
+            Msg::LauncherThemePaneSystem => return self.theme_pane_set_system(),
+            Msg::LauncherSettingsPaneActivate(i) => {
+                let pane = match &self.app.modal {
+                    Modal::SessionLauncher {
+                        settings: Some(ls), ..
+                    } => ls.pane,
+                    _ => return Task::none(),
+                };
+                match pane {
+                    SettingsPane::Backend => return self.backend_pane_commit(i),
+                    SettingsPane::Permissions => return self.permissions_pane_commit(i),
+                    SettingsPane::DefaultAgent => return self.default_agent_pane_commit(i),
+                    SettingsPane::Root
+                    | SettingsPane::Theme { .. }
+                    | SettingsPane::ProjectTheme { .. } => {}
+                }
+            }
+            Msg::LauncherUpdateActionPick(i) => {
+                if let Modal::SessionLauncher {
+                    settings: Some(ls), ..
+                } = &mut self.app.modal
+                {
+                    if ls.update_actions.is_some() {
+                        ls.update_actions = Some(i);
+                        return self.update_actions_commit(i);
+                    }
                 }
             }
         }
@@ -2633,6 +2744,7 @@ impl Grove {
                 options,
                 switch,
                 row_actions,
+                settings,
             } => {
                 let (input, selected, browse_all) = (input.clone(), *selected, *browse_all);
                 if let Some(r) = options.clone() {
@@ -2712,6 +2824,252 @@ impl Grove {
                             _ => {}
                         }
                     }
+                } else if let Some(s) = *settings {
+                    // Settings drill-in. `resizing` (Root pane only, D4) takes
+                    // priority: it's a modal-within-the-modal for the App-size
+                    // row where arrows/±/0 adjust zoom instead of moving the
+                    // list cursor, and Enter/Esc merely *leave* the mode
+                    // rather than popping the drill-in. Otherwise, behavior
+                    // branches on `s.pane`: Root keeps the phase-1 filtered-
+                    // list nav (Enter now opens a sub-pane for the five enum
+                    // rows via `activate_setting`, not a no-op); each sub-pane
+                    // has its own short, unfiltered row count and its own
+                    // commit/cancel (see the `Grove::*_pane_*` methods).
+                    let dir_delta: Option<i32> = match &key {
+                        Key::Named(Named::ArrowDown) => Some(1),
+                        Key::Named(Named::ArrowUp) => Some(-1),
+                        _ => None,
+                    };
+                    if s.resizing {
+                        if let Some(delta) = dir_delta {
+                            // ↑↓ exit resizing, then move the Root cursor
+                            // exactly as it would outside resize mode.
+                            let rows_len = self.settings_rows_filtered(&input).len();
+                            let new_sel = crate::gui::launcher::clamp(s.selected, delta, rows_len);
+                            if let Modal::SessionLauncher {
+                                settings: Some(ss), ..
+                            } = &mut self.app.modal
+                            {
+                                ss.resizing = false;
+                                ss.selected = new_sel;
+                            }
+                            return self.scroll_launcher_settings_to_selection();
+                        } else {
+                            match key {
+                                Key::Named(Named::ArrowLeft) => return self.update(Msg::ZoomOut),
+                                Key::Named(Named::ArrowRight) => return self.update(Msg::ZoomIn),
+                                Key::Named(Named::Enter) | Key::Named(Named::Escape) => {
+                                    if let Modal::SessionLauncher {
+                                        settings: Some(ss), ..
+                                    } = &mut self.app.modal
+                                    {
+                                        ss.resizing = false;
+                                    }
+                                }
+                                Key::Character(ch) => match ch.as_str() {
+                                    "-" => return self.update(Msg::ZoomOut),
+                                    "+" => return self.update(Msg::ZoomIn),
+                                    "0" => return self.update(Msg::ZoomReset),
+                                    _ => {}
+                                },
+                                _ => {}
+                            }
+                        }
+                    } else if let Some(strip_sel) = s.update_actions {
+                        // Update-actions strip (E3): ←→/Tab move across the
+                        // strip's actions, ⏎ runs one, Esc collapses just
+                        // the strip. ↑↓ collapse it and move the Root cursor
+                        // as normal, same shape as resizing above.
+                        let len = update_available_actions(matches!(
+                            self.upgrade_method,
+                            crate::upgrade::InstallMethod::Unknown
+                        ))
+                        .len();
+                        if let Some(delta) = dir_delta {
+                            let rows_len = self.settings_rows_filtered(&input).len();
+                            let new_sel = crate::gui::launcher::clamp(s.selected, delta, rows_len);
+                            if let Modal::SessionLauncher {
+                                settings: Some(ss), ..
+                            } = &mut self.app.modal
+                            {
+                                ss.update_actions = None;
+                                ss.selected = new_sel;
+                            }
+                            return self.scroll_launcher_settings_to_selection();
+                        } else {
+                            let strip_delta: Option<i32> = match &key {
+                                Key::Named(Named::ArrowLeft) => Some(-1),
+                                Key::Named(Named::ArrowRight) | Key::Named(Named::Tab) => Some(1),
+                                _ => None,
+                            };
+                            if let Some(delta) = strip_delta {
+                                let new_sel = crate::gui::launcher::clamp(strip_sel, delta, len);
+                                if let Modal::SessionLauncher {
+                                    settings: Some(ss), ..
+                                } = &mut self.app.modal
+                                {
+                                    ss.update_actions = Some(new_sel);
+                                }
+                            } else {
+                                match key {
+                                    Key::Named(Named::Escape) => self.close_update_actions_strip(),
+                                    Key::Named(Named::Enter) => {
+                                        return self.update_actions_commit(strip_sel)
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    } else {
+                        match s.pane {
+                            SettingsPane::Root => {
+                                let sel = s.selected;
+                                let rows = self.settings_rows_filtered(&input);
+                                if let Some(delta) = dir_delta {
+                                    let new_sel =
+                                        crate::gui::launcher::clamp(sel, delta, rows.len());
+                                    if let Modal::SessionLauncher {
+                                        settings: Some(ss), ..
+                                    } = &mut self.app.modal
+                                    {
+                                        ss.selected = new_sel;
+                                    }
+                                    return self.scroll_launcher_settings_to_selection();
+                                } else {
+                                    match key {
+                                        Key::Named(Named::Escape) => {
+                                            if let Modal::SessionLauncher {
+                                                settings,
+                                                input,
+                                                selected,
+                                                ..
+                                            } = &mut self.app.modal
+                                            {
+                                                *settings = None;
+                                                input.clear();
+                                                *selected = 0;
+                                            }
+                                        }
+                                        Key::Named(Named::Enter) => {
+                                            if let Some(&sr) = rows.get(sel) {
+                                                return self.activate_setting(sr);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            SettingsPane::Theme { .. } => {
+                                if let Some(delta) = dir_delta {
+                                    return self.theme_pane_move(delta);
+                                } else {
+                                    match key {
+                                        Key::Named(Named::Escape) => {
+                                            return self.theme_pane_cancel()
+                                        }
+                                        Key::Named(Named::Enter) => {
+                                            return self.theme_pane_commit()
+                                        }
+                                        // Tab cycles the mode row; plain
+                                        // letters stay with the search input,
+                                        // per the palette-wide convention.
+                                        Key::Named(Named::Tab) => {
+                                            return self.theme_pane_cycle_mode()
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            SettingsPane::Backend => {
+                                if let Some(delta) = dir_delta {
+                                    let new_sel = crate::gui::launcher::clamp(s.selected, delta, 2);
+                                    if let Modal::SessionLauncher {
+                                        settings: Some(ss), ..
+                                    } = &mut self.app.modal
+                                    {
+                                        ss.selected = new_sel;
+                                    }
+                                } else {
+                                    match key {
+                                        Key::Named(Named::Escape) => {
+                                            return self
+                                                .return_to_settings_root(SettingRow::Backend)
+                                        }
+                                        Key::Named(Named::Enter) => {
+                                            return self.backend_pane_commit(s.selected)
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            SettingsPane::Permissions => {
+                                if let Some(delta) = dir_delta {
+                                    let new_sel = crate::gui::launcher::clamp(s.selected, delta, 2);
+                                    if let Modal::SessionLauncher {
+                                        settings: Some(ss), ..
+                                    } = &mut self.app.modal
+                                    {
+                                        ss.selected = new_sel;
+                                    }
+                                } else {
+                                    match key {
+                                        Key::Named(Named::Escape) => {
+                                            return self
+                                                .return_to_settings_root(SettingRow::Permissions)
+                                        }
+                                        Key::Named(Named::Enter) => {
+                                            return self.permissions_pane_commit(s.selected)
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            SettingsPane::ProjectTheme { .. } => {
+                                if let Some(delta) = dir_delta {
+                                    return self.project_theme_pane_move(delta);
+                                } else {
+                                    match key {
+                                        Key::Named(Named::Escape) => {
+                                            return self.project_theme_pane_cancel()
+                                        }
+                                        Key::Named(Named::Enter) => {
+                                            return self.project_theme_pane_commit()
+                                        }
+                                        // Tab cycles Dark/Light only — no
+                                        // System mode for a project override.
+                                        Key::Named(Named::Tab) => {
+                                            return self.project_theme_pane_cycle_kind()
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            SettingsPane::DefaultAgent => {
+                                let len = Agent::ALL.len();
+                                if let Some(delta) = dir_delta {
+                                    let new_sel =
+                                        crate::gui::launcher::clamp(s.selected, delta, len);
+                                    if let Modal::SessionLauncher {
+                                        settings: Some(ss), ..
+                                    } = &mut self.app.modal
+                                    {
+                                        ss.selected = new_sel;
+                                    }
+                                } else {
+                                    match key {
+                                        Key::Named(Named::Escape) => {
+                                            return self
+                                                .return_to_settings_root(SettingRow::DefaultAgent)
+                                        }
+                                        Key::Named(Named::Enter) => {
+                                            return self.default_agent_pane_commit(s.selected)
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } else if let Some(ra) = row_actions.clone() {
                     // Inline row-actions strip: ↑↓ move between the two
                     // actions (clamped, no wrap); Enter runs the selected
@@ -2722,7 +3080,13 @@ impl Grove {
                         _ => None,
                     };
                     if let Some(delta) = list_delta {
-                        let new_action = crate::gui::launcher::clamp(ra.action, delta, 2);
+                        let action_count = if self.app.project_themes_enabled() {
+                            3
+                        } else {
+                            2
+                        };
+                        let new_action =
+                            crate::gui::launcher::clamp(ra.action, delta, action_count);
                         if let Modal::SessionLauncher {
                             row_actions: Some(rr),
                             ..
@@ -2740,11 +3104,7 @@ impl Grove {
                                 }
                             }
                             Key::Named(Named::Enter) => {
-                                return self.launcher_run_row_action(
-                                    ra.proj,
-                                    ra.wt_path,
-                                    ra.action,
-                                )
+                                return self.launcher_run_row_action(ra.proj, ra.wt_path, ra.action)
                             }
                             _ => {}
                         }
@@ -2769,7 +3129,7 @@ impl Grove {
                     } else {
                         let enter_actions = matches!(&key, Key::Named(Named::Tab));
                         if enter_actions {
-                            self.launcher_enter_row_actions(selected, &input, browse_all);
+                            return self.launcher_enter_row_actions(selected, &input, browse_all);
                         } else {
                             match key {
                                 Key::Named(Named::Escape) => self.cancel_modal(),
@@ -2780,7 +3140,17 @@ impl Grove {
                                     if let Some(n) =
                                         s.parse::<usize>().ok().filter(|n| (1..=9).contains(n))
                                     {
-                                        return self.launcher_activate(n - 1);
+                                        // mod+digit addresses sessions only:
+                                        // in typed mode Setting rows sort
+                                        // above Combo rows (B2), so a raw
+                                        // list index would hand ⌘1 to a
+                                        // setting instead of the first
+                                        // session. No-op when fewer than
+                                        // `n` session rows match.
+                                        let rows = self.palette_rows(&input, browse_all);
+                                        if let Some(idx) = nth_session_row(&rows, n) {
+                                            return self.launcher_activate(idx);
+                                        }
                                     }
                                 }
                                 _ => {}
@@ -3391,6 +3761,7 @@ impl Grove {
             options: None,
             switch: None,
             row_actions: None,
+            settings: None,
         };
     }
 
@@ -3522,6 +3893,33 @@ impl Grove {
                 }
                 Task::none()
             }
+            PaletteRow::Settings => self.open_settings_drill_in(),
+            PaletteRow::Setting(s) => {
+                let s = *s;
+                let task = self.activate_setting(s);
+                self.reselect_typed_setting(s, &input, browse_all, i);
+                task
+            }
+        }
+    }
+
+    /// The typed-root-list arm of the toggle re-anchor (the drill-in arm is
+    /// `reselect_after_toggle`): a toggle can drop its own row out of a
+    /// value-matched query, leaving the cursor on a shifted row. Keep the
+    /// cursor on the same setting row if it's still rendered, else clamp.
+    /// Toggles only — every other Setting row just entered the drill-in,
+    /// whose own cursor logic owns the selection now.
+    fn reselect_typed_setting(&mut self, s: SettingRow, input: &str, browse_all: bool, old: usize) {
+        if !matches!(s, SettingRow::ProjectThemes | SettingRow::Telemetry) {
+            return;
+        }
+        let rows = self.palette_rows(input, browse_all);
+        let new_sel = rows
+            .iter()
+            .position(|r| matches!(r, PaletteRow::Setting(x) if *x == s))
+            .unwrap_or_else(|| crate::gui::launcher::clamp(old, 0, rows.len()));
+        if let Modal::SessionLauncher { selected, .. } = &mut self.app.modal {
+            *selected = new_sel;
         }
     }
 
@@ -3539,14 +3937,983 @@ impl Grove {
         }
     }
 
+    /// Enter the Settings drill-in (root "Settings…" row, Enter or Tab):
+    /// selects the first row and clears the search input, same rationale as
+    /// `launcher_enter_switch` — a query like "settings" that found the row
+    /// shouldn't still be filtering the drill-in's own, unrelated list.
+    /// Returns the scroll-to-top task: the scrollable's offset persists by
+    /// widget id, so a reopened drill-in would otherwise resume wherever a
+    /// previous visit left it — with the cursor invisibly back at row 0.
+    fn open_settings_drill_in(&mut self) -> Task<Msg> {
+        if let Modal::SessionLauncher {
+            settings,
+            input,
+            selected,
+            ..
+        } = &mut self.app.modal
+        {
+            *settings = Some(LauncherSettings {
+                pane: SettingsPane::Root,
+                selected: 0,
+                resizing: false,
+                update_actions: None,
+            });
+            input.clear();
+            *selected = 0;
+        }
+        self.scroll_launcher_settings_to_selection()
+    }
+
+    /// Apply the effect of activating setting `s` — from a root-mode direct
+    /// `PaletteRow::Setting` match, or an Enter/click inside the Settings
+    /// drill-in. The two toggles flip in place through the exact `Msg`
+    /// handlers `settings_modal`'s checkboxes already use, so persistence
+    /// stays on that single existing path; the value shown in the palette
+    /// re-reads live state (`setting_value`) on the next frame, so no local
+    /// mirror is needed here. `CheckUpdates` kicks off the same off-thread
+    /// check `Msg::CheckForUpdates` does — its `Task` must be returned to
+    /// the iced runtime (not discarded) or the check never fires — unless a
+    /// release is already known to be available, in which case it expands
+    /// the update-actions strip instead of pointlessly re-checking (E3; see
+    /// `check_updates_opens_strip`). Enum rows (Theme/Backend/Permissions/
+    /// DefaultAgent/AppSize) each open a dedicated sub-pane (`SettingsPane`)
+    /// — see the `enter_*_pane` methods.
+    fn activate_setting(&mut self, s: SettingRow) -> Task<Msg> {
+        match s {
+            SettingRow::ProjectThemes => {
+                let task =
+                    self.update(Msg::ProjectThemesToggle(!self.app.project_themes_enabled()));
+                Task::batch([task, self.reselect_after_toggle(s)])
+            }
+            SettingRow::Telemetry => {
+                let task = self.update(Msg::TelemetryToggle(!self.app.telemetry_enabled()));
+                Task::batch([task, self.reselect_after_toggle(s)])
+            }
+            SettingRow::CheckUpdates => {
+                if check_updates_opens_strip(&self.upgrade) {
+                    self.open_update_actions_strip()
+                } else {
+                    self.update(Msg::CheckForUpdates { manual: true })
+                }
+            }
+            SettingRow::Theme => self.enter_theme_pane(),
+            SettingRow::Backend => self.enter_backend_pane(),
+            SettingRow::Permissions => self.enter_permissions_pane(),
+            SettingRow::DefaultAgent => self.enter_default_agent_pane(),
+            SettingRow::AppSize => self.enter_appsize_resize(),
+        }
+    }
+
+    /// Re-anchor the drill-in Root cursor after a toggle: flipping On/Off
+    /// rewrites the value string the active query may have been matching
+    /// (e.g. "on"), so the row can drop out of — or shift within — the
+    /// filtered list under the unmoved cursor. Keep the cursor on the
+    /// toggled row when it survived the refilter (`reselect_setting`), else
+    /// clamp, then scroll with it. No-op outside the drill-in — the
+    /// root/typed list re-anchors in `launcher_activate`'s `Setting` arm.
+    fn reselect_after_toggle(&mut self, activated: SettingRow) -> Task<Msg> {
+        let input = match &self.app.modal {
+            Modal::SessionLauncher {
+                input,
+                settings: Some(_),
+                ..
+            } => input.clone(),
+            _ => return Task::none(),
+        };
+        let rows = self.settings_rows_filtered(&input);
+        if let Modal::SessionLauncher {
+            settings: Some(ls), ..
+        } = &mut self.app.modal
+        {
+            ls.selected = reselect_setting(&rows, activated, ls.selected);
+        }
+        self.scroll_launcher_settings_to_selection()
+    }
+
+    /// Land `pane`/`selected` on the Settings drill-in and clear the query,
+    /// same rationale as `open_settings_drill_in` — a query that found the
+    /// enum row at root shouldn't keep filtering a sub-pane whose own list
+    /// means something else. Reachable straight from a root/typing
+    /// `PaletteRow::Setting` match (B2 in the mock), so the drill-in is
+    /// opened first when absent — Esc from the pane then pops to the
+    /// drill-in Root list, one level at a time, like any other pane exit.
+    fn enter_settings_pane(&mut self, pane: SettingsPane, selected: usize) {
+        if !matches!(
+            &self.app.modal,
+            Modal::SessionLauncher {
+                settings: Some(_),
+                ..
+            }
+        ) {
+            // The Root-list scroll task is deliberately not chained: this
+            // immediately switches to a sub-pane, whose view doesn't render
+            // that scrollable at all, and every path back to Root
+            // (`return_to_settings_root`) re-scrolls on its own.
+            let _ = self.open_settings_drill_in();
+        }
+        if let Modal::SessionLauncher {
+            settings: Some(ls),
+            input,
+            ..
+        } = &mut self.app.modal
+        {
+            ls.pane = pane;
+            ls.selected = selected;
+            ls.update_actions = None;
+            input.clear();
+        }
+    }
+
+    /// Pop a sub-pane back to the Root settings list, landing the cursor on
+    /// `from`'s row. Root's own list is recomputed unfiltered
+    /// (`settings_rows_filtered("")`) since the query was cleared entering
+    /// the sub-pane, mirroring `enter_settings_pane`. Returns the scroll
+    /// task landing the viewport with the cursor — `from` can sit near the
+    /// bottom of the list (Default agent, Check for updates).
+    fn return_to_settings_root(&mut self, from: SettingRow) -> Task<Msg> {
+        let selected = self
+            .settings_rows_filtered("")
+            .iter()
+            .position(|s| *s == from)
+            .unwrap_or(0);
+        if let Modal::SessionLauncher {
+            settings: Some(ls),
+            input,
+            ..
+        } = &mut self.app.modal
+        {
+            ls.pane = SettingsPane::Root;
+            ls.selected = selected;
+            ls.resizing = false;
+            ls.update_actions = None;
+            input.clear();
+        }
+        self.scroll_launcher_settings_to_selection()
+    }
+
+    /// Expand the update-available actions strip under the Check-for-updates
+    /// row (E3). From the Settings drill-in the strip simply opens in place;
+    /// from a root-mode `PaletteRow::Setting` match the drill-in is opened
+    /// first, landed on that row, so the strip has a row to hang under.
+    /// Returns the scroll task for that landing — CheckUpdates is the last
+    /// row, guaranteed below the 380px fold of a fresh drill-in.
+    fn open_update_actions_strip(&mut self) -> Task<Msg> {
+        let in_drill_in = matches!(
+            &self.app.modal,
+            Modal::SessionLauncher {
+                settings: Some(_),
+                ..
+            }
+        );
+        if !in_drill_in {
+            // Entry scroll superseded by the one returned below, once the
+            // cursor has landed on the CheckUpdates row.
+            let _ = self.open_settings_drill_in();
+            let idx = self
+                .settings_rows_filtered("")
+                .iter()
+                .position(|s| *s == SettingRow::CheckUpdates)
+                .unwrap_or(0);
+            if let Modal::SessionLauncher {
+                settings: Some(ls), ..
+            } = &mut self.app.modal
+            {
+                ls.selected = idx;
+            }
+        }
+        if let Modal::SessionLauncher {
+            settings: Some(ls), ..
+        } = &mut self.app.modal
+        {
+            ls.update_actions = Some(0);
+        }
+        self.scroll_launcher_settings_to_selection()
+    }
+
+    /// Collapse the update-actions strip, staying in the drill-in Root list.
+    fn close_update_actions_strip(&mut self) {
+        if let Modal::SessionLauncher {
+            settings: Some(ls), ..
+        } = &mut self.app.modal
+        {
+            ls.update_actions = None;
+        }
+    }
+
+    /// Run strip action `idx` (⏎ or click). `StartUpdate`'s handler replaces
+    /// the palette with the Updating progress modal on its own; `SkipVersion`
+    /// flips `upgrade` out of `Available`, so the strip closes with it (the
+    /// row's value slot re-derives to "Up to date"); `CopyUrl` is a pure side
+    /// effect — the strip stays open for a follow-up action.
+    fn update_actions_commit(&mut self, idx: usize) -> Task<Msg> {
+        let method_unknown = matches!(self.upgrade_method, crate::upgrade::InstallMethod::Unknown);
+        let Some(&action) = update_available_actions(method_unknown).get(idx) else {
+            return Task::none();
+        };
+        match action {
+            UpdateAction::UpdateNow => self.update(Msg::StartUpdate),
+            UpdateAction::SkipVersion => {
+                let task = self.update(Msg::SkipVersion);
+                self.close_update_actions_strip();
+                task
+            }
+            UpdateAction::CopyUrl => self.update(Msg::CopyReleaseUrl),
+        }
+    }
+
+    /// Enter the Theme sub-pane (D1 in the palette redesign mock): previews
+    /// live like `Modal::ThemePicker`, so `original` is captured up front for
+    /// Esc to restore. Starts on the active theme's own kind list, cursor on
+    /// the active theme (mirrors `App::open_theme_picker`).
+    fn enter_theme_pane(&mut self) -> Task<Msg> {
+        let original = crate::theme::current();
+        let kind = original.kind;
+        let selected = theme_pane_selected_index(kind, original.name);
+        let follow_system = self.app.theme_follow_system;
+        self.enter_settings_pane(
+            SettingsPane::Theme {
+                original,
+                kind,
+                follow_system,
+            },
+            selected,
+        );
+        // The entry scroll is load-bearing: `themes_of` is alphabetical, so
+        // without it the pre-selected current theme usually sits below the
+        // pane's 280px fold and the pane appears to have selected nothing.
+        self.scroll_launcher_theme_to_selection()
+    }
+
+    /// Enter the Backend sub-pane (D2): cursor starts on the active backend.
+    fn enter_backend_pane(&mut self) -> Task<Msg> {
+        let selected = backend_pane_selected_index(self.app.use_tmux());
+        self.enter_settings_pane(SettingsPane::Backend, selected);
+        Task::none()
+    }
+
+    /// Enter the Permissions sub-pane (E1): cursor starts on the active
+    /// choice (Ask/Skip).
+    fn enter_permissions_pane(&mut self) -> Task<Msg> {
+        let selected = permissions_pane_selected_index(self.app.skip_permissions_enabled());
+        self.enter_settings_pane(SettingsPane::Permissions, selected);
+        Task::none()
+    }
+
+    /// Enter the DefaultAgent sub-pane (D3): cursor starts on the current
+    /// default (or `Agent::ALL[0]` if none set). Kicks off the same tool
+    /// detection `settings_modal` triggers on open when it hasn't run yet,
+    /// so install status/version populate instead of showing "detecting…"
+    /// forever.
+    fn enter_default_agent_pane(&mut self) -> Task<Msg> {
+        let selected = default_agent_pane_selected_index(self.app.store.default_agent);
+        self.enter_settings_pane(SettingsPane::DefaultAgent, selected);
+        if self.settings_tools.is_empty() {
+            return self.update(Msg::RefreshTools);
+        }
+        Task::none()
+    }
+
+    /// Enter App-size inline-edit mode (D4): stays on the Root pane —
+    /// `resizing` swaps the selected row's value slot for the live stepper.
+    /// From a root-mode `PaletteRow::Setting` match the drill-in is opened
+    /// first, landed on the App-size row, so the stepper has a row to live on
+    /// (same shape as `open_update_actions_strip`).
+    fn enter_appsize_resize(&mut self) -> Task<Msg> {
+        if !matches!(
+            &self.app.modal,
+            Modal::SessionLauncher {
+                settings: Some(_),
+                ..
+            }
+        ) {
+            // Entry scroll superseded by the one returned below, once the
+            // cursor has landed on the App-size row.
+            let _ = self.open_settings_drill_in();
+            let idx = self
+                .settings_rows_filtered("")
+                .iter()
+                .position(|s| *s == SettingRow::AppSize)
+                .unwrap_or(0);
+            if let Modal::SessionLauncher {
+                settings: Some(ls), ..
+            } = &mut self.app.modal
+            {
+                ls.selected = idx;
+            }
+        }
+        if let Modal::SessionLauncher {
+            settings: Some(ls), ..
+        } = &mut self.app.modal
+        {
+            ls.resizing = true;
+        }
+        self.scroll_launcher_settings_to_selection()
+    }
+
+    /// Scroll the Theme sub-pane's list so the selected row is centered —
+    /// same shape as `scroll_theme_picker_to_selection`, against the pane's
+    /// own 36px rows and 280px cap. Chained from every path that moves the
+    /// selection or reshapes the list (entry, ↑↓, clicks, mode switches,
+    /// query edits): `themes_of` is alphabetical, so without this the
+    /// current theme usually sits below the fold on entry and the highlight
+    /// moves invisibly.
+    fn scroll_launcher_theme_to_selection(&self) -> Task<Msg> {
+        use iced::widget::scrollable::AbsoluteOffset;
+        let Modal::SessionLauncher {
+            input,
+            settings:
+                Some(LauncherSettings {
+                    pane: SettingsPane::Theme { kind, .. },
+                    selected,
+                    ..
+                }),
+            ..
+        } = &self.app.modal
+        else {
+            return Task::none();
+        };
+        let total = theme_pane_rows(*kind, input).len();
+        let y = launcher_theme_scroll_offset(total, *selected);
+        scroll_to(
+            super::view::launcher_theme_scrollable_id(),
+            AbsoluteOffset { x: 0.0, y },
+        )
+    }
+
+    /// Scroll the Settings drill-in's Root list so the selected row is
+    /// centered — the Root-pane counterpart of
+    /// `scroll_launcher_theme_to_selection`, chained from every path that
+    /// moves the Root cursor or rebuilds the list (↑↓, drill-in entry,
+    /// sub-pane exits landing near the bottom, query edits). No-op outside
+    /// the Root pane.
+    fn scroll_launcher_settings_to_selection(&self) -> Task<Msg> {
+        use iced::widget::scrollable::AbsoluteOffset;
+        let Modal::SessionLauncher {
+            input,
+            settings:
+                Some(LauncherSettings {
+                    pane: SettingsPane::Root,
+                    selected,
+                    ..
+                }),
+            ..
+        } = &self.app.modal
+        else {
+            return Task::none();
+        };
+        let rows = self.settings_rows_filtered(input);
+        let y = settings_root_scroll_offset(&rows, *selected);
+        scroll_to(
+            super::view::launcher_settings_scrollable_id(),
+            AbsoluteOffset { x: 0.0, y },
+        )
+    }
+
+    /// Theme sub-pane ↑↓ / row click: move (or jump straight to, for a
+    /// click) the selection within the *currently shown* kind's
+    /// fuzzy-filtered list and preview it immediately (`theme::set`) — same
+    /// live-preview idiom as `Grove::theme_picker_select`/`theme_picker_move`.
+    /// Selecting a concrete theme opts back out of "follow system", mirroring
+    /// `ThemePickerScope::App`'s arm of `App::theme_picker_move`.
+    fn theme_pane_select(&mut self, idx: usize) -> Task<Msg> {
+        let input = match &self.app.modal {
+            Modal::SessionLauncher { input, .. } => input.clone(),
+            _ => return Task::none(),
+        };
+        let Modal::SessionLauncher {
+            settings: Some(ls), ..
+        } = &mut self.app.modal
+        else {
+            return Task::none();
+        };
+        let SettingsPane::Theme {
+            kind,
+            follow_system,
+            ..
+        } = &mut ls.pane
+        else {
+            return Task::none();
+        };
+        let rows = theme_pane_rows(*kind, &input);
+        let Some(theme) = rows.get(idx).copied() else {
+            return Task::none();
+        };
+        ls.selected = idx;
+        *follow_system = false;
+        crate::theme::set(theme);
+        self.invalidate_pty_render_cache();
+        self.scroll_launcher_theme_to_selection()
+    }
+
+    /// Theme sub-pane ↑↓ (keyboard): delta-move `theme_pane_select` over the
+    /// currently shown kind's fuzzy-filtered list length.
+    fn theme_pane_move(&mut self, delta: i32) -> Task<Msg> {
+        let (input, selected, kind) = match &self.app.modal {
+            Modal::SessionLauncher {
+                input,
+                settings:
+                    Some(LauncherSettings {
+                        pane: SettingsPane::Theme { kind, .. },
+                        selected,
+                        ..
+                    }),
+                ..
+            } => (input.clone(), *selected, *kind),
+            _ => return Task::none(),
+        };
+        let len = theme_pane_rows(kind, &input).len();
+        let new_sel = crate::gui::launcher::clamp(selected, delta, len);
+        self.theme_pane_select(new_sel)
+    }
+
+    /// Theme sub-pane Dark/Light segment (click or Tab-cycle): switches
+    /// which kind's list is shown, opts out of "follow system", and previews
+    /// the active theme's position in the new list (or the first entry if it
+    /// has none).
+    fn theme_pane_set_kind(&mut self, kind: crate::theme::ThemeKind) -> Task<Msg> {
+        let input = match &self.app.modal {
+            Modal::SessionLauncher { input, .. } => input.clone(),
+            _ => return Task::none(),
+        };
+        let rows = theme_pane_rows(kind, &input);
+        let active = crate::theme::current();
+        let idx = rows.iter().position(|t| t.name == active.name).unwrap_or(0);
+        let Modal::SessionLauncher {
+            settings: Some(ls), ..
+        } = &mut self.app.modal
+        else {
+            return Task::none();
+        };
+        let SettingsPane::Theme {
+            kind: k,
+            follow_system,
+            ..
+        } = &mut ls.pane
+        else {
+            return Task::none();
+        };
+        *k = kind;
+        *follow_system = false;
+        ls.selected = idx;
+        if let Some(t) = rows.get(idx) {
+            crate::theme::set(*t);
+        }
+        self.invalidate_pty_render_cache();
+        self.scroll_launcher_theme_to_selection()
+    }
+
+    /// Theme sub-pane System segment (click or Tab-cycle): previews the
+    /// resolved system theme and marks "follow system" as a local draft
+    /// (persisted on ⏎) — mirrors `Grove::theme_picker_toggle_system(true)`.
+    /// The list always falls back to the dark set under "system", since
+    /// system mode still needs a concrete dark choice.
+    fn theme_pane_set_system(&mut self) -> Task<Msg> {
+        let name = self
+            .app
+            .resolve_system_theme_name(self.app.system_theme_mode)
+            .to_string();
+        let input = match &self.app.modal {
+            Modal::SessionLauncher { input, .. } => input.clone(),
+            _ => return Task::none(),
+        };
+        // The list snaps back to the (filtered) dark set: re-clamp the
+        // cursor so a selection made deep in a longer list can't dangle
+        // past the end.
+        let dark_len = theme_pane_rows(crate::theme::ThemeKind::Dark, &input).len();
+        let Modal::SessionLauncher {
+            settings: Some(ls), ..
+        } = &mut self.app.modal
+        else {
+            return Task::none();
+        };
+        let SettingsPane::Theme {
+            kind,
+            follow_system,
+            ..
+        } = &mut ls.pane
+        else {
+            return Task::none();
+        };
+        ls.selected = crate::gui::launcher::clamp(ls.selected, 0, dark_len);
+        *kind = crate::theme::ThemeKind::Dark;
+        *follow_system = true;
+        crate::theme::set_by_name(&name);
+        self.invalidate_pty_render_cache();
+        self.scroll_launcher_theme_to_selection()
+    }
+
+    /// Theme sub-pane Tab: cycle the mode row Dark → Light → System → Dark
+    /// (`next_theme_mode`), routed through the same `theme_pane_set_kind` /
+    /// `theme_pane_set_system` paths the segment clicks take, so preview and
+    /// selection behave identically to clicking.
+    fn theme_pane_cycle_mode(&mut self) -> Task<Msg> {
+        let (kind, follow_system) = match &self.app.modal {
+            Modal::SessionLauncher {
+                settings:
+                    Some(LauncherSettings {
+                        pane:
+                            SettingsPane::Theme {
+                                kind,
+                                follow_system,
+                                ..
+                            },
+                        ..
+                    }),
+                ..
+            } => (*kind, *follow_system),
+            _ => return Task::none(),
+        };
+        match next_theme_mode(kind, follow_system) {
+            ThemeMode::Dark => self.theme_pane_set_kind(crate::theme::ThemeKind::Dark),
+            ThemeMode::Light => self.theme_pane_set_kind(crate::theme::ThemeKind::Light),
+            ThemeMode::System => self.theme_pane_set_system(),
+        }
+    }
+
+    /// Theme sub-pane ⏎: persist the previewed theme (or "follow system")
+    /// through the same `Store` fields `App::theme_picker_submit` writes,
+    /// then return to Root landed on the App theme row.
+    fn theme_pane_commit(&mut self) -> Task<Msg> {
+        let follow_system = match &self.app.modal {
+            Modal::SessionLauncher {
+                settings:
+                    Some(LauncherSettings {
+                        pane: SettingsPane::Theme { follow_system, .. },
+                        ..
+                    }),
+                ..
+            } => *follow_system,
+            _ => return Task::none(),
+        };
+        self.app.theme_follow_system = follow_system;
+        self.app.store.theme_follow_system = follow_system;
+        if follow_system {
+            self.app.apply_system_theme();
+        } else {
+            let chosen = crate::theme::current();
+            crate::theme::set(chosen);
+            self.app.store.theme = Some(chosen.name.to_string());
+            match chosen.kind {
+                crate::theme::ThemeKind::Dark => {
+                    self.app.store.theme_dark = Some(chosen.name.to_string())
+                }
+                crate::theme::ThemeKind::Light => {
+                    self.app.store.theme_light = Some(chosen.name.to_string())
+                }
+            }
+        }
+        let _ = crate::storage::save(&self.app.store);
+        self.invalidate_pty_render_cache();
+        self.return_to_settings_root(SettingRow::Theme)
+    }
+
+    /// Theme sub-pane Esc: restore the pre-entry theme and return to Root.
+    fn theme_pane_cancel(&mut self) -> Task<Msg> {
+        let original = match &self.app.modal {
+            Modal::SessionLauncher {
+                settings:
+                    Some(LauncherSettings {
+                        pane: SettingsPane::Theme { original, .. },
+                        ..
+                    }),
+                ..
+            } => *original,
+            _ => return Task::none(),
+        };
+        crate::theme::set(original);
+        self.invalidate_pty_render_cache();
+        self.return_to_settings_root(SettingRow::Theme)
+    }
+
+    /// Whether the Settings drill-in is currently showing the ProjectTheme
+    /// sub-pane — lets the shared `LauncherThemePaneSelect/Dark/Light` `Msg`s
+    /// route to this pane's handlers instead of the app-theme pane's without
+    /// adding parallel `Msg` variants.
+    fn launcher_pane_is_project_theme(&self) -> bool {
+        matches!(
+            &self.app.modal,
+            Modal::SessionLauncher {
+                settings: Some(LauncherSettings {
+                    pane: SettingsPane::ProjectTheme { .. },
+                    ..
+                }),
+                ..
+            }
+        )
+    }
+
+    /// Enter the ProjectTheme sub-pane from a session row's actions strip
+    /// (action `2`) — unlike `enter_theme_pane`, this is never reached from
+    /// the Settings root list, so it sets `Modal::SessionLauncher` fields
+    /// directly rather than routing through `enter_settings_pane`/
+    /// `open_settings_drill_in` (which assume that entry point and don't
+    /// touch `row_actions`). Starts on the project's pinned theme if it has
+    /// one, else the current global theme's kind with no preview ("Use app
+    /// theme").
+    fn enter_project_theme_pane(&mut self, proj: usize) -> Task<Msg> {
+        let pinned = self
+            .app
+            .store
+            .projects
+            .get(proj)
+            .and_then(|p| p.theme.as_deref())
+            .and_then(crate::theme::by_name);
+        let kind = pinned
+            .map(|t| t.kind)
+            .unwrap_or(crate::theme::current().kind);
+        let rows = project_theme_pane_rows(kind, "");
+        let selected = rows
+            .iter()
+            .position(|t| match (t, pinned) {
+                (Some(a), Some(b)) => a.name == b.name,
+                (None, None) => true,
+                _ => false,
+            })
+            .unwrap_or(0);
+        if let Modal::SessionLauncher {
+            input,
+            selected: outer_selected,
+            row_actions,
+            settings,
+            ..
+        } = &mut self.app.modal
+        {
+            input.clear();
+            *outer_selected = 0;
+            *row_actions = None;
+            *settings = Some(LauncherSettings {
+                pane: SettingsPane::ProjectTheme {
+                    proj,
+                    kind,
+                    preview: pinned,
+                },
+                selected,
+                resizing: false,
+                update_actions: None,
+            });
+        }
+        self.invalidate_pty_render_cache();
+        self.scroll_launcher_project_theme_to_selection()
+    }
+
+    /// Scroll the ProjectTheme sub-pane's list so the selected row is
+    /// centered — same geometry/idiom as `scroll_launcher_theme_to_selection`.
+    fn scroll_launcher_project_theme_to_selection(&self) -> Task<Msg> {
+        use iced::widget::scrollable::AbsoluteOffset;
+        let Modal::SessionLauncher {
+            input,
+            settings:
+                Some(LauncherSettings {
+                    pane: SettingsPane::ProjectTheme { kind, .. },
+                    selected,
+                    ..
+                }),
+            ..
+        } = &self.app.modal
+        else {
+            return Task::none();
+        };
+        let total = project_theme_pane_rows(*kind, input).len();
+        let y = launcher_theme_scroll_offset(total, *selected);
+        scroll_to(
+            super::view::launcher_theme_scrollable_id(),
+            AbsoluteOffset { x: 0.0, y },
+        )
+    }
+
+    /// ProjectTheme sub-pane ↑↓ / row click: move (or jump straight to) the
+    /// selection and update `preview` — never touches the global active
+    /// theme (no `theme::set`), only the local draft `project_theme_override`
+    /// reads.
+    fn project_theme_pane_select(&mut self, idx: usize) -> Task<Msg> {
+        let input = match &self.app.modal {
+            Modal::SessionLauncher { input, .. } => input.clone(),
+            _ => return Task::none(),
+        };
+        let Modal::SessionLauncher {
+            settings: Some(ls), ..
+        } = &mut self.app.modal
+        else {
+            return Task::none();
+        };
+        let SettingsPane::ProjectTheme { kind, preview, .. } = &mut ls.pane else {
+            return Task::none();
+        };
+        let rows = project_theme_pane_rows(*kind, &input);
+        let Some(&row) = rows.get(idx) else {
+            return Task::none();
+        };
+        *preview = row;
+        ls.selected = idx;
+        self.invalidate_pty_render_cache();
+        self.scroll_launcher_project_theme_to_selection()
+    }
+
+    /// ProjectTheme sub-pane ↑↓ (keyboard): delta-move over the currently
+    /// shown kind's fuzzy-filtered list length.
+    fn project_theme_pane_move(&mut self, delta: i32) -> Task<Msg> {
+        let (input, selected, kind) = match &self.app.modal {
+            Modal::SessionLauncher {
+                input,
+                settings:
+                    Some(LauncherSettings {
+                        pane: SettingsPane::ProjectTheme { kind, .. },
+                        selected,
+                        ..
+                    }),
+                ..
+            } => (input.clone(), *selected, *kind),
+            _ => return Task::none(),
+        };
+        let len = project_theme_pane_rows(kind, &input).len();
+        let new_sel = crate::gui::launcher::clamp(selected, delta, len);
+        self.project_theme_pane_select(new_sel)
+    }
+
+    /// ProjectTheme sub-pane Dark/Light segment (click or Tab-cycle):
+    /// switches which kind's list is shown, keeping the same theme selected
+    /// by name if it exists in the new kind's list, else falling back to
+    /// index 0 ("Use app theme" if the query is empty, else the first match).
+    fn project_theme_pane_set_kind(&mut self, kind: crate::theme::ThemeKind) -> Task<Msg> {
+        let input = match &self.app.modal {
+            Modal::SessionLauncher { input, .. } => input.clone(),
+            _ => return Task::none(),
+        };
+        let rows = project_theme_pane_rows(kind, &input);
+        let Modal::SessionLauncher {
+            settings: Some(ls), ..
+        } = &mut self.app.modal
+        else {
+            return Task::none();
+        };
+        let SettingsPane::ProjectTheme {
+            kind: k, preview, ..
+        } = &mut ls.pane
+        else {
+            return Task::none();
+        };
+        let current_name = preview.map(|t| t.name);
+        let idx = rows
+            .iter()
+            .position(|row| row.map(|t| t.name) == current_name)
+            .unwrap_or(0);
+        *k = kind;
+        ls.selected = idx;
+        *preview = rows.get(idx).copied().flatten();
+        self.invalidate_pty_render_cache();
+        self.scroll_launcher_project_theme_to_selection()
+    }
+
+    /// ProjectTheme sub-pane Tab: cycle Dark ↔ Light only — no System mode
+    /// for a project override.
+    fn project_theme_pane_cycle_kind(&mut self) -> Task<Msg> {
+        let kind = match &self.app.modal {
+            Modal::SessionLauncher {
+                settings:
+                    Some(LauncherSettings {
+                        pane: SettingsPane::ProjectTheme { kind, .. },
+                        ..
+                    }),
+                ..
+            } => *kind,
+            _ => return Task::none(),
+        };
+        let next = match kind {
+            crate::theme::ThemeKind::Dark => crate::theme::ThemeKind::Light,
+            crate::theme::ThemeKind::Light => crate::theme::ThemeKind::Dark,
+        };
+        self.project_theme_pane_set_kind(next)
+    }
+
+    /// ProjectTheme sub-pane ⏎: persist `preview` as the project's pinned
+    /// theme (or clear it) through the same `Store` write/toast
+    /// `App::theme_picker_submit`'s project-scope arm uses, then close the
+    /// drill-in back to the plain session list (not Settings root — this
+    /// pane was never entered from there).
+    fn project_theme_pane_commit(&mut self) -> Task<Msg> {
+        let (proj, preview) = match &self.app.modal {
+            Modal::SessionLauncher {
+                settings:
+                    Some(LauncherSettings {
+                        pane: SettingsPane::ProjectTheme { proj, preview, .. },
+                        ..
+                    }),
+                ..
+            } => (*proj, *preview),
+            _ => return Task::none(),
+        };
+        match self.app.store.projects.get_mut(proj) {
+            Some(p) => {
+                p.theme = preview.map(|t| t.name.to_string());
+                let _ = crate::storage::save(&self.app.store);
+                let label = preview
+                    .map(|t| t.name.to_string())
+                    .unwrap_or_else(|| "default".to_string());
+                self.app.set_toast(format!("project theme: {label}"));
+            }
+            None => {
+                self.app.set_error_toast("project no longer exists");
+            }
+        }
+        if let Modal::SessionLauncher {
+            settings, input, ..
+        } = &mut self.app.modal
+        {
+            *settings = None;
+            input.clear();
+        }
+        self.invalidate_pty_render_cache();
+        Task::none()
+    }
+
+    /// ProjectTheme sub-pane Esc: drop the preview and close the drill-in
+    /// back to the plain session list — nothing was written, so there's
+    /// nothing to restore.
+    fn project_theme_pane_cancel(&mut self) -> Task<Msg> {
+        if let Modal::SessionLauncher {
+            settings, input, ..
+        } = &mut self.app.modal
+        {
+            *settings = None;
+            input.clear();
+        }
+        self.invalidate_pty_render_cache();
+        Task::none()
+    }
+
+    /// Backend/Permissions/DefaultAgent sub-pane ⏎/click: commit row
+    /// `selected` and return to Root. Shared by the three since they're all
+    /// "pick one of a short fixed list, apply immediately" — only which
+    /// `Msg` fires (and, for DefaultAgent, the installed-agent guard) differs.
+    fn backend_pane_commit(&mut self, selected: usize) -> Task<Msg> {
+        let task = if selected == 0 {
+            self.update(Msg::BackendNative)
+        } else {
+            self.update(Msg::BackendTmux)
+        };
+        Task::batch([task, self.return_to_settings_root(SettingRow::Backend)])
+    }
+
+    fn permissions_pane_commit(&mut self, selected: usize) -> Task<Msg> {
+        let task = if selected == 0 {
+            self.update(Msg::SkipPermissionsDisable)
+        } else {
+            self.update(Msg::SkipPermissionsEnable)
+        };
+        Task::batch([task, self.return_to_settings_root(SettingRow::Permissions)])
+    }
+
+    /// Whether the DefaultAgent sub-pane row for `agent` is interactable.
+    /// `Terminal` is always available; while tool detection is still
+    /// empty/in-flight, every agent is treated as installed-unknown (no
+    /// version text, but not inert) rather than inert.
+    pub(super) fn default_agent_pane_row_installed(&self, agent: Agent) -> bool {
+        if agent == Agent::Terminal || self.settings_tools.is_empty() {
+            return true;
+        }
+        self.settings_tools
+            .iter()
+            .find(|t| t.agent == agent)
+            .map(|t| t.installed)
+            .unwrap_or(true)
+    }
+
+    fn default_agent_pane_commit(&mut self, selected: usize) -> Task<Msg> {
+        let Some(&agent) = Agent::ALL.get(selected) else {
+            return Task::none();
+        };
+        if !self.default_agent_pane_row_installed(agent) {
+            return Task::none();
+        }
+        let task = self.update(Msg::SetDefaultAgent(agent));
+        Task::batch([task, self.return_to_settings_root(SettingRow::DefaultAgent)])
+    }
+
+    /// Every `SettingRow` (in `SettingRow::ALL`'s section/definition order)
+    /// fuzzy-filtered by `input`, for the Settings drill-in's live list and
+    /// its keyboard nav. Shares the same 3-way (label/value/section) match
+    /// `palette_rows` uses for root-mode `Setting` rows, via
+    /// `launcher::matching_settings`, so the same query surfaces a setting
+    /// whether you're still at root or already inside the drill-in.
+    pub(super) fn settings_rows_filtered(&self, input: &str) -> Vec<SettingRow> {
+        let values: Vec<String> = SettingRow::ALL
+            .iter()
+            .map(|s| self.setting_value(*s))
+            .collect();
+        let candidates: Vec<(SettingRow, &str, &str, &str)> = SettingRow::ALL
+            .iter()
+            .zip(values.iter())
+            .map(|(s, v)| (*s, s.label(), v.as_str(), s.section()))
+            .collect();
+        crate::gui::launcher::matching_settings(input, &candidates)
+    }
+
+    /// Live value string for `s`, as shown right-aligned on its palette row.
+    /// Cross-checked against `settings_modal`'s own value sources (view.rs)
+    /// so the palette and the browse-view Settings modal never disagree.
+    pub(super) fn setting_value(&self, s: SettingRow) -> String {
+        match s {
+            SettingRow::Theme => crate::theme::current().name.to_string(),
+            SettingRow::AppSize => format!("{:.0}%", self.ui_zoom * 100.0),
+            SettingRow::ProjectThemes => {
+                if self.app.project_themes_enabled() {
+                    "On".to_string()
+                } else {
+                    "Off".to_string()
+                }
+            }
+            SettingRow::Backend => {
+                if self.app.use_tmux() {
+                    "Tmux".to_string()
+                } else {
+                    "Native".to_string()
+                }
+            }
+            SettingRow::Permissions => {
+                if self.app.skip_permissions_enabled() {
+                    "Skip".to_string()
+                } else {
+                    "Ask".to_string()
+                }
+            }
+            SettingRow::Telemetry => {
+                if self.app.telemetry_enabled() {
+                    "On".to_string()
+                } else {
+                    "Off".to_string()
+                }
+            }
+            SettingRow::DefaultAgent => self
+                .app
+                .store
+                .default_agent
+                .map(|a| a.label().to_string())
+                .unwrap_or_else(|| "auto".to_string()),
+            SettingRow::CheckUpdates => {
+                let ver = env!("CARGO_PKG_VERSION");
+                match &self.upgrade {
+                    UpgradeState::Idle => format!("v{ver}"),
+                    UpgradeState::Checking => "Checking…".to_string(),
+                    UpgradeState::UpToDate => format!("v{ver} · Up to date"),
+                    UpgradeState::Available(r) => format!("Update available: {}", r.tag),
+                    _ => "Updating…".to_string(),
+                }
+            }
+        }
+    }
+
     /// Tab in root/typing state: if the row at `i` is a `Recent`/`Combo`,
     /// reveal its inline contextual-action strip (Launch session…/Delete
     /// worktree); if it's `SwitchToSession`, open the switch-to-session
-    /// drill-in directly (Tab behaves the same as Enter there). Any other row
+    /// drill-in directly (Tab behaves the same as Enter there); if it's a
+    /// `Setting`/`Settings` row, Tab also mirrors Enter — enum settings
+    /// extend into their sub-pane, toggles flip in place. Any other row
     /// is a no-op, same as before.
-    fn launcher_enter_row_actions(&mut self, i: usize, input: &str, browse_all: bool) {
+    fn launcher_enter_row_actions(&mut self, i: usize, input: &str, browse_all: bool) -> Task<Msg> {
         let rows = self.palette_rows(input, browse_all);
-        let Some(row) = rows.get(i) else { return };
+        let Some(row) = rows.get(i) else {
+            return Task::none();
+        };
         match row {
             PaletteRow::Recent { proj, wt_path, .. } | PaletteRow::Combo { proj, wt_path, .. } => {
                 let ra = crate::app::RowActionsState {
@@ -3564,8 +4931,16 @@ impl Grove {
                     self.launcher_enter_switch();
                 }
             }
+            PaletteRow::Settings => return self.open_settings_drill_in(),
+            PaletteRow::Setting(s) => {
+                let s = *s;
+                let task = self.activate_setting(s);
+                self.reselect_typed_setting(s, input, browse_all, i);
+                return task;
+            }
             _ => {}
         }
+        Task::none()
     }
 
     /// Enter the "Launch session…" flow for `(proj, wt_path)`: the full OPEN
@@ -3667,12 +5042,21 @@ impl Grove {
             if self.switch_to_session_row_visible() {
                 rows.push(PaletteRow::SwitchToSession);
             }
+            rows.push(PaletteRow::Settings);
             rows
         } else {
             if self.app.available_agents.is_empty() {
                 return Vec::new();
             }
             let mut rows = Vec::new();
+            // Direct settings matches (name/value/section) go first, so the
+            // typing-state SETTINGS section (see `view.rs`'s header logic)
+            // prints above SESSIONS — B2 in the palette redesign mock.
+            if !browse_all {
+                for s in self.settings_rows_filtered(input) {
+                    rows.push(PaletteRow::Setting(s));
+                }
+            }
             for (proj, p) in self.app.store.projects.iter().enumerate() {
                 for w in self.launcher_worktrees(proj) {
                     let name = if w.branch.is_empty() {
@@ -3709,6 +5093,9 @@ impl Grove {
                     && crate::gui::launcher::fuzzy_match(input, "switch to session", "", "")
                 {
                     rows.push(PaletteRow::SwitchToSession);
+                }
+                if crate::gui::launcher::fuzzy_match(input, "settings", "", "") {
+                    rows.push(PaletteRow::Settings);
                 }
             }
             rows
@@ -3768,7 +5155,12 @@ impl Grove {
     /// identity (rather than re-deriving `palette_rows()` and indexing into
     /// it) means a query/list change since the strip was opened can't make
     /// this act on the wrong row.
-    fn launcher_run_row_action(&mut self, proj: usize, wt_path: String, action: usize) -> Task<Msg> {
+    fn launcher_run_row_action(
+        &mut self,
+        proj: usize,
+        wt_path: String,
+        action: usize,
+    ) -> Task<Msg> {
         if action == 0 {
             let origin = RowActionsState {
                 proj,
@@ -3777,6 +5169,9 @@ impl Grove {
             };
             self.launcher_open_options_for(proj, wt_path, origin);
             return Task::none();
+        }
+        if action == 2 && self.app.project_themes_enabled() {
+            return self.enter_project_theme_pane(proj);
         }
         let worktrees = self.launcher_worktrees(proj);
         let Some(w) = worktrees.iter().find(|w| w.path == wt_path) else {
@@ -4055,6 +5450,314 @@ pub(super) enum PaletteRow {
     /// ACTIONS row: Enter or Tab opens the "switch to session" drill-in
     /// (`Modal::SessionLauncher::switch`).
     SwitchToSession,
+    /// ACTIONS row: Enter or Tab opens the Settings drill-in
+    /// (`Modal::SessionLauncher::settings`).
+    Settings,
+    /// A direct settings match surfaced while typing at root (not
+    /// `browse_all`) — name, current value, and section all searchable. See
+    /// `Grove::activate_setting`: toggles flip in place here without opening
+    /// the drill-in; enum rows are phase-1 no-ops.
+    Setting(SettingRow),
+}
+
+/// One settings entry surfaced by the palette, either as a root-mode direct
+/// match (`PaletteRow::Setting`) or as a row in the Settings drill-in.
+/// Ordering of the variants is the drill-in's display order within its
+/// section (see `SettingRow::ALL`, `section`) — enum panes for the "enum"
+/// rows (`Theme`/`Backend`/`Permissions`/`DefaultAgent`/`AppSize`) are a
+/// later phase; here they're inert stubs (see `Grove::activate_setting`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum SettingRow {
+    Theme,
+    AppSize,
+    ProjectThemes,
+    Backend,
+    Permissions,
+    Telemetry,
+    DefaultAgent,
+    CheckUpdates,
+}
+
+impl SettingRow {
+    /// Every setting, in section/definition (= drill-in display) order.
+    pub(super) const ALL: [SettingRow; 8] = [
+        SettingRow::Theme,
+        SettingRow::AppSize,
+        SettingRow::ProjectThemes,
+        SettingRow::Backend,
+        SettingRow::Permissions,
+        SettingRow::Telemetry,
+        SettingRow::DefaultAgent,
+        SettingRow::CheckUpdates,
+    ];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            SettingRow::Theme => "App theme",
+            SettingRow::AppSize => "App size",
+            SettingRow::ProjectThemes => "Project themes",
+            SettingRow::Backend => "Backend",
+            SettingRow::Permissions => "Permissions",
+            SettingRow::Telemetry => "Telemetry",
+            SettingRow::DefaultAgent => "Default agent",
+            SettingRow::CheckUpdates => "Check for updates",
+        }
+    }
+
+    /// Name of the inline SVG sprite (see `gui::icons`) shown in this row's
+    /// leading 24px icon slot. `ProjectThemes`/`Telemetry` render a checkbox
+    /// glyph instead (see `palette_row_view`'s `Setting` arm) and never
+    /// consult this. Several picks are the nearest existing sprite standing
+    /// in for one the redesign mock uses that isn't in `icons.rs` — see the
+    /// per-arm comments below.
+    pub(super) fn icon_name(self) -> &'static str {
+        match self {
+            // Mock uses a dedicated palette glyph; `contrast` (the existing
+            // light/dark toggle icon) is the closest stand-in for "theme".
+            SettingRow::Theme => "contrast",
+            // Mock's own choice — already in `icons.rs`.
+            SettingRow::AppSize => "grid",
+            SettingRow::ProjectThemes => "check",
+            // Mock uses a monitor glyph; `term` (terminal) is the closest
+            // existing sprite for "backend".
+            SettingRow::Backend => "term",
+            // Mock uses a shield glyph; `ring` (a plain protective circle)
+            // is the closest existing stand-in.
+            SettingRow::Permissions => "ring",
+            SettingRow::Telemetry => "check",
+            // Mock uses a bot glyph; `sparkle` is the closest existing
+            // "agent/AI" stand-in.
+            SettingRow::DefaultAgent => "sparkle",
+            // Matches the existing refresh icon used for the same action in
+            // `settings_modal` (view.rs).
+            SettingRow::CheckUpdates => "restart",
+        }
+    }
+
+    pub(super) fn section(self) -> &'static str {
+        match self {
+            SettingRow::Theme | SettingRow::AppSize | SettingRow::ProjectThemes => "APPEARANCE",
+            SettingRow::Backend | SettingRow::Permissions | SettingRow::Telemetry => {
+                "AGENTS / TERMINAL"
+            }
+            SettingRow::DefaultAgent => "TOOLS",
+            SettingRow::CheckUpdates => "UPDATES",
+        }
+    }
+}
+
+/// Pure selection-index math for entering each Settings sub-pane (see the
+/// `Grove::enter_*_pane` methods) — kept free of `Grove`/`Modal` so it's
+/// directly unit-testable without building a GUI.
+pub(super) fn backend_pane_selected_index(tmux_on: bool) -> usize {
+    if tmux_on {
+        1
+    } else {
+        0
+    }
+}
+
+pub(super) fn permissions_pane_selected_index(skip_on: bool) -> usize {
+    if skip_on {
+        1
+    } else {
+        0
+    }
+}
+
+pub(super) fn default_agent_pane_selected_index(default: Option<Agent>) -> usize {
+    default
+        .and_then(|a| Agent::ALL.iter().position(|&x| x == a))
+        .unwrap_or(0)
+}
+
+pub(super) fn theme_pane_selected_index(kind: crate::theme::ThemeKind, name: &str) -> usize {
+    crate::theme::themes_of(kind)
+        .iter()
+        .position(|t| t.name == name)
+        .unwrap_or(0)
+}
+
+/// Themes of `kind` fuzzy-filtered by `input`, in `theme::themes_of`'s
+/// alphabetical order — the Theme sub-pane's live list (`view.rs`) and its
+/// keyboard/mouse selection (`Grove::theme_pane_select`/`theme_pane_move`)
+/// share this so they never disagree on what row N is.
+pub(super) fn theme_pane_rows(
+    kind: crate::theme::ThemeKind,
+    input: &str,
+) -> Vec<crate::theme::Theme> {
+    crate::theme::themes_of(kind)
+        .into_iter()
+        .filter(|t| crate::gui::launcher::fuzzy_match(input, t.name, "", ""))
+        .collect()
+}
+
+/// The ProjectTheme sub-pane's list: same `theme_pane_rows` filtering,
+/// fronted by a "Use app theme" row (`None`) — only while the query is empty,
+/// so a fuzzy search doesn't dangle a static row above an unrelated match
+/// list. Row N here is exactly what `Grove::project_theme_pane_select`/
+/// `_move` index into, mirroring `theme_pane_rows`'s contract.
+pub(super) fn project_theme_pane_rows(
+    kind: crate::theme::ThemeKind,
+    input: &str,
+) -> Vec<Option<crate::theme::Theme>> {
+    let mut rows: Vec<Option<crate::theme::Theme>> = Vec::new();
+    if input.trim().is_empty() {
+        rows.push(None);
+    }
+    rows.extend(theme_pane_rows(kind, input).into_iter().map(Some));
+    rows
+}
+
+/// The Theme sub-pane's list geometry: 36px rows (the sub-pane row height,
+/// vs the standalone picker's `ROW_H`) under a 280px viewport cap — must
+/// match the pane's `max_height` in `view.rs` or the centering drifts. The
+/// full 280 is viewport: that container carries no padding of its own (the
+/// pane's 8px padding sits on the outer wrapper around context/mode/list).
+const THEME_PANE_ROW_H: f32 = 36.0;
+const THEME_PANE_VIEWPORT_CAP: f32 = 280.0;
+
+/// Center-and-clamp scroll offset for the Theme sub-pane's list: the y that
+/// centers row `selected` of `total` in the capped viewport, clamped to the
+/// scrollable's valid range (0 when everything already fits). Same math as
+/// `scroll_theme_picker_to_selection`, kept pure for testing.
+pub(super) fn launcher_theme_scroll_offset(total: usize, selected: usize) -> f32 {
+    let viewport_h = (total as f32 * THEME_PANE_ROW_H).min(THEME_PANE_VIEWPORT_CAP);
+    let sel_y = selected as f32 * THEME_PANE_ROW_H;
+    let max_y = (total as f32 * THEME_PANE_ROW_H - viewport_h).max(0.0);
+    (sel_y - (viewport_h - THEME_PANE_ROW_H) / 2.0).clamp(0.0, max_y)
+}
+
+/// The Settings drill-in Root list's geometry, mirroring its `view.rs`
+/// render exactly: 44px palette rows and section headers in a 2px-spaced
+/// column. The header total is its label — 10px text at iced's default 1.3
+/// relative line height = 13px — plus the render loop's margins (top 0 for
+/// the first header, 12 for later ones; bottom 6).
+const SETTINGS_ROOT_ROW_H: f32 = 44.0;
+const SETTINGS_ROOT_SPACING: f32 = 2.0;
+const SETTINGS_ROOT_HEADER_LABEL_H: f32 = 13.0;
+/// The scrollable's true viewport: the list container caps at
+/// `max_height(380.0)` but carries `padding(8)` on that same container
+/// (unlike the Theme pane's), and `max_height` bounds padding included —
+/// 380 − 2·8. Clamping against the raw 380 under-scrolls by exactly that
+/// 16px, clipping the bottom row.
+const SETTINGS_ROOT_VIEWPORT_CAP: f32 = 380.0 - 16.0;
+
+/// Center-and-clamp scroll offset for the Settings drill-in's Root list —
+/// `launcher_theme_scroll_offset`'s idiom, but this list isn't uniform
+/// height: a section header precedes every row whose section differs from
+/// the previous row's, so the selected row's y comes from walking the
+/// rendered element sequence rather than multiplying an index.
+pub(super) fn settings_root_scroll_offset(rows: &[SettingRow], selected: usize) -> f32 {
+    let mut content_h: f32 = 0.0;
+    let mut sel_y: f32 = 0.0;
+    let mut prev_section: Option<&'static str> = None;
+    for (i, row) in rows.iter().enumerate() {
+        let section = row.section();
+        if prev_section != Some(section) {
+            let top = if prev_section.is_none() { 0.0 } else { 12.0 };
+            if content_h > 0.0 {
+                content_h += SETTINGS_ROOT_SPACING;
+            }
+            content_h += top + SETTINGS_ROOT_HEADER_LABEL_H + 6.0;
+            prev_section = Some(section);
+        }
+        if content_h > 0.0 {
+            content_h += SETTINGS_ROOT_SPACING;
+        }
+        if i == selected {
+            sel_y = content_h;
+        }
+        content_h += SETTINGS_ROOT_ROW_H;
+    }
+    let viewport_h = content_h.min(SETTINGS_ROOT_VIEWPORT_CAP);
+    let max_y = (content_h - viewport_h).max(0.0);
+    (sel_y - (viewport_h - SETTINGS_ROOT_ROW_H) / 2.0).clamp(0.0, max_y)
+}
+
+/// Keep-identity-else-clamp reselection for the drill-in Root list after a
+/// toggle refilters it: the cursor follows `activated` to its new position
+/// when the row survived, and otherwise clamps the old index into the new
+/// length (`launcher::clamp` handles the empty list).
+pub(super) fn reselect_setting(rows: &[SettingRow], activated: SettingRow, old: usize) -> usize {
+    rows.iter()
+        .position(|s| *s == activated)
+        .unwrap_or_else(|| crate::gui::launcher::clamp(old, 0, rows.len()))
+}
+
+/// Resolve mod+digit `n` (1-based) to the list index of the nth session
+/// (`Recent`/`Combo`) row, skipping settings and action rows — in typed
+/// mode those sort above sessions (B2), and the digits must keep meaning
+/// "nth session", not "nth row". `None` when fewer than `n` session rows
+/// exist. Root mode is unchanged by construction: recents come first there.
+pub(super) fn nth_session_row(rows: &[PaletteRow], n: usize) -> Option<usize> {
+    rows.iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r, PaletteRow::Recent { .. } | PaletteRow::Combo { .. }))
+        .nth(n.checked_sub(1)?)
+        .map(|(i, _)| i)
+}
+
+/// The three states of the Theme sub-pane's mode row, in Tab-cycle order.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum ThemeMode {
+    Dark,
+    Light,
+    System,
+}
+
+/// Tab in the Theme sub-pane cycles the mode row Dark → Light → System →
+/// Dark. The current mode is System whenever `follow_system` is set (that's
+/// also how the segments render), else the shown list's kind.
+pub(super) fn next_theme_mode(kind: crate::theme::ThemeKind, follow_system: bool) -> ThemeMode {
+    if follow_system {
+        ThemeMode::Dark
+    } else {
+        match kind {
+            crate::theme::ThemeKind::Dark => ThemeMode::Light,
+            crate::theme::ThemeKind::Light => ThemeMode::System,
+        }
+    }
+}
+
+/// One action in the update-available strip under the Check-for-updates row
+/// (E3). Mirrors the Settings modal's update-available action row.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum UpdateAction {
+    UpdateNow,
+    SkipVersion,
+    CopyUrl,
+}
+
+impl UpdateAction {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            UpdateAction::UpdateNow => "Update now",
+            UpdateAction::SkipVersion => "Skip version",
+            UpdateAction::CopyUrl => "Copy URL",
+        }
+    }
+}
+
+/// The update-available strip's actions, in display order. "Update now" is
+/// hidden for `InstallMethod::Unknown` installs (notify-only) — the same
+/// guard `settings_modal`'s action row applies — so the strip and the
+/// keyboard nav derive from one list and indices can never disagree.
+pub(super) fn update_available_actions(method_unknown: bool) -> Vec<UpdateAction> {
+    let mut actions = Vec::with_capacity(3);
+    if !method_unknown {
+        actions.push(UpdateAction::UpdateNow);
+    }
+    actions.push(UpdateAction::SkipVersion);
+    actions.push(UpdateAction::CopyUrl);
+    actions
+}
+
+/// Whether activating the Check-for-updates row expands the actions strip
+/// (a release is already known to be available — re-checking would only
+/// throw that answer away) instead of firing a fresh check.
+pub(super) fn check_updates_opens_strip(upgrade: &UpgradeState) -> bool {
+    matches!(upgrade, UpgradeState::Available(_))
 }
 
 /// Spawn a tokio blocking task that runs `git worktree remove --force` for
@@ -4788,7 +6491,11 @@ fn is_paste_shortcut(mods: Modifiers, s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{match_global_shortcut, slide_progress, GlobalShortcut, Screen, GRID_SLIDE};
+    use super::{
+        backend_pane_selected_index, default_agent_pane_selected_index, match_global_shortcut,
+        permissions_pane_selected_index, project_theme_pane_rows, slide_progress, theme_pane_rows,
+        theme_pane_selected_index, GlobalShortcut, Screen, SettingRow, GRID_SLIDE,
+    };
     use iced::keyboard::{key::Named, Key, Modifiers};
     use smol_str::SmolStr;
 
@@ -5480,5 +7187,307 @@ mod tests {
         fn true_when_attention_queue_is_open() {
             assert!(escape_should_dismiss(None, None, None, true));
         }
+    }
+
+    #[test]
+    fn setting_row_label_section_and_icon_are_total_and_nonempty() {
+        for s in SettingRow::ALL {
+            assert!(!s.label().is_empty());
+            assert!(!s.section().is_empty());
+            assert!(!s.icon_name().is_empty());
+        }
+        // Spot-check a few, so a typo'd match arm can't silently return the
+        // wrong (but still non-empty) string for the wrong variant.
+        assert_eq!(SettingRow::Telemetry.label(), "Telemetry");
+        assert_eq!(SettingRow::Telemetry.section(), "AGENTS / TERMINAL");
+        assert_eq!(SettingRow::CheckUpdates.label(), "Check for updates");
+        assert_eq!(SettingRow::CheckUpdates.section(), "UPDATES");
+    }
+
+    #[test]
+    fn settings_row_keyword_matches_root_query() {
+        // `palette_rows` needs a full `Grove` to construct (sessions, PTYs,
+        // store, …) — impractical in a unit test — so this exercises the
+        // exact keyword condition it uses to surface `PaletteRow::Settings`
+        // while typing at root (not `browse_all`): test (b), "typed input
+        // 'settings' yields a Settings row".
+        assert!(crate::gui::launcher::fuzzy_match(
+            "settings", "settings", "", ""
+        ));
+        assert!(crate::gui::launcher::fuzzy_match("set", "settings", "", ""));
+        assert!(!crate::gui::launcher::fuzzy_match(
+            "zzz", "settings", "", ""
+        ));
+    }
+
+    // ── Settings sub-panes (phase 2) ─────────────────────────────────────
+
+    #[test]
+    fn backend_pane_selects_the_active_backend() {
+        assert_eq!(backend_pane_selected_index(false), 0); // Native
+        assert_eq!(backend_pane_selected_index(true), 1); // Tmux
+    }
+
+    #[test]
+    fn permissions_pane_selects_the_active_choice() {
+        assert_eq!(permissions_pane_selected_index(false), 0); // Ask
+        assert_eq!(permissions_pane_selected_index(true), 1); // Skip
+    }
+
+    #[test]
+    fn default_agent_pane_selects_the_current_default() {
+        use crate::agent::Agent;
+        assert_eq!(default_agent_pane_selected_index(None), 0);
+        assert_eq!(default_agent_pane_selected_index(Some(Agent::Claude)), 0);
+        assert_eq!(default_agent_pane_selected_index(Some(Agent::Codex)), 1);
+        assert_eq!(default_agent_pane_selected_index(Some(Agent::OpenCode)), 2);
+        assert_eq!(default_agent_pane_selected_index(Some(Agent::Terminal)), 3);
+    }
+
+    #[test]
+    fn theme_pane_selects_the_active_theme_within_its_kind() {
+        use crate::theme::ThemeKind;
+        // `tokyonight` is alphabetically first among the builtin dark
+        // themes shipped today; a name with no match falls back to 0
+        // rather than panicking.
+        let dark = crate::theme::themes_of(ThemeKind::Dark);
+        let idx = dark.iter().position(|t| t.name == "tokyonight").unwrap();
+        assert_eq!(
+            theme_pane_selected_index(ThemeKind::Dark, "tokyonight"),
+            idx
+        );
+        assert_eq!(
+            theme_pane_selected_index(ThemeKind::Dark, "no-such-theme"),
+            0
+        );
+    }
+
+    #[test]
+    fn theme_pane_rows_lists_only_the_requested_kind_fuzzy_filtered() {
+        use crate::theme::ThemeKind;
+        let all_dark = crate::theme::themes_of(ThemeKind::Dark);
+        let all_light = crate::theme::themes_of(ThemeKind::Light);
+        // Unfiltered: exactly the kind's own theme set, same order.
+        assert_eq!(
+            theme_pane_rows(ThemeKind::Dark, "")
+                .iter()
+                .map(|t| t.name)
+                .collect::<Vec<_>>(),
+            all_dark.iter().map(|t| t.name).collect::<Vec<_>>()
+        );
+        // Every row is actually of the requested kind — Light never leaks
+        // into a Dark query or vice versa.
+        assert!(theme_pane_rows(ThemeKind::Light, "")
+            .iter()
+            .all(|t| t.kind == ThemeKind::Light));
+        assert_ne!(all_dark.len(), 0);
+        assert_ne!(all_light.len(), 0);
+        // Fuzzy-filtered: only names containing the query survive.
+        let filtered = theme_pane_rows(ThemeKind::Dark, "tokyonight");
+        assert!(!filtered.is_empty());
+        assert!(filtered.iter().all(|t| t.name.contains("tokyonight")));
+        // No match anywhere in the kind's list.
+        assert!(theme_pane_rows(ThemeKind::Dark, "zzz-no-such-theme").is_empty());
+    }
+
+    #[test]
+    fn project_theme_pane_rows_has_use_default_row_only_when_query_is_empty() {
+        use crate::theme::ThemeKind;
+        // Empty query: "Use app theme" (None) leads, followed by every dark
+        // theme in `theme_pane_rows` order.
+        let rows = project_theme_pane_rows(ThemeKind::Dark, "");
+        assert!(rows[0].is_none());
+        assert_eq!(
+            rows[1..]
+                .iter()
+                .map(|t| t.unwrap().name)
+                .collect::<Vec<_>>(),
+            theme_pane_rows(ThemeKind::Dark, "")
+                .iter()
+                .map(|t| t.name)
+                .collect::<Vec<_>>()
+        );
+        // Whitespace-only query counts as empty too.
+        assert!(project_theme_pane_rows(ThemeKind::Dark, "   ")[0].is_none());
+        // Any real query drops the "Use app theme" row — only fuzzy matches
+        // remain.
+        let filtered = project_theme_pane_rows(ThemeKind::Dark, "tokyonight");
+        assert!(!filtered.is_empty());
+        assert!(filtered.iter().all(|t| t.is_some()));
+        assert!(filtered
+            .iter()
+            .all(|t| t.unwrap().name.contains("tokyonight")));
+        // No match anywhere still yields an empty list, not a dangling
+        // default row.
+        assert!(project_theme_pane_rows(ThemeKind::Dark, "zzz-no-such-theme").is_empty());
+    }
+
+    #[test]
+    fn project_theme_pane_rows_kind_switch_yields_different_lists() {
+        use crate::theme::ThemeKind;
+        let dark = project_theme_pane_rows(ThemeKind::Dark, "");
+        let light = project_theme_pane_rows(ThemeKind::Light, "");
+        assert!(dark
+            .iter()
+            .skip(1)
+            .all(|t| t.unwrap().kind == ThemeKind::Dark));
+        assert!(light
+            .iter()
+            .skip(1)
+            .all(|t| t.unwrap().kind == ThemeKind::Light));
+        assert_ne!(dark.len(), light.len());
+    }
+
+    #[test]
+    fn update_actions_hide_update_now_for_unknown_installs() {
+        use super::{update_available_actions, UpdateAction};
+        // Known install method: all three actions, "Update now" first.
+        assert_eq!(
+            update_available_actions(false),
+            vec![
+                UpdateAction::UpdateNow,
+                UpdateAction::SkipVersion,
+                UpdateAction::CopyUrl
+            ]
+        );
+        // Unknown install (notify-only): "Update now" is hidden, same guard
+        // `settings_modal` applies — indices shift down with it.
+        assert_eq!(
+            update_available_actions(true),
+            vec![UpdateAction::SkipVersion, UpdateAction::CopyUrl]
+        );
+    }
+
+    #[test]
+    fn check_updates_activation_opens_strip_only_when_update_available() {
+        use super::{check_updates_opens_strip, UpgradeState};
+        let release = crate::upgrade::Release {
+            version: semver::Version::new(0, 9, 5),
+            tag: "v0.9.5".into(),
+            html_url: String::new(),
+            body: String::new(),
+            dmg_url: None,
+        };
+        // Only a known-available release expands the strip…
+        assert!(check_updates_opens_strip(&UpgradeState::Available(release)));
+        // …every other state falls through to firing a fresh check.
+        assert!(!check_updates_opens_strip(&UpgradeState::Idle));
+        assert!(!check_updates_opens_strip(&UpgradeState::Checking));
+        assert!(!check_updates_opens_strip(&UpgradeState::UpToDate));
+        assert!(!check_updates_opens_strip(&UpgradeState::Error(
+            "offline".into()
+        )));
+    }
+
+    #[test]
+    fn launcher_theme_scroll_offset_centers_and_clamps() {
+        use super::launcher_theme_scroll_offset;
+        // Everything fits (7 rows ≤ 280px cap): no scrolling, ever.
+        assert_eq!(launcher_theme_scroll_offset(7, 0), 0.0);
+        assert_eq!(launcher_theme_scroll_offset(7, 6), 0.0);
+        // 30 rows × 36px = 1080px against a 280px viewport.
+        // Top rows clamp to 0 rather than centering above the list…
+        assert_eq!(launcher_theme_scroll_offset(30, 0), 0.0);
+        // …the last row clamps to the bottom (1080 − 280 = 800)…
+        assert_eq!(launcher_theme_scroll_offset(30, 29), 800.0);
+        // …and a middle row centers: y = 15·36 − (280 − 36)/2 = 418.
+        assert_eq!(launcher_theme_scroll_offset(30, 15), 418.0);
+        // Empty list degenerates to 0, not NaN/negative.
+        assert_eq!(launcher_theme_scroll_offset(0, 0), 0.0);
+    }
+
+    #[test]
+    fn theme_pane_tab_cycles_dark_light_system() {
+        use super::{next_theme_mode, ThemeMode};
+        use crate::theme::ThemeKind;
+        // Dark → Light → System → Dark, matching the segment order (System
+        // is active whenever follow_system is set, whatever the list kind).
+        assert_eq!(next_theme_mode(ThemeKind::Dark, false), ThemeMode::Light);
+        assert_eq!(next_theme_mode(ThemeKind::Light, false), ThemeMode::System);
+        assert_eq!(next_theme_mode(ThemeKind::Dark, true), ThemeMode::Dark);
+        assert_eq!(next_theme_mode(ThemeKind::Light, true), ThemeMode::Dark);
+    }
+
+    #[test]
+    fn settings_root_scroll_offset_accounts_for_headers_and_clamps() {
+        use super::settings_root_scroll_offset;
+        // The full unfiltered list: 8 rows across 4 sections. Element walk
+        // (2px column spacing throughout): first header 19px (0+13+6), later
+        // headers 31px (12+13+6), rows 44px — content = 4 headers (112) +
+        // 8 rows (352) + 11 gaps (22) = 486px against the 364px viewport
+        // (the 380px max_height minus the same container's 2·8px padding),
+        // so max scroll = 122.
+        let rows = SettingRow::ALL;
+        // Row 0 sits right under the first header: centering clamps to 0.
+        assert_eq!(settings_root_scroll_offset(&rows, 0), 0.0);
+        // The last row (CheckUpdates, y = 442) clamps to the bottom:
+        // content_h − viewport_h = 486 − 364…
+        assert_eq!(settings_root_scroll_offset(&rows, 7), 122.0);
+        // …which leaves all 44px of it inside the viewport: its bottom edge
+        // (y + row) sits exactly at the viewport's bottom (offset + 364).
+        let max_offset = settings_root_scroll_offset(&rows, 7);
+        assert!(442.0 + 44.0 <= max_offset + 364.0);
+        // A row past a mid-list header (Backend, first of AGENTS/TERMINAL):
+        // y = 192 → centered 192 − (364 − 44)/2 = 32. Uniform-height math
+        // (i·46) would put y at 138 and clamp the centering to 0 — the
+        // headers are what make the difference.
+        assert_eq!(settings_root_scroll_offset(&rows, 3), 32.0);
+        assert!(
+            settings_root_scroll_offset(&rows, 3)
+                > (3.0 * 46.0 - (364.0 - 44.0) / 2.0_f32).max(0.0)
+        );
+        // Empty (fully filtered-out) list degenerates to 0.
+        assert_eq!(settings_root_scroll_offset(&[], 0), 0.0);
+    }
+
+    #[test]
+    fn nth_session_row_skips_settings_and_action_rows() {
+        use super::{nth_session_row, PaletteRow};
+        use crate::agent::Agent;
+        let combo = |proj: usize| PaletteRow::Combo {
+            proj,
+            wt_path: format!("/wt/{proj}"),
+            agent: Agent::Claude,
+        };
+        // Typed-mode shape: settings sort above the session rows (B2).
+        let rows = vec![
+            PaletteRow::Setting(SettingRow::Theme),
+            PaletteRow::Setting(SettingRow::Telemetry),
+            combo(0),
+            combo(1),
+            PaletteRow::SwitchToSession,
+        ];
+        // ⌘1/⌘2 land on the sessions, not the settings above them…
+        assert_eq!(nth_session_row(&rows, 1), Some(2));
+        assert_eq!(nth_session_row(&rows, 2), Some(3));
+        // …and digits past the session count are a no-op, even though other
+        // row kinds are still below.
+        assert_eq!(nth_session_row(&rows, 3), None);
+        assert_eq!(nth_session_row(&rows, 0), None);
+        // Recent rows count the same as Combo (root-mode list shape).
+        let root = vec![
+            PaletteRow::Recent {
+                proj: 0,
+                wt_path: "/wt/0".into(),
+                agent: Agent::Codex,
+            },
+            PaletteRow::NewSession,
+        ];
+        assert_eq!(nth_session_row(&root, 1), Some(0));
+        assert_eq!(nth_session_row(&root, 2), None);
+    }
+
+    #[test]
+    fn reselect_setting_keeps_identity_else_clamps() {
+        use super::reselect_setting;
+        // The toggled row survived the refilter (moved up): follow it.
+        let rows = [SettingRow::Telemetry, SettingRow::CheckUpdates];
+        assert_eq!(reselect_setting(&rows, SettingRow::Telemetry, 5), 0);
+        // The toggled row dropped out (value no longer matches the query):
+        // the stale index clamps into the shrunk list.
+        assert_eq!(reselect_setting(&rows, SettingRow::ProjectThemes, 5), 1);
+        assert_eq!(reselect_setting(&rows, SettingRow::ProjectThemes, 0), 0);
+        // Everything filtered out: clamp degenerates to 0.
+        assert_eq!(reselect_setting(&[], SettingRow::Telemetry, 3), 0);
     }
 }
