@@ -120,6 +120,7 @@ impl Grove {
             pty_drag: None,
             blink_tick: 0,
             attention_anim: Self::attention_animation(),
+            onb_step_anim: Self::onb_step_animation(),
             pending_kill: None,
             pending_kill_terminal: None,
             hovered_wt: None,
@@ -182,6 +183,10 @@ impl Grove {
                 }
             }
         }
+        // Play the wizard's entrance animation on first show.
+        if matches!(g.app.modal, Modal::Onboarding { .. }) {
+            g.onb_step_anim.go_mut(true, std::time::Instant::now());
+        }
         g
     }
 
@@ -195,6 +200,24 @@ impl Grove {
             .easing(iced::animation::Easing::EaseInOut)
             .auto_reverse()
             .repeat_forever()
+    }
+
+    /// Idle-state constructor for the onboarding step-transition animation:
+    /// parked at `false` (pre-entrance). `go_mut(true, ..)` plays a single
+    /// quick (200ms, `EaseOut`) fade-in/slide-up; unlike `attention_animation`
+    /// it doesn't repeat, so it naturally stops animating (and drops out of
+    /// the frame subscription) once settled.
+    fn onb_step_animation() -> iced::animation::Animation<bool> {
+        iced::animation::Animation::new(false)
+            .quick()
+            .easing(iced::animation::Easing::EaseOut)
+    }
+
+    /// Restart the wizard's entrance animation — called whenever the
+    /// onboarding step changes (or the wizard first opens).
+    fn restart_onb_anim(&mut self) {
+        self.onb_step_anim = Self::onb_step_animation();
+        self.onb_step_anim.go_mut(true, std::time::Instant::now());
     }
 
     /// Records a slide animation for the two tiles that just swapped places
@@ -267,14 +290,15 @@ impl Grove {
         } else if self.window_focused {
             subs.push(iced::time::every(Duration::from_secs(1)).map(|_| Msg::Tick));
         }
-        // Needs-attention pulse: while active, let the animation request its
-        // own redraws at frame rate; zero subscriptions otherwise.
-        if self.attention_anim.value() {
-            subs.push(iced::window::frames().map(|_| Msg::AnimationFrame));
-        }
-        // Tile-slide reorder animation: same frame-rate redraw trick, active
-        // only for the ~150ms window after a grid swap.
-        if self.grid_slide.is_some() {
+        // Frame-rate redraw trick shared by every short-lived animation: the
+        // needs-attention pulse (while active), the tile-slide reorder
+        // animation (~150ms window after a grid swap), and the onboarding
+        // wizard's step-transition entrance. A single subscription covers all
+        // three so an idle app carries zero frame-rate cost.
+        if self.attention_anim.value()
+            || self.grid_slide.is_some()
+            || self.onb_step_anim.is_animating(std::time::Instant::now())
+        {
             subs.push(iced::window::frames().map(|_| Msg::AnimationFrame));
         }
         subs.push(iced::window::close_requests().map(Msg::CloseRequested));
@@ -1363,7 +1387,10 @@ impl Grove {
                 }
             }
             Msg::OnbNext => return self.onboard_advance(),
-            Msg::OnbBack => self.app.onboard_back(),
+            Msg::OnbBack => {
+                self.app.onboard_back();
+                self.restart_onb_anim();
+            }
             Msg::OnbSkip => self.onboard_skip(),
             Msg::OnbPathChanged(s) => self.app.onboard_set_path(s),
             Msg::OnbNameChanged(s) => self.app.onboard_set_name(s),
@@ -1371,10 +1398,7 @@ impl Grove {
                 self.app.onboard_pick_dir(p);
                 return move_cursor_to_end(crate::gui::view::modal_input_id());
             }
-            Msg::OnbThemeTab => self.app.onboard_theme_switch_tab(),
-            Msg::OnbThemeSelect(i) => self.app.onboard_theme_select(i),
             Msg::OnbAgentSelect(i) => self.app.onboard_agent_select(i),
-            Msg::OnbBackendSelect(tmux) => self.app.onboard_set_backend(tmux),
             Msg::OnbPermsSelect(skip) => self.app.onboard_set_perms(skip),
             Msg::ToggleGridView => {
                 self.grid_view = !self.grid_view;
@@ -1654,6 +1678,7 @@ impl Grove {
             return self.onboard_finish();
         }
         self.app.onboard_next();
+        self.restart_onb_anim();
         self.rebuild_wt_cache();
         // Keep the project-step path input focused after rendering.
         if matches!(
@@ -3080,11 +3105,12 @@ impl Grove {
                         _ => None,
                     };
                     if let Some(delta) = list_delta {
-                        let action_count = if self.app.project_themes_enabled() {
+                        let base = if self.app.project_themes_enabled() {
                             3
                         } else {
                             2
                         };
+                        let action_count = base + self.row_action_scripts(ra.proj).len();
                         let new_action =
                             crate::gui::launcher::clamp(ra.action, delta, action_count);
                         if let Modal::SessionLauncher {
@@ -3188,18 +3214,18 @@ impl Grove {
                 match key {
                     Key::Named(Named::Escape) => self.onboard_skip(),
                     Key::Named(Named::Enter) => return self.onboard_advance(),
-                    Key::Named(Named::ArrowDown) => match step {
-                        crate::app::OnboardStep::Project => self.app.onboard_dir_move(1),
-                        crate::app::OnboardStep::Theme => self.app.onboard_theme_move(1),
-                        _ => {}
-                    },
-                    Key::Named(Named::ArrowUp) => match step {
-                        crate::app::OnboardStep::Project => self.app.onboard_dir_move(-1),
-                        crate::app::OnboardStep::Theme => self.app.onboard_theme_move(-1),
-                        _ => {}
-                    },
-                    Key::Named(Named::Tab) => match step {
-                        crate::app::OnboardStep::Project => {
+                    Key::Named(Named::ArrowDown) => {
+                        if step == crate::app::OnboardStep::Project {
+                            self.app.onboard_dir_move(1)
+                        }
+                    }
+                    Key::Named(Named::ArrowUp) => {
+                        if step == crate::app::OnboardStep::Project {
+                            self.app.onboard_dir_move(-1)
+                        }
+                    }
+                    Key::Named(Named::Tab) => {
+                        if step == crate::app::OnboardStep::Project {
                             if self.app.onboard_toggle_project_focus() {
                                 return focus(crate::gui::view::modal_name_id());
                             }
@@ -3209,9 +3235,7 @@ impl Grove {
                                 move_cursor_to_end(crate::gui::view::modal_input_id()),
                             ]);
                         }
-                        crate::app::OnboardStep::Theme => self.app.onboard_theme_switch_tab(),
-                        _ => {}
-                    },
+                    }
                     _ => {}
                 }
             }
@@ -5155,6 +5179,32 @@ impl Grove {
     /// identity (rather than re-deriving `palette_rows()` and indexing into
     /// it) means a query/list change since the strip was opened can't make
     /// this act on the wrong row.
+    /// The project's configured lifecycle scripts, in fixed order
+    /// setup/run/teardown, skipping any that are unset or blank. Indices
+    /// into this vec are the row-actions strip's script actions, offset by
+    /// the strip's base action count — used by the view, the keyboard-nav
+    /// clamp, and the run handler so all three stay in sync.
+    pub(crate) fn row_action_scripts(&self, proj: usize) -> Vec<(&'static str, String)> {
+        let Some(p) = self.app.store.projects.get(proj) else {
+            return Vec::new();
+        };
+        [
+            ("setup", &p.scripts.setup),
+            ("run", &p.scripts.run),
+            ("teardown", &p.scripts.teardown),
+        ]
+        .into_iter()
+        .filter_map(|(kind, script)| {
+            let s = script.as_deref()?.trim();
+            if s.is_empty() {
+                None
+            } else {
+                Some((kind, s.to_string()))
+            }
+        })
+        .collect()
+    }
+
     fn launcher_run_row_action(
         &mut self,
         proj: usize,
@@ -5172,6 +5222,23 @@ impl Grove {
         }
         if action == 2 && self.app.project_themes_enabled() {
             return self.enter_project_theme_pane(proj);
+        }
+        let base = if self.app.project_themes_enabled() {
+            3
+        } else {
+            2
+        };
+        if action >= base {
+            let scripts = self.row_action_scripts(proj);
+            let Some((kind, script)) = scripts.get(action - base) else {
+                return Task::none();
+            };
+            let Some(pname) = self.app.store.projects.get(proj).map(|p| p.name.clone()) else {
+                return Task::none();
+            };
+            self.app.modal = Modal::None;
+            self.app.spawn_script_session(kind, pname, wt_path, script);
+            return Task::none();
         }
         let worktrees = self.launcher_worktrees(proj);
         let Some(w) = worktrees.iter().find(|w| w.path == wt_path) else {

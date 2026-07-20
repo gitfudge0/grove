@@ -194,6 +194,38 @@ impl Grove {
     }
 
     pub fn view(&self) -> Element<'_, Msg> {
+        // The first-run wizard owns the entire window while active: no
+        // sidebar/statusbar/scrim behind it, just its own full-viewport chrome.
+        // It still goes through the shared background wrapper below, but
+        // skips `body`/the modal layer entirely.
+        if let Modal::Onboarding {
+            step,
+            path,
+            dir_sel,
+            name,
+            note,
+            agent_sel,
+            perms_skip,
+            ..
+        } = &self.app.modal
+        {
+            let content = self.onboarding_view(
+                *step,
+                path,
+                *dir_sel,
+                name.as_deref(),
+                note.as_deref(),
+                *agent_sel,
+                *perms_skip,
+            );
+            return container(content)
+                .style(|_| container::Style {
+                    background: Some(Background::Color(c::BG())),
+                    text_color: Some(c::FG()),
+                    ..Default::default()
+                })
+                .into();
+        }
         let body = if self.app.chrome_visible {
             let workspace_row: Element<'_, Msg> = if self.grid_view {
                 // Grid mode: sidebar is hidden, workspace fills the full width.
@@ -2371,32 +2403,10 @@ impl Grove {
             Modal::Updating => self.updating_modal(),
             Modal::Teardown => self.teardown_modal(),
             Modal::ScriptsEditor => self.project_settings_modal(),
-            Modal::Onboarding {
-                step,
-                path,
-                dir_sel,
-                name,
-                note,
-                tab,
-                sel_dark,
-                sel_light,
-                agent_sel,
-                backend_tmux,
-                perms_skip,
-                ..
-            } => self.onboarding_modal(
-                *step,
-                path,
-                *dir_sel,
-                name.as_deref(),
-                note.as_deref(),
-                *tab,
-                *sel_dark,
-                *sel_light,
-                *agent_sel,
-                *backend_tmux,
-                *perms_skip,
-            ),
+            // Onboarding never reaches the modal layer: `view()` returns
+            // `onboarding_view(...)` directly while it's active (see above),
+            // full-viewport with no sidebar/statusbar/scrim behind it.
+            Modal::Onboarding { .. } => unreachable!("onboarding short-circuits in view()"),
             // The palette already returns a `Length::Fill` x `Length::Fill`
             // element that top-aligns itself internally (see
             // `session_launcher_modal`), so wrapping it in the shared
@@ -4398,7 +4408,8 @@ impl Grove {
                                 .find(|w| w.path == rw)
                                 .map(|w| w.is_main)
                                 .unwrap_or(false);
-                            list = list.push(self.palette_row_actions_strip(ra.action, is_main));
+                            list = list
+                                .push(self.palette_row_actions_strip(ra.proj, ra.action, is_main));
                         }
                     }
                 }
@@ -5013,8 +5024,15 @@ impl Grove {
     /// must render exactly as wide as the highlighted row card above it, and
     /// `modal_list_row_sized`'s own row buttons are already `Length::Fill`
     /// with their own internal `pad_x`, so any outer horizontal padding here
-    /// would inset the strip relative to that row.
-    fn palette_row_actions_strip<'a>(&'a self, action: usize, is_main: bool) -> Element<'a, Msg> {
+    /// would inset the strip relative to that row. Any configured lifecycle
+    /// scripts (setup/run/teardown) are appended after the theme row, via
+    /// `row_action_scripts`.
+    fn palette_row_actions_strip<'a>(
+        &'a self,
+        proj: usize,
+        action: usize,
+        is_main: bool,
+    ) -> Element<'a, Msg> {
         let icon_slot = |name: &'static str, color: Color| {
             container(icon(name, 13.0, color))
                 .width(20.0)
@@ -5049,6 +5067,20 @@ impl Grove {
             // theme row's own icon, reused here since this is the same idea
             // scoped to one project.
             rows = rows.push(action_row(2, "contrast", "Project theme…", c::CYAN()));
+        }
+        let base = if self.app.project_themes_enabled() {
+            3
+        } else {
+            2
+        };
+        for (i, (kind, _)) in self.row_action_scripts(proj).into_iter().enumerate() {
+            let (label, color) = match kind {
+                "setup" => ("Setup script", c::GREEN()),
+                "run" => ("Run script", c::CYAN()),
+                "teardown" => ("Teardown script", c::AMBER()),
+                _ => continue,
+            };
+            rows = rows.push(action_row(base + i, "play", label, color));
         }
         container(rows)
             .padding(Padding {
@@ -5863,34 +5895,49 @@ impl Grove {
         modal_panel(panel_body.into(), 460.0)
     }
 
-    /// The first-run onboarding wizard. A single modal that walks the user
-    /// through the flow's steps (five, or six when tmux is detected) in
-    /// grove's own quiet chrome — no SaaS-wizard flourishes, just the same
-    /// modal vocabulary every other surface uses.
-    #[allow(clippy::too_many_arguments)]
-    fn onboarding_modal<'a>(
+    /// The first-run onboarding wizard: a full-viewport page (no modal
+    /// chrome, no sidebar/statusbar/scrim behind it) that walks the user
+    /// through four steps in grove's own quiet visual language. `view()`
+    /// returns this directly while `Modal::Onboarding` is active, bypassing
+    /// the modal layer entirely (see the top of `view()`).
+    fn onboarding_view<'a>(
         &'a self,
         step: OnboardStep,
         path: &'a str,
         dir_sel: usize,
         name: Option<&'a str>,
         note: Option<&'a str>,
-        tab: crate::theme::ThemeKind,
-        sel_dark: usize,
-        sel_light: usize,
         agent_sel: usize,
-        backend_tmux: bool,
         perms_skip: bool,
     ) -> Element<'a, Msg> {
         use iced::Alignment::Center;
 
+        // Entrance animation: eases 0 → 1 over `.quick()` (200ms, `EaseOut`)
+        // whenever the step changes (and on first show). Drives a fade
+        // (text/dot alpha) and an 8px settle (top padding on the centered
+        // column) — see `Grove::onb_step_anim`.
+        let t = self
+            .onb_step_anim
+            .interpolate(0.0_f32, 1.0_f32, std::time::Instant::now());
+        let slide_pad = 8.0 * (1.0 - t);
+        let fg = Color { a: t, ..c::FG() };
+        let fg_dim = Color {
+            a: t,
+            ..c::FG_DIM()
+        };
+
         // ── progress rail ───────────────────────────────────────────────────
-        let tmux = self.app.tmux_available;
         let mut rail = Row::new().spacing(10).align_y(Center);
-        for &s in OnboardStep::flow(tmux) {
+        for &s in OnboardStep::flow() {
             let (dotc, txtc) = if s == step {
-                (c::MAGENTA(), c::FG())
-            } else if s.index_in(tmux) < step.index_in(tmux) {
+                (
+                    Color {
+                        a: t,
+                        ..c::MAGENTA()
+                    },
+                    c::FG(),
+                )
+            } else if s.index_in() < step.index_in() {
                 (c::MAGENTA(), c::FG_DIM())
             } else {
                 (c::BORDER(), c::FG_MUTE())
@@ -5905,11 +5952,16 @@ impl Grove {
         // ── step body ────────────────────────────────────────────────────────
         let body: Element<'_, Msg> = match step {
             OnboardStep::Welcome => column![
-                text("Welcome to Grove").size(19).color(c::FG()),
-                text("A worktree launchpad for AI coding agents")
-                    .size(13)
-                    .color(c::FG_DIM()),
-                Space::new().height(6),
+                row![
+                    icon("grid", 30.0, Color { a: t, ..c::CYAN() }),
+                    text("grove").size(30).font(UI_BOLD).color(fg),
+                ]
+                .spacing(10)
+                .align_y(Center),
+                text("a worktree launchpad for AI coding agents")
+                    .size(14)
+                    .color(fg_dim),
+                Space::new().height(20),
                 onboard_point(
                     "Sessions are the unit of work",
                     "Every agent you spawn lives in a managed session that survives navigation; switch between them in two keystrokes.",
@@ -5923,6 +5975,7 @@ impl Grove {
                     "The app stays out of the way so terminal output stays primary. This takes about a minute.",
                 ),
             ]
+            .align_x(Center)
             .spacing(10)
             .into(),
 
@@ -5959,57 +6012,15 @@ impl Grove {
                     list = list.push(onboard_env_row(found, optional, n, meta));
                 }
                 column![
-                    text("Environment").size(16).color(c::FG()),
+                    text("Environment").size(18).color(fg),
                     text("Grove spawns agents from your PATH; it doesn't install or authenticate them. Only Git is required to get going.")
                         .size(12)
-                        .color(c::FG_DIM())
+                        .color(fg_dim)
                         .wrapping(iced::widget::text::Wrapping::Word),
                     Space::new().height(4),
                     list,
                 ]
-                .spacing(10)
-                .into()
-            }
-
-            OnboardStep::Backend => {
-                let seg = container(
-                    row![
-                        seg_button(
-                            "Native",
-                            !backend_tmux,
-                            SegSide::Left,
-                            Msg::OnbBackendSelect(false)
-                        ),
-                        seg_button(
-                            "Tmux",
-                            backend_tmux,
-                            SegSide::Right,
-                            Msg::OnbBackendSelect(true)
-                        ),
-                    ]
-                    .spacing(0),
-                )
-                .style(|_| container::Style {
-                    border: Border {
-                        color: c::BORDER(),
-                        width: 1.0,
-                        radius: Radius::from(6.0),
-                    },
-                    ..Default::default()
-                });
-                column![
-                    text("Session backend").size(16).color(c::FG()),
-                    text("Use tmux for new sessions? Existing sessions keep their current backend.")
-                        .size(12)
-                        .color(c::FG_DIM())
-                        .wrapping(iced::widget::text::Wrapping::Word),
-                    text("Native sessions end when Grove quits; tmux sessions survive restarts")
-                        .size(12)
-                        .color(c::FG_DIM())
-                        .wrapping(iced::widget::text::Wrapping::Word),
-                    Space::new().height(4),
-                    seg,
-                ]
+                .align_x(Center)
                 .spacing(10)
                 .into()
             }
@@ -6035,16 +6046,17 @@ impl Grove {
                 );
 
                 let mut col = column![
-                    text("Add your first project").size(16).color(c::FG()),
+                    text("Add your first project").size(18).color(fg),
                     text("Point Grove at a Git repository, or any plain folder for ad-hoc sessions.")
                         .size(12)
-                        .color(c::FG_DIM())
+                        .color(fg_dim)
                         .wrapping(iced::widget::text::Wrapping::Word),
                     text("Repository or folder").size(11).color(c::FG_MUTE()),
                     row![path_input, browse]
                         .spacing(8)
-                        .align_y(iced::Alignment::Center),
+                        .align_y(Center),
                 ]
+                .align_x(Center)
                 .spacing(8);
 
                 // Matches appear only once the user starts typing; an empty
@@ -6080,88 +6092,17 @@ impl Grove {
                 col.into()
             }
 
-            OnboardStep::Theme => {
-                let themes = crate::theme::themes_of(tab);
-                let sel = match tab {
-                    crate::theme::ThemeKind::Dark => sel_dark,
-                    crate::theme::ThemeKind::Light => sel_light,
-                };
-                let tabs = container(
-                    row![
-                        seg_button(
-                            "Dark",
-                            matches!(tab, crate::theme::ThemeKind::Dark),
-                            SegSide::Left,
-                            Msg::OnbThemeTab,
-                        ),
-                        seg_button(
-                            "Light",
-                            matches!(tab, crate::theme::ThemeKind::Light),
-                            SegSide::Right,
-                            Msg::OnbThemeTab,
-                        ),
-                    ]
-                    .spacing(0),
-                )
-                .style(|_| container::Style {
-                    border: Border {
-                        color: c::BORDER(),
-                        width: 1.0,
-                        radius: Radius::from(6.0),
-                    },
-                    ..Default::default()
-                });
-
-                let mut list = Column::new().spacing(0);
-                for (i, th) in themes.iter().enumerate() {
-                    let active = i == sel;
-                    list = list.push(modal_list_row(
-                        text(th.name.to_string())
-                            .size(12)
-                            .color(if active { c::FG() } else { c::FG_DIM() }),
-                        active,
-                        Msg::OnbThemeSelect(i),
-                    ));
-                }
-                let list_h = (themes.len().min(7) as f32) * ROW_H;
-                let scroller = container(ghost_scrollable(list))
-                    .width(Length::Fill)
-                    .height(Length::Fixed(list_h))
-                    .style(|_| container::Style {
-                        background: Some(Background::Color(c::BG_STRIP())),
-                        border: Border {
-                            color: c::BORDER(),
-                            width: 1.0,
-                            radius: Radius::from(4.0),
-                        },
-                        ..Default::default()
-                    });
-
-                column![
-                    text("Pick a theme").size(16).color(c::FG()),
-                    text("37 colorways, painted by semantic role so every screen reads correctly. Change it any time in settings.")
-                        .size(12)
-                        .color(c::FG_DIM())
-                        .wrapping(iced::widget::text::Wrapping::Word),
-                    tabs,
-                    scroller,
-                ]
-                .spacing(10)
-                .into()
-            }
-
             OnboardStep::Session => {
-                let mut col = column![
-                    text("Start your first session").size(16).color(c::FG()),
-                ]
-                .spacing(8);
+                let mut col = column![text("Start your first session").size(18).color(fg),]
+                    .align_x(Center)
+                    .spacing(8);
 
                 match self.app.store.projects.last() {
                     Some(p) => {
                         col = col.push(
                             text(format!("Launch an agent inside {}.", p.name))
                                 .size(12)
-                                .color(c::FG_DIM())
+                                .color(fg_dim)
                                 .wrapping(iced::widget::text::Wrapping::Word),
                         );
                         let mut list = Column::new().spacing(0);
@@ -6178,7 +6119,7 @@ impl Grove {
                         let list_h = (self.app.available_agents.len().max(1) as f32) * ROW_H;
                         col = col.push(
                             container(list)
-                                .width(Length::Fill)
+                                .width(Length::Fixed(520.0))
                                 .height(Length::Fixed(list_h))
                                 .style(|_| container::Style {
                                     background: Some(Background::Color(c::BG_STRIP())),
@@ -6195,7 +6136,7 @@ impl Grove {
                         col = col.push(
                             text("No project added. You can add one any time from the sidebar. Finish to start using Grove.")
                                 .size(12)
-                                .color(c::FG_DIM())
+                                .color(fg_dim)
                                 .wrapping(iced::widget::text::Wrapping::Word),
                         );
                     }
@@ -6205,14 +6146,14 @@ impl Grove {
                     .push(
                         row![
                             text("Permissions").size(11).color(c::FG_MUTE()),
-                            Space::new().width(Length::Fill),
+                            Space::new().width(20),
                             skip_perms_seg(
                                 perms_skip,
                                 Msg::OnbPermsSelect(true),
                                 Msg::OnbPermsSelect(false)
                             ),
                         ]
-                        .align_y(iced::Alignment::Center),
+                        .align_y(Center),
                     )
                     .push(
                         text(if perms_skip {
@@ -6233,11 +6174,7 @@ impl Grove {
             OnboardStep::Session => "Launch session",
             _ => "Continue",
         };
-        let count = format!(
-            "{} / {}",
-            step.index_in(tmux) + 1,
-            OnboardStep::flow(tmux).len()
-        );
+        let count = format!("{} / {}", step.index_in() + 1, OnboardStep::flow().len());
         let mut footer = row![
             text(count).size(11).color(c::FG_MUTE()),
             Space::new().width(Length::Fill),
@@ -6245,24 +6182,45 @@ impl Grove {
         ]
         .spacing(8)
         .align_y(Center);
-        if step.prev(tmux).is_some() {
+        if step.prev().is_some() {
             footer = footer.push(modal_action("Back", ModalBtn::Plain, Msg::OnbBack));
         }
         footer = footer.push(modal_action(next_label, ModalBtn::Primary, Msg::OnbNext));
 
-        let content = column![
-            rail,
-            container(body)
-                .width(Length::Fill)
-                .height(Length::Fixed(300.0)),
-            footer,
+        // Small top-left wordmark — the wizard's only persistent chrome.
+        // Distinct from the (larger, centered) wordmark the Welcome step's
+        // `body` renders as part of its own content.
+        let brand = row![
+            icon("grid", 15.0, c::CYAN()),
+            text("grove").font(UI_BOLD).size(14).color(c::MAGENTA()),
         ]
-        .spacing(14);
+        .spacing(8)
+        .align_y(Center);
 
-        modal_panel(
-            container(content).padding(Padding::from([16, 20])).into(),
-            600.0,
+        let centered = container(
+            column![rail, container(body).max_width(520.0)]
+                .spacing(22)
+                .align_x(Center)
+                .padding(Padding {
+                    top: slide_pad,
+                    ..Padding::ZERO
+                }),
         )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill);
+
+        column![
+            container(brand).padding(Padding::from([16, 20])),
+            centered,
+            container(footer)
+                .width(Length::Fill)
+                .padding(Padding::from([16, 20])),
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
 
     // ── changelog modal ───────────────────────────────────────────────────
