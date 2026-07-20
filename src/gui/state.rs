@@ -103,6 +103,13 @@ pub struct Grove {
     /// `Animation` drives the amber glyph/scrim alpha via per-frame redraws
     /// (`window::frames()`), instead of the old `blink_tick` triangle waves.
     pub attention_anim: iced::animation::Animation<bool>,
+    /// Onboarding wizard step-transition animation: quick (200ms, `EaseOut`)
+    /// fade + ≤8px slide-up played whenever the wizard's step changes (and on
+    /// first show). Restarted via `go_mut(true, ..)` from a fresh idle
+    /// instance each time, mirroring `attention_anim`'s shape. Idle (not
+    /// animating) costs nothing — gated into the same `frames()` subscription
+    /// as `attention_anim`.
+    pub onb_step_anim: iced::animation::Animation<bool>,
     /// Session index awaiting kill confirmation. When set, that session's
     /// close button shows a red tick — clicking it confirms the kill, clicking
     /// anywhere else clears this back to `None`.
@@ -621,14 +628,8 @@ pub enum Msg {
     OnbNameChanged(String),
     /// Clicked a directory match in the project step.
     OnbPickDir(String),
-    /// Toggle the theme-step dark/light tab.
-    OnbThemeTab,
-    /// Select (and live-preview) the theme at this index in the theme step.
-    OnbThemeSelect(usize),
     /// Select the agent at this index in the session step.
     OnbAgentSelect(usize),
-    /// Select the session backend (true = tmux) on the backend step.
-    OnbBackendSelect(bool),
     /// Select the permissions mode (true = skip prompts) on the session step.
     OnbPermsSelect(bool),
     ToggleGridView,

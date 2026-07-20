@@ -112,64 +112,41 @@ pub fn first_run_modal(
 }
 
 /// The ordered steps of the first-run onboarding wizard. `Welcome` orients the
-/// user, `Environment` reports detected tools, `Backend` picks tmux vs native
-/// (only when tmux was detected), `Project` registers the first project,
-/// `Theme` previews colorways, and `Session` launches the first agent.
+/// user, `Environment` reports detected tools, `Project` registers the first
+/// project, and `Session` launches the first agent. The flow no longer varies
+/// with tmux availability — new sessions default to tmux when it's present,
+/// native otherwise (set on completion in [`App::onboard_finish`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnboardStep {
     Welcome,
     Environment,
-    Backend,
     Project,
-    Theme,
     Session,
 }
 
 impl OnboardStep {
-    pub const ALL: [OnboardStep; 6] = [
-        OnboardStep::Welcome,
-        OnboardStep::Environment,
-        OnboardStep::Backend,
-        OnboardStep::Project,
-        OnboardStep::Theme,
-        OnboardStep::Session,
-    ];
-
-    const FLOW_NO_TMUX: [OnboardStep; 5] = [
+    pub const ALL: [OnboardStep; 4] = [
         OnboardStep::Welcome,
         OnboardStep::Environment,
         OnboardStep::Project,
-        OnboardStep::Theme,
         OnboardStep::Session,
     ];
 
-    /// The wizard's step sequence: the backend step only exists when tmux
-    /// was detected, so the choice is never shown where it can't apply.
-    pub fn flow(tmux_available: bool) -> &'static [OnboardStep] {
-        if tmux_available {
-            &Self::ALL
-        } else {
-            &Self::FLOW_NO_TMUX
-        }
+    /// The wizard's fixed step sequence.
+    pub fn flow() -> &'static [OnboardStep] {
+        &Self::ALL
     }
 
-    pub fn index_in(self, tmux_available: bool) -> usize {
-        Self::flow(tmux_available)
-            .iter()
-            .position(|s| *s == self)
-            .unwrap_or(0)
+    pub fn index_in(self) -> usize {
+        Self::flow().iter().position(|s| *s == self).unwrap_or(0)
     }
 
-    pub fn next(self, tmux_available: bool) -> Option<OnboardStep> {
-        Self::flow(tmux_available)
-            .get(self.index_in(tmux_available) + 1)
-            .copied()
+    pub fn next(self) -> Option<OnboardStep> {
+        Self::flow().get(self.index_in() + 1).copied()
     }
 
-    pub fn prev(self, tmux_available: bool) -> Option<OnboardStep> {
-        self.index_in(tmux_available)
-            .checked_sub(1)
-            .map(|i| Self::flow(tmux_available)[i])
+    pub fn prev(self) -> Option<OnboardStep> {
+        self.index_in().checked_sub(1).map(|i| Self::flow()[i])
     }
 
     /// Short label shown in the progress rail.
@@ -177,28 +154,14 @@ impl OnboardStep {
         match self {
             OnboardStep::Welcome => "welcome",
             OnboardStep::Environment => "environment",
-            OnboardStep::Backend => "backend",
             OnboardStep::Project => "project",
-            OnboardStep::Theme => "theme",
             OnboardStep::Session => "session",
         }
     }
 }
 
-/// Build the initial onboarding modal, seeding the theme selection from the
-/// theme currently active so previewing starts from where the user is and a
-/// skip can restore it. Call after the saved theme has been applied.
+/// Build the initial onboarding modal.
 pub fn onboarding_modal() -> Modal {
-    let original = theme::current();
-    let tab = original.kind;
-    let sel = theme::themes_of(tab)
-        .iter()
-        .position(|t| t.name == original.name)
-        .unwrap_or(0);
-    let (sel_dark, sel_light) = match tab {
-        theme::ThemeKind::Dark => (sel, 0),
-        theme::ThemeKind::Light => (0, sel),
-    };
     Modal::Onboarding {
         step: OnboardStep::Welcome,
         path: String::new(),
@@ -206,12 +169,7 @@ pub fn onboarding_modal() -> Modal {
         name: None,
         note: None,
         added_proj: None,
-        tab,
-        sel_dark,
-        sel_light,
-        theme_original: original,
         agent_sel: 0,
-        backend_tmux: true,
         perms_skip: false,
         name_focused: false,
     }
@@ -347,10 +305,9 @@ pub enum Modal {
     Updating,
     /// First-run onboarding wizard. Self-contained, multi-step state: the
     /// project step mirrors the add-project path input (`path`/`dir_sel`/`name`/
-    /// `note`), the theme step mirrors the theme picker (`tab`/`sel_*`), and the
-    /// session step tracks the agent selection. `added_proj` is the index of the
-    /// project registered during the wizard, so the session step can launch into
-    /// it. `theme_original` lets a skip restore the pre-preview theme.
+    /// `note`), and the session step tracks the agent selection. `added_proj`
+    /// is the index of the project registered during the wizard, so the
+    /// session step can launch into it.
     Onboarding {
         step: OnboardStep,
         path: String,
@@ -358,14 +315,7 @@ pub enum Modal {
         name: Option<String>,
         note: Option<String>,
         added_proj: Option<usize>,
-        tab: crate::theme::ThemeKind,
-        sel_dark: usize,
-        sel_light: usize,
-        theme_original: crate::theme::Theme,
         agent_sel: usize,
-        /// Backend step selection: `true` = tmux for new sessions. Persisted
-        /// as `Store::tmux_enabled` only on finish, and only when tmux exists.
-        backend_tmux: bool,
         /// Session-step permissions selection: `true` = skip permission
         /// prompts. Persisted as an explicit store value on finish; "safe"
         /// (`false`) is preselected.
@@ -1946,10 +1896,9 @@ impl App {
         }
     }
 
-    /// Advance the wizard one step. The project step validates and registers the
-    /// project before advancing; the theme step persists the previewed theme.
-    /// The session step is terminal — [`onboard_finish`](Self::onboard_finish)
-    /// handles it.
+    /// Advance the wizard one step. The project step validates and registers
+    /// the project before advancing. The session step is terminal —
+    /// [`onboard_finish`](Self::onboard_finish) handles it.
     pub fn onboard_next(&mut self) {
         let Modal::Onboarding { step, .. } = &self.modal else {
             return;
@@ -1957,16 +1906,12 @@ impl App {
         let step = *step;
         match step {
             // Plain forward steps: walk to the next one.
-            OnboardStep::Welcome | OnboardStep::Environment | OnboardStep::Backend => {
-                if let Some(next) = step.next(self.tmux_available) {
+            OnboardStep::Welcome | OnboardStep::Environment => {
+                if let Some(next) = step.next() {
                     self.onboard_goto(next);
                 }
             }
             OnboardStep::Project => self.onboard_submit_project(),
-            OnboardStep::Theme => {
-                let _ = self.onboard_persist_theme();
-                self.onboard_goto(OnboardStep::Session);
-            }
             OnboardStep::Session => {}
         }
     }
@@ -1975,7 +1920,7 @@ impl App {
     /// project step recognizes it's already added and skips re-adding.
     pub fn onboard_back(&mut self) {
         let prev = match &self.modal {
-            Modal::Onboarding { step, .. } => step.prev(self.tmux_available),
+            Modal::Onboarding { step, .. } => step.prev(),
             _ => None,
         };
         if let Some(prev) = prev {
@@ -1983,11 +1928,11 @@ impl App {
         }
     }
 
-    /// Register the project from the path field, then advance to the theme step.
-    /// On validation failure the inline note is set and the step stays put. A
-    /// project already added (e.g. after stepping back and forward) just
-    /// advances. Unlike the normal add-project flow this is quiet — no git
-    /// probe or init-git choice.
+    /// Register the project from the path field, then advance to the session
+    /// step. On validation failure the inline note is set and the step stays
+    /// put. A project already added (e.g. after stepping back and forward)
+    /// just advances. Unlike the normal add-project flow this is quiet — no
+    /// git probe or init-git choice.
     fn onboard_submit_project(&mut self) {
         let (already, path, name) = match &self.modal {
             Modal::Onboarding {
@@ -1999,7 +1944,7 @@ impl App {
             _ => return,
         };
         if already {
-            self.onboard_goto(OnboardStep::Theme);
+            self.onboard_goto(OnboardStep::Session);
             return;
         }
         match self.onboard_add_project(&path, name) {
@@ -2011,7 +1956,7 @@ impl App {
                     *added_proj = Some(idx);
                     *note = None;
                 }
-                self.onboard_goto(OnboardStep::Theme);
+                self.onboard_goto(OnboardStep::Session);
             }
             Err(e) => {
                 if let Modal::Onboarding { note, .. } = &mut self.modal {
@@ -2155,109 +2100,9 @@ impl App {
         }
     }
 
-    /// Live-preview the theme at index `i` in the current tab and remember the
-    /// selection. Mirrors [`theme_picker_select`] semantics.
-    pub fn onboard_theme_select(&mut self, i: usize) {
-        if let Modal::Onboarding {
-            tab,
-            sel_dark,
-            sel_light,
-            ..
-        } = &mut self.modal
-        {
-            let themes = theme::themes_of(*tab);
-            if let Some(t) = themes.get(i).copied() {
-                match tab {
-                    theme::ThemeKind::Dark => *sel_dark = i,
-                    theme::ThemeKind::Light => *sel_light = i,
-                }
-                theme::set(t);
-            }
-        }
-    }
-
-    /// Arrow-key theme navigation in the theme step: move the selection by
-    /// `delta` within the current tab and live-preview it.
-    pub fn onboard_theme_move(&mut self, delta: i32) {
-        if let Modal::Onboarding {
-            tab,
-            sel_dark,
-            sel_light,
-            ..
-        } = &mut self.modal
-        {
-            let themes = theme::themes_of(*tab);
-            if themes.is_empty() {
-                return;
-            }
-            let sel = match tab {
-                theme::ThemeKind::Dark => sel_dark,
-                theme::ThemeKind::Light => sel_light,
-            };
-            *sel = cycle(*sel, delta, themes.len());
-            theme::set(themes[*sel]);
-        }
-    }
-
-    pub fn onboard_theme_switch_tab(&mut self) {
-        if let Modal::Onboarding {
-            tab,
-            sel_dark,
-            sel_light,
-            ..
-        } = &mut self.modal
-        {
-            *tab = match *tab {
-                theme::ThemeKind::Dark => theme::ThemeKind::Light,
-                theme::ThemeKind::Light => theme::ThemeKind::Dark,
-            };
-            let sel = match tab {
-                theme::ThemeKind::Dark => *sel_dark,
-                theme::ThemeKind::Light => *sel_light,
-            };
-            if let Some(t) = theme::themes_of(*tab).get(sel).copied() {
-                theme::set(t);
-            }
-        }
-    }
-
-    fn onboard_persist_theme(&mut self) -> Result<()> {
-        let chosen = match &self.modal {
-            Modal::Onboarding {
-                tab,
-                sel_dark,
-                sel_light,
-                ..
-            } => {
-                let sel = match tab {
-                    theme::ThemeKind::Dark => *sel_dark,
-                    theme::ThemeKind::Light => *sel_light,
-                };
-                theme::themes_of(*tab).get(sel).copied()
-            }
-            _ => None,
-        };
-        if let Some(c) = chosen {
-            theme::set(c);
-            self.store.theme = Some(c.name.to_string());
-            match c.kind {
-                theme::ThemeKind::Dark => self.store.theme_dark = Some(c.name.to_string()),
-                theme::ThemeKind::Light => self.store.theme_light = Some(c.name.to_string()),
-            }
-            storage::save(&self.store)?;
-        }
-        Ok(())
-    }
-
     pub fn onboard_agent_select(&mut self, i: usize) {
         if let Modal::Onboarding { agent_sel, .. } = &mut self.modal {
             *agent_sel = i;
-        }
-    }
-
-    pub fn onboard_set_backend(&mut self, tmux: bool) {
-        if let Modal::Onboarding { backend_tmux, .. } = &mut self.modal {
-            *backend_tmux = tmux;
         }
     }
 
@@ -2267,40 +2112,34 @@ impl App {
         }
     }
 
-    /// Skip the wizard: restore the pre-preview theme, mark onboarded, persist,
-    /// and close. The first-run gate won't show it again.
+    /// Skip the wizard: mark onboarded, persist, and close. The first-run
+    /// gate won't show it again.
     pub fn onboard_skip(&mut self) -> Result<()> {
-        if let Modal::Onboarding { theme_original, .. } = &self.modal {
-            theme::set(*theme_original);
-        }
         self.store.onboarded = true;
         storage::save(&self.store)?;
         self.modal = Modal::None;
         Ok(())
     }
 
-    /// Finish the wizard: persist the chosen theme, mark onboarded, close, and
-    /// return the `(project index, agent)` to launch a first session into — or
-    /// `None` if no project was added or no agent is available.
+    /// Finish the wizard: mark onboarded, default new sessions to tmux when
+    /// available (native otherwise), close, and return the
+    /// `(project index, agent)` to launch a first session into — or `None` if
+    /// no project was added or no agent is available.
     pub fn onboard_finish(&mut self) -> Result<Option<(usize, Agent)>> {
-        let _ = self.onboard_persist_theme();
-        let (added_proj, agent_sel, backend_tmux, perms_skip) = match &self.modal {
+        let (added_proj, agent_sel, perms_skip) = match &self.modal {
             Modal::Onboarding {
                 added_proj,
                 agent_sel,
-                backend_tmux,
                 perms_skip,
                 ..
-            } => (*added_proj, *agent_sel, *backend_tmux, *perms_skip),
-            _ => (None, 0, true, false),
+            } => (*added_proj, *agent_sel, *perms_skip),
+            _ => (None, 0, false),
         };
         let agent = self.available_agents.get(agent_sel).copied();
         self.store.onboarded = true;
-        if self.tmux_available {
-            // The wizard's backend step made this an explicit choice; persist
-            // it so Modal::TmuxChoice never re-asks an onboarded user.
-            self.store.tmux_enabled = Some(backend_tmux);
-        }
+        // New sessions default to the tmux backend when it's available, native
+        // otherwise; changeable later via the palette's Settings pane.
+        self.store.tmux_enabled = Some(self.tmux_available);
         self.store.dangerously_skip_permissions_enabled = Some(perms_skip);
         storage::save(&self.store)?;
         self.modal = Modal::None;
@@ -2774,30 +2613,14 @@ mod tests {
 
     #[test]
     fn onboard_step_navigation_is_bounded() {
-        // With tmux detected, the backend step sits between environment and project.
-        assert_eq!(OnboardStep::Welcome.prev(true), None);
-        assert_eq!(
-            OnboardStep::Environment.next(true),
-            Some(OnboardStep::Backend)
-        );
-        assert_eq!(OnboardStep::Backend.next(true), Some(OnboardStep::Project));
-        assert_eq!(OnboardStep::Project.prev(true), Some(OnboardStep::Backend));
-        assert_eq!(OnboardStep::Session.next(true), None);
-        // Without tmux the backend step is skipped entirely.
-        assert_eq!(
-            OnboardStep::Environment.next(false),
-            Some(OnboardStep::Project)
-        );
-        assert_eq!(
-            OnboardStep::Project.prev(false),
-            Some(OnboardStep::Environment)
-        );
-        assert!(!OnboardStep::flow(false).contains(&OnboardStep::Backend));
-        // index round-trips through each flow in order.
-        for tmux in [true, false] {
-            for (i, s) in OnboardStep::flow(tmux).iter().enumerate() {
-                assert_eq!(s.index_in(tmux), i);
-            }
+        assert_eq!(OnboardStep::Welcome.prev(), None);
+        assert_eq!(OnboardStep::Environment.next(), Some(OnboardStep::Project));
+        assert_eq!(OnboardStep::Project.prev(), Some(OnboardStep::Environment));
+        assert_eq!(OnboardStep::Project.next(), Some(OnboardStep::Session));
+        assert_eq!(OnboardStep::Session.next(), None);
+        // index round-trips through the flow in order.
+        for (i, s) in OnboardStep::flow().iter().enumerate() {
+            assert_eq!(s.index_in(), i);
         }
     }
 

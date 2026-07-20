@@ -5900,6 +5900,12 @@ impl Grove {
     /// through four steps in grove's own quiet visual language. `view()`
     /// returns this directly while `Modal::Onboarding` is active, bypassing
     /// the modal layer entirely (see the top of `view()`).
+    ///
+    /// Layout: one hard left axis. Rail, wordmark/tagline, bullets,
+    /// headings, descriptions, labels and inputs all sit flush to the left
+    /// edge of a fixed 560px column, which is itself horizontally centered
+    /// in the viewport. The column sits slightly above true center via
+    /// proportional spacers (44/56 split) rather than `center_y`.
     fn onboarding_view<'a>(
         &'a self,
         step: OnboardStep,
@@ -5953,13 +5959,13 @@ impl Grove {
         let body: Element<'_, Msg> = match step {
             OnboardStep::Welcome => column![
                 row![
-                    icon("grid", 30.0, Color { a: t, ..c::CYAN() }),
-                    text("grove").size(30).font(UI_BOLD).color(fg),
+                    icon("grid", 32.0, Color { a: t, ..c::CYAN() }),
+                    text("grove").size(32).font(UI_BOLD).color(fg),
                 ]
                 .spacing(10)
                 .align_y(Center),
                 text("a worktree launchpad for AI coding agents")
-                    .size(14)
+                    .size(15)
                     .color(fg_dim),
                 Space::new().height(20),
                 onboard_point(
@@ -5975,7 +5981,6 @@ impl Grove {
                     "The app stays out of the way so terminal output stays primary. This takes about a minute.",
                 ),
             ]
-            .align_x(Center)
             .spacing(10)
             .into(),
 
@@ -6012,15 +6017,14 @@ impl Grove {
                     list = list.push(onboard_env_row(found, optional, n, meta));
                 }
                 column![
-                    text("Environment").size(18).color(fg),
+                    text("Environment").size(20).color(fg),
                     text("Grove spawns agents from your PATH; it doesn't install or authenticate them. Only Git is required to get going.")
-                        .size(12)
+                        .size(13)
                         .color(fg_dim)
                         .wrapping(iced::widget::text::Wrapping::Word),
                     Space::new().height(4),
                     list,
                 ]
-                .align_x(Center)
                 .spacing(10)
                 .into()
             }
@@ -6029,7 +6033,7 @@ impl Grove {
                 let path_input = text_input("~/code/my-repo", path)
                     .id(modal_input_id())
                     .font(UI_FONT)
-                    .size(13)
+                    .size(14)
                     .padding(Padding::from([8, 12]))
                     .on_input(Msg::OnbPathChanged)
                     .on_submit(Msg::OnbNext)
@@ -6046,24 +6050,28 @@ impl Grove {
                 );
 
                 let mut col = column![
-                    text("Add your first project").size(18).color(fg),
+                    text("Add your first project").size(20).color(fg),
                     text("Point Grove at a Git repository, or any plain folder for ad-hoc sessions.")
-                        .size(12)
+                        .size(13)
                         .color(fg_dim)
                         .wrapping(iced::widget::text::Wrapping::Word),
-                    text("Repository or folder").size(11).color(c::FG_MUTE()),
+                    // iced has no letter-spacing; the gaps are literal
+                    // characters (single space between letters, three
+                    // between words) — copied verbatim from the mock.
+                    text("R E P O S I T O R Y   O R   F O L D E R")
+                        .size(11)
+                        .color(c::FG_MUTE()),
                     row![path_input, browse]
                         .spacing(8)
                         .align_y(Center),
                 ]
-                .align_x(Center)
                 .spacing(8);
 
                 // Matches appear only once the user starts typing; an empty
                 // field would list the cwd's directories as noise.
                 if !path.trim().is_empty() {
                     col = col
-                        .push(text("Matches").size(11).color(c::FG_MUTE()))
+                        .push(text("M A T C H E S").size(11).color(c::FG_MUTE()))
                         .push(self.dir_matches(path, dir_sel, 5, Msg::OnbPickDir));
                 }
 
@@ -6071,13 +6079,13 @@ impl Grove {
                     let name_input = text_input("project name", name)
                         .id(modal_name_id())
                         .font(UI_FONT)
-                        .size(13)
+                        .size(14)
                         .padding(Padding::from([8, 12]))
                         .on_input(Msg::OnbNameChanged)
                         .on_submit(Msg::OnbNext)
                         .style(input_field_style);
                     col = col
-                        .push(text("Name").size(11).color(c::FG_MUTE()))
+                        .push(text("N A M E").size(11).color(c::FG_MUTE()))
                         .push(name_input);
                 }
 
@@ -6093,15 +6101,14 @@ impl Grove {
             }
 
             OnboardStep::Session => {
-                let mut col = column![text("Start your first session").size(18).color(fg),]
-                    .align_x(Center)
+                let mut col = column![text("Start your first session").size(20).color(fg),]
                     .spacing(8);
 
                 match self.app.store.projects.last() {
                     Some(p) => {
                         col = col.push(
                             text(format!("Launch an agent inside {}.", p.name))
-                                .size(12)
+                                .size(13)
                                 .color(fg_dim)
                                 .wrapping(iced::widget::text::Wrapping::Word),
                         );
@@ -6110,7 +6117,7 @@ impl Grove {
                             let active = i == agent_sel;
                             list = list.push(modal_list_row(
                                 text(cap(agent.label()))
-                                    .size(12)
+                                    .size(13)
                                     .color(if active { c::FG() } else { c::FG_DIM() }),
                                 active,
                                 Msg::OnbAgentSelect(i),
@@ -6119,7 +6126,7 @@ impl Grove {
                         let list_h = (self.app.available_agents.len().max(1) as f32) * ROW_H;
                         col = col.push(
                             container(list)
-                                .width(Length::Fixed(520.0))
+                                .width(Length::Fill)
                                 .height(Length::Fixed(list_h))
                                 .style(|_| container::Style {
                                     background: Some(Background::Color(c::BG_STRIP())),
@@ -6135,7 +6142,7 @@ impl Grove {
                     None => {
                         col = col.push(
                             text("No project added. You can add one any time from the sidebar. Finish to start using Grove.")
-                                .size(12)
+                                .size(13)
                                 .color(fg_dim)
                                 .wrapping(iced::widget::text::Wrapping::Word),
                         );
@@ -6145,7 +6152,7 @@ impl Grove {
                     .push(Space::new().height(4))
                     .push(
                         row![
-                            text("Permissions").size(11).color(c::FG_MUTE()),
+                            text("P E R M I S S I O N S").size(11).color(c::FG_MUTE()),
                             Space::new().width(20),
                             skip_perms_seg(
                                 perms_skip,
@@ -6176,7 +6183,7 @@ impl Grove {
         };
         let count = format!("{} / {}", step.index_in() + 1, OnboardStep::flow().len());
         let mut footer = row![
-            text(count).size(11).color(c::FG_MUTE()),
+            text(count).size(12).color(c::FG_MUTE()),
             Space::new().width(Length::Fill),
             modal_action("Skip setup", ModalBtn::Plain, Msg::OnbSkip),
         ]
@@ -6197,19 +6204,33 @@ impl Grove {
         .spacing(8)
         .align_y(Center);
 
+        // One hard left axis: rail and body both sit flush to the left edge
+        // of a fixed 560px column. The column itself is horizontally
+        // centered in the viewport, but nothing inside it is — no centered
+        // text anywhere in the content.
+        let content = column![rail, container(body).width(Length::Fixed(560.0))]
+            .width(Length::Fixed(560.0))
+            .align_x(iced::Alignment::Start)
+            .spacing(22)
+            .padding(Padding {
+                top: slide_pad,
+                ..Padding::ZERO
+            });
+
+        // Vertical bias: the column sits slightly above true center (~44%
+        // from the top) via a proportional 44/56 spacer split, rather than
+        // `center_y`.
         let centered = container(
-            column![rail, container(body).max_width(520.0)]
-                .spacing(22)
-                .align_x(Center)
-                .padding(Padding {
-                    top: slide_pad,
-                    ..Padding::ZERO
-                }),
+            column![
+                Space::new().height(Length::FillPortion(44)),
+                content,
+                Space::new().height(Length::FillPortion(56)),
+            ]
+            .width(Length::Fill)
+            .align_x(Center),
         )
         .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill);
+        .height(Length::Fill);
 
         column![
             container(brand).padding(Padding::from([16, 20])),
@@ -6356,15 +6377,15 @@ fn onboard_point<'a>(lead: &'a str, body: &'a str) -> Element<'a, Msg> {
         // characters, so a text bullet renders as tofu. Nudged down to sit on
         // the lead line's baseline.
         container(dot(c::MAGENTA())).padding(Padding {
-            top: 5.0,
+            top: 6.0,
             right: 0.0,
             bottom: 0.0,
             left: 0.0,
         }),
         column![
-            text(lead).size(12).color(c::FG()),
+            text(lead).size(14).color(c::FG()),
             text(body)
-                .size(11)
+                .size(13)
                 .color(c::FG_DIM())
                 .wrapping(iced::widget::text::Wrapping::Word),
         ]
@@ -6392,10 +6413,10 @@ fn onboard_env_row<'a>(
     container(
         row![
             dot(dotc),
-            text(name.to_string()).size(12).color(c::FG()),
-            text(meta.to_string()).size(11).color(c::FG_MUTE()),
+            text(name.to_string()).size(13).color(c::FG()),
+            text(meta.to_string()).size(12).color(c::FG_MUTE()),
             Space::new().width(Length::Fill),
-            text(tag).size(10).color(tagc),
+            text(tag).size(11).color(tagc),
         ]
         .spacing(10)
         .align_y(iced::Alignment::Center),

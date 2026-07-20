@@ -48,10 +48,21 @@ Before writing any view code, check these modules and use them; do not re-invent
 | `position: absolute` popover/menu                         | `stack![full-screen invisible click-catcher button, positioned panel]` (see `widgets.rs` dropdown)                                                                                       |
 | modal + scrim                                             | `stack![body, scrim, centered modal_panel(...)]`; scrim = flat `c::SCRIM()` fill                                                                                                         |
 | `color-mix()` / rgba tint                                 | `palette.rs` `mix()` helper or `Color { a, ..c::X() }`                                                                                                                                   |
-| CSS Animations / Transitions                              | Use the built-in **`Animation` API** [1.1.2, 1.1.4]. Do not manually calculate tick-math with `Instant::now()` anymore.                                                                  |
+| CSS Animations / Transitions                              | `iced::animation::Animation<T>` — see "Animations" section below. Do not manually calculate tick-math with `Instant::now()`.                                                              |
 | hairline / `gap: 1px` seams                               | 1px filled `container(Space)` (`widgets.rs::divider_*`)                                                                                                                                  |
 | `text-overflow: ellipsis`                                 | manual `truncate_ellipsis`/`truncate_middle` (see `rows.rs`) — Iced text has no auto-truncation                                                                                          |
 | `linear-gradient`                                         | `Background::Gradient(gradient::Linear)` — works                                                                                                                                         |
+
+## Animations (iced 0.14 `Animation` API — verified against docs.iced.rs)
+
+The real API is `iced::animation::Animation<T>` (`T: bool` or `f32`), NOT the older lilt/tick patterns. There is no `animation::stream` — snippets showing it are hallucinated. **Working in-repo example: the attention pulse** — `state.rs::attention_anim`, `update.rs::attention_animation()` + `Msg::AnimationFrame`, subscription gating in `update.rs` (~line 273), consumption in `rows.rs` (~line 779). Copy that shape.
+
+- **State**: store `Animation<bool>` (two-keyframe fade/slide) or `Animation<f32>` in `state.rs`. Build: `Animation::new(false).quick().easing(Easing::EaseOut)`. Durations: `.very_quick()` 100ms, `.quick()` 200ms, `.slow()` 400ms, `.very_slow()` 500ms, or `.duration(..)`; also `.delay(..)`, `.repeat_forever()`, `.auto_reverse()`.
+- **Trigger**: in `update`, `anim.go_mut(true, now)` — where `now: Instant` came IN via the message (never `Instant::now()` inside `update`).
+- **Redraw ticks**: subscribe to `iced::window::frames() -> Subscription<Instant>` and store the delivered `Instant` as `self.now`. Gate the subscription on `anim.is_animating(self.now)` so it stops when idle (reactive rendering stays cheap). Grove's existing `blink_tick` (~60ms) is fine for slow pulses; use `frames()` for entrance/step transitions.
+- **View**: `anim.interpolate(start, end, self.now)` (bool) or `anim.interpolate_with(f, self.now)` — interpolate opacity via `Color { a, .. }`, offsets via padding/`Space` widths.
+
+**Microanimation house style**: subtle only — fade-in + ≤8px slide on entrance (`quick`/`EaseOut`), color/alpha eases on state change, existing triangle-wave pulse for attention. No bounces, no >400ms, nothing that moves layout after settle.
 
 ## Not Translatable — Approximate, Don't Attempt
 
