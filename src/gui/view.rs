@@ -2113,10 +2113,75 @@ impl Grove {
             (Color::TRANSPARENT, 0.0)
         };
 
+        // Full-tile scrim overlay when waiting for input. Layered on top of
+        // the tile-header "respond" chip above and the appbar "needs you"
+        // pill elsewhere — this doesn't replace either, it's the third and
+        // most attention-grabbing signal for a tile that needs a response.
+        let with_scrim: Element<'_, Msg> = if waiting {
+            // Opacity pulse (~2.4s): 40-tick triangle wave, alpha 0.7..1.0.
+            let phase = (self.blink_tick % 40) as f32;
+            let t = (phase - 20.0).abs() / 20.0;
+            let text_alpha = 0.7 + 0.3 * t;
+            let amber_pulsed = Color {
+                a: text_alpha,
+                ..c::AMBER()
+            };
+
+            let sub_line: String = if tile_order_idx < 9 {
+                format!(
+                    "click to respond · {}+{}",
+                    platform_mod_label(),
+                    tile_order_idx + 1
+                )
+            } else {
+                "click to respond".to_string()
+            };
+
+            let scrim_content: Element<'_, Msg> = container(
+                column![
+                    text("N E E D S   A T T E N T I O N")
+                        .font(UI_BOLD)
+                        .size(20)
+                        .color(amber_pulsed),
+                    text(sub_line).font(MONO_FONT).size(10).color(c::FG_MUTE()),
+                ]
+                .spacing(8)
+                .align_x(iced::Alignment::Center),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(iced::Alignment::Center)
+            .align_y(iced::Alignment::Center)
+            .style(|_| container::Style {
+                // Darker theme-derived scrim: BG_STRIP is the theme's deepest
+                // surface, so the wash tracks the active theme (iced has no
+                // backdrop blur, so opacity does the softening).
+                background: Some(Background::Color(Color {
+                    a: 0.92,
+                    ..c::BG_STRIP()
+                })),
+                ..Default::default()
+            })
+            .into();
+
+            // Wrap in mouse_area so clicking the scrim focuses/acknowledges
+            // the tile, same as clicking the header elsewhere on the tile.
+            let clickable_scrim: Element<'_, Msg> = iced::widget::mouse_area(scrim_content)
+                .on_press(Msg::GridDragStart(tile_order_idx))
+                .into();
+
+            stack![with_dim, clickable_scrim]
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else {
+            with_dim
+        };
+
         // on_enter fires even while a button is held — the GridDragHover handler
         // ignores it when no drag is active.
         iced::widget::mouse_area(
-            container(with_dim)
+            container(with_scrim)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .style(move |_| container::Style {
