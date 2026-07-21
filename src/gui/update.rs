@@ -133,6 +133,7 @@ impl Grove {
             dir_cache: Default::default(),
             picker_open: false,
             activity: Default::default(),
+            claude_poller: crate::claude_agents::Poller::new(),
             // Assumed focused at launch (iced can't be queried); corrected by
             // the first Focused/Unfocused event. Worst case: one missed dock
             // bounce in the first moments of an unfocused launch.
@@ -1953,11 +1954,22 @@ impl Grove {
     /// Recompute every session's `ActivityState` from its live signals.
     /// Runs every ~480ms; also prunes trackers for sessions that no longer
     /// exist and pushes dock badge/bounce updates on transitions.
+    ///
+    /// Signal precedence, highest first: native poll (`claude_agents`) >
+    /// hook state file (`attention`) > screen-scraping heuristics
+    /// (`activity::classify`). See the per-session loop below.
     fn refresh_activity(&mut self) {
         use super::activity::{classify, ActivityState, Signals};
         let now = std::time::Instant::now();
         let mut live_keys: Vec<u64> = Vec::with_capacity(self.app.sessions.len());
         let mut newly_waiting = false;
+
+        // Only worth polling `claude agents --json` while at least one live
+        // Claude session exists to inform — see `claude_agents::Poller`.
+        let any_live_claude = self.app.sessions.iter().any(|s| {
+            matches!(s.status(), crate::session::SessionStatus::Running) && s.agent == Agent::Claude
+        });
+        self.claude_poller.set_wanted(any_live_claude);
 
         for (i, s) in self.app.sessions.iter().enumerate() {
             live_keys.push(s.id);
@@ -2005,23 +2017,67 @@ impl Grove {
                 // that emit one; vt100 already tracks it from the PTY stream.
                 title: if alive { s.current_title() } else { None },
             };
-            // Claude/Codex sessions with a hook/notify state file get a
-            // deterministic signal that outranks the screen-scraping
-            // heuristic below (but never a dead process — a stale `working`
-            // left behind by a killed agent must still show Exited). A
-            // `NeedsYou` signal while focused is treated like the user has
-            // already seen it (never resurrect the highest-urgency state on
-            // the session they're looking at, mirroring
-            // `Tracker::acknowledge`'s existing downgrade rule).
-            let new_state = match (alive, s.attention_state()) {
-                (false, _) => classify(s.agent, &tail, &sig),
-                (true, Some(crate::attention::AttentionState::NeedsYou)) if !focused => {
-                    ActivityState::WaitingForInput
+            // Precedence, highest first: native poll (`claude_agents`) >
+            // hook state file (`attention`) > screen-scraping heuristics
+            // (`activity::classify`). The native poll is the most
+            // authoritative signal when available (it comes straight from
+            // the Claude CLI, not a hook we injected or the terminal
+            // contents), and it's also the only one of the three that works
+            // for tmux sessions reattached across a grove restart. It's
+            // consulted only for alive Claude sessions; everything else
+            // falls straight through to the existing hook/heuristic chain,
+            // unchanged.
+            let native = if alive && s.agent == Agent::Claude {
+                self.claude_poller.status_for(s.root_pid(), &s.wt_path)
+            } else {
+                None
+            };
+            let new_state = if let Some(native_status) = native {
+                match native_status {
+                    crate::claude_agents::NativeStatus::Busy => ActivityState::Working,
+                    // A `Waiting` signal while focused is treated like the
+                    // user has already seen it, mirroring the same downgrade
+                    // rule the hook-state-file branch below applies to
+                    // `NeedsYou` (never resurrect the highest-urgency state
+                    // on the session they're looking at).
+                    crate::claude_agents::NativeStatus::Waiting => {
+                        if !focused {
+                            ActivityState::WaitingForInput
+                        } else {
+                            ActivityState::Working
+                        }
+                    }
+                    crate::claude_agents::NativeStatus::Idle => {
+                        if tracker.was_working {
+                            ActivityState::Done
+                        } else {
+                            ActivityState::Idle
+                        }
+                    }
                 }
-                (true, Some(crate::attention::AttentionState::NeedsYou)) => ActivityState::Working,
-                (true, Some(crate::attention::AttentionState::Done)) => ActivityState::Done,
-                (true, Some(crate::attention::AttentionState::Working)) => ActivityState::Working,
-                (true, None) => classify(s.agent, &tail, &sig),
+            } else {
+                // Claude/Codex sessions with a hook/notify state file get a
+                // deterministic signal that outranks the screen-scraping
+                // heuristic below (but never a dead process — a stale `working`
+                // left behind by a killed agent must still show Exited). A
+                // `NeedsYou` signal while focused is treated like the user has
+                // already seen it (never resurrect the highest-urgency state on
+                // the session they're looking at, mirroring
+                // `Tracker::acknowledge`'s existing downgrade rule).
+                match (alive, s.attention_state()) {
+                    (false, _) => classify(s.agent, &tail, &sig),
+                    (true, Some(crate::attention::AttentionState::NeedsYou)) if !focused => {
+                        ActivityState::WaitingForInput
+                    }
+                    (true, Some(crate::attention::AttentionState::NeedsYou)) => {
+                        ActivityState::Working
+                    }
+                    (true, Some(crate::attention::AttentionState::Done)) => ActivityState::Done,
+                    (true, Some(crate::attention::AttentionState::Working)) => {
+                        ActivityState::Working
+                    }
+                    (true, None) => classify(s.agent, &tail, &sig),
+                }
             };
             if new_state == ActivityState::Working {
                 tracker.was_working = true;
