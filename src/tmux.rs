@@ -176,6 +176,30 @@ pub fn kill_session(name: &str) {
     let _ = run_silent(c);
 }
 
+/// PID of the pane's foreground process in tmux session `name` (i.e. the
+/// direct child of the tmux server for that pane — typically the agent
+/// process's shell, or the agent itself if exec'd directly). Used as the
+/// process-tree root for matching a session against `claude agents --json`
+/// rows in `claude_agents::Poller::status_for`. Returns `None` on any
+/// failure (tmux not running, session gone, unparsable output) — callers
+/// treat that as "no live signal" and fall back to other heuristics.
+pub fn pane_pid(name: &str) -> Option<u32> {
+    let out = tmux()
+        .args(["list-panes", "-t", &exact(name), "-F", "#{pane_pid}"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()?
+        .trim()
+        .parse()
+        .ok()
+}
+
 #[derive(Debug, Clone)]
 pub struct DiscoveredSession {
     pub name: String,

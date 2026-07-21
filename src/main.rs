@@ -1,6 +1,7 @@
 mod agent;
 mod app;
 mod attention;
+mod claude_agents;
 mod clipboard;
 mod env_path;
 mod git;

@@ -56,6 +56,15 @@ pub struct Session {
     /// Terminal, Windows (v1), or a reattached session — those sessions
     /// render the existing plain running/idle baseline.
     pub attention: Option<AttentionFiles>,
+    /// Tmux-only: pid of the pane's foreground process, captured once at
+    /// spawn/reattach time via `tmux::pane_pid`. This is the process-tree
+    /// root `claude_agents::Poller::status_for` walks `ps`-derived ancestry
+    /// from when matching this session against a live `claude agents --json`
+    /// row. `None` for native sessions (see `root_pid`, which reads the
+    /// live child pid directly instead) and for tmux sessions where the
+    /// `tmux list-panes` probe failed (rare; matching then falls back to the
+    /// cwd-uniqueness heuristic in `claude_agents`).
+    pane_pid: Option<u32>,
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
@@ -145,6 +154,9 @@ impl Session {
             &all_args,
             &env,
         )?;
+        // Best effort: a missing pane pid just means the native-agent poller
+        // falls back to its cwd-uniqueness heuristic for this session.
+        let pane_pid = tmux::pane_pid(&tmux_name);
         // Without the sidecar the session can't be rediscovered after a grove
         // restart — kill the tmux session rather than orphan it.
         if let Err(e) = session_meta::write(
@@ -164,7 +176,7 @@ impl Session {
         }
 
         Self::attach_tmux(
-            id, label, project, wt_path, agent, tmux_name, rows, cols, attention,
+            id, label, project, wt_path, agent, tmux_name, rows, cols, attention, pane_pid,
         )
     }
 
@@ -217,6 +229,7 @@ impl Session {
             INIT_ROWS,
             INIT_COLS,
             attention,
+            None,
         )
     }
 
@@ -255,6 +268,7 @@ impl Session {
             INIT_ROWS,
             INIT_COLS,
             None,
+            None,
         )
     }
 
@@ -264,8 +278,13 @@ impl Session {
     /// the plain running/idle baseline rather than an attention signal.
     pub fn attach_existing(d: tmux::DiscoveredSession) -> Result<Self> {
         let id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+        // Best effort, same as the fresh-spawn path: keeps the native-agent
+        // poller's cwd-based fallback matching accurate even for sessions
+        // reattached across a grove restart.
+        let pane_pid = tmux::pane_pid(&d.name);
         Self::attach_tmux(
             id, d.label, d.project, d.wt_path, d.agent, d.name, INIT_ROWS, INIT_COLS, None,
+            pane_pid,
         )
     }
 
@@ -280,6 +299,7 @@ impl Session {
         rows: u16,
         cols: u16,
         attention: Option<AttentionFiles>,
+        pane_pid: Option<u32>,
     ) -> Result<Self> {
         tmux::configure_embedded_session(&tmux_name);
 
@@ -310,6 +330,7 @@ impl Session {
             rows,
             cols,
             attention,
+            pane_pid,
         )
     }
 
@@ -325,6 +346,7 @@ impl Session {
         rows: u16,
         cols: u16,
         attention: Option<AttentionFiles>,
+        pane_pid: Option<u32>,
     ) -> Result<Self> {
         let pty_system = NativePtySystem::default();
         let pair = pty_system.openpty(PtySize {
@@ -395,6 +417,7 @@ impl Session {
             status,
             last_output_at,
             attention,
+            pane_pid,
             writer,
             master: pair.master,
             child,
@@ -411,6 +434,21 @@ impl Session {
         match &self.backend {
             SessionBackend::Tmux { name } => Some(name.as_str()),
             SessionBackend::Native => None,
+        }
+    }
+
+    /// Process-tree root for this session, used by `claude_agents::Poller`
+    /// to match this session against a live `claude agents --json` row by
+    /// ancestry rather than by (ambiguous, possibly-shared) worktree cwd.
+    /// Native sessions read the live PTY child pid directly — cheap, and
+    /// always current even if the agent process re-execs itself. Tmux
+    /// sessions instead return the pane pid captured once at spawn/reattach
+    /// time (see `pane_pid`), since there's no cheap live handle to the
+    /// pane's foreground process from here.
+    pub fn root_pid(&self) -> Option<u32> {
+        match &self.backend {
+            SessionBackend::Native => self.child.lock().ok()?.process_id(),
+            SessionBackend::Tmux { .. } => self.pane_pid,
         }
     }
 

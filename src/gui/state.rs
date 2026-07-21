@@ -163,6 +163,12 @@ pub struct Grove {
     /// unlike Arc pointer addresses). Refreshed every ~480ms by `Msg::Tick`;
     /// stale keys are pruned on the same pass.
     pub activity: HashMap<u64, super::activity::Tracker>,
+    /// Background poller for `claude agents --json`, the most authoritative
+    /// available signal for a live Claude session's status when it's
+    /// supported (see `claude_agents`). Shared across all sessions — one
+    /// poll per tick, not one per session. `refresh_activity` consults it
+    /// ahead of the hook-state-file and heuristic fallbacks.
+    pub claude_poller: crate::claude_agents::Poller,
     /// Whether the OS window currently has focus — gates the dock bounce.
     pub window_focused: bool,
     /// Last dock badge value pushed, to avoid redundant objc calls.
