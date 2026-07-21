@@ -118,6 +118,7 @@ impl Grove {
             attention_open: false,
             pty_selection: None,
             pty_drag: None,
+            pty_press_focused: false,
             blink_tick: 0,
             attention_anim: Self::attention_animation(),
             onb_step_anim: Self::onb_step_animation(),
@@ -804,6 +805,7 @@ impl Grove {
                     // already updated, so `pixel_to_abs`/`pty_view_geom`
                     // (which resolve via `focused_session`) target this
                     // tile's session.
+                    self.pty_press_focused = self.grid_focused != Some(si);
                     self.grid_focused = Some(si);
                     self.app.active_session = Some(si);
                     self.acknowledge_session(si);
@@ -825,7 +827,9 @@ impl Grove {
                 // Clicking a PTY focuses its pane (so subsequent keystrokes,
                 // scroll, and this very selection route there). Honored only
                 // while the panel is open; otherwise the agent always owns input.
+                let pane_before = self.focused_pane;
                 self.focus_pane(pane);
+                self.pty_press_focused = self.focused_pane != pane_before;
                 // A focus switch invalidates any in-progress selection on the
                 // previously focused PTY — it was anchored to a different grid.
                 self.pty_selection = None;
@@ -923,9 +927,16 @@ impl Grove {
             }
             Msg::PtyMouseUp => {
                 self.pty_drag = None;
+                // The press that switched focus is focus-only: swallow its
+                // release so refocusing a pane never moves the caret (a second
+                // click does).
+                let press_focused = std::mem::take(&mut self.pty_press_focused);
                 if let Some((a, h)) = self.pty_selection {
                     if a == h {
                         self.pty_selection = None;
+                        if press_focused {
+                            return Task::none();
+                        }
                         // No drag happened — treat it as a click-to-move-caret.
                         // `pixel_to_abs` only clamps into the visible window
                         // when scrollback is 0, so bail if the view has been

@@ -94,6 +94,11 @@ pub struct Grove {
     /// the tick-based edge auto-scroll: while set, `Msg::Tick` checks whether
     /// `last_y` sits in the top/bottom edge zone and scrolls + extends.
     pub pty_drag: Option<PtyDrag>,
+    /// True while the current PTY press is the one that changed focus (tile or
+    /// pane). That press only focuses: its release must not fire the
+    /// click-to-move-caret, so a first click on a stale session can't poke
+    /// its shell.
+    pub pty_press_focused: bool,
     /// Monotonically incrementing counter driven by `Msg::Tick` (~30 Hz).
     /// Used to compute cursor blink state: visible when `blink_tick % 30 < 15`
     /// (≈ 500 ms on / 500 ms off).
