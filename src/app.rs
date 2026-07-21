@@ -343,16 +343,20 @@ pub struct LauncherOptions {
 
 /// The command palette's inline contextual-action strip, revealed by Tab
 /// under a highlighted `Recent`/`Combo` row. Identifies the row by
-/// `(proj, wt_path)` rather than a list index, so it stays valid even if the
-/// rendered row list is rebuilt out from under it (e.g. `browse_all` flips,
-/// or the query changes) — the strip is simply not found/collapsed rather
-/// than silently acting on a different row. `action` is the selected action
-/// within the strip (`0` = primary/"Launch session…", `1` = danger/"Delete
+/// `(proj, wt_path, agent)` rather than a list index, so it stays valid even
+/// if the rendered row list is rebuilt out from under it (e.g. `browse_all`
+/// flips, or the query changes) — the strip is simply not found/collapsed
+/// rather than silently acting on a different row. `agent` is part of the
+/// identity because recent launches are deduped by `(project, wt_path,
+/// agent)` (see `push_recent_launch`), so two Recent rows can share a
+/// worktree with different agents. `action` is the selected action within
+/// the strip (`0` = primary/"Launch session…", `1` = danger/"Delete
 /// worktree").
 #[derive(Clone)]
 pub struct RowActionsState {
     pub proj: usize,
     pub wt_path: String,
+    pub agent: crate::agent::Agent,
     pub action: usize,
 }
 

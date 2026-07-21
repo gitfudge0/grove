@@ -1597,7 +1597,7 @@ impl Grove {
                     _ => None,
                 };
                 if let Some(r) = row_actions {
-                    return self.launcher_run_row_action(r.proj, r.wt_path, action);
+                    return self.launcher_run_row_action(r.proj, r.wt_path, r.agent, action);
                 }
             }
             Msg::LauncherSettingActivate(i) => {
@@ -3141,7 +3141,12 @@ impl Grove {
                                 }
                             }
                             Key::Named(Named::Enter) => {
-                                return self.launcher_run_row_action(ra.proj, ra.wt_path, ra.action)
+                                return self.launcher_run_row_action(
+                                    ra.proj,
+                                    ra.wt_path,
+                                    ra.agent,
+                                    ra.action,
+                                )
                             }
                             _ => {}
                         }
@@ -4950,10 +4955,16 @@ impl Grove {
             return Task::none();
         };
         match row {
-            PaletteRow::Recent { proj, wt_path, .. } | PaletteRow::Combo { proj, wt_path, .. } => {
+            PaletteRow::Recent {
+                proj, wt_path, agent, ..
+            }
+            | PaletteRow::Combo {
+                proj, wt_path, agent, ..
+            } => {
                 let ra = crate::app::RowActionsState {
                     proj: *proj,
                     wt_path: wt_path.clone(),
+                    agent: *agent,
                     action: 0,
                 };
                 if let Modal::SessionLauncher { row_actions, .. } = &mut self.app.modal {
@@ -5220,12 +5231,14 @@ impl Grove {
         &mut self,
         proj: usize,
         wt_path: String,
+        agent: crate::agent::Agent,
         action: usize,
     ) -> Task<Msg> {
         if action == 0 {
             let origin = RowActionsState {
                 proj,
                 wt_path: wt_path.clone(),
+                agent,
                 action: 0,
             };
             self.launcher_open_options_for(proj, wt_path, origin);

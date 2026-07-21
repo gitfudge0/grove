@@ -4394,14 +4394,16 @@ impl Grove {
                         list = list.push(danger_caption());
                     }
                     let row_identity = match row {
-                        PaletteRow::Recent { proj, wt_path, .. }
-                        | PaletteRow::Combo { proj, wt_path, .. } => {
-                            Some((*proj, wt_path.as_str()))
+                        PaletteRow::Recent {
+                            proj, wt_path, agent, ..
                         }
+                        | PaletteRow::Combo {
+                            proj, wt_path, agent, ..
+                        } => Some((*proj, wt_path.as_str(), *agent)),
                         _ => None,
                     };
-                    if let (Some((rp, rw)), Some(ra)) = (row_identity, row_actions) {
-                        if rp == ra.proj && rw == ra.wt_path {
+                    if let (Some((rp, rw, rag)), Some(ra)) = (row_identity, row_actions) {
+                        if rp == ra.proj && rw == ra.wt_path && rag == ra.agent {
                             let is_main = self
                                 .launcher_worktrees(rp)
                                 .iter()
