@@ -89,6 +89,14 @@ pub fn launcher_settings_scrollable_id() -> Id {
     Id::new("launcher-settings-list")
 }
 
+/// Stable id for the palette's root/typed list scrollable — same idiom
+/// again: ↑↓ moves the selection without moving the viewport on its own, so
+/// the selected row must be scrolled into view from `update`, same as the
+/// Settings drill-in's Root list.
+pub fn launcher_palette_scrollable_id() -> Id {
+    Id::new("launcher-palette-list")
+}
+
 /// A mod+key hint chip: on macOS the modifier renders as the ⌘ glyph icon,
 /// elsewhere as `platform_mod_label()`. Used for the palette's ⌘T action-row
 /// chip (`color` = `FG_DIM`) and its ⌘1…⌘N recent-row digit chips (`color` =
@@ -4572,11 +4580,15 @@ impl Grove {
                         }
                     }
                 }
-                container(ghost_scrollable(list).height(Length::Shrink))
-                    .padding(8)
-                    .max_height(380.0)
-                    .width(Length::Fill)
-                    .into()
+                container(
+                    ghost_scrollable(list)
+                        .id(launcher_palette_scrollable_id())
+                        .height(Length::Shrink),
+                )
+                .padding(8)
+                .max_height(380.0)
+                .width(Length::Fill)
+                .into()
             };
             body = body.push(list_zone);
             body = body.push(divider_h(c::BORDER_SOFT()));

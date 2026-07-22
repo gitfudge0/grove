@@ -1599,6 +1599,10 @@ impl Grove {
                         _ => Task::none(),
                     };
                 }
+                // Root/typed list: the query edit just reshaped the list and
+                // snapped the cursor to 0 above — scroll it back with it,
+                // same as the Settings drill-in's Root pane.
+                return self.scroll_launcher_palette_to_selection();
             }
             Msg::LauncherActivate(i) => return self.launcher_activate(i),
             Msg::LauncherOptionsPick(i) => {
@@ -3240,6 +3244,7 @@ impl Grove {
                     if let Some(delta) = list_delta {
                         let new_selected = crate::gui::launcher::clamp(selected, delta, rows.len());
                         self.set_palette_selected(new_selected);
+                        return self.scroll_launcher_palette_to_selection();
                     } else {
                         let enter_actions = matches!(&key, Key::Named(Named::Tab));
                         if enter_actions {
@@ -4464,6 +4469,36 @@ impl Grove {
         let y = settings_root_scroll_offset(&rows, *selected);
         scroll_to(
             super::view::launcher_settings_scrollable_id(),
+            AbsoluteOffset { x: 0.0, y },
+        )
+    }
+
+    /// Scroll the root/typed palette list so the selected row is centered —
+    /// the un-drilled-in list's counterpart to `scroll_launcher_settings_
+    /// to_selection`. No-op whenever a sub-state (options, switch drill-in,
+    /// settings drill-in, or the row-actions strip) is showing instead of
+    /// this list — see the `else` branch in `view.rs` that renders it.
+    fn scroll_launcher_palette_to_selection(&self) -> Task<Msg> {
+        use iced::widget::scrollable::AbsoluteOffset;
+        let Modal::SessionLauncher {
+            input,
+            selected,
+            browse_all,
+            options: None,
+            switch: None,
+            row_actions: None,
+            settings: None,
+            ..
+        } = &self.app.modal
+        else {
+            return Task::none();
+        };
+        let rows = self.palette_rows(input, *browse_all);
+        let zero_projects = self.app.store.projects.is_empty();
+        let root_mode = input.is_empty() && !*browse_all && !zero_projects;
+        let y = palette_scroll_offset(&rows, *selected, root_mode);
+        scroll_to(
+            super::view::launcher_palette_scrollable_id(),
             AbsoluteOffset { x: 0.0, y },
         )
     }
@@ -5963,17 +5998,31 @@ pub(super) fn project_theme_pane_rows(
 /// match the pane's `max_height` in `view.rs` or the centering drifts. The
 /// full 280 is viewport: that container carries no padding of its own (the
 /// pane's 8px padding sits on the outer wrapper around context/mode/list).
+/// Both the Theme and ProjectTheme panes render their list as
+/// `Column::new().spacing(2)` (view.rs ~3785/3806 and ~3919/3960) — the true
+/// row pitch is 38px (36 + 2px column spacing), not the bare row height, and
+/// the last row's gap doesn't exist (content is `total*38 − 2`, not
+/// `total*38`).
 const THEME_PANE_ROW_H: f32 = 36.0;
+const THEME_PANE_SPACING: f32 = 2.0;
 const THEME_PANE_VIEWPORT_CAP: f32 = 280.0;
 
 /// Center-and-clamp scroll offset for the Theme sub-pane's list: the y that
 /// centers row `selected` of `total` in the capped viewport, clamped to the
 /// scrollable's valid range (0 when everything already fits). Same math as
-/// `scroll_theme_picker_to_selection`, kept pure for testing.
+/// `scroll_theme_picker_to_selection`, kept pure for testing — but pitched at
+/// `THEME_PANE_ROW_H + THEME_PANE_SPACING` per row (see the geometry note
+/// above), not the bare row height.
 pub(super) fn launcher_theme_scroll_offset(total: usize, selected: usize) -> f32 {
-    let viewport_h = (total as f32 * THEME_PANE_ROW_H).min(THEME_PANE_VIEWPORT_CAP);
-    let sel_y = selected as f32 * THEME_PANE_ROW_H;
-    let max_y = (total as f32 * THEME_PANE_ROW_H - viewport_h).max(0.0);
+    let pitch = THEME_PANE_ROW_H + THEME_PANE_SPACING;
+    let content_h = if total == 0 {
+        0.0
+    } else {
+        total as f32 * pitch - THEME_PANE_SPACING
+    };
+    let sel_y = selected as f32 * pitch;
+    let viewport_h = content_h.min(THEME_PANE_VIEWPORT_CAP);
+    let max_y = (content_h - viewport_h).max(0.0);
     (sel_y - (viewport_h - THEME_PANE_ROW_H) / 2.0).clamp(0.0, max_y)
 }
 
@@ -6022,6 +6071,144 @@ pub(super) fn settings_root_scroll_offset(rows: &[SettingRow], selected: usize) 
     let viewport_h = content_h.min(SETTINGS_ROOT_VIEWPORT_CAP);
     let max_y = (content_h - viewport_h).max(0.0);
     (sel_y - (viewport_h - SETTINGS_ROOT_ROW_H) / 2.0).clamp(0.0, max_y)
+}
+
+/// The root/typed palette list's geometry, mirroring its `view.rs` render
+/// exactly — same shape as `SETTINGS_ROOT_*` above, just under the palette's
+/// own section-header vocabulary (RECENT/WORKTREES/ACTIONS at root,
+/// SETTINGS/SESSIONS/ACTIONS plus per-project sub-headers when typed/
+/// browse-all list is long enough to group).
+const PALETTE_LIST_ROW_H: f32 = 44.0;
+const PALETTE_LIST_SPACING: f32 = 2.0;
+const PALETTE_LIST_HEADER_LABEL_H: f32 = 13.0;
+/// Same reasoning as `SETTINGS_ROOT_VIEWPORT_CAP`: the list container caps
+/// at `max_height(380.0)` but that bound includes its own `padding(8)`.
+const PALETTE_LIST_VIEWPORT_CAP: f32 = 380.0 - 16.0;
+
+/// Center-and-clamp scroll offset for the palette's root/typed list —
+/// `settings_root_scroll_offset`'s idiom, walking the same header/row
+/// sequence `view.rs`'s `else` branch (view.rs:4462-4544) renders, so the
+/// selected row's y always matches what's actually on screen.
+pub(super) fn palette_scroll_offset(rows: &[PaletteRow], selected: usize, root_mode: bool) -> f32 {
+    let mut content_h: f32 = 0.0;
+    let mut sel_y: f32 = 0.0;
+
+    let push_header = |content_h: &mut f32, top: f32, bottom: f32| {
+        if *content_h > 0.0 {
+            *content_h += PALETTE_LIST_SPACING;
+        }
+        *content_h += top + PALETTE_LIST_HEADER_LABEL_H + bottom;
+    };
+
+    if root_mode {
+        let mut printed_recent = false;
+        let mut last_wt_project: Option<usize> = None;
+        let mut printed_actions = false;
+        for (i, row) in rows.iter().enumerate() {
+            match row {
+                PaletteRow::Recent { .. } => {
+                    if !printed_recent {
+                        push_header(&mut content_h, 0.0, 6.0);
+                        printed_recent = true;
+                    }
+                }
+                PaletteRow::Combo { proj, .. } => {
+                    if last_wt_project != Some(*proj) {
+                        let top = if i == 0 { 0.0 } else { 12.0 };
+                        push_header(&mut content_h, top, 6.0);
+                        last_wt_project = Some(*proj);
+                    }
+                }
+                _ => {
+                    if !printed_actions {
+                        let top = if printed_recent || last_wt_project.is_some() {
+                            12.0
+                        } else {
+                            0.0
+                        };
+                        push_header(&mut content_h, top, 6.0);
+                        printed_actions = true;
+                    }
+                }
+            }
+            if content_h > 0.0 {
+                content_h += PALETTE_LIST_SPACING;
+            }
+            if i == selected {
+                sel_y = content_h;
+            }
+            content_h += PALETTE_LIST_ROW_H;
+        }
+    } else {
+        let has_settings = rows.iter().any(|r| matches!(r, PaletteRow::Setting(_)));
+        let mut printed_settings = false;
+        let mut printed_sessions = false;
+        let mut printed_actions = false;
+        let session_project_order: Vec<usize> = {
+            let mut seen = Vec::new();
+            for r in rows.iter() {
+                if let PaletteRow::Recent { proj, .. } | PaletteRow::Combo { proj, .. } = r {
+                    if !seen.contains(proj) {
+                        seen.push(*proj);
+                    }
+                }
+            }
+            seen
+        };
+        let session_row_count = rows
+            .iter()
+            .filter(|r| matches!(r, PaletteRow::Recent { .. } | PaletteRow::Combo { .. }))
+            .count();
+        let grouped_by_project = session_project_order.len() > 2 || session_row_count > 10;
+        let mut last_grouped_project: Option<usize> = None;
+
+        for (i, row) in rows.iter().enumerate() {
+            let is_setting = matches!(row, PaletteRow::Setting(_));
+            let is_session = matches!(row, PaletteRow::Recent { .. } | PaletteRow::Combo { .. });
+            if has_settings && is_setting && !printed_settings {
+                push_header(&mut content_h, 0.0, 6.0);
+                printed_settings = true;
+            } else if is_session && !printed_sessions {
+                let top = if printed_settings { 12.0 } else { 0.0 };
+                push_header(&mut content_h, top, 6.0);
+                printed_sessions = true;
+            } else if !is_setting && !is_session && !printed_actions {
+                let top = if printed_sessions || printed_settings {
+                    12.0
+                } else {
+                    0.0
+                };
+                push_header(&mut content_h, top, 6.0);
+                printed_actions = true;
+            }
+            if grouped_by_project && is_session {
+                let proj = match row {
+                    PaletteRow::Recent { proj, .. } | PaletteRow::Combo { proj, .. } => *proj,
+                    _ => unreachable!(),
+                };
+                if last_grouped_project != Some(proj) {
+                    let top = if last_grouped_project.is_none() {
+                        0.0
+                    } else {
+                        8.0
+                    };
+                    push_header(&mut content_h, top, 4.0);
+                    last_grouped_project = Some(proj);
+                }
+            }
+            if content_h > 0.0 {
+                content_h += PALETTE_LIST_SPACING;
+            }
+            if i == selected {
+                sel_y = content_h;
+            }
+            content_h += PALETTE_LIST_ROW_H;
+        }
+    }
+
+    let viewport_h = content_h.min(PALETTE_LIST_VIEWPORT_CAP);
+    let max_y = (content_h - viewport_h).max(0.0);
+    (sel_y - (viewport_h - PALETTE_LIST_ROW_H) / 2.0).clamp(0.0, max_y)
 }
 
 /// Keep-identity-else-clamp reselection for the drill-in Root list after a
@@ -7864,13 +8051,15 @@ mod tests {
         // Everything fits (7 rows ≤ 280px cap): no scrolling, ever.
         assert_eq!(launcher_theme_scroll_offset(7, 0), 0.0);
         assert_eq!(launcher_theme_scroll_offset(7, 6), 0.0);
-        // 30 rows × 36px = 1080px against a 280px viewport.
+        // 30 rows at the true 38px pitch (36px row + 2px column spacing) =
+        // 30·38 − 2 = 1138px content (no trailing gap after the last row)
+        // against a 280px viewport.
         // Top rows clamp to 0 rather than centering above the list…
         assert_eq!(launcher_theme_scroll_offset(30, 0), 0.0);
-        // …the last row clamps to the bottom (1080 − 280 = 800)…
-        assert_eq!(launcher_theme_scroll_offset(30, 29), 800.0);
-        // …and a middle row centers: y = 15·36 − (280 − 36)/2 = 418.
-        assert_eq!(launcher_theme_scroll_offset(30, 15), 418.0);
+        // …the last row clamps to the bottom (1138 − 280 = 858)…
+        assert_eq!(launcher_theme_scroll_offset(30, 29), 858.0);
+        // …and a middle row centers: y = 15·38 − (280 − 36)/2 = 448.
+        assert_eq!(launcher_theme_scroll_offset(30, 15), 448.0);
         // Empty list degenerates to 0, not NaN/negative.
         assert_eq!(launcher_theme_scroll_offset(0, 0), 0.0);
     }
@@ -7917,6 +8106,75 @@ mod tests {
         );
         // Empty (fully filtered-out) list degenerates to 0.
         assert_eq!(settings_root_scroll_offset(&[], 0), 0.0);
+    }
+
+    #[test]
+    fn palette_scroll_offset_root_mode_accounts_for_headers_and_clamps() {
+        use super::{palette_scroll_offset, PaletteRow};
+        use crate::agent::Agent;
+        let combo = |proj: usize| PaletteRow::Combo {
+            proj,
+            wt_path: format!("/wt/{proj}"),
+            agent: Agent::Claude,
+        };
+        // Root-mode shape: one RECENT row, two per-project WORKTREES groups
+        // of three rows each, then one ACTIONS row — same header sizes as
+        // `settings_root_scroll_offset`'s test (19px first header, 31px
+        // later ones, 44px rows, 2px gaps throughout), so content sums to
+        // the same 486px against the same 364px viewport (max scroll 122).
+        let rows = vec![
+            PaletteRow::Recent {
+                proj: 0,
+                wt_path: "/wt/0".into(),
+                agent: Agent::Claude,
+            },
+            combo(0),
+            combo(0),
+            combo(0),
+            combo(1),
+            combo(1),
+            combo(1),
+            PaletteRow::NewSession,
+        ];
+        // Row 0 sits right under the RECENT header: centering clamps to 0.
+        assert_eq!(palette_scroll_offset(&rows, 0, true), 0.0);
+        // The last row (NewSession, y = 442) clamps to the bottom.
+        assert_eq!(palette_scroll_offset(&rows, 7, true), 122.0);
+        // A row past the second WORKTREES header (proj 0's 3rd combo row,
+        // y = 192): centered 192 − (364 − 44)/2 = 32 — the header is what
+        // shifts it off the naive index·46 estimate.
+        assert_eq!(palette_scroll_offset(&rows, 3, true), 32.0);
+        // Empty list degenerates to 0.
+        assert_eq!(palette_scroll_offset(&[], 0, true), 0.0);
+    }
+
+    #[test]
+    fn palette_scroll_offset_typed_list_fits_and_clamps() {
+        use super::{palette_scroll_offset, PaletteRow};
+        use crate::agent::Agent;
+        let combo = |proj: usize| PaletteRow::Combo {
+            proj,
+            wt_path: format!("/wt/{proj}"),
+            agent: Agent::Claude,
+        };
+        // A short typed list (well under the 364px viewport): no scrolling,
+        // ever, whichever row is selected.
+        let short = vec![
+            PaletteRow::Setting(SettingRow::Theme),
+            PaletteRow::Setting(SettingRow::Telemetry),
+            combo(0),
+        ];
+        assert_eq!(palette_scroll_offset(&short, 0, false), 0.0);
+        assert_eq!(palette_scroll_offset(&short, 2, false), 0.0);
+        // A long typed list of 15 same-project session rows: >10 rows alone
+        // triggers `grouped_by_project`, adding a per-project sub-header
+        // under the SESSIONS header. Selection 0 still clamps to 0 (row 0
+        // sits right under both headers)…
+        let long: Vec<PaletteRow> = (0..15).map(|_| combo(0)).collect();
+        assert_eq!(palette_scroll_offset(&long, 0, false), 0.0);
+        // …and the last row clamps to the bottom of the (728px) content
+        // against the 364px viewport: max scroll = 364.
+        assert_eq!(palette_scroll_offset(&long, 14, false), 364.0);
     }
 
     #[test]
