@@ -12,8 +12,8 @@ use super::state::{
 };
 use crate::agent::Agent;
 use crate::app::{
-    AddProjectStep, App, ConfirmKind, LauncherOptions, LauncherSettings, Modal, OnboardStep, Pane,
-    RowActionsState, SettingsPane,
+    AddProjectStep, App, ConfirmKind, LauncherOptions, LauncherSettings, Modal, OnboardStep,
+    PaletteRowIdentity, Pane, RowActionsState, SettingsPane,
 };
 use crate::session::Session;
 use iced::keyboard::{key::Named, Key, Modifiers};
@@ -1511,29 +1511,34 @@ impl Grove {
                 // The switch-to-session drill-in filters live by `input`
                 // (same idiom as OPEN WITH's agent list, which also keeps
                 // its own state open while the query underneath changes) —
-                // computed before the mutable borrow below so the cursor can
-                // be reclamped to the new filtered length in the same pass.
-                let switch_len = self.switch_session_rows(&s).len();
+                // resolved by identity (which session, not which position)
+                // before the mutable borrow below, same principle as
+                // `resolve_selected` for the main list: a query edit can
+                // reorder/drop rows in the filtered list, so re-anchoring by
+                // position alone (the old `clamp`-based behavior) could land
+                // the cursor on a different session than the one highlighted.
+                let switch_open = matches!(
+                    &self.app.modal,
+                    Modal::SessionLauncher {
+                        switch: Some(_),
+                        ..
+                    }
+                );
+                let new_switch_pos = switch_open.then(|| self.resolve_switch_position(&s));
                 if let Modal::SessionLauncher {
                     input,
-                    selected,
-                    switch,
                     row_actions,
                     settings,
                     ..
                 } = &mut self.app.modal
                 {
                     *input = s;
-                    *selected = 0;
                     // `row_actions` is pinned to a specific (proj, wt_path)
                     // resolved from the root/typing list; once that list is
                     // re-derived for the new query, the row it was anchored
                     // to may no longer be rendered (or may have moved) —
                     // collapse the strip rather than risk it going stale.
                     *row_actions = None;
-                    if let Some(sel) = switch {
-                        *sel = crate::gui::launcher::clamp(*sel, 0, switch_len);
-                    }
                     // Settings drill-in stays open across a query edit (only
                     // Esc backs out). Only the panes that actually filter on
                     // the query (Root, Theme) reset their cursor — the input
@@ -1557,6 +1562,12 @@ impl Grove {
                             st.resizing = false;
                         }
                     }
+                }
+                // Root/typed list cursor snapped to 0 for the new query —
+                // capture its identity too (see `set_palette_selected`).
+                self.set_palette_selected(0);
+                if let Some(pos) = new_switch_pos {
+                    self.set_switch_selected(pos);
                 }
                 // Theme sub-pane / drill-in Root: the new query reshapes
                 // the list and the cursor just snapped to 0 — scroll the
@@ -2837,6 +2848,7 @@ impl Grove {
                 switch,
                 row_actions,
                 settings,
+                ..
             } => {
                 let (input, selected, browse_all) = (input.clone(), *selected, *browse_all);
                 if let Some(r) = options.clone() {
@@ -2891,25 +2903,20 @@ impl Grove {
                     };
                     if let Some(delta) = list_delta {
                         let new_sel = crate::gui::launcher::clamp(sel, delta, len);
-                        if let Modal::SessionLauncher { switch, .. } = &mut self.app.modal {
-                            *switch = Some(new_sel);
-                        }
+                        self.set_switch_selected(new_sel);
                     } else {
                         match key {
                             Key::Named(Named::Escape) => {
-                                if let Modal::SessionLauncher {
-                                    switch, selected, ..
-                                } = &mut self.app.modal
-                                {
+                                if let Modal::SessionLauncher { switch, .. } = &mut self.app.modal {
                                     *switch = None;
-                                    // The root list was recomputed against the cleared
-                                    // input when the drill-in opened; the old cursor no
-                                    // longer points at the row it was on.
-                                    *selected = 0;
                                 }
+                                // The root list was recomputed against the cleared
+                                // input when the drill-in opened; the old cursor no
+                                // longer points at the row it was on.
+                                self.set_palette_selected(0);
                             }
                             Key::Named(Named::Enter) => {
-                                if let Some(&si) = self.switch_session_rows(&input).get(sel) {
+                                if let Some(si) = self.resolve_switch_selected(&input) {
                                     return self.launcher_switch_to(si);
                                 }
                             }
@@ -3031,16 +3038,13 @@ impl Grove {
                                     match key {
                                         Key::Named(Named::Escape) => {
                                             if let Modal::SessionLauncher {
-                                                settings,
-                                                input,
-                                                selected,
-                                                ..
+                                                settings, input, ..
                                             } = &mut self.app.modal
                                             {
                                                 *settings = None;
                                                 input.clear();
-                                                *selected = 0;
                                             }
+                                            self.set_palette_selected(0);
                                         }
                                         Key::Named(Named::Enter) => {
                                             if let Some(&sr) = rows.get(sel) {
@@ -3213,26 +3217,32 @@ impl Grove {
                     // opens the switch-to-session drill-in (arrows can't:
                     // ←→ move the caret in the focused search input). Plain
                     // letters belong to the input too, never to nav.
-                    let rows_len = self.palette_rows(&input, browse_all).len();
+                    let rows = self.palette_rows(&input, browse_all);
                     let list_delta: Option<i32> = match &key {
                         Key::Named(Named::ArrowDown) => Some(1),
                         Key::Named(Named::ArrowUp) => Some(-1),
                         _ => None,
                     };
                     if let Some(delta) = list_delta {
-                        let new_selected = crate::gui::launcher::clamp(selected, delta, rows_len);
-                        if let Modal::SessionLauncher { selected, .. } = &mut self.app.modal {
-                            *selected = new_selected;
-                        }
+                        let new_selected = crate::gui::launcher::clamp(selected, delta, rows.len());
+                        self.set_palette_selected(new_selected);
                     } else {
                         let enter_actions = matches!(&key, Key::Named(Named::Tab));
                         if enter_actions {
-                            return self.launcher_enter_row_actions(selected, &input, browse_all);
+                            return match self.resolve_selected(&rows) {
+                                Some(idx) => {
+                                    self.launcher_enter_row_actions(idx, &input, browse_all)
+                                }
+                                None => Task::none(),
+                            };
                         } else {
                             match key {
                                 Key::Named(Named::Escape) => self.cancel_modal(),
                                 Key::Named(Named::Enter) => {
-                                    return self.launcher_activate(selected)
+                                    return match self.resolve_selected(&rows) {
+                                        Some(idx) => self.launcher_activate(idx),
+                                        None => Task::none(),
+                                    }
                                 }
                                 Key::Character(s) if global_mods(mods) => {
                                     if let Some(n) =
@@ -3245,7 +3255,6 @@ impl Grove {
                                         // setting instead of the first
                                         // session. No-op when fewer than
                                         // `n` session rows match.
-                                        let rows = self.palette_rows(&input, browse_all);
                                         if let Some(idx) = nth_session_row(&rows, n) {
                                             return self.launcher_activate(idx);
                                         }
@@ -3853,12 +3862,15 @@ impl Grove {
         self.app.modal = Modal::SessionLauncher {
             input: String::new(),
             selected: 0,
+            selected_identity: None,
             browse_all: false,
             options: None,
             switch: None,
+            switch_identity: None,
             row_actions: None,
             settings: None,
         };
+        self.set_palette_selected(0);
     }
 
     /// Start the session for the current options-state selection: Enter, or
@@ -3914,6 +3926,53 @@ impl Grove {
         self.rebuild_wt_cache();
     }
 
+    /// Move the root/typed list's selection cursor to `idx` and capture that
+    /// row's identity in the same step (`PaletteRowIdentity`). Every write
+    /// site for `SessionLauncher::selected` routes through this — reads
+    /// `input`/`browse_all` off the *current* modal state, so callers must
+    /// apply any other field changes (new `input`, flipped `browse_all`,
+    /// …) first. No-op outside `SessionLauncher`.
+    fn set_palette_selected(&mut self, idx: usize) {
+        let (input, browse_all) = match &self.app.modal {
+            Modal::SessionLauncher {
+                input, browse_all, ..
+            } => (input.clone(), *browse_all),
+            _ => return,
+        };
+        let rows = self.palette_rows(&input, browse_all);
+        let identity = rows.get(idx).map(row_identity);
+        if let Modal::SessionLauncher {
+            selected,
+            selected_identity,
+            ..
+        } = &mut self.app.modal
+        {
+            *selected = idx;
+            *selected_identity = identity;
+        }
+    }
+
+    /// The keyboard Enter/Tab activation path's index resolution: match the
+    /// modal's `selected_identity` against `rows` (see
+    /// `resolve_row_by_identity`) instead of trusting `selected` directly —
+    /// this is what actually closes the staleness window `set_palette_
+    /// selected` opens up: a background list change between the last
+    /// keypress that moved the cursor and this one can't make Enter/Tab fire
+    /// a different row than the one highlighted on screen. Mouse clicks
+    /// (`Msg::LauncherActivate(i)`) name their row directly and skip this —
+    /// the click event itself is already exact.
+    fn resolve_selected(&self, rows: &[PaletteRow]) -> Option<usize> {
+        let (selected, identity) = match &self.app.modal {
+            Modal::SessionLauncher {
+                selected,
+                selected_identity,
+                ..
+            } => (*selected, selected_identity.clone()),
+            _ => return None,
+        };
+        resolve_row_by_identity(rows, &identity, selected)
+    }
+
     /// Activate the row at `i` in the currently-rendered root/typing/
     /// browse-all list: launch a `Recent`/`Combo` row directly, or run the
     /// effect of an action row.
@@ -3950,15 +4009,10 @@ impl Grove {
                 Task::none()
             }
             PaletteRow::NewSession => {
-                if let Modal::SessionLauncher {
-                    browse_all,
-                    selected,
-                    ..
-                } = &mut self.app.modal
-                {
+                if let Modal::SessionLauncher { browse_all, .. } = &mut self.app.modal {
                     *browse_all = true;
-                    *selected = 0;
                 }
+                self.set_palette_selected(0);
                 Task::none()
             }
             PaletteRow::TerminalHome => {
@@ -4014,9 +4068,7 @@ impl Grove {
             .iter()
             .position(|r| matches!(r, PaletteRow::Setting(x) if *x == s))
             .unwrap_or_else(|| crate::gui::launcher::clamp(old, 0, rows.len()));
-        if let Modal::SessionLauncher { selected, .. } = &mut self.app.modal {
-            *selected = new_sel;
-        }
+        self.set_palette_selected(new_sel);
     }
 
     /// Enter the "switch to session" drill-in: selects the first row and
@@ -4027,10 +4079,10 @@ impl Grove {
     /// Esc backs out without restoring that query — same as OPEN WITH, which
     /// doesn't touch `input` at all going in or coming out.
     fn launcher_enter_switch(&mut self) {
-        if let Modal::SessionLauncher { switch, input, .. } = &mut self.app.modal {
-            *switch = Some(0);
+        if let Modal::SessionLauncher { input, .. } = &mut self.app.modal {
             input.clear();
         }
+        self.set_switch_selected(0);
     }
 
     /// Enter the Settings drill-in (root "Settings…" row, Enter or Tab):
@@ -4042,10 +4094,7 @@ impl Grove {
     /// previous visit left it — with the cursor invisibly back at row 0.
     fn open_settings_drill_in(&mut self) -> Task<Msg> {
         if let Modal::SessionLauncher {
-            settings,
-            input,
-            selected,
-            ..
+            settings, input, ..
         } = &mut self.app.modal
         {
             *settings = Some(LauncherSettings {
@@ -4055,8 +4104,8 @@ impl Grove {
                 update_actions: None,
             });
             input.clear();
-            *selected = 0;
         }
+        self.set_palette_selected(0);
         self.scroll_launcher_settings_to_selection()
     }
 
@@ -5135,6 +5184,44 @@ impl Grove {
                     agent: r.agent,
                 });
             }
+            // No valid recents (fresh install, or every recent's project/
+            // worktree since disappeared) but at least one project exists:
+            // fall back to listing worktrees directly, active project first,
+            // so root state is never just the bare action rows. Capped at 6
+            // total, same as the recents list it replaces. `view.rs` renders
+            // a "{PROJECT} — WORKTREES" header per project run (detected by
+            // the same "root_mode but rows contain a Combo" signal used
+            // here) and a persistent "starts a session" row hint in place of
+            // the recents list's per-row digit accelerator.
+            if rows.is_empty() && !self.app.available_agents.is_empty() {
+                let proj_order =
+                    root_project_order(self.app.store.projects.len(), self.app.proj_idx);
+                let mut count = 0;
+                'projects: for proj in proj_order {
+                    let Some(p) = self.app.store.projects.get(proj) else {
+                        continue;
+                    };
+                    for w in self.launcher_worktrees(proj) {
+                        if count >= 6 {
+                            break 'projects;
+                        }
+                        let agent = self
+                            .app
+                            .store
+                            .recent_launches
+                            .iter()
+                            .find(|r| r.project == p.name && r.wt_path == w.path)
+                            .map(|r| r.agent)
+                            .unwrap_or(self.app.available_agents[0]);
+                        rows.push(PaletteRow::Combo {
+                            proj,
+                            wt_path: w.path.clone(),
+                            agent,
+                        });
+                        count += 1;
+                    }
+                }
+            }
             rows.push(PaletteRow::NewSession);
             rows.push(PaletteRow::TerminalHome);
             if self.app.active_session.is_some() && !self.terminal_focused {
@@ -5159,6 +5246,13 @@ impl Grove {
                     rows.push(PaletteRow::Setting(s));
                 }
             }
+            // Score every (project, worktree) combo, keep only the ones that
+            // match at all, then rank by score desc with a recency tiebreak:
+            // a combo whose (project, wt_path) sits earlier in
+            // `recent_launches` wins a tie (`sort_by` is stable, so combos
+            // absent from recents — tied at `usize::MAX` — keep their
+            // relative store order).
+            let mut scored: Vec<(u32, usize, PaletteRow)> = Vec::new();
             for (proj, p) in self.app.store.projects.iter().enumerate() {
                 for w in self.launcher_worktrees(proj) {
                     let name = if w.branch.is_empty() {
@@ -5174,16 +5268,30 @@ impl Grove {
                         .find(|r| r.project == p.name && r.wt_path == w.path)
                         .map(|r| r.agent)
                         .unwrap_or(self.app.available_agents[0]);
-                    if !crate::gui::launcher::fuzzy_match(input, &p.name, &name, agent.label()) {
+                    let Some(score) =
+                        crate::gui::launcher::fuzzy_score(input, &p.name, &name, agent.label())
+                    else {
                         continue;
-                    }
-                    rows.push(PaletteRow::Combo {
-                        proj,
-                        wt_path: w.path.clone(),
-                        agent,
-                    });
+                    };
+                    let recency = self
+                        .app
+                        .store
+                        .recent_launches
+                        .iter()
+                        .position(|r| r.project == p.name && r.wt_path == w.path)
+                        .unwrap_or(usize::MAX);
+                    scored.push((
+                        score,
+                        recency,
+                        PaletteRow::Combo {
+                            proj,
+                            wt_path: w.path.clone(),
+                            agent,
+                        },
+                    ));
                 }
             }
+            rows.extend(rank_and_group_combos(scored));
             // Typing (not the "+ new session…" browse-all list): the ACTIONS
             // rows stay reachable by keyword, e.g. "swi" -> "Switch to
             // session…" (D5 in the palette redesign mock).
@@ -5218,7 +5326,7 @@ impl Grove {
     /// zen (`!chrome_visible` — the flag `Msg::ToggleZen`/mod+enter flips).
     /// Outside zen the workspace/grid already shows every session, so
     /// opening the drill-in would be redundant there; the row still renders
-    /// (muted, "zen only") but Enter/Tab on it are no-ops.
+    /// (muted, "in zen · ⌘⏎") but Enter/Tab on it are no-ops.
     pub(super) fn switch_to_session_active(&self) -> bool {
         self.switch_to_session_row_visible() && !self.app.chrome_visible
     }
@@ -5245,6 +5353,86 @@ impl Grove {
     fn launcher_switch_to(&mut self, si: usize) -> Task<Msg> {
         self.app.modal = Modal::None;
         self.update(Msg::SelectSession(si))
+    }
+
+    /// Move the "switch to session" drill-in's cursor to position `idx`
+    /// within `switch_session_rows(&input)` and capture that row's session
+    /// `id` in the same step — same principle as `set_palette_selected`,
+    /// applied to this drill-in's own list. Reads `input` off the *current*
+    /// modal state, so callers must clear/update it first.
+    fn set_switch_selected(&mut self, idx: usize) {
+        let input = match &self.app.modal {
+            Modal::SessionLauncher { input, .. } => input.clone(),
+            _ => return,
+        };
+        let rows = self.switch_session_rows(&input);
+        let identity = rows
+            .get(idx)
+            .and_then(|&si| self.app.sessions.get(si))
+            .map(|s| s.id);
+        if let Modal::SessionLauncher {
+            switch,
+            switch_identity,
+            ..
+        } = &mut self.app.modal
+        {
+            *switch = Some(idx);
+            *switch_identity = identity;
+        }
+    }
+
+    /// The position (within a freshly filtered `switch_session_rows(input)`)
+    /// of the session at `switch_identity` — used to re-anchor the drill-in
+    /// cursor after `input` itself changes (a query edit can reorder/drop
+    /// rows in the filtered list, so clamping the raw position, the old
+    /// behavior, could land on a different session than the one
+    /// highlighted). Defaults to the top of the list when there's no
+    /// identity yet, or that session no longer matches the new query.
+    fn resolve_switch_position(&self, input: &str) -> usize {
+        let identity = match &self.app.modal {
+            Modal::SessionLauncher {
+                switch_identity, ..
+            } => *switch_identity,
+            _ => None,
+        };
+        let rows = self.switch_session_rows(input);
+        match identity {
+            Some(id) => rows
+                .iter()
+                .position(|&si| self.app.sessions.get(si).map(|s| s.id) == Some(id))
+                .unwrap_or(0),
+            None => 0,
+        }
+    }
+
+    /// Resolve the switch drill-in's Enter target: the `App::sessions` index
+    /// whose `id` matches `switch_identity`, re-derived against a fresh
+    /// `switch_session_rows` rather than trusting the drill-in's raw cursor
+    /// position — the same staleness hazard `resolve_selected` closes for
+    /// the main list (a session closing/reordering between two keystrokes
+    /// can't make Enter switch to a different session than the one
+    /// highlighted). `Session::id` is the identity here rather than
+    /// `PaletteRowIdentity`, since a switch-drill-in row already *is* a
+    /// session, with its own stable, never-reused id (see
+    /// `crate::gui::launcher::session_grid_key` for the analogous
+    /// project+path key used elsewhere — an id is simpler and available
+    /// here).
+    fn resolve_switch_selected(&self, input: &str) -> Option<usize> {
+        let (sel, identity) = match &self.app.modal {
+            Modal::SessionLauncher {
+                switch: Some(sel),
+                switch_identity,
+                ..
+            } => (*sel, *switch_identity),
+            _ => return None,
+        };
+        let rows = self.switch_session_rows(input);
+        match identity {
+            Some(id) => rows
+                .into_iter()
+                .find(|&si| self.app.sessions.get(si).map(|s| s.id) == Some(id)),
+            None => rows.get(sel).copied(),
+        }
     }
 
     /// Run the row-actions strip action `action` for the `(proj, wt_path)`
@@ -5614,7 +5802,7 @@ pub(super) enum PaletteRow {
 /// rows (`Theme`/`Backend`/`Permissions`/`DefaultAgent`/`AppSize`) are a
 /// later phase; here they're inert stubs (see `Grove::activate_setting`).
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub(super) enum SettingRow {
+pub(crate) enum SettingRow {
     Theme,
     AppSize,
     ProjectThemes,
@@ -5843,6 +6031,100 @@ pub(super) fn nth_session_row(rows: &[PaletteRow], n: usize) -> Option<usize> {
         .filter(|(_, r)| matches!(r, PaletteRow::Recent { .. } | PaletteRow::Combo { .. }))
         .nth(n.checked_sub(1)?)
         .map(|(i, _)| i)
+}
+
+/// A row's [`PaletteRowIdentity`] — the content-based key `resolve_row_by_
+/// identity` matches against, decoupled from the row's transient index.
+pub(super) fn row_identity(row: &PaletteRow) -> PaletteRowIdentity {
+    match row {
+        PaletteRow::Recent {
+            proj,
+            wt_path,
+            agent,
+        }
+        | PaletteRow::Combo {
+            proj,
+            wt_path,
+            agent,
+        } => PaletteRowIdentity::Session {
+            proj: *proj,
+            wt_path: wt_path.clone(),
+            agent: *agent,
+        },
+        PaletteRow::NewSession => PaletteRowIdentity::NewSession,
+        PaletteRow::TerminalHome => PaletteRowIdentity::TerminalHome,
+        PaletteRow::TerminalWt => PaletteRowIdentity::TerminalWt,
+        PaletteRow::AddProject => PaletteRowIdentity::AddProject,
+        PaletteRow::SwitchToSession => PaletteRowIdentity::SwitchToSession,
+        PaletteRow::Settings => PaletteRowIdentity::Settings,
+        PaletteRow::Setting(s) => PaletteRowIdentity::Setting(*s),
+    }
+}
+
+/// Resolve an activation target by identity rather than by trusting a
+/// possibly-stale index: `identity` is the row that was highlighted the last
+/// time `selected` was written (see `Grove::set_palette_selected`); this
+/// finds that same row wherever it now sits in a freshly rebuilt `rows`
+/// (self-healing past a re-sort/re-group/re-filter that happened since), or
+/// reports `None` if it's simply gone — it never falls back to activating
+/// whatever row now happens to sit at the stale index. `fallback` only
+/// applies when `identity` itself is `None` (defensive: a state that hasn't
+/// captured one yet).
+pub(super) fn resolve_row_by_identity(
+    rows: &[PaletteRow],
+    identity: &Option<PaletteRowIdentity>,
+    fallback: usize,
+) -> Option<usize> {
+    match identity {
+        Some(id) => rows.iter().position(|r| row_identity(r) == *id),
+        None => (fallback < rows.len()).then_some(fallback),
+    }
+}
+
+/// Rank the typed/browse-all Combo list: score desc, recency asc as a
+/// tiebreak (`sort_by` is stable, so combos absent from recents — tied at
+/// `usize::MAX` — keep their relative store-build order), then re-cluster
+/// into per-project runs once the list is too broad to read as one flat
+/// ranking (see `view.rs`'s header logic, which recomputes the same
+/// threshold from the returned rows rather than trusting a flag).
+pub(super) fn rank_and_group_combos(mut scored: Vec<(u32, usize, PaletteRow)>) -> Vec<PaletteRow> {
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut combos: Vec<PaletteRow> = scored.into_iter().map(|(_, _, r)| r).collect();
+    let mut project_order: Vec<usize> = Vec::new();
+    for r in &combos {
+        if let PaletteRow::Combo { proj, .. } = r {
+            if !project_order.contains(proj) {
+                project_order.push(*proj);
+            }
+        }
+    }
+    if project_order.len() > 2 || combos.len() > 10 {
+        let mut grouped = Vec::with_capacity(combos.len());
+        for proj in project_order {
+            grouped.extend(
+                combos
+                    .iter()
+                    .filter(|r| matches!(r, PaletteRow::Combo { proj: p, .. } if *p == proj))
+                    .cloned(),
+            );
+        }
+        combos = grouped;
+    }
+    combos
+}
+
+/// Project visit order for the root state's no-recents worktree fallback:
+/// the active project first, then every other project in store order.
+/// Clamps `active` into range so a stale index (project removed mid-session)
+/// can't panic.
+pub(super) fn root_project_order(n: usize, active: usize) -> Vec<usize> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let first = active.min(n - 1);
+    let mut order = vec![first];
+    order.extend((0..n).filter(|&i| i != first));
+    order
 }
 
 /// The three states of the Theme sub-pane's mode row, in Tab-cycle order.
@@ -7622,6 +7904,207 @@ mod tests {
         ];
         assert_eq!(nth_session_row(&root, 1), Some(0));
         assert_eq!(nth_session_row(&root, 2), None);
+    }
+
+    #[test]
+    fn resolve_row_by_identity_follows_the_row_after_a_synthetic_reorder() {
+        use super::{resolve_row_by_identity, row_identity, PaletteRow};
+        use crate::agent::Agent;
+        let combo = |proj: usize| PaletteRow::Combo {
+            proj,
+            wt_path: format!("/wt/{proj}"),
+            agent: Agent::Claude,
+        };
+        // The user highlighted combo(1) (index 1) and its identity was
+        // captured then — simulating `set_palette_selected`.
+        let rendered = vec![combo(0), combo(1), combo(2)];
+        let identity = Some(row_identity(&rendered[1]));
+        // Before Enter lands, something reorders the list out from under
+        // the stale index (e.g. a re-rank/re-group pass, or an async
+        // recents update) — combo(1) is now at index 0, not 1.
+        let mutated = vec![combo(1), combo(0), combo(2)];
+        // A naive `mutated.get(1)` would now resolve to combo(0) — the
+        // wrong row. Identity resolution finds combo(1) wherever it moved.
+        assert_eq!(resolve_row_by_identity(&mutated, &identity, 1), Some(0));
+    }
+
+    #[test]
+    fn resolve_row_by_identity_refuses_to_substitute_a_different_row() {
+        use super::{resolve_row_by_identity, row_identity, PaletteRow};
+        use crate::agent::Agent;
+        let combo = |proj: usize| PaletteRow::Combo {
+            proj,
+            wt_path: format!("/wt/{proj}"),
+            agent: Agent::Claude,
+        };
+        let identity = Some(row_identity(&combo(1)));
+        // combo(1) is simply gone from the rebuilt list (worktree removed,
+        // filtered out, …): must not silently activate whatever now sits at
+        // the stale index instead.
+        let mutated = vec![combo(0), combo(2)];
+        assert_eq!(resolve_row_by_identity(&mutated, &identity, 1), None);
+    }
+
+    #[test]
+    fn resolve_row_by_identity_falls_back_to_index_with_no_identity() {
+        use super::{resolve_row_by_identity, PaletteRow};
+        use crate::agent::Agent;
+        let combo = |proj: usize| PaletteRow::Combo {
+            proj,
+            wt_path: format!("/wt/{proj}"),
+            agent: Agent::Claude,
+        };
+        let rows = vec![combo(0), combo(1)];
+        // No identity captured yet: falls back to the raw index (clamped to
+        // the list bounds).
+        assert_eq!(resolve_row_by_identity(&rows, &None, 1), Some(1));
+        assert_eq!(resolve_row_by_identity(&rows, &None, 5), None);
+    }
+
+    #[test]
+    fn row_identity_distinguishes_action_and_setting_rows() {
+        use super::{row_identity, PaletteRow};
+        // Action/singleton rows carry no per-row data, but must still
+        // compare unequal to each other so a stale identity can't match
+        // the wrong action.
+        assert!(row_identity(&PaletteRow::NewSession) != row_identity(&PaletteRow::AddProject));
+        assert_eq!(
+            row_identity(&PaletteRow::Setting(SettingRow::Theme)),
+            row_identity(&PaletteRow::Setting(SettingRow::Theme))
+        );
+        assert!(
+            row_identity(&PaletteRow::Setting(SettingRow::Theme))
+                != row_identity(&PaletteRow::Setting(SettingRow::Telemetry))
+        );
+    }
+
+    #[test]
+    fn rank_and_group_combos_orders_by_score_then_recency() {
+        use super::{rank_and_group_combos, PaletteRow};
+        use crate::agent::Agent;
+        let combo = |proj: usize, path: &str| PaletteRow::Combo {
+            proj,
+            wt_path: path.into(),
+            agent: Agent::Claude,
+        };
+        // Two combos tie on score (10): the one at recency index 0 (earlier
+        // in `recent_launches`) must sort first, even though it was pushed
+        // second.
+        let scored = vec![
+            (10, usize::MAX, combo(0, "/b")),
+            (10, 0, combo(0, "/a")),
+            (5, usize::MAX, combo(0, "/c")),
+        ];
+        let ranked = rank_and_group_combos(scored);
+        let paths: Vec<&str> = ranked
+            .iter()
+            .map(|r| match r {
+                PaletteRow::Combo { wt_path, .. } => wt_path.as_str(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(paths, vec!["/a", "/b", "/c"]);
+    }
+
+    #[test]
+    fn rank_and_group_combos_ties_with_no_recency_keep_store_order() {
+        use super::{rank_and_group_combos, PaletteRow};
+        use crate::agent::Agent;
+        let combo = |path: &str| PaletteRow::Combo {
+            proj: 0,
+            wt_path: path.into(),
+            agent: Agent::Claude,
+        };
+        // Both tied at usize::MAX (absent from recents): stable sort keeps
+        // their original (store) relative order.
+        let scored = vec![
+            (10, usize::MAX, combo("/first")),
+            (10, usize::MAX, combo("/second")),
+        ];
+        let ranked = rank_and_group_combos(scored);
+        let paths: Vec<&str> = ranked
+            .iter()
+            .map(|r| match r {
+                PaletteRow::Combo { wt_path, .. } => wt_path.as_str(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(paths, vec!["/first", "/second"]);
+    }
+
+    #[test]
+    fn rank_and_group_combos_groups_by_project_above_threshold() {
+        use super::{rank_and_group_combos, PaletteRow};
+        use crate::agent::Agent;
+        let combo = |proj: usize, path: &str, score: u32| {
+            (
+                score,
+                usize::MAX,
+                PaletteRow::Combo {
+                    proj,
+                    wt_path: path.into(),
+                    agent: Agent::Claude,
+                },
+            )
+        };
+        // 3 distinct projects (over the 2-project threshold): re-clustered
+        // by project, each project's run led by its own best-scored row —
+        // project 1's best (20) beats project 0's best (15), so project 1's
+        // whole run comes first.
+        let scored = vec![
+            combo(0, "/p0/a", 15),
+            combo(1, "/p1/a", 20),
+            combo(2, "/p2/a", 5),
+            combo(0, "/p0/b", 10),
+            combo(1, "/p1/b", 8),
+        ];
+        let ranked = rank_and_group_combos(scored);
+        let projects: Vec<usize> = ranked
+            .iter()
+            .map(|r| match r {
+                PaletteRow::Combo { proj, .. } => *proj,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(projects, vec![1, 1, 0, 0, 2]);
+    }
+
+    #[test]
+    fn rank_and_group_combos_stays_flat_at_or_below_threshold() {
+        use super::{rank_and_group_combos, PaletteRow};
+        use crate::agent::Agent;
+        let combo = |proj: usize, path: &str, score: u32| {
+            (
+                score,
+                usize::MAX,
+                PaletteRow::Combo {
+                    proj,
+                    wt_path: path.into(),
+                    agent: Agent::Claude,
+                },
+            )
+        };
+        // Exactly 2 distinct projects, ≤10 rows: flat rank order, untouched.
+        let scored = vec![combo(0, "/p0/a", 5), combo(1, "/p1/a", 20)];
+        let ranked = rank_and_group_combos(scored);
+        let projects: Vec<usize> = ranked
+            .iter()
+            .map(|r| match r {
+                PaletteRow::Combo { proj, .. } => *proj,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(projects, vec![1, 0]);
+    }
+
+    #[test]
+    fn root_project_order_puts_active_first_then_clamps_stale_index() {
+        use super::root_project_order;
+        assert_eq!(root_project_order(3, 1), vec![1, 0, 2]);
+        assert_eq!(root_project_order(3, 0), vec![0, 1, 2]);
+        // Stale/out-of-range active index clamps rather than panicking.
+        assert_eq!(root_project_order(3, 99), vec![2, 0, 1]);
+        assert_eq!(root_project_order(0, 0), Vec::<usize>::new());
     }
 
     #[test]

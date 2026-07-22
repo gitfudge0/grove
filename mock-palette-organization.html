@@ -1,0 +1,1176 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8" />
+<title>Session Launcher — Ranking &amp; Organization Review</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    /* tokyonight-day (light) */
+    --bg: #e1e2e7;
+    --bg-rail: #d5d6dd;
+    --bg-strip: #cacbd4;
+    --bg-highlight: #c4c8da;
+    --bg-hover: #cdd0dd;
+    --fg: #3760bf;
+    --fg-dim: #6172b0;
+    --fg-mute: #848cb5;
+    --border: #b7bad0;
+    --border-soft: #d3d5e2;
+    --cyan: #007197;
+    --cyan-rgb: 0,113,151;
+    --magenta: #9854f1;
+    --blue: #2e7de9;
+    --green: #587539;
+    --yellow: #8c6c3e;
+    --red: #f52a65;
+
+    --board-bg: #eceef2;
+    --surface: #f4f5f8;
+    --primary: var(--blue);
+    --radius: 8px;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  html.dark {
+    /* TokyoNight (dark) */
+    --bg: #1a1b26;
+    --bg-rail: #15161f;
+    --bg-strip: #12121a;
+    --bg-highlight: #292e42;
+    --bg-hover: #222535;
+    --fg: #c0caf5;
+    --fg-dim: #a9b1d6;
+    --fg-mute: #565f89;
+    --border: #353747;
+    --border-soft: #262734;
+    --cyan: #7dcfff;
+    --cyan-rgb: 125,207,255;
+    --magenta: #bb9af7;
+    --blue: #7aa2f7;
+    --green: #9ece6a;
+    --yellow: #e0af68;
+    --red: #f7768e;
+
+    --board-bg: #101116;
+    --surface: #1e2030;
+  }
+  html.dark #viewport { background-image: radial-gradient(circle, #23252f 1px, transparent 1px); }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--board-bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow: hidden;
+  }
+
+  #viewport {
+    position: fixed; inset: 0; overflow: hidden; cursor: grab;
+    background-image: radial-gradient(circle, #cfd1da 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  #viewport.panning { cursor: grabbing; }
+  #canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; padding: 60px; width: max-content; }
+
+  .hud {
+    position: fixed; right: 16px; bottom: 16px; z-index: 10; display: flex; gap: 6px; align-items: center;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px;
+    font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.25); color: var(--fg);
+  }
+  .hud button { border: 1px solid var(--border); background: var(--surface); color: var(--fg); border-radius: 5px; padding: 3px 9px; font: inherit; cursor: pointer; }
+  .hud .zoom-pct { min-width: 42px; text-align: center; color: var(--fg-mute); }
+  .theme-toggle {
+    position: fixed; right: 16px; top: 16px; z-index: 10; border: 1px solid var(--border);
+    background: var(--surface); color: var(--fg); border-radius: 9999px; padding: 7px 14px;
+    font: inherit; font-size: 13px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+  }
+
+  .page-header { margin-bottom: 36px; max-width: 980px; }
+  .page-header h1 { font-size: 26px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .page-header .subtitle { font-size: 14px; color: var(--fg-mute); margin: 0 0 18px; max-width: 820px; line-height: 1.5; }
+  .legend {
+    display: inline-flex; gap: 18px; flex-wrap: wrap; align-items: center;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px 16px; font-size: 12px; color: var(--fg-mute);
+  }
+  .legend b { color: var(--fg); }
+  .legend .tag { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .swatch.before { background: var(--red); }
+  .swatch.after { background: var(--green); }
+
+  .section-heading {
+    font-size: 18px; font-weight: 700; margin: 56px 0 6px; padding-bottom: 8px;
+    border-bottom: 2px solid var(--border); display: flex; align-items: baseline; gap: 10px;
+  }
+  .section-letter {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; border-radius: 6px;
+    background: var(--primary); color: #0c0d12; font-size: 13px; font-weight: 700;
+  }
+
+  .frame-row { display: flex; gap: 30px; margin-top: 22px; align-items: flex-start; position: relative; flex-wrap: wrap; }
+  .frame { position: relative; }
+  .frame-caption { margin-bottom: 10px; max-width: 640px; }
+  .frame-id {
+    display: inline-block; font-size: 11px; font-weight: 800; letter-spacing: 0.02em;
+    color: #14151d; border-radius: 4px; padding: 2px 7px; margin-right: 8px;
+    background: var(--cyan);
+  }
+  .frame-id.before { background: var(--red); }
+  .frame-id.after { background: var(--green); }
+  .frame-name { font-size: 14px; font-weight: 600; color: var(--fg); }
+  .frame-desc { font-size: 12px; color: var(--fg-mute); margin: 4px 0 0; line-height: 1.5; }
+  .frame-desc code { font-family: var(--mono); background: var(--bg-highlight); padding: 1px 4px; border-radius: 3px; }
+
+  .frame-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15), 0 8px 24px rgba(0,0,0,0.12); overflow: hidden;
+  }
+
+  .connector-row { display: flex; align-items: center; color: var(--fg-mute); font-size: 22px; align-self: center; padding-top: 130px; }
+
+  .sticky-note {
+    display: inline-block; background: #fff8c5; border: 1px solid #e6d97a; color: #4a4320;
+    font-size: 12.5px; line-height: 1.55; padding: 14px 16px; max-width: 460px; border-radius: 3px;
+    box-shadow: 0 6px 16px rgba(0,0,0,0.3); transform: rotate(-1.2deg); margin: 34px 22px;
+  }
+  .sticky-note b { color: #2c2810; }
+  .sticky-note code { background: rgba(0,0,0,0.08); padding: 1px 4px; border-radius: 3px; }
+
+  @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
+  .pulse-el { animation: pulse 1.1s ease-in-out infinite; }
+
+  .scrim-swatch {
+    width: 720px; position: relative; display: flex; justify-content: center;
+    background: var(--bg); padding: 56px 40px 40px;
+  }
+  .scrim-swatch::after { content: ""; position: absolute; inset: 0; background: rgba(0,0,0,0.42); pointer-events: none; }
+  .scrim-swatch > * { position: relative; z-index: 1; }
+
+  /* palette panel (matches redesign's np- naming) */
+  .np-panel {
+    width: 640px; background: var(--bg-rail); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5); overflow: hidden;
+  }
+  .np-input-zone { display: flex; align-items: center; gap: 10px; padding: 14px 16px; }
+  .np-input-zone svg { width: 16px; height: 16px; color: var(--fg-mute); flex-shrink: 0; }
+  .np-input-zone .ph { font-size: 14px; color: var(--fg-mute); }
+  .np-input-zone .typed { font-size: 14px; color: var(--fg); font-family: var(--mono); }
+  .np-caret { display: inline-block; width: 1px; height: 15px; background: var(--cyan); margin-left: 1px; vertical-align: middle; }
+  .np-divider { border-top: 1px solid var(--border-soft); }
+
+  .np-list { padding: 8px 8px; max-height: 460px; overflow: hidden; }
+  .np-section {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--fg-mute); padding-left: 12px; margin: 12px 0 6px;
+  }
+  .np-section.first { margin-top: 0; }
+  .np-group-header {
+    font-size: 11px; color: var(--fg-mute); padding: 6px 12px 2px; margin-top: 2px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .np-group-header .ln { flex: 1; height: 1px; background: var(--border-soft); }
+
+  .np-row {
+    display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 12px;
+    border-radius: 6px; margin-bottom: 2px; position: relative;
+  }
+  .np-row:last-child { margin-bottom: 0; }
+  .np-row:hover { background: var(--bg-hover); }
+  .np-row.active {
+    color: var(--cyan);
+    background: linear-gradient(to right, rgba(var(--cyan-rgb),.22), rgba(var(--cyan-rgb),.10));
+    box-shadow: inset 0 0 0 1px rgba(var(--cyan-rgb),.5);
+  }
+  .np-row.active::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; border-radius: 2px; background: var(--cyan); }
+  .np-row-icon { width: 24px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+  .np-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .np-row-title { font-size: 13px; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .np-row.active .np-row-title { color: var(--cyan); }
+  .np-row-sub { font-family: var(--mono); font-size: 10.5px; color: var(--fg-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .np-row-title .fz, .np-row-sub .fz { color: var(--cyan); font-weight: 600; }
+  .np-magenta { color: var(--magenta) !important; }
+  .np-row-rhs { margin-left: auto; flex-shrink: 0; display: flex; align-items: center; gap: 6px; }
+
+  .np-keycap {
+    font-family: var(--mono); font-size: 11px; padding: 2px 6px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 4px; color: var(--fg-dim); flex-shrink: 0;
+  }
+  .np-keycap.dim { color: var(--fg-mute); }
+
+  .np-chip {
+    font-family: var(--mono); font-size: 10px; border: 1px solid var(--border); border-radius: 9999px;
+    padding: 2px 8px; color: var(--fg-mute); flex-shrink: 0;
+  }
+  .np-affix { font-family: var(--mono); font-size: 10px; color: var(--green); flex-shrink: 0; }
+
+  .np-footer {
+    background: var(--bg-strip); border-top: 1px solid var(--border-soft); padding: 8px 16px;
+    border-radius: 0 0 12px 12px; display: flex; align-items: center; gap: 14px;
+    font-family: var(--mono); font-size: 10px; color: var(--fg-mute); flex-wrap: wrap;
+  }
+  .np-footer .np-keycap { margin-right: 4px; }
+  .np-footer .hint-dim { color: var(--border); }
+
+  .np-empty { padding: 30px 16px; text-align: center; font-size: 12px; color: var(--fg-mute); }
+
+  /* row-actions strip */
+  .np-actions-strip {
+    margin: 2px 8px 6px; padding: 8px 10px; border-radius: 8px;
+    background: var(--bg-strip); border: 1px solid var(--border-soft);
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  }
+  .np-action-btn {
+    font-size: 11px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border-soft);
+    background: var(--bg-highlight); color: var(--fg); display: inline-flex; align-items: center; gap: 5px;
+  }
+  .np-action-btn.destructive { color: var(--red); }
+  .np-action-script {
+    font-family: var(--mono); font-size: 10px; padding: 4px 8px; border-radius: 5px;
+    border: 1px dashed var(--border); color: var(--fg-mute);
+  }
+
+  /* disabled row */
+  .np-row.disabled { opacity: 0.62; cursor: default; }
+  .np-row.disabled:hover { background: transparent; }
+  .np-row.disabled .np-row-title { color: var(--fg-mute); }
+  .np-row-hint-right { font-size: 10.5px; font-family: var(--mono); color: var(--fg-mute); margin-left: auto; white-space: nowrap; }
+
+  .before-tag {
+    position: absolute; top: -12px; right: -10px; background: var(--red); color: #14151d;
+    font-size: 10px; font-weight: 800; letter-spacing: 0.03em; padding: 3px 8px; border-radius: 4px;
+    transform: rotate(4deg); box-shadow: 0 2px 6px rgba(0,0,0,0.3); z-index: 2;
+  }
+
+  /* ---- desktop app chrome (Section A in-context frame) ---- */
+  .desktop { background: var(--bg); display: flex; flex-direction: column; position: relative; overflow: hidden; }
+  .appbar { height: 34px; background: var(--bg-strip); display: flex; align-items: center; padding: 0 12px; gap: 12px; flex-shrink: 0; border-bottom: 1px solid var(--border-soft); }
+  .traffic { display: flex; gap: 7px; }
+  .traffic span { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+  .traffic .r { background: #f7768e; }
+  .traffic .a { background: #e0af68; }
+  .traffic .g { background: #9ece6a; }
+  .appbar .app-name { font-family: var(--mono); font-size: 11px; color: var(--fg-mute); }
+  .appbar .right { margin-left: auto; display: flex; align-items: center; gap: 10px; color: var(--fg-mute); font-size: 12px; }
+  .statusbar { height: 26px; background: var(--bg-strip); display: flex; align-items: center; justify-content: space-between; padding: 0 12px; flex-shrink: 0; border-top: 1px solid var(--border-soft); font-family: var(--mono); font-size: 10px; color: var(--fg-mute); }
+  .statusbar .running { color: var(--green); }
+
+  .grid2 { flex: 1; display: grid; grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr; gap: 10px; padding: 10px; min-height: 0; background: var(--bg); }
+  .gtile { background: #1a1b26; border: 1px solid var(--border-soft); border-radius: 6px; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+  .gtile-header { height: 26px; background: #12121a; display: flex; align-items: center; gap: 6px; padding: 0 8px; font-family: var(--mono); font-size: 10.5px; color: #a9b1d6; flex-shrink: 0; }
+  .gtile-header .dot { width: 6px; height: 6px; border-radius: 50%; margin-left: auto; }
+  .gtile-header .dot.green { background: #9ece6a; }
+  .gtile-header .dot.amber { background: #e0af68; }
+  .gtile-body { flex: 1; font-family: var(--mono); font-size: 10px; color: #565f89; line-height: 1.6; padding: 6px 10px; overflow: hidden; }
+  .gtile-body .q { color: #c0caf5; }
+  .gtile-body .ok { color: #9ece6a; }
+
+  .desktop-scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.42); }
+  .desktop-palette-slot { position: absolute; left: 50%; transform: translateX(-50%); top: 96px; }
+</style>
+</head>
+<body>
+<button class="theme-toggle" id="themeToggle" type="button">☀ Light</button>
+<div class="hud">
+  <button type="button" id="zoomOut">−</button>
+  <span class="zoom-pct" id="zoomPct">100%</span>
+  <button type="button" id="zoomIn">+</button>
+  <button type="button" id="zoomFit">Fit</button>
+</div>
+<div id="viewport">
+<div id="canvas">
+
+  <div class="page-header">
+    <h1>Session Launcher — Ranking &amp; Organization Review</h1>
+    <p class="subtitle">Grove's ⌘N command palette organizes projects × git worktrees. This mock captures the four-persona review's agreed improvements: ranked typed results, consistent section headers, a project-grouping threshold, root states that teach rather than sit empty, a discoverable row-actions strip, and an explained (not cryptic) disabled row.</p>
+    <div class="legend">
+      <span class="tag"><span class="swatch before"></span><b>TODAY</b> = current behavior</span>
+      <span class="tag"><span class="swatch after"></span><b>IMPROVED</b> = proposed behavior</span>
+      <span class="tag">Frame IDs (e.g. <b>A1</b>, <b>B2</b>) group related states; &rarr; shows the flow between them</span>
+    </div>
+  </div>
+
+  <!-- ================= SECTION A ================= -->
+  <div class="section-heading"><span class="section-letter">A</span> In Context</div>
+  <div class="frame-row">
+
+    <!-- A1 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">A1</span><span class="frame-name">Palette open over a live session grid</span>
+        <p class="frame-desc">640px panel centered over a dimmed 3-tile session grid. This is the improved root state — see E1 for the full detail.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="desktop" style="width:1280px; height:800px;">
+          <div class="appbar">
+            <div class="traffic"><span class="r"></span><span class="a"></span><span class="g"></span></div>
+            <span class="app-name">grove</span>
+            <div class="right"><span>v0.38.0</span></div>
+          </div>
+          <div class="grid2">
+            <div class="gtile">
+              <div class="gtile-header">&#10022; claude &mdash; grove/main<span class="dot green"></span></div>
+              <div class="gtile-body">
+                <div>$ cargo build --release</div>
+                <div class="ok">Finished release [optimized] target(s) in 41.2s</div>
+                <div class="q">&#9679; running tests&hellip;</div>
+              </div>
+            </div>
+            <div class="gtile">
+              <div class="gtile-header">&#10022; claude &mdash; higgs-api/fix/rank<span class="dot amber"></span></div>
+              <div class="gtile-body">
+                <div>$ npm test</div>
+                <div>12 passing</div>
+                <div class="q">&#9679; waiting on you&hellip;</div>
+              </div>
+            </div>
+            <div class="gtile">
+              <div class="gtile-header">&#10022; claude &mdash; careconvoy/main<span class="dot green"></span></div>
+              <div class="gtile-body">
+                <div>$ ./install.sh</div>
+                <div>installing dotfiles&hellip;</div>
+                <div class="ok">&#10003; done</div>
+              </div>
+            </div>
+          </div>
+          <div class="statusbar"><span class="running">&#9679; 3 running</span><span>v0.38.0</span></div>
+
+          <div class="desktop-scrim"></div>
+          <div class="desktop-palette-slot">
+            <div class="np-panel">
+              <div class="np-input-zone">
+                <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                <span class="ph">Search projects, worktrees, agents&hellip;</span>
+              </div>
+              <div class="np-divider"></div>
+              <div class="np-list">
+                <div class="np-section first">RECENT</div>
+                <div class="np-row active">
+                  <span class="np-row-icon" style="color:var(--yellow);">&#10022;</span>
+                  <div class="np-row-text">
+                    <span class="np-row-title">grove / main</span>
+                    <span class="np-row-sub">claude</span>
+                  </div>
+                  <span class="np-row-rhs"><span class="np-keycap">1</span></span>
+                </div>
+                <div class="np-row">
+                  <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                  <div class="np-row-text">
+                    <span class="np-row-title">higgs-api / fix/rank</span>
+                    <span class="np-row-sub">claude</span>
+                  </div>
+                  <span class="np-row-rhs"><span class="np-keycap dim">2</span></span>
+                </div>
+                <div class="np-row">
+                  <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                  <div class="np-row-text">
+                    <span class="np-row-title">careconvoy / main</span>
+                    <span class="np-row-sub">claude</span>
+                  </div>
+                  <span class="np-row-rhs"><span class="np-keycap dim">3</span></span>
+                </div>
+                <div class="np-section">ACTIONS</div>
+                <div class="np-row">
+                  <span class="np-row-icon" style="color:var(--magenta);">&#65291;</span>
+                  <span class="np-row-title np-magenta">New session&hellip;</span>
+                </div>
+              </div>
+              <div class="np-footer">
+                <span><span class="np-keycap">&#8593;&#8595;</span>navigate</span>
+                <span><span class="np-keycap">&#9166;</span>open</span>
+                <span><span class="np-keycap">tab</span>actions</span>
+                <span><span class="np-keycap">esc</span>close</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ================= SECTION B ================= -->
+  <div class="section-heading"><span class="section-letter">B</span> Ranking (query &ldquo;api&rdquo;)</div>
+  <div class="frame-row">
+
+    <!-- B1 -->
+    <div class="frame" style="position:relative;">
+      <span class="before-tag">CURRENT — REMOVE</span>
+      <div class="frame-caption">
+        <span class="frame-id before">B1</span><span class="frame-name">Store order (TODAY)</span>
+        <p class="frame-desc">Results appear in raw store order &mdash; whatever order projects/worktrees were created in. The best match, <code>higgs-api / main</code>, is buried 5th under looser and stale matches.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="scrim-swatch">
+          <div class="np-panel">
+            <div class="np-input-zone">
+              <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span class="typed">api<span class="np-caret pulse-el"></span></span>
+            </div>
+            <div class="np-divider"></div>
+            <div class="np-list">
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">careconvoy / rapid<span class="fz">-api</span>-glue</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">grove / feat/session-<span class="fz">api</span></span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">higgs-<span class="fz">api</span> / archive/v0-old</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&lt;&gt;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">higgs-<span class="fz">api</span> / fix/rank</span>
+                  <span class="np-row-sub">codex</span>
+                </div>
+              </div>
+              <div class="np-row active">
+                <span class="np-row-icon" style="color:var(--yellow);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">higgs-<span class="fz">api</span> / main</span>
+                  <span class="np-row-sub">claude &mdash; best match, launched 2m ago</span>
+                </div>
+              </div>
+            </div>
+            <div class="np-footer">
+              <span><span class="np-keycap">&#8593;&#8595;</span>navigate</span>
+              <span><span class="np-keycap">&#9166;</span>open</span>
+              <span><span class="np-keycap">esc</span>close</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <!-- B2 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id after">B2</span><span class="frame-name">Ranked, best match first (IMPROVED)</span>
+        <p class="frame-desc">Same query, same store &mdash; <code>higgs-api / main</code> now ranks first, with a "recent &middot; 2m ago" affix explaining why it's boosted. Looser matches (archived worktree, unrelated agent) sink.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="scrim-swatch">
+          <div class="np-panel">
+            <div class="np-input-zone">
+              <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span class="typed">api<span class="np-caret pulse-el"></span></span>
+            </div>
+            <div class="np-divider"></div>
+            <div class="np-list">
+              <div class="np-section first">SESSIONS</div>
+              <div class="np-row active">
+                <span class="np-row-icon" style="color:var(--yellow);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">higgs-<span class="fz">api</span> / main</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-affix">recent &middot; 2m ago</span></span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">grove / feat/session-<span class="fz">api</span></span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&lt;&gt;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">higgs-<span class="fz">api</span> / fix/rank</span>
+                  <span class="np-row-sub">codex</span>
+                </div>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">careconvoy / rapid-<span class="fz">api</span>-glue</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">higgs-<span class="fz">api</span> / archive/v0-old</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+              </div>
+            </div>
+            <div class="np-footer">
+              <span><span class="np-keycap">&#8593;&#8595;</span>navigate</span>
+              <span><span class="np-keycap">&#9166;</span>open</span>
+              <span><span class="np-keycap">tab</span>actions</span>
+              <span><span class="np-keycap">esc</span>close</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="sticky-note">
+    <b>Ranking formula:</b> score = match tightness (prefix bonus &gt; word-boundary bonus &gt; substring) as the primary key, with recency from <code>recent_launches</code> as a tiebreak only &mdash; a weak substring match never outranks a tight prefix match no matter how recent.
+  </div>
+
+  <!-- ================= SECTION C ================= -->
+  <div class="section-heading"><span class="section-letter">C</span> Grouping Threshold</div>
+  <div class="frame-row">
+
+    <!-- C1 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id after">C1</span><span class="frame-name">&le; 2 projects &mdash; headerless (query &ldquo;main&rdquo;)</span>
+        <p class="frame-desc">Results span only <code>grove</code> and <code>higgs-api</code> &mdash; a single flat SESSIONS list, no per-project subdividing. Grouping would add noise for this few rows.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="scrim-swatch">
+          <div class="np-panel">
+            <div class="np-input-zone">
+              <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span class="typed">main<span class="np-caret pulse-el"></span></span>
+            </div>
+            <div class="np-divider"></div>
+            <div class="np-list">
+              <div class="np-section first">SESSIONS</div>
+              <div class="np-row active">
+                <span class="np-row-icon" style="color:var(--yellow);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">grove / <span class="fz">main</span></span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap">1</span></span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">higgs-api / <span class="fz">main</span></span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+              </div>
+              <div class="np-section">ACTIONS</div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--magenta);">&#65291;</span>
+                <span class="np-row-title np-magenta">New session on a &ldquo;<span class="fz">main</span>&rdquo; worktree&hellip;</span>
+              </div>
+            </div>
+            <div class="np-footer">
+              <span><span class="np-keycap">&#8593;&#8595;</span>navigate</span>
+              <span><span class="np-keycap">&#9166;</span>open</span>
+              <span><span class="np-keycap">esc</span>close</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <!-- C2 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id after">C2</span><span class="frame-name">4 projects, ~12 rows &mdash; grouped (query &ldquo;fix&rdquo;)</span>
+        <p class="frame-desc">Once results span 4 projects, muted project-name group headers appear between clusters. Still one flat keyboard list &mdash; arrows move through rows regardless of the header in between.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="scrim-swatch">
+          <div class="np-panel">
+            <div class="np-input-zone">
+              <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span class="typed">fix<span class="np-caret pulse-el"></span></span>
+            </div>
+            <div class="np-divider"></div>
+            <div class="np-list" style="max-height:520px;">
+              <div class="np-section first">SESSIONS</div>
+              <div class="np-group-header">grove<span class="ln"></span></div>
+              <div class="np-row active">
+                <span class="np-row-icon" style="color:var(--yellow);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title"><span class="fz">fix</span>/palette-rank</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap">1</span></span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&lt;&gt;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title"><span class="fz">fix</span>/tile-scrim</span>
+                  <span class="np-row-sub">codex</span>
+                </div>
+              </div>
+              <div class="np-group-header">higgs-api<span class="ln"></span></div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title"><span class="fz">fix</span>/rank</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title"><span class="fz">fix</span>/auth-timeout</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+              </div>
+              <div class="np-group-header">careconvoy<span class="ln"></span></div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title"><span class="fz">fix</span>/rapid-glue</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+              </div>
+              <div class="np-group-header">dotfiles<span class="ln"></span></div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title"><span class="fz">fix</span>/zsh-prompt</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+              </div>
+              <div class="np-section">ACTIONS</div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--magenta);">&#65291;</span>
+                <span class="np-row-title np-magenta">New session on a &ldquo;<span class="fz">fix</span>&rdquo; worktree&hellip;</span>
+              </div>
+            </div>
+            <div class="np-footer">
+              <span><span class="np-keycap">&#8593;&#8595;</span>navigate</span>
+              <span><span class="np-keycap">&#9166;</span>open</span>
+              <span><span class="np-keycap">tab</span>actions</span>
+              <span><span class="np-keycap">esc</span>close</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="sticky-note">
+    <b>Threshold:</b> project group headers render only when the typed result set spans <b>&gt;2 projects</b> AND has <b>&ge;~10 rows</b>. Below that, headers are pure noise for a list you can already scan in one glance &mdash; C1 has 2 rows and 2 projects, well under either bound.
+  </div>
+
+  <!-- ================= SECTION D ================= -->
+  <div class="section-heading"><span class="section-letter">D</span> Consistent Section Headers</div>
+  <div class="frame-row">
+
+    <!-- D1 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id after">D1</span><span class="frame-name">All three headers present (query &ldquo;th&rdquo;)</span>
+        <p class="frame-desc">Query matches a theme setting, two worktrees, and nothing action-like &mdash; yet SETTINGS, SESSIONS, and ACTIONS all render, each with its content, so the taxonomy never looks arbitrary.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="scrim-swatch">
+          <div class="np-panel">
+            <div class="np-input-zone">
+              <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span class="typed">th<span class="np-caret pulse-el"></span></span>
+            </div>
+            <div class="np-divider"></div>
+            <div class="np-list">
+              <div class="np-section first">SETTINGS</div>
+              <div class="np-row active">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#9881;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">Project <span class="fz">th</span>eme&hellip;</span>
+                  <span class="np-row-sub">grove &middot; tokyonight</span>
+                </div>
+              </div>
+              <div class="np-section">SESSIONS</div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">grove / feat/session-<span class="fz">th</span>emes</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">careconvoy / <span class="fz">th</span>emed-charts</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+              </div>
+              <div class="np-section">ACTIONS</div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#9656;_</span>
+                <span class="np-row-title">Terminal in ~/<span class="fz">th</span>emes</span>
+              </div>
+            </div>
+            <div class="np-footer">
+              <span><span class="np-keycap">&#8593;&#8595;</span>navigate</span>
+              <span><span class="np-keycap">&#9166;</span>open</span>
+              <span><span class="np-keycap">esc</span>close</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <!-- D2 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id after">D2</span><span class="frame-name">No settings match &mdash; headers still consistent (query &ldquo;rank&rdquo;)</span>
+        <p class="frame-desc">Nothing matches a setting this time, so SETTINGS is simply omitted &mdash; but SESSIONS and ACTIONS still both render with their own headers. The set of visible headers changes; their presence/absence rule never does.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="scrim-swatch">
+          <div class="np-panel">
+            <div class="np-input-zone">
+              <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span class="typed">rank<span class="np-caret pulse-el"></span></span>
+            </div>
+            <div class="np-divider"></div>
+            <div class="np-list">
+              <div class="np-section first">SESSIONS</div>
+              <div class="np-row active">
+                <span class="np-row-icon" style="color:var(--yellow);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">higgs-api / fix/<span class="fz">rank</span></span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap">1</span></span>
+              </div>
+              <div class="np-section">ACTIONS</div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--magenta);">&#65291;</span>
+                <span class="np-row-title np-magenta">New session on a &ldquo;<span class="fz">rank</span>&rdquo; worktree&hellip;</span>
+              </div>
+            </div>
+            <div class="np-footer">
+              <span><span class="np-keycap">&#8593;&#8595;</span>navigate</span>
+              <span><span class="np-keycap">&#9166;</span>open</span>
+              <span><span class="np-keycap">tab</span>actions</span>
+              <span><span class="np-keycap">esc</span>close</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="sticky-note">
+    <b>Header rule:</b> a section header renders iff that section has &ge;1 row, full stop &mdash; never conditioned on whether sibling sections are present. Today's palette sometimes drops SESSIONS' label when ACTIONS is the only other group, which is exactly the inconsistency D1/D2 fix.
+  </div>
+
+  <!-- ================= SECTION E ================= -->
+  <div class="section-heading"><span class="section-letter">E</span> Root States (empty input)</div>
+  <div class="frame-row">
+
+    <!-- E1 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id after">E1</span><span class="frame-name">Recents present &mdash; unchanged, good state</span>
+        <p class="frame-desc">RECENT (up to 6) + ACTIONS. Today's best root state; kept as-is. Digit accelerators 1&ndash;6 map to the recent rows.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="scrim-swatch">
+          <div class="np-panel">
+            <div class="np-input-zone">
+              <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span class="ph">Search projects, worktrees, agents&hellip;</span>
+            </div>
+            <div class="np-divider"></div>
+            <div class="np-list">
+              <div class="np-section first">RECENT</div>
+              <div class="np-row active">
+                <span class="np-row-icon" style="color:var(--yellow);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">grove / main</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap">1</span></span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">higgs-api / fix/rank</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap dim">2</span></span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">careconvoy / main</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap dim">3</span></span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&lt;&gt;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">grove / feat/session-grid</span>
+                  <span class="np-row-sub">codex</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap dim">4</span></span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">dotfiles / main</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap dim">5</span></span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">higgs-api / main</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap dim">6</span></span>
+              </div>
+              <div class="np-section">ACTIONS</div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--magenta);">&#65291;</span>
+                <span class="np-row-title np-magenta">New session&hellip;</span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#9656;_</span>
+                <span class="np-row-title">Terminal at ~</span>
+                <span class="np-row-rhs"><span class="np-keycap">&#8984;T</span></span>
+              </div>
+            </div>
+            <div class="np-footer">
+              <span><span class="np-keycap">&#8593;&#8595;</span>navigate</span>
+              <span><span class="np-keycap">&#9166;</span>open</span>
+              <span><span class="np-keycap">tab</span>actions</span>
+              <span><span class="np-keycap">esc</span>close</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- E2 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id after">E2</span><span class="frame-name">1 project, no launch history &mdash; teach the model</span>
+        <p class="frame-desc">Instead of an empty list, root shows the project's worktrees under a &ldquo;GROVE &mdash; WORKTREES&rdquo; header with a one-line teaching subtitle, so a first-time user learns project / worktree &rarr; session before ever typing.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="scrim-swatch">
+          <div class="np-panel">
+            <div class="np-input-zone">
+              <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span class="ph">Search projects, worktrees, agents&hellip;</span>
+            </div>
+            <div class="np-divider"></div>
+            <div class="np-list">
+              <div class="np-section first">GROVE &mdash; WORKTREES</div>
+              <div class="np-row active">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10148;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">main</span>
+                  <span class="np-row-sub">&#9166; starts a session in this worktree</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap">1</span></span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10148;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">fix/palette-rank</span>
+                  <span class="np-row-sub">&#9166; starts a session in this worktree</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap dim">2</span></span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10148;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">feat/session-grid</span>
+                  <span class="np-row-sub">&#9166; starts a session in this worktree</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap dim">3</span></span>
+              </div>
+              <div class="np-section">ACTIONS</div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--magenta);">&#65291;</span>
+                <span class="np-row-title np-magenta">New session&hellip;</span>
+              </div>
+            </div>
+            <div class="np-footer">
+              <span><span class="np-keycap">&#8593;&#8595;</span>navigate</span>
+              <span><span class="np-keycap">&#9166;</span>open</span>
+              <span><span class="np-keycap">esc</span>close</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- E3 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id after">E3</span><span class="frame-name">Zero projects &mdash; unchanged</span>
+        <p class="frame-desc">No projects configured: just Terminal at ~ and Add project&hellip;. Included for completeness &mdash; no change proposed here.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="scrim-swatch">
+          <div class="np-panel">
+            <div class="np-input-zone">
+              <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span class="ph">Search projects, worktrees, agents&hellip;</span>
+            </div>
+            <div class="np-divider"></div>
+            <div class="np-list">
+              <div class="np-section first">ACTIONS</div>
+              <div class="np-row active">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#9656;_</span>
+                <span class="np-row-title">Terminal at ~</span>
+                <span class="np-row-rhs"><span class="np-keycap">&#9166;</span></span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--magenta);">&#65291;</span>
+                <span class="np-row-title np-magenta">Add project&hellip;</span>
+              </div>
+            </div>
+            <div class="np-footer">
+              <span><span class="np-keycap">&#8593;&#8595;</span>navigate</span>
+              <span><span class="np-keycap">&#9166;</span>open</span>
+              <span><span class="np-keycap">esc</span>close</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ================= SECTION F ================= -->
+  <div class="section-heading"><span class="section-letter">F</span> Row Actions &amp; Disabled Row</div>
+  <div class="frame-row">
+
+    <!-- F1 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id after">F1</span><span class="frame-name">Highlighted row &mdash; footer teaches Tab</span>
+        <p class="frame-desc">Any time a session row (not an action/settings row) is highlighted, the footer shows a "tab actions" hint so the strip in F2 stops being a hidden feature.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="scrim-swatch">
+          <div class="np-panel">
+            <div class="np-input-zone">
+              <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span class="ph">Search projects, worktrees, agents&hellip;</span>
+            </div>
+            <div class="np-divider"></div>
+            <div class="np-list">
+              <div class="np-section first">RECENT</div>
+              <div class="np-row active">
+                <span class="np-row-icon" style="color:var(--yellow);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">grove / main</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap">1</span></span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">higgs-api / fix/rank</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap dim">2</span></span>
+              </div>
+              <div class="np-section">ACTIONS</div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--magenta);">&#65291;</span>
+                <span class="np-row-title np-magenta">New session&hellip;</span>
+              </div>
+            </div>
+            <div class="np-footer">
+              <span><span class="np-keycap">&#8593;&#8595;</span>navigate</span>
+              <span><span class="np-keycap">&#9166;</span>open</span>
+              <span style="color:var(--cyan); font-weight:700;"><span class="np-keycap" style="border-color:var(--cyan); color:var(--cyan);">tab</span>actions</span>
+              <span><span class="np-keycap">esc</span>close</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- F2 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id after">F2</span><span class="frame-name">Row-actions strip open (Tab pressed)</span>
+        <p class="frame-desc">Pressing Tab on the highlighted row opens an actions strip beneath it: Launch session&hellip;, Delete worktree, Project theme&hellip;, plus setup/run/teardown script chips when the project defines them.</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="scrim-swatch">
+          <div class="np-panel">
+            <div class="np-input-zone">
+              <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span class="ph">Search projects, worktrees, agents&hellip;</span>
+            </div>
+            <div class="np-divider"></div>
+            <div class="np-list">
+              <div class="np-section first">RECENT</div>
+              <div class="np-row active">
+                <span class="np-row-icon" style="color:var(--yellow);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">grove / main</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap">1</span></span>
+              </div>
+              <div class="np-actions-strip">
+                <span class="np-action-btn">&#9654; Launch session&hellip;</span>
+                <span class="np-action-btn destructive">&#128465; Delete worktree</span>
+                <span class="np-action-btn">&#9679; Project theme&hellip;</span>
+                <span class="np-action-script">setup</span>
+                <span class="np-action-script">run</span>
+                <span class="np-action-script">teardown</span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">higgs-api / fix/rank</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap dim">2</span></span>
+              </div>
+              <div class="np-section">ACTIONS</div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--magenta);">&#65291;</span>
+                <span class="np-row-title np-magenta">New session&hellip;</span>
+              </div>
+            </div>
+            <div class="np-footer">
+              <span><span class="np-keycap">&larr;&rarr;</span>pick action</span>
+              <span><span class="np-keycap">&#9166;</span>run</span>
+              <span><span class="np-keycap">tab</span>close strip</span>
+              <span><span class="np-keycap">esc</span>close</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- F3 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id after">F3</span><span class="frame-name">Disabled &ldquo;Switch to session&hellip;&rdquo; &mdash; explained, not cryptic</span>
+        <p class="frame-desc">Muted row with a right-aligned hint that explains <em>why</em> it's disabled and <em>how</em> to unlock it, instead of today's bare "zen only".</p>
+      </div>
+      <div class="frame-card" style="padding:0;">
+        <div class="scrim-swatch">
+          <div class="np-panel">
+            <div class="np-input-zone">
+              <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><line x1="11" y1="11" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span class="ph">Search projects, worktrees, agents&hellip;</span>
+            </div>
+            <div class="np-divider"></div>
+            <div class="np-list">
+              <div class="np-section first">RECENT</div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#10022;</span>
+                <div class="np-row-text">
+                  <span class="np-row-title">grove / main</span>
+                  <span class="np-row-sub">claude</span>
+                </div>
+                <span class="np-row-rhs"><span class="np-keycap dim">1</span></span>
+              </div>
+              <div class="np-section">ACTIONS</div>
+              <div class="np-row disabled">
+                <span class="np-row-icon" style="color:var(--fg-mute);">&#8646;</span>
+                <span class="np-row-title">Switch to session&hellip;</span>
+                <span class="np-row-hint-right">available in zen (&#8984;&#9166;)</span>
+              </div>
+              <div class="np-row">
+                <span class="np-row-icon" style="color:var(--magenta);">&#65291;</span>
+                <span class="np-row-title np-magenta">New session&hellip;</span>
+              </div>
+            </div>
+            <div class="np-footer">
+              <span><span class="np-keycap">&#8593;&#8595;</span>navigate</span>
+              <span><span class="np-keycap">&#9166;</span>open</span>
+              <span><span class="np-keycap">esc</span>close</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="sticky-note">
+    <b>Copy fix:</b> old row rendered a bare "zen only" &mdash; unclear what "zen" even means to a new user. New copy names the destination mode, the unlock condition, and the shortcut that gets you there: <code>"available in zen (&#8984;&#8629;)"</code>.
+  </div>
+
+</div><!-- /#canvas -->
+</div><!-- /#viewport -->
+
+<script>
+(function () {
+  var vp = document.getElementById('viewport'), cv = document.getElementById('canvas');
+  var x = 0, y = 0, z = 1, MIN = 0.1, MAX = 2.5, userAdjusted = false;
+  function apply() {
+    cv.style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + z + ')';
+    document.getElementById('zoomPct').textContent = Math.round(z * 100) + '%';
+  }
+  function fit() {
+    var w = cv.scrollWidth, h = cv.scrollHeight;
+    z = Math.min(MAX, Math.max(MIN, Math.min(innerWidth / w, innerHeight / h) * 0.95));
+    x = (innerWidth - w * z) / 2; y = Math.max(20, (innerHeight - h * z) / 2);
+    apply();
+  }
+  function zoomAt(nz, cx, cy) {
+    userAdjusted = true;
+    nz = Math.min(MAX, Math.max(MIN, nz));
+    x = cx - (cx - x) * (nz / z);
+    y = cy - (cy - y) * (nz / z);
+    z = nz; apply();
+  }
+  vp.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    zoomAt(z * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
+  }, { passive: false });
+  var panning = false, px = 0, py = 0;
+  vp.addEventListener('pointerdown', function (e) {
+    if (e.target.closest('.frame, .sticky-note')) return;
+    e.preventDefault();
+    panning = true; userAdjusted = true; px = e.clientX - x; py = e.clientY - y;
+    vp.classList.add('panning'); vp.setPointerCapture(e.pointerId);
+  });
+  vp.addEventListener('pointermove', function (e) {
+    if (panning) { x = e.clientX - px; y = e.clientY - py; apply(); }
+  });
+  vp.addEventListener('pointerup', function () { panning = false; vp.classList.remove('panning'); });
+  document.getElementById('zoomIn').onclick = function () { zoomAt(z * 1.25, innerWidth / 2, innerHeight / 2); };
+  document.getElementById('zoomOut').onclick = function () { zoomAt(z / 1.25, innerWidth / 2, innerHeight / 2); };
+  document.getElementById('zoomFit').onclick = fit;
+  addEventListener('resize', function () { if (!userAdjusted) fit(); });
+  document.getElementById('themeToggle').onclick = function () {
+    var dark = document.documentElement.classList.toggle('dark');
+    this.textContent = dark ? '☀ Light' : '☾ Dark';
+  };
+  fit();
+})();
+</script>
+</body>
+</html>

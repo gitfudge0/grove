@@ -94,11 +94,103 @@ pub fn push_recent_launch(
     recent.truncate(6);
 }
 
-/// Fuzzy filter: split `query` on whitespace, lowercase every term, require
-/// each term to substring-match at least one of `project`/`worktree`/
-/// `agent_label` (also lowercased). Empty query matches everything.
+/// Fuzzy filter: split `query` on whitespace, require each term to match (by
+/// [`fuzzy_score`]'s rules) at least one of `project`/`worktree`/
+/// `agent_label`. Empty query matches everything.
 pub fn fuzzy_match(query: &str, project: &str, worktree: &str, agent_label: &str) -> bool {
-    fuzzy_match_indices(query, project, worktree, agent_label).matched
+    fuzzy_score(query, project, worktree, agent_label).is_some()
+}
+
+/// A combo whose worktree/branch name matches at least as strongly as a
+/// project-name match of the same quality — applied as a flat additive bonus
+/// on top of a worktree hit, since that's what the caller is usually typing
+/// toward (branch names, not project names).
+const WORKTREE_BONUS: u32 = 10;
+
+/// Score a candidate row against `query`, `None` meaning "no match" (same AND
+/// -across-terms semantics as [`fuzzy_match`]). Higher is better. Per term,
+/// per field: a match at the very start of the field scores highest, then a
+/// match starting right after a `/ - _` or space (a "word boundary"), then
+/// any other contiguous substring match, and last — ranked below every
+/// contiguous match — a scattered subsequence match (e.g. "grv" in "grove").
+/// A worktree/branch hit gets [`WORKTREE_BONUS`] added so it outranks an
+/// equal-quality project-name hit. Empty query scores 0 (matches, no
+/// preference) so it composes with `matching_settings`'s empty-query
+/// passthrough.
+pub fn fuzzy_score(query: &str, project: &str, worktree: &str, agent_label: &str) -> Option<u32> {
+    if query.trim().is_empty() {
+        return Some(0);
+    }
+    let mut total: u32 = 0;
+    for term in query.split_whitespace() {
+        let p = term_field_score(term, project);
+        let w = term_field_score(term, worktree).map(|s| s + WORKTREE_BONUS);
+        let a = term_field_score(term, agent_label);
+        total = total.saturating_add([p, w, a].into_iter().flatten().max()?);
+    }
+    Some(total)
+}
+
+/// Best match quality for a single `term` within a single `haystack` field.
+/// `None` = no match at all (neither contiguous nor subsequence).
+fn term_field_score(term: &str, haystack: &str) -> Option<u32> {
+    if term.is_empty() {
+        return None;
+    }
+    let hay: Vec<char> = haystack.chars().collect();
+    let need: Vec<char> = term.chars().collect();
+    if need.len() <= hay.len() {
+        for start in 0..=(hay.len() - need.len()) {
+            let matches = need
+                .iter()
+                .enumerate()
+                .all(|(i, nc)| hay[start + i].to_lowercase().eq(nc.to_lowercase()));
+            if matches {
+                return Some(if start == 0 {
+                    100 // prefix of the whole field
+                } else if matches!(hay[start - 1], '/' | '-' | '_' | ' ') {
+                    80 // start of a token (after a path/branch separator)
+                } else {
+                    50 // contiguous, but mid-token
+                });
+            }
+        }
+    }
+    subsequence_score(&hay, &need)
+}
+
+/// Scattered (non-contiguous, in-order) subsequence match, always scored
+/// below every contiguous case above (max 50) — 1..=20, tighter clusters of
+/// the matched characters scoring higher. `None` if some character of `need`
+/// never appears in order.
+fn subsequence_score(hay: &[char], need: &[char]) -> Option<u32> {
+    if need.is_empty() {
+        return None;
+    }
+    let mut hi = 0;
+    let mut first = None;
+    let mut last = 0;
+    for (ni, nc) in need.iter().enumerate() {
+        let mut found = false;
+        while hi < hay.len() {
+            if hay[hi].to_lowercase().eq(nc.to_lowercase()) {
+                if ni == 0 {
+                    first = Some(hi);
+                }
+                last = hi;
+                hi += 1;
+                found = true;
+                break;
+            }
+            hi += 1;
+        }
+        if !found {
+            return None;
+        }
+    }
+    let span = last - first.unwrap_or(0) + 1;
+    let tightness = (need.len() as u32 * 10).saturating_sub(span as u32);
+    Some(tightness.clamp(1, 20))
 }
 
 /// Result of [`fuzzy_match_indices`]: whether the row matched, plus the
@@ -352,6 +444,36 @@ mod tests {
         let m3 = fuzzy_match_indices("zzz", "grove", "main", "claude");
         assert!(!m3.matched);
         assert!(m3.project.is_empty() && m3.worktree.is_empty() && m3.agent.is_empty());
+    }
+
+    #[test]
+    fn fuzzy_score_ranks_substring_above_subsequence() {
+        // "gro" is a contiguous prefix of "grove"; "grv" only matches as a
+        // scattered subsequence. Both match, but the substring hit must
+        // outrank the subsequence hit.
+        let substring = fuzzy_score("gro", "grove", "main", "claude").unwrap();
+        let subsequence = fuzzy_score("grv", "grove", "main", "claude").unwrap();
+        assert!(substring > subsequence);
+        // A term with no subsequence either (chars out of order) is None.
+        assert!(fuzzy_score("ovrg", "grove", "main", "claude").is_none());
+    }
+
+    #[test]
+    fn fuzzy_score_prefers_worktree_hits_and_prefix_matches() {
+        // Same term, same edit distance, but one field match is a whole-field
+        // prefix and the other is mid-token: prefix wins.
+        let prefix = fuzzy_score("gro", "grove-app", "main", "claude").unwrap();
+        let midtoken = fuzzy_score("rove", "a-grove-app", "main", "claude").unwrap();
+        assert!(prefix > midtoken);
+        // A worktree/branch match outscores an equal-quality project match.
+        let wt_hit = fuzzy_score("fix", "grove", "fix-scroll", "claude").unwrap();
+        let proj_hit = fuzzy_score("fix", "fix-tool", "main", "claude").unwrap();
+        assert!(wt_hit >= proj_hit);
+    }
+
+    #[test]
+    fn fuzzy_score_empty_query_matches_with_zero_score() {
+        assert_eq!(fuzzy_score("", "grove", "main", "claude"), Some(0));
     }
 
     // `palette_rows` needs a full `Grove` (sessions, PTYs, store, …) to

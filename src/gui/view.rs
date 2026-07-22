@@ -2486,6 +2486,7 @@ impl Grove {
                 switch,
                 row_actions,
                 settings,
+                ..
             } => self.session_launcher_modal(
                 input,
                 *selected,
@@ -4424,30 +4425,121 @@ impl Grove {
                 // Typed list only: settings matches sort first (see
                 // `palette_rows`), and their presence labels the two groups —
                 // SETTINGS above, SESSIONS below (B2 in the palette redesign
-                // mock). A pure session list stays headerless as before.
+                // mock). Sessions and actions each always get a header now
+                // (previously SESSIONS/ACTIONS only appeared when a settings
+                // match was also present).
                 let has_settings = rows.iter().any(|r| matches!(r, PaletteRow::Setting(_)));
                 let mut printed_settings = false;
                 let mut printed_sessions = false;
+                // Root-only: when the recents list is empty, `palette_rows`
+                // falls back to a worktree listing grouped by project — the
+                // presence of a `Combo` row in root state is the signal (root
+                // state otherwise only ever holds `Recent` + action rows).
+                let mut last_wt_project: Option<usize> = None;
+                // Typed/browse-all only: `palette_rows` already reordered
+                // session rows into per-project runs above this same
+                // threshold — recompute it here (never trust a flag) so the
+                // headers can't disagree with the actual row order.
+                let session_project_order: Vec<usize> = {
+                    let mut seen = Vec::new();
+                    for r in rows.iter() {
+                        if let PaletteRow::Recent { proj, .. } | PaletteRow::Combo { proj, .. } = r
+                        {
+                            if !seen.contains(proj) {
+                                seen.push(*proj);
+                            }
+                        }
+                    }
+                    seen
+                };
+                let session_row_count = rows
+                    .iter()
+                    .filter(|r| matches!(r, PaletteRow::Recent { .. } | PaletteRow::Combo { .. }))
+                    .count();
+                let grouped_by_project =
+                    !root_mode && (session_project_order.len() > 2 || session_row_count > 10);
+                let mut last_grouped_project: Option<usize> = None;
                 for (i, row) in rows.iter().enumerate() {
                     if root_mode {
-                        let is_recent = matches!(row, PaletteRow::Recent { .. });
-                        if is_recent && !printed_recent {
-                            list = list.push(section_header("RECENT", 0.0, 6.0));
-                            printed_recent = true;
-                        } else if !is_recent && !printed_actions {
-                            let top = if printed_recent { 12.0 } else { 0.0 };
-                            list = list.push(section_header("ACTIONS", top, 6.0));
-                            printed_actions = true;
+                        match row {
+                            PaletteRow::Recent { .. } => {
+                                if !printed_recent {
+                                    list = list.push(section_header("RECENT", 0.0, 6.0));
+                                    printed_recent = true;
+                                }
+                            }
+                            PaletteRow::Combo { proj, .. } => {
+                                if last_wt_project != Some(*proj) {
+                                    let top = if i == 0 { 0.0 } else { 12.0 };
+                                    let pname = self
+                                        .app
+                                        .store
+                                        .projects
+                                        .get(*proj)
+                                        .map(|p| p.name.to_uppercase())
+                                        .unwrap_or_default();
+                                    list = list.push(section_header(
+                                        &format!("{pname} — WORKTREES"),
+                                        top,
+                                        6.0,
+                                    ));
+                                    last_wt_project = Some(*proj);
+                                }
+                            }
+                            _ => {
+                                if !printed_actions {
+                                    let top = if printed_recent || last_wt_project.is_some() {
+                                        12.0
+                                    } else {
+                                        0.0
+                                    };
+                                    list = list.push(section_header("ACTIONS", top, 6.0));
+                                    printed_actions = true;
+                                }
+                            }
                         }
-                    } else if has_settings {
+                    } else {
                         let is_setting = matches!(row, PaletteRow::Setting(_));
-                        if is_setting && !printed_settings {
+                        let is_session =
+                            matches!(row, PaletteRow::Recent { .. } | PaletteRow::Combo { .. });
+                        if has_settings && is_setting && !printed_settings {
                             list = list.push(section_header("SETTINGS", 0.0, 6.0));
                             printed_settings = true;
-                        } else if !is_setting && !printed_sessions {
+                        } else if is_session && !printed_sessions {
                             let top = if printed_settings { 12.0 } else { 0.0 };
                             list = list.push(section_header("SESSIONS", top, 6.0));
                             printed_sessions = true;
+                        } else if !is_setting && !is_session && !printed_actions {
+                            let top = if printed_sessions || printed_settings {
+                                12.0
+                            } else {
+                                0.0
+                            };
+                            list = list.push(section_header("ACTIONS", top, 6.0));
+                            printed_actions = true;
+                        }
+                        if grouped_by_project && is_session {
+                            let proj = match row {
+                                PaletteRow::Recent { proj, .. }
+                                | PaletteRow::Combo { proj, .. } => *proj,
+                                _ => unreachable!(),
+                            };
+                            if last_grouped_project != Some(proj) {
+                                let pname = self
+                                    .app
+                                    .store
+                                    .projects
+                                    .get(proj)
+                                    .map(|p| p.name.to_uppercase())
+                                    .unwrap_or_default();
+                                let top = if last_grouped_project.is_none() {
+                                    0.0
+                                } else {
+                                    8.0
+                                };
+                                list = list.push(section_header(&pname, top, 4.0));
+                                last_grouped_project = Some(proj);
+                            }
                         }
                     }
                     list =
@@ -4905,6 +4997,18 @@ impl Grove {
                     Some(enter_chip())
                 } else if is_recent && root_mode {
                     digit_label(i).map(|d| mod_key_chip(d, c::FG_MUTE()))
+                } else if !is_recent && root_mode {
+                    // Root's no-recents worktree-listing fallback (the only
+                    // place a `Combo` row renders in root state): a
+                    // persistent teaching hint since there's no recency
+                    // digit to show instead.
+                    Some(
+                        text("↵ starts a session")
+                            .font(MONO_FONT)
+                            .size(10)
+                            .color(c::FG_MUTE())
+                            .into(),
+                    )
                 } else {
                     None
                 };
@@ -5004,9 +5108,10 @@ impl Grove {
                 // actions): a "swap sessions" idiom via the restart glyph,
                 // plus a tab-hint chip and chevron drill-in affordance.
                 // Outside zen the row is visible but inert — forced muted
-                // regardless of keyboard highlight, with a "zen only" hint
-                // in place of the tab/chevron affordance; Enter/Tab on it
-                // are swallowed (see `launcher_activate`/
+                // regardless of keyboard highlight, with an "in zen · ⌘⏎"
+                // hint (telling the user how to actually reach it) in place
+                // of the tab/chevron affordance; Enter/Tab on it are
+                // swallowed (see `launcher_activate`/
                 // `launcher_enter_row_actions`).
                 let switchable = self.switch_to_session_active();
                 let label_color = if !switchable {
@@ -5030,7 +5135,7 @@ impl Grove {
                 .align_y(iced::Alignment::Center);
                 if !switchable {
                     content = content.push(
-                        text("zen only")
+                        text("in zen · ⌘⏎")
                             .font(MONO_FONT)
                             .size(10.5)
                             .color(c::FG_MUTE()),

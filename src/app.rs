@@ -248,6 +248,11 @@ pub enum Modal {
         /// Selected row index into whatever list is currently rendered (root's
         /// combined recents+actions list, or the typing/browse-all list).
         selected: usize,
+        /// Identity of the row at `selected`, captured whenever `selected` is
+        /// written (see `PaletteRowIdentity`) — activation resolves by this,
+        /// not by `selected` alone. `None` only defensively, for states this
+        /// field predates having always been threaded through.
+        selected_identity: Option<PaletteRowIdentity>,
         /// Set once the root "+ new session…" action row is activated: forces
         /// the unfiltered every-combo list even while `input` is empty.
         browse_all: bool,
@@ -256,6 +261,12 @@ pub enum Modal {
         /// session (index into `App::sessions`-derived display order = the
         /// selection cursor within that list). `None` outside this state.
         switch: Option<usize>,
+        /// The `id` of the session at `switch`'s position, captured whenever
+        /// `switch` is written — same principle as `selected_identity`,
+        /// applied to this drill-in's own list (`Session::id` is the stable
+        /// key here rather than `PaletteRowIdentity`, since a switch-drill-in
+        /// row already *is* a session, with its own never-reused id).
+        switch_identity: Option<u64>,
         /// Inline contextual actions revealed by Tab under a highlighted
         /// `Recent`/`Combo` row (root or typing/browse-all list). `None` when
         /// no action strip is open.
@@ -358,6 +369,37 @@ pub struct RowActionsState {
     pub wt_path: String,
     pub agent: crate::agent::Agent,
     pub action: usize,
+}
+
+/// Same "identify by content, not list position" principle as
+/// `RowActionsState`, applied to `SessionLauncher::selected` — the main
+/// palette's own selection cursor. Captured whenever `selected` is written
+/// (`Grove::set_palette_selected`) and re-resolved against a freshly rebuilt
+/// row list at activation time (`Grove::resolve_selected` /
+/// `resolve_row_by_identity`) rather than trusting the raw index: a query
+/// edit, a recency-driven re-sort, or the root's no-recents worktree fallback
+/// swapping in between two keystrokes can't make Enter silently activate a
+/// different row than the one the user was looking at.
+///
+/// `proj` is an index rather than the project's name: a project can only be
+/// removed via its own confirmation modal (`Modal::RemoveProject`), and
+/// `Modal` holds exactly one variant at a time, so a project can't be
+/// removed out from under an *open* `SessionLauncher` — its project indices
+/// are stable for the palette's whole lifetime.
+#[derive(Clone, PartialEq, Debug)]
+pub enum PaletteRowIdentity {
+    Session {
+        proj: usize,
+        wt_path: String,
+        agent: crate::agent::Agent,
+    },
+    NewSession,
+    TerminalHome,
+    TerminalWt,
+    AddProject,
+    SwitchToSession,
+    Settings,
+    Setting(crate::gui::update::SettingRow),
 }
 
 /// Which pane the palette's Settings drill-in is showing. `Root` is the

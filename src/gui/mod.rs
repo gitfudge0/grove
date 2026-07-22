@@ -26,7 +26,7 @@ mod pty;
 mod rows;
 mod slide;
 mod state;
-mod update;
+pub(crate) mod update;
 mod view;
 mod widgets;
 
