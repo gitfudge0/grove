@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 /// Fallback dark/light themes for "system" mode when the user hasn't picked
 /// one explicitly yet (thematic pair: `tokyonight` and its day companion).
-const DEFAULT_DARK_THEME: &str = "tokyonight";
+const DEFAULT_DARK_THEME: &str = "tokyonight-storm";
 const DEFAULT_LIGHT_THEME: &str = "tokyonight-day";
 
 /// Which theme the picker modal is editing: the global app theme, or a
