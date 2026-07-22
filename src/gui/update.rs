@@ -732,6 +732,10 @@ impl Grove {
                         }
                     }
                     if self.grid_view || self.grid_view_before_zen {
+                        // Capture the killed tile's slot before it's dropped from
+                        // tile_order, so we can refocus whatever now sits there.
+                        let killed_pos = self.tile_order.iter().position(|&x| x == i);
+                        let was_focused = self.grid_focused == Some(i);
                         // Remove the killed session index from tile_order; shift
                         // higher indices down to match the new sessions array.
                         self.tile_order.retain_mut(|si| {
@@ -748,6 +752,16 @@ impl Grove {
                             Some(si) if si > i => Some(si - 1),
                             other => other,
                         };
+                        // If the killed session was the focused tile, focus whatever
+                        // now occupies its slot instead of leaving nothing focused.
+                        if was_focused && !self.tile_order.is_empty() {
+                            if let Some(pos) = grid_focus_after_kill(killed_pos, self.tile_order.len()) {
+                                let si = self.tile_order[pos];
+                                self.app.active_session = Some(si);
+                                self.set_grid_focus(Some(si));
+                                self.acknowledge_session(si);
+                            }
+                        }
                         if self.grid_view {
                             if self.tile_order.is_empty() {
                                 // Auto-exit grid when all sessions are gone.
@@ -6745,6 +6759,19 @@ fn should_sync_grid_focus(grid_view: bool, grid_view_before_zen: bool) -> bool {
     grid_view || grid_view_before_zen
 }
 
+/// `tile_order` position to refocus after killing the focused tile, given the
+/// killed tile's position before removal (`killed_pos`) and the tile count
+/// after removal (`len`). The killed slot is filled by whatever shifted into
+/// it, so we refocus that same slot; if the killed tile was last, clamp to
+/// the new last slot instead. Kept as a free function so it's testable
+/// without constructing a full `Grove`.
+fn grid_focus_after_kill(killed_pos: Option<usize>, len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    Some(killed_pos.unwrap_or(0).min(len - 1))
+}
+
 /// Tile index reached by moving `(dx, dy)` from tile `i` in a grid of `n`
 /// tiles, or `None` if there's no such tile. Tiles are numbered row-major
 /// (`tile_idx = row * cols + col`, see `grid_layout`/`grid_workspace`) but
@@ -7514,6 +7541,29 @@ mod tests {
             // grid_view_before_zen remembers to restore it on exit — that's
             // exactly the state where the desync used to happen.
             assert!(should_sync_grid_focus(false, true));
+        }
+    }
+
+    /// Killing the focused tile shouldn't leave the grid with nothing
+    /// focused — whatever slides into the killed slot should take focus.
+    mod grid_focus_after_kill {
+        use super::super::grid_focus_after_kill;
+
+        #[test]
+        fn killed_in_middle_focuses_same_slot() {
+            // Tile that shifted into the killed slot takes focus.
+            assert_eq!(grid_focus_after_kill(Some(1), 3), Some(1));
+        }
+
+        #[test]
+        fn killed_at_end_clamps_to_new_last_slot() {
+            // Nothing slides into the last slot, so clamp instead.
+            assert_eq!(grid_focus_after_kill(Some(2), 2), Some(1));
+        }
+
+        #[test]
+        fn no_tiles_remain_focuses_nothing() {
+            assert_eq!(grid_focus_after_kill(Some(0), 0), None);
         }
     }
 
