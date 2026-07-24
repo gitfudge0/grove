@@ -68,7 +68,12 @@ pub fn summarize_errors(errors: &[ThemeLoadError]) -> Option<String> {
 /// Parses `#rrggbb` (leading `#` optional, case-insensitive) into a `Color`.
 pub fn parse_hex(s: &str) -> Result<Color, String> {
     let s = s.strip_prefix('#').unwrap_or(s);
-    if s.len() != 6 {
+    // The length check below is byte-based, and the slicing after it
+    // (`&s[i..i+2]`) indexes by byte offset too — both are only safe once
+    // every byte is confirmed ASCII (a single non-ASCII char, e.g. multibyte
+    // UTF-8, can make `s.len()` land on 6 while still slicing mid-character
+    // and panicking). Rejecting non-hexdigit bytes up front guarantees ASCII.
+    if s.len() != 6 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!("invalid hex color \"{s}\" (expected #rrggbb)"));
     }
     let byte = |i: usize| -> Result<u8, String> {
@@ -234,20 +239,10 @@ pub fn save(themes: &[Theme]) -> std::io::Result<()> {
 }
 
 /// Canonical field order used by the bare-hex paste format and by
-/// [`PastedColors`]'s iteration helpers. Matches `Theme`'s field order.
-pub const FIELD_ORDER: [&str; 11] = [
-    "bg",
-    "bg_highlight",
-    "fg",
-    "fg_dark",
-    "comment",
-    "blue",
-    "cyan",
-    "magenta",
-    "green",
-    "yellow",
-    "red",
-];
+/// [`PastedColors`]'s iteration helpers. This is just `Theme::FIELD_NAMES`
+/// under this module's own established name — an alias rather than a second
+/// copy of the same 11 strings, so the two can never drift out of sync.
+pub use crate::theme::FIELD_NAMES as FIELD_ORDER;
 
 /// Result of successfully parsing a pasted palette: a name/kind (only present
 /// when the paste was full-`ThemeDef` JSON and included them) plus whichever
@@ -447,6 +442,17 @@ mod tests {
         assert!(parse_hex("#zzzzzz").is_err());
         assert!(parse_hex("#fff").is_err());
         assert!(parse_hex("").is_err());
+    }
+
+    /// A multibyte character can make `s.len()` (byte length) land on 6
+    /// while the string has fewer than 6 chars — slicing `&s[i..i+2]` at
+    /// those byte offsets used to panic instead of returning `Err`.
+    #[test]
+    fn parse_hex_rejects_multibyte_without_panicking() {
+        assert!(parse_hex("aéaab").is_err());
+        assert!(parse_hex("é11111").is_err());
+        assert!(parse_hex("111111é").is_err());
+        assert!(parse_hex("#aébbcc").is_err());
     }
 
     /// Mirrors the theme editor's live per-keystroke validation

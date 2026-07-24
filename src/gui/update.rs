@@ -252,8 +252,20 @@ impl Grove {
         // (iced_widget text_input.rs) without telling the app, so Escape would
         // otherwise need a second press to reach the modal's cancel handler.
         // Forward it regardless of status; every other captured key stays dropped.
+        // `MODAL_OPEN` tells `should_forward` whether a global-mods chord
+        // captured by a focused text widget belongs to a modal's own
+        // shortcut handling (`handle_modal_key`, reached only while a modal
+        // is open) — see that function's doc comment for why it must NOT
+        // also forward outside a modal, where `handle_key` would otherwise
+        // double-handle the same chord via the PTY copy/paste shortcuts.
+        // `event::listen_with` requires a plain `fn` (no captures), so the
+        // current value is stashed in a static ahead of time rather than
+        // captured by the closure below — refreshed every `subscription()`
+        // call, which iced makes on every update, so it never lags by more
+        // than the current frame.
+        MODAL_OPEN.store(!matches!(self.app.modal, Modal::None), Ordering::Relaxed);
         let keys = event::listen_with(|ev, status, _| {
-            if !should_forward(&ev, status) {
+            if !should_forward(&ev, status, MODAL_OPEN.load(Ordering::Relaxed)) {
                 return None;
             }
             match ev {
@@ -1544,98 +1556,30 @@ impl Grove {
             Msg::LauncherInputChanged(s) => {
                 // A `global_mods` chord (⌘D, ⌘⌫, ...) is a command, never
                 // text — but `iced_widget::text_input` only special-cases
-                // ⌘C/⌘X/⌘V/⌘A explicitly; every other chord still gets
-                // inserted/deleted unconditionally by its fallback character/
-                // Backspace handling, publishing this very message. Dropping
-                // it here (using `live_mods`, tracked independently — see
-                // `Msg::ModifiersChanged`'s doc comment for why `KeyPress`'s
-                // own `mods` arrives too late to gate this) leaves `input`
-                // untouched; the next render re-diffs the field back to that
-                // unchanged value, undoing the widget's own transient edit.
+                // ⌘C/⌘X/⌘A explicitly (⌘V routes to `Msg::LauncherInputPasted`
+                // via `on_paste` instead, see below); every other chord still
+                // gets inserted/deleted unconditionally by its fallback
+                // character/Backspace handling, publishing this very message.
+                // Dropping it here (using `live_mods`, tracked independently
+                // — see `Msg::ModifiersChanged`'s doc comment for why
+                // `KeyPress`'s own `mods` arrives too late to gate this)
+                // leaves `input` untouched; the next render re-diffs the
+                // field back to that unchanged value, undoing the widget's
+                // own transient edit.
                 if global_mods(self.live_mods) {
                     return Task::none();
                 }
-                // The switch-to-session drill-in filters live by `input`
-                // (same idiom as OPEN WITH's agent list, which also keeps
-                // its own state open while the query underneath changes) —
-                // resolved by identity (which session, not which position)
-                // before the mutable borrow below, same principle as
-                // `resolve_selected` for the main list: a query edit can
-                // reorder/drop rows in the filtered list, so re-anchoring by
-                // position alone (the old `clamp`-based behavior) could land
-                // the cursor on a different session than the one highlighted.
-                let switch_open = matches!(
-                    &self.app.modal,
-                    Modal::SessionLauncher {
-                        switch: Some(_),
-                        ..
-                    }
-                );
-                let new_switch_pos = switch_open.then(|| self.resolve_switch_position(&s));
-                if let Modal::SessionLauncher {
-                    input,
-                    row_actions,
-                    settings,
-                    ..
-                } = &mut self.app.modal
-                {
-                    *input = s;
-                    // `row_actions` is pinned to a specific (proj, wt_path)
-                    // resolved from the root/typing list; once that list is
-                    // re-derived for the new query, the row it was anchored
-                    // to may no longer be rendered (or may have moved) —
-                    // collapse the strip rather than risk it going stale.
-                    *row_actions = None;
-                    // Settings drill-in stays open across a query edit (only
-                    // Esc backs out). Only the panes that actually filter on
-                    // the query (Root, Theme) reset their cursor — the input
-                    // stays focused in every pane, so a stray keystroke in
-                    // Backend/Permissions/DefaultAgent must not snap their
-                    // (unfiltered) cursor to 0. The update-actions strip
-                    // collapses for the same reason `row_actions` does: the
-                    // row it hangs under may no longer be rendered. Typing
-                    // also leaves App-size resize mode — the user is
-                    // searching now, and the filtered list may not even
-                    // contain the App-size row anymore.
-                    if let Some(st) = settings {
-                        if matches!(
-                            st.pane,
-                            SettingsPane::Root
-                                | SettingsPane::Theme { .. }
-                                | SettingsPane::ProjectTheme { .. }
-                        ) {
-                            st.selected = 0;
-                            st.update_actions = None;
-                            st.resizing = false;
-                        }
-                    }
-                }
-                // Root/typed list cursor snapped to 0 for the new query —
-                // capture its identity too (see `set_palette_selected`).
-                self.set_palette_selected(0);
-                if let Some(pos) = new_switch_pos {
-                    self.set_switch_selected(pos);
-                }
-                // Theme sub-pane / drill-in Root: the new query reshapes
-                // the list and the cursor just snapped to 0 — scroll the
-                // list back with it.
-                if let Modal::SessionLauncher {
-                    settings: Some(ls), ..
-                } = &self.app.modal
-                {
-                    return match ls.pane {
-                        SettingsPane::Theme { .. } => self.scroll_launcher_theme_to_selection(),
-                        SettingsPane::ProjectTheme { .. } => {
-                            self.scroll_launcher_project_theme_to_selection()
-                        }
-                        SettingsPane::Root => self.scroll_launcher_settings_to_selection(),
-                        _ => Task::none(),
-                    };
-                }
-                // Root/typed list: the query edit just reshaped the list and
-                // snapped the cursor to 0 above — scroll it back with it,
-                // same as the Settings drill-in's Root pane.
-                return self.scroll_launcher_palette_to_selection();
+                return self.launcher_input_changed(s);
+            }
+            // `text_input`'s dedicated ⌘V callback: unlike `LauncherInputChanged`
+            // above, this only ever fires for a real paste (iced's text_input
+            // calls `on_paste` instead of `on_input` when pasting — see its
+            // `text_input.rs` update handling), so it must NOT go through the
+            // `global_mods` guard: the chord's modifier is still held when the
+            // pasted content arrives, and that guard exists only to catch a
+            // chord's spurious character insert, not to block an actual paste.
+            Msg::LauncherInputPasted(s) => {
+                return self.launcher_input_changed(s);
             }
             Msg::LauncherActivate(i) => return self.launcher_activate(i),
             Msg::LauncherOptionsPick(i) => {
@@ -4094,6 +4038,96 @@ impl Grove {
         self.rebuild_wt_cache();
     }
 
+    /// Shared landing for `Msg::LauncherInputChanged` and
+    /// `Msg::LauncherInputPasted`: writes the new query into `input`,
+    /// resets the pieces of state a query edit invalidates (row-actions
+    /// strip, resize mode, filtered-list cursors), and rescrolls whichever
+    /// sub-view is showing. Split out so the paste path can reach this
+    /// without going through `LauncherInputChanged`'s `global_mods` guard,
+    /// which would otherwise swallow the paste too.
+    fn launcher_input_changed(&mut self, s: String) -> Task<Msg> {
+        // The switch-to-session drill-in filters live by `input` (same idiom
+        // as OPEN WITH's agent list, which also keeps its own state open
+        // while the query underneath changes) — resolved by identity (which
+        // session, not which position) before the mutable borrow below, same
+        // principle as `resolve_selected` for the main list: a query edit
+        // can reorder/drop rows in the filtered list, so re-anchoring by
+        // position alone (the old `clamp`-based behavior) could land the
+        // cursor on a different session than the one highlighted.
+        let switch_open = matches!(
+            &self.app.modal,
+            Modal::SessionLauncher {
+                switch: Some(_),
+                ..
+            }
+        );
+        let new_switch_pos = switch_open.then(|| self.resolve_switch_position(&s));
+        if let Modal::SessionLauncher {
+            input,
+            row_actions,
+            settings,
+            ..
+        } = &mut self.app.modal
+        {
+            *input = s;
+            // `row_actions` is pinned to a specific (proj, wt_path)
+            // resolved from the root/typing list; once that list is
+            // re-derived for the new query, the row it was anchored
+            // to may no longer be rendered (or may have moved) —
+            // collapse the strip rather than risk it going stale.
+            *row_actions = None;
+            // Settings drill-in stays open across a query edit (only
+            // Esc backs out). Only the panes that actually filter on
+            // the query (Root, Theme) reset their cursor — the input
+            // stays focused in every pane, so a stray keystroke in
+            // Backend/Permissions/DefaultAgent must not snap their
+            // (unfiltered) cursor to 0. The update-actions strip
+            // collapses for the same reason `row_actions` does: the
+            // row it hangs under may no longer be rendered. Typing
+            // also leaves App-size resize mode — the user is
+            // searching now, and the filtered list may not even
+            // contain the App-size row anymore.
+            if let Some(st) = settings {
+                if matches!(
+                    st.pane,
+                    SettingsPane::Root
+                        | SettingsPane::Theme { .. }
+                        | SettingsPane::ProjectTheme { .. }
+                ) {
+                    st.selected = 0;
+                    st.update_actions = None;
+                    st.resizing = false;
+                }
+            }
+        }
+        // Root/typed list cursor snapped to 0 for the new query —
+        // capture its identity too (see `set_palette_selected`).
+        self.set_palette_selected(0);
+        if let Some(pos) = new_switch_pos {
+            self.set_switch_selected(pos);
+        }
+        // Theme sub-pane / drill-in Root: the new query reshapes
+        // the list and the cursor just snapped to 0 — scroll the
+        // list back with it.
+        if let Modal::SessionLauncher {
+            settings: Some(ls), ..
+        } = &self.app.modal
+        {
+            return match ls.pane {
+                SettingsPane::Theme { .. } => self.scroll_launcher_theme_to_selection(),
+                SettingsPane::ProjectTheme { .. } => {
+                    self.scroll_launcher_project_theme_to_selection()
+                }
+                SettingsPane::Root => self.scroll_launcher_settings_to_selection(),
+                _ => Task::none(),
+            };
+        }
+        // Root/typed list: the query edit just reshaped the list and
+        // snapped the cursor to 0 above — scroll it back with it,
+        // same as the Settings drill-in's Root pane.
+        self.scroll_launcher_palette_to_selection()
+    }
+
     /// Move the root/typed list's selection cursor to `idx` and capture that
     /// row's identity in the same step (`PaletteRowIdentity`). Every write
     /// site for `SessionLauncher::selected` routes through this — reads
@@ -4586,14 +4620,13 @@ impl Grove {
         else {
             return Task::none();
         };
-        // Approximation: this pitches every row (including the "Custom"
-        // section header/empty-hint) at the uniform 38px row pitch rather
-        // than each element's true rendered height, so centering drifts
-        // slightly once the Custom section is showing. Good enough to keep
-        // the selection on-screen; a pixel-exact version would need the
-        // section-aware walk `settings_root_scroll_offset` uses.
-        let total = theme_pane_combined_rows(*kind, input).len();
-        let y = launcher_theme_scroll_offset(total, *selected);
+        // `theme_pane_scroll_offset` walks the CUSTOM section header/empty-
+        // hint/"Manage themes…" rows the same way `settings_root_scroll_
+        // offset` walks Root's section headers, rather than pitching every
+        // row (including those) at the uniform 38px row pitch.
+        let n_builtin = theme_pane_rows(*kind, input).len();
+        let n_custom = theme_pane_custom_rows(*kind, input).len();
+        let y = theme_pane_scroll_offset(n_builtin, n_custom, *selected);
         scroll_to(
             super::view::launcher_theme_scrollable_id(),
             AbsoluteOffset { x: 0.0, y },
@@ -5005,7 +5038,11 @@ impl Grove {
             self.app.set_error_toast(e);
             return Task::none();
         }
-        self.open_theme_manager_editor(new_theme)
+        let task = self.open_theme_manager_editor(new_theme);
+        if let Some(ed) = &mut self.theme_manager_editor {
+            ed.created_this_session = true;
+        }
+        task
     }
 
     /// Duplicates the theme at row `idx` into a new custom theme (auto-named
@@ -5078,6 +5115,7 @@ impl Grove {
         }
         match crate::theme::rename_custom(&original, &new_name) {
             Ok(()) => {
+                self.persist_theme_rename(&original, &new_name);
                 self.invalidate_pty_render_cache();
                 let idx = crate::theme::all_custom_themes()
                     .iter()
@@ -5115,6 +5153,40 @@ impl Grove {
         }
     }
 
+    /// Updates any persisted reference to a renamed/saved-under-a-new-name
+    /// custom theme — `store.theme`/`theme_dark`/`theme_light` and any
+    /// `project.theme` pin — from `old` to `new`, then saves the store if
+    /// anything changed. `theme::rename_custom`/`update_custom` only touch
+    /// the in-memory `CUSTOM` registry (and `ACTIVE`, for `rename_custom`);
+    /// without this, a rename would leave stale pins in `store.json` that
+    /// silently fall back to a default theme (or a since-reused name) the
+    /// next time they're read. Mirrors `theme_manager_delete_confirm`'s
+    /// store-update pattern, extended to project pins.
+    fn persist_theme_rename(&mut self, old: &str, new: &str) {
+        let mut changed = false;
+        if self.app.store.theme.as_deref() == Some(old) {
+            self.app.store.theme = Some(new.to_string());
+            changed = true;
+        }
+        if self.app.store.theme_dark.as_deref() == Some(old) {
+            self.app.store.theme_dark = Some(new.to_string());
+            changed = true;
+        }
+        if self.app.store.theme_light.as_deref() == Some(old) {
+            self.app.store.theme_light = Some(new.to_string());
+            changed = true;
+        }
+        for proj in &mut self.app.store.projects {
+            if proj.theme.as_deref() == Some(old) {
+                proj.theme = Some(new.to_string());
+                changed = true;
+            }
+        }
+        if changed {
+            let _ = crate::storage::save(&self.app.store);
+        }
+    }
+
     fn theme_manager_delete_start(&mut self, idx: usize) {
         let Some(theme) = crate::theme::all_custom_themes().get(idx).cloned() else {
             return;
@@ -5147,6 +5219,13 @@ impl Grove {
             .find(|t| t.name == name)
             .map(|t| t.kind)
         else {
+            // The pending theme is already gone (e.g. deleted from another
+            // path, or `themes.json` reloaded out from under the modal) —
+            // clear the stale confirmation instead of leaving the dialog
+            // permanently stuck on a theme that no longer exists.
+            if let Modal::ThemeManager { pending_delete, .. } = &mut self.app.modal {
+                *pending_delete = None;
+            }
             return;
         };
         let was_active = crate::theme::current().name == name;
@@ -5270,6 +5349,7 @@ impl Grove {
             paste,
             paste_status: None,
             return_selected: list_selected,
+            created_this_session: false,
         });
         crate::theme::set(draft);
         self.invalidate_pty_render_cache();
@@ -5370,8 +5450,16 @@ impl Grove {
 
     /// Editor ⏎ (only reaches here with no text field focused) / ⌘S / Save
     /// button: persists `draft` into the `CUSTOM` registry via
-    /// `theme::update_custom`, keeps it live-applied, and returns to the
-    /// list landed on the saved theme's row.
+    /// `theme::update_custom` (which rejects an empty/whitespace-only name —
+    /// same as the list-view rename path — and trims a valid one, so `name`
+    /// below is recomputed from the trimmed value rather than trusted from
+    /// the untrimmed draft), updates any persisted `store`/project-pin
+    /// reference if the name changed, and returns to the list landed on the
+    /// saved theme's row. The save is always persisted regardless of
+    /// Preview, but only re-applies the draft app-wide when Preview is ON —
+    /// with it OFF, `original_active` is what's actually showing, and Save
+    /// must not silently switch the whole app to a theme the user opted out
+    /// of previewing.
     fn theme_manager_editor_save(&mut self) -> Task<Msg> {
         let Some(ed) = self.theme_manager_editor.take() else {
             return Task::none();
@@ -5381,9 +5469,24 @@ impl Grove {
             self.theme_manager_editor = Some(ed);
             return Task::none();
         }
-        self.app.set_toast(format!("theme saved: {}", ed.draft.name));
-        let name = ed.draft.name.to_string();
-        crate::theme::set(ed.draft);
+        let name = ed.draft.name.trim().to_string();
+        self.app.set_toast(format!("theme saved: {name}"));
+        if name != ed.original_name {
+            self.persist_theme_rename(&ed.original_name, &name);
+        }
+        let mut saved = ed.draft;
+        saved.name = std::borrow::Cow::Owned(name.clone());
+        // Save always persists the draft into the registry (above); whether
+        // it also becomes the whole app's live theme depends on Preview:
+        // ON means the draft is already what's showing (leave it applied),
+        // OFF means `original_active` is what's showing and Save must not
+        // silently switch the app to a theme the user opted out of
+        // previewing.
+        if ed.preview_on {
+            crate::theme::set(saved);
+        } else {
+            crate::theme::set(ed.original_active);
+        }
         let idx = crate::theme::all_custom_themes()
             .iter()
             .position(|t| t.name == name)
@@ -5419,14 +5522,26 @@ impl Grove {
 
     /// Editor discard-confirmation Enter ("Discard"), or Esc outright when
     /// there was nothing dirty to confirm: reverts the whole app to
-    /// `original_active` and returns to the list.
+    /// `original_active` and returns to the list. If this editor session was
+    /// opened via "New theme" and never reached a successful Save,
+    /// `theme_manager_new` already persisted a fresh "untitled ..." entry
+    /// into the registry so the user could preview it — discarding here
+    /// deletes that entry too, so it doesn't linger as an orphan the user
+    /// never actually chose to keep.
     fn theme_manager_editor_discard(&mut self) -> Task<Msg> {
         let Some(ed) = self.theme_manager_editor.take() else {
             return Task::none();
         };
+        if ed.created_this_session {
+            crate::theme::delete_custom(&ed.original_name);
+        }
         crate::theme::set(ed.original_active);
+        // Deleting the never-saved entry can shrink the list out from under
+        // `return_selected` (it was resolved back when that row still
+        // existed) — clamp the same way `theme_manager_delete_confirm` does.
+        let total = crate::theme::all_custom_themes().len();
         if let Modal::ThemeManager { selected, .. } = &mut self.app.modal {
-            *selected = ed.return_selected;
+            *selected = ed.return_selected.min(total.saturating_sub(1));
         }
         self.invalidate_pty_render_cache();
         Task::none()
@@ -5437,8 +5552,22 @@ impl Grove {
     /// ⌘⏎ is a command, never text, but a focused `text_editor` (like
     /// `text_input`) doesn't special-case an arbitrary Cmd/Ctrl+Shift chord
     /// and would otherwise insert/delete on it unconditionally.
+    ///
+    /// `Edit::Paste` is carved out of that guard: iced's `text_editor`
+    /// resolves ⌘V to `Action::Edit(Edit::Paste(_))` itself (see its
+    /// `Binding::Paste` handling) before this callback ever runs, so by the
+    /// time we're asked to perform it the chord's ⌘ is still held in
+    /// `live_mods` — without the carve-out, a real paste would be dropped
+    /// exactly like the spurious edit this guard exists to catch. ⌘C (copy)
+    /// needs no carve-out: the widget writes the clipboard directly and
+    /// never publishes an `Action` for it, so it can't reach this guard at
+    /// all. ⌘X (cut) resolves to plain `Edit::Delete` — indistinguishable
+    /// from a bare Delete keypress, so it's left under the existing guard
+    /// rather than carved out too; this finding is scoped to restoring ⌘V.
     fn theme_manager_paste_action(&mut self, action: iced::widget::text_editor::Action) {
-        if action.is_edit() && global_mods(self.live_mods) {
+        use iced::widget::text_editor::{Action as EditorAction, Edit};
+        let is_paste = matches!(action, EditorAction::Edit(Edit::Paste(_)));
+        if action.is_edit() && !is_paste && global_mods(self.live_mods) {
             return;
         }
         if let Some(ed) = &mut self.theme_manager_editor {
@@ -6881,6 +7010,67 @@ pub(super) fn launcher_theme_scroll_offset(total: usize, selected: usize) -> f32
     (sel_y - (viewport_h - THEME_PANE_ROW_H) / 2.0).clamp(0.0, max_y)
 }
 
+/// The Theme sub-pane's CUSTOM section header (`section_header("CUSTOM",
+/// 12.0, 6.0)`, view.rs:3859): `top` + `SETTINGS_ROOT_HEADER_LABEL_H` (10px
+/// text at iced's default 1.3 line height, same approximation
+/// `settings_root_scroll_offset` uses for its own headers) + `bottom`.
+const THEME_PANE_CUSTOM_HEADER_H: f32 = 12.0 + SETTINGS_ROOT_HEADER_LABEL_H + 6.0;
+/// The "No custom themes yet…" hint row shown in place of any custom rows
+/// when there are none (view.rs:3860-3868): `Padding::from([8, 12])` (8px
+/// top + bottom) around one line of 11px text, approximated with the same
+/// `SETTINGS_ROOT_HEADER_LABEL_H` label-height constant the header above
+/// uses (close enough at this size difference, and this whole helper is
+/// already a centering approximation, not a pixel-exact layout).
+const THEME_PANE_CUSTOM_HINT_H: f32 = 8.0 + SETTINGS_ROOT_HEADER_LABEL_H + 8.0;
+/// The trailing "Manage themes…" row (view.rs:3878-3890): `modal_list_row_
+/// sized(..., height: 32.0, ...)`, never selectable, always present.
+const THEME_PANE_MANAGE_ROW_H: f32 = 32.0;
+
+/// Center-and-clamp scroll offset for the Theme sub-pane's list, accounting
+/// for the CUSTOM section header, its "no custom themes yet" hint (only
+/// rendered when `n_custom == 0`), and the trailing "Manage themes…" row —
+/// `launcher_theme_scroll_offset`'s uniform-row math undercounts all three,
+/// so centering drifted once the list scrolled anywhere near the Custom
+/// section. Walks the exact child sequence `view.rs` pushes onto the same
+/// `Column::new().spacing(2)` (builtin rows, header, hint-or-custom-rows,
+/// manage row), so the column spacing between each pair of children is
+/// counted exactly once, same idiom as `settings_root_scroll_offset`.
+pub(super) fn theme_pane_scroll_offset(n_builtin: usize, n_custom: usize, selected: usize) -> f32 {
+    let mut content_h: f32 = 0.0;
+    let mut sel_y: f32 = 0.0;
+    for i in 0..n_builtin {
+        if content_h > 0.0 {
+            content_h += THEME_PANE_SPACING;
+        }
+        if i == selected {
+            sel_y = content_h;
+        }
+        content_h += THEME_PANE_ROW_H;
+    }
+    if content_h > 0.0 {
+        content_h += THEME_PANE_SPACING;
+    }
+    content_h += THEME_PANE_CUSTOM_HEADER_H;
+    if n_custom == 0 {
+        content_h += THEME_PANE_SPACING;
+        content_h += THEME_PANE_CUSTOM_HINT_H;
+    } else {
+        for j in 0..n_custom {
+            content_h += THEME_PANE_SPACING;
+            let i = n_builtin + j;
+            if i == selected {
+                sel_y = content_h;
+            }
+            content_h += THEME_PANE_ROW_H;
+        }
+    }
+    content_h += THEME_PANE_SPACING;
+    content_h += THEME_PANE_MANAGE_ROW_H;
+    let viewport_h = content_h.min(THEME_PANE_VIEWPORT_CAP);
+    let max_y = (content_h - viewport_h).max(0.0);
+    (sel_y - (viewport_h - THEME_PANE_ROW_H) / 2.0).clamp(0.0, max_y)
+}
+
 /// The theme editor's group-header geometry: same `SETTINGS_ROOT_HEADER_
 /// LABEL_H` (10px text at iced's default 1.3 line height) the Settings Root
 /// list uses, but the editor's `section_header(group, top, 4.0)` calls (see
@@ -7960,7 +8150,20 @@ pub(crate) fn slide_progress(start: std::time::Instant, now: std::time::Instant)
 ///   chord is a command, never text — without this carve-out, e.g. ⌘D in
 ///   the Theme sub-pane never reached `handle_modal_key`'s Theme-pane arm at
 ///   all; the user just saw "d" typed into the focused search field.
-fn should_forward(ev: &Event, status: event::Status) -> bool {
+///   This carve-out is gated on `modal_open`: `handle_key` only reaches the
+///   `handle_modal_key` chord-handling path (which needs it) while a modal
+///   is open; with no modal open, the same forwarded chord would instead
+///   fall through to `handle_key`'s PTY copy/paste shortcuts (⌘C/⌘V) —
+///   double-handling a chord the focused (non-modal) text widget already
+///   consumed itself (e.g. copying/pasting into that widget, then again into
+///   the PTY). Escape's carve-out stays unconditional: `escape_should_dismiss`
+///   is meant to reach `handle_key` with no modal open too.
+/// Backing store for `should_forward`'s `modal_open` check — see
+/// `Grove::subscription`'s doc comment for why a static is needed here
+/// instead of a captured closure variable.
+static MODAL_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn should_forward(ev: &Event, status: event::Status, modal_open: bool) -> bool {
     if status != event::Status::Captured {
         return true;
     }
@@ -7969,7 +8172,9 @@ fn should_forward(ev: &Event, status: event::Status) -> bool {
             key: Key::Named(Named::Escape),
             ..
         }) => true,
-        Event::Keyboard(keyboard::Event::KeyPressed { modifiers, .. }) => global_mods(*modifiers),
+        Event::Keyboard(keyboard::Event::KeyPressed { modifiers, .. }) => {
+            modal_open && global_mods(*modifiers)
+        }
         _ => false,
     }
 }
@@ -8740,15 +8945,24 @@ mod tests {
         fn uncaptured_events_always_forward() {
             assert!(should_forward(
                 &press(Key::Character("a".into())),
-                event::Status::Ignored
+                event::Status::Ignored,
+                false
             ));
         }
 
         #[test]
         fn captured_escape_still_forwards() {
+            // Escape's carve-out is unconditional — it must reach
+            // `escape_should_dismiss` whether or not a modal is open.
             assert!(should_forward(
                 &press(Key::Named(Named::Escape)),
-                event::Status::Captured
+                event::Status::Captured,
+                false
+            ));
+            assert!(should_forward(
+                &press(Key::Named(Named::Escape)),
+                event::Status::Captured,
+                true
             ));
         }
 
@@ -8758,11 +8972,13 @@ mod tests {
             // focused field, not to handle_key.
             assert!(!should_forward(
                 &press(Key::Character("a".into())),
-                event::Status::Captured
+                event::Status::Captured,
+                true
             ));
             assert!(!should_forward(
                 &press(Key::Named(Named::Enter)),
-                event::Status::Captured
+                event::Status::Captured,
+                true
             ));
         }
 
@@ -8771,17 +8987,38 @@ mod tests {
         /// carve-out a chord like ⌘D never reached `handle_modal_key`'s
         /// Theme-pane arm at all — the user just saw "d" typed into the
         /// query. Chords are commands, never text, regardless of what
-        /// widget currently has focus.
+        /// widget currently has focus — but only while a modal is open,
+        /// since that's the only time `handle_modal_key` is reached at all.
         #[test]
-        fn captured_global_mod_chord_still_forwards() {
+        fn captured_global_mod_chord_forwards_while_modal_open() {
             assert!(should_forward(
                 &press_mods(Key::Character("d".into()), gmods()),
-                event::Status::Captured
+                event::Status::Captured,
+                true
             ));
             // Named keys chord too (⌘⌫ delete).
             assert!(should_forward(
                 &press_mods(Key::Named(Named::Backspace), gmods()),
-                event::Status::Captured
+                event::Status::Captured,
+                true
+            ));
+        }
+
+        /// With no modal open, the same captured chord must NOT forward:
+        /// `handle_key` would otherwise double-handle it via the PTY
+        /// copy/paste shortcuts (⌘C/⌘V) on top of whatever the focused
+        /// non-modal text widget already did with it itself.
+        #[test]
+        fn captured_global_mod_chord_dropped_without_modal_open() {
+            assert!(!should_forward(
+                &press_mods(Key::Character("c".into()), gmods()),
+                event::Status::Captured,
+                false
+            ));
+            assert!(!should_forward(
+                &press_mods(Key::Character("v".into()), gmods()),
+                event::Status::Captured,
+                false
             ));
         }
 
@@ -8794,11 +9031,13 @@ mod tests {
         fn captured_partial_or_unrelated_modifier_still_dropped() {
             assert!(!should_forward(
                 &press_mods(Key::Character("d".into()), Modifiers::CTRL),
-                event::Status::Captured
+                event::Status::Captured,
+                true
             ));
             assert!(!should_forward(
                 &press_mods(Key::Character("d".into()), Modifiers::SHIFT),
-                event::Status::Captured
+                event::Status::Captured,
+                true
             ));
         }
     }
@@ -9094,6 +9333,39 @@ mod tests {
         assert_eq!(launcher_theme_scroll_offset(30, 15), 448.0);
         // Empty list degenerates to 0, not NaN/negative.
         assert_eq!(launcher_theme_scroll_offset(0, 0), 0.0);
+    }
+
+    /// Regression for the Theme sub-pane's `scroll_launcher_theme_to_
+    /// selection`: `launcher_theme_scroll_offset` above pitches the CUSTOM
+    /// section header/hint/"Manage themes…" rows at the uniform 38px row
+    /// pitch, drifting centering once the list scrolls anywhere near that
+    /// section. Values hand-derived from the exact child sequence `view.rs`
+    /// pushes onto `Column::new().spacing(2)` (view.rs:3856-3890): builtin
+    /// rows (38px pitch), `section_header("CUSTOM", 12.0, 6.0)` (31px),
+    /// either the "no custom themes yet" hint (29px) or the custom rows
+    /// (38px pitch), then the "Manage themes…" row (32px, never selectable).
+    #[test]
+    fn theme_pane_scroll_offset_accounts_for_custom_header_hint_and_manage_row() {
+        use super::theme_pane_scroll_offset;
+        // 7 builtins, no custom themes yet (hint row shown in their place):
+        // a builtin row well clear of both edges still centers cleanly —
+        // the header/hint/manage rows below only affect how far it can
+        // clamp, not this row's own y.
+        assert_eq!(theme_pane_scroll_offset(7, 0, 4), 30.0);
+        // The very first row clamps to the top…
+        assert_eq!(theme_pane_scroll_offset(7, 0, 0), 0.0);
+        // …and the last builtin row clamps to the bottom: the header/hint/
+        // manage rows below it push max_y past where it'd naturally center
+        // (106), which the old uniform-pitch version undercounted.
+        assert_eq!(theme_pane_scroll_offset(7, 0, 6), 82.0);
+        // 5 builtins + 5 custom themes: selecting the first custom row
+        // (row 5) lands just past the CUSTOM header, still shy of the
+        // bottom clamp — exactly the geometry a uniform 38px pitch gets
+        // wrong (the header renders at 31px, not 38px).
+        assert_eq!(theme_pane_scroll_offset(5, 5, 5), 101.0);
+        // No themes match the filter at all: header + hint + manage row
+        // still total well under the 280px cap, so nothing scrolls.
+        assert_eq!(theme_pane_scroll_offset(0, 0, 0), 0.0);
     }
 
     /// Regression for the reported bug: ↑/↓ in the theme editor didn't

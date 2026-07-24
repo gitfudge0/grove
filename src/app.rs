@@ -629,9 +629,31 @@ impl App {
     }
 }
 
+/// Rewrites any of `store.theme`/`theme_dark`/`theme_light` that names a
+/// theme `theme::by_name` can no longer resolve (a builtin dropped from a
+/// later curated set, or a custom theme deleted outside the app) to
+/// `DEFAULT_DARK_THEME`. Deliberately no name-mapping of old builtins to
+/// their closest modern equivalent — `tokyonight-storm` is the one fallback,
+/// same as `theme_reload_fallback`'s at-runtime counterpart. Returns whether
+/// anything changed, so the caller only re-persists the store when needed.
+/// Pulled out of `App::new` as a free function so it's testable without a
+/// full `App`/on-disk config.
+fn migrate_stale_theme_names(store: &mut Store) -> bool {
+    let mut changed = false;
+    for slot in [&mut store.theme, &mut store.theme_dark, &mut store.theme_light] {
+        if let Some(name) = slot.as_deref() {
+            if theme::by_name(name).is_none() {
+                *slot = Some(DEFAULT_DARK_THEME.to_string());
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 impl App {
     pub fn new() -> Result<Self> {
-        let store = storage::load()?;
+        let mut store = storage::load()?;
         let tmux_available = tmux::available();
         // Apply the saved theme before building the initial modal so the
         // onboarding wizard seeds its theme selection from the active theme.
@@ -643,12 +665,27 @@ impl App {
         // so a persisted custom theme name (dark/light/plain) still resolves
         // on this first frame instead of silently falling back.
         let theme_load_errors = theme::load_custom();
+        // One-time migration: a persisted theme name can go stale (e.g. a
+        // builtin dropped from a later curated set, or a custom theme
+        // deleted outside the app) — `theme::by_name` fails to resolve it
+        // silently. Rewrite any such field to `DEFAULT_DARK_THEME` up front
+        // so the dead name doesn't linger in `store.json`, and so the
+        // resolution below always lands on a theme that actually exists
+        // instead of leaving `theme::ACTIVE` on its static-initializer
+        // default (`TOKYONIGHT`, not `DEFAULT_DARK_THEME`) unnoticed.
+        if migrate_stale_theme_names(&mut store) {
+            let _ = storage::save(&store);
+        }
         let theme_follow_system = store.theme_follow_system;
         if theme_follow_system {
             let name = store.theme_dark.as_deref().unwrap_or(DEFAULT_DARK_THEME);
-            theme::set_by_name(name);
+            if !theme::set_by_name(name) {
+                theme::set_by_name(DEFAULT_DARK_THEME);
+            }
         } else if let Some(name) = store.theme.as_deref() {
-            theme::set_by_name(name);
+            if !theme::set_by_name(name) {
+                theme::set_by_name(DEFAULT_DARK_THEME);
+            }
         }
         let initial_modal =
             match first_run_modal(store.onboarded, tmux_available, store.tmux_enabled) {
@@ -2784,5 +2821,40 @@ mod tests {
         assert!(!needs_tmux_choice(true, Some(true)));
         assert!(!needs_tmux_choice(true, Some(false)));
         assert!(!needs_tmux_choice(false, None));
+    }
+
+    #[test]
+    fn migrate_stale_theme_names_rewrites_unresolvable_fields_only() {
+        use super::{migrate_stale_theme_names, DEFAULT_DARK_THEME};
+        let _lock = crate::theme::CUSTOM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        // A stale name in every slot, plus one that still resolves fine.
+        let mut store = Store {
+            theme: Some("this-theme-was-retired".to_string()),
+            theme_dark: Some(DEFAULT_DARK_THEME.to_string()),
+            theme_light: Some("also-retired".to_string()),
+            ..Store::default()
+        };
+        assert!(migrate_stale_theme_names(&mut store));
+        assert_eq!(store.theme.as_deref(), Some(DEFAULT_DARK_THEME));
+        // Already resolvable — left untouched, not just rewritten to the
+        // same value (matters if a future change makes the fallback name a
+        // dynamic choice rather than a constant).
+        assert_eq!(store.theme_dark.as_deref(), Some(DEFAULT_DARK_THEME));
+        assert_eq!(store.theme_light.as_deref(), Some(DEFAULT_DARK_THEME));
+
+        // Nothing stale: no-op, reports no change.
+        let mut clean = Store {
+            theme: Some(DEFAULT_DARK_THEME.to_string()),
+            ..Store::default()
+        };
+        assert!(!migrate_stale_theme_names(&mut clean));
+
+        // All `None`: no-op, reports no change (fresh install / follow-
+        // system-only config with nothing pinned yet).
+        let mut empty = Store::default();
+        assert!(!migrate_stale_theme_names(&mut empty));
     }
 }

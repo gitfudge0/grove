@@ -84,9 +84,11 @@ pub fn launcher_theme_scrollable_id() -> Id {
     Id::new("launcher-theme-list")
 }
 
-/// Stable id for `Modal::ThemeManager`'s list scrollable (unused for now —
-/// Stage A's list is short enough it never needs a programmatic scroll, but
-/// kept alongside the other list ids for consistency and future use).
+/// Stable id for `Modal::ThemeManager`'s list scrollable — the same list
+/// (rename/duplicate/delete/edit) and the editor's own 11-row list share
+/// this id, both scrolled programmatically by `Grove::scroll_theme_manager_
+/// editor_to_selection` (row moves in the editor) and the list-view's own
+/// selection scroll.
 pub fn theme_manager_scrollable_id() -> Id {
     Id::new("theme-manager-list")
 }
@@ -3594,6 +3596,7 @@ impl Grove {
             .size(14)
             .padding(0)
             .on_input(Msg::LauncherInputChanged)
+            .on_paste(Msg::LauncherInputPasted)
             .style(palette_input_style);
         let input_zone = container(
             row![leading, field]

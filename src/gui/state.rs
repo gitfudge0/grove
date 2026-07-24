@@ -440,6 +440,14 @@ pub struct ThemeManagerEditorState {
     /// closes (save or discard) — the row for whichever theme was being
     /// edited, resolved fresh by name rather than trusted as a raw index.
     pub return_selected: usize,
+    /// Set when this editor session was opened via "New theme" — that path
+    /// (unlike Edit/⌘E on an existing theme) already persisted a fresh
+    /// `CUSTOM` entry (auto-named "untitled ...") before the editor even
+    /// opened, so the user can preview it. Cleared on the first successful
+    /// Save; if the editor is discarded/Esc'd while this is still `true`,
+    /// that never-actually-saved-by-the-user entry is deleted rather than
+    /// left behind as an orphan.
+    pub created_this_session: bool,
 }
 
 impl ThemeManagerEditorState {
@@ -727,6 +735,12 @@ pub enum Msg {
     OpenSessionLauncher,
     /// Live edit of the palette's search field. Resets `selected` to 0.
     LauncherInputChanged(String),
+    /// `text_input`'s dedicated ⌘V callback (`on_paste`) for the palette's
+    /// search field — fires instead of `LauncherInputChanged` for an actual
+    /// paste, so it can skip that message's `global_mods` spurious-edit guard
+    /// (which would otherwise drop the paste too, since the chord's modifier
+    /// is still held when the content arrives).
+    LauncherInputPasted(String),
     /// Activate (launch/act on) the row at this index in the currently
     /// rendered root/typing/browse-all list; driven by both row click and the
     /// Enter/mod+digit keyboard paths.

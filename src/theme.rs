@@ -807,7 +807,12 @@ pub fn save_custom() -> std::io::Result<()> {
 
 /// Adds a new custom theme. Rejects a name that collides with a builtin or
 /// an existing custom theme.
-pub fn add_custom(theme: Theme) -> Result<(), String> {
+pub fn add_custom(mut theme: Theme) -> Result<(), String> {
+    let trimmed = theme.name.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("name can't be empty".to_string());
+    }
+    theme.name = Cow::Owned(trimmed);
     if is_builtin(&theme.name) {
         return Err(format!("\"{}\" shadows a built-in theme", theme.name));
     }
@@ -822,8 +827,15 @@ pub fn add_custom(theme: Theme) -> Result<(), String> {
 
 /// Replaces the custom theme named `original_name` with `theme` in place
 /// (preserving its position). Errors if `original_name` isn't a known
-/// custom theme, or if renaming to `theme.name` would collide.
-pub fn update_custom(original_name: &str, theme: Theme) -> Result<(), String> {
+/// custom theme, if `theme.name` is empty/whitespace-only (mirrors the
+/// list-view rename path's validation — a theme can never be saved with a
+/// blank name), or if renaming to `theme.name` would collide.
+pub fn update_custom(original_name: &str, mut theme: Theme) -> Result<(), String> {
+    let trimmed = theme.name.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("name can't be empty".to_string());
+    }
+    theme.name = Cow::Owned(trimmed);
     let mut guard = CUSTOM.write().unwrap_or_else(|e| e.into_inner());
     let idx = guard
         .iter()
@@ -1010,6 +1022,33 @@ mod tests {
         let builtin_name = BUILTINS[0].name.to_string();
         let err = rename_custom("theme-a", &builtin_name);
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn add_custom_rejects_empty_or_whitespace_name() {
+        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = CustomGuard::new();
+        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = Vec::new();
+
+        assert!(add_custom(sample("", ThemeKind::Dark)).is_err());
+        assert!(add_custom(sample("   ", ThemeKind::Dark)).is_err());
+        // Rejected before ever touching the registry.
+        assert!(CUSTOM.read().unwrap_or_else(|e| e.into_inner()).is_empty());
+    }
+
+    #[test]
+    fn update_custom_rejects_empty_or_whitespace_name() {
+        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = CustomGuard::new();
+        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = vec![sample("theme-a", ThemeKind::Dark)];
+
+        let err = update_custom("theme-a", sample("   ", ThemeKind::Dark));
+        assert!(err.is_err());
+        // The original entry is left untouched by the rejected save.
+        assert_eq!(
+            CUSTOM.read().unwrap_or_else(|e| e.into_inner())[0].name,
+            "theme-a"
+        );
     }
 
     #[test]
