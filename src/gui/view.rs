@@ -9,19 +9,22 @@ use super::metrics::{
 use super::palette as c;
 use super::pty::{rebuild_row_runs, PtyProgram};
 use super::rows::{project_row, session_row, single_line, state_glyph, worktree_row};
-use super::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, UpgradeState};
+use super::state::{
+    FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane, ThemeManagerEditorState, UpgradeState,
+};
 use super::update::{
-    platform_mod_label, project_theme_pane_rows, theme_pane_rows, update_available_actions,
+    platform_mod_label, project_theme_pane_rows, theme_pane_custom_rows, theme_pane_row_is_custom,
+    theme_pane_rows, update_available_actions,
     GlobalShortcut, PaletteRow, Scope, SettingRow, ShortcutDef, UpdateAction, SHORTCUTS,
 };
 use super::widgets::{
-    control_btn_sized, control_icon_btn, divider_h, divider_v, dot, empty_terminals_workspace,
-    empty_workspace, footer_container, footer_hint, ghost_scrollable, icon_btn, keycap,
-    keycap_text, launcher_row, modal_action, modal_action_sized, modal_checkbox,
-    modal_footer_hints, modal_footer_row, modal_header, modal_header_row, modal_list_row,
-    modal_list_row_sized, modal_panel, palette_input_style, section_header, seg_button,
-    sidebar_agent_menu_overlay, skip_perms_seg, slot_badge, tool_btn, tool_btn_toggle, vline,
-    ModalBtn, SegSide, PALETTE_ROW_H,
+    action_mini, action_mini_danger, control_btn_sized, control_icon_btn, divider_h, divider_v,
+    dot, empty_terminals_workspace, empty_workspace, footer_container, footer_hint,
+    ghost_scrollable, icon_btn, keycap, keycap_text, launcher_row, modal_action,
+    modal_action_sized, modal_checkbox, modal_footer_hints, modal_footer_row, modal_header,
+    modal_header_row, modal_list_row, modal_list_row_sized, modal_panel, palette_input_style,
+    section_header, seg_button, sidebar_agent_menu_overlay, skip_perms_seg, slot_badge, tool_btn,
+    tool_btn_toggle, vline, ModalBtn, SegSide, PALETTE_ROW_H,
 };
 use crate::app::{
     AddProjectStep, ConfirmKind, GitProbe, LauncherOptions, LauncherSettings, Modal, OnboardStep,
@@ -81,6 +84,13 @@ pub fn launcher_theme_scrollable_id() -> Id {
     Id::new("launcher-theme-list")
 }
 
+/// Stable id for `Modal::ThemeManager`'s list scrollable (unused for now —
+/// Stage A's list is short enough it never needs a programmatic scroll, but
+/// kept alongside the other list ids for consistency and future use).
+pub fn theme_manager_scrollable_id() -> Id {
+    Id::new("theme-manager-list")
+}
+
 /// Stable id for the palette Settings drill-in's Root list scrollable —
 /// same idiom again: 8 rows plus section headers overflow the 380px cap, so
 /// cursor moves (and sub-pane exits landing near the bottom) must scroll
@@ -118,6 +128,21 @@ fn mod_key_chip<'a>(key: &'static str, color: Color) -> Element<'a, Msg> {
             .into()
     };
     keycap(inner)
+}
+
+/// A mod-chorded footer hint (e.g. "⌘D duplicate" / "ctrl+shift+D duplicate"
+/// off mac) — `footer_hint`'s idiom, but with `mod_key_chip`'s platform-aware
+/// modifier rendering instead of a bare keycap. Used by the Theme sub-pane's
+/// duplicate/rename/edit/delete actions, which are ⌘-chorded so they never
+/// collide with typing a theme name into the search filter.
+fn footer_mod_hint<'a>(key: &'static str, label: &'static str) -> Element<'a, Msg> {
+    row![
+        mod_key_chip(key, c::FG_DIM()),
+        text(label).font(MONO_FONT).size(10).color(c::FG_MUTE()),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center)
+    .into()
 }
 
 /// Render `s` as rich text, coloring the character ranges in `ranges` cyan
@@ -2472,6 +2497,20 @@ impl Grove {
                 *project_use_default,
             ),
             Modal::Settings => self.settings_modal(),
+            Modal::ThemeManager {
+                selected,
+                rename,
+                rename_error,
+                pending_delete,
+            } => match &self.theme_manager_editor {
+                Some(ed) => self.theme_manager_editor_modal(ed),
+                None => self.theme_manager_modal(
+                    *selected,
+                    rename.as_ref(),
+                    rename_error.as_deref(),
+                    pending_delete.as_deref(),
+                ),
+            },
             Modal::ShortcutOverlay => self.shortcut_overlay_modal(),
             Modal::Updating => self.updating_modal(),
             Modal::Teardown => self.teardown_modal(),
@@ -2502,7 +2541,7 @@ impl Grove {
                 options.as_ref(),
                 *switch,
                 row_actions.as_ref(),
-                *settings,
+                settings.as_ref(),
             ),
             _ => Space::new().width(0).into(),
         };
@@ -3512,7 +3551,7 @@ impl Grove {
         options: Option<&'a LauncherOptions>,
         switch: Option<usize>,
         row_actions: Option<&'a crate::app::RowActionsState>,
-        settings: Option<LauncherSettings>,
+        settings: Option<&'a LauncherSettings>,
     ) -> Element<'a, Msg> {
         // A cue chip shell shared by the "options" and "switch to session"
         // states' leading slot: mono, cyan text over a soft cyan tint.
@@ -3586,7 +3625,7 @@ impl Grove {
         };
 
         if let Some(ls) = settings {
-            match ls.pane {
+            match &ls.pane {
                 SettingsPane::Root => {
                     // Settings drill-in root: every `SettingRow`, grouped
                     // under its 4 section headers (C1 in the palette
@@ -3699,11 +3738,7 @@ impl Grove {
                     };
                     body = body.push(footer_container(footer_row));
                 }
-                SettingsPane::Theme {
-                    kind,
-                    follow_system,
-                    ..
-                } => {
+                SettingsPane::Theme { kind, follow_system, .. } => {
                     // Theme sub-pane (D1): pinned context row + Dark/Light/
                     // System mode row above a fuzzy-filtered, live-previewing
                     // theme list — see `Grove::theme_pane_select`/
@@ -3736,19 +3771,19 @@ impl Grove {
                         row![
                             seg_button(
                                 "Dark",
-                                !follow_system && kind == crate::theme::ThemeKind::Dark,
+                                !*follow_system && *kind == crate::theme::ThemeKind::Dark,
                                 SegSide::Left,
                                 Msg::LauncherThemePaneDark,
                             ),
                             seg_button(
                                 "Light",
-                                !follow_system && kind == crate::theme::ThemeKind::Light,
+                                !*follow_system && *kind == crate::theme::ThemeKind::Light,
                                 SegSide::Mid,
                                 Msg::LauncherThemePaneLight,
                             ),
                             seg_button(
                                 "System",
-                                follow_system,
+                                *follow_system,
                                 SegSide::Right,
                                 Msg::LauncherThemePaneSystem,
                             ),
@@ -3773,9 +3808,13 @@ impl Grove {
                     )
                     .padding(Padding::from([8, 12]));
 
-                    let theme_rows = theme_pane_rows(kind, input);
-                    let current_name = crate::theme::current().name;
-                    let theme_list: Element<'a, Msg> = if theme_rows.is_empty() {
+                    let list_filter: &str = input;
+                    let builtin_rows = theme_pane_rows(*kind, list_filter);
+                    let custom_rows = theme_pane_custom_rows(*kind, list_filter);
+                    let n_builtin = builtin_rows.len();
+                    let current_name = crate::theme::current().name.to_string();
+
+                    let theme_list: Element<'a, Msg> = if n_builtin == 0 && custom_rows.is_empty() {
                         container(text("No matching themes").size(12).color(c::FG_MUTE()))
                             .padding(Padding::from([30, 16]))
                             .width(Length::Fill)
@@ -3783,14 +3822,21 @@ impl Grove {
                             .into()
                     } else {
                         let mut list = Column::new().spacing(2);
-                        for (i, t) in theme_rows.iter().enumerate() {
-                            let active = i == ls.selected;
-                            let m = (!input.is_empty()).then(|| {
-                                crate::gui::launcher::fuzzy_match_indices(input, t.name, "", "")
+                        let theme_row = |i: usize,
+                                          t: &crate::theme::Theme,
+                                          active: bool|
+                         -> Element<'a, Msg> {
+                            let m = (!list_filter.is_empty()).then(|| {
+                                crate::gui::launcher::fuzzy_match_indices(
+                                    list_filter,
+                                    &t.name,
+                                    "",
+                                    "",
+                                )
                             });
                             let ranges: &[(usize, usize)] =
                                 m.as_ref().map(|m| m.project.as_slice()).unwrap_or(&[]);
-                            let label_el = highlighted_line(t.name, ranges, c::FG(), UI_FONT, 13.0);
+                            let label_el = highlighted_line(&t.name, ranges, c::FG(), UI_FONT, 13.0);
                             let mut content = row![label_el]
                                 .spacing(8)
                                 .align_y(iced::Alignment::Center)
@@ -3798,14 +3844,49 @@ impl Grove {
                             if t.name == current_name {
                                 content = content.push(icon("check", 12.0, c::CYAN()));
                             }
-                            list = list.push(launcher_row(
+                            launcher_row(
                                 content,
                                 active,
                                 true,
                                 Msg::LauncherThemePaneSelect(i),
                                 36.0,
-                            ));
+                            )
+                        };
+                        for (i, t) in builtin_rows.iter().enumerate() {
+                            list = list.push(theme_row(i, t, i == ls.selected));
                         }
+                        list = list.push(section_header("CUSTOM", 12.0, 6.0));
+                        if custom_rows.is_empty() {
+                            list = list.push(
+                                container(
+                                    text("No custom themes yet — create one or paste a palette.")
+                                        .size(11)
+                                        .color(c::FG_MUTE()),
+                                )
+                                .padding(Padding::from([8, 12])),
+                            );
+                        } else {
+                            for (j, t) in custom_rows.iter().enumerate() {
+                                let i = n_builtin + j;
+                                list = list.push(theme_row(i, t, i == ls.selected));
+                            }
+                        }
+                        // "Manage themes…" (D2+): opens `Modal::ThemeManager`
+                        // for rename/duplicate/delete/new — the palette's own
+                        // Theme pane only browses and previews now.
+                        list = list.push(modal_list_row_sized(
+                            row![
+                                text("Manage themes…").size(12).color(c::FG_DIM()),
+                                Space::new().width(Length::Fill),
+                                footer_mod_hint("m", "manage"),
+                            ]
+                            .align_y(iced::Alignment::Center),
+                            false,
+                            Msg::OpenThemeManager,
+                            32.0,
+                            6.0,
+                            12.0,
+                        ));
                         container(
                             ghost_scrollable(list)
                                 .id(launcher_theme_scrollable_id())
@@ -3822,17 +3903,30 @@ impl Grove {
                             .width(Length::Fill),
                     );
                     body = body.push(divider_h(c::BORDER_SOFT()));
-                    body = body.push(footer_container(
+                    let selected_is_custom =
+                        theme_pane_row_is_custom(*kind, list_filter, ls.selected);
+                    let footer_row: Element<'a, Msg> = if selected_is_custom {
+                        row![
+                            footer_hint("⏎", "apply"),
+                            footer_mod_hint("e", "edit"),
+                            footer_mod_hint("m", "manage themes"),
+                        ]
+                        .spacing(14)
+                        .align_y(iced::Alignment::Center)
+                        .into()
+                    } else {
                         row![
                             footer_hint("↑↓", "preview"),
                             footer_hint("tab", "mode"),
                             footer_hint("⏎", "apply"),
+                            footer_mod_hint("m", "manage themes"),
                             footer_hint("esc", "back"),
                         ]
                         .spacing(14)
                         .align_y(iced::Alignment::Center)
-                        .into(),
-                    ));
+                        .into()
+                    };
+                    body = body.push(footer_container(footer_row));
                 }
                 SettingsPane::ProjectTheme {
                     proj,
@@ -3848,7 +3942,7 @@ impl Grove {
                         .app
                         .store
                         .projects
-                        .get(proj)
+                        .get(*proj)
                         .map(|p| p.name.as_str())
                         .unwrap_or("(project removed)");
                     let context_row = container(
@@ -3877,13 +3971,13 @@ impl Grove {
                         row![
                             seg_button(
                                 "Dark",
-                                kind == crate::theme::ThemeKind::Dark,
+                                *kind == crate::theme::ThemeKind::Dark,
                                 SegSide::Left,
                                 Msg::LauncherThemePaneDark,
                             ),
                             seg_button(
                                 "Light",
-                                kind == crate::theme::ThemeKind::Light,
+                                *kind == crate::theme::ThemeKind::Light,
                                 SegSide::Right,
                                 Msg::LauncherThemePaneLight,
                             ),
@@ -3908,7 +4002,7 @@ impl Grove {
                     )
                     .padding(Padding::from([8, 12]));
 
-                    let rows = project_theme_pane_rows(kind, input);
+                    let rows = project_theme_pane_rows(*kind, input);
                     let theme_list: Element<'a, Msg> = if rows.is_empty() {
                         container(text("No matching themes").size(12).color(c::FG_MUTE()))
                             .padding(Padding::from([30, 16]))
@@ -3919,18 +4013,19 @@ impl Grove {
                         let mut list = Column::new().spacing(2);
                         for (i, row_theme) in rows.iter().enumerate() {
                             let active = i == ls.selected;
-                            let is_current = row_theme.map(|t| t.name) == preview.map(|t| t.name);
+                            let is_current = row_theme.as_ref().map(|t| t.name.as_ref())
+                                == preview.as_ref().map(|t| t.name.as_ref());
                             let content: Element<'a, Msg> = match row_theme {
                                 Some(t) => {
                                     let m = (!input.is_empty()).then(|| {
                                         crate::gui::launcher::fuzzy_match_indices(
-                                            input, t.name, "", "",
+                                            input, &t.name, "", "",
                                         )
                                     });
                                     let ranges: &[(usize, usize)] =
                                         m.as_ref().map(|m| m.project.as_slice()).unwrap_or(&[]);
                                     let label_el =
-                                        highlighted_line(t.name, ranges, c::FG(), UI_FONT, 13.0);
+                                        highlighted_line(&t.name, ranges, c::FG(), UI_FONT, 13.0);
                                     let mut c = row![label_el]
                                         .spacing(8)
                                         .align_y(iced::Alignment::Center)
@@ -5193,6 +5288,24 @@ impl Grove {
                     PALETTE_ROW_H,
                 )
             }
+            PaletteRow::ReloadThemes => {
+                let mut content = row![
+                    icon_slot("restart", c::FG_MUTE()),
+                    text("Reload themes").size(13).color(if active {
+                        c::FG()
+                    } else {
+                        c::FG_DIM()
+                    }),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center);
+                if active {
+                    content = content
+                        .push(Space::new().width(Length::Fill))
+                        .push(enter_chip());
+                }
+                modal_list_row_sized(content, active, Msg::LauncherActivate(i), 36.0, 6.0, 12.0)
+            }
         }
     }
 
@@ -6077,6 +6190,621 @@ impl Grove {
         ];
 
         modal_panel(panel_body.into(), 460.0)
+    }
+
+    /// A small 11-swatch strip previewing a theme's whole palette, in
+    /// `theme::FIELD_NAMES` order — used by `Modal::ThemeManager`'s rows.
+    fn theme_swatch_strip<'a>(theme: &crate::theme::Theme) -> Element<'a, Msg> {
+        let mut strip = Row::new().spacing(2);
+        for i in 0..crate::theme::FIELD_NAMES.len() {
+            let color = c::ic(theme.field(i));
+            strip = strip.push(
+                container(Space::new().width(10).height(10))
+                    .style(move |_| container::Style {
+                        background: Some(Background::Color(color)),
+                        border: Border {
+                            color: c::BORDER(),
+                            width: 1.0,
+                            radius: Radius::from(2.0),
+                        },
+                        ..Default::default()
+                    }),
+            );
+        }
+        strip.into()
+    }
+
+    /// `Modal::ThemeManager`'s LIST view (Stage A): every custom theme as a
+    /// row (name, kind badge, 11-color swatch strip) with per-row Rename/
+    /// Duplicate/Delete actions, plus a global "New theme" action. Mirrors
+    /// `theme_picker_modal`'s structure/styling. The paste-first editor view
+    /// is a later stage — for now nothing here opens it.
+    fn theme_manager_modal<'a>(
+        &'a self,
+        selected: usize,
+        rename: Option<&'a (String, String)>,
+        rename_error: Option<&'a str>,
+        pending_delete: Option<&'a str>,
+    ) -> Element<'a, Msg> {
+        // A pending delete swaps the whole panel for a `confirm_modal`-shaped
+        // dialog (header/body/footer) rather than an inline row — matching
+        // how every other destructive confirmation in the app looks
+        // (`confirm_modal`, `remove_project_modal`), not a bespoke inline
+        // treatment.
+        if let Some(name) = pending_delete {
+            let body_zone = column![
+                text(format!("Delete theme \"{name}\"?"))
+                    .size(13)
+                    .color(c::FG_DIM())
+                    .wrapping(iced::widget::text::Wrapping::Word),
+                text("This cannot be undone.").size(11).color(c::FG_MUTE()),
+                Space::new().height(4),
+                row![
+                    Space::new().width(Length::Fill),
+                    modal_action("Cancel", ModalBtn::Plain, Msg::ThemeManagerDeleteCancel),
+                    modal_action("Delete", ModalBtn::Danger, Msg::ThemeManagerDeleteConfirm),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            ]
+            .spacing(8);
+            let body = column![
+                modal_header("Delete theme", c::RED()),
+                divider_h(c::BORDER_SOFT()),
+                container(body_zone).padding(Padding::from([14, 16])),
+                divider_h(c::BORDER_SOFT()),
+                modal_footer_hints(&[("y", "delete"), ("esc", "cancel")]),
+            ];
+            return modal_panel(body.into(), 420.0);
+        }
+
+        let themes = crate::theme::all_custom_themes();
+
+        let body_content: Element<'a, Msg> = if themes.is_empty() {
+            container(
+                text("No custom themes yet — create one or paste a palette.")
+                    .size(12)
+                    .color(c::FG_MUTE()),
+            )
+            .padding(Padding::from([30, 16]))
+            .width(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .into()
+        } else {
+            let mut list = Column::new().spacing(4);
+            for (i, t) in themes.iter().enumerate() {
+                let active = i == selected;
+                let renaming = rename.map(|(orig, _)| orig.as_str()) == Some(t.name.as_ref());
+                let row_el: Element<'a, Msg> = if renaming {
+                    let buf = rename.map(|(_, b)| b.as_str()).unwrap_or("");
+                    let mut col = column![row![
+                        text_input("theme name", buf)
+                            .on_input(Msg::ThemeManagerRenameChanged)
+                            .on_submit(Msg::ThemeManagerRenameSubmit)
+                            .style(input_field_style)
+                            .size(13)
+                            .width(Length::Fill),
+                        modal_action_sized("Save", ModalBtn::Primary, 11, Msg::ThemeManagerRenameSubmit),
+                        modal_action_sized("Cancel", ModalBtn::Plain, 11, Msg::ThemeManagerRenameCancel),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::Alignment::Center)]
+                    .spacing(4);
+                    if let Some(err) = rename_error {
+                        col = col.push(text(err).size(11).color(c::RED()));
+                    }
+                    container(col)
+                        .width(Length::Fill)
+                        .padding(Padding::from([6, 10]))
+                        .style(|_| container::Style {
+                            background: Some(Background::Color(c::SEL_TINT_STRONG())),
+                            border: Border {
+                                color: c::SEL_RING(),
+                                width: 1.0,
+                                radius: Radius::from(6.0),
+                            },
+                            ..Default::default()
+                        })
+                        .into()
+                } else {
+                    let badge = container(
+                        text(match t.kind {
+                            crate::theme::ThemeKind::Dark => "DARK",
+                            crate::theme::ThemeKind::Light => "LIGHT",
+                        })
+                        .size(9)
+                        .color(c::FG_MUTE()),
+                    )
+                    .padding(Padding::from([1, 5]))
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(c::BG_HL())),
+                        border: Border {
+                            color: c::BORDER(),
+                            width: 1.0,
+                            radius: Radius::from(4.0),
+                        },
+                        ..Default::default()
+                    });
+                    // Name + badge live in a `Fill`, clipped zone so a long
+                    // theme name truncates instead of pushing the icon
+                    // cluster past the modal's edge (the overflow the text
+                    // buttons used to cause); the swatch strip gets its own
+                    // capped/clipped width for the same reason, then the
+                    // icon cluster keeps its natural (`Shrink`) size so it
+                    // never clips.
+                    let name_zone = container(
+                        row![
+                            text(t.name.to_string())
+                                .size(13)
+                                .color(if active { c::FG() } else { c::FG_DIM() }),
+                            badge,
+                        ]
+                        .spacing(6)
+                        .align_y(iced::Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .clip(true);
+                    let swatch_zone = container(Self::theme_swatch_strip(t))
+                        .width(Length::Fixed(90.0))
+                        .clip(true);
+                    let icons = row![
+                        Self::hint(
+                            action_mini("edit", Msg::ThemeManagerEditStart(i)),
+                            "edit"
+                        ),
+                        Self::hint(
+                            action_mini("rename", Msg::ThemeManagerRenameStart(i)),
+                            "rename"
+                        ),
+                        Self::hint(
+                            action_mini("duplicate", Msg::ThemeManagerDuplicate(i)),
+                            "duplicate"
+                        ),
+                        Self::hint(
+                            action_mini_danger("trash", Msg::ThemeManagerDeleteStart(i)),
+                            "delete"
+                        ),
+                    ]
+                    .spacing(2)
+                    .align_y(iced::Alignment::Center);
+                    container(
+                        row![name_zone, swatch_zone, icons]
+                            .spacing(10)
+                            .align_y(iced::Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .padding(Padding::from([6, 10]))
+                    .style(move |_| container::Style {
+                        background: Some(Background::Color(if active {
+                            c::BG_HL()
+                        } else {
+                            Color::TRANSPARENT
+                        })),
+                        border: Border {
+                            color: Color::TRANSPARENT,
+                            width: 0.0,
+                            radius: Radius::from(6.0),
+                        },
+                        ..Default::default()
+                    })
+                    .into()
+                };
+                list = list.push(
+                    button(row_el)
+                        .on_press(Msg::ThemeManagerSelect(i))
+                        .padding(0)
+                        .style(|_, _| button::Style {
+                            background: None,
+                            text_color: c::FG(),
+                            border: Border {
+                                color: Color::TRANSPARENT,
+                                width: 0.0,
+                                radius: Radius::from(6.0),
+                            },
+                            ..Default::default()
+                        }),
+                );
+            }
+            container(
+                ghost_scrollable(list)
+                    .id(theme_manager_scrollable_id())
+                    .height(Length::Shrink),
+            )
+            .max_height(360.0)
+            .width(Length::Fill)
+            .into()
+        };
+
+        // Header: bare title + a close icon button — same shape as the
+        // Settings modal's header (`icon_btn("close", …)`), since like
+        // Settings this list has no unsaved state of its own (every row
+        // action persists immediately) rather than the Cancel/Save modals'
+        // header-with-step-counter shape.
+        let header = modal_header_row(
+            row![
+                text("Manage themes").size(13).color(c::MAGENTA()),
+                Space::new().width(Length::Fill),
+                icon_btn("close", Msg::ThemeManagerClose),
+            ]
+            .align_y(iced::Alignment::Center)
+            .into(),
+        );
+
+        // "+ New theme" is a body-level action row (mirrors the scripts
+        // editor's/confirm dialogs' own trailing action rows), not a header
+        // control.
+        let body_zone = column![
+            row![
+                Space::new().width(Length::Fill),
+                modal_action("+ New theme", ModalBtn::Primary, Msg::ThemeManagerNew),
+            ]
+            .align_y(iced::Alignment::Center),
+            body_content,
+        ]
+        .spacing(10);
+
+        let body = column![
+            header,
+            divider_h(c::BORDER_SOFT()),
+            container(body_zone).padding(Padding::from([14, 16])),
+            divider_h(c::BORDER_SOFT()),
+            modal_footer_hints(&[("↑↓", "select"), ("esc", "close")]),
+        ];
+
+        modal_panel(body.into(), 560.0)
+    }
+
+    /// `Modal::ThemeManager`'s EDITOR sub-view (Stage B): paste-first box at
+    /// the top, then name/kind, then the grouped 11-swatch manual editor
+    /// migrated from the old `SettingsPane::ThemeEditor` pane (rows, hex
+    /// editing, invalid-row state, contrast badges, derived strip).
+    fn theme_manager_editor_modal<'a>(&'a self, ed: &'a ThemeManagerEditorState) -> Element<'a, Msg> {
+        let dirty = ed.is_dirty();
+
+        // Discard confirmation swaps the whole panel for a `confirm_modal`-
+        // shaped dialog, same convention as the LIST view's delete confirm.
+        if ed.confirm_discard {
+            let body_zone = column![
+                text(format!("Discard changes to \"{}\"?", ed.original_name))
+                    .size(13)
+                    .color(c::FG_DIM())
+                    .wrapping(iced::widget::text::Wrapping::Word),
+                Space::new().height(4),
+                row![
+                    Space::new().width(Length::Fill),
+                    modal_action(
+                        "Keep editing",
+                        ModalBtn::Plain,
+                        Msg::ThemeManagerEditorDiscardCancel
+                    ),
+                    modal_action(
+                        "Discard",
+                        ModalBtn::Danger,
+                        Msg::ThemeManagerEditorDiscardConfirm
+                    ),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            ]
+            .spacing(8);
+            let body = column![
+                modal_header("Discard changes", c::RED()),
+                divider_h(c::BORDER_SOFT()),
+                container(body_zone).padding(Padding::from([14, 16])),
+                divider_h(c::BORDER_SOFT()),
+                modal_footer_hints(&[("⏎", "discard"), ("esc", "keep editing")]),
+            ];
+            return modal_panel(body.into(), 420.0);
+        }
+
+        // ── Paste box ────────────────────────────────────────────────────
+        // Prefilled by `open_theme_manager_editor`/`theme_manager_editor_
+        // hex_changed`/`theme_manager_paste_apply` with the draft's own
+        // current values (`theme_file::to_named_lines`) — it's a live
+        // reflection of the draft (copyable reference + editable starting
+        // point), not a separate scratchpad, so there's no empty state to
+        // show a sample for.
+        let paste_editor = iced::widget::text_editor(&ed.paste)
+            .height(Length::Fixed(190.0))
+            .font(iced::Font::MONOSPACE)
+            .size(12)
+            .padding(8)
+            .placeholder("field #hex per line, 11 hex values, or a themes.json entry")
+            .style(|_, status| {
+                use iced::widget::text_editor::Status;
+                let border_color = match status {
+                    Status::Focused { .. } => c::CYAN(),
+                    Status::Hovered => c::BORDER(),
+                    _ => c::BORDER_SOFT(),
+                };
+                iced::widget::text_editor::Style {
+                    background: Background::Color(c::BG_STRIP()),
+                    border: Border {
+                        color: border_color,
+                        width: 1.0,
+                        radius: Radius::from(4.0),
+                    },
+                    placeholder: c::FG_MUTE(),
+                    value: c::FG(),
+                    selection: c::BG_HL(),
+                }
+            })
+            .on_action(Msg::ThemeManagerPasteAction);
+        let mut paste_col = column![
+            row![
+                text("Paste colors").size(12).color(c::FG()),
+                Space::new().width(Length::Fill),
+                modal_action_sized("Apply (⌘⏎)", ModalBtn::Plain, 11, Msg::ThemeManagerPasteApply),
+            ]
+            .align_y(iced::Alignment::Center),
+            paste_editor,
+        ]
+        .spacing(4);
+        // A successful/failed Apply's own message takes priority; otherwise
+        // a short, permanent one-line caption about the accepted alternate
+        // formats (the box itself is now the example, prefilled from the
+        // draft — no separate sample block needed).
+        match &ed.paste_status {
+            Some(Ok(s)) => paste_col = paste_col.push(text(s.clone()).size(11).color(c::GREEN())),
+            Some(Err(e)) => paste_col = paste_col.push(text(e.clone()).size(11).color(c::RED())),
+            None => {
+                paste_col = paste_col.push(
+                    text("also accepts 11 hex values or a themes.json entry")
+                        .size(10)
+                        .color(c::FG_MUTE()),
+                );
+            }
+        }
+
+        // ── Name + kind ──────────────────────────────────────────────────
+        let name_field = text_input("theme name", &ed.draft.name)
+            .on_input(Msg::ThemeManagerEditorNameChanged)
+            .style(input_field_style)
+            .size(13)
+            .width(Length::Fill);
+        let kind_seg = container(
+            row![
+                seg_button(
+                    "Dark",
+                    matches!(ed.draft.kind, crate::theme::ThemeKind::Dark),
+                    SegSide::Left,
+                    Msg::ThemeManagerEditorKindDark,
+                ),
+                seg_button(
+                    "Light",
+                    matches!(ed.draft.kind, crate::theme::ThemeKind::Light),
+                    SegSide::Right,
+                    Msg::ThemeManagerEditorKindLight,
+                ),
+            ]
+            .spacing(0),
+        )
+        .style(|_| container::Style {
+            border: Border {
+                color: c::BORDER(),
+                width: 1.0,
+                radius: Radius::from(6.0),
+            },
+            ..Default::default()
+        });
+        let name_row = row![name_field, kind_seg]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
+
+        // Header: title (mirrors `project_settings_modal`'s "Title — name"
+        // single-accent shape) + dirty dot, with the Preview toggle as the
+        // header's right-side control — same precedent as the Settings
+        // modal's header-mounted close icon button.
+        let mut header_row = row![text(format!("Edit theme — {}", ed.original_name))
+            .size(13)
+            .color(c::MAGENTA())]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+        if dirty {
+            header_row = header_row.push(text("●").size(8).color(c::YELLOW()));
+        }
+        header_row = header_row.push(Space::new().width(Length::Fill));
+        header_row = header_row.push(
+            button(
+                container(
+                    text(if ed.preview_on {
+                        "Preview: on"
+                    } else {
+                        "Preview: off"
+                    })
+                    .size(10)
+                    .color(if ed.preview_on { c::CYAN() } else { c::FG_MUTE() }),
+                )
+                .padding(Padding::from([2, 8])),
+            )
+            .style(|_, _| button::Style {
+                background: Some(Background::Color(c::BG_HL())),
+                border: Border {
+                    color: c::BORDER(),
+                    width: 1.0,
+                    radius: Radius::from(4.0),
+                },
+                text_color: c::FG(),
+                ..Default::default()
+            })
+            .on_press(Msg::ThemeManagerEditorTogglePreview),
+        );
+
+        // ── Body: the grouped swatch rows (discard-confirm is handled by
+        // the early return above) ───────────────────────────────────────
+        let swatch_rows: Element<'a, Msg> = {
+            let mut list = Column::new().spacing(2);
+            let mut printed_group: Option<&'static str> = None;
+            for i in 0..crate::theme::FIELD_NAMES.len() {
+                let group = crate::theme::FIELD_GROUPS[i];
+                if printed_group != Some(group) {
+                    let top = if printed_group.is_none() { 0.0 } else { 10.0 };
+                    list = list.push(section_header(group, top, 4.0));
+                    printed_group = Some(group);
+                }
+                let active = i == ed.selected;
+                let color = ed.draft.field(i);
+                let swatch = container(Space::new().width(14.0).height(14.0)).style(move |_| {
+                    container::Style {
+                        background: Some(Background::Color(c::ic(color))),
+                        border: Border {
+                            color: c::BORDER(),
+                            width: 1.0,
+                            radius: Radius::from(3.0),
+                        },
+                        ..Default::default()
+                    }
+                });
+                let is_invalid = ed.invalid[i];
+                let row_el: Element<'a, Msg> = if active {
+                    let field = text_input("#rrggbb", &ed.hex_buf)
+                        .on_input(Msg::ThemeManagerEditorHexChanged)
+                        .style(input_field_style)
+                        .font(MONO_FONT)
+                        .size(12)
+                        .width(Length::Fixed(90.0));
+                    let mut row_content = row![
+                        swatch,
+                        text(crate::theme::FIELD_NAMES[i]).size(12).color(c::FG_DIM()),
+                        Space::new().width(Length::Fill),
+                        field,
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center);
+                    if let Some(partner) = crate::theme::CONTRAST_PARTNER[i] {
+                        let ratio = crate::theme::contrast_ratio(color, ed.draft.field(partner));
+                        if ratio < 3.0 {
+                            row_content = row_content
+                                .push(text(format!("{ratio:.1}:1")).size(10).color(c::RED()));
+                        } else if ratio < 4.5 {
+                            row_content = row_content
+                                .push(text(format!("{ratio:.1}:1")).size(10).color(c::YELLOW()));
+                        }
+                    }
+                    container(row_content)
+                        .width(Length::Fill)
+                        .height(36.0)
+                        .padding(Padding::from([0.0, 12.0]))
+                        .align_y(iced::Alignment::Center)
+                        .style(move |_| container::Style {
+                            background: Some(Background::Color(if is_invalid {
+                                c::RED_WASH()
+                            } else {
+                                c::SEL_TINT_STRONG()
+                            })),
+                            border: Border {
+                                color: if is_invalid { c::RED() } else { c::SEL_RING() },
+                                width: 1.0,
+                                radius: Radius::from(6.0),
+                            },
+                            ..Default::default()
+                        })
+                        .into()
+                } else {
+                    let hex_text = crate::theme_file::to_hex(color);
+                    let mut row_content = row![
+                        swatch,
+                        text(crate::theme::FIELD_NAMES[i]).size(12).color(c::FG_DIM()),
+                        Space::new().width(Length::Fill),
+                        text(hex_text).font(MONO_FONT).size(12).color(c::FG()),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center);
+                    if let Some(partner) = crate::theme::CONTRAST_PARTNER[i] {
+                        let ratio = crate::theme::contrast_ratio(color, ed.draft.field(partner));
+                        if ratio < 3.0 {
+                            row_content = row_content
+                                .push(text(format!("{ratio:.1}:1")).size(10).color(c::RED()));
+                        } else if ratio < 4.5 {
+                            row_content = row_content
+                                .push(text(format!("{ratio:.1}:1")).size(10).color(c::YELLOW()));
+                        }
+                    }
+                    launcher_row(row_content, false, true, Msg::ThemeManagerEditorRowSelect(i), 36.0)
+                };
+                list = list.push(row_el);
+            }
+            // Derived strip: read-only synthesized chips, reusing
+            // `palette.rs`'s `_of` blend helpers directly on the draft.
+            list = list.push(section_header("DERIVED — NOT EDITABLE", 10.0, 4.0));
+            let derived_chip = |label: &'static str, color: Color| -> Element<'a, Msg> {
+                row![
+                    container(Space::new().width(12.0).height(12.0)).style(move |_| {
+                        container::Style {
+                            background: Some(Background::Color(color)),
+                            border: Border {
+                                color: c::BORDER(),
+                                width: 1.0,
+                                radius: Radius::from(3.0),
+                            },
+                            ..Default::default()
+                        }
+                    }),
+                    text(label).size(10).color(c::FG_MUTE()),
+                ]
+                .spacing(6)
+                .align_y(iced::Alignment::Center)
+                .into()
+            };
+            list = list.push(
+                container(
+                    row![
+                        derived_chip("hover", c::bg_hover_of(&ed.draft)),
+                        derived_chip("border", c::border_of(&ed.draft)),
+                        derived_chip("highlight", c::bg_hl_of(&ed.draft)),
+                        derived_chip("selection", c::sel_ring_of(&ed.draft)),
+                    ]
+                    .spacing(14)
+                    .align_y(iced::Alignment::Center),
+                )
+                .padding(Padding::from([4, 12])),
+            );
+            container(
+                ghost_scrollable(list)
+                    .id(theme_manager_scrollable_id())
+                    .height(Length::Shrink),
+            )
+            .max_height(280.0)
+            .width(Length::Fill)
+            .into()
+        };
+
+        // Trailing Back/Save action row lives in the body zone, not the
+        // footer — same convention `project_settings_modal`'s Cancel/Save row
+        // and `confirm_modal`'s button row use; the footer strip stays
+        // hints-only.
+        let body_zone = column![
+            paste_col,
+            name_row,
+            swatch_rows,
+            row![
+                Space::new().width(Length::Fill),
+                modal_action("Back", ModalBtn::Plain, Msg::ThemeManagerEditorEsc),
+                modal_action("Save", ModalBtn::Primary, Msg::ThemeManagerEditorSave),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(12);
+
+        let body = column![
+            modal_header_row(header_row.into()),
+            divider_h(c::BORDER_SOFT()),
+            container(body_zone).padding(Padding::from([14, 16])),
+            divider_h(c::BORDER_SOFT()),
+            footer_container(
+                row![
+                    footer_hint("↑↓", "row"),
+                    footer_mod_hint("p", "preview"),
+                    footer_hint("esc", "back"),
+                ]
+                .spacing(14)
+                .align_y(iced::Alignment::Center)
+                .into(),
+            ),
+        ];
+
+        modal_panel(body.into(), 560.0)
     }
 
     /// The first-run onboarding wizard: a full-viewport page (no modal

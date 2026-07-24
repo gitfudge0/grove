@@ -205,6 +205,10 @@ pub struct Grove {
     /// Live state for the per-project lifecycle-scripts editor, when open.
     /// `Some` exactly when `app.modal` is `Modal::ScriptsEditor`.
     pub scripts_editor: Option<ScriptsEditorState>,
+    /// Live state for `Modal::ThemeManager`'s EDITOR sub-view, when open.
+    /// `Some` exactly when the modal is showing the editor rather than the
+    /// list — same idiom as `scripts_editor`.
+    pub theme_manager_editor: Option<ThemeManagerEditorState>,
     /// Per-tool install/version status shown in the Settings → Tools section.
     /// Parked on the model (like `scripts_editor`) because detection runs
     /// asynchronously and posts results back via `Msg::ToolVersionsDetected`.
@@ -232,6 +236,10 @@ pub struct Grove {
     /// Set while a git-status poll thread is running; guards against
     /// spawning an overlapping poll if the previous one is still in flight.
     pub git_poll_inflight: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Live modifier-key state, tracked via `Msg::ModifiersChanged` — see
+    /// its doc comment for why this needs its own channel rather than
+    /// reading `mods` off `Msg::KeyPress`.
+    pub live_mods: Modifiers,
 }
 
 /// Install + version status for a single coding-agent tool in the Settings
@@ -391,6 +399,59 @@ pub struct ScriptsEditorState {
     pub teardown: iced::widget::text_editor::Content,
 }
 
+/// Live state for `Modal::ThemeManager`'s EDITOR sub-view — same idiom as
+/// `ScriptsEditorState`: holds the paste box's `text_editor::Content` (which
+/// must persist across frames, so it can't live in the cloneable `Modal`)
+/// plus everything else the editor needs. `Some` exactly when the manager
+/// modal is showing the editor rather than the list; `None` renders the list.
+pub struct ThemeManagerEditorState {
+    /// Name of the `CUSTOM` entry this editor is bound to — identifies what
+    /// `theme::update_custom` persists into on save (a rename here is just a
+    /// field on `draft`, resolved by this original name).
+    pub original_name: String,
+    /// Live-edited copy. Every valid hex/name/kind edit updates this
+    /// immediately; applied to the whole app via `theme::set` whenever
+    /// `preview_on`.
+    pub draft: crate::theme::Theme,
+    /// Last-saved snapshot: the dirty check (`draft` vs `saved`) and what a
+    /// discard reverts the *draft* back to.
+    pub saved: crate::theme::Theme,
+    /// Whole-app active theme when the editor was entered — restored on
+    /// discard and whenever `preview_on` is toggled off.
+    pub original_active: crate::theme::Theme,
+    /// Which of the 11 rows (`theme::FIELD_NAMES` order) has the cursor.
+    pub selected: usize,
+    /// Per-row "currently showing invalid hex" flag.
+    pub invalid: [bool; 11],
+    /// The selected row's live hex-text edit buffer (its own small
+    /// `text_input`, seeded from `draft.field(selected)` on every row change).
+    pub hex_buf: String,
+    /// Preview toggle (⌘P): true applies `draft` live; false shows
+    /// `original_active` again without losing the draft.
+    pub preview_on: bool,
+    /// "Discard changes…?" confirmation, shown by Esc while dirty.
+    pub confirm_discard: bool,
+    /// The paste-first box's multiline buffer.
+    pub paste: iced::widget::text_editor::Content,
+    /// Last Apply outcome, shown inline under the paste box: `Ok(summary)` or
+    /// `Err(parser message)`. `None` before the first Apply.
+    pub paste_status: Option<Result<String, String>>,
+    /// `Modal::ThemeManager::selected` to land the list on when the editor
+    /// closes (save or discard) — the row for whichever theme was being
+    /// edited, resolved fresh by name rather than trusted as a raw index.
+    pub return_selected: usize,
+}
+
+impl ThemeManagerEditorState {
+    /// Whether `draft` differs from `saved` in any way Save would persist:
+    /// colors, name, or kind (`Theme::colors_eq` alone misses the latter two).
+    pub fn is_dirty(&self) -> bool {
+        !self.draft.colors_eq(&self.saved)
+            || self.draft.name != self.saved.name
+            || self.draft.kind != self.saved.kind
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Msg {
     Tick,
@@ -476,6 +537,11 @@ pub enum Msg {
     /// modifier-independent (so Ctrl shortcuts match across platforms);
     /// `modified_key` carries Shift/AltGr for text entry.
     KeyPress(Key, Key, Modifiers),
+    /// Live modifier-key state, tracked independently of `KeyPress` (see
+    /// `Grove::subscription`'s doc comment) so `Msg::LauncherInputChanged`
+    /// can recognize a `global_mods` chord the focused search field doesn't
+    /// special-case and ignore the stray edit it would otherwise produce.
+    ModifiersChanged(Modifiers),
     /// A file was dragged onto the window; its path is typed into the
     /// focused session (shell-escaped, trailing space).
     FileDropped(std::path::PathBuf),
@@ -697,6 +763,68 @@ pub enum Msg {
     /// theme and marks "follow system" as a local draft, persisted on ⏎
     /// (mirrors `Modal::ThemePicker`'s follow-system checkbox).
     LauncherThemePaneSystem,
+    /// Opens `Modal::ThemeManager` (the palette's "Manage themes…" row / ⌘M).
+    OpenThemeManager,
+    /// `Modal::ThemeManager` LIST view: click (or the equivalent of hover) on
+    /// row `i` — just moves the highlight, mirroring `LauncherThemePaneSelect`.
+    ThemeManagerSelect(usize),
+    /// Begins inline rename of the custom theme at row `i`.
+    ThemeManagerRenameStart(usize),
+    /// Live edit of the inline rename buffer.
+    ThemeManagerRenameChanged(String),
+    /// Commits the inline rename buffer via `theme::rename_custom`.
+    ThemeManagerRenameSubmit,
+    /// Discards the inline rename buffer without renaming.
+    ThemeManagerRenameCancel,
+    /// Duplicates the custom theme at row `i` (auto-named via
+    /// `theme::duplicate_name`) and selects the copy.
+    ThemeManagerDuplicate(usize),
+    /// Opens the "Delete theme…?" confirmation for row `i`.
+    ThemeManagerDeleteStart(usize),
+    /// Confirms the pending delete, removing the custom theme via
+    /// `theme::delete_custom` (falling back to the mode default if it was
+    /// the active theme).
+    ThemeManagerDeleteConfirm,
+    /// Cancels the pending delete confirmation.
+    ThemeManagerDeleteCancel,
+    /// "New theme": creates a fresh custom theme seeded from the current
+    /// active theme's mode default, auto-named via
+    /// `theme::duplicate_name("untitled")`, then opens the EDITOR sub-view
+    /// on it directly (same landing as `ThemeManagerEditStart`).
+    ThemeManagerNew,
+    /// Closes `Modal::ThemeManager` ("Done" button / Esc from the list).
+    ThemeManagerClose,
+    /// List row's "Edit" button: opens the EDITOR sub-view on the custom
+    /// theme at row `i`.
+    ThemeManagerEditStart(usize),
+    /// Editor: click row `i` (`theme::FIELD_NAMES` order) — selects it as the
+    /// row ↑/↓ would.
+    ThemeManagerEditorRowSelect(usize),
+    /// Editor: live edit of the selected row's hex-text buffer.
+    ThemeManagerEditorHexChanged(String),
+    /// Editor: live edit of the name field.
+    ThemeManagerEditorNameChanged(String),
+    /// Editor: Dark/Light kind toggle.
+    ThemeManagerEditorKindDark,
+    ThemeManagerEditorKindLight,
+    /// Editor Preview button / ⌘P: toggles applying the draft to the whole
+    /// app vs. showing the last-applied saved theme.
+    ThemeManagerEditorTogglePreview,
+    /// Editor ⏎ (only reaches here when no text field has focus) / ⌘S /
+    /// Save button: persists the draft via `theme::update_custom`.
+    ThemeManagerEditorSave,
+    /// Editor Esc: dirty edits open the discard confirmation; otherwise
+    /// discards immediately and returns to the list.
+    ThemeManagerEditorEsc,
+    /// Editor discard-confirmation "Discard" button (mirrors ⏎ there).
+    ThemeManagerEditorDiscardConfirm,
+    /// Editor discard-confirmation "Keep editing" button (mirrors Esc there).
+    ThemeManagerEditorDiscardCancel,
+    /// Paste box edit (any `text_editor::Action` — move, select, or edit).
+    ThemeManagerPasteAction(iced::widget::text_editor::Action),
+    /// Paste box "Apply" button / ⌘⏎: runs `theme_file::parse_paste` on the
+    /// paste box's current text and applies the result to the draft.
+    ThemeManagerPasteApply,
     /// Backend/Permissions/DefaultAgent sub-pane: click on row `i` — selects
     /// and immediately commits (mirrors ⏎). Unlike the Theme pane, these
     /// panes have no live-preview step to defer.

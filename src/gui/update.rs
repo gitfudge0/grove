@@ -8,7 +8,8 @@ use super::metrics::{
 };
 use super::state::{
     AbsCell, ChangelogState, FocusedPane, GridDrag, GridSlide, Grove, Msg, PtyCell, PtyDrag,
-    PtyPane, ScriptField, ScriptsEditorState, SidebarDrag, ToolStatus, UpgradeState,
+    PtyPane, ScriptField, ScriptsEditorState, SidebarDrag, ThemeManagerEditorState, ToolStatus,
+    UpgradeState,
 };
 use crate::agent::Agent;
 use crate::app::{
@@ -151,6 +152,7 @@ impl Grove {
             term_panel_dragging: false,
             last_term_divider_press: None,
             scripts_editor: None,
+            theme_manager_editor: None,
             settings_tools: Vec::new(),
             upgrade: UpgradeState::Idle,
             upgrade_method: crate::upgrade::detect(),
@@ -162,6 +164,7 @@ impl Grove {
             git_state: Default::default(),
             last_git_poll: None,
             git_poll_inflight: Default::default(),
+            live_mods: Modifiers::empty(),
         };
         // Prime the per-project worktree cache so `view()` never has to shell
         // out to `git worktree list` (it runs on every 33ms tick).
@@ -260,6 +263,20 @@ impl Grove {
                     modifiers,
                     ..
                 }) => Some(Msg::KeyPress(key, modified_key, modifiers)),
+                // Tracked live (never `Captured` by `text_input` — it only
+                // records it internally, see `should_forward`'s doc comment)
+                // so `Msg::LauncherInputChanged` can tell a real typed
+                // character apart from a `global_mods` chord the focused
+                // search field doesn't special-case (⌘D, ⌘⌫, ...): iced's
+                // `text_input` inserts/deletes unconditionally on those,
+                // publishing its own `on_input` message *before* the
+                // corresponding `KeyPressed` is even broadcast to this
+                // subscription (widget dispatch happens first each tick —
+                // see `iced_winit`'s event loop), so the fix can't live in
+                // the `KeyPress` handler alone.
+                Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                    Some(Msg::ModifiersChanged(modifiers))
+                }
                 Event::Window(iced::window::Event::FileDropped(path)) => {
                     Some(Msg::FileDropped(path))
                 }
@@ -771,6 +788,9 @@ impl Grove {
                         }
                     }
                 }
+            }
+            Msg::ModifiersChanged(mods) => {
+                self.live_mods = mods;
             }
             Msg::KeyPress(key, modified_key, mods) => {
                 if let Modal::RemoveProject { in_progress, .. } = &self.app.modal {
@@ -1522,6 +1542,19 @@ impl Grove {
                 return focus(crate::gui::view::modal_input_id());
             }
             Msg::LauncherInputChanged(s) => {
+                // A `global_mods` chord (⌘D, ⌘⌫, ...) is a command, never
+                // text — but `iced_widget::text_input` only special-cases
+                // ⌘C/⌘X/⌘V/⌘A explicitly; every other chord still gets
+                // inserted/deleted unconditionally by its fallback character/
+                // Backspace handling, publishing this very message. Dropping
+                // it here (using `live_mods`, tracked independently — see
+                // `Msg::ModifiersChanged`'s doc comment for why `KeyPress`'s
+                // own `mods` arrives too late to gate this) leaves `input`
+                // untouched; the next render re-diffs the field back to that
+                // unchanged value, undoing the widget's own transient edit.
+                if global_mods(self.live_mods) {
+                    return Task::none();
+                }
                 // The switch-to-session drill-in filters live by `input`
                 // (same idiom as OPEN WITH's agent list, which also keeps
                 // its own state open while the query underneath changes) —
@@ -1673,11 +1706,40 @@ impl Grove {
                 return self.theme_pane_set_kind(crate::theme::ThemeKind::Light);
             }
             Msg::LauncherThemePaneSystem => return self.theme_pane_set_system(),
+            Msg::OpenThemeManager => return self.open_theme_manager(),
+            Msg::ThemeManagerSelect(i) => self.theme_manager_select(i),
+            Msg::ThemeManagerRenameStart(i) => self.theme_manager_rename_start(i),
+            Msg::ThemeManagerRenameChanged(s) => self.theme_manager_rename_changed(s),
+            Msg::ThemeManagerRenameSubmit => self.theme_manager_rename_submit(),
+            Msg::ThemeManagerRenameCancel => self.theme_manager_rename_cancel(),
+            Msg::ThemeManagerDuplicate(i) => self.theme_manager_duplicate(i),
+            Msg::ThemeManagerDeleteStart(i) => self.theme_manager_delete_start(i),
+            Msg::ThemeManagerDeleteConfirm => self.theme_manager_delete_confirm(),
+            Msg::ThemeManagerDeleteCancel => self.theme_manager_delete_cancel(),
+            Msg::ThemeManagerNew => return self.theme_manager_new(),
+            Msg::ThemeManagerClose => self.theme_manager_close(),
+            Msg::ThemeManagerEditStart(i) => return self.theme_manager_edit_start(i),
+            Msg::ThemeManagerEditorRowSelect(i) => return self.theme_manager_editor_row_select(i),
+            Msg::ThemeManagerEditorHexChanged(s) => return self.theme_manager_editor_hex_changed(s),
+            Msg::ThemeManagerEditorNameChanged(s) => self.theme_manager_editor_name_changed(s),
+            Msg::ThemeManagerEditorKindDark => {
+                self.theme_manager_editor_set_kind(crate::theme::ThemeKind::Dark)
+            }
+            Msg::ThemeManagerEditorKindLight => {
+                self.theme_manager_editor_set_kind(crate::theme::ThemeKind::Light)
+            }
+            Msg::ThemeManagerEditorTogglePreview => self.theme_manager_editor_toggle_preview(),
+            Msg::ThemeManagerEditorSave => return self.theme_manager_editor_save(),
+            Msg::ThemeManagerEditorEsc => return self.theme_manager_editor_esc(),
+            Msg::ThemeManagerEditorDiscardConfirm => return self.theme_manager_editor_discard(),
+            Msg::ThemeManagerEditorDiscardCancel => self.theme_manager_editor_discard_cancel(),
+            Msg::ThemeManagerPasteAction(action) => self.theme_manager_paste_action(action),
+            Msg::ThemeManagerPasteApply => self.theme_manager_paste_apply(),
             Msg::LauncherSettingsPaneActivate(i) => {
                 let pane = match &self.app.modal {
                     Modal::SessionLauncher {
                         settings: Some(ls), ..
-                    } => ls.pane,
+                    } => ls.pane.clone(),
                     _ => return Task::none(),
                 };
                 match pane {
@@ -1914,7 +1976,7 @@ impl Grove {
             ThemePickerScope::App => {
                 // Picking a concrete theme from the list opts back out of "system".
                 *follow_system = false;
-                crate::theme::set(themes[index]);
+                crate::theme::set(themes[index].clone());
             }
             ThemePickerScope::Project(_) => {
                 // Project scope never previews into the global active theme.
@@ -1952,7 +2014,7 @@ impl Grove {
                 crate::theme::ThemeKind::Light => *sel_light,
             };
             if let Some(t) = themes.get(sel) {
-                crate::theme::set(*t);
+                crate::theme::set(t.clone());
             }
         }
         self.invalidate_pty_render_cache();
@@ -2845,6 +2907,81 @@ impl Grove {
                 },
                 _ => {}
             },
+            Modal::ThemeManager {
+                rename,
+                pending_delete,
+                ..
+            } => {
+                if self.theme_manager_editor.is_some() {
+                    let confirm_discard = self
+                        .theme_manager_editor
+                        .as_ref()
+                        .is_some_and(|ed| ed.confirm_discard);
+                    if confirm_discard {
+                        // "Discard changes…?" up: only its own Enter
+                        // (discard)/Esc (keep editing) apply — rows are
+                        // frozen underneath it.
+                        match key {
+                            Key::Named(Named::Enter) => return self.theme_manager_editor_discard(),
+                            Key::Named(Named::Escape) => self.theme_manager_editor_discard_cancel(),
+                            _ => {}
+                        }
+                    } else {
+                        let dir_delta: Option<i32> = match &key {
+                            Key::Named(Named::ArrowDown) => Some(1),
+                            Key::Named(Named::ArrowUp) => Some(-1),
+                            _ => None,
+                        };
+                        if let Some(delta) = dir_delta {
+                            return self.theme_manager_editor_move(delta);
+                        }
+                        match key {
+                            // ⌘⏎ (Apply the paste box) must be checked ahead
+                            // of the plain-Enter arm below, which would
+                            // otherwise shadow it.
+                            Key::Named(Named::Enter) if global_mods(mods) => {
+                                self.theme_manager_paste_apply()
+                            }
+                            Key::Named(Named::Escape) => return self.theme_manager_editor_esc(),
+                            Key::Named(Named::Enter) => return self.theme_manager_editor_save(),
+                            Key::Character(s) if global_mods(mods) => match s.as_str() {
+                                "s" | "S" => return self.theme_manager_editor_save(),
+                                "p" | "P" => self.theme_manager_editor_toggle_preview(),
+                                _ => {}
+                            },
+                            _ => {}
+                        }
+                    }
+                } else if pending_delete.is_some() {
+                    // y/n mirrors `confirm_modal`'s destructive-confirm
+                    // convention (Enter deliberately does not there); Enter
+                    // still works here too since this dialog has no other
+                    // use for it.
+                    match key {
+                        Key::Named(Named::Enter) => self.theme_manager_delete_confirm(),
+                        Key::Named(Named::Escape) => self.theme_manager_delete_cancel(),
+                        Key::Character(s) => match s.as_str() {
+                            "y" | "Y" => self.theme_manager_delete_confirm(),
+                            "n" | "N" => self.theme_manager_delete_cancel(),
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+                } else if rename.is_some() {
+                    match key {
+                        Key::Named(Named::Enter) => self.theme_manager_rename_submit(),
+                        Key::Named(Named::Escape) => self.theme_manager_rename_cancel(),
+                        _ => {}
+                    }
+                } else {
+                    match key {
+                        Key::Named(Named::Escape) => self.theme_manager_close(),
+                        Key::Named(Named::ArrowDown) => self.theme_manager_move(1),
+                        Key::Named(Named::ArrowUp) => self.theme_manager_move(-1),
+                        _ => {}
+                    }
+                }
+            }
             Modal::AgentPicker { .. } => match key {
                 Key::Named(Named::Escape) => self.cancel_modal(),
                 Key::Named(Named::Enter) => self.submit_agent_picker(),
@@ -2941,7 +3078,7 @@ impl Grove {
                             _ => {}
                         }
                     }
-                } else if let Some(s) = *settings {
+                } else if let Some(s) = settings.clone() {
                     // Settings drill-in. `resizing` (Root pane only, D4) takes
                     // priority: it's a modal-within-the-modal for the App-size
                     // row where arrows/±/0 adjust zoom instead of moving the
@@ -3084,11 +3221,23 @@ impl Grove {
                                         Key::Named(Named::Enter) => {
                                             return self.theme_pane_commit()
                                         }
-                                        // Tab cycles the mode row; plain
-                                        // letters stay with the search input,
-                                        // per the palette-wide convention.
+                                        // Tab cycles the mode row; bare
+                                        // letters always stay with the
+                                        // search input (fuzzy-filtering the
+                                        // list) — edit/manage are ⌘-chorded
+                                        // specifically so they never collide
+                                        // with typing a theme name.
                                         Key::Named(Named::Tab) => {
                                             return self.theme_pane_cycle_mode()
+                                        }
+                                        Key::Character(s) if global_mods(mods) => {
+                                            match s.as_str() {
+                                                "e" | "E" => {
+                                                    return self.theme_pane_open_editor()
+                                                }
+                                                "m" | "M" => return self.open_theme_manager(),
+                                                _ => {}
+                                            }
                                         }
                                         _ => {}
                                     }
@@ -4069,6 +4218,7 @@ impl Grove {
                 self.reselect_typed_setting(s, &input, browse_all, i);
                 task
             }
+            PaletteRow::ReloadThemes => self.reload_themes(),
         }
     }
 
@@ -4332,7 +4482,7 @@ impl Grove {
     fn enter_theme_pane(&mut self) -> Task<Msg> {
         let original = crate::theme::current();
         let kind = original.kind;
-        let selected = theme_pane_selected_index(kind, original.name);
+        let selected = theme_pane_selected_index(kind, &original.name);
         let follow_system = self.app.theme_follow_system;
         self.enter_settings_pane(
             SettingsPane::Theme {
@@ -4436,7 +4586,13 @@ impl Grove {
         else {
             return Task::none();
         };
-        let total = theme_pane_rows(*kind, input).len();
+        // Approximation: this pitches every row (including the "Custom"
+        // section header/empty-hint) at the uniform 38px row pitch rather
+        // than each element's true rendered height, so centering drifts
+        // slightly once the Custom section is showing. Good enough to keep
+        // the selection on-screen; a pixel-exact version would need the
+        // section-aware walk `settings_root_scroll_offset` uses.
+        let total = theme_pane_combined_rows(*kind, input).len();
         let y = launcher_theme_scroll_offset(total, *selected);
         scroll_to(
             super::view::launcher_theme_scrollable_id(),
@@ -4528,8 +4684,8 @@ impl Grove {
         else {
             return Task::none();
         };
-        let rows = theme_pane_rows(*kind, &input);
-        let Some(theme) = rows.get(idx).copied() else {
+        let rows = theme_pane_combined_rows(*kind, &input);
+        let Some(theme) = rows.get(idx).cloned() else {
             return Task::none();
         };
         ls.selected = idx;
@@ -4540,7 +4696,8 @@ impl Grove {
     }
 
     /// Theme sub-pane ↑↓ (keyboard): delta-move `theme_pane_select` over the
-    /// currently shown kind's fuzzy-filtered list length.
+    /// currently shown kind's fuzzy-filtered combined (Built-in + Custom)
+    /// list length.
     fn theme_pane_move(&mut self, delta: i32) -> Task<Msg> {
         let (input, selected, kind) = match &self.app.modal {
             Modal::SessionLauncher {
@@ -4555,7 +4712,7 @@ impl Grove {
             } => (input.clone(), *selected, *kind),
             _ => return Task::none(),
         };
-        let len = theme_pane_rows(kind, &input).len();
+        let len = theme_pane_combined_rows(kind, &input).len();
         let new_sel = crate::gui::launcher::clamp(selected, delta, len);
         self.theme_pane_select(new_sel)
     }
@@ -4569,7 +4726,7 @@ impl Grove {
             Modal::SessionLauncher { input, .. } => input.clone(),
             _ => return Task::none(),
         };
-        let rows = theme_pane_rows(kind, &input);
+        let rows = theme_pane_combined_rows(kind, &input);
         let active = crate::theme::current();
         let idx = rows.iter().position(|t| t.name == active.name).unwrap_or(0);
         let Modal::SessionLauncher {
@@ -4590,7 +4747,7 @@ impl Grove {
         *follow_system = false;
         ls.selected = idx;
         if let Some(t) = rows.get(idx) {
-            crate::theme::set(*t);
+            crate::theme::set(t.clone());
         }
         self.invalidate_pty_render_cache();
         self.scroll_launcher_theme_to_selection()
@@ -4613,7 +4770,7 @@ impl Grove {
         // The list snaps back to the (filtered) dark set: re-clamp the
         // cursor so a selection made deep in a longer list can't dangle
         // past the end.
-        let dark_len = theme_pane_rows(crate::theme::ThemeKind::Dark, &input).len();
+        let dark_len = theme_pane_combined_rows(crate::theme::ThemeKind::Dark, &input).len();
         let Modal::SessionLauncher {
             settings: Some(ls), ..
         } = &mut self.app.modal
@@ -4685,7 +4842,6 @@ impl Grove {
             self.app.apply_system_theme();
         } else {
             let chosen = crate::theme::current();
-            crate::theme::set(chosen);
             self.app.store.theme = Some(chosen.name.to_string());
             match chosen.kind {
                 crate::theme::ThemeKind::Dark => {
@@ -4695,6 +4851,7 @@ impl Grove {
                     self.app.store.theme_light = Some(chosen.name.to_string())
                 }
             }
+            crate::theme::set(chosen);
         }
         let _ = crate::storage::save(&self.app.store);
         self.invalidate_pty_render_cache();
@@ -4711,12 +4868,630 @@ impl Grove {
                         ..
                     }),
                 ..
-            } => *original,
+            } => original.clone(),
             _ => return Task::none(),
         };
         crate::theme::set(original);
         self.invalidate_pty_render_cache();
         self.return_to_settings_root(SettingRow::Theme)
+    }
+
+    /// "Reload themes" command (palette root, keyword-only — see
+    /// `palette_rows`): re-reads `themes.json` via `theme::load_custom`,
+    /// replacing `App::theme_load_errors` with the fresh result and
+    /// surfacing it as a toast (mock E1/E2). If the active theme's name no
+    /// longer resolves anywhere afterward (edited out from under the app,
+    /// deleted, synced from another machine, ...), falls back to the mode
+    /// default *silently* — this is routine config drift, not an error, per
+    /// the mock's E3 sticky note. If the Theme sub-pane happens to be open,
+    /// its combined Built-in+Custom list just changed under it, so the
+    /// cursor is reclamped and rescrolled instead of left dangling; there's
+    /// nothing pane-specific to refresh otherwise, so the palette just closes
+    /// (same "run and dismiss" idiom as `PaletteRow::AddProject`).
+    fn reload_themes(&mut self) -> Task<Msg> {
+        self.app.theme_load_errors = crate::theme::load_custom();
+
+        let active = crate::theme::current();
+        if let Some(fallback) = theme_reload_fallback(&active.name, active.kind) {
+            crate::theme::set_by_name(fallback);
+            self.app.store.theme = Some(fallback.to_string());
+            match active.kind {
+                crate::theme::ThemeKind::Dark => {
+                    self.app.store.theme_dark = Some(fallback.to_string())
+                }
+                crate::theme::ThemeKind::Light => {
+                    self.app.store.theme_light = Some(fallback.to_string())
+                }
+            }
+            let _ = crate::storage::save(&self.app.store);
+        }
+
+        match crate::theme_file::summarize_errors(&self.app.theme_load_errors) {
+            Some(summary) => self.app.set_error_toast(summary),
+            None => self.app.set_toast("themes.json reloaded"),
+        }
+
+        let theme_pane_kind_input = match &self.app.modal {
+            Modal::SessionLauncher {
+                input,
+                settings:
+                    Some(LauncherSettings {
+                        pane: SettingsPane::Theme { kind, .. },
+                        ..
+                    }),
+                ..
+            } => Some((*kind, input.clone())),
+            _ => None,
+        };
+        self.invalidate_pty_render_cache();
+        match theme_pane_kind_input {
+            Some((kind, input)) => {
+                let total = theme_pane_combined_rows(kind, &input).len();
+                if let Modal::SessionLauncher {
+                    settings: Some(ls), ..
+                } = &mut self.app.modal
+                {
+                    ls.selected = ls.selected.min(total.saturating_sub(1));
+                }
+                self.scroll_launcher_theme_to_selection()
+            }
+            None => {
+                self.app.modal = Modal::None;
+                Task::none()
+            }
+        }
+    }
+
+
+    // ── Modal::ThemeManager LIST sub-view ───────────────────────────────────
+
+    /// Opens the dedicated theme-management modal, replacing whatever's
+    /// currently showing (including the palette, if it was open) — this is a
+    /// top-level `Modal`, not a palette drill-in pane.
+    fn open_theme_manager(&mut self) -> Task<Msg> {
+        self.app.modal = Modal::ThemeManager {
+            selected: 0,
+            rename: None,
+            rename_error: None,
+            pending_delete: None,
+        };
+        self.theme_manager_editor = None;
+        Task::none()
+    }
+
+    fn theme_manager_close(&mut self) {
+        self.app.modal = Modal::None;
+        self.theme_manager_editor = None;
+    }
+
+    fn theme_manager_select(&mut self, idx: usize) {
+        let len = crate::theme::all_custom_themes().len();
+        if idx >= len {
+            return;
+        }
+        if let Modal::ThemeManager { selected, .. } = &mut self.app.modal {
+            *selected = idx;
+        }
+    }
+
+    fn theme_manager_move(&mut self, delta: i32) {
+        let len = crate::theme::all_custom_themes().len();
+        if len == 0 {
+            return;
+        }
+        if let Modal::ThemeManager { selected, .. } = &mut self.app.modal {
+            *selected = crate::gui::launcher::clamp(*selected, delta, len);
+        }
+    }
+
+    /// "New theme": creates a fresh custom theme seeded from the *current
+    /// active theme's* mode default (`DEFAULT_DARK_THEME`/`DEFAULT_LIGHT_
+    /// THEME`), auto-named via `theme::duplicate_name("untitled")`, and opens
+    /// the EDITOR sub-view on it directly.
+    fn theme_manager_new(&mut self) -> Task<Msg> {
+        let kind = crate::theme::current().kind;
+        let seed_name = match kind {
+            crate::theme::ThemeKind::Dark => crate::app::DEFAULT_DARK_THEME,
+            crate::theme::ThemeKind::Light => crate::app::DEFAULT_LIGHT_THEME,
+        };
+        let Some(seed) = crate::theme::by_name(seed_name) else {
+            return Task::none(); // defensive: the mode defaults are builtins
+        };
+        let new_name = crate::theme::duplicate_name("untitled");
+        let mut new_theme = seed;
+        new_theme.name = std::borrow::Cow::Owned(new_name);
+        new_theme.kind = kind;
+        if let Err(e) = crate::theme::add_custom(new_theme.clone()) {
+            self.app.set_error_toast(e);
+            return Task::none();
+        }
+        self.open_theme_manager_editor(new_theme)
+    }
+
+    /// Duplicates the theme at row `idx` into a new custom theme (auto-named
+    /// via `theme::duplicate_name`) and selects the copy.
+    fn theme_manager_duplicate(&mut self, idx: usize) {
+        let Some(base) = crate::theme::all_custom_themes().get(idx).cloned() else {
+            return;
+        };
+        let new_name = crate::theme::duplicate_name(&base.name);
+        let mut copy = base;
+        copy.name = std::borrow::Cow::Owned(new_name.clone());
+        if let Err(e) = crate::theme::add_custom(copy) {
+            self.app.set_error_toast(e);
+            return;
+        }
+        let idx = crate::theme::all_custom_themes()
+            .iter()
+            .position(|t| t.name == new_name)
+            .unwrap_or(idx);
+        if let Modal::ThemeManager { selected, .. } = &mut self.app.modal {
+            *selected = idx;
+        }
+    }
+
+    fn theme_manager_rename_start(&mut self, idx: usize) {
+        let Some(theme) = crate::theme::all_custom_themes().get(idx).cloned() else {
+            return;
+        };
+        if let Modal::ThemeManager {
+            selected,
+            rename,
+            rename_error,
+            ..
+        } = &mut self.app.modal
+        {
+            *selected = idx;
+            let name = theme.name.to_string();
+            *rename = Some((name.clone(), name));
+            *rename_error = None;
+        }
+    }
+
+    fn theme_manager_rename_changed(&mut self, s: String) {
+        if let Modal::ThemeManager { rename: Some((_, buf)), rename_error, .. } = &mut self.app.modal
+        {
+            *buf = s;
+            *rename_error = None;
+        }
+    }
+
+    fn theme_manager_rename_submit(&mut self) {
+        let Modal::ThemeManager {
+            rename: Some((original, buffer)),
+            ..
+        } = &self.app.modal
+        else {
+            return;
+        };
+        let (original, buffer) = (original.clone(), buffer.clone());
+        let new_name = buffer.trim().to_string();
+        if new_name.is_empty() {
+            if let Modal::ThemeManager { rename_error, .. } = &mut self.app.modal {
+                *rename_error = Some("name can't be empty".to_string());
+            }
+            return;
+        }
+        if new_name == original {
+            self.theme_manager_rename_cancel();
+            return;
+        }
+        match crate::theme::rename_custom(&original, &new_name) {
+            Ok(()) => {
+                self.invalidate_pty_render_cache();
+                let idx = crate::theme::all_custom_themes()
+                    .iter()
+                    .position(|t| t.name == new_name)
+                    .unwrap_or(0);
+                if let Modal::ThemeManager {
+                    selected,
+                    rename,
+                    rename_error,
+                    ..
+                } = &mut self.app.modal
+                {
+                    *selected = idx;
+                    *rename = None;
+                    *rename_error = None;
+                }
+            }
+            Err(e) => {
+                if let Modal::ThemeManager { rename_error, .. } = &mut self.app.modal {
+                    *rename_error = Some(e);
+                }
+            }
+        }
+    }
+
+    fn theme_manager_rename_cancel(&mut self) {
+        if let Modal::ThemeManager {
+            rename,
+            rename_error,
+            ..
+        } = &mut self.app.modal
+        {
+            *rename = None;
+            *rename_error = None;
+        }
+    }
+
+    fn theme_manager_delete_start(&mut self, idx: usize) {
+        let Some(theme) = crate::theme::all_custom_themes().get(idx).cloned() else {
+            return;
+        };
+        if let Modal::ThemeManager {
+            selected,
+            pending_delete,
+            ..
+        } = &mut self.app.modal
+        {
+            *selected = idx;
+            *pending_delete = Some(theme.name.to_string());
+        }
+    }
+
+    /// Deletes the pending custom theme. Falls back to the mode default
+    /// (`DEFAULT_DARK_THEME`/`DEFAULT_LIGHT_THEME`) if it was the active
+    /// theme — same fallback the palette's Theme pane used.
+    fn theme_manager_delete_confirm(&mut self) {
+        let Modal::ThemeManager {
+            pending_delete: Some(name),
+            ..
+        } = &self.app.modal
+        else {
+            return;
+        };
+        let name = name.clone();
+        let Some(kind) = crate::theme::all_custom_themes()
+            .iter()
+            .find(|t| t.name == name)
+            .map(|t| t.kind)
+        else {
+            return;
+        };
+        let was_active = crate::theme::current().name == name;
+        crate::theme::delete_custom(&name);
+        if was_active {
+            let fallback = match kind {
+                crate::theme::ThemeKind::Dark => crate::app::DEFAULT_DARK_THEME,
+                crate::theme::ThemeKind::Light => crate::app::DEFAULT_LIGHT_THEME,
+            };
+            crate::theme::set_by_name(fallback);
+            self.app.store.theme = Some(fallback.to_string());
+            match kind {
+                crate::theme::ThemeKind::Dark => {
+                    self.app.store.theme_dark = Some(fallback.to_string())
+                }
+                crate::theme::ThemeKind::Light => {
+                    self.app.store.theme_light = Some(fallback.to_string())
+                }
+            }
+            let _ = crate::storage::save(&self.app.store);
+        }
+        self.invalidate_pty_render_cache();
+        let total = crate::theme::all_custom_themes().len();
+        if let Modal::ThemeManager {
+            selected,
+            pending_delete,
+            ..
+        } = &mut self.app.modal
+        {
+            *pending_delete = None;
+            *selected = (*selected).min(total.saturating_sub(1));
+        }
+    }
+
+    fn theme_manager_delete_cancel(&mut self) {
+        if let Modal::ThemeManager { pending_delete, .. } = &mut self.app.modal {
+            *pending_delete = None;
+        }
+    }
+
+    /// List row's "Edit" button: opens the EDITOR sub-view on the custom
+    /// theme at row `idx`.
+    fn theme_manager_edit_start(&mut self, idx: usize) -> Task<Msg> {
+        let Some(theme) = crate::theme::all_custom_themes().get(idx).cloned() else {
+            return Task::none();
+        };
+        self.open_theme_manager_editor(theme)
+    }
+
+    // ── Palette Theme pane bridge into the editor ───────────────────────────
+
+    /// Theme sub-pane ⌘E on a custom row: opens `Modal::ThemeManager`
+    /// directly in its EDITOR sub-view for that theme (closing the palette —
+    /// `ThemeManager` is a top-level modal, not a palette drill-in pane).
+    fn theme_pane_open_editor(&mut self) -> Task<Msg> {
+        let (input, selected, kind) = match &self.app.modal {
+            Modal::SessionLauncher {
+                input,
+                settings:
+                    Some(LauncherSettings {
+                        pane: SettingsPane::Theme { kind, .. },
+                        selected,
+                        ..
+                    }),
+                ..
+            } => (input.clone(), *selected, *kind),
+            _ => return Task::none(),
+        };
+        if !theme_pane_row_is_custom(kind, &input, selected) {
+            return Task::none(); // builtins aren't editable
+        }
+        let Some(draft) = theme_pane_combined_rows(kind, &input)
+            .get(selected)
+            .cloned()
+        else {
+            return Task::none();
+        };
+        self.open_theme_manager_editor(draft)
+    }
+
+    /// Shared landing for every path into `Modal::ThemeManager`'s EDITOR
+    /// sub-view (list row's Edit button, "New theme", the palette's ⌘E):
+    /// opens/keeps the modal on the list's state (so Esc-back-to-list always
+    /// has somewhere sane to land), captures the pre-edit whole-app theme for
+    /// discard/preview-off, seeds the row-0 hex buffer, applies `draft` as a
+    /// live preview immediately, and scrolls to row 0.
+    fn open_theme_manager_editor(&mut self, draft: crate::theme::Theme) -> Task<Msg> {
+        let list_selected = crate::theme::all_custom_themes()
+            .iter()
+            .position(|t| t.name == draft.name)
+            .unwrap_or(0);
+        // Always land on a clean list state (no stray rename/delete
+        // confirmation left open underneath) with the cursor on this theme's
+        // row, whether the modal was already open or not.
+        self.app.modal = Modal::ThemeManager {
+            selected: list_selected,
+            rename: None,
+            rename_error: None,
+            pending_delete: None,
+        };
+        let original_active = crate::theme::current();
+        let original_name = draft.name.to_string();
+        let saved = draft.clone();
+        let hex_buf = crate::theme_file::to_hex(draft.field(0));
+        // Prefill the paste box with the draft's own current values (named-
+        // lines format) — a copyable reference and an editable starting
+        // point, rather than an empty box.
+        let paste = iced::widget::text_editor::Content::with_text(
+            &crate::theme_file::to_named_lines(&draft),
+        );
+        self.theme_manager_editor = Some(ThemeManagerEditorState {
+            original_name,
+            draft: draft.clone(),
+            saved,
+            original_active,
+            selected: 0,
+            invalid: [false; 11],
+            hex_buf,
+            preview_on: true,
+            confirm_discard: false,
+            paste,
+            paste_status: None,
+            return_selected: list_selected,
+        });
+        crate::theme::set(draft);
+        self.invalidate_pty_render_cache();
+        self.scroll_theme_manager_editor_to_selection()
+    }
+
+    /// Editor ↑/↓: moves the row cursor and reseeds `hex_buf` with the new
+    /// row's live hex text.
+    fn theme_manager_editor_move(&mut self, delta: i32) -> Task<Msg> {
+        let Some(ed) = &self.theme_manager_editor else {
+            return Task::none();
+        };
+        let new_idx = crate::gui::launcher::clamp(ed.selected, delta, 11);
+        self.theme_manager_editor_row_select(new_idx)
+    }
+
+    /// Editor row click / `theme_manager_editor_move`'s landing: jumps the
+    /// row cursor straight to `idx` and reseeds `hex_buf` with that row's hex
+    /// text.
+    fn theme_manager_editor_row_select(&mut self, idx: usize) -> Task<Msg> {
+        let Some(ed) = &mut self.theme_manager_editor else {
+            return Task::none();
+        };
+        if idx >= 11 {
+            return Task::none();
+        }
+        ed.selected = idx;
+        ed.hex_buf = crate::theme_file::to_hex(ed.draft.field(idx));
+        self.scroll_theme_manager_editor_to_selection()
+    }
+
+    /// Editor hex-field edit: a valid `#rrggbb` updates the focused row's
+    /// color in `draft` and, while previewing, re-applies the whole draft
+    /// live; invalid hex just flags that row's error state without touching
+    /// `draft`.
+    fn theme_manager_editor_hex_changed(&mut self, s: String) -> Task<Msg> {
+        let parsed = crate::theme_file::parse_hex(&s).ok();
+        let Some(ed) = &mut self.theme_manager_editor else {
+            return Task::none();
+        };
+        ed.hex_buf = s;
+        match parsed {
+            Some(color) => {
+                ed.draft.set_field(ed.selected, color);
+                ed.invalid[ed.selected] = false;
+                if ed.preview_on {
+                    crate::theme::set(ed.draft.clone());
+                }
+                // The paste box reflects the draft, not a scratchpad the
+                // user's own edits there must survive — resync it every time
+                // a swatch-row hex commits to a valid value.
+                ed.paste = iced::widget::text_editor::Content::with_text(
+                    &crate::theme_file::to_named_lines(&ed.draft),
+                );
+            }
+            None => ed.invalid[ed.selected] = true,
+        }
+        self.invalidate_pty_render_cache();
+        Task::none()
+    }
+
+    /// Editor name field edit: live-updates `draft.name` (collision checking
+    /// stays deferred to Save's `theme::update_custom` call, same as the old
+    /// design's rename-on-save).
+    fn theme_manager_editor_name_changed(&mut self, s: String) {
+        if let Some(ed) = &mut self.theme_manager_editor {
+            ed.draft.name = std::borrow::Cow::Owned(s);
+        }
+    }
+
+    /// Editor Dark/Light toggle: updates `draft.kind` and re-previews.
+    fn theme_manager_editor_set_kind(&mut self, kind: crate::theme::ThemeKind) {
+        if let Some(ed) = &mut self.theme_manager_editor {
+            ed.draft.kind = kind;
+            if ed.preview_on {
+                crate::theme::set(ed.draft.clone());
+            }
+        }
+        self.invalidate_pty_render_cache();
+    }
+
+    /// Editor ⌘P / Preview button: toggles applying the draft to the whole
+    /// app. ON re-applies `draft`; OFF shows `original_active` again without
+    /// losing the draft's edits.
+    fn theme_manager_editor_toggle_preview(&mut self) {
+        let Some(ed) = &mut self.theme_manager_editor else {
+            return;
+        };
+        ed.preview_on = !ed.preview_on;
+        let next = if ed.preview_on {
+            ed.draft.clone()
+        } else {
+            ed.original_active.clone()
+        };
+        crate::theme::set(next);
+        self.invalidate_pty_render_cache();
+    }
+
+    /// Editor ⏎ (only reaches here with no text field focused) / ⌘S / Save
+    /// button: persists `draft` into the `CUSTOM` registry via
+    /// `theme::update_custom`, keeps it live-applied, and returns to the
+    /// list landed on the saved theme's row.
+    fn theme_manager_editor_save(&mut self) -> Task<Msg> {
+        let Some(ed) = self.theme_manager_editor.take() else {
+            return Task::none();
+        };
+        if let Err(e) = crate::theme::update_custom(&ed.original_name, ed.draft.clone()) {
+            self.app.set_error_toast(e);
+            self.theme_manager_editor = Some(ed);
+            return Task::none();
+        }
+        self.app.set_toast(format!("theme saved: {}", ed.draft.name));
+        let name = ed.draft.name.to_string();
+        crate::theme::set(ed.draft);
+        let idx = crate::theme::all_custom_themes()
+            .iter()
+            .position(|t| t.name == name)
+            .unwrap_or(ed.return_selected);
+        if let Modal::ThemeManager { selected, .. } = &mut self.app.modal {
+            *selected = idx;
+        }
+        self.invalidate_pty_render_cache();
+        Task::none()
+    }
+
+    /// Editor Esc: dirty edits show the "Discard changes…?" confirmation
+    /// (mirroring `Modal::Confirm`'s Enter=yes/Esc=no convention); with
+    /// nothing to lose, Esc discards immediately.
+    fn theme_manager_editor_esc(&mut self) -> Task<Msg> {
+        let Some(ed) = &mut self.theme_manager_editor else {
+            return Task::none();
+        };
+        if !ed.is_dirty() {
+            return self.theme_manager_editor_discard();
+        }
+        ed.confirm_discard = true;
+        Task::none()
+    }
+
+    /// Editor discard-confirmation Esc ("Keep editing"): drops the
+    /// confirmation, keeps the draft and the editor open.
+    fn theme_manager_editor_discard_cancel(&mut self) {
+        if let Some(ed) = &mut self.theme_manager_editor {
+            ed.confirm_discard = false;
+        }
+    }
+
+    /// Editor discard-confirmation Enter ("Discard"), or Esc outright when
+    /// there was nothing dirty to confirm: reverts the whole app to
+    /// `original_active` and returns to the list.
+    fn theme_manager_editor_discard(&mut self) -> Task<Msg> {
+        let Some(ed) = self.theme_manager_editor.take() else {
+            return Task::none();
+        };
+        crate::theme::set(ed.original_active);
+        if let Modal::ThemeManager { selected, .. } = &mut self.app.modal {
+            *selected = ed.return_selected;
+        }
+        self.invalidate_pty_render_cache();
+        Task::none()
+    }
+
+    /// Paste box edit: routes through the same `global_mods`/`live_mods`
+    /// spurious-edit guard `LauncherInputChanged` uses — a chord like ⌘S or
+    /// ⌘⏎ is a command, never text, but a focused `text_editor` (like
+    /// `text_input`) doesn't special-case an arbitrary Cmd/Ctrl+Shift chord
+    /// and would otherwise insert/delete on it unconditionally.
+    fn theme_manager_paste_action(&mut self, action: iced::widget::text_editor::Action) {
+        if action.is_edit() && global_mods(self.live_mods) {
+            return;
+        }
+        if let Some(ed) = &mut self.theme_manager_editor {
+            ed.paste.perform(action);
+        }
+    }
+
+    /// Paste box "Apply" / ⌘⏎: parses the paste box's current text via
+    /// `theme_file::parse_paste` and applies the result to the draft (a
+    /// subset of fields is valid — only those fields change; `name`/`kind`
+    /// prefill when the paste included them). Success shows "Applied N
+    /// colors"; failure shows the parser's message, both inline under the
+    /// box.
+    fn theme_manager_paste_apply(&mut self) {
+        let Some(ed) = &mut self.theme_manager_editor else {
+            return;
+        };
+        let text = ed.paste.text();
+        match crate::theme_file::parse_paste(&text) {
+            Ok(applied) => {
+                let n = applied.colors.len();
+                crate::theme_file::apply_pasted_colors(&mut ed.draft, &applied);
+                ed.invalid = [false; 11];
+                ed.hex_buf = crate::theme_file::to_hex(ed.draft.field(ed.selected));
+                if ed.preview_on {
+                    crate::theme::set(ed.draft.clone());
+                }
+                // Resync the box to the (now-updated) draft — it's a
+                // reflection of the draft, not a scratchpad to preserve.
+                ed.paste = iced::widget::text_editor::Content::with_text(
+                    &crate::theme_file::to_named_lines(&ed.draft),
+                );
+                ed.paste_status = Some(Ok(format!("Applied {n} colors")));
+            }
+            Err(e) => ed.paste_status = Some(Err(e)),
+        }
+        self.invalidate_pty_render_cache();
+    }
+
+    /// Scroll the editor's row list so the selected color row is centered —
+    /// same idiom as `scroll_launcher_theme_to_selection`, via
+    /// `theme_editor_scroll_offset`'s section-aware walk (Surfaces/Text/
+    /// Accents headers, then the derived strip, aren't uniform-height rows).
+    fn scroll_theme_manager_editor_to_selection(&self) -> Task<Msg> {
+        use iced::widget::scrollable::AbsoluteOffset;
+        let Some(ed) = &self.theme_manager_editor else {
+            return Task::none();
+        };
+        let y = theme_editor_scroll_offset(ed.selected);
+        scroll_to(
+            super::view::theme_manager_scrollable_id(),
+            AbsoluteOffset { x: 0.0, y },
+        )
     }
 
     /// Whether the Settings drill-in is currently showing the ProjectTheme
@@ -4753,12 +5528,13 @@ impl Grove {
             .and_then(|p| p.theme.as_deref())
             .and_then(crate::theme::by_name);
         let kind = pinned
+            .as_ref()
             .map(|t| t.kind)
             .unwrap_or(crate::theme::current().kind);
         let rows = project_theme_pane_rows(kind, "");
         let selected = rows
             .iter()
-            .position(|t| match (t, pinned) {
+            .position(|t| match (t, &pinned) {
                 (Some(a), Some(b)) => a.name == b.name,
                 (None, None) => true,
                 _ => false,
@@ -4834,7 +5610,7 @@ impl Grove {
             return Task::none();
         };
         let rows = project_theme_pane_rows(*kind, &input);
-        let Some(&row) = rows.get(idx) else {
+        let Some(row) = rows.get(idx).cloned() else {
             return Task::none();
         };
         *preview = row;
@@ -4886,14 +5662,14 @@ impl Grove {
         else {
             return Task::none();
         };
-        let current_name = preview.map(|t| t.name);
+        let current_name = preview.as_ref().map(|t| t.name.to_string());
         let idx = rows
             .iter()
-            .position(|row| row.map(|t| t.name) == current_name)
+            .position(|row| row.as_ref().map(|t| t.name.to_string()) == current_name)
             .unwrap_or(0);
         *k = kind;
         ls.selected = idx;
-        *preview = rows.get(idx).copied().flatten();
+        *preview = rows.get(idx).cloned().flatten();
         self.invalidate_pty_render_cache();
         self.scroll_launcher_project_theme_to_selection()
     }
@@ -4933,14 +5709,15 @@ impl Grove {
                         ..
                     }),
                 ..
-            } => (*proj, *preview),
+            } => (*proj, preview.clone()),
             _ => return Task::none(),
         };
         match self.app.store.projects.get_mut(proj) {
             Some(p) => {
-                p.theme = preview.map(|t| t.name.to_string());
+                p.theme = preview.as_ref().map(|t| t.name.to_string());
                 let _ = crate::storage::save(&self.app.store);
                 let label = preview
+                    .as_ref()
                     .map(|t| t.name.to_string())
                     .unwrap_or_else(|| "default".to_string());
                 self.app.set_toast(format!("project theme: {label}"));
@@ -5355,6 +6132,9 @@ impl Grove {
                 }
                 if crate::gui::launcher::fuzzy_match(input, "settings", "", "") {
                     rows.push(PaletteRow::Settings);
+                }
+                if crate::gui::launcher::fuzzy_match(input, "reload themes", "", "") {
+                    rows.push(PaletteRow::ReloadThemes);
                 }
             }
             rows
@@ -5842,6 +6622,11 @@ pub(super) enum PaletteRow {
     /// `Grove::activate_setting`: toggles flip in place here without opening
     /// the drill-in; enum rows are phase-1 no-ops.
     Setting(SettingRow),
+    /// ACTIONS row, keyword-only (never shown at bare root — see
+    /// `palette_rows`): re-reads `themes.json` via `theme::load_custom` and
+    /// surfaces any skipped-entry errors (mock E2). Stateless, so unlike
+    /// `Setting` there's no value to display or toggle.
+    ReloadThemes,
 }
 
 /// One settings entry surfaced by the palette, either as a root-mode direct
@@ -5955,16 +6740,26 @@ pub(super) fn default_agent_pane_selected_index(default: Option<Agent>) -> usize
         .unwrap_or(0)
 }
 
+/// Selects the row (builtin or custom) matching `name` within `kind`'s
+/// *unfiltered* combined list — builtins first, then customs — falling back
+/// to row 0. Builtins and customs never share a name (custom names that
+/// collide with a builtin are rejected at creation/load), so this never
+/// double-matches.
 pub(super) fn theme_pane_selected_index(kind: crate::theme::ThemeKind, name: &str) -> usize {
-    crate::theme::themes_of(kind)
+    let builtins = crate::theme::themes_of(kind);
+    if let Some(i) = builtins.iter().position(|t| t.name == name) {
+        return i;
+    }
+    crate::theme::custom_themes_of(kind)
         .iter()
         .position(|t| t.name == name)
+        .map(|i| builtins.len() + i)
         .unwrap_or(0)
 }
 
-/// Themes of `kind` fuzzy-filtered by `input`, in `theme::themes_of`'s
-/// alphabetical order — the Theme sub-pane's live list (`view.rs`) and its
-/// keyboard/mouse selection (`Grove::theme_pane_select`/`theme_pane_move`)
+/// Builtin themes of `kind` fuzzy-filtered by `input`, in `theme::themes_of`'s
+/// alphabetical order — the Theme sub-pane's Built-in section (`view.rs`) and
+/// its keyboard/mouse selection (`Grove::theme_pane_select`/`theme_pane_move`)
 /// share this so they never disagree on what row N is.
 pub(super) fn theme_pane_rows(
     kind: crate::theme::ThemeKind,
@@ -5972,8 +6767,68 @@ pub(super) fn theme_pane_rows(
 ) -> Vec<crate::theme::Theme> {
     crate::theme::themes_of(kind)
         .into_iter()
-        .filter(|t| crate::gui::launcher::fuzzy_match(input, t.name, "", ""))
+        .filter(|t| crate::gui::launcher::fuzzy_match(input, &t.name, "", ""))
         .collect()
+}
+
+/// Custom themes of `kind` fuzzy-filtered by `input`, same alphabetical/
+/// fuzzy-match contract as `theme_pane_rows` — the Theme sub-pane's Custom
+/// section, rendered *after* (never interleaved with) `theme_pane_rows`.
+pub(super) fn theme_pane_custom_rows(
+    kind: crate::theme::ThemeKind,
+    input: &str,
+) -> Vec<crate::theme::Theme> {
+    crate::theme::custom_themes_of(kind)
+        .into_iter()
+        .filter(|t| crate::gui::launcher::fuzzy_match(input, &t.name, "", ""))
+        .collect()
+}
+
+/// The Theme sub-pane's full selectable list: every builtin row followed by
+/// every custom row (never interleaved) — selection/keyboard nav flows
+/// continuously across the boundary, so callers that only need "the theme
+/// at index N" or "how many rows total" use this rather than combining
+/// `theme_pane_rows`/`theme_pane_custom_rows` themselves.
+pub(super) fn theme_pane_combined_rows(
+    kind: crate::theme::ThemeKind,
+    input: &str,
+) -> Vec<crate::theme::Theme> {
+    let mut rows = theme_pane_rows(kind, input);
+    rows.extend(theme_pane_custom_rows(kind, input));
+    rows
+}
+
+/// Whether row `idx` of the Theme sub-pane's combined list (see
+/// `theme_pane_combined_rows`) falls in the Custom section — the only rows
+/// where rename/delete/edit are offered.
+/// `Grove::reload_themes`'s "does the active theme still resolve?" decision,
+/// pulled out as a pure function so it's testable without a full `Grove`:
+/// `None` when `active_name` still resolves to something (builtin or
+/// custom) — nothing to do; `Some(fallback)` — the mode default for `kind`
+/// — when it doesn't, so the caller can silently reassign it (mock E3: this
+/// is routine config drift, not an error).
+pub(super) fn theme_reload_fallback(
+    active_name: &str,
+    kind: crate::theme::ThemeKind,
+) -> Option<&'static str> {
+    if crate::theme::by_name(active_name).is_some() {
+        return None;
+    }
+    Some(match kind {
+        crate::theme::ThemeKind::Dark => crate::app::DEFAULT_DARK_THEME,
+        crate::theme::ThemeKind::Light => crate::app::DEFAULT_LIGHT_THEME,
+    })
+}
+
+pub(super) fn theme_pane_row_is_custom(kind: crate::theme::ThemeKind, input: &str, idx: usize) -> bool {
+    // Resolved by name via `theme::is_custom` rather than an
+    // `idx >= builtins.len()` position check — same answer today (customs
+    // always sort after builtins in `theme_pane_combined_rows`), but doesn't
+    // depend on that ordering staying that way.
+    theme_pane_combined_rows(kind, input)
+        .get(idx)
+        .map(|t| crate::theme::is_custom(&t.name))
+        .unwrap_or(false)
 }
 
 /// The ProjectTheme sub-pane's list: same `theme_pane_rows` filtering,
@@ -6021,6 +6876,70 @@ pub(super) fn launcher_theme_scroll_offset(total: usize, selected: usize) -> f32
         total as f32 * pitch - THEME_PANE_SPACING
     };
     let sel_y = selected as f32 * pitch;
+    let viewport_h = content_h.min(THEME_PANE_VIEWPORT_CAP);
+    let max_y = (content_h - viewport_h).max(0.0);
+    (sel_y - (viewport_h - THEME_PANE_ROW_H) / 2.0).clamp(0.0, max_y)
+}
+
+/// The theme editor's group-header geometry: same `SETTINGS_ROOT_HEADER_
+/// LABEL_H` (10px text at iced's default 1.3 line height) the Settings Root
+/// list uses, but the editor's `section_header(group, top, 4.0)` calls (see
+/// `view.rs`) always pass `top = 10.0` for every header after the first
+/// (never `12.0` like Root's), and a `4.0` bottom margin (Root uses `6.0`).
+const THEME_EDITOR_GROUP_HEADER_TOP: f32 = 10.0;
+const THEME_EDITOR_GROUP_HEADER_BOTTOM: f32 = 4.0;
+/// The trailing "derived — not editable" chip row's height: its 12px
+/// swatches sit shorter than the row's 10px label text at iced's default
+/// 1.3 line height (`SETTINGS_ROOT_HEADER_LABEL_H`, same constant), plus the
+/// row container's own `padding(Padding::from([4, 12]))` (4px top + bottom).
+const THEME_EDITOR_DERIVED_ROW_H: f32 = SETTINGS_ROOT_HEADER_LABEL_H + 8.0;
+
+/// Center-and-clamp scroll offset for the theme editor's row list: the
+/// Theme sub-pane already keeps keyboard selection in view via
+/// `launcher_theme_scroll_offset`, but that helper assumes every row is a
+/// uniform `THEME_PANE_ROW_H` pitch — the editor's list isn't, since its 11
+/// color rows are grouped under Surfaces/Text/Accents section headers
+/// (`theme::FIELD_GROUPS`) and followed by a "derived — not editable"
+/// header + chip row. Walks the same header/row sequence `view.rs` renders
+/// (`settings_root_scroll_offset`'s idiom) so the selected row's y always
+/// matches what's actually on screen. `selected` is always one of the 11
+/// color rows — the derived strip is never selectable — but it still
+/// contributes to `content_h`/`max_y` since it occupies real scroll height.
+pub(super) fn theme_editor_scroll_offset(selected: usize) -> f32 {
+    let mut content_h: f32 = 0.0;
+    let mut sel_y: f32 = 0.0;
+    let mut prev_group: Option<&'static str> = None;
+    for (i, &group) in crate::theme::FIELD_GROUPS.iter().enumerate() {
+        if prev_group != Some(group) {
+            let top = if prev_group.is_none() {
+                0.0
+            } else {
+                THEME_EDITOR_GROUP_HEADER_TOP
+            };
+            if content_h > 0.0 {
+                content_h += THEME_PANE_SPACING;
+            }
+            content_h +=
+                top + SETTINGS_ROOT_HEADER_LABEL_H + THEME_EDITOR_GROUP_HEADER_BOTTOM;
+            prev_group = Some(group);
+        }
+        if content_h > 0.0 {
+            content_h += THEME_PANE_SPACING;
+        }
+        if i == selected {
+            sel_y = content_h;
+        }
+        content_h += THEME_PANE_ROW_H;
+    }
+    // The trailing "DERIVED — NOT EDITABLE" header + its chip row: not
+    // selectable, but still real scrollable content that bounds `max_y`.
+    content_h += THEME_PANE_SPACING;
+    content_h += THEME_EDITOR_GROUP_HEADER_TOP
+        + SETTINGS_ROOT_HEADER_LABEL_H
+        + THEME_EDITOR_GROUP_HEADER_BOTTOM;
+    content_h += THEME_PANE_SPACING;
+    content_h += THEME_EDITOR_DERIVED_ROW_H;
+
     let viewport_h = content_h.min(THEME_PANE_VIEWPORT_CAP);
     let max_y = (content_h - viewport_h).max(0.0);
     (sel_y - (viewport_h - THEME_PANE_ROW_H) / 2.0).clamp(0.0, max_y)
@@ -6259,6 +7178,7 @@ pub(super) fn row_identity(row: &PaletteRow) -> PaletteRowIdentity {
         PaletteRow::SwitchToSession => PaletteRowIdentity::SwitchToSession,
         PaletteRow::Settings => PaletteRowIdentity::Settings,
         PaletteRow::Setting(s) => PaletteRowIdentity::Setting(*s),
+        PaletteRow::ReloadThemes => PaletteRowIdentity::ReloadThemes,
     }
 }
 
@@ -7029,20 +7949,29 @@ pub(crate) fn slide_progress(start: std::time::Instant, now: std::time::Instant)
 
 /// Whether the event subscription forwards this event to `update()`.
 ///
-/// Captured events belong to the widget that consumed them — except Escape: a
-/// focused `text_input` captures it only to blur itself and never tells the
-/// app, so without this carve-out cancelling a modal would take two presses.
+/// Captured events belong to the widget that consumed them — with two
+/// carve-outs:
+/// - Escape: a focused `text_input` captures it only to blur itself and
+///   never tells the app, so without this cancelling a modal would take two
+///   presses.
+/// - A `global_mods` chord (Cmd on mac, Ctrl+Shift elsewhere): a focused
+///   `text_input` captures *every* `KeyPressed`, chord or not, since as far
+///   as the widget is concerned a character key just gets typed. But a
+///   chord is a command, never text — without this carve-out, e.g. ⌘D in
+///   the Theme sub-pane never reached `handle_modal_key`'s Theme-pane arm at
+///   all; the user just saw "d" typed into the focused search field.
 fn should_forward(ev: &Event, status: event::Status) -> bool {
     if status != event::Status::Captured {
         return true;
     }
-    matches!(
-        ev,
+    match ev {
         Event::Keyboard(keyboard::Event::KeyPressed {
             key: Key::Named(Named::Escape),
             ..
-        })
-    )
+        }) => true,
+        Event::Keyboard(keyboard::Event::KeyPressed { modifiers, .. }) => global_mods(*modifiers),
+        _ => false,
+    }
 }
 
 /// Whether Escape has something to dismiss when no modal is open. `false`
@@ -7136,8 +8065,10 @@ fn is_paste_shortcut(mods: Modifiers, s: &str) -> bool {
 mod tests {
     use super::{
         backend_pane_selected_index, default_agent_pane_selected_index, match_global_shortcut,
-        permissions_pane_selected_index, project_theme_pane_rows, slide_progress, theme_pane_rows,
-        theme_pane_selected_index, GlobalShortcut, Screen, SettingRow, GRID_SLIDE,
+        permissions_pane_selected_index, project_theme_pane_rows, slide_progress,
+        theme_pane_combined_rows, theme_pane_row_is_custom, theme_pane_rows,
+        theme_pane_selected_index, theme_reload_fallback, GlobalShortcut, Screen, SettingRow,
+        GRID_SLIDE,
     };
     use iced::keyboard::{key::Named, Key, Modifiers};
     use smol_str::SmolStr;
@@ -7783,10 +8714,15 @@ mod tests {
     /// focused text_input eats it to self-blur); nothing else may (Bug 3).
     mod should_forward {
         use super::super::should_forward;
+        use super::gmods;
         use iced::keyboard::{key::Named, Key, Modifiers};
         use iced::{event, keyboard, Event};
 
         fn press(key: Key) -> Event {
+            press_mods(key, Modifiers::empty())
+        }
+
+        fn press_mods(key: Key, modifiers: Modifiers) -> Event {
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key: key.clone(),
                 modified_key: key,
@@ -7794,7 +8730,7 @@ mod tests {
                     iced::keyboard::key::NativeCode::Unidentified,
                 ),
                 location: iced::keyboard::Location::Standard,
-                modifiers: Modifiers::empty(),
+                modifiers,
                 text: None,
                 repeat: false,
             })
@@ -7826,6 +8762,42 @@ mod tests {
             ));
             assert!(!should_forward(
                 &press(Key::Named(Named::Enter)),
+                event::Status::Captured
+            ));
+        }
+
+        /// The bug this regresses: the palette's focused search input
+        /// captures every `KeyPressed` (it's a text field), so without this
+        /// carve-out a chord like ⌘D never reached `handle_modal_key`'s
+        /// Theme-pane arm at all — the user just saw "d" typed into the
+        /// query. Chords are commands, never text, regardless of what
+        /// widget currently has focus.
+        #[test]
+        fn captured_global_mod_chord_still_forwards() {
+            assert!(should_forward(
+                &press_mods(Key::Character("d".into()), gmods()),
+                event::Status::Captured
+            ));
+            // Named keys chord too (⌘⌫ delete).
+            assert!(should_forward(
+                &press_mods(Key::Named(Named::Backspace), gmods()),
+                event::Status::Captured
+            ));
+        }
+
+        /// A bare modifier that doesn't add up to the platform's *global*
+        /// chord (`global_mods` requires Ctrl+Shift together on non-mac,
+        /// Cmd-without-Ctrl on mac) must not forward — otherwise every
+        /// Ctrl-chord a text field captures for its own editing (e.g.
+        /// word-delete) would leak into `handle_modal_key` too.
+        #[test]
+        fn captured_partial_or_unrelated_modifier_still_dropped() {
+            assert!(!should_forward(
+                &press_mods(Key::Character("d".into()), Modifiers::CTRL),
+                event::Status::Captured
+            ));
+            assert!(!should_forward(
+                &press_mods(Key::Character("d".into()), Modifiers::SHIFT),
                 event::Status::Captured
             ));
         }
@@ -7937,9 +8909,9 @@ mod tests {
         assert_eq!(
             theme_pane_rows(ThemeKind::Dark, "")
                 .iter()
-                .map(|t| t.name)
+                .map(|t| t.name.clone())
                 .collect::<Vec<_>>(),
-            all_dark.iter().map(|t| t.name).collect::<Vec<_>>()
+            all_dark.iter().map(|t| t.name.clone()).collect::<Vec<_>>()
         );
         // Every row is actually of the requested kind — Light never leaks
         // into a Dark query or vice versa.
@@ -7957,6 +8929,66 @@ mod tests {
     }
 
     #[test]
+    fn theme_pane_combined_rows_lists_customs_after_builtins() {
+        use crate::theme::{Color, ThemeKind};
+        let _lock = crate::theme::CUSTOM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let name = "zz-test-custom-batch2";
+        let custom = crate::theme::Theme {
+            name: std::borrow::Cow::Owned(name.to_string()),
+            kind: ThemeKind::Dark,
+            bg: Color::Rgb(0, 0, 0),
+            bg_highlight: Color::Rgb(0, 0, 0),
+            fg: Color::Rgb(0, 0, 0),
+            fg_dark: Color::Rgb(0, 0, 0),
+            comment: Color::Rgb(0, 0, 0),
+            blue: Color::Rgb(0, 0, 0),
+            cyan: Color::Rgb(0, 0, 0),
+            magenta: Color::Rgb(0, 0, 0),
+            green: Color::Rgb(0, 0, 0),
+            yellow: Color::Rgb(0, 0, 0),
+            red: Color::Rgb(0, 0, 0),
+        };
+        crate::theme::add_custom(custom).expect("add_custom");
+
+        let builtins_len = theme_pane_rows(ThemeKind::Dark, "").len();
+        let combined = theme_pane_combined_rows(ThemeKind::Dark, "");
+        // Every builtin row comes first, in the same order, then the custom
+        // row(s) — never interleaved.
+        assert_eq!(combined.len(), builtins_len + 1);
+        assert_eq!(combined.last().unwrap().name, name);
+        assert!(!theme_pane_row_is_custom(ThemeKind::Dark, "", 0));
+        assert!(theme_pane_row_is_custom(ThemeKind::Dark, "", builtins_len));
+        assert_eq!(
+            theme_pane_selected_index(ThemeKind::Dark, name),
+            builtins_len
+        );
+
+        crate::theme::delete_custom(name);
+    }
+
+    #[test]
+    fn theme_reload_fallback_none_when_active_theme_still_resolves() {
+        use crate::theme::ThemeKind;
+        let name = crate::theme::BUILTINS[0].name.to_string();
+        assert_eq!(theme_reload_fallback(&name, ThemeKind::Dark), None);
+    }
+
+    #[test]
+    fn theme_reload_fallback_falls_back_to_mode_default_when_active_theme_vanished() {
+        use crate::theme::ThemeKind;
+        assert_eq!(
+            theme_reload_fallback("a-name-that-was-deleted", ThemeKind::Dark),
+            Some(crate::app::DEFAULT_DARK_THEME)
+        );
+        assert_eq!(
+            theme_reload_fallback("a-name-that-was-deleted", ThemeKind::Light),
+            Some(crate::app::DEFAULT_LIGHT_THEME)
+        );
+    }
+
+    #[test]
     fn project_theme_pane_rows_has_use_default_row_only_when_query_is_empty() {
         use crate::theme::ThemeKind;
         // Empty query: "Use app theme" (None) leads, followed by every dark
@@ -7966,11 +8998,11 @@ mod tests {
         assert_eq!(
             rows[1..]
                 .iter()
-                .map(|t| t.unwrap().name)
+                .map(|t| t.clone().unwrap().name)
                 .collect::<Vec<_>>(),
             theme_pane_rows(ThemeKind::Dark, "")
                 .iter()
-                .map(|t| t.name)
+                .map(|t| t.name.clone())
                 .collect::<Vec<_>>()
         );
         // Whitespace-only query counts as empty too.
@@ -7982,7 +9014,7 @@ mod tests {
         assert!(filtered.iter().all(|t| t.is_some()));
         assert!(filtered
             .iter()
-            .all(|t| t.unwrap().name.contains("tokyonight")));
+            .all(|t| t.clone().unwrap().name.contains("tokyonight")));
         // No match anywhere still yields an empty list, not a dangling
         // default row.
         assert!(project_theme_pane_rows(ThemeKind::Dark, "zzz-no-such-theme").is_empty());
@@ -7996,11 +9028,11 @@ mod tests {
         assert!(dark
             .iter()
             .skip(1)
-            .all(|t| t.unwrap().kind == ThemeKind::Dark));
+            .all(|t| t.clone().unwrap().kind == ThemeKind::Dark));
         assert!(light
             .iter()
             .skip(1)
-            .all(|t| t.unwrap().kind == ThemeKind::Light));
+            .all(|t| t.clone().unwrap().kind == ThemeKind::Light));
         assert_ne!(dark.len(), light.len());
     }
 
@@ -8062,6 +9094,32 @@ mod tests {
         assert_eq!(launcher_theme_scroll_offset(30, 15), 448.0);
         // Empty list degenerates to 0, not NaN/negative.
         assert_eq!(launcher_theme_scroll_offset(0, 0), 0.0);
+    }
+
+    /// Regression for the reported bug: ↑/↓ in the theme editor didn't
+    /// scroll at all (`theme_manager_editor_row_select` never called any
+    /// scroll function). Values hand-derived from the exact `view.rs` render
+    /// geometry (2 Surfaces + 3 Text + 6 Accents rows, each group preceded
+    /// by a 10/13/4 header, followed by the derived strip's own header +
+    /// chip row) — see `theme_editor_scroll_offset`'s doc comment for the
+    /// constants.
+    #[test]
+    fn theme_editor_scroll_offset_centers_and_clamps() {
+        use super::theme_editor_scroll_offset;
+        // Row 0 (first "Surfaces" row): would center above the list, so it
+        // clamps to the top instead.
+        assert_eq!(theme_editor_scroll_offset(0), 0.0);
+        // Row 2 (first "Text" row, right after a group-header transition):
+        // sel_y = 124 (17 + 2 + 36 + 2 + 36 + 27 + 2), centered at
+        // 124 − (280 − 36)/2 = 2.
+        assert_eq!(theme_editor_scroll_offset(2), 2.0);
+        // Row 5 (first "Accents" row): centers normally, no clamp.
+        assert_eq!(theme_editor_scroll_offset(5), 145.0);
+        // Row 10 ("red", the last color row): the trailing derived-strip
+        // header + chip row push total content to 545px, so the bottom
+        // clamp (545 − 280 = 265) kicks in rather than over-scrolling past
+        // the real content.
+        assert_eq!(theme_editor_scroll_offset(10), 265.0);
     }
 
     #[test]

@@ -1,19 +1,20 @@
+use std::borrow::Cow;
 use std::sync::RwLock;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeKind {
     Dark,
     Light,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Color {
     Rgb(u8, u8, u8),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Theme {
-    pub name: &'static str,
+    pub name: Cow<'static, str>,
     pub kind: ThemeKind,
     pub bg: Color,
     pub bg_highlight: Color,
@@ -32,10 +33,128 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::Rgb(r, g, b)
 }
 
+/// The 11 editable color fields, in the theme editor's fixed row order
+/// (`Theme::field`/`set_field` index into this same order). Grouped
+/// Surfaces / Text / Accents, matching the editor's section headers.
+pub const FIELD_NAMES: [&str; 11] = [
+    "bg",
+    "bg_highlight",
+    "fg",
+    "fg_dark",
+    "comment",
+    "blue",
+    "cyan",
+    "magenta",
+    "green",
+    "yellow",
+    "red",
+];
+
+/// Section label for each index into [`FIELD_NAMES`].
+pub const FIELD_GROUPS: [&str; 11] = [
+    "Surfaces", "Surfaces", "Text", "Text", "Text", "Accents", "Accents", "Accents", "Accents",
+    "Accents", "Accents",
+];
+
+/// For each editable field, the index of the field it's contrast-checked
+/// against in the theme editor (`None` for `bg`, which has no pair of its
+/// own) — `bg_highlight` is checked against `fg` (the text that sits on
+/// it), everything else against `bg`.
+pub const CONTRAST_PARTNER: [Option<usize>; 11] = [
+    None,
+    Some(2),
+    Some(0),
+    Some(0),
+    Some(0),
+    Some(0),
+    Some(0),
+    Some(0),
+    Some(0),
+    Some(0),
+    Some(0),
+];
+
+impl Theme {
+    /// Reads one of the 11 editable colors by index (`FIELD_NAMES` order).
+    /// Out-of-range indices fall back to `bg` rather than panicking, since
+    /// this is only ever driven by a `0..11` UI row cursor.
+    pub fn field(&self, i: usize) -> Color {
+        match i {
+            0 => self.bg,
+            1 => self.bg_highlight,
+            2 => self.fg,
+            3 => self.fg_dark,
+            4 => self.comment,
+            5 => self.blue,
+            6 => self.cyan,
+            7 => self.magenta,
+            8 => self.green,
+            9 => self.yellow,
+            10 => self.red,
+            _ => self.bg,
+        }
+    }
+
+    /// Writes one of the 11 editable colors by index. Out-of-range indices
+    /// are a no-op (same defensive contract as `field`).
+    pub fn set_field(&mut self, i: usize, c: Color) {
+        match i {
+            0 => self.bg = c,
+            1 => self.bg_highlight = c,
+            2 => self.fg = c,
+            3 => self.fg_dark = c,
+            4 => self.comment = c,
+            5 => self.blue = c,
+            6 => self.cyan = c,
+            7 => self.magenta = c,
+            8 => self.green = c,
+            9 => self.yellow = c,
+            10 => self.red = c,
+            _ => {}
+        }
+    }
+
+    /// Whether every one of the 11 editable colors matches `other` — the
+    /// theme editor's dirty check (name/kind aren't editable there, so they
+    /// don't factor in).
+    pub fn colors_eq(&self, other: &Theme) -> bool {
+        (0..FIELD_NAMES.len()).all(|i| self.field(i) == other.field(i))
+    }
+}
+
+/// WCAG 2.x relative luminance of an sRGB color (the sRGB → linear gamma
+/// correction, then the standard 0.2126/0.7152/0.0722 luma weights).
+pub fn relative_luminance(c: Color) -> f64 {
+    let Color::Rgb(r, g, b) = c;
+    let chan = |v: u8| -> f64 {
+        let s = v as f64 / 255.0;
+        if s <= 0.039_28 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b)
+}
+
+/// WCAG 2.x contrast ratio between two colors: `(L1 + 0.05) / (L2 + 0.05)`
+/// with `L1` the lighter of the two relative luminances, always in `[1.0,
+/// 21.0]`. Used for the theme editor's amber/red contrast badges — warns
+/// only, never blocks saving.
+pub fn contrast_ratio(a: Color, b: Color) -> f64 {
+    let la = relative_luminance(a) + 0.05;
+    let lb = relative_luminance(b) + 0.05;
+    if la > lb {
+        la / lb
+    } else {
+        lb / la
+    }
+}
+
 // ---------------- Dark themes ----------------
 
 pub const TOKYONIGHT: Theme = Theme {
-    name: "tokyonight",
+    name: Cow::Borrowed("tokyonight"),
     kind: ThemeKind::Dark,
     bg: rgb(0x1a, 0x1b, 0x26),
     bg_highlight: rgb(0x29, 0x2e, 0x42),
@@ -51,7 +170,7 @@ pub const TOKYONIGHT: Theme = Theme {
 };
 
 pub const EVERFOREST: Theme = Theme {
-    name: "everforest",
+    name: Cow::Borrowed("everforest"),
     kind: ThemeKind::Dark,
     bg: rgb(0x2d, 0x35, 0x3b),
     bg_highlight: rgb(0x3d, 0x48, 0x4d),
@@ -67,7 +186,7 @@ pub const EVERFOREST: Theme = Theme {
 };
 
 pub const CATPPUCCIN: Theme = Theme {
-    name: "catppuccin",
+    name: Cow::Borrowed("catppuccin"),
     kind: ThemeKind::Dark,
     bg: rgb(0x1e, 0x1e, 0x2e),
     bg_highlight: rgb(0x31, 0x32, 0x44),
@@ -83,7 +202,7 @@ pub const CATPPUCCIN: Theme = Theme {
 };
 
 pub const GRUVBOX: Theme = Theme {
-    name: "gruvbox",
+    name: Cow::Borrowed("gruvbox"),
     kind: ThemeKind::Dark,
     bg: rgb(0x28, 0x28, 0x28),
     bg_highlight: rgb(0x3c, 0x38, 0x36),
@@ -99,7 +218,7 @@ pub const GRUVBOX: Theme = Theme {
 };
 
 pub const KANAGAWA: Theme = Theme {
-    name: "kanagawa",
+    name: Cow::Borrowed("kanagawa"),
     kind: ThemeKind::Dark,
     bg: rgb(0x1f, 0x1f, 0x28),
     bg_highlight: rgb(0x2a, 0x2a, 0x37),
@@ -115,7 +234,7 @@ pub const KANAGAWA: Theme = Theme {
 };
 
 pub const ONE_DARK: Theme = Theme {
-    name: "one-dark",
+    name: Cow::Borrowed("one-dark"),
     kind: ThemeKind::Dark,
     bg: rgb(0x28, 0x2c, 0x34),
     bg_highlight: rgb(0x3e, 0x44, 0x51),
@@ -131,7 +250,7 @@ pub const ONE_DARK: Theme = Theme {
 };
 
 pub const DRACULA: Theme = Theme {
-    name: "dracula",
+    name: Cow::Borrowed("dracula"),
     kind: ThemeKind::Dark,
     bg: rgb(0x28, 0x2a, 0x36),
     bg_highlight: rgb(0x44, 0x47, 0x5a),
@@ -147,7 +266,7 @@ pub const DRACULA: Theme = Theme {
 };
 
 pub const ROSE_PINE: Theme = Theme {
-    name: "rose-pine",
+    name: Cow::Borrowed("rose-pine"),
     kind: ThemeKind::Dark,
     bg: rgb(0x19, 0x17, 0x24),
     bg_highlight: rgb(0x26, 0x23, 0x3a),
@@ -163,7 +282,7 @@ pub const ROSE_PINE: Theme = Theme {
 };
 
 pub const GITHUB_DARK: Theme = Theme {
-    name: "github-dark",
+    name: Cow::Borrowed("github-dark"),
     kind: ThemeKind::Dark,
     bg: rgb(0x0d, 0x11, 0x17),
     bg_highlight: rgb(0x16, 0x1b, 0x22),
@@ -181,7 +300,7 @@ pub const GITHUB_DARK: Theme = Theme {
 // ---------------- Light themes ----------------
 
 pub const GITHUB_LIGHT: Theme = Theme {
-    name: "github-light",
+    name: Cow::Borrowed("github-light"),
     kind: ThemeKind::Light,
     bg: rgb(0xff, 0xff, 0xff),
     bg_highlight: rgb(0xf6, 0xf8, 0xfa),
@@ -197,7 +316,7 @@ pub const GITHUB_LIGHT: Theme = Theme {
 };
 
 pub const GRUVBOX_LIGHT: Theme = Theme {
-    name: "gruvbox-light",
+    name: Cow::Borrowed("gruvbox-light"),
     kind: ThemeKind::Light,
     bg: rgb(0xfb, 0xf1, 0xc7),
     bg_highlight: rgb(0xeb, 0xdb, 0xb2),
@@ -213,7 +332,7 @@ pub const GRUVBOX_LIGHT: Theme = Theme {
 };
 
 pub const EVERFOREST_LIGHT: Theme = Theme {
-    name: "everforest-light",
+    name: Cow::Borrowed("everforest-light"),
     kind: ThemeKind::Light,
     bg: rgb(0xfd, 0xf6, 0xe3),
     bg_highlight: rgb(0xf4, 0xf0, 0xd9),
@@ -229,7 +348,7 @@ pub const EVERFOREST_LIGHT: Theme = Theme {
 };
 
 pub const ONE_LIGHT: Theme = Theme {
-    name: "one-light",
+    name: Cow::Borrowed("one-light"),
     kind: ThemeKind::Light,
     bg: rgb(0xfa, 0xfa, 0xfa),
     bg_highlight: rgb(0xe5, 0xe5, 0xe6),
@@ -245,7 +364,7 @@ pub const ONE_LIGHT: Theme = Theme {
 };
 
 pub const CATPPUCCIN_LATTE: Theme = Theme {
-    name: "catppuccin-latte",
+    name: Cow::Borrowed("catppuccin-latte"),
     kind: ThemeKind::Light,
     bg: rgb(0xef, 0xf1, 0xf5),
     bg_highlight: rgb(0xcc, 0xd0, 0xda),
@@ -261,7 +380,7 @@ pub const CATPPUCCIN_LATTE: Theme = Theme {
 };
 
 pub const ROSE_PINE_DAWN: Theme = Theme {
-    name: "rose-pine-dawn",
+    name: Cow::Borrowed("rose-pine-dawn"),
     kind: ThemeKind::Light,
     bg: rgb(0xfa, 0xf4, 0xed),
     bg_highlight: rgb(0xf2, 0xe9, 0xe1),
@@ -277,7 +396,7 @@ pub const ROSE_PINE_DAWN: Theme = Theme {
 };
 
 pub const TOKYONIGHT_DAY: Theme = Theme {
-    name: "tokyonight-day",
+    name: Cow::Borrowed("tokyonight-day"),
     kind: ThemeKind::Light,
     bg: rgb(0xe1, 0xe2, 0xe7),
     bg_highlight: rgb(0xc4, 0xc8, 0xda),
@@ -293,7 +412,7 @@ pub const TOKYONIGHT_DAY: Theme = Theme {
 };
 
 pub const VSCODE_DARK_MODERN: Theme = Theme {
-    name: "vscode-dark-modern",
+    name: Cow::Borrowed("vscode-dark-modern"),
     kind: ThemeKind::Dark,
     bg: rgb(0x1f, 0x1f, 0x1f),
     bg_highlight: rgb(0x2a, 0x2a, 0x2a),
@@ -309,7 +428,7 @@ pub const VSCODE_DARK_MODERN: Theme = Theme {
 };
 
 pub const TOKYONIGHT_STORM: Theme = Theme {
-    name: "tokyonight-storm",
+    name: Cow::Borrowed("tokyonight-storm"),
     kind: ThemeKind::Dark,
     bg: rgb(0x24, 0x28, 0x3b),
     bg_highlight: rgb(0x37, 0x3b, 0x51),
@@ -325,7 +444,7 @@ pub const TOKYONIGHT_STORM: Theme = Theme {
 };
 
 pub const VITESSE_DARK: Theme = Theme {
-    name: "vitesse-dark",
+    name: Cow::Borrowed("vitesse-dark"),
     kind: ThemeKind::Dark,
     bg: rgb(0x12, 0x12, 0x12),
     bg_highlight: rgb(0x2a, 0x2a, 0x28),
@@ -341,7 +460,7 @@ pub const VITESSE_DARK: Theme = Theme {
 };
 
 pub const GITHUB_DARK_DIMMED: Theme = Theme {
-    name: "github-dark-dimmed",
+    name: Cow::Borrowed("github-dark-dimmed"),
     kind: ThemeKind::Dark,
     bg: rgb(0x22, 0x27, 0x2e),
     bg_highlight: rgb(0x33, 0x39, 0x40),
@@ -357,7 +476,7 @@ pub const GITHUB_DARK_DIMMED: Theme = Theme {
 };
 
 pub const MATERIAL_DARK: Theme = Theme {
-    name: "material-dark",
+    name: Cow::Borrowed("material-dark"),
     kind: ThemeKind::Dark,
     bg: rgb(0x12, 0x12, 0x12),
     bg_highlight: rgb(0x2b, 0x2b, 0x2b),
@@ -373,7 +492,7 @@ pub const MATERIAL_DARK: Theme = Theme {
 };
 
 pub const SHADES_OF_PURPLE: Theme = Theme {
-    name: "shades-of-purple",
+    name: Cow::Borrowed("shades-of-purple"),
     kind: ThemeKind::Dark,
     bg: rgb(0x2d, 0x2b, 0x55),
     bg_highlight: rgb(0x46, 0x44, 0x69),
@@ -389,7 +508,7 @@ pub const SHADES_OF_PURPLE: Theme = Theme {
 };
 
 pub const XCODE_DARK: Theme = Theme {
-    name: "xcode-dark",
+    name: Cow::Borrowed("xcode-dark"),
     kind: ThemeKind::Dark,
     bg: rgb(0x29, 0x2a, 0x30),
     bg_highlight: rgb(0x43, 0x44, 0x49),
@@ -405,7 +524,7 @@ pub const XCODE_DARK: Theme = Theme {
 };
 
 pub const MONOKAI: Theme = Theme {
-    name: "monokai",
+    name: Cow::Borrowed("monokai"),
     kind: ThemeKind::Dark,
     bg: rgb(0x27, 0x28, 0x22),
     bg_highlight: rgb(0x40, 0x41, 0x3b),
@@ -421,7 +540,7 @@ pub const MONOKAI: Theme = Theme {
 };
 
 pub const VITESSE_LIGHT: Theme = Theme {
-    name: "vitesse-light",
+    name: Cow::Borrowed("vitesse-light"),
     kind: ThemeKind::Light,
     bg: rgb(0xff, 0xff, 0xff),
     bg_highlight: rgb(0xe7, 0xe7, 0xe7),
@@ -437,7 +556,7 @@ pub const VITESSE_LIGHT: Theme = Theme {
 };
 
 pub const VSCODE_LIGHT_MODERN: Theme = Theme {
-    name: "vscode-light-modern",
+    name: Cow::Borrowed("vscode-light-modern"),
     kind: ThemeKind::Light,
     bg: rgb(0xff, 0xff, 0xff),
     bg_highlight: rgb(0xe7, 0xe7, 0xe7),
@@ -453,7 +572,7 @@ pub const VSCODE_LIGHT_MODERN: Theme = Theme {
 };
 
 pub const KANAGAWA_LOTUS: Theme = Theme {
-    name: "kanagawa-lotus",
+    name: Cow::Borrowed("kanagawa-lotus"),
     kind: ThemeKind::Light,
     bg: rgb(0xf2, 0xec, 0xbc),
     bg_highlight: rgb(0xdf, 0xda, 0xb1),
@@ -469,7 +588,7 @@ pub const KANAGAWA_LOTUS: Theme = Theme {
 };
 
 pub const MATERIAL_LIGHT: Theme = Theme {
-    name: "material-light",
+    name: Cow::Borrowed("material-light"),
     kind: ThemeKind::Light,
     bg: rgb(0xff, 0xff, 0xff),
     bg_highlight: rgb(0xe4, 0xe4, 0xe5),
@@ -485,7 +604,7 @@ pub const MATERIAL_LIGHT: Theme = Theme {
 };
 
 pub const ALUCARD: Theme = Theme {
-    name: "alucard",
+    name: Cow::Borrowed("alucard"),
     kind: ThemeKind::Light,
     bg: rgb(0xff, 0xfb, 0xeb),
     bg_highlight: rgb(0xe4, 0xe1, 0xd3),
@@ -501,7 +620,7 @@ pub const ALUCARD: Theme = Theme {
 };
 
 pub const XCODE_LIGHT: Theme = Theme {
-    name: "xcode-light",
+    name: Cow::Borrowed("xcode-light"),
     kind: ThemeKind::Light,
     bg: rgb(0xff, 0xff, 0xff),
     bg_highlight: rgb(0xe5, 0xe5, 0xe5),
@@ -517,7 +636,7 @@ pub const XCODE_LIGHT: Theme = Theme {
 };
 
 pub const MONOKAI_PRO_LIGHT: Theme = Theme {
-    name: "monokai-pro-light",
+    name: Cow::Borrowed("monokai-pro-light"),
     kind: ThemeKind::Light,
     bg: rgb(0xfa, 0xf4, 0xf2),
     bg_highlight: rgb(0xe1, 0xdb, 0xda),
@@ -570,23 +689,48 @@ pub const BUILTINS: &[Theme] = &[
 
 static ACTIVE: RwLock<Theme> = RwLock::new(TOKYONIGHT);
 
+/// User-defined themes loaded from `themes.json` (see `theme_file`). Empty
+/// until `load_custom()` is called (typically once at startup).
+static CUSTOM: RwLock<Vec<Theme>> = RwLock::new(Vec::new());
+
+/// Serializes any test, in any module, that touches the shared `CUSTOM`
+/// registry (and, via `save_custom`, the on-disk `themes.json`) so parallel
+/// `cargo test` runs don't stomp on each other. `pub(crate)` (rather than
+/// living inside `mod tests`) so `gui::update`'s tests can share it too.
+#[cfg(test)]
+pub(crate) static CUSTOM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn current() -> Theme {
     // Recover from poisoning: a Theme is plain data, so a panic elsewhere
     // can't leave it half-written.
-    *ACTIVE.read().unwrap_or_else(|e| e.into_inner())
+    ACTIVE.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// Look up a builtin theme by name without touching the global `ACTIVE`
-/// theme. Used to resolve a project's pinned "Project theme" for PTY
-/// rendering; an unknown/stale name yields `None` so callers fall back to
-/// the global theme.
+/// Borrow the active theme without cloning it — prefer this on hot paths
+/// (e.g. per-frame palette color lookups) over `current()`.
+pub fn with_current<R>(f: impl FnOnce(&Theme) -> R) -> R {
+    f(&ACTIVE.read().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Look up a theme by name without touching the global `ACTIVE` theme.
+/// Checks builtins first, then custom themes (builtins win on collision).
+/// Used to resolve a project's pinned "Project theme" for PTY rendering; an
+/// unknown/stale name yields `None` so callers fall back to the global theme.
 pub fn by_name(name: &str) -> Option<Theme> {
-    BUILTINS.iter().copied().find(|t| t.name == name)
+    if let Some(t) = BUILTINS.iter().find(|t| t.name == name) {
+        return Some(t.clone());
+    }
+    CUSTOM
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|t| t.name == name)
+        .cloned()
 }
 
 pub fn set_by_name(name: &str) -> bool {
-    if let Some(t) = BUILTINS.iter().find(|t| t.name == name) {
-        *ACTIVE.write().unwrap_or_else(|e| e.into_inner()) = *t;
+    if let Some(t) = by_name(name) {
+        *ACTIVE.write().unwrap_or_else(|e| e.into_inner()) = t;
         true
     } else {
         false
@@ -600,9 +744,340 @@ pub fn set(theme: Theme) {
 pub fn themes_of(kind: ThemeKind) -> Vec<Theme> {
     let mut v: Vec<Theme> = BUILTINS
         .iter()
-        .copied()
         .filter(|t| t.kind == kind)
+        .cloned()
         .collect();
-    v.sort_by_key(|t| t.name);
+    v.sort_by(|a, b| a.name.cmp(&b.name));
     v
+}
+
+/// Whether `name` refers to a builtin theme.
+fn is_builtin(name: &str) -> bool {
+    BUILTINS.iter().any(|t| t.name == name)
+}
+
+/// Whether `name` refers to a custom (user-defined) theme.
+pub fn is_custom(name: &str) -> bool {
+    CUSTOM
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|t| t.name == name)
+}
+
+/// Custom themes of `kind`, sorted alphabetically. UI shows these separately
+/// from `themes_of` (builtins-only).
+pub fn custom_themes_of(kind: ThemeKind) -> Vec<Theme> {
+    let mut v: Vec<Theme> = CUSTOM
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|t| t.kind == kind)
+        .cloned()
+        .collect();
+    v.sort_by(|a, b| a.name.cmp(&b.name));
+    v
+}
+
+/// All custom themes (either kind), sorted alphabetically — used by
+/// `Modal::ThemeManager`'s flat list, which shows a kind badge per row
+/// instead of splitting into Dark/Light tabs like the palette's Theme pane.
+pub fn all_custom_themes() -> Vec<Theme> {
+    let mut v: Vec<Theme> = CUSTOM.read().unwrap_or_else(|e| e.into_inner()).clone();
+    v.sort_by(|a, b| a.name.cmp(&b.name));
+    v
+}
+
+/// Loads `themes.json` into `CUSTOM`, replacing its previous contents.
+/// Returns the list of entries that were skipped, with human-readable
+/// reasons. A missing file is not an error (yields an empty list, no
+/// errors); a corrupt top-level file yields a single error and leaves
+/// `CUSTOM` empty without touching the file on disk.
+pub fn load_custom() -> Vec<crate::theme_file::ThemeLoadError> {
+    let (themes, errors) = crate::theme_file::load();
+    *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = themes;
+    errors
+}
+
+/// Persists the current `CUSTOM` contents to `themes.json`.
+pub fn save_custom() -> std::io::Result<()> {
+    let themes = CUSTOM.read().unwrap_or_else(|e| e.into_inner()).clone();
+    crate::theme_file::save(&themes)
+}
+
+/// Adds a new custom theme. Rejects a name that collides with a builtin or
+/// an existing custom theme.
+pub fn add_custom(theme: Theme) -> Result<(), String> {
+    if is_builtin(&theme.name) {
+        return Err(format!("\"{}\" shadows a built-in theme", theme.name));
+    }
+    let mut guard = CUSTOM.write().unwrap_or_else(|e| e.into_inner());
+    if guard.iter().any(|t| t.name == theme.name) {
+        return Err(format!("a custom theme named \"{}\" already exists", theme.name));
+    }
+    guard.push(theme);
+    drop(guard);
+    save_custom().map_err(|e| e.to_string())
+}
+
+/// Replaces the custom theme named `original_name` with `theme` in place
+/// (preserving its position). Errors if `original_name` isn't a known
+/// custom theme, or if renaming to `theme.name` would collide.
+pub fn update_custom(original_name: &str, theme: Theme) -> Result<(), String> {
+    let mut guard = CUSTOM.write().unwrap_or_else(|e| e.into_inner());
+    let idx = guard
+        .iter()
+        .position(|t| t.name == original_name)
+        .ok_or_else(|| format!("no custom theme named \"{original_name}\""))?;
+    if theme.name != original_name {
+        if is_builtin(&theme.name) {
+            return Err(format!("\"{}\" shadows a built-in theme", theme.name));
+        }
+        if guard.iter().any(|t| t.name == theme.name) {
+            return Err(format!("a custom theme named \"{}\" already exists", theme.name));
+        }
+    }
+    guard[idx] = theme;
+    drop(guard);
+    save_custom().map_err(|e| e.to_string())
+}
+
+/// Renames a custom theme, updating `ACTIVE` in place if it was the active
+/// theme (nothing else is affected — callers own any project-pin bookkeeping).
+pub fn rename_custom(old: &str, new: &str) -> Result<(), String> {
+    if old == new {
+        return Ok(());
+    }
+    if is_builtin(new) {
+        return Err(format!("\"{new}\" shadows a built-in theme"));
+    }
+    let mut guard = CUSTOM.write().unwrap_or_else(|e| e.into_inner());
+    if guard.iter().any(|t| t.name == new) {
+        return Err(format!("a custom theme named \"{new}\" already exists"));
+    }
+    let idx = guard
+        .iter()
+        .position(|t| t.name == old)
+        .ok_or_else(|| format!("no custom theme named \"{old}\""))?;
+    guard[idx].name = Cow::Owned(new.to_string());
+    drop(guard);
+    save_custom().map_err(|e| e.to_string())?;
+
+    let mut active = ACTIVE.write().unwrap_or_else(|e| e.into_inner());
+    if active.name == old {
+        active.name = Cow::Owned(new.to_string());
+    }
+    Ok(())
+}
+
+/// Removes a custom theme by name. Returns `false` if no such theme exists.
+pub fn delete_custom(name: &str) -> bool {
+    let mut guard = CUSTOM.write().unwrap_or_else(|e| e.into_inner());
+    let before = guard.len();
+    guard.retain(|t| t.name != name);
+    let removed = guard.len() != before;
+    drop(guard);
+    if removed {
+        let _ = save_custom();
+    }
+    removed
+}
+
+/// Produces a fresh, non-colliding name derived from `base`: "X copy", then
+/// "X copy 2", "X copy 3", ... — checked against both builtins and customs.
+pub fn duplicate_name(base: &str) -> String {
+    let exists = |name: &str| {
+        BUILTINS.iter().any(|t| t.name == name)
+            || CUSTOM
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .any(|t| t.name == name)
+    };
+    let first = format!("{base} copy");
+    if !exists(&first) {
+        return first;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{base} copy {n}");
+        if !exists(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(name: &str, kind: ThemeKind) -> Theme {
+        Theme {
+            name: Cow::Owned(name.to_string()),
+            kind,
+            bg: rgb(0, 0, 0),
+            bg_highlight: rgb(0, 0, 0),
+            fg: rgb(0, 0, 0),
+            fg_dark: rgb(0, 0, 0),
+            comment: rgb(0, 0, 0),
+            blue: rgb(0, 0, 0),
+            cyan: rgb(0, 0, 0),
+            magenta: rgb(0, 0, 0),
+            green: rgb(0, 0, 0),
+            yellow: rgb(0, 0, 0),
+            red: rgb(0, 0, 0),
+        }
+    }
+
+    /// Snapshots `CUSTOM`'s contents and restores them (in-memory only, no
+    /// disk write) when dropped, so a test's mutations never leak into
+    /// another test even under panics.
+    struct CustomGuard {
+        original: Vec<Theme>,
+    }
+
+    impl CustomGuard {
+        fn new() -> Self {
+            let original = CUSTOM.read().unwrap_or_else(|e| e.into_inner()).clone();
+            Self { original }
+        }
+    }
+
+    impl Drop for CustomGuard {
+        fn drop(&mut self) {
+            *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = std::mem::take(&mut self.original);
+        }
+    }
+
+    #[test]
+    fn duplicate_name_sequence() {
+        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = CustomGuard::new();
+        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = vec![
+            sample("mytheme copy", ThemeKind::Dark),
+            sample("mytheme copy 2", ThemeKind::Dark),
+        ];
+        assert_eq!(duplicate_name("mytheme"), "mytheme copy 3");
+
+        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = Vec::new();
+        assert_eq!(duplicate_name("mytheme"), "mytheme copy");
+
+        // A duplicate name that collides with a builtin is also avoided.
+        let builtin_name = BUILTINS[0].name.to_string();
+        assert_eq!(duplicate_name(&builtin_name), format!("{builtin_name} copy"));
+    }
+
+    #[test]
+    fn load_custom_replaces_registry_contents_rather_than_merging() {
+        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = CustomGuard::new();
+        // An in-memory-only entry that was never written to `themes.json`.
+        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) =
+            vec![sample("stale-injected-not-on-disk", ThemeKind::Dark)];
+        let _ = load_custom();
+        // Reloading re-reads from disk: a genuine replace throws this stale
+        // in-memory-only entry away rather than keeping it alongside
+        // whatever was actually loaded.
+        assert!(
+            !CUSTOM
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .any(|t| t.name == "stale-injected-not-on-disk"),
+            "load_custom must replace CUSTOM's contents, not merge into them"
+        );
+    }
+
+    #[test]
+    fn rename_custom_rejects_collision_with_existing_custom_and_builtin() {
+        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = CustomGuard::new();
+        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = vec![
+            sample("theme-a", ThemeKind::Dark),
+            sample("theme-b", ThemeKind::Dark),
+        ];
+
+        // Colliding with another custom theme is rejected; nothing changes.
+        let err = rename_custom("theme-a", "theme-b");
+        assert!(err.is_err());
+        assert_eq!(
+            CUSTOM.read().unwrap_or_else(|e| e.into_inner())[0].name,
+            "theme-a"
+        );
+
+        // Colliding with a builtin is rejected too.
+        let builtin_name = BUILTINS[0].name.to_string();
+        let err = rename_custom("theme-a", &builtin_name);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn is_builtin_and_by_name_prefer_builtins_over_customs() {
+        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = CustomGuard::new();
+        let builtin_name = BUILTINS[0].name.to_string();
+        assert!(is_builtin(&builtin_name));
+        // A "custom" theme that (illegally) shares a builtin's name still
+        // never wins the lookup — builtins are checked first.
+        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) =
+            vec![sample(&builtin_name, ThemeKind::Light)];
+        let found = by_name(&builtin_name).expect("by_name finds the builtin");
+        assert!(matches!(found.kind, k if k == BUILTINS[0].kind));
+    }
+
+    #[test]
+    fn field_and_set_field_round_trip_every_index_in_field_names_order() {
+        let mut t = sample("roundtrip", ThemeKind::Dark);
+        for (i, _) in FIELD_NAMES.iter().enumerate() {
+            let c = rgb(i as u8, (i * 2) as u8, (i * 3) as u8);
+            t.set_field(i, c);
+            assert_eq!(t.field(i), c, "field {i} ({}) didn't round-trip", FIELD_NAMES[i]);
+        }
+    }
+
+    #[test]
+    fn colors_eq_detects_any_single_field_difference() {
+        let a = sample("a", ThemeKind::Dark);
+        let mut b = a.clone();
+        assert!(a.colors_eq(&b), "identical theme must compare equal");
+        b.set_field(7, rgb(1, 2, 3)); // magenta
+        assert!(!a.colors_eq(&b), "a differing field must break equality");
+    }
+
+    #[test]
+    fn contrast_ratio_black_on_white_is_maximal() {
+        let ratio = contrast_ratio(rgb(0, 0, 0), rgb(255, 255, 255));
+        assert!((ratio - 21.0).abs() < 0.01, "black/white ratio was {ratio}");
+    }
+
+    #[test]
+    fn contrast_ratio_identical_colors_is_one() {
+        let ratio = contrast_ratio(rgb(0x33, 0x66, 0x99), rgb(0x33, 0x66, 0x99));
+        assert!((ratio - 1.0).abs() < 0.001, "identical-color ratio was {ratio}");
+    }
+
+    #[test]
+    fn contrast_ratio_is_order_independent() {
+        let a = rgb(0x10, 0x20, 0x30);
+        let b = rgb(0xe0, 0xd0, 0xc0);
+        assert_eq!(contrast_ratio(a, b), contrast_ratio(b, a));
+    }
+
+    #[test]
+    fn contrast_ratio_flags_low_contrast_pair_below_thresholds() {
+        // Two similarly dark grays: well under both the amber (4.5) and red
+        // (3.0) editor thresholds.
+        let ratio = contrast_ratio(rgb(0x20, 0x20, 0x20), rgb(0x30, 0x30, 0x30));
+        assert!(ratio < 3.0, "expected a low-contrast pair, got {ratio}");
+    }
+
+    #[test]
+    fn contrast_partner_indices_are_in_range_and_bg_has_none() {
+        assert_eq!(CONTRAST_PARTNER[0], None, "bg has no contrast partner");
+        for (i, partner) in CONTRAST_PARTNER.iter().enumerate().skip(1) {
+            let p = partner.expect("every non-bg field has a contrast partner");
+            assert!(p < FIELD_NAMES.len(), "partner index {p} for field {i} out of range");
+        }
+    }
 }

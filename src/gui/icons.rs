@@ -87,6 +87,12 @@ fn svg_for(name: &str) -> String {
         // Circular arrow — restart / relaunch.
         "restart" => r#"<path d="M13 8a5 5 0 1 1-1.7-3.75M13 2.5V5h-2.5"/>"#,
         "edit" => r#"<path d="M11.5 2.5l2 2L6 12l-2.5.5L4 10z"/>"#,
+        // I-beam text cursor — "rename" (distinct from the "edit" pencil).
+        "rename" => r#"<path d="M5 3h6M8 3v10M5 13h6"/>"#,
+        // Two overlapping sheets — "duplicate".
+        "duplicate" => {
+            r#"<rect x="3" y="5.5" width="8" height="8" rx="1"/><path d="M6 5.5V3.5a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-2"/>"#
+        }
         "trash" => {
             r#"<path d="M3 4.5h10M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M4.5 4.5l.5 8a1 1 0 0 0 1 .9h4a1 1 0 0 0 1-.9l.5-8"/>"#
         }

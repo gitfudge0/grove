@@ -11,6 +11,7 @@ mod session_meta;
 mod storage;
 mod telemetry;
 mod theme;
+mod theme_file;
 mod tmux;
 mod upgrade;
 

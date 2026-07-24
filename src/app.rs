@@ -9,8 +9,8 @@ use std::collections::{HashMap, HashSet};
 
 /// Fallback dark/light themes for "system" mode when the user hasn't picked
 /// one explicitly yet (thematic pair: `tokyonight` and its day companion).
-const DEFAULT_DARK_THEME: &str = "tokyonight-storm";
-const DEFAULT_LIGHT_THEME: &str = "tokyonight-day";
+pub(crate) const DEFAULT_DARK_THEME: &str = "tokyonight-storm";
+pub(crate) const DEFAULT_LIGHT_THEME: &str = "tokyonight-day";
 
 /// Which theme the picker modal is editing: the global app theme, or a
 /// single project's pinned "Project theme" (see `Store::project_themes_enabled`
@@ -297,6 +297,23 @@ pub enum Modal {
         /// theme from the list clears this.
         project_use_default: bool,
     },
+    /// Dedicated custom-theme management modal (⌘M / "Manage themes…" from
+    /// the palette's Theme pane). This struct is the LIST sub-view's state
+    /// (per-row Rename/Duplicate/Delete/Edit, global "New theme"); the paste-
+    /// first EDITOR sub-view's state lives separately in
+    /// `Grove::theme_manager_editor` (a `text_editor::Content` can't live in
+    /// this cloneable `Modal` — same reason `ScriptsEditorState` lives
+    /// outside it). The editor is showing whenever that field is `Some`.
+    ThemeManager {
+        /// Index into `theme::all_custom_themes()`.
+        selected: usize,
+        /// Inline rename in progress: `(original_name, live_buffer)`.
+        rename: Option<(String, String)>,
+        /// Inline error under the row being renamed (e.g. name collision).
+        rename_error: Option<String>,
+        /// Custom theme pending a delete confirmation, by name.
+        pending_delete: Option<String>,
+    },
     /// The consolidated Settings modal (appearance, terminal, tools). Opened
     /// from the appbar cog. All controls persist immediately; there is no
     /// apply/cancel footer.
@@ -400,13 +417,14 @@ pub enum PaletteRowIdentity {
     SwitchToSession,
     Settings,
     Setting(crate::gui::update::SettingRow),
+    ReloadThemes,
 }
 
 /// Which pane the palette's Settings drill-in is showing. `Root` is the
 /// sectioned all-settings list; the others are one-level-deeper pickers for
 /// enum-shaped settings, entered via `Grove::activate_setting`. Esc pops one
 /// level back to `Root` (and `Root`'s own Esc closes the whole drill-in).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum SettingsPane {
     Root,
     /// Theme picker with live preview, mirroring `Modal::ThemePicker`:
@@ -416,6 +434,10 @@ pub enum SettingsPane {
     /// is a local draft of "follow system appearance" — toggled and previewed
     /// by the System segment, only written to `Store::theme_follow_system` on
     /// Enter, exactly like `Modal::ThemePicker::follow_system`.
+    /// Duplicate/rename/delete/⌘N-new all moved out to `Modal::ThemeManager`
+    /// (reached via the "Manage themes…" row / ⌘M below); this pane only
+    /// browses and previews. ⌘E (open the swatch editor) stays wired here
+    /// until `Modal::ThemeManager`'s own editor view lands.
     Theme {
         original: crate::theme::Theme,
         kind: theme::ThemeKind,
@@ -433,12 +455,15 @@ pub enum SettingsPane {
         kind: theme::ThemeKind,
         preview: Option<crate::theme::Theme>,
     },
+    // The in-app swatch editor moved to `Modal::ThemeManager`'s EDITOR
+    // sub-view (`Grove::theme_manager_editor`) — no `SettingsPane` variant
+    // for it anymore.
 }
 
 /// "Settings" drill-in state for the session-launcher palette: a `pane`
 /// (root list or a one-level-deeper enum picker) plus a selection cursor into
 /// whatever that pane currently renders.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct LauncherSettings {
     pub pane: SettingsPane,
     /// Selection cursor into the current pane's rendered list.
@@ -569,6 +594,11 @@ pub struct App {
     /// at startup and kept current by the `system::theme_changes()`
     /// subscription. Only consulted while `theme_follow_system` is set.
     pub system_theme_mode: iced::theme::Mode,
+    /// Entries from `themes.json` skipped on the last `theme::load_custom()`
+    /// call (bad hex, missing field, name collision, ...), kept for a future
+    /// non-blocking error toast/surface (batch 4). Empty on a clean load or
+    /// when the file doesn't exist.
+    pub theme_load_errors: Vec<crate::theme_file::ThemeLoadError>,
 }
 
 impl App {
@@ -609,6 +639,10 @@ impl App {
         // the seeded `iced::system::theme()` task, but that first frame still
         // needs a concrete theme, so we seed from the saved dark theme (the
         // `SystemThemeChanged` handler corrects this once the query answers).
+        // Load user-defined themes before resolving the saved selection below,
+        // so a persisted custom theme name (dark/light/plain) still resolves
+        // on this first frame instead of silently falling back.
+        let theme_load_errors = theme::load_custom();
         let theme_follow_system = store.theme_follow_system;
         if theme_follow_system {
             let name = store.theme_dark.as_deref().unwrap_or(DEFAULT_DARK_THEME);
@@ -657,8 +691,15 @@ impl App {
             teardown: None,
             theme_follow_system,
             system_theme_mode: iced::theme::Mode::None,
+            theme_load_errors,
         };
         app.refresh_worktrees();
+        // Non-blocking notice for any themes.json entries skipped on this
+        // startup load (mock E1) — reuses the existing toast mechanism
+        // rather than a bespoke banner; auto-dismisses like any other toast.
+        if let Some(summary) = crate::theme_file::summarize_errors(&app.theme_load_errors) {
+            app.set_error_toast(summary);
+        }
         Ok(app)
     }
 
@@ -759,7 +800,7 @@ impl App {
                     theme::ThemeKind::Dark => *sel_dark,
                     theme::ThemeKind::Light => *sel_light,
                 };
-                return theme::themes_of(*tab).get(sel).copied();
+                return theme::themes_of(*tab).get(sel).cloned();
             }
         }
         // Same live-preview idea for the in-palette project-theme pane
@@ -777,7 +818,7 @@ impl App {
         } = &self.modal
         {
             if self.store.projects.get(*proj).map(|p| p.name.as_str()) == Some(project_name) {
-                return *preview;
+                return preview.clone();
             }
         }
         if !self.store.project_themes_enabled {
@@ -1697,8 +1738,9 @@ impl App {
         let original = theme::current();
         let pinned = project.theme.as_deref().and_then(theme::by_name);
         let project_use_default = pinned.is_none();
-        let tab = pinned.map(|t| t.kind).unwrap_or(original.kind);
+        let tab = pinned.as_ref().map(|t| t.kind).unwrap_or(original.kind);
         let sel = pinned
+            .as_ref()
             .and_then(|t| theme::themes_of(tab).iter().position(|x| x.name == t.name))
             .unwrap_or(0);
         let (sel_dark, sel_light) = match tab {
@@ -1770,7 +1812,7 @@ impl App {
         match scope {
             ThemePickerScope::App => {
                 *follow_system = false;
-                theme::set(themes[*sel]);
+                theme::set(themes[*sel].clone());
             }
             ThemePickerScope::Project(_) => {
                 // Project scope only edits local picker state — never the
@@ -1815,7 +1857,7 @@ impl App {
                 .to_string();
             theme::set_by_name(&name);
         } else if let Some(t) = themes.get(sel) {
-            theme::set(*t);
+            theme::set(t.clone());
         }
     }
 
@@ -1896,18 +1938,18 @@ impl App {
             theme::ThemeKind::Dark => sel_dark,
             theme::ThemeKind::Light => sel_light,
         };
-        let Some(chosen) = themes.get(sel).copied() else {
+        let Some(chosen) = themes.get(sel).cloned() else {
             storage::save(&self.store)?;
             return Ok(());
         };
-        theme::set(chosen);
         self.store.theme = Some(chosen.name.to_string());
         match chosen.kind {
             theme::ThemeKind::Dark => self.store.theme_dark = Some(chosen.name.to_string()),
             theme::ThemeKind::Light => self.store.theme_light = Some(chosen.name.to_string()),
         }
-        storage::save(&self.store)?;
         self.set_toast(format!("theme: {}", chosen.name));
+        theme::set(chosen);
+        storage::save(&self.store)?;
         Ok(())
     }
 
@@ -2584,6 +2626,7 @@ mod tests {
             teardown: None,
             theme_follow_system: false,
             system_theme_mode: iced::theme::Mode::None,
+            theme_load_errors: Vec::new(),
         }
     }
 

@@ -13,7 +13,9 @@
 use crate::theme;
 use iced::Color;
 
-fn ic(c: theme::Color) -> Color {
+/// Public so the theme editor (`view.rs`) can render arbitrary draft-theme
+/// swatches directly, without going through `theme::current()`.
+pub fn ic(c: theme::Color) -> Color {
     match c {
         theme::Color::Rgb(r, g, b) => {
             Color::from_rgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
@@ -31,14 +33,14 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
 }
 
 fn is_dark() -> bool {
-    matches!(theme::current().kind, theme::ThemeKind::Dark)
+    theme::with_current(|t| matches!(t.kind, theme::ThemeKind::Dark))
 }
 
 fn base_bg() -> Color {
-    ic(theme::current().bg)
+    theme::with_current(|t| ic(t.bg))
 }
 fn base_fg() -> Color {
-    ic(theme::current().fg)
+    theme::with_current(|t| ic(t.fg))
 }
 
 // ── surfaces ─────────────────────────────────────────────────────────────
@@ -70,12 +72,12 @@ pub fn BG_STRIP() -> Color {
 
 /// Hover surface — partway between bg and bg_highlight.
 pub fn BG_HOVER() -> Color {
-    mix(base_bg(), ic(theme::current().bg_highlight), 0.55)
+    mix(base_bg(), theme::with_current(|t| ic(t.bg_highlight)), 0.55)
 }
 
 /// Active / selected row.
 pub fn BG_HL() -> Color {
-    ic(theme::current().bg_highlight)
+    theme::with_current(|t| ic(t.bg_highlight))
 }
 
 pub fn BORDER() -> Color {
@@ -105,36 +107,36 @@ pub fn FG() -> Color {
     base_fg()
 }
 pub fn FG_DIM() -> Color {
-    ic(theme::current().fg_dark)
+    theme::with_current(|t| ic(t.fg_dark))
 }
 pub fn FG_MUTE() -> Color {
-    ic(theme::current().comment)
+    theme::with_current(|t| ic(t.comment))
 }
 
 // ── accents ──────────────────────────────────────────────────────────────
 
 pub fn BLUE() -> Color {
-    ic(theme::current().blue)
+    theme::with_current(|t| ic(t.blue))
 }
 pub fn CYAN() -> Color {
-    ic(theme::current().cyan)
+    theme::with_current(|t| ic(t.cyan))
 }
 pub fn MAGENTA() -> Color {
-    ic(theme::current().magenta)
+    theme::with_current(|t| ic(t.magenta))
 }
 pub fn GREEN() -> Color {
-    ic(theme::current().green)
+    theme::with_current(|t| ic(t.green))
 }
 /// Attention amber — the "needs input" accent. Warmer than YELLOW so it
 /// reads as a call to action next to green/working.
 pub fn AMBER() -> Color {
-    mix(ic(theme::current().yellow), ic(theme::current().red), 0.25)
+    theme::with_current(|t| mix(ic(t.yellow), ic(t.red), 0.25))
 }
 pub fn YELLOW() -> Color {
-    ic(theme::current().yellow)
+    theme::with_current(|t| ic(t.yellow))
 }
 pub fn RED() -> Color {
-    ic(theme::current().red)
+    theme::with_current(|t| ic(t.red))
 }
 
 /// A 16% wash of RED over BG — the active fill for a danger-flavored
@@ -209,5 +211,28 @@ pub fn bg_strip_of(t: &theme::Theme) -> Color {
         mix(bg, Color::BLACK, 0.32)
     } else {
         mix(bg, Color::BLACK, 0.08)
+    }
+}
+
+/// Themed variant of `BG_HL` — the theme editor's "derived — not editable"
+/// strip synthesizes these from a draft `Theme` that isn't (and may never
+/// be) the active theme, so it needs the same blends as `BG_HL`/`BORDER`/
+/// `BG_HOVER`/`SEL_RING` parameterized rather than reading `theme::current()`.
+pub fn bg_hl_of(t: &theme::Theme) -> Color {
+    ic(t.bg_highlight)
+}
+/// Themed variant of `BG_HOVER`.
+pub fn bg_hover_of(t: &theme::Theme) -> Color {
+    mix(bg_of(t), bg_hl_of(t), 0.55)
+}
+/// Themed variant of `BORDER`.
+pub fn border_of(t: &theme::Theme) -> Color {
+    mix(bg_of(t), fg_of(t), 0.16)
+}
+/// Themed variant of `SEL_RING`.
+pub fn sel_ring_of(t: &theme::Theme) -> Color {
+    Color {
+        a: 0.5,
+        ..cyan_of(t)
     }
 }
