@@ -9,6 +9,13 @@ license = "MIT OR Apache-2.0"
 
 # Denied in production paths only. CI runs a second `--all-targets` pass with
 # these allowed, so test modules keep using unwrap() freely.
+[workspace.lints.rust]
+# objc 0.2's macros expand `cfg(feature = "cargo-clippy")`; register the
+# value so `unexpected_cfgs` stays quiet on macOS. The `#![allow]` in
+# src/gui/dock.rs doesn't reach lints raised inside external macro
+# expansions, so this workspace-level registration is the reliable fix.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
