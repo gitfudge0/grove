@@ -10,7 +10,7 @@ impl Grove {
         match msg {
             UpgradeMsg::CheckForUpdates { manual } => return self.on_check_for_updates(manual),
             UpgradeMsg::UpdateCheckResult(result, manual) => {
-                self.on_update_check_result(result, manual)
+                self.on_update_check_result(result, manual);
             }
             UpgradeMsg::SkipVersion => self.on_skip_version(),
             UpgradeMsg::CopyReleaseUrl => self.on_copy_release_url(),

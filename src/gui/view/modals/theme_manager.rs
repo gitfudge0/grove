@@ -105,7 +105,7 @@ impl Grove {
                 let active = i == selected;
                 let renaming = rename.map(|(orig, _)| orig.as_str()) == Some(t.name.as_ref());
                 let row_el: Element<'a, Msg> = if renaming {
-                    let buf = rename.map(|(_, b)| b.as_str()).unwrap_or("");
+                    let buf = rename.map_or("", |(_, b)| b.as_str());
                     let mut col = column![row![
                         text_input("theme name", buf)
                             .on_input(|v| Msg::ThemeManager(ThemeManagerMsg::RenameChanged(v)))

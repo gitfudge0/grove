@@ -84,7 +84,7 @@ fn theme_pane_combined_rows_lists_customs_after_builtins() {
     use grove_core::theme::{Color, ThemeKind};
     let _lock = grove_core::theme::CUSTOM_TEST_LOCK
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let name = "zz-test-custom-batch2";
     let custom = grove_core::theme::Theme {
         name: std::borrow::Cow::Owned(name.to_string()),
@@ -176,7 +176,7 @@ fn project_theme_pane_rows_has_use_default_row_only_when_query_is_empty() {
     // expect.
     let _lock = grove_core::theme::CUSTOM_TEST_LOCK
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Empty query: "Use app theme" (None) leads, followed by every dark
     // theme in `theme_pane_combined_rows` order (builtins then customs).
     let rows = project_theme_pane_rows(ThemeKind::Dark, "");
@@ -197,7 +197,7 @@ fn project_theme_pane_rows_has_use_default_row_only_when_query_is_empty() {
     // remain.
     let filtered = project_theme_pane_rows(ThemeKind::Dark, "tokyonight");
     assert!(!filtered.is_empty());
-    assert!(filtered.iter().all(|t| t.is_some()));
+    assert!(filtered.iter().all(std::option::Option::is_some));
     assert!(filtered
         .iter()
         .all(|t| t.clone().unwrap().name.contains("tokyonight")));

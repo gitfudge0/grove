@@ -315,7 +315,9 @@ impl Grove {
     /// A single tab in the terminal panel's tab strip.
     fn term_panel_tab<'a>(&self, idx: usize, s: &Session, active: bool) -> Element<'a, Msg> {
         let running = matches!(
-            *s.status.lock().unwrap_or_else(|e| e.into_inner()),
+            *s.status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             SessionStatus::Running
         );
         let dot_color = if running { c::GREEN() } else { c::FG_MUTE() };
@@ -414,7 +416,9 @@ impl Grove {
     /// affordance the user reaches for.
     fn home_terminal_bar(&self, s: &Session) -> Element<'_, Msg> {
         let running = matches!(
-            *s.status.lock().unwrap_or_else(|e| e.into_inner()),
+            *s.status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             SessionStatus::Running
         );
         let (dot_color, label) = if running {
@@ -479,15 +483,13 @@ impl Grove {
 
     fn sess_bar(&self, si: usize, s: &Session) -> Element<'_, Msg> {
         let running = matches!(
-            *s.status.lock().unwrap_or_else(|e| e.into_inner()),
+            *s.status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             SessionStatus::Running
         );
         let context = session_context_title(s);
-        let show_progress = running
-            && context
-                .as_deref()
-                .map(is_in_progress_title)
-                .unwrap_or(false);
+        let show_progress = running && context.as_deref().is_some_and(is_in_progress_title);
         // Visual hierarchy: session/project label is the strongest (13px,
         // weight-600, FG); the branch and context title are secondary
         // (12px, FG_DIM).
@@ -564,7 +566,9 @@ impl Grove {
                 let wts: &[Worktree] = if pi == self.app.proj_idx {
                     &self.app.worktrees
                 } else {
-                    self.wt_cache.get(&pi).map(|v| v.as_slice()).unwrap_or(&[])
+                    self.wt_cache
+                        .get(&pi)
+                        .map_or(&[][..], std::vec::Vec::as_slice)
                 };
                 wts.iter()
                     .position(|w| w.path == s.wt_path)
@@ -683,7 +687,10 @@ impl Grove {
                 cursor_key: (None, false),
             });
             if needs_rebuild {
-                let parser = s.parser.lock().unwrap_or_else(|e| e.into_inner());
+                let parser = s
+                    .parser
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let screen = parser.screen();
                 let (h, w) = screen.size();
                 let mut new_rows = Vec::with_capacity(h as usize);
@@ -715,10 +722,9 @@ impl Grove {
         };
 
         let rows_len = rows.len() as f32;
-        let cols = rows
-            .first()
-            .map(|r| r.iter().map(|run| run.text.chars().count()).sum::<usize>())
-            .unwrap_or(0) as f32;
+        let cols = rows.first().map_or(0, |r| {
+            r.iter().map(|run| run.text.chars().count()).sum::<usize>()
+        }) as f32;
         // Translate the scrollback-stable selection into the current viewport.
         // Each endpoint clamps to the visible window; a selection entirely off
         // one edge isn't painted. The selection lives in the pane that owns
@@ -800,6 +806,8 @@ impl Grove {
     }
 
     fn grid_tile(&self, tile_order_idx: usize, si: usize, s: &Session) -> Element<'_, Msg> {
+        use crate::gui::activity::ActivityState;
+
         use crate::gui::metrics::TILE_HEAD_H;
 
         let focused = self.grid_focused == Some(si);
@@ -864,7 +872,6 @@ impl Grove {
         });
         // Waiting-for-input: drives both the header's "respond" chip below and
         // (later) the tile border. Attention wins over the focused-cyan border.
-        use crate::gui::activity::ActivityState;
         let waiting = matches!(self.activity_state(s), ActivityState::WaitingForInput);
 
         // "respond" chip: only shown while this tile is waiting for input.
@@ -1181,9 +1188,7 @@ impl Grove {
     /// pane.
     pub(in crate::gui) fn selection_pane(&self) -> PtyPane {
         if self.grid_view {
-            self.grid_focused
-                .map(PtyPane::Tile)
-                .unwrap_or(PtyPane::Agent)
+            self.grid_focused.map_or(PtyPane::Agent, PtyPane::Tile)
         } else {
             self.focused_input_pane()
         }

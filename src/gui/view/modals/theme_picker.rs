@@ -85,7 +85,7 @@ impl Grove {
             ));
         }
 
-        let list_h = ((themes.len() + if is_project { 1 } else { 0 }).min(12) as f32) * ROW_H;
+        let list_h = ((themes.len() + usize::from(is_project)).min(12) as f32) * ROW_H;
         let scroller = container(ghost_scrollable(list).id(theme_picker_scrollable_id()))
             .width(Length::Fill)
             .height(Length::Fixed(list_h))

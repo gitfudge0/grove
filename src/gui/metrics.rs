@@ -228,15 +228,13 @@ fn find_table(ttf: &[u8], tag: &[u8; 4]) -> Option<usize> {
 fn u16_at(bytes: &[u8], offset: usize) -> u16 {
     bytes
         .get(offset..offset + 2)
-        .map(|b| u16::from_be_bytes([b[0], b[1]]))
-        .unwrap_or(0)
+        .map_or(0, |b| u16::from_be_bytes([b[0], b[1]]))
 }
 
 fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     bytes
         .get(offset..offset + 4)
-        .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
-        .unwrap_or(0)
+        .map_or(0, |b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
 }
 
 /// PTY dimensions derived from unzoomed window size. Subtracts the visible chrome

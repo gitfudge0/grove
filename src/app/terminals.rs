@@ -6,9 +6,7 @@ impl App {
     /// Absolute path of the home directory, falling back to `/` if it can't be
     /// resolved. Used as the home terminal's working directory.
     fn home_dir() -> String {
-        dirs::home_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "/".into())
+        dirs::home_dir().map_or_else(|| "/".into(), |p| p.to_string_lossy().into_owned())
     }
 
     /// The home terminal the tab is currently showing, if any.
@@ -120,8 +118,7 @@ impl App {
     pub(crate) fn wt_terminals_for(&self, wt_path: &str) -> &[Session] {
         self.wt_terminals
             .get(wt_path)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+            .map_or(&[][..], std::vec::Vec::as_slice)
     }
 
     /// The active shell of the panel for `wt_path`, if any.

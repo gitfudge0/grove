@@ -142,7 +142,10 @@ impl Grove {
             }
 
             let alive = matches!(s.status(), grove_core::session::SessionStatus::Running);
-            let t = *s.last_output_at.lock().unwrap_or_else(|e| e.into_inner());
+            let t = *s
+                .last_output_at
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let output_age = now.saturating_duration_since(t);
             // Scraping the tail takes the parser lock and copies 15 lines out
             // of the vt100 screen, but the two higher-precedence signals below

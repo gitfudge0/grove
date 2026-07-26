@@ -268,7 +268,7 @@ impl Grove {
                         crate::gui::launcher::fuzzy_match_indices(list_filter, &t.name, "", "")
                     });
                     let ranges: &[(usize, usize)] =
-                        m.as_ref().map(|m| m.project.as_slice()).unwrap_or(&[]);
+                        m.as_ref().map_or(&[][..], |m| m.project.as_slice());
                     let label_el = highlighted_line(&t.name, ranges, c::FG(), UI_FONT, 13.0);
                     let mut content = row![label_el]
                         .spacing(8)
@@ -380,8 +380,7 @@ impl Grove {
             .store
             .projects
             .get(proj)
-            .map(|p| p.name.as_str())
-            .unwrap_or("(project removed)");
+            .map_or("(project removed)", |p| p.name.as_str());
         let context_row = container(
             row![
                 text("Project theme").size(13).color(c::FG()),
@@ -458,7 +457,7 @@ impl Grove {
                             crate::gui::launcher::fuzzy_match_indices(input, &t.name, "", "")
                         });
                         let ranges: &[(usize, usize)] =
-                            m.as_ref().map(|m| m.project.as_slice()).unwrap_or(&[]);
+                            m.as_ref().map_or(&[][..], |m| m.project.as_slice());
                         let label_el = highlighted_line(&t.name, ranges, c::FG(), UI_FONT, 13.0);
                         let mut c = row![label_el]
                             .spacing(8)
@@ -530,7 +529,7 @@ impl Grove {
         ls: &'a LauncherSettings,
     ) -> Column<'a, GMsg> {
         let tmux_on = self.app.use_tmux();
-        let current = if tmux_on { 1 } else { 0 };
+        let current = usize::from(tmux_on);
         let rows: [(&str, &str); 2] = [
             ("Native", "spawn PTYs directly"),
             ("Tmux", "sessions survive restarts"),
@@ -590,7 +589,7 @@ impl Grove {
         ls: &'a LauncherSettings,
     ) -> Column<'a, GMsg> {
         let skip_on = self.app.skip_permissions_enabled();
-        let current = if skip_on { 1 } else { 0 };
+        let current = usize::from(skip_on);
         let rows: [(&str, &str); 2] = [
             ("Ask", "agents ask before running commands"),
             ("Skip", "run any command without asking"),

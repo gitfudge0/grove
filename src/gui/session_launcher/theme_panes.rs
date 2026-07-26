@@ -373,10 +373,10 @@ impl Grove {
                     self.app.store.theme = Some(chosen.name.to_string());
                     match chosen.kind {
                         grove_core::theme::ThemeKind::Dark => {
-                            self.app.store.theme_dark = Some(chosen.name.to_string())
+                            self.app.store.theme_dark = Some(chosen.name.to_string());
                         }
                         grove_core::theme::ThemeKind::Light => {
-                            self.app.store.theme_light = Some(chosen.name.to_string())
+                            self.app.store.theme_light = Some(chosen.name.to_string());
                         }
                     }
                     grove_core::theme::set(chosen);
@@ -392,8 +392,7 @@ impl Grove {
                         grove_core::storage::persist(&self.app.store);
                         let label = preview
                             .as_ref()
-                            .map(|t| t.name.to_string())
-                            .unwrap_or_else(|| "default".to_string());
+                            .map_or_else(|| "default".to_string(), |t| t.name.to_string());
                         self.app.set_toast(format!("project theme: {label}"));
                     }
                     None => {
@@ -481,10 +480,10 @@ impl Grove {
             self.app.store.theme = Some(fallback.to_string());
             match active.kind {
                 grove_core::theme::ThemeKind::Dark => {
-                    self.app.store.theme_dark = Some(fallback.to_string())
+                    self.app.store.theme_dark = Some(fallback.to_string());
                 }
                 grove_core::theme::ThemeKind::Light => {
-                    self.app.store.theme_light = Some(fallback.to_string())
+                    self.app.store.theme_light = Some(fallback.to_string());
                 }
             }
             grove_core::storage::persist(&self.app.store);
@@ -590,8 +589,7 @@ impl Grove {
             .and_then(grove_core::theme::by_name);
         let kind = pinned
             .as_ref()
-            .map(|t| t.kind)
-            .unwrap_or(grove_core::theme::current().kind);
+            .map_or(grove_core::theme::current().kind, |t| t.kind);
         let rows = project_theme_pane_rows(kind, "");
         let selected = rows
             .iter()

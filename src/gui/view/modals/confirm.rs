@@ -287,9 +287,8 @@ impl Grove {
 
     pub(super) fn teardown_modal(&self) -> Element<'_, Msg> {
         use crate::app::TeardownStage;
-        let td = match &self.app.teardown {
-            Some(td) => td,
-            None => return Space::new().width(0).into(),
+        let Some(td) = &self.app.teardown else {
+            return Space::new().width(0).into();
         };
         let wt_name = crate::app::path_basename(&td.wt_path);
         let done = matches!(td.stage, TeardownStage::Done { .. });

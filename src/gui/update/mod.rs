@@ -139,11 +139,11 @@ impl Grove {
         }
         let mut g = Self {
             app,
-            collapsed: Default::default(),
-            collapsed_wt: Default::default(),
+            collapsed: std::collections::HashSet::default(),
+            collapsed_wt: std::collections::HashSet::default(),
             tree_expand: crate::gui::state::TreeExpand::All,
-            wt_cache: Default::default(),
-            pty_cache: Default::default(),
+            wt_cache: std::collections::HashMap::default(),
+            pty_cache: std::cell::RefCell::default(),
             pty_layout: PtyLayout {
                 rows: pty_rows,
                 cols: pty_cols,
@@ -172,9 +172,9 @@ impl Grove {
             terminals_collapsed: false,
             term_panel_portion: TERM_PANEL_PORTION,
             focused_pane: FocusedPane::Agent,
-            dir_cache: Default::default(),
+            dir_cache: std::cell::RefCell::default(),
             picker_open: false,
-            activity: Default::default(),
+            activity: std::collections::HashMap::default(),
             claude_poller: grove_core::claude_agents::Poller::new(),
             // Assumed focused at launch (iced can't be queried); corrected by
             // the first Focused/Unfocused event. Worst case: one missed dock
@@ -199,9 +199,9 @@ impl Grove {
             )),
             changelog: ChangelogState::Idle,
             show_changelog: false,
-            git_state: Default::default(),
+            git_state: std::sync::Arc::default(),
             last_git_poll: None,
-            git_poll_inflight: Default::default(),
+            git_poll_inflight: std::sync::Arc::default(),
             wt_rebuild_pending: false,
             wt_rebuild_inflight: false,
             live_mods: Modifiers::empty(),
@@ -642,8 +642,7 @@ impl Grove {
     pub(super) fn activity_state(&self, s: &Session) -> super::activity::ActivityState {
         self.activity
             .get(&s.id)
-            .map(|t| t.state)
-            .unwrap_or(super::activity::ActivityState::Idle)
+            .map_or(super::activity::ActivityState::Idle, |t| t.state)
     }
 
     /// Current needs-attention pulse phase in `[0, 1]` (0 = fully opaque,
@@ -994,15 +993,12 @@ impl Grove {
         let cur = self
             .grid_focused
             .and_then(|si| self.tile_order.iter().position(|&x| x == si));
-        let pos = match cur {
-            Some(p) => p,
-            None => {
-                let si = self.tile_order[0];
-                self.app.active_session = Some(si);
-                self.sync_grid_focus();
-                self.acknowledge_session(si);
-                return;
-            }
+        let Some(pos) = cur else {
+            let si = self.tile_order[0];
+            self.app.active_session = Some(si);
+            self.sync_grid_focus();
+            self.acknowledge_session(si);
+            return;
         };
         let Some(target) = grid_neighbor(pos, self.tile_order.len(), dx, dy) else {
             return;
@@ -1094,8 +1090,7 @@ impl Grove {
             .app
             .active_session
             .and_then(|i| self.app.sessions.get(i))
-            .map(|s| s.wt_path == path)
-            .unwrap_or(false);
+            .is_some_and(|s| s.wt_path == path);
         if already_here {
             return;
         }
@@ -1109,8 +1104,7 @@ impl Grove {
         } else {
             self.wt_cache
                 .get(&proj)
-                .map(|v| v.as_slice())
-                .unwrap_or(&[])
+                .map_or(&[][..], std::vec::Vec::as_slice)
         }
     }
 

@@ -32,8 +32,7 @@ impl Grove {
         let value = self.setting_value(s);
         let m = (!input.is_empty())
             .then(|| crate::gui::launcher::fuzzy_match_indices(input, label, &value, s.section()));
-        let label_ranges: &[(usize, usize)] =
-            m.as_ref().map(|m| m.project.as_slice()).unwrap_or(&[]);
+        let label_ranges: &[(usize, usize)] = m.as_ref().map_or(&[][..], |m| m.project.as_slice());
         let label_el = highlighted_line(label, label_ranges, c::FG(), UI_FONT, 13.0);
 
         let icon_slot: Element<'a, GMsg> =
@@ -120,7 +119,7 @@ impl Grove {
     /// set (D4): the same live zoom stepper trio `settings_modal` uses
     /// (view.rs's own `app_size_row`), instead of `setting_row_content`'s
     /// usual right-aligned value + chevron.
-    pub(super) fn appsize_stepper_row_content<'a>(&'a self) -> Element<'a, GMsg> {
+    pub(super) fn appsize_stepper_row_content(&self) -> Element<'_, GMsg> {
         let icon_slot = container(icon(SettingRow::AppSize.icon_name(), 16.0, c::FG_MUTE()))
             .width(24.0)
             .align_x(iced::alignment::Horizontal::Center);
@@ -165,7 +164,7 @@ impl Grove {
     /// ↑↓ stay reserved for the list cursor). The action list comes from
     /// `update_available_actions` so the render and the keyboard nav can
     /// never disagree about what index N runs.
-    pub(super) fn update_actions_strip<'a>(&'a self, sel: usize) -> Element<'a, GMsg> {
+    pub(super) fn update_actions_strip(&self, sel: usize) -> Element<'_, GMsg> {
         let method_unknown = matches!(
             self.upgrade_method,
             grove_core::upgrade::InstallMethod::Unknown

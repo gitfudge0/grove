@@ -12,6 +12,39 @@ license = "MIT OR Apache-2.0"
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
+pedantic = { level = "warn", priority = -1 }
+# Pedantic opt-outs. Each is either pure style churn or would require broad,
+# behavior-adjacent refactors that this codebase deliberately doesn't want.
+must_use_candidate = "allow"          # #[must_use] on every getter is noise
+missing_errors_doc = "allow"          # internal binary, errors are self-evident
+missing_panics_doc = "allow"          # ditto for panics
+doc_markdown = "allow"                # prose comments aren't rustdoc-formatted
+too_many_lines = "allow"              # iced `view`/`update` fns are naturally long
+module_name_repetitions = "allow"     # gui::session::SessionState reads fine
+cast_possible_truncation = "allow"    # GUI layout math is f32<->int by nature
+cast_precision_loss = "allow"         # ditto
+cast_possible_wrap = "allow"          # ditto
+cast_sign_loss = "allow"              # ditto
+cast_lossless = "allow"               # `as f32` is clearer than `f32::from`
+float_cmp = "allow"                   # exact compares are intentional in layout tests
+similar_names = "allow"               # row/col, x0/x1 style names are deliberate
+many_single_char_names = "allow"      # geometry code uses x/y/w/h
+struct_excessive_bools = "allow"      # UI state genuinely has many flags
+fn_params_excessive_bools = "allow"   # ditto
+unreadable_literal = "allow"          # color/keycode literals read better raw
+match_same_arms = "allow"             # keeping arms separate documents intent
+unused_self = "allow"                 # method form kept for API symmetry
+needless_pass_by_value = "allow"      # iced messages are moved by design
+option_option = "allow"               # "unset vs cleared" is a real distinction here
+ref_option = "allow"                  # &Option<T> keeps call sites simple
+single_match_else = "allow"           # match reads better than if-let here
+if_not_else = "allow"                 # negated conditions often match the domain
+wildcard_imports = "allow"            # module preludes are used intentionally
+trivially_copy_pass_by_ref = "allow"  # consistency with sibling signatures
+unnecessary_wraps = "allow"           # Result kept for forward compatibility
+# `.lock`/`.dmg`/`.app` suffixes are exact by spec (git refs, release assets,
+# macOS bundles) — case-insensitive matching would change behavior.
+case_sensitive_file_extension_comparisons = "allow"
 
 [workspace.dependencies]
 serde_json = "1"
@@ -30,6 +63,9 @@ ring = "0.17"
 
 [package]
 name = "grove"
+# Not on crates.io; also lets cargo-deny's allow-wildcard-paths accept the
+# version-less grove-core path dependency.
+publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -62,7 +98,6 @@ vt100.workspace = true
 fs-err.workspace = true
 arboard = { version = "3", features = ["wayland-data-control"] }
 base64 = "0.22"
-keepawake = "0.6.0"
 iced = { version = "0.14.0", features = ["tokio", "advanced", "svg", "canvas"] }
 ureq.workspace = true
 semver.workspace = true

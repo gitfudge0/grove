@@ -92,9 +92,8 @@ fn launched_without_terminal() -> bool {
 /// consider it thin when PATH is unset/empty or it contains none of the common
 /// user/tool directories where `claude` & friends typically live.
 fn looks_thin() -> bool {
-    let path = match std::env::var_os("PATH") {
-        Some(p) => p,
-        None => return true,
+    let Some(path) = std::env::var_os("PATH") else {
+        return true;
     };
 
     let home = std::env::var("HOME").unwrap_or_default();

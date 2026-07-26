@@ -344,7 +344,9 @@ pub fn read_state(path: &Path) -> Option<AttentionState> {
     // A poisoned lock here would mean a panic inside this tiny critical
     // section; the cache is pure derived data, so recover rather than
     // propagate.
-    let mut guard = STATE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = STATE_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let cache = guard.get_or_insert_with(Default::default);
     if let Some(stamp) = stamp {
         if let Some((cached_stamp, cached_len, value)) = cache.get(path) {

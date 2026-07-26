@@ -24,7 +24,7 @@ struct Slide<'a, Msg> {
     offset: Vector,
 }
 
-impl<'a, Msg> Widget<Msg, Theme, Renderer> for Slide<'a, Msg> {
+impl<Msg> Widget<Msg, Theme, Renderer> for Slide<'_, Msg> {
     fn size(&self) -> Size<Length> {
         self.content.as_widget().size()
     }

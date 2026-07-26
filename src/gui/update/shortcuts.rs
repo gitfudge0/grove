@@ -421,8 +421,7 @@ pub(super) fn match_global_shortcut(
                 let scopes = SHORTCUTS
                     .iter()
                     .find(|d| d.action == Some(GlobalShortcut::NewSessionInWorktree))
-                    .map(|d| d.scopes)
-                    .unwrap_or(G);
+                    .map_or(G, |d| d.scopes);
                 if scope_allows(scopes, screen) {
                     return Some(GlobalShortcut::NewSessionInWorktree);
                 }

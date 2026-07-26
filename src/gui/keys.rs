@@ -39,7 +39,7 @@ pub fn key_to_bytes(key: &Key, mods: Modifiers) -> Option<Vec<u8>> {
             Named::Insert => out.extend_from_slice(b"\x1b[2~"),
             _ => return None,
         },
-        _ => return None,
+        Key::Unidentified => return None,
     }
     Some(out)
 }

@@ -100,7 +100,7 @@ impl Grove {
                 Key::Named(Named::Escape) => self.cancel_modal(),
                 Key::Named(Named::Enter) => self.submit_modal_input(),
                 Key::Character(s) if mods.control() && matches!(s.as_str(), "c" | "C") => {
-                    self.cancel_modal()
+                    self.cancel_modal();
                 }
                 _ => {}
             },
@@ -145,7 +145,7 @@ impl Grove {
                 _ => {}
             },
             Modal::Message(_) => match key {
-                Key::Named(Named::Escape) | Key::Named(Named::Enter) => self.cancel_modal(),
+                Key::Named(Named::Escape | Named::Enter) => self.cancel_modal(),
                 Key::Character(s) if matches!(s.as_str(), "q" | "Q") => self.cancel_modal(),
                 _ => {}
             },
@@ -256,12 +256,12 @@ impl Grove {
                     Key::Named(Named::Enter) => return self.onboard_advance(),
                     Key::Named(Named::ArrowDown) => {
                         if step == crate::app::OnboardStep::Project {
-                            self.app.onboard_dir_move(1)
+                            self.app.onboard_dir_move(1);
                         }
                     }
                     Key::Named(Named::ArrowUp) => {
                         if step == crate::app::OnboardStep::Project {
-                            self.app.onboard_dir_move(-1)
+                            self.app.onboard_dir_move(-1);
                         }
                     }
                     Key::Named(Named::Tab) => {
@@ -748,7 +748,7 @@ impl Grove {
         match self.app.finalize_remove_project(idx) {
             Ok(msg) if !msg.is_empty() && !errors.is_empty() => {
                 self.app
-                    .set_error_toast(format!("{} ({} worktree errors)", msg, errors.len()))
+                    .set_error_toast(format!("{} ({} worktree errors)", msg, errors.len()));
             }
             Ok(msg) if !msg.is_empty() => self.app.set_toast(msg),
             Err(e) => self.app.set_error_toast(format!("err: {e}")),

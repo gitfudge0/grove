@@ -628,7 +628,7 @@ pub fn handle_key(
 /// The discard-confirmation dialog that replaces the whole editor panel when
 /// Esc is pressed with unsaved changes — same convention as the LIST view's
 /// delete confirm.
-fn discard_confirm_panel<'a>(ed: &'a ThemeManagerEditorState) -> Element<'a, GMsg> {
+fn discard_confirm_panel(ed: &ThemeManagerEditorState) -> Element<'_, GMsg> {
     let body_zone = column![
         text(format!("Discard changes to \"{}\"?", ed.original_name))
             .size(13)
@@ -664,7 +664,7 @@ fn discard_confirm_panel<'a>(ed: &'a ThemeManagerEditorState) -> Element<'a, GMs
 
 /// The paste-first box at the top of the editor, plus its status/format
 /// caption line.
-fn paste_zone<'a>(ed: &'a ThemeManagerEditorState) -> Element<'a, GMsg> {
+fn paste_zone(ed: &ThemeManagerEditorState) -> Element<'_, GMsg> {
     let paste_editor = iced::widget::text_editor(&ed.paste)
         .height(Length::Fixed(190.0))
         .font(iced::Font::MONOSPACE)
@@ -726,7 +726,7 @@ fn paste_zone<'a>(ed: &'a ThemeManagerEditorState) -> Element<'a, GMsg> {
 }
 
 /// The theme-name input paired with the Dark/Light kind segmented control.
-fn name_and_kind_row<'a>(ed: &'a ThemeManagerEditorState) -> Element<'a, GMsg> {
+fn name_and_kind_row(ed: &ThemeManagerEditorState) -> Element<'_, GMsg> {
     let name_field = text_input("theme name", &ed.draft.name)
         .on_input(|s| GMsg::ThemeManager(ThemeManagerMsg::Editor(Msg::NameChanged(s))))
         .style(input_field_style)
@@ -766,7 +766,7 @@ fn name_and_kind_row<'a>(ed: &'a ThemeManagerEditorState) -> Element<'a, GMsg> {
 
 /// The editor's header zone content: title + dirty dot on the left, the
 /// Preview toggle on the right.
-fn editor_header<'a>(ed: &'a ThemeManagerEditorState, dirty: bool) -> Element<'a, GMsg> {
+fn editor_header(ed: &ThemeManagerEditorState, dirty: bool) -> Element<'_, GMsg> {
     let mut header_row = row![text(format!("Edit theme — {}", ed.original_name))
         .size(13)
         .color(c::MAGENTA())]
@@ -972,7 +972,7 @@ fn editor_footer<'a>() -> Element<'a, GMsg> {
     )
 }
 
-pub fn view<'a>(ed: &'a ThemeManagerEditorState) -> Element<'a, GMsg> {
+pub fn view(ed: &ThemeManagerEditorState) -> Element<'_, GMsg> {
     let dirty = ed.is_dirty();
 
     // Discard confirmation swaps the whole panel for a `confirm_modal`-

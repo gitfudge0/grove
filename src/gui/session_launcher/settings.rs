@@ -356,8 +356,7 @@ impl Grove {
         self.settings_tools
             .iter()
             .find(|t| t.agent == agent)
-            .map(|t| t.installed)
-            .unwrap_or(true)
+            .is_none_or(|t| t.installed)
     }
 
     pub(in crate::gui) fn default_agent_pane_commit(&mut self, selected: usize) -> Task<GMsg> {
@@ -429,8 +428,7 @@ impl Grove {
                 .app
                 .store
                 .default_agent
-                .map(|a| a.label().to_string())
-                .unwrap_or_else(|| "auto".to_string()),
+                .map_or_else(|| "auto".to_string(), |a| a.label().to_string()),
             SettingRow::CheckUpdates => {
                 let ver = env!("CARGO_PKG_VERSION");
                 match &self.upgrade {

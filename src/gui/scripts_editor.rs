@@ -133,9 +133,8 @@ pub fn update(editor: &mut Option<ScriptsEditorState>, app: &mut App, msg: Msg) 
 /// no child-`Msg` `Element` to `.map()` at the call site — the wrapping has
 /// to happen inline, at each leaf that actually produces a message.
 pub fn view(grove: &Grove) -> Element<'_, GMsg> {
-    let ed = match &grove.scripts_editor {
-        Some(ed) => ed,
-        None => return Space::new().width(0).into(),
+    let Some(ed) = &grove.scripts_editor else {
+        return Space::new().width(0).into();
     };
 
     // ── PROJECT THEME ────────────────────────────────────────────────

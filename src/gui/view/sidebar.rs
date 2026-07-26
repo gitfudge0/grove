@@ -60,7 +60,9 @@ impl Grove {
     fn home_terminals_activity(&self) -> bool {
         self.app.home_terminals.iter().any(|s| {
             matches!(
-                *s.status.lock().unwrap_or_else(|e| e.into_inner()),
+                *s.status
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
                 SessionStatus::Running
             )
         })
@@ -239,7 +241,7 @@ impl Grove {
             let (pname, ppath) = (p.name.as_str(), p.path.as_str());
             let expanded = !self.collapsed.contains(&pi);
             let is_git = is_repo_cached(ppath);
-            let proj_sessions = by_proj.get(pname).map(|v| v.as_slice()).unwrap_or(&[]);
+            let proj_sessions = by_proj.get(pname).map_or(&[][..], std::vec::Vec::as_slice);
             let count = proj_sessions.len();
             // Collapsed projects surface the most urgent descendant state as
             // a trailing glyph; expanded parents show nothing extra.
@@ -267,7 +269,9 @@ impl Grove {
             let wts: &[Worktree] = if pi == self.app.proj_idx {
                 &self.app.worktrees
             } else {
-                self.wt_cache.get(&pi).map(|v| v.as_slice()).unwrap_or(&[])
+                self.wt_cache
+                    .get(&pi)
+                    .map_or(&[][..], std::vec::Vec::as_slice)
             };
             let has_run = p
                 .scripts
@@ -282,8 +286,7 @@ impl Grove {
                 };
                 let wt_sessions = by_wt
                     .get(w.path.as_str())
-                    .map(|v| v.as_slice())
-                    .unwrap_or(&[]);
+                    .map_or(&[][..], std::vec::Vec::as_slice);
                 let active_wt = pi == self.app.proj_idx && wi == self.app.wt_idx;
                 let hovered = self.hovered_wt == Some((pi, wi));
                 let wt_expanded = !self.collapsed_wt.contains(&(pi, wi));
@@ -383,7 +386,9 @@ impl Grove {
             let wts: &[Worktree] = if pi == self.app.proj_idx {
                 &self.app.worktrees
             } else {
-                self.wt_cache.get(&pi).map(|v| v.as_slice()).unwrap_or(&[])
+                self.wt_cache
+                    .get(&pi)
+                    .map_or(&[][..], std::vec::Vec::as_slice)
             };
             for (wi, w) in wts.iter().enumerate() {
                 if self.collapsed_wt.contains(&(pi, wi)) {
@@ -421,7 +426,9 @@ impl Grove {
             let wts: &[Worktree] = if pi == self.app.proj_idx {
                 &self.app.worktrees
             } else {
-                self.wt_cache.get(&pi).map(|v| v.as_slice()).unwrap_or(&[])
+                self.wt_cache
+                    .get(&pi)
+                    .map_or(&[][..], std::vec::Vec::as_slice)
             };
 
             for (wi, w) in wts.iter().enumerate() {

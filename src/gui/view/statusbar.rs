@@ -21,7 +21,9 @@ impl Grove {
             .iter()
             .filter(|s| {
                 matches!(
-                    *s.status.lock().unwrap_or_else(|e| e.into_inner()),
+                    *s.status
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
                     SessionStatus::Running
                 )
             })
@@ -139,15 +141,13 @@ impl Grove {
         let overlay_key = SHORTCUTS
             .iter()
             .find(|d| d.action == Some(GlobalShortcut::ShortcutOverlay))
-            .map(|d| d.display_keys)
-            .unwrap_or("/");
+            .map_or("/", |d| d.display_keys);
         let shortcuts_chip = hint_button(overlay_key, "shortcuts", Msg::OpenShortcutOverlay);
 
         let palette_key = SHORTCUTS
             .iter()
             .find(|d| d.action == Some(GlobalShortcut::NewSession))
-            .map(|d| d.display_keys)
-            .unwrap_or("p");
+            .map_or("p", |d| d.display_keys);
         let palette_chip = hint_button(
             palette_key,
             "palette",

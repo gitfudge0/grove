@@ -144,41 +144,40 @@ impl Grove {
                         ss.selected = new_sel;
                     }
                     return self.scroll_launcher_settings_to_selection();
-                } else {
-                    match key {
-                        Key::Named(Named::ArrowLeft) => {
+                }
+                match key {
+                    Key::Named(Named::ArrowLeft) => {
+                        self.on_zoom_out();
+                        return Task::none();
+                    }
+                    Key::Named(Named::ArrowRight) => {
+                        self.on_zoom_in();
+                        return Task::none();
+                    }
+                    Key::Named(Named::Enter | Named::Escape) => {
+                        if let Some(LauncherState {
+                            settings: Some(ss), ..
+                        }) = self.launcher_modal_mut()
+                        {
+                            ss.resizing = false;
+                        }
+                    }
+                    Key::Character(ch) => match ch.as_str() {
+                        "-" => {
                             self.on_zoom_out();
                             return Task::none();
                         }
-                        Key::Named(Named::ArrowRight) => {
+                        "+" => {
                             self.on_zoom_in();
                             return Task::none();
                         }
-                        Key::Named(Named::Enter) | Key::Named(Named::Escape) => {
-                            if let Some(LauncherState {
-                                settings: Some(ss), ..
-                            }) = self.launcher_modal_mut()
-                            {
-                                ss.resizing = false;
-                            }
+                        "0" => {
+                            self.on_zoom_reset();
+                            return Task::none();
                         }
-                        Key::Character(ch) => match ch.as_str() {
-                            "-" => {
-                                self.on_zoom_out();
-                                return Task::none();
-                            }
-                            "+" => {
-                                self.on_zoom_in();
-                                return Task::none();
-                            }
-                            "0" => {
-                                self.on_zoom_reset();
-                                return Task::none();
-                            }
-                            _ => {}
-                        },
                         _ => {}
-                    }
+                    },
+                    _ => {}
                 }
             } else if let Some(strip_sel) = s.update_actions {
                 // Update-actions strip (E3): ←→/Tab move across the
@@ -201,28 +200,25 @@ impl Grove {
                         ss.selected = new_sel;
                     }
                     return self.scroll_launcher_settings_to_selection();
+                }
+                let strip_delta: Option<i32> = match &key {
+                    Key::Named(Named::ArrowLeft) => Some(-1),
+                    Key::Named(Named::ArrowRight | Named::Tab) => Some(1),
+                    _ => None,
+                };
+                if let Some(delta) = strip_delta {
+                    let new_sel = crate::gui::launcher::clamp(strip_sel, delta, len);
+                    if let Some(LauncherState {
+                        settings: Some(ss), ..
+                    }) = self.launcher_modal_mut()
+                    {
+                        ss.update_actions = Some(new_sel);
+                    }
                 } else {
-                    let strip_delta: Option<i32> = match &key {
-                        Key::Named(Named::ArrowLeft) => Some(-1),
-                        Key::Named(Named::ArrowRight) | Key::Named(Named::Tab) => Some(1),
-                        _ => None,
-                    };
-                    if let Some(delta) = strip_delta {
-                        let new_sel = crate::gui::launcher::clamp(strip_sel, delta, len);
-                        if let Some(LauncherState {
-                            settings: Some(ss), ..
-                        }) = self.launcher_modal_mut()
-                        {
-                            ss.update_actions = Some(new_sel);
-                        }
-                    } else {
-                        match key {
-                            Key::Named(Named::Escape) => self.close_update_actions_strip(),
-                            Key::Named(Named::Enter) => {
-                                return self.update_actions_commit(strip_sel)
-                            }
-                            _ => {}
-                        }
+                    match key {
+                        Key::Named(Named::Escape) => self.close_update_actions_strip(),
+                        Key::Named(Named::Enter) => return self.update_actions_commit(strip_sel),
+                        _ => {}
                     }
                 }
             } else {
@@ -239,48 +235,46 @@ impl Grove {
                                 ss.selected = new_sel;
                             }
                             return self.scroll_launcher_settings_to_selection();
-                        } else {
-                            match key {
-                                Key::Named(Named::Escape) => {
-                                    if let Some(LauncherState {
-                                        settings, input, ..
-                                    }) = self.launcher_modal_mut()
-                                    {
-                                        *settings = None;
-                                        input.clear();
-                                    }
-                                    self.set_palette_selected(0);
+                        }
+                        match key {
+                            Key::Named(Named::Escape) => {
+                                if let Some(LauncherState {
+                                    settings, input, ..
+                                }) = self.launcher_modal_mut()
+                                {
+                                    *settings = None;
+                                    input.clear();
                                 }
-                                Key::Named(Named::Enter) => {
-                                    if let Some(&sr) = rows.get(sel) {
-                                        return self.activate_setting(sr);
-                                    }
-                                }
-                                _ => {}
+                                self.set_palette_selected(0);
                             }
+                            Key::Named(Named::Enter) => {
+                                if let Some(&sr) = rows.get(sel) {
+                                    return self.activate_setting(sr);
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     SettingsPane::Theme { .. } => {
                         if let Some(delta) = dir_delta {
                             return self.theme_pane_move(delta);
-                        } else {
-                            match key {
-                                Key::Named(Named::Escape) => return self.theme_pane_cancel(),
-                                Key::Named(Named::Enter) => return self.theme_pane_commit(),
-                                // Tab cycles the mode row; bare
-                                // letters always stay with the
-                                // search input (fuzzy-filtering the
-                                // list) — edit/manage are ⌘-chorded
-                                // specifically so they never collide
-                                // with typing a theme name.
-                                Key::Named(Named::Tab) => return self.theme_pane_cycle_mode(),
-                                Key::Character(s) if global_mods(mods) => match s.as_str() {
-                                    "e" | "E" => return self.theme_pane_open_editor(),
-                                    "m" | "M" => return self.open_theme_manager(),
-                                    _ => {}
-                                },
+                        }
+                        match key {
+                            Key::Named(Named::Escape) => return self.theme_pane_cancel(),
+                            Key::Named(Named::Enter) => return self.theme_pane_commit(),
+                            // Tab cycles the mode row; bare
+                            // letters always stay with the
+                            // search input (fuzzy-filtering the
+                            // list) — edit/manage are ⌘-chorded
+                            // specifically so they never collide
+                            // with typing a theme name.
+                            Key::Named(Named::Tab) => return self.theme_pane_cycle_mode(),
+                            Key::Character(s) if global_mods(mods) => match s.as_str() {
+                                "e" | "E" => return self.theme_pane_open_editor(),
+                                "m" | "M" => return self.open_theme_manager(),
                                 _ => {}
-                            }
+                            },
+                            _ => {}
                         }
                     }
                     SettingsPane::Backend => {
@@ -328,17 +322,16 @@ impl Grove {
                     SettingsPane::ProjectTheme { .. } => {
                         if let Some(delta) = dir_delta {
                             return self.theme_pane_move(delta);
-                        } else {
-                            match key {
-                                Key::Named(Named::Escape) => return self.theme_pane_cancel(),
-                                Key::Named(Named::Enter) => return self.theme_pane_commit(),
-                                // Tab cycles Dark/Light only — no
-                                // System mode for a project override
-                                // (`theme_pane_cycle_mode` branches on
-                                // scope internally).
-                                Key::Named(Named::Tab) => return self.theme_pane_cycle_mode(),
-                                _ => {}
-                            }
+                        }
+                        match key {
+                            Key::Named(Named::Escape) => return self.theme_pane_cancel(),
+                            Key::Named(Named::Enter) => return self.theme_pane_commit(),
+                            // Tab cycles Dark/Light only — no
+                            // System mode for a project override
+                            // (`theme_pane_cycle_mode` branches on
+                            // scope internally).
+                            Key::Named(Named::Tab) => return self.theme_pane_cycle_mode(),
+                            _ => {}
                         }
                     }
                     SettingsPane::DefaultAgent => {
@@ -419,40 +412,37 @@ impl Grove {
                 let new_selected = crate::gui::launcher::clamp(selected, delta, rows.len());
                 self.set_palette_selected(new_selected);
                 return self.scroll_launcher_palette_to_selection();
-            } else {
-                let enter_actions = matches!(&key, Key::Named(Named::Tab));
-                if enter_actions {
+            }
+            let enter_actions = matches!(&key, Key::Named(Named::Tab));
+            if enter_actions {
+                return match self.resolve_selected(&rows) {
+                    Some(idx) => self.launcher_enter_row_actions(idx, &input, browse_all),
+                    None => Task::none(),
+                };
+            }
+            match key {
+                Key::Named(Named::Escape) => self.cancel_modal(),
+                Key::Named(Named::Enter) => {
                     return match self.resolve_selected(&rows) {
-                        Some(idx) => self.launcher_enter_row_actions(idx, &input, browse_all),
+                        Some(idx) => self.launcher_activate(idx),
                         None => Task::none(),
-                    };
-                } else {
-                    match key {
-                        Key::Named(Named::Escape) => self.cancel_modal(),
-                        Key::Named(Named::Enter) => {
-                            return match self.resolve_selected(&rows) {
-                                Some(idx) => self.launcher_activate(idx),
-                                None => Task::none(),
-                            }
-                        }
-                        Key::Character(s) if global_mods(mods) => {
-                            if let Some(n) = s.parse::<usize>().ok().filter(|n| (1..=9).contains(n))
-                            {
-                                // mod+digit addresses sessions only:
-                                // in typed mode Setting rows sort
-                                // above Combo rows (B2), so a raw
-                                // list index would hand ⌘1 to a
-                                // setting instead of the first
-                                // session. No-op when fewer than
-                                // `n` session rows match.
-                                if let Some(idx) = nth_session_row(&rows, n) {
-                                    return self.launcher_activate(idx);
-                                }
-                            }
-                        }
-                        _ => {}
                     }
                 }
+                Key::Character(s) if global_mods(mods) => {
+                    if let Some(n) = s.parse::<usize>().ok().filter(|n| (1..=9).contains(n)) {
+                        // mod+digit addresses sessions only:
+                        // in typed mode Setting rows sort
+                        // above Combo rows (B2), so a raw
+                        // list index would hand ⌘1 to a
+                        // setting instead of the first
+                        // session. No-op when fewer than
+                        // `n` session rows match.
+                        if let Some(idx) = nth_session_row(&rows, n) {
+                            return self.launcher_activate(idx);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 

@@ -377,8 +377,7 @@ impl App {
                     // never exhausted early.
                     scanned
                         .next()
-                        .map(|w| w.iter().filter(|w| !w.is_main).count())
-                        .unwrap_or(0)
+                        .map_or(0, |w| w.iter().filter(|w| !w.is_main).count())
                 }
             })
             .sum();
@@ -451,7 +450,7 @@ impl App {
                     let path = wt.path.clone();
                     self.modal = Modal::Confirm {
                         title: "Remove worktree?".into(),
-                        prompt: format!("git worktree remove --force {}", path),
+                        prompt: format!("git worktree remove --force {path}"),
                         destructive: true,
                         kind: ConfirmKind::RemoveWorktree(path),
                     };
@@ -585,7 +584,7 @@ impl App {
         self.store.projects.push(Project {
             name: name.clone(),
             path,
-            scripts: Default::default(),
+            scripts: grove_core::storage::ProjectScripts::default(),
             theme: None,
         });
         storage::save(&self.store)?;

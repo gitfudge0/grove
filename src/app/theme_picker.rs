@@ -163,7 +163,7 @@ impl App {
         let original = theme::current();
         let pinned = project.theme.as_deref().and_then(theme::by_name);
         let project_use_default = pinned.is_none();
-        let tab = pinned.as_ref().map(|t| t.kind).unwrap_or(original.kind);
+        let tab = pinned.as_ref().map_or(original.kind, |t| t.kind);
         let sel = pinned
             .as_ref()
             .and_then(|t| {
@@ -336,7 +336,7 @@ impl App {
             // when the write actually lands somewhere.
             match self.store.projects.iter_mut().find(|p| p.name == name) {
                 Some(p) => {
-                    p.theme = chosen.clone();
+                    p.theme.clone_from(&chosen);
                     storage::save(&self.store)?;
                     let label = chosen.unwrap_or_else(|| "default".to_string());
                     self.set_toast(format!("project theme: {label}"));
@@ -414,7 +414,7 @@ mod tests {
     fn migrate_stale_theme_names_rewrites_unresolvable_fields_only() {
         let _lock = grove_core::theme::CUSTOM_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // A stale name in every slot, plus one that still resolves fine.
         let mut store = Store {

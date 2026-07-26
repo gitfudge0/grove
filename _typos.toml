@@ -1,0 +1,8 @@
+# Exceptions for the `typos` spell checker (run in CI and in the pre-commit hook).
+[default.extend-words]
+# "mis" is only ever seen here as the prefix in hyphenated compounds
+# ("mis-render"), never as a misspelling of miss/mist.
+mis = "mis"
+# "unparseable" is the spelling used consistently in Grove's docs and error
+# text; typos' dictionary prefers "unparsable".
+unparseable = "unparseable"

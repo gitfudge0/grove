@@ -1,0 +1,12 @@
+# Optional git hooks — enable them locally with `lefthook install`.
+#
+# Deliberately limited to checks that finish in well under a second. Clippy and
+# the test suite live in CI only: on this workspace they take minutes, which is
+# far too slow to run on every commit.
+pre-commit:
+  parallel: true
+  jobs:
+    - name: fmt
+      run: cargo fmt --all -- --check
+    - name: typos
+      run: typos

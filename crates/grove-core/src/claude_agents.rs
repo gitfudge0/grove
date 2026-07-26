@@ -230,7 +230,7 @@ fn parse_agents_json(s: &str) -> Result<Vec<AgentRow>, serde_json::Error> {
         if kind != "interactive" {
             continue;
         }
-        let Some(pid) = entry.get("pid").and_then(|v| v.as_u64()) else {
+        let Some(pid) = entry.get("pid").and_then(serde_json::Value::as_u64) else {
             continue;
         };
         let cwd = entry
@@ -466,7 +466,7 @@ mod tests {
                 status: NativeStatus::Busy,
             }],
             pid_parent: HashMap::new(),
-            taken_at: Instant::now() - Duration::from_secs(10),
+            taken_at: Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
         };
         assert!(snap.taken_at.elapsed() > STALE_AFTER);
         // Mirrors the check `Poller::status_for` performs before ever

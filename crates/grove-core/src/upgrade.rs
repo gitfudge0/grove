@@ -269,7 +269,7 @@ pub fn latest() -> Result<Release> {
     let release = parse_release(&body);
     match &release {
         Ok(r) => {
-            tracing::info!(current = env!("CARGO_PKG_VERSION"), latest = %r.version, "upgrade: version check result")
+            tracing::info!(current = env!("CARGO_PKG_VERSION"), latest = %r.version, "upgrade: version check result");
         }
         Err(e) => tracing::warn!(error = %e, "upgrade: failed to parse latest release"),
     }
@@ -463,12 +463,13 @@ fn resolve_location(base: &str, location: &str) -> String {
 
 /// Lowercase hex SHA-256 of `bytes`.
 fn sha256_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
     let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
-    digest
-        .as_ref()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>()
+    digest.as_ref().iter().fold(String::new(), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
 }
 
 /// Pull the digest out of a `.sha256` file: either a bare hex digest or the
@@ -557,9 +558,9 @@ fn apply_dmg(release: &Release, progress: &(dyn Fn(Stage) + Send + Sync)) -> Res
         // Find the .app inside the mounted volume.
         let app_in_dmg = fs::read_dir(&mnt)
             .map_err(UpgradeError::ReadMountedVolume)?
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .map(|e| e.path())
-            .find(|p| p.extension().map(|x| x == "app").unwrap_or(false))
+            .find(|p| p.extension().is_some_and(|x| x == "app"))
             .ok_or(UpgradeError::NoAppInDmg)?;
 
         // Replace the running bundle. `ditto` preserves macOS metadata.
@@ -689,10 +690,10 @@ pub fn clean_markdown(input: &str) -> String {
         lines.push(cleaned);
     }
     // Trim leading/trailing blank lines.
-    while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) {
+    while lines.first().is_some_and(|l| l.trim().is_empty()) {
         lines.remove(0);
     }
-    while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
         lines.pop();
     }
     lines.join("\n")

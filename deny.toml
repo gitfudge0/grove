@@ -33,6 +33,12 @@ ignore = [
 
 [bans]
 multiple-versions = "warn"
+# Wildcard version requirements ("*") make builds non-reproducible and can
+# silently pull in a breaking release; every dependency must pin a real range.
+wildcards = "deny"
+# Version-less path deps (grove-core) are workspace-internal, not real
+# wildcards — they can't drift because they build from this repo.
+allow-wildcard-paths = true
 deny = []
 
 [licenses]

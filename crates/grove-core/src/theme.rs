@@ -707,7 +707,9 @@ thread_local! {
 }
 
 fn store_active(theme: Theme) {
-    *ACTIVE.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(theme);
+    *ACTIVE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(theme);
     // Release pairs with the Acquire load in `active()`: a thread that sees
     // the new generation must also see the new `Arc` through the lock.
     GENERATION.fetch_add(1, Ordering::Release);
@@ -723,7 +725,10 @@ fn active() -> Arc<Theme> {
                 return theme.clone();
             }
         }
-        let theme = ACTIVE.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let theme = ACTIVE
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         *cell.borrow_mut() = Some((gen_now, theme.clone()));
         theme
     })
@@ -761,7 +766,7 @@ pub fn by_name(name: &str) -> Option<Theme> {
     }
     CUSTOM
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
         .find(|t| t.name == name)
         .cloned()
@@ -843,7 +848,7 @@ fn is_builtin(name: &str) -> bool {
 pub fn is_custom(name: &str) -> bool {
     CUSTOM
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
         .any(|t| t.name == name)
 }
@@ -853,7 +858,7 @@ pub fn is_custom(name: &str) -> bool {
 pub fn custom_themes_of(kind: ThemeKind) -> Vec<Theme> {
     let mut v: Vec<Theme> = CUSTOM
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
         .filter(|t| t.kind == kind)
         .cloned()
@@ -866,7 +871,10 @@ pub fn custom_themes_of(kind: ThemeKind) -> Vec<Theme> {
 /// `Modal::ThemeManager`'s flat list, which shows a kind badge per row
 /// instead of splitting into Dark/Light tabs like the palette's Theme pane.
 pub fn all_custom_themes() -> Vec<Theme> {
-    let mut v: Vec<Theme> = CUSTOM.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut v: Vec<Theme> = CUSTOM
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     v.sort_by(|a, b| a.name.cmp(&b.name));
     v
 }
@@ -878,13 +886,18 @@ pub fn all_custom_themes() -> Vec<Theme> {
 /// `CUSTOM` empty without touching the file on disk.
 pub fn load_custom() -> Vec<crate::theme_file::ThemeLoadError> {
     let (themes, errors) = crate::theme_file::load();
-    *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = themes;
+    *CUSTOM
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = themes;
     errors
 }
 
 /// Persists the current `CUSTOM` contents to `themes.json`.
 pub fn save_custom() -> std::io::Result<()> {
-    let themes = CUSTOM.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let themes = CUSTOM
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     crate::theme_file::save(&themes)
 }
 
@@ -899,7 +912,9 @@ pub fn add_custom(mut theme: Theme) -> Result<(), String> {
     if is_builtin(&theme.name) {
         return Err(format!("\"{}\" shadows a built-in theme", theme.name));
     }
-    let mut guard = CUSTOM.write().unwrap_or_else(|e| e.into_inner());
+    let mut guard = CUSTOM
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if guard.iter().any(|t| t.name == theme.name) {
         return Err(format!(
             "a custom theme named \"{}\" already exists",
@@ -922,7 +937,9 @@ pub fn update_custom(original_name: &str, mut theme: Theme) -> Result<(), String
         return Err("name can't be empty".to_string());
     }
     theme.name = Cow::Owned(trimmed);
-    let mut guard = CUSTOM.write().unwrap_or_else(|e| e.into_inner());
+    let mut guard = CUSTOM
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let idx = guard
         .iter()
         .position(|t| t.name == original_name)
@@ -952,7 +969,9 @@ pub fn rename_custom(old: &str, new: &str) -> Result<(), String> {
     if is_builtin(new) {
         return Err(format!("\"{new}\" shadows a built-in theme"));
     }
-    let mut guard = CUSTOM.write().unwrap_or_else(|e| e.into_inner());
+    let mut guard = CUSTOM
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if guard.iter().any(|t| t.name == new) {
         return Err(format!("a custom theme named \"{new}\" already exists"));
     }
@@ -975,7 +994,9 @@ pub fn rename_custom(old: &str, new: &str) -> Result<(), String> {
 
 /// Removes a custom theme by name. Returns `false` if no such theme exists.
 pub fn delete_custom(name: &str) -> bool {
-    let mut guard = CUSTOM.write().unwrap_or_else(|e| e.into_inner());
+    let mut guard = CUSTOM
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let before = guard.len();
     guard.retain(|t| t.name != name);
     let removed = guard.len() != before;
@@ -995,7 +1016,7 @@ pub fn duplicate_name(base: &str) -> String {
         BUILTINS.iter().any(|t| t.name == name)
             || CUSTOM
                 .read()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
                 .any(|t| t.name == name)
     };
@@ -1044,22 +1065,32 @@ mod tests {
 
     impl CustomGuard {
         fn new() -> Self {
-            let original = CUSTOM.read().unwrap_or_else(|e| e.into_inner()).clone();
+            let original = CUSTOM
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             Self { original }
         }
     }
 
     impl Drop for CustomGuard {
         fn drop(&mut self) {
-            *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = std::mem::take(&mut self.original);
+            *CUSTOM
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                std::mem::take(&mut self.original);
         }
     }
 
     #[test]
     fn selectable_themes_of_lists_builtins_then_customs() {
-        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = CUSTOM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _guard = CustomGuard::new();
-        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = vec![
+        *CUSTOM
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = vec![
             sample("zz-custom-dark-b", ThemeKind::Dark),
             sample("zz-custom-dark-a", ThemeKind::Dark),
             sample("zz-custom-light-only", ThemeKind::Light),
@@ -1086,9 +1117,13 @@ mod tests {
 
     #[test]
     fn selectable_themes_of_filters_by_kind() {
-        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = CUSTOM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _guard = CustomGuard::new();
-        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = vec![
+        *CUSTOM
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = vec![
             sample("zz-custom-dark-only", ThemeKind::Dark),
             sample("zz-custom-light-only", ThemeKind::Light),
         ];
@@ -1103,9 +1138,13 @@ mod tests {
 
     #[test]
     fn selectable_themes_of_is_builtins_only_when_no_customs() {
-        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = CUSTOM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _guard = CustomGuard::new();
-        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = Vec::new();
+        *CUSTOM
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Vec::new();
         let names = |v: &[Theme]| v.iter().map(|t| t.name.to_string()).collect::<Vec<_>>();
         assert_eq!(
             names(&selectable_themes_of(ThemeKind::Dark)),
@@ -1115,15 +1154,21 @@ mod tests {
 
     #[test]
     fn duplicate_name_sequence() {
-        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = CUSTOM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _guard = CustomGuard::new();
-        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = vec![
+        *CUSTOM
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = vec![
             sample("mytheme copy", ThemeKind::Dark),
             sample("mytheme copy 2", ThemeKind::Dark),
         ];
         assert_eq!(duplicate_name("mytheme"), "mytheme copy 3");
 
-        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = Vec::new();
+        *CUSTOM
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Vec::new();
         assert_eq!(duplicate_name("mytheme"), "mytheme copy");
 
         // A duplicate name that collides with a builtin is also avoided.
@@ -1136,10 +1181,14 @@ mod tests {
 
     #[test]
     fn load_custom_replaces_registry_contents_rather_than_merging() {
-        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = CUSTOM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _guard = CustomGuard::new();
         // An in-memory-only entry that was never written to `themes.json`.
-        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) =
+        *CUSTOM
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
             vec![sample("stale-injected-not-on-disk", ThemeKind::Dark)];
         let _ = load_custom();
         // Reloading re-reads from disk: a genuine replace throws this stale
@@ -1148,7 +1197,7 @@ mod tests {
         assert!(
             !CUSTOM
                 .read()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
                 .any(|t| t.name == "stale-injected-not-on-disk"),
             "load_custom must replace CUSTOM's contents, not merge into them"
@@ -1157,9 +1206,13 @@ mod tests {
 
     #[test]
     fn rename_custom_rejects_collision_with_existing_custom_and_builtin() {
-        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = CUSTOM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _guard = CustomGuard::new();
-        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = vec![
+        *CUSTOM
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = vec![
             sample("theme-a", ThemeKind::Dark),
             sample("theme-b", ThemeKind::Dark),
         ];
@@ -1168,7 +1221,10 @@ mod tests {
         let err = rename_custom("theme-a", "theme-b");
         assert!(err.is_err());
         assert_eq!(
-            CUSTOM.read().unwrap_or_else(|e| e.into_inner())[0].name,
+            CUSTOM
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)[0]
+                .name,
             "theme-a"
         );
 
@@ -1180,41 +1236,59 @@ mod tests {
 
     #[test]
     fn add_custom_rejects_empty_or_whitespace_name() {
-        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = CUSTOM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _guard = CustomGuard::new();
-        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) = Vec::new();
+        *CUSTOM
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Vec::new();
 
         assert!(add_custom(sample("", ThemeKind::Dark)).is_err());
         assert!(add_custom(sample("   ", ThemeKind::Dark)).is_err());
         // Rejected before ever touching the registry.
-        assert!(CUSTOM.read().unwrap_or_else(|e| e.into_inner()).is_empty());
+        assert!(CUSTOM
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty());
     }
 
     #[test]
     fn update_custom_rejects_empty_or_whitespace_name() {
-        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = CUSTOM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _guard = CustomGuard::new();
-        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) =
+        *CUSTOM
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
             vec![sample("theme-a", ThemeKind::Dark)];
 
         let err = update_custom("theme-a", sample("   ", ThemeKind::Dark));
         assert!(err.is_err());
         // The original entry is left untouched by the rejected save.
         assert_eq!(
-            CUSTOM.read().unwrap_or_else(|e| e.into_inner())[0].name,
+            CUSTOM
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)[0]
+                .name,
             "theme-a"
         );
     }
 
     #[test]
     fn is_builtin_and_by_name_prefer_builtins_over_customs() {
-        let _lock = CUSTOM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = CUSTOM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _guard = CustomGuard::new();
         let builtin_name = BUILTINS[0].name.to_string();
         assert!(is_builtin(&builtin_name));
         // A "custom" theme that (illegally) shares a builtin's name still
         // never wins the lookup — builtins are checked first.
-        *CUSTOM.write().unwrap_or_else(|e| e.into_inner()) =
+        *CUSTOM
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
             vec![sample(&builtin_name, ThemeKind::Light)];
         let found = by_name(&builtin_name).expect("by_name finds the builtin");
         assert!(matches!(found.kind, k if k == BUILTINS[0].kind));

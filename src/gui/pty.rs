@@ -295,21 +295,17 @@ impl canvas::Program<Msg> for PtyProgram {
             });
         let mut out = vec![geom];
         if let Some((a, h)) = self.selection {
-            let cols = self
-                .rows
-                .first()
-                .map(|r| {
-                    r.iter()
-                        .map(|run| {
-                            if run.text.is_ascii() {
-                                run.text.len()
-                            } else {
-                                run.text.chars().count()
-                            }
-                        })
-                        .sum::<usize>()
-                })
-                .unwrap_or(0);
+            let cols = self.rows.first().map_or(0, |r| {
+                r.iter()
+                    .map(|run| {
+                        if run.text.is_ascii() {
+                            run.text.len()
+                        } else {
+                            run.text.chars().count()
+                        }
+                    })
+                    .sum::<usize>()
+            });
             let rows = self.rows.len();
             let mut overlay = Frame::new(renderer, bounds.size());
             paint_selection(&mut overlay, a, h, rows, cols);

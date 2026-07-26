@@ -59,7 +59,7 @@ pub fn run() -> Result<()> {
                 async {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 },
-                |_| Msg::Upgrade(UpgradeMsg::CheckForUpdates { manual: false }),
+                |()| Msg::Upgrade(UpgradeMsg::CheckForUpdates { manual: false }),
             );
             // Seed the OS appearance immediately so "follow system" resolves
             // to the real mode on the first frame rather than waiting for the

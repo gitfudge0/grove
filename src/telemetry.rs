@@ -79,7 +79,7 @@ fn generate_id() -> String {
         .unwrap_or_default();
     let nanos = dur.as_secs() as u128 * 1_000_000_000 + dur.subsec_nanos() as u128;
     let pid = std::process::id();
-    format!("{:x}{:x}", nanos, pid)
+    format!("{nanos:x}{pid:x}")
 }
 
 /// Strip filesystem identity out of a string before it leaves the machine

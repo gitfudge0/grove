@@ -129,7 +129,7 @@ impl Grove {
                 ),
                 None => Space::new().width(0).into(),
             },
-            _ => Space::new().width(0).into(),
+            Modal::None => Space::new().width(0).into(),
         };
 
         container(panel)

@@ -86,7 +86,7 @@ impl Grove {
             // headers can't disagree with the actual row order.
             let session_project_order: Vec<usize> = {
                 let mut seen = Vec::new();
-                for r in rows.iter() {
+                for r in &rows {
                     if let PaletteRow::Recent { proj, .. } | PaletteRow::Combo { proj, .. } = r {
                         if !seen.contains(proj) {
                             seen.push(*proj);
@@ -213,8 +213,7 @@ impl Grove {
                             .launcher_worktrees(rp)
                             .iter()
                             .find(|w| w.path == rw)
-                            .map(|w| w.is_main)
-                            .unwrap_or(false);
+                            .is_some_and(|w| w.is_main);
                         list =
                             list.push(self.palette_row_actions_strip(ra.proj, ra.action, is_main));
                     }
@@ -255,13 +254,13 @@ impl Grove {
             let highlighted = rows.get(selected);
             let highlighted_is_row = matches!(
                 highlighted,
-                Some(PaletteRow::Recent { .. }) | Some(PaletteRow::Combo { .. })
+                Some(PaletteRow::Recent { .. } | PaletteRow::Combo { .. })
             );
             let setting_enter_label: Option<&'static str> = match highlighted {
                 Some(PaletteRow::Setting(SettingRow::ProjectThemes | SettingRow::Telemetry)) => {
                     Some("toggle")
                 }
-                Some(PaletteRow::Setting(_)) | Some(PaletteRow::Settings) => Some("open"),
+                Some(PaletteRow::Setting(_) | PaletteRow::Settings) => Some("open"),
                 _ => None,
             };
             // Row-highlighted footer orders tab before ⏎ ("navigate · tab

@@ -347,13 +347,13 @@ mod tests {
                 Project {
                     name: "myapp".into(),
                     path: "/home/user/myapp".into(),
-                    scripts: Default::default(),
+                    scripts: ProjectScripts::default(),
                     theme: None,
                 },
                 Project {
                     name: "other".into(),
                     path: "/tmp/other".into(),
-                    scripts: Default::default(),
+                    scripts: ProjectScripts::default(),
                     theme: Some("dracula".into()),
                 },
             ],
@@ -590,7 +590,7 @@ mod tests {
     fn config_dir_honours_override_when_set() {
         let _lock = CONFIG_DIR_ENV_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let dir = std::env::temp_dir().join(format!(
             "grove_test_config_dir_override_{}",
@@ -619,7 +619,7 @@ mod tests {
     fn config_dir_ignores_empty_override() {
         let _lock = CONFIG_DIR_ENV_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _guard = EnvVarGuard::set(CONFIG_DIR_ENV, "");
 
         // Must not blow up or try to create a directory named "" — it should
@@ -638,7 +638,7 @@ mod tests {
     fn config_dir_unset_still_migrates_legacy_dir() {
         let _lock = CONFIG_DIR_ENV_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::env::remove_var(CONFIG_DIR_ENV);
 
         let base = std::env::temp_dir().join(format!(

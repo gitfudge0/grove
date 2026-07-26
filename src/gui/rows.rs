@@ -579,7 +579,9 @@ pub fn terminal_row<'a>(
     pending_kill: bool,
 ) -> Element<'a, Msg> {
     let running = matches!(
-        *s.status.lock().unwrap_or_else(|e| e.into_inner()),
+        *s.status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
         SessionStatus::Running
     );
     let name_color = if active {
@@ -762,7 +764,7 @@ pub(crate) fn cached_context(
             (s.id, slot),
             (
                 raw,
-                salt.iter().map(|x| x.to_string()).collect(),
+                salt.iter().map(std::string::ToString::to_string).collect(),
                 out.clone(),
             ),
         );

@@ -21,10 +21,10 @@ fn main() -> Result<()> {
         // The message stays local: free text can carry user data (paths,
         // branch names, config values). Only the code location leaves the
         // machine, and even that gets its paths scrubbed first.
-        let location = info
-            .location()
-            .map(|l| telemetry::scrub_paths(&format!("{}:{}:{}", l.file(), l.line(), l.column())))
-            .unwrap_or_else(|| "unknown".to_string());
+        let location = info.location().map_or_else(
+            || "unknown".to_string(),
+            |l| telemetry::scrub_paths(&format!("{}:{}:{}", l.file(), l.line(), l.column())),
+        );
         telemetry::track_blocking("panic", vec![("location", location.into())]);
         prev_hook(info);
     }));

@@ -288,7 +288,7 @@ pub fn live_grove_session_names() -> Vec<String> {
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|n| n.starts_with(NAME_PREFIX))
-        .map(|n| n.to_string())
+        .map(std::string::ToString::to_string)
         .collect()
 }
 
@@ -321,7 +321,7 @@ pub fn short_hash(s: &str) -> String {
         h ^= *b as u64;
         h = h.wrapping_mul(0x100000001b3);
     }
-    format!("{:016x}", h)
+    format!("{h:016x}")
 }
 
 /// Build a unique grove session name. `n` disambiguates multiple sessions
@@ -346,7 +346,7 @@ pub fn next_free_n(wt_path: &str, agent: Agent) -> u32 {
 
 /// Anchor a target so tmux treats it as a session-exact match, not a prefix.
 fn exact(name: &str) -> String {
-    format!("={}", name)
+    format!("={name}")
 }
 
 #[cfg(test)]
@@ -366,12 +366,7 @@ mod tests {
             "a".repeat(200).as_str(),
         ] {
             let h = short_hash(s);
-            assert_eq!(
-                h.len(),
-                16,
-                "short_hash({s:?}) must be 16 chars, got {:?}",
-                h
-            );
+            assert_eq!(h.len(), 16, "short_hash({s:?}) must be 16 chars, got {h:?}");
             assert!(
                 h.chars().all(|c| c.is_ascii_hexdigit()),
                 "short_hash({s:?}) must be hex digits, got {h:?}"

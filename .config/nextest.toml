@@ -1,0 +1,13 @@
+# nextest configuration. The `ci` profile is used by .github/workflows/ci.yml.
+[profile.ci]
+# Run the whole suite even after a failure: one CI run should report every
+# broken test, not just the first one.
+fail-fast = false
+
+# Retry twice on failure with a fixed backoff, so a flaky GUI/timing test
+# doesn't red-light an otherwise good push...
+retries = { backoff = "fixed", count = 2 }
+
+# ...but a test that only passes on retry is still a bug: `flaky-result`
+# makes those fail the run instead of quietly passing.
+flaky-result = "fail"

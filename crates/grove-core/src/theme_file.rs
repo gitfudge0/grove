@@ -548,9 +548,8 @@ mod tests {
     fn convert_rejects_unknown_kind() {
         let mut def = sample_def("mytheme");
         def.kind = "sepia".to_string();
-        let err = match convert(def) {
-            Err(e) => e,
-            Ok(_) => panic!("expected an error"),
+        let Err(err) = convert(def) else {
+            panic!("expected an error")
         };
         assert!(err.contains("unknown kind"));
     }
@@ -558,9 +557,8 @@ mod tests {
     #[test]
     fn convert_rejects_empty_name() {
         let def = sample_def("");
-        let err = match convert(def) {
-            Err(e) => e,
-            Ok(_) => panic!("expected an error"),
+        let Err(err) = convert(def) else {
+            panic!("expected an error")
         };
         assert_eq!(err, "empty name");
     }
@@ -618,7 +616,7 @@ mod tests {
 
     #[test]
     fn parse_paste_json_rejects_bad_hex() {
-        let json = r##"{"colors":{"bg":"nope"}}"##;
+        let json = r#"{"colors":{"bg":"nope"}}"#;
         assert!(parse_paste(json).is_err());
     }
 

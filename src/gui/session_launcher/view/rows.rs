@@ -95,14 +95,16 @@ impl Grove {
                     .launcher_worktrees(*proj)
                     .iter()
                     .find(|w| &w.path == wt_path)
-                    .map(|w| {
-                        if w.branch.is_empty() {
-                            crate::app::path_basename(&w.path)
-                        } else {
-                            w.branch.clone()
-                        }
-                    })
-                    .unwrap_or_else(|| crate::app::path_basename(wt_path));
+                    .map_or_else(
+                        || crate::app::path_basename(wt_path),
+                        |w| {
+                            if w.branch.is_empty() {
+                                crate::app::path_basename(&w.path)
+                            } else {
+                                w.branch.clone()
+                            }
+                        },
+                    );
                 let subtitle = format!("{pname} / {wt_name}");
                 let is_recent = matches!(row, PaletteRow::Recent { .. });
 
@@ -115,7 +117,7 @@ impl Grove {
                     )
                 });
                 let agent_ranges: &[(usize, usize)] =
-                    m.as_ref().map(|m| m.agent.as_slice()).unwrap_or(&[]);
+                    m.as_ref().map_or(&[][..], |m| m.agent.as_slice());
                 // The subtitle is "{pname} / {wt_name}"; the worktree match's
                 // ranges (computed against `wt_name` alone) need shifting by
                 // that prefix's char length to land in the right place.
@@ -222,14 +224,16 @@ impl Grove {
                     .app
                     .active_session
                     .and_then(|si| self.app.sessions.get(si))
-                    .map(|s| {
-                        format!(
-                            "Terminal in {}/{}",
-                            s.project,
-                            crate::app::path_basename(&s.wt_path)
-                        )
-                    })
-                    .unwrap_or_else(|| "Terminal in worktree".to_string());
+                    .map_or_else(
+                        || "Terminal in worktree".to_string(),
+                        |s| {
+                            format!(
+                                "Terminal in {}/{}",
+                                s.project,
+                                crate::app::path_basename(&s.wt_path)
+                            )
+                        },
+                    );
                 let mut content = row![
                     icon_slot("term", c::FG_MUTE()),
                     text(label)
@@ -408,12 +412,12 @@ impl Grove {
     /// would inset the strip relative to that row. Any configured lifecycle
     /// scripts (setup/run/teardown) are appended after the theme row, via
     /// `row_action_scripts`.
-    pub(super) fn palette_row_actions_strip<'a>(
-        &'a self,
+    pub(super) fn palette_row_actions_strip(
+        &self,
         proj: usize,
         action: usize,
         is_main: bool,
-    ) -> Element<'a, GMsg> {
+    ) -> Element<'_, GMsg> {
         let icon_slot = |name: &'static str, color: Color| {
             container(icon(name, 13.0, color))
                 .width(20.0)

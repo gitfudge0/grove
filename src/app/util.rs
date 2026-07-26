@@ -39,10 +39,10 @@ pub fn list_dirs(buffer: &str) -> Vec<String> {
         )
     } else {
         let pb = std::path::PathBuf::from(&expanded);
-        let parent = pb
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let parent = pb.parent().map_or_else(
+            || std::path::PathBuf::from("."),
+            std::path::Path::to_path_buf,
+        );
         let name = pb
             .file_name()
             .and_then(|s| s.to_str())
@@ -59,7 +59,7 @@ pub fn list_dirs(buffer: &str) -> Vec<String> {
         return vec![];
     };
     let mut out: Vec<String> = rd
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|n| !n.starts_with('.') || prefix.starts_with('.'))

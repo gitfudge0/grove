@@ -61,6 +61,8 @@ impl Grove {
         wt_path: &'a str,
         sel: usize,
     ) -> Element<'a, Msg> {
+        const AGENT_ROW_H: f32 = 32.0;
+
         let wt_name = crate::app::path_basename(wt_path);
         let title = if project.is_empty() {
             format!("Start session / {wt_name}")
@@ -68,7 +70,6 @@ impl Grove {
             format!("Start session / {project} / {wt_name}")
         };
 
-        const AGENT_ROW_H: f32 = 32.0;
         let mut list = Column::new().spacing(2);
         for (i, agent) in self.app.available_agents.iter().enumerate() {
             let active = i == sel;
@@ -127,6 +128,11 @@ impl Grove {
     }
 
     pub(super) fn settings_modal(&self) -> Element<'_, Msg> {
+        // The "Default" badge and "Set default" button share an identical
+        // footprint (fixed width, same padding/radius) so the action-cell
+        // column stays aligned regardless of which state a row is in.
+        const SLOT_W: f32 = 84.0;
+
         use iced::Alignment::Center;
 
         // A muted, indented one-liner used under section headers and rows to
@@ -144,10 +150,6 @@ impl Grove {
                 .padding(Padding::from([0, 10]))
                 .into()
         };
-        // The "Default" badge and "Set default" button share an identical
-        // footprint (fixed width, same padding/radius) so the action-cell
-        // column stays aligned regardless of which state a row is in.
-        const SLOT_W: f32 = 84.0;
         let slot_badge = |label: &'static str| -> Element<'_, Msg> {
             container(
                 text(label)
@@ -701,7 +703,7 @@ impl Grove {
                 .filter(|d| d.scopes.contains(&Scope::Global))
                 .map(|d| (key_label(d), d.description))
                 .collect();
-            for (keys, desc) in static_rows.iter() {
+            for (keys, desc) in &static_rows {
                 global_rows.push((keys.clone(), desc));
             }
             // Screen section: registry rows scoped to the current screen.
@@ -729,7 +731,7 @@ impl Grove {
                 .iter()
                 .map(|d| (key_label(d), d.description))
                 .collect();
-            for (keys, desc) in static_rows.iter() {
+            for (keys, desc) in &static_rows {
                 rows.push((keys.clone(), desc));
             }
             body = body.push(two_columns(rows));

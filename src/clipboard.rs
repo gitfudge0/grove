@@ -19,6 +19,8 @@ fn clipboard() -> &'static Mutex<Option<arboard::Clipboard>> {
 /// Copy `text` to the clipboard. Both backends are best-effort; failures are
 /// swallowed since at least one usually lands.
 pub fn copy(text: &str) {
+    use std::io::IsTerminal;
+
     if let Ok(mut guard) = clipboard().lock() {
         if let Some(cb) = guard.as_mut() {
             let _ = cb.set_text(text.to_owned());
@@ -27,11 +29,10 @@ pub fn copy(text: &str) {
 
     // OSC 52 only makes sense when stdout is actually a terminal; writing it
     // into a pipe/file would just inject escape garbage.
-    use std::io::IsTerminal;
     if io::stdout().is_terminal() {
         let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
         let mut stdout = io::stdout();
-        let _ = write!(stdout, "\x1b]52;c;{}\x07", b64);
+        let _ = write!(stdout, "\x1b]52;c;{b64}\x07");
         let _ = stdout.flush();
     }
 }

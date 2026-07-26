@@ -24,7 +24,7 @@ impl Grove {
         if proj == self.app.proj_idx {
             &self.app.worktrees
         } else {
-            self.wt_cache.get(&proj).map(Vec::as_slice).unwrap_or(&[])
+            self.wt_cache.get(&proj).map_or(&[][..], Vec::as_slice)
         }
     }
 
@@ -456,14 +456,16 @@ impl Grove {
             .recent_launches
             .iter()
             .find(|r| r.project == pname && r.wt_path == wt_path)
-            .map(|r| r.agent)
-            .unwrap_or_else(|| {
-                self.app
-                    .available_agents
-                    .first()
-                    .copied()
-                    .unwrap_or(Agent::Terminal)
-            });
+            .map_or_else(
+                || {
+                    self.app
+                        .available_agents
+                        .first()
+                        .copied()
+                        .unwrap_or(Agent::Terminal)
+                },
+                |r| r.agent,
+            );
         let agent_idx = self
             .app
             .available_agents
@@ -548,8 +550,7 @@ impl Grove {
                             .recent_launches
                             .iter()
                             .find(|r| r.project == p.name && r.wt_path == w.path)
-                            .map(|r| r.agent)
-                            .unwrap_or(self.app.available_agents[0]);
+                            .map_or(self.app.available_agents[0], |r| r.agent);
                         rows.push(PaletteRow::Combo {
                             proj,
                             wt_path: w.path.clone(),
@@ -603,8 +604,7 @@ impl Grove {
                         .recent_launches
                         .iter()
                         .find(|r| r.project == p.name && r.wt_path == w.path)
-                        .map(|r| r.agent)
-                        .unwrap_or(self.app.available_agents[0]);
+                        .map_or(self.app.available_agents[0], |r| r.agent);
                     let Some(score) =
                         crate::gui::launcher::fuzzy_score(input, &p.name, &name, agent.label())
                     else {

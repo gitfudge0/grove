@@ -15,19 +15,11 @@ use grove_core::agent::Agent;
 /// `Grove::enter_*_pane` methods) — kept free of `Grove`/`Modal` so it's
 /// directly unit-testable without building a GUI.
 pub(super) fn backend_pane_selected_index(tmux_on: bool) -> usize {
-    if tmux_on {
-        1
-    } else {
-        0
-    }
+    usize::from(tmux_on)
 }
 
 pub(super) fn permissions_pane_selected_index(skip_on: bool) -> usize {
-    if skip_on {
-        1
-    } else {
-        0
-    }
+    usize::from(skip_on)
 }
 
 pub(super) fn default_agent_pane_selected_index(default: Option<Agent>) -> usize {
@@ -49,8 +41,7 @@ pub(super) fn theme_pane_selected_index(kind: grove_core::theme::ThemeKind, name
     grove_core::theme::custom_themes_of(kind)
         .iter()
         .position(|t| t.name == name)
-        .map(|i| builtins.len() + i)
-        .unwrap_or(0)
+        .map_or(0, |i| builtins.len() + i)
 }
 
 /// Builtin themes of `kind` fuzzy-filtered by `input`, in `theme::themes_of`'s
@@ -127,8 +118,7 @@ pub(super) fn theme_pane_row_is_custom(
     // depend on that ordering staying that way.
     theme_pane_combined_rows(kind, input)
         .get(idx)
-        .map(|t| grove_core::theme::is_custom(&t.name))
-        .unwrap_or(false)
+        .is_some_and(|t| grove_core::theme::is_custom(&t.name))
 }
 
 /// The ProjectTheme sub-pane's list: same `theme_pane_combined_rows`
@@ -442,7 +432,7 @@ pub(super) fn palette_scroll_offset(rows: &[PaletteRow], selected: usize, root_m
         let mut printed_actions = false;
         let session_project_order: Vec<usize> = {
             let mut seen = Vec::new();
-            for r in rows.iter() {
+            for r in rows {
                 if let PaletteRow::Recent { proj, .. } | PaletteRow::Combo { proj, .. } = r {
                     if !seen.contains(proj) {
                         seen.push(*proj);

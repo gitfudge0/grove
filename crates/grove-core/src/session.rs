@@ -368,7 +368,7 @@ impl Session {
         cmd.arg("-u");
         cmd.arg("attach-session");
         cmd.arg("-t");
-        cmd.arg(format!("={}", tmux_name));
+        cmd.arg(format!("={tmux_name}"));
         cmd.env("TERM", "xterm-256color");
         cmd.env("LC_ALL", "en_US.UTF-8");
 
@@ -641,10 +641,7 @@ impl Session {
     pub fn scroll(&mut self, up: bool, col: u16, row: u16) {
         self.last_scroll_at = Some(Instant::now());
 
-        let p = match self.parser.lock() {
-            Ok(p) => p,
-            Err(_) => return,
-        };
+        let Ok(p) = self.parser.lock() else { return };
 
         if p.screen().mouse_protocol_mode() == MouseProtocolMode::None {
             // Inner app doesn't handle the mouse — scroll the terminal view.
@@ -687,9 +684,8 @@ impl Session {
                 }
             }
             SessionBackend::Native => {
-                let mut p = match self.parser.lock() {
-                    Ok(p) => p,
-                    Err(_) => return,
+                let Ok(mut p) = self.parser.lock() else {
+                    return;
                 };
                 // Cap at the configured scrollback size. vt100 0.15.2's
                 // `set_scrollback` clamps to the actually-filled scrollback
@@ -724,10 +720,7 @@ impl Session {
     pub fn scroll_lines(&mut self, up: bool, lines: usize) {
         self.last_scroll_at = Some(Instant::now());
 
-        let p = match self.parser.lock() {
-            Ok(p) => p,
-            Err(_) => return,
-        };
+        let Ok(p) = self.parser.lock() else { return };
 
         if p.screen().mouse_protocol_mode() == MouseProtocolMode::None {
             drop(p);
@@ -763,10 +756,7 @@ impl Session {
     /// back — clicking history must never poke the live screen — and, on the
     /// arrow path, while the caret is hidden (nothing to visibly move).
     pub fn click(&mut self, col: u16, row: u16) {
-        let p = match self.parser.lock() {
-            Ok(p) => p,
-            Err(_) => return,
-        };
+        let Ok(p) = self.parser.lock() else { return };
         if p.screen().scrollback() != 0 {
             return;
         }
@@ -898,7 +888,7 @@ impl Session {
         /// Last `n` non-blank-trailing lines of a chunk of screen text.
         fn tail_lines(contents: &str, n: usize) -> String {
             let mut lines: Vec<&str> = contents.lines().collect();
-            while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+            while lines.last().is_some_and(|l| l.trim().is_empty()) {
                 lines.pop();
             }
             let from = lines.len().saturating_sub(n);
@@ -1130,7 +1120,7 @@ mod tests {
     #[test]
     fn clean_selection_all_whitespace_returns_none() {
         assert_eq!(clean_selection("   \n  \n".into()), None);
-        assert_eq!(clean_selection("".into()), None);
+        assert_eq!(clean_selection(String::new()), None);
     }
 
     /// Interior blank lines are preserved; only trailing ones are dropped.

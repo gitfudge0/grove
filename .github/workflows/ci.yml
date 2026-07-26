@@ -61,8 +61,39 @@ jobs:
       - name: Clippy (production code)
         run: cargo clippy --workspace -- -D warnings
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      # nextest gives per-test process isolation and the retry/flaky policy in
+      # .config/nextest.toml (profile `ci`).
       - name: Run tests
-        run: cargo test --workspace --locked
+        run: cargo nextest run --workspace --locked --profile ci
+
+      # nextest cannot run doctests, so they need a separate `cargo test` pass.
+      - name: Run doctests
+        run: cargo test --doc --workspace --locked
+
+  hygiene:
+    name: Hygiene (typos, unused deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Both tools are source-level only (typos scans text, cargo-machete
+      # parses Cargo.toml/`use` statements with regexes), so this job needs
+      # neither a Rust toolchain nor the GUI build deps — it stays fast.
+      - name: Install typos and cargo-machete
+        uses: taiki-e/install-action@v2
+        with:
+          tool: typos-cli,cargo-machete
+
+      - name: Check spelling
+        run: typos
+
+      - name: Check for unused dependencies
+        run: cargo machete
 
   deny:
     name: Supply chain (cargo-deny)

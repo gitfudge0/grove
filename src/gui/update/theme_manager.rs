@@ -321,10 +321,10 @@ impl Grove {
             self.app.store.theme = Some(fallback.to_string());
             match kind {
                 grove_core::theme::ThemeKind::Dark => {
-                    self.app.store.theme_dark = Some(fallback.to_string())
+                    self.app.store.theme_dark = Some(fallback.to_string());
                 }
                 grove_core::theme::ThemeKind::Light => {
-                    self.app.store.theme_light = Some(fallback.to_string())
+                    self.app.store.theme_light = Some(fallback.to_string());
                 }
             }
             grove_core::storage::persist(&self.app.store);

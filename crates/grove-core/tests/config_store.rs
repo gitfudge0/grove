@@ -104,13 +104,13 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
             Project {
                 name: "myapp".into(),
                 path: "/home/user/myapp".into(),
-                scripts: Default::default(),
+                scripts: grove_core::storage::ProjectScripts::default(),
                 theme: Some("dracula".into()),
             },
             Project {
                 name: "other".into(),
                 path: "/tmp/other".into(),
-                scripts: Default::default(),
+                scripts: grove_core::storage::ProjectScripts::default(),
                 theme: None,
             },
         ],
@@ -195,7 +195,7 @@ fn malformed_json_on_disk_fails_to_parse_as_store() {
 fn save_then_load_round_trips_through_real_paths() {
     let _lock = CONFIG_DIR_ENV_TEST_LOCK
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let dir = tempfile::tempdir().expect("tempdir");
     std::env::set_var(storage::CONFIG_DIR_ENV, dir.path());
@@ -204,7 +204,7 @@ fn save_then_load_round_trips_through_real_paths() {
         projects: vec![Project {
             name: "myapp".into(),
             path: "/home/user/myapp".into(),
-            scripts: Default::default(),
+            scripts: grove_core::storage::ProjectScripts::default(),
             theme: Some("dracula".into()),
         }],
         default_agent: Some(Agent::Codex),

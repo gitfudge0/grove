@@ -26,7 +26,7 @@ fn path_for(name: &str) -> Result<PathBuf> {
     if name.contains('/') || name.contains('\\') || name.contains("..") {
         return Err(SessionError::InvalidName(name.to_string()));
     }
-    Ok(sessions_dir()?.join(format!("{}.json", name)))
+    Ok(sessions_dir()?.join(format!("{name}.json")))
 }
 
 pub fn write(name: &str, meta: &SessionMeta) -> Result<()> {
