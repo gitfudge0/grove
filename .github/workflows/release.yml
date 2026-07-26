@@ -137,7 +137,9 @@ jobs:
           set -euo pipefail
           VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
           mkdir -p dist
-          cargo wix --no-build --nocapture -o "dist/Grove-${VERSION}-windows-x86_64-alpha.msi"
+          # -p grove: required since the grove-core workspace split — cargo-wix
+          # refuses to guess which workspace member to package.
+          cargo wix -p grove --no-build --nocapture -o "dist/Grove-${VERSION}-windows-x86_64-alpha.msi"
           echo "Built dist/Grove-${VERSION}-windows-x86_64-alpha.msi"
 
       - name: Upload bundles to release
