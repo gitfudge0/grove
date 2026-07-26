@@ -94,6 +94,8 @@ the desktop app has three sidebar views:
 
 from an active desktop session, the `term` control opens a right-docked shell for the same worktree. you can keep the agent on one side and run git, tests, or edits in the adjacent terminal panel.
 
+the `mod+n` launcher doubles as a command palette: recent worktrees first, plus settings, per-project themes, and each project's setup/run/teardown scripts as row actions.
+
 grove supports two session backends:
 
 | backend | when to use | persistence |
@@ -109,7 +111,7 @@ on first launch with `tmux` installed, grove asks which backend to use. use the 
 
 | shortcut | action |
 |---|---|
-| `mod+n` | open the new-session launcher |
+| `mod+n` | open the launcher / command palette |
 | `cmd+alt+n` (macOS) / `ctrl+alt+n` | new session in the current worktree — note: no shift, so this is not `mod+alt+n` |
 | `mod+j` / `mod+k` | next / previous session (visible order) |
 | `mod+1`..`mod+9` | select the nth session |
@@ -138,9 +140,9 @@ each agent must be installed and available on your `PATH`. grove does not bundle
 
 ## themes
 
-grove ships with 37 themes (23 dark, 14 light). the default is tokyonight. use the settings button to open the theme picker; the selection persists across launches.
+grove ships with 31 curated themes (17 dark, 14 light). the default is tokyonight. use the settings button to open the theme picker; the selection persists across launches. you can also add your own: paste a theme (json or named hex lines) into the custom-theme manager in settings, and it joins the picker alongside the built-ins.
 
-themes are colorways, not chrome. every screen reads correctly across all 37, because grove paints by semantic role (`fg`, `bg`, `comment`, `green` for running state, `yellow` for keybinding letters, `red` for errors) rather than fixed hex values. see [DESIGN.md](DESIGN.md) for the role contract.
+themes are colorways, not chrome. every screen reads correctly across all of them, because grove paints by semantic role (`fg`, `bg`, `comment`, `green` for running state, `yellow` for keybinding letters, `red` for errors) rather than fixed hex values. see [DESIGN.md](DESIGN.md) for the role contract.
 
 ## requirements
 
