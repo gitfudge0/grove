@@ -18,13 +18,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # No `toolchain`/`channel` input: dtolnay/rust-toolchain@master reads
-      # the pinned channel straight out of rust-toolchain.toml, so the file
-      # is the single source of truth for both local and CI builds.
+      # No `toolchain` input: actions-rust-lang reads the pinned channel out
+      # of rust-toolchain.toml, so the file is the single source of truth for
+      # both local and CI builds. (dtolnay/rust-toolchain can't do this — it
+      # hard-requires an explicit toolchain input.) cache: false because the
+      # explicit cache step below already covers registry + target.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt, clippy
+          cache: false
 
       - name: Cache cargo
         uses: actions/cache@v4
