@@ -122,7 +122,15 @@ pub fn list_worktrees(project_path: &str) -> Vec<Worktree> {
     // Guarantee the project root is always present at the top, even if git
     // emitted nothing (not a repo / fresh init with no HEAD) or somehow didn't
     // include it. The root is the user's default landing spot.
-    let has_root = result.iter().any(|w| w.path == project_path);
+    // Compare canonicalized paths: git prints resolved paths (on macOS,
+    // /tmp and /var are symlinks into /private), so a raw string compare
+    // would miss the root and duplicate it whenever the project was added
+    // via a symlinked path.
+    let canon = |p: &str| fs_err::canonicalize(p).unwrap_or_else(|_| p.into());
+    let project_canon = canon(project_path);
+    let has_root = result
+        .iter()
+        .any(|w| w.path == project_path || canon(&w.path) == project_canon);
     if !has_root {
         result.insert(0, root_worktree(project_path));
     }
