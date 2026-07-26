@@ -85,9 +85,19 @@ fn pid_is_live(pid: u32) -> bool {
     }
     #[cfg(all(unix, not(target_os = "linux")))]
     {
+        // kill(2) gives pid 0 and negative pids special meanings ("this
+        // process group" / "every process"), and a pid that overflows pid_t
+        // would wrap into that range — none of those can name a real single
+        // process, so they are dead by definition, not a question for kill.
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        if pid <= 0 {
+            return false;
+        }
         // signal 0 performs the permission/existence checks without signalling.
         // EPERM (a live process we don't own) also means "alive".
-        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        let rc = unsafe { libc::kill(pid, 0) };
         rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
     #[cfg(not(unix))]
