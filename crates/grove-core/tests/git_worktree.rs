@@ -115,7 +115,12 @@ fn list_worktrees_on_clean_repo_returns_only_main_worktree() {
         worktrees[0].is_main,
         "the sole entry must be the main worktree"
     );
-    assert_eq!(worktrees[0].path, repo_str);
+    // git prints resolved paths (macOS: /var -> /private/var), so compare
+    // canonicalized forms rather than raw strings.
+    assert_eq!(
+        fs::canonicalize(&worktrees[0].path).expect("canonicalize listed path"),
+        fs::canonicalize(repo_str).expect("canonicalize repo path"),
+    );
 }
 
 /// Pointing `list_worktrees` at a directory that is not a git repository
