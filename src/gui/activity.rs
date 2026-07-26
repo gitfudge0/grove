@@ -4,7 +4,7 @@
 //! Classification is best-effort and cosmetic: states drive only sidebar
 //! visuals and the macOS dock badge, never behavior.
 
-use crate::agent::Agent;
+use grove_core::agent::Agent;
 use std::time::Duration;
 
 /// Output younger than this counts as "actively producing".
@@ -307,7 +307,10 @@ mod tests {
     fn interaction_redraw_is_not_working() {
         let mut signals = sig(true, 0, false, false, true);
         signals.interacting = true;
-        assert_eq!(classify(Agent::Terminal, "❯ ", &signals), ActivityState::Idle);
+        assert_eq!(
+            classify(Agent::Terminal, "❯ ", &signals),
+            ActivityState::Idle
+        );
     }
 
     /// A Done session that the user resizes must not flip back to Working.
@@ -325,7 +328,10 @@ mod tests {
         let mut signals = sig(true, 0, false, false, true);
         signals.interacting = true;
         let signals = with_title(signals, "\u{2802} Cogitating…");
-        assert_eq!(classify(Agent::Claude, "", &signals), ActivityState::Working);
+        assert_eq!(
+            classify(Agent::Claude, "", &signals),
+            ActivityState::Working
+        );
     }
 
     /// While interacting, a genuinely working agent is still caught by its

@@ -1,0 +1,74 @@
+name: CI
+
+# Run formatting, lint, and test checks on every push to main and on every
+# pull request, so regressions are caught before they land.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # No `toolchain`/`channel` input: dtolnay/rust-toolchain@master reads
+      # the pinned channel straight out of rust-toolchain.toml, so the file
+      # is the single source of truth for both local and CI builds.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-cargo-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ci-cargo-${{ matrix.os }}-
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # GUI (iced) + bundling prerequisites.
+          sudo apt-get install -y \
+            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
+            librsvg2-dev libssl-dev pkg-config dpkg
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      # Two clippy passes are intentional: tests may `unwrap()`/`expect()`
+      # freely, but production code may not (see [lints.clippy] in
+      # Cargo.toml). Collapsing this into one pass would either let
+      # production code slip past the deny, or force test code to stop
+      # unwrapping.
+      - name: Clippy (all targets, tests allowed to unwrap)
+        run: cargo clippy --workspace --all-targets -- -D warnings -A clippy::unwrap_used -A clippy::expect_used
+
+      # Production paths only (no --all-targets, so #[cfg(test)] modules
+      # aren't compiled here) — the Cargo.toml unwrap/expect denies apply.
+      - name: Clippy (production code)
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+  deny:
+    name: Supply chain (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cargo-deny check
+        uses: EmbarkStudios/cargo-deny-action@v2

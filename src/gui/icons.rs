@@ -1,35 +1,88 @@
 //! Inline SVG sprite. Avoids depending on system glyph fonts so the GUI
 //! looks identical across platforms.
 
-use super::state::Msg;
 use iced::widget::svg;
 use iced::{Color, Element};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
-pub fn icon<'a>(name: &str, size: f32, color: Color) -> Element<'a, Msg> {
-    let s = svg_for(name);
-    svg(svg::Handle::from_memory(s.into_bytes()))
+thread_local! {
+    /// One `svg::Handle` per icon name, built the first time that icon is
+    /// drawn. The handle's identity is what the renderer keys its parsed/
+    /// rasterized SVG cache on, so rebuilding it per call (the GUI redraws
+    /// ~16×/s) would re-parse and re-raster every icon on every frame. The
+    /// color is *not* baked into the SVG text — it stays in `svg::Style`, so
+    /// one handle serves every color.
+    ///
+    /// Thread-local rather than a global `Mutex`: every `icon()` call comes
+    /// from `view()` on the UI thread, so the lock was pure per-call overhead
+    /// (hundreds of acquisitions per frame) buying nothing.
+    static ICON_HANDLES: RefCell<HashMap<String, svg::Handle>> =
+        RefCell::new(HashMap::new());
+}
+
+fn icon_handle(name: &str) -> svg::Handle {
+    ICON_HANDLES.with(|cache| {
+        let mut map = cache.borrow_mut();
+        if let Some(h) = map.get(name) {
+            return h.clone();
+        }
+        let h = svg::Handle::from_memory(svg_for(name).into_bytes());
+        map.insert(name.to_string(), h.clone());
+        h
+    })
+}
+
+pub(in crate::gui) fn icon<'a, M: 'a>(name: &str, size: f32, color: Color) -> Element<'a, M> {
+    svg(icon_handle(name))
         .width(size)
         .height(size)
         .style(move |_, _| svg::Style { color: Some(color) })
         .into()
 }
 
+/// Number of distinct spinner frames. The arc rotates 360°/`SPINNER_FRAMES`
+/// per step, and each frame is a pre-built handle — a fresh handle per tick
+/// would force the renderer to re-parse and re-raster the SVG every frame.
+const SPINNER_FRAMES: u32 = 12;
+
+static SPINNER_HANDLES: OnceLock<Vec<svg::Handle>> = OnceLock::new();
+
 /// Continuously rotating arc — the Working/loading indicator. `tick` is the
-/// GUI `blink_tick`; the arc advances 12° per tick for a smooth spin without
-/// any glyph-font dependency or discrete frame array.
-pub fn spinner<'a>(size: f32, color: Color, tick: u32) -> Element<'a, Msg> {
-    let deg = (tick.wrapping_mul(12) % 360) as f32;
-    // Open ~270° arc, gapped at the top-left, so the rotation is visible.
-    let inner =
-        format!(r#"<path d="M8 1.5a6.5 6.5 0 1 1-4.6 1.9" transform="rotate({deg} 8 8)"/>"#);
-    let s = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{inner}</svg>"#
-    );
-    svg(svg::Handle::from_memory(s.into_bytes()))
+/// GUI `blink_tick`; the arc advances one of `SPINNER_FRAMES` fixed steps
+/// every 3 ticks, so the spin reuses a small set of cached handles instead of
+/// minting a new SVG per frame.
+pub(in crate::gui) fn spinner<'a, M: 'a>(size: f32, color: Color, tick: u32) -> Element<'a, M> {
+    let frames = SPINNER_HANDLES.get_or_init(|| {
+        (0..SPINNER_FRAMES)
+            .map(|f| {
+                let deg = f * (360 / SPINNER_FRAMES);
+                // Open ~270° arc, gapped at the top-left, so the rotation is
+                // visible.
+                let inner = format!(
+                    r#"<path d="M8 1.5a6.5 6.5 0 1 1-4.6 1.9" transform="rotate({deg} 8 8)"/>"#
+                );
+                svg::Handle::from_memory(wrap_svg(&inner).into_bytes())
+            })
+            .collect()
+    });
+    let idx = (tick / 3 % SPINNER_FRAMES) as usize;
+    let handle = frames
+        .get(idx)
+        .cloned()
+        .unwrap_or_else(|| svg::Handle::from_memory(wrap_svg("").into_bytes()));
+    svg(handle)
         .width(size)
         .height(size)
         .style(move |_, _| svg::Style { color: Some(color) })
         .into()
+}
+
+fn wrap_svg(inner: &str) -> String {
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{inner}</svg>"#
+    )
 }
 
 fn svg_for(name: &str) -> String {
@@ -138,7 +191,5 @@ fn svg_for(name: &str) -> String {
         }
         _ => "",
     };
-    format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{inner}</svg>"#
-    )
+    wrap_svg(inner)
 }

@@ -19,7 +19,7 @@ pub fn rebuild_row_runs(
     screen: &vt100::Screen,
     row: u16,
     cols: u16,
-    theme: &crate::theme::Theme,
+    theme: &grove_core::theme::Theme,
 ) -> Vec<StyledRun> {
     let mut runs: Vec<StyledRun> = Vec::new();
     let mut buf = String::new();
@@ -31,7 +31,14 @@ pub fn rebuild_row_runs(
     for col in 0..cols {
         let (ch, fg, bg, bold) = match screen.cell(row, col) {
             Some(cell) => {
-                let ch = cell.contents().chars().next().unwrap_or(' ');
+                // `contents()` allocates a `String` per cell; blank cells are
+                // the overwhelming majority of a terminal grid, so skip it for
+                // them entirely.
+                let ch = if cell.has_contents() {
+                    cell.contents().chars().next().unwrap_or(' ')
+                } else {
+                    ' '
+                };
                 let mut fg = vt_color_opt(cell.fgcolor(), theme);
                 let mut bg = vt_color_opt(cell.bgcolor(), theme);
                 if cell.inverse() {
@@ -82,6 +89,11 @@ pub struct PtyProgram {
     pub pane: PtyPane,
     pub rows: Arc<Vec<Vec<StyledRun>>>,
     pub cache: Arc<canvas::Cache>,
+    /// Separate cache for the blinking cursor block. Kept apart from `cache`
+    /// so the ~2 Hz blink doesn't invalidate the screen geometry, and cleared
+    /// by `pty()` only when `(cursor, cursor_visible)` actually changes — so a
+    /// steady cursor draws no `Frame` at all.
+    pub cursor_cache: Arc<canvas::Cache>,
     pub selection: Option<(PtyCell, PtyCell)>,
     /// Terminal cursor position (row, col). `None` when the running program
     /// has hidden the cursor (e.g. vim, htop manage their own cursor).
@@ -220,7 +232,15 @@ impl canvas::Program<Msg> for PtyProgram {
                     let y = r_i as f32 * CELL_H;
                     let mut col_i: usize = 0;
                     for run in row {
-                        let n = run.text.chars().count();
+                        // ASCII is one char per byte, and `mono_covers` is
+                        // true for all of it — the common case skips both the
+                        // char-count scan and the segmentation below.
+                        let ascii = run.text.is_ascii();
+                        let n = if ascii {
+                            run.text.len()
+                        } else {
+                            run.text.chars().count()
+                        };
                         let x = col_i as f32 * CELL_W;
                         let w = n as f32 * CELL_W;
                         if let Some(bg) = run.bg {
@@ -234,16 +254,21 @@ impl canvas::Program<Msg> for PtyProgram {
                         // advanced shaping so cosmic-text falls back to a system
                         // font instead of painting tofu. Each segment is drawn
                         // at its own column, so the monospace grid never drifts.
-                        let mut segs: Vec<(usize, String, bool)> = Vec::new();
-                        let mut idx = col_i;
-                        for ch in run.text.chars() {
-                            let covered = mono_covers(ch);
-                            match segs.last_mut() {
-                                Some((_, s, c)) if *c == covered => s.push(ch),
-                                _ => segs.push((idx, String::from(ch), covered)),
+                        let segs: Vec<(usize, String, bool)> = if ascii {
+                            vec![(col_i, run.text.clone(), true)]
+                        } else {
+                            let mut segs: Vec<(usize, String, bool)> = Vec::new();
+                            let mut idx = col_i;
+                            for ch in run.text.chars() {
+                                let covered = mono_covers(ch);
+                                match segs.last_mut() {
+                                    Some((_, s, c)) if *c == covered => s.push(ch),
+                                    _ => segs.push((idx, String::from(ch), covered)),
+                                }
+                                idx += 1;
                             }
-                            idx += 1;
-                        }
+                            segs
+                        };
                         for (start, content, covered) in segs {
                             frame.fill_text(canvas::Text {
                                 content,
@@ -273,7 +298,17 @@ impl canvas::Program<Msg> for PtyProgram {
             let cols = self
                 .rows
                 .first()
-                .map(|r| r.iter().map(|run| run.text.chars().count()).sum::<usize>())
+                .map(|r| {
+                    r.iter()
+                        .map(|run| {
+                            if run.text.is_ascii() {
+                                run.text.len()
+                            } else {
+                                run.text.chars().count()
+                            }
+                        })
+                        .sum::<usize>()
+                })
                 .unwrap_or(0);
             let rows = self.rows.len();
             let mut overlay = Frame::new(renderer, bounds.size());
@@ -282,15 +317,16 @@ impl canvas::Program<Msg> for PtyProgram {
         }
         if self.cursor_visible {
             if let Some((crow, ccol)) = self.cursor {
-                let mut cursor_frame = Frame::new(renderer, bounds.size());
-                let x = ccol as f32 * CELL_W;
-                let y = crow as f32 * CELL_H;
-                cursor_frame.fill_rectangle(
-                    Point::new(x, y),
-                    Size::new(CELL_W, CELL_H),
-                    self.cursor_color,
+                out.push(
+                    self.cursor_cache
+                        .draw(renderer, bounds.size(), |frame: &mut Frame| {
+                            frame.fill_rectangle(
+                                Point::new(ccol as f32 * CELL_W, crow as f32 * CELL_H),
+                                Size::new(CELL_W, CELL_H),
+                                self.cursor_color,
+                            );
+                        }),
                 );
-                out.push(cursor_frame.into_geometry());
             }
         }
         out
@@ -347,7 +383,7 @@ pub fn normalize_selection(a: PtyCell, b: PtyCell) -> (usize, usize, usize, usiz
     }
 }
 
-fn vt_color_opt(c: vt100::Color, theme: &crate::theme::Theme) -> Option<Color> {
+fn vt_color_opt(c: vt100::Color, theme: &grove_core::theme::Theme) -> Option<Color> {
     match c {
         vt100::Color::Default => None,
         vt100::Color::Idx(i) => Some(ansi_idx(i, theme)),
@@ -355,7 +391,7 @@ fn vt_color_opt(c: vt100::Color, theme: &crate::theme::Theme) -> Option<Color> {
     }
 }
 
-fn ansi_idx(i: u8, theme: &crate::theme::Theme) -> Color {
+fn ansi_idx(i: u8, theme: &grove_core::theme::Theme) -> Color {
     match i {
         0 => c::bg_strip_of(theme),
         1 | 9 => c::red_of(theme),

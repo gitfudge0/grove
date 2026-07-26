@@ -11,25 +11,37 @@
 //! - [`keys`]     — keyboard → PTY byte mapping
 //! - [`drop`]     — dropped file paths → PTY text
 //! - [`metrics`]  — layout constants
+//! - [`add_project`] — two-step add-project wizard (`Modal::AddProject`)
+//! - [`onboarding`] — first-run onboarding wizard view
 //! - [`palette`]  — color tokens
+//! - [`scripts_editor`] — per-project lifecycle-scripts editor
+//! - [`session_launcher`] — command palette / session launcher (`Modal::SessionLauncher`): state,
+//!   behavior, keys, and view, split across its own directory (see that module's doc comment)
 //! - [`slide`]    — draw-only translation wrapper for the grid slide animation
+//! - [`theme_manager_editor`] — `Modal::ThemeManager`'s EDITOR sub-view
 
 mod activity;
+mod add_project;
 mod dock;
 mod drop;
 mod icons;
 mod keys;
 pub(crate) mod launcher;
 mod metrics;
+mod onboarding;
 mod palette;
 mod pty;
 mod rows;
+mod scripts_editor;
+mod session_launcher;
 mod slide;
 mod state;
+mod theme_manager_editor;
 pub(crate) mod update;
 mod view;
 mod widgets;
 
+use crate::gui::state::UpgradeMsg;
 use anyhow::Result;
 use iced::{Size, Task, Theme};
 use state::{Grove, Msg};
@@ -37,7 +49,7 @@ use state::{Grove, Msg};
 pub fn run() -> Result<()> {
     // When launched from Finder/Launchpad/.desktop the process inherits a
     // minimal PATH; recover the user's login PATH before spawning any PTYs.
-    crate::env_path::ensure_login_path();
+    grove_core::env_path::ensure_login_path();
 
     iced::application(
         || {
@@ -47,7 +59,7 @@ pub fn run() -> Result<()> {
                 async {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 },
-                |_| Msg::CheckForUpdates { manual: false },
+                |_| Msg::Upgrade(UpgradeMsg::CheckForUpdates { manual: false }),
             );
             // Seed the OS appearance immediately so "follow system" resolves
             // to the real mode on the first frame rather than waiting for the
@@ -59,11 +71,11 @@ pub fn run() -> Result<()> {
         Grove::view,
     )
     .title("grove")
-    .theme(|_: &Grove| match crate::theme::current().kind {
-        crate::theme::ThemeKind::Light => Theme::Light,
-        crate::theme::ThemeKind::Dark => Theme::Dark,
+    .theme(|_: &Grove| match grove_core::theme::current().kind {
+        grove_core::theme::ThemeKind::Light => Theme::Light,
+        grove_core::theme::ThemeKind::Dark => Theme::Dark,
     })
-    .scale_factor(|state| state.ui_zoom)
+    .scale_factor(|state| state.pty_layout.zoom)
     .subscription(Grove::subscription)
     .font(metrics::PLEX_SANS_REGULAR)
     .font(metrics::PLEX_SANS_BOLD)

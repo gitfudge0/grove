@@ -1,21 +1,25 @@
 //! Anonymous product telemetry (PostHog). No-ops until an API key is set.
 
-// ponytail: paste PostHog project API key; telemetry no-ops while empty
-const POSTHOG_API_KEY: &str = "phc_wECBzCsyqCpSAqgMSdFfsbR3yneyJEUPjtESi5ArsSQ7";
+// Supplied at build time via `GROVE_POSTHOG_KEY`; telemetry no-ops when unset.
+const POSTHOG_API_KEY: Option<&str> = option_env!("GROVE_POSTHOG_KEY");
 const POSTHOG_ENDPOINT: &str = "https://us.i.posthog.com/i/v0/e/";
 
+use fs_err as fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-static ENABLED: AtomicBool = AtomicBool::new(true);
+/// Starts `false` so nothing is transmitted before the stored
+/// `telemetry_enabled` preference has been read; `set_enabled` flips it on at
+/// startup once the store is loaded.
+static ENABLED: AtomicBool = AtomicBool::new(false);
 static ID: OnceLock<String> = OnceLock::new();
 
 /// Whether telemetry should currently be sent: requires a compiled-in API
 /// key, respects the `GROVE_TELEMETRY=off` escape hatch, and the runtime
 /// opt-out toggle in settings.
 pub fn enabled() -> bool {
-    if POSTHOG_API_KEY.is_empty() {
+    if api_key().is_none() {
         return false;
     }
     if let Ok(v) = std::env::var("GROVE_TELEMETRY") {
@@ -27,6 +31,12 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
+/// The compiled-in PostHog key, if one was baked in. `None` (or an empty
+/// value) turns every send path into a no-op.
+fn api_key() -> Option<&'static str> {
+    POSTHOG_API_KEY.filter(|k| !k.is_empty())
+}
+
 pub fn set_enabled(v: bool) {
     ENABLED.store(v, Ordering::Relaxed);
 }
@@ -36,7 +46,7 @@ pub fn set_enabled(v: bool) {
 pub fn distinct_id() -> String {
     ID.get_or_init(|| {
         if let Some(path) = telemetry_id_path() {
-            if let Ok(existing) = std::fs::read_to_string(&path) {
+            if let Ok(existing) = fs::read_to_string(&path) {
                 let trimmed = existing.trim();
                 if !trimmed.is_empty() {
                     return trimmed.to_string();
@@ -44,9 +54,11 @@ pub fn distinct_id() -> String {
             }
             let id = generate_id();
             if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                let _ = fs::create_dir_all(parent);
             }
-            let _ = std::fs::write(&path, &id);
+            if let Err(e) = fs::write(&path, &id) {
+                tracing::debug!(error = %e, "failed to persist telemetry id");
+            }
             return id;
         }
         generate_id()
@@ -55,7 +67,10 @@ pub fn distinct_id() -> String {
 }
 
 fn telemetry_id_path() -> Option<std::path::PathBuf> {
-    Some(dirs::config_dir()?.join("grove").join("telemetry_id"))
+    // Routed through grove-core so `GROVE_CONFIG_DIR` is honored.
+    grove_core::storage::config_dir()
+        .ok()
+        .map(|d| d.join("telemetry_id"))
 }
 
 fn generate_id() -> String {
@@ -65,6 +80,42 @@ fn generate_id() -> String {
     let nanos = dur.as_secs() as u128 * 1_000_000_000 + dur.subsec_nanos() as u128;
     let pid = std::process::id();
     format!("{:x}{:x}", nanos, pid)
+}
+
+/// Strip filesystem identity out of a string before it leaves the machine
+/// (used on the panic *location*, never on the panic message — the free-text
+/// payload is never transmitted): the user's home directory collapses to `~`,
+/// and any other
+/// absolute path is replaced wholesale with `<path>`. Relative paths — which
+/// is what panic locations look like (`src/app/mod.rs:12:5`) — are kept.
+pub fn scrub_paths(msg: &str) -> String {
+    let home = dirs::home_dir().and_then(|h| h.to_str().map(str::to_string));
+    let mut out = String::with_capacity(msg.len());
+    for (i, token) in msg.split(' ').enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(&scrub_token(token, home.as_deref()));
+    }
+    out
+}
+
+/// A token is path-looking if it starts with `/` or with the home directory
+/// (possibly behind common punctuation such as a quote or an opening paren).
+fn scrub_token(token: &str, home: Option<&str>) -> String {
+    let lead = token.len() - token.trim_start_matches(['"', '\'', '`', '(', '[']).len();
+    let (prefix, rest) = token.split_at(lead);
+    if let Some(home) = home {
+        if let Some(tail) = rest.strip_prefix(home) {
+            if tail.is_empty() || tail.starts_with('/') {
+                return format!("{prefix}~{tail}");
+            }
+        }
+    }
+    if rest.starts_with('/') {
+        return format!("{prefix}<path>");
+    }
+    token.to_string()
 }
 
 /// Fire-and-forget: send `event` with `props` on a detached thread.
@@ -85,6 +136,9 @@ pub fn track_blocking(event: &'static str, props: Vec<(&'static str, serde_json:
 }
 
 fn send(event: &str, props: Vec<(&'static str, serde_json::Value)>) {
+    let Some(api_key) = api_key() else {
+        return;
+    };
     let mut properties = serde_json::Map::new();
     properties.insert("$process_person_profile".to_string(), false.into());
     properties.insert("app_version".to_string(), env!("CARGO_PKG_VERSION").into());
@@ -93,7 +147,7 @@ fn send(event: &str, props: Vec<(&'static str, serde_json::Value)>) {
         properties.insert(k.to_string(), v);
     }
     let body = serde_json::json!({
-        "api_key": POSTHOG_API_KEY,
+        "api_key": api_key,
         "event": event,
         "distinct_id": distinct_id(),
         "properties": properties,
@@ -115,4 +169,42 @@ pub fn start_heartbeat() {
         std::thread::sleep(std::time::Duration::from_secs(3600));
         track("heartbeat", vec![]);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scrub_token;
+
+    fn scrub(msg: &str) -> String {
+        msg.split(' ')
+            .map(|t| scrub_token(t, Some("/home/tester")))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn home_collapses_to_tilde() {
+        assert_eq!(
+            scrub("open /home/tester/dev/x failed"),
+            "open ~/dev/x failed"
+        );
+        assert_eq!(scrub("/home/tester"), "~");
+    }
+
+    #[test]
+    fn other_absolute_paths_are_redacted() {
+        assert_eq!(scrub("no /etc/secret/key here"), "no <path> here");
+        assert_eq!(scrub("\"/home/other/x\""), "\"<path>");
+    }
+
+    #[test]
+    fn panic_location_survives() {
+        let msg = "called on None, src/app/mod.rs:12:5";
+        assert_eq!(scrub(msg), msg);
+    }
+
+    #[test]
+    fn home_prefix_is_not_matched_mid_segment() {
+        assert_eq!(scrub("/home/tester2/x"), "<path>");
+    }
 }

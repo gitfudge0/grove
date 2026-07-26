@@ -1,16 +1,18 @@
-//! GUI color tokens, derived live from the active [`crate::theme`].
+//! GUI color tokens, derived live from the active [`grove_core::theme`].
 //!
 //! The shared theme exposes a flat `Theme` with `bg / bg_highlight / fg /
 //! fg_dark / comment` plus six accents. The GUI uses a richer surface
 //! vocabulary (rail, strip, hover, two border weights), so the missing tokens
 //! are synthesized by blending the base theme colors at fixed ratios.
 //!
-//! All accessors read [`crate::theme::current()`] on each call, so swapping
-//! themes at runtime takes effect on the next frame.
+//! All accessors read the active theme on each call, so swapping themes at
+//! runtime takes effect on the next frame. Reads go through
+//! `theme::with_current`, which serves a per-thread snapshot guarded by a
+//! generation counter — a token call costs an atomic load, not a lock.
 
-#![allow(non_snake_case, dead_code)]
+#![allow(non_snake_case)]
 
-use crate::theme;
+use grove_core::theme;
 use iced::Color;
 
 /// Public so the theme editor (`view.rs`) can render arbitrary draft-theme
@@ -32,10 +34,6 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
     )
 }
 
-fn is_dark() -> bool {
-    theme::with_current(|t| matches!(t.kind, theme::ThemeKind::Dark))
-}
-
 fn base_bg() -> Color {
     theme::with_current(|t| ic(t.bg))
 }
@@ -52,27 +50,20 @@ pub fn BG() -> Color {
 /// Rail / sidebar — slightly darker than BG on dark themes, slightly
 /// off-white on light themes.
 pub fn BG_RAIL() -> Color {
-    let bg = base_bg();
-    if is_dark() {
-        mix(bg, Color::BLACK, 0.18)
-    } else {
-        mix(bg, Color::BLACK, 0.04)
-    }
+    theme::with_current(|t| {
+        let d = if is_dark_of(t) { 0.18 } else { 0.04 };
+        mix(ic(t.bg), Color::BLACK, d)
+    })
 }
 
 /// Outer strip / chrome edge — darker than rail.
 pub fn BG_STRIP() -> Color {
-    let bg = base_bg();
-    if is_dark() {
-        mix(bg, Color::BLACK, 0.32)
-    } else {
-        mix(bg, Color::BLACK, 0.08)
-    }
+    theme::with_current(bg_strip_of)
 }
 
 /// Hover surface — partway between bg and bg_highlight.
 pub fn BG_HOVER() -> Color {
-    mix(base_bg(), theme::with_current(|t| ic(t.bg_highlight)), 0.55)
+    theme::with_current(bg_hover_of)
 }
 
 /// Active / selected row.
@@ -81,10 +72,10 @@ pub fn BG_HL() -> Color {
 }
 
 pub fn BORDER() -> Color {
-    mix(base_bg(), base_fg(), 0.16)
+    theme::with_current(border_of)
 }
 pub fn BORDER_SOFT() -> Color {
-    mix(base_bg(), base_fg(), 0.07)
+    theme::with_current(|t| mix(ic(t.bg), ic(t.fg), 0.07))
 }
 
 // ── overlays ─────────────────────────────────────────────────────────────
@@ -93,12 +84,17 @@ pub fn BORDER_SOFT() -> Color {
 /// fixed black. Dark themes dim toward black; light themes dim toward the
 /// foreground so the wash stays visible on near-white backgrounds.
 pub fn SCRIM() -> Color {
-    let base = if is_dark() {
-        mix(base_bg(), Color::BLACK, 0.9)
-    } else {
-        mix(base_bg(), base_fg(), 0.9)
-    };
-    Color { a: 0.16, ..base }
+    theme::with_current(|t| {
+        let toward = if is_dark_of(t) {
+            Color::BLACK
+        } else {
+            ic(t.fg)
+        };
+        Color {
+            a: 0.16,
+            ..mix(ic(t.bg), toward, 0.9)
+        }
+    })
 }
 
 // ── text ─────────────────────────────────────────────────────────────────
@@ -115,9 +111,6 @@ pub fn FG_MUTE() -> Color {
 
 // ── accents ──────────────────────────────────────────────────────────────
 
-pub fn BLUE() -> Color {
-    theme::with_current(|t| ic(t.blue))
-}
 pub fn CYAN() -> Color {
     theme::with_current(|t| ic(t.cyan))
 }
@@ -143,7 +136,7 @@ pub fn RED() -> Color {
 /// segmented control (e.g. "skip permissions"), distinct from the neutral
 /// `BG_HL()` used by ordinary active segments.
 pub fn RED_WASH() -> Color {
-    mix(RED(), BG(), 0.84)
+    theme::with_current(|t| mix(ic(t.red), ic(t.bg), 0.84))
 }
 
 // ── selection (focused Miller column) ──────────────────────────────────────

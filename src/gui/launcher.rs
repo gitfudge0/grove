@@ -40,7 +40,7 @@ pub fn insert_into_tile_order(tile_order: &mut Vec<usize>, at: usize) {
 /// Commit a tile drag with swap semantics: the dragged tile and the drop
 /// target trade positions directly; all other tiles are unaffected. No-op
 /// when the indices match or fall outside the order.
-pub fn swap_tiles(order: &mut Vec<usize>, src: usize, dst: usize) {
+pub fn swap_tiles(order: &mut [usize], src: usize, dst: usize) {
     if src == dst || src >= order.len() || dst >= order.len() {
         return;
     }
@@ -84,8 +84,8 @@ pub fn reconcile_tile_order(live_keys: &[String], saved_order: &[String]) -> Vec
 /// agent) — i.e. re-launching the same target moves it to the front instead
 /// of creating a duplicate entry — then truncate to 6.
 pub fn push_recent_launch(
-    recent: &mut Vec<crate::storage::RecentLaunch>,
-    launch: crate::storage::RecentLaunch,
+    recent: &mut Vec<grove_core::storage::RecentLaunch>,
+    launch: grove_core::storage::RecentLaunch,
 ) {
     recent.retain(|r| {
         !(r.project == launch.project && r.wt_path == launch.wt_path && r.agent == launch.agent)
@@ -379,9 +379,9 @@ mod tests {
     fn recent(
         project: &str,
         wt_path: &str,
-        agent: crate::agent::Agent,
-    ) -> crate::storage::RecentLaunch {
-        crate::storage::RecentLaunch {
+        agent: grove_core::agent::Agent,
+    ) -> grove_core::storage::RecentLaunch {
+        grove_core::storage::RecentLaunch {
             project: project.to_string(),
             wt_path: wt_path.to_string(),
             agent,
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn push_recent_launch_dedups_and_moves_to_front() {
-        use crate::agent::Agent;
+        use grove_core::agent::Agent;
         let mut recents = vec![
             recent("a", "/a", Agent::Claude),
             recent("b", "/b", Agent::Codex),
@@ -403,8 +403,8 @@ mod tests {
 
     #[test]
     fn push_recent_launch_truncates_beyond_six() {
-        use crate::agent::Agent;
-        let mut recents: Vec<crate::storage::RecentLaunch> = (0..6)
+        use grove_core::agent::Agent;
+        let mut recents: Vec<grove_core::storage::RecentLaunch> = (0..6)
             .map(|i| recent(&format!("p{i}"), &format!("/p{i}"), Agent::Claude))
             .collect();
         push_recent_launch(&mut recents, recent("new", "/new", Agent::Terminal));

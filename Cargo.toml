@@ -1,7 +1,39 @@
+[workspace]
+members = ["crates/grove-core"]
+
+[workspace.package]
+version = "0.43.0"
+edition = "2021"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+
+# Denied in production paths only. CI runs a second `--all-targets` pass with
+# these allowed, so test modules keep using unwrap() freely.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[workspace.dependencies]
+serde_json = "1"
+anyhow = "1"
+dirs = "5"
+vt100 = "0.15"
+ureq = { version = "2", features = ["tls"], default-features = false }
+semver = "1"
+tracing = "0.1"
+fs-err = "3"
+tempfile = "3"
+thiserror = "2"
+# Already in the tree via ureq's rustls stack — used only for `ring::digest`
+# (SHA-256 of a downloaded release asset), so this adds no new supply chain.
+ring = "0.17"
+
 [package]
 name = "grove"
-version = "0.42.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Grove — a worktree launchpad for AI coding agents"
 
 [[bin]]
@@ -22,23 +54,25 @@ short_description = "A worktree launchpad for AI coding agents"
 copyright = "Copyright (c) 2026 Grove"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-anyhow = "1"
-dirs = "5"
-portable-pty = "0.9"
-vt100 = "0.15"
+grove-core = { path = "crates/grove-core" }
+anyhow.workspace = true
+dirs.workspace = true
+serde_json.workspace = true
+vt100.workspace = true
+fs-err.workspace = true
 arboard = { version = "3", features = ["wayland-data-control"] }
 base64 = "0.22"
 keepawake = "0.6.0"
 iced = { version = "0.14.0", features = ["tokio", "advanced", "svg", "canvas"] }
-ureq = { version = "2", features = ["tls"], default-features = false }
-semver = "1"
+ureq.workspace = true
+semver.workspace = true
 tokio = { version = "1", features = ["time"] }
 rfd = "0.17"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
+[lints]
+workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"

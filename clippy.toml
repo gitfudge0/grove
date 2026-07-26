@@ -1,0 +1,26 @@
+# Architectural bans enforced via clippy::disallowed_methods.
+#
+# `std::fs` errors don't name the offending path (e.g. a bare "No such file
+# or directory (os error 2)"), which is the single most useful fact when
+# debugging a user's broken config or a git worktree gone missing. `fs_err`
+# is a drop-in replacement for `std::fs` that includes the path in its
+# `Display` output, so use it everywhere instead.
+disallowed-methods = [
+    { path = "std::fs::read", reason = "use fs_err::read instead — std::fs errors don't name the path" },
+    { path = "std::fs::read_to_string", reason = "use fs_err::read_to_string instead — std::fs errors don't name the path" },
+    { path = "std::fs::write", reason = "use fs_err::write instead — std::fs errors don't name the path" },
+    { path = "std::fs::copy", reason = "use fs_err::copy instead — std::fs errors don't name the path" },
+    { path = "std::fs::rename", reason = "use fs_err::rename instead — std::fs errors don't name the path" },
+    { path = "std::fs::remove_file", reason = "use fs_err::remove_file instead — std::fs errors don't name the path" },
+    { path = "std::fs::remove_dir", reason = "use fs_err::remove_dir instead — std::fs errors don't name the path" },
+    { path = "std::fs::remove_dir_all", reason = "use fs_err::remove_dir_all instead — std::fs errors don't name the path" },
+    { path = "std::fs::create_dir", reason = "use fs_err::create_dir instead — std::fs errors don't name the path" },
+    { path = "std::fs::create_dir_all", reason = "use fs_err::create_dir_all instead — std::fs errors don't name the path" },
+    { path = "std::fs::metadata", reason = "use fs_err::metadata instead — std::fs errors don't name the path" },
+    { path = "std::fs::read_dir", reason = "use fs_err::read_dir instead — std::fs errors don't name the path" },
+    { path = "std::fs::canonicalize", reason = "use fs_err::canonicalize instead — std::fs errors don't name the path" },
+    { path = "std::fs::File::open", reason = "use fs_err::File::open instead — std::fs errors don't name the path" },
+    { path = "std::fs::File::create", reason = "use fs_err::File::create instead — std::fs errors don't name the path" },
+    { path = "std::fs::OpenOptions::new", reason = "use fs_err::OpenOptions::new instead — std::fs errors don't name the path" },
+    { path = "std::env::set_current_dir", reason = "mutates process-global state; cargo test runs tests concurrently, so this silently races other tests" },
+]

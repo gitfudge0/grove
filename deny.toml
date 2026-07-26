@@ -1,0 +1,66 @@
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = [
+    # paste 1.0.15 is unmaintained (transitive proc-macro dependency). No
+    # maintained drop-in replacement exists, and it only runs at build time
+    # (never ships in the binary). Revisit when the dependent upgrades away
+    # from it.
+    "RUSTSEC-2024-0436",
+    # rustybuzz 0.20.1 is unmaintained, pulled in via iced's text-shaping
+    # stack. Not directly replaceable by Grove. Revisit on an iced release
+    # that moves off it.
+    "RUSTSEC-2026-0206",
+    # ttf-parser 0.25.1 is unmaintained, same iced font stack as
+    # rustybuzz above, same reasoning: not directly replaceable by Grove,
+    # revisit on an iced release that moves off it.
+    "RUSTSEC-2026-0192",
+    # quick-xml 0.39.4: quadratic runtime when parsing hostile XML.
+    # Reached only through wayland-scanner, a proc-macro that parses the
+    # Wayland protocol XML files shipped with the build at compile time —
+    # it never ships in the binary, and Grove never feeds it
+    # attacker-controlled XML, so this is unreachable in Grove's threat
+    # model. `cargo update` cannot fix it: 0.41 is a semver-major bump
+    # held back by the transitive dependent. Revisit if quick-xml ever
+    # appears on a runtime path.
+    "RUSTSEC-2026-0194",
+    # quick-xml 0.39.4: unbounded allocation when parsing hostile XML.
+    # Same wayland-scanner build-time-only proc-macro path and reasoning
+    # as RUSTSEC-2026-0194 above.
+    "RUSTSEC-2026-0195",
+]
+
+[bans]
+multiple-versions = "warn"
+deny = []
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    # clipboard-win, error-code: via arboard / iced's clipboard stack.
+    # Permissive, no attribution required.
+    "BSL-1.0",
+    # hexf-parse: via iced. Public-domain dedication.
+    "CC0-1.0",
+    # option-ext: via dirs. Weak, file-level copyleft; using it unmodified
+    # as a library imposes nothing on Grove.
+    "MPL-2.0",
+    # webpki-roots 0.26.11 and 1.0.8: via ureq. Permissive data license
+    # covering a root-certificate dataset.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

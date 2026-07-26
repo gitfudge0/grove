@@ -10,6 +10,14 @@
 pub fn set_badge(count: usize) {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
+    // SAFETY: `msg_send!` is an unchecked FFI call into the Objective-C
+    // runtime, so the compiler can't verify the selectors exist or that
+    // receiver/return types match; correctness rests on the AppKit contract.
+    // This function is `#[cfg(target_os = "macos")]` so AppKit is present,
+    // `sharedApplication` is null-checked below, `dockTile`/`setBadgeLabel:`
+    // match AppKit's documented signatures, and iced drives the GUI on the
+    // main thread, which AppKit requires. A null `NSString*` label is the
+    // documented way to clear the badge, hence `null_mut()` when `count == 0`.
     unsafe {
         let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
         if app.is_null() {
@@ -32,6 +40,13 @@ pub fn request_attention() {
     use objc::{class, msg_send, sel, sel_impl};
     // NSRequestUserAttentionType::NSInformationalRequest = 10
     const NS_INFORMATIONAL_REQUEST: u64 = 10;
+    // SAFETY: `msg_send!` is an unchecked FFI call into the Objective-C
+    // runtime, so the compiler can't verify the selector exists or that
+    // receiver/return types match; correctness rests on the AppKit contract.
+    // This function is `#[cfg(target_os = "macos")]` so AppKit is present,
+    // `sharedApplication` is null-checked below, `requestUserAttention:`
+    // matches AppKit's documented signature, and iced drives the GUI on the
+    // main thread, which AppKit requires.
     unsafe {
         let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
         if app.is_null() {

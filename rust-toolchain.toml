@@ -1,0 +1,8 @@
+# Pinned (not "stable"): CI previously resolved whatever `stable` was on the
+# day it ran, so a new upstream Rust/Clippy release could turn CI red on a
+# commit nobody touched. Pinning makes local and CI lint results identical,
+# and makes bumping the toolchain (and therefore Clippy's lint set) an
+# explicit, reviewable change instead of something that happens to us.
+[toolchain]
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]

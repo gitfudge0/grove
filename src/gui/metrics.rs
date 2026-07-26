@@ -327,7 +327,7 @@ pub fn pty_cols_for_fraction(
 pub fn grid_layout(n: usize) -> (usize, usize) {
     let n = n.max(1);
     let cols = ((n as f64).sqrt().ceil() as usize).clamp(1, 4);
-    let rows = ((n + cols - 1) / cols).min(4);
+    let rows = n.div_ceil(cols).min(4);
     (cols, rows)
 }
 

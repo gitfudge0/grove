@@ -1,0 +1,31 @@
+[package]
+name = "grove-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Grove's domain layer — git/tmux/session/storage/theme/upgrade and friends"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+anyhow.workspace = true
+dirs.workspace = true
+portable-pty = "0.9"
+vt100.workspace = true
+ureq.workspace = true
+ring.workspace = true
+semver.workspace = true
+tracing.workspace = true
+fs-err.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

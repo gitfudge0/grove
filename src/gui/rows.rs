@@ -6,11 +6,13 @@ use super::metrics::{MONO_FONT, ROW_H, UI_BOLD, UI_FONT};
 use super::palette as c;
 use super::state::Msg;
 use super::widgets::{action_mini, action_mini_danger, clickable_row, split_start_button};
-use crate::agent::Agent;
-use crate::session::{Session, SessionStatus};
+use grove_core::agent::Agent;
+use grove_core::session::{Session, SessionStatus};
 use iced::border::Radius;
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Background, Border, Color, Element, Length, Padding, Shadow};
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 /// Branch "chip" — pill for feature branches, plain mono text for `main`.
 fn branch_chip<'a>(branch: &str, subtle: bool) -> Element<'a, Msg> {
@@ -42,17 +44,29 @@ fn branch_chip<'a>(branch: &str, subtle: bool) -> Element<'a, Msg> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn project_row<'a>(
-    idx: usize,
-    name: &str,
-    count: usize,
-    expanded: bool,
-    is_git: bool,
-    rollup: Option<ActivityState>,
-    tick: u32,
-    pulse: f32,
-) -> Element<'a, Msg> {
+/// Everything [`project_row`] needs to render one project header row.
+pub struct ProjectRowProps<'a> {
+    pub idx: usize,
+    pub name: &'a str,
+    pub count: usize,
+    pub expanded: bool,
+    pub is_git: bool,
+    pub rollup: Option<ActivityState>,
+    pub tick: u32,
+    pub pulse: f32,
+}
+
+pub fn project_row<'a>(props: ProjectRowProps<'_>) -> Element<'a, Msg> {
+    let ProjectRowProps {
+        idx,
+        name,
+        count,
+        expanded,
+        is_git,
+        rollup,
+        tick,
+        pulse,
+    } = props;
     let twist = if expanded { "chev-down" } else { "chev-right" };
     let has_sessions = count > 0;
     let count_color = if has_sessions {
@@ -142,7 +156,9 @@ pub fn project_row<'a>(
             .center_x(22)
             .center_y(22),
     )
-    .on_press(Msg::EditScripts { proj: idx })
+    .on_press(Msg::Scripts(crate::gui::scripts_editor::Msg::Open {
+        proj: idx,
+    }))
     .padding(0)
     .style(|_, status| {
         let hovered = matches!(status, button::Status::Hovered);
@@ -257,24 +273,43 @@ pub fn worktree_row_height(show_branch: bool) -> f32 {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn worktree_row<'a>(
-    proj: usize,
-    wt: usize,
-    name: &str,
-    branch: &str,
-    active: bool,
-    is_main: bool,
-    is_git: bool,
-    hovered: bool,
-    expanded: bool,
-    has_run: bool,
-    rollup: Option<ActivityState>,
-    tick: u32,
-    pulse: f32,
-    available: &[Agent],
-    git_suffix: Option<String>,
-) -> Element<'a, Msg> {
+/// Everything [`worktree_row`] needs to render one worktree row.
+pub struct WorktreeRowProps<'a> {
+    pub proj: usize,
+    pub wt: usize,
+    pub name: &'a str,
+    pub branch: &'a str,
+    pub active: bool,
+    pub is_main: bool,
+    pub is_git: bool,
+    pub hovered: bool,
+    pub expanded: bool,
+    pub has_run: bool,
+    pub rollup: Option<ActivityState>,
+    pub tick: u32,
+    pub pulse: f32,
+    pub available: &'a [Agent],
+    pub git_suffix: Option<String>,
+}
+
+pub fn worktree_row<'a>(props: WorktreeRowProps<'_>) -> Element<'a, Msg> {
+    let WorktreeRowProps {
+        proj,
+        wt,
+        name,
+        branch,
+        active,
+        is_main,
+        is_git,
+        hovered,
+        expanded,
+        has_run,
+        rollup,
+        tick,
+        pulse,
+        available,
+        git_suffix,
+    } = props;
     // (Height logic shared with the agent-menu overlay positioning in view.rs
     // via `worktree_shows_branch` / `worktree_row_height`.)
     // Split layout — action buttons are siblings of the left button, NOT
@@ -417,17 +452,29 @@ pub fn worktree_row<'a>(
     .into()
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn session_row<'a>(
-    idx: usize,
-    s: &Session,
-    wt_name: &str,
-    active: bool,
-    pending_kill: bool,
-    state: ActivityState,
-    tick: u32,
-    pulse: f32,
-) -> Element<'a, Msg> {
+/// Everything [`session_row`] needs to render one session row.
+pub struct SessionRowProps<'a> {
+    pub idx: usize,
+    pub session: &'a Session,
+    pub wt_name: &'a str,
+    pub active: bool,
+    pub pending_kill: bool,
+    pub state: ActivityState,
+    pub tick: u32,
+    pub pulse: f32,
+}
+
+pub fn session_row<'a>(props: SessionRowProps<'_>) -> Element<'a, Msg> {
+    let SessionRowProps {
+        idx,
+        session: s,
+        wt_name,
+        active,
+        pending_kill,
+        state,
+        tick,
+        pulse,
+    } = props;
     let agent_color = if active {
         c::CYAN()
     } else {
@@ -678,13 +725,59 @@ pub fn home_terminals_header<'a>(
     .into()
 }
 
+/// One `CONTEXT_CACHE` entry: the raw OSC title and salt the result was
+/// derived from, plus the result itself.
+type ContextEntry = (String, Vec<String>, Option<String>);
+
+thread_local! {
+    /// Memoized session-context derivations, keyed by `(session id, slot)`.
+    /// The stored tuple is `(raw OSC title, the strings stripped out of it,
+    /// result)`; a hit only needs the raw title (one lock, one alloc) instead
+    /// of the ~10 allocations the strip/sanitize pipeline costs. `view()` runs
+    /// ~16×/s per session row, and OSC titles change far more slowly.
+    static CONTEXT_CACHE: RefCell<HashMap<(u64, u8), ContextEntry>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Run `compute` over `s`'s current OSC title, reusing the previous result
+/// while neither that title nor `salt` (the other inputs `compute` closes
+/// over) has changed. `slot` distinguishes the derivations that share a
+/// session — they strip different things out of the same title.
+pub(crate) fn cached_context(
+    s: &Session,
+    slot: u8,
+    salt: &[&str],
+    compute: impl FnOnce(&str) -> Option<String>,
+) -> Option<String> {
+    let raw = s.current_title()?;
+    CONTEXT_CACHE.with(|cache| {
+        let mut map = cache.borrow_mut();
+        if let Some((cached_raw, cached_salt, out)) = map.get(&(s.id, slot)) {
+            if cached_raw == &raw && cached_salt.iter().eq(salt.iter()) {
+                return out.clone();
+            }
+        }
+        let out = compute(&raw);
+        map.insert(
+            (s.id, slot),
+            (
+                raw,
+                salt.iter().map(|x| x.to_string()).collect(),
+                out.clone(),
+            ),
+        );
+        out
+    })
+}
+
 /// Contextual title for a home terminal: its OSC window title (typically the
 /// current directory or running command), with the redundant terminal label
 /// stripped and unrenderable characters removed.
 pub fn terminal_context(s: &Session) -> Option<String> {
-    let raw = s.current_title()?;
-    let out = remove_all_ci(&raw, &s.label);
-    sanitize_ui_text(&out)
+    cached_context(s, 0, &[&s.label], |raw| {
+        let out = remove_all_ci(raw, &s.label);
+        sanitize_ui_text(&out)
+    })
 }
 
 /// Derive the short "context" string shown next to the agent name.
@@ -693,16 +786,17 @@ pub fn terminal_context(s: &Session) -> Option<String> {
 /// remainder is the actual task description. Returns `None` if nothing
 /// useful is left.
 fn session_context(s: &Session, wt_name: &str) -> Option<String> {
-    let raw = s.current_title()?;
     let strips: [&str; 3] = [wt_name, &s.label, s.agent.label()];
-    let mut out = raw.clone();
-    for needle in strips {
-        if needle.is_empty() {
-            continue;
+    cached_context(s, 1, &strips, |raw| {
+        let mut out = raw.to_string();
+        for needle in strips {
+            if needle.is_empty() {
+                continue;
+            }
+            out = remove_all_ci(&out, needle);
         }
-        out = remove_all_ci(&out, needle);
-    }
-    sanitize_ui_text(&out)
+        sanitize_ui_text(&out)
+    })
 }
 
 /// Strip characters the UI font (IBM Plex Sans) can't render — emoji, box
@@ -794,6 +888,22 @@ pub fn state_glyph<'a>(state: ActivityState, tick: u32, pulse: f32) -> Element<'
     container(inner).width(14).center_x(14).into()
 }
 
+/// Remove every case-insensitive occurrence of `needle` from `hay`, returning
+/// a UTF-8-safe result.
+fn remove_all_ci(hay: &str, needle: &str) -> String {
+    let hay_lower = hay.to_ascii_lowercase();
+    let needle_lower = needle.to_ascii_lowercase();
+    let mut out = String::with_capacity(hay.len());
+    let mut cursor = 0;
+    while let Some(rel) = hay_lower[cursor..].find(&needle_lower) {
+        let start = cursor + rel;
+        out.push_str(&hay[cursor..start]);
+        cursor = start + needle_lower.len();
+    }
+    out.push_str(&hay[cursor..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -851,20 +961,4 @@ mod tests {
         let result = sanitize_ui_text("fix: handle edge case");
         assert_eq!(result, Some("fix: handle edge case".into()));
     }
-}
-
-/// Remove every case-insensitive occurrence of `needle` from `hay`, returning
-/// a UTF-8-safe result.
-fn remove_all_ci(hay: &str, needle: &str) -> String {
-    let hay_lower = hay.to_ascii_lowercase();
-    let needle_lower = needle.to_ascii_lowercase();
-    let mut out = String::with_capacity(hay.len());
-    let mut cursor = 0;
-    while let Some(rel) = hay_lower[cursor..].find(&needle_lower) {
-        let start = cursor + rel;
-        out.push_str(&hay[cursor..start]);
-        cursor = start + needle_lower.len();
-    }
-    out.push_str(&hay[cursor..]);
-    out
 }
