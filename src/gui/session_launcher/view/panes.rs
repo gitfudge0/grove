@@ -1,12 +1,12 @@
-//! The palette's three non-settings states, one function each: the default
-//! recents/typing/browse-all list (`root_pane`), the "open with" agent picker
-//! (`options_pane`) and the "switch to session" drill-in (`switch_pane`).
+//! The palette's two non-settings states, one function each: the default
+//! recents/typing/browse-all list (`root_pane`) and the "switch to session"
+//! drill-in (`switch_pane`).
 //!
 //! Each takes the modal's partially-built `body` column (input zone + divider
 //! already pushed) and returns it with its own list zone, divider and footer
 //! appended — the shell in `super` owns everything around that.
 
-use super::super::state::{LauncherOptions, Msg, PaletteRow, RowActionsState};
+use super::super::state::{Msg, PaletteRow, RowActionsState};
 use crate::gui::icons::icon;
 use crate::gui::metrics::{MONO_FONT, UI_FONT};
 use crate::gui::palette as c;
@@ -214,8 +214,12 @@ impl Grove {
                             .iter()
                             .find(|w| w.path == rw)
                             .is_some_and(|w| w.is_main);
-                        list =
-                            list.push(self.palette_row_actions_strip(ra.proj, ra.action, is_main));
+                        list = list.push(self.palette_row_actions_strip(
+                            ra.proj,
+                            ra.action,
+                            ra.agent_sel,
+                            is_main,
+                        ));
                     }
                 }
             }
@@ -231,20 +235,22 @@ impl Grove {
         };
         body = body.push(list_zone);
         body = body.push(divider_h(c::BORDER_SOFT()));
-        body = body.push(if row_actions.is_some() {
+        body = body.push(if let Some(ra) = row_actions {
             // Row-actions strip open: the footer reflects that sub-state
             // directly rather than the underlying highlighted row — ⏎
             // runs the selected strip action (e.g. "Delete worktree"),
-            // not "open/launch".
-            footer_container(
-                row![
-                    footer_hint("↑↓", "choose"),
-                    footer_hint("⏎", "run"),
-                    footer_hint("esc", "back"),
-                ]
-                .spacing(14)
-                .into(),
-            )
+            // not "open/launch". ←→ only mean "agent" on the strip's
+            // "Launch session…" row, which hosts the agent icon bar, so
+            // the hint only shows there.
+            let mut hints = row![footer_hint("↑↓", "action")].spacing(14);
+            if ra.action == 0 {
+                hints = hints.push(footer_hint("←→", "agent"));
+                hints = hints.push(footer_hint("⏎", "launch"));
+            } else {
+                hints = hints.push(footer_hint("⏎", "run"));
+            }
+            hints = hints.push(footer_hint("esc", "back"));
+            footer_container(hints.into())
         } else {
             // Recent/Combo (project/worktree) rows expose the
             // tab->actions strip; settings rows get their own ⏎ verb
@@ -291,113 +297,6 @@ impl Grove {
                 .into(),
             )
         });
-        body
-    }
-
-    /// Options state: the resolved project/worktree pinned on top, a plain
-    /// "OPEN WITH" list of agents underneath.
-    pub(super) fn options_pane<'a>(
-        &'a self,
-        mut body: Column<'a, GMsg>,
-        r: &'a LauncherOptions,
-    ) -> Column<'a, GMsg> {
-        let worktrees = self.launcher_worktrees(r.proj);
-        let agent = self
-            .app
-            .available_agents
-            .get(r.agent)
-            .copied()
-            .unwrap_or(grove_core::agent::Agent::Terminal);
-        let pname = self
-            .app
-            .store
-            .projects
-            .get(r.proj)
-            .map(|p| p.name.clone())
-            .unwrap_or_default();
-        let wt_name = worktrees
-            .get(r.wt)
-            .map(|w| {
-                if w.branch.is_empty() {
-                    crate::app::path_basename(&w.path)
-                } else {
-                    w.branch.clone()
-                }
-            })
-            .unwrap_or_default();
-        let subtitle = format!("{pname} / {wt_name}");
-
-        // Pinned context row: quiet, non-interactive — just the currently
-        // selected agent's icon/label live-updating as ↑↓ moves.
-        let context_row =
-            container(self.palette_agent_content(agent, subtitle, &[], &[], None, true))
-                .width(Length::Fill)
-                .height(PALETTE_ROW_H)
-                .padding(Padding::from([0.0, 12.0]))
-                .align_y(iced::Alignment::Center)
-                .style(|_| container::Style {
-                    background: Some(Background::Color(c::BG_HL())),
-                    border: Border {
-                        color: Color::TRANSPARENT,
-                        width: 0.0,
-                        radius: Radius::from(6.0),
-                    },
-                    ..Default::default()
-                });
-
-        // Plain agent list: one 36px row per available agent.
-        let mut agent_list = Column::new().spacing(2);
-        for (i, ag) in self.app.available_agents.iter().enumerate() {
-            let active = i == r.agent;
-            let icon_color = if active { c::YELLOW() } else { c::FG_MUTE() };
-            let icon_slot = container(icon(ag.icon_name(), 16.0, icon_color))
-                .width(24.0)
-                .align_x(iced::alignment::Horizontal::Center);
-            let label_color = if active { c::FG() } else { c::FG_DIM() };
-            let mut content = row![
-                icon_slot,
-                text(cap(ag.label()))
-                    .font(UI_FONT)
-                    .size(13)
-                    .color(label_color),
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center);
-            if active {
-                content = content
-                    .push(Space::new().width(Length::Fill))
-                    .push(keycap_text("⏎", c::FG_DIM()));
-            }
-            agent_list = agent_list.push(launcher_row(
-                content,
-                active,
-                true,
-                GMsg::SessionLauncher(Msg::OptionsPick(i)),
-                36.0,
-            ));
-        }
-
-        let list_zone = container(
-            column![
-                context_row,
-                section_header("OPEN WITH", 12.0, 6.0),
-                agent_list,
-            ]
-            .spacing(0),
-        )
-        .padding(8)
-        .width(Length::Fill);
-        body = body.push(list_zone);
-        body = body.push(divider_h(c::BORDER_SOFT()));
-        body = body.push(footer_container(
-            row![
-                footer_hint("↑↓", "choose"),
-                footer_hint("⏎", "launch"),
-                footer_hint("esc", "back"),
-            ]
-            .spacing(14)
-            .into(),
-        ));
         body
     }
 

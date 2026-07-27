@@ -664,7 +664,7 @@ impl Grove {
         ))
     }
 
-    /// Default agent picker (D3): mirrors OPEN WITH's list —
+    /// Default agent picker (D3): a plain agent list —
     /// uninstalled tools are visible but inert (see
     /// `Grove::default_agent_pane_row_installed`).
     fn settings_default_agent_pane<'a>(

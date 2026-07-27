@@ -43,30 +43,21 @@ impl Grove {
             // chord's spurious character insert, not to block an actual paste.
             session_launcher::Msg::InputPasted(s) => self.launcher_input_changed(s),
             session_launcher::Msg::Activate(i) => self.launcher_activate(i),
-            session_launcher::Msg::OptionsPick(i) => {
-                let len = self.app.available_agents.len();
-                if let Some(LauncherState {
-                    options: Some(r), ..
-                }) = self.launcher_modal_mut()
-                {
-                    if i < len {
-                        r.agent = i;
-                    }
+            // Clicking an agent icon button in the strip's "Launch
+            // session…" bar both picks that agent and launches with it, so
+            // the ring never has to be moved separately first.
+            session_launcher::Msg::RowActionAgentLaunch(i) => {
+                let row_actions = self.launcher_row_actions();
+                if let Some(r) = row_actions {
+                    return self.launcher_run_row_action(r.proj, r.wt_path, i, 0);
                 }
-                self.launcher_start();
                 Task::none()
             }
             session_launcher::Msg::SwitchSessionPick(si) => self.launcher_switch_to(si),
             session_launcher::Msg::RowActionPick(action) => {
-                let row_actions = match self.launcher_modal() {
-                    Some(LauncherState {
-                        row_actions: Some(r),
-                        ..
-                    }) => Some(r.clone()),
-                    _ => None,
-                };
+                let row_actions = self.launcher_row_actions();
                 if let Some(r) = row_actions {
-                    return self.launcher_run_row_action(r.proj, r.wt_path, r.agent, action);
+                    return self.launcher_run_row_action(r.proj, r.wt_path, r.agent_sel, action);
                 }
                 Task::none()
             }

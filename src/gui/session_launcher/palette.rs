@@ -43,7 +43,6 @@ impl Grove {
             selected: 0,
             selected_identity: None,
             browse_all: false,
-            options: None,
             switch: None,
             switch_identity: None,
             row_actions: None,
@@ -52,24 +51,10 @@ impl Grove {
         self.set_palette_selected(0);
     }
 
-    /// Start the session for the current options-state selection: Enter, or
-    /// an agent row click (`Msg::SessionLauncher(Msg::OptionsPick)`, which sets the
-    /// selection then calls this). No-op outside options state, or if the
-    /// selection no longer resolves.
-    pub(in crate::gui) fn launcher_start(&mut self) {
-        let Some(LauncherState {
-            options: Some(r), ..
-        }) = self.launcher.clone()
-        else {
-            return;
-        };
-        self.launcher_launch(r.proj, r.wt, r.agent);
-    }
-
     /// Spawn the session for `(proj, wt, agent_idx)`, close the palette, and
     /// (grid always open here) append it to `tile_order` and focus it. Shared
-    /// by `launcher_activate`'s Recent/Combo case and `launcher_start`'s
-    /// options path.
+    /// by `launcher_activate`'s Recent/Combo case and the row-actions strip's
+    /// direct "Launch session…" path.
     pub(super) fn launcher_launch(&mut self, proj: usize, wt: usize, agent_idx: usize) {
         let Some(project) = self.app.store.projects.get(proj) else {
             return;
@@ -114,10 +99,10 @@ impl Grove {
     /// without going through `Msg::InputChanged`'s `global_mods` guard,
     /// which would otherwise swallow the paste too.
     pub(in crate::gui) fn launcher_input_changed(&mut self, s: String) -> Task<GMsg> {
-        // The switch-to-session drill-in filters live by `input` (same idiom
-        // as OPEN WITH's agent list, which also keeps its own state open
-        // while the query underneath changes) — resolved by identity (which
-        // session, not which position) before the mutable borrow below, same
+        // The switch-to-session drill-in filters live by `input` (it keeps
+        // its own state open while the query underneath changes) — resolved
+        // by identity (which session, not which position) before the mutable
+        // borrow below, same
         // principle as `resolve_selected` for the main list: a query edit
         // can reorder/drop rows in the filtered list, so re-anchoring by
         // position alone (the old `clamp`-based behavior) could land the
@@ -242,6 +227,39 @@ impl Grove {
         resolve_row_by_identity(rows, &identity, selected)
     }
 
+    /// The agent a `Recent`/`Combo` row should *show*: its own `agent`,
+    /// unless the row-actions strip is open on exactly this row, in which
+    /// case the strip's agent bar wins — walking that bar with ←/→ retitles
+    /// the row above it (mock F2→F3), so the row and the launch it's about
+    /// to perform can never disagree.
+    pub(super) fn palette_row_agent(&self, row: &PaletteRow) -> Agent {
+        let (PaletteRow::Recent {
+            proj,
+            wt_path,
+            agent,
+        }
+        | PaletteRow::Combo {
+            proj,
+            wt_path,
+            agent,
+        }) = row
+        else {
+            return Agent::Terminal;
+        };
+        let Some(ra) = self
+            .launcher_modal()
+            .and_then(|l| l.row_actions.as_ref())
+            .filter(|ra| ra.proj == *proj && ra.wt_path == *wt_path && ra.agent == *agent)
+        else {
+            return *agent;
+        };
+        self.app
+            .available_agents
+            .get(ra.agent_sel)
+            .copied()
+            .unwrap_or(*agent)
+    }
+
     /// Activate the row at `i` in the currently-rendered root/typing/
     /// browse-all list: launch a `Recent`/`Combo` row directly, or run the
     /// effect of an action row.
@@ -329,8 +347,7 @@ impl Grove {
     /// immediately, rather than still filtered by whatever root/typing query
     /// was active (e.g. "swi", which is how the row itself was found).
     /// Typing afterward re-filters as normal (`Msg::SessionLauncher(Msg::InputChanged)`).
-    /// Esc backs out without restoring that query — same as OPEN WITH, which
-    /// doesn't touch `input` at all going in or coming out.
+    /// Esc backs out without restoring that query.
     pub(in crate::gui) fn launcher_enter_switch(&mut self) {
         if let Some(LauncherState { input, .. }) = self.launcher_modal_mut() {
             input.clear();
@@ -340,16 +357,15 @@ impl Grove {
 
     /// Scroll the root/typed palette list so the selected row is centered —
     /// the un-drilled-in list's counterpart to `scroll_launcher_settings_
-    /// to_selection`. No-op whenever a sub-state (options, switch drill-in,
-    /// settings drill-in, or the row-actions strip) is showing instead of
-    /// this list — see the `else` branch in `view.rs` that renders it.
+    /// to_selection`. No-op whenever a sub-state (switch drill-in, settings
+    /// drill-in, or the row-actions strip) is showing instead of this list
+    /// — see the `else` branch in `view.rs` that renders it.
     pub(super) fn scroll_launcher_palette_to_selection(&self) -> Task<GMsg> {
         use iced::widget::scrollable::AbsoluteOffset;
         let Some(LauncherState {
             input,
             selected,
             browse_all,
-            options: None,
             switch: None,
             row_actions: None,
             settings: None,
@@ -403,6 +419,10 @@ impl Grove {
                     wt_path: wt_path.clone(),
                     agent: *agent,
                     action: 0,
+                    // The strip's agent bar opens on the row's own agent,
+                    // so ⏎ straight after tab is still the plain
+                    // launch-with-the-remembered-agent path.
+                    agent_sel: agent_sel_for(&self.app.available_agents, *agent),
                 };
                 if let Some(LauncherState { row_actions, .. }) = self.launcher_modal_mut() {
                     *row_actions = Some(ra);
@@ -426,15 +446,30 @@ impl Grove {
         Task::none()
     }
 
-    /// Enter the "Launch session…" flow for `(proj, wt_path)`: the full OPEN
-    /// WITH agent-picker state (`Modal::SessionLauncher::options`). Used by
-    /// the row-actions strip's "Launch session…" action (action `0`); `origin`
-    /// is that strip's state, restored on Esc from options.
-    pub(super) fn launcher_open_options_for(
+    /// The open row-actions strip's state, cloned — the mouse handlers
+    /// (`RowActionPick` / `RowActionAgentLaunch`) need it out of the borrow
+    /// before they can call back into `&mut self`.
+    pub(in crate::gui) fn launcher_row_actions(&self) -> Option<RowActionsState> {
+        match self.launcher_modal() {
+            Some(LauncherState {
+                row_actions: Some(r),
+                ..
+            }) => Some(r.clone()),
+            _ => None,
+        }
+    }
+
+    /// Launch `(proj, wt_path)` with `available_agents[agent_sel]` straight
+    /// away — the row-actions strip's "Launch session…" action (⏎ on it, a
+    /// click on the row, or a click on one of its agent icon buttons). An
+    /// out-of-range `agent_sel` (the agents list changed under an open
+    /// palette) falls back to the first agent rather than launching
+    /// nothing.
+    pub(super) fn launcher_launch_from_strip(
         &mut self,
         proj: usize,
-        wt_path: String,
-        origin: RowActionsState,
+        wt_path: &str,
+        agent_sel: usize,
     ) {
         let Some(wt) = self
             .launcher_worktrees(proj)
@@ -443,49 +478,12 @@ impl Grove {
         else {
             return;
         };
-        let pname = self
-            .app
-            .store
-            .projects
-            .get(proj)
-            .map(|p| p.name.clone())
-            .unwrap_or_default();
-        let agent = self
-            .app
-            .store
-            .recent_launches
-            .iter()
-            .find(|r| r.project == pname && r.wt_path == wt_path)
-            .map_or_else(
-                || {
-                    self.app
-                        .available_agents
-                        .first()
-                        .copied()
-                        .unwrap_or(Agent::Terminal)
-                },
-                |r| r.agent,
-            );
-        let agent_idx = self
-            .app
-            .available_agents
-            .iter()
-            .position(|a| *a == agent)
-            .unwrap_or(0);
-        if let Some(LauncherState {
-            options,
-            row_actions,
-            ..
-        }) = self.launcher_modal_mut()
-        {
-            *options = Some(LauncherOptions {
-                proj,
-                wt,
-                agent: agent_idx,
-                origin,
-            });
-            *row_actions = None;
-        }
+        let agent_idx = if agent_sel < self.app.available_agents.len() {
+            agent_sel
+        } else {
+            0
+        };
+        self.launcher_launch(proj, wt, agent_idx);
     }
 
     /// Build the current root or typing/browse-all row list for the command
@@ -777,8 +775,9 @@ impl Grove {
     }
 
     /// Run the row-actions strip action `action` for the `(proj, wt_path)`
-    /// identity it's pinned to: `0` enters the existing OPEN WITH agent-picker
-    /// ("Launch session…"); `1` closes the palette and routes through the
+    /// identity it's pinned to: `0` launches immediately with the strip's
+    /// currently-ringed agent (`agent_sel`); `1` closes the palette and
+    /// routes through the
     /// sidebar's own delete-worktree confirmation flow (`Msg::DeleteWorktree`,
     /// the same message the sidebar trash icon sends — reusing it means the
     /// existing teardown-script/confirm modal applies here too, rather than
@@ -816,17 +815,11 @@ impl Grove {
         &mut self,
         proj: usize,
         wt_path: String,
-        agent: grove_core::agent::Agent,
+        agent_sel: usize,
         action: usize,
     ) -> Task<GMsg> {
         if action == 0 {
-            let origin = RowActionsState {
-                proj,
-                wt_path: wt_path.clone(),
-                agent,
-                action: 0,
-            };
-            self.launcher_open_options_for(proj, wt_path, origin);
+            self.launcher_launch_from_strip(proj, &wt_path, agent_sel);
             return Task::none();
         }
         if action == 2 && self.app.project_themes_enabled() {

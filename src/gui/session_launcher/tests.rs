@@ -717,3 +717,44 @@ fn reselect_setting_keeps_identity_else_clamps() {
     // Everything filtered out: clamp degenerates to 0.
     assert_eq!(reselect_setting(&[], SettingRow::Telemetry, 3), 0);
 }
+
+// ── Row-actions strip agent bar (←→ on "Launch session…") ───────────
+
+#[test]
+fn cycle_agent_wraps_in_both_directions() {
+    assert_eq!(cycle_agent(0, 1, 3), 1);
+    assert_eq!(cycle_agent(1, 1, 3), 2);
+    // Off the end wraps to the start, and off the start to the end.
+    assert_eq!(cycle_agent(2, 1, 3), 0);
+    assert_eq!(cycle_agent(0, -1, 3), 2);
+    assert_eq!(cycle_agent(1, -1, 3), 0);
+    // Single agent: every step is a no-op rather than an out-of-range index.
+    assert_eq!(cycle_agent(0, 1, 1), 0);
+    assert_eq!(cycle_agent(0, -1, 1), 0);
+    // No agents at all: never divides by zero.
+    assert_eq!(cycle_agent(0, 1, 0), 0);
+    // A stale index (agents list shrank under an open palette) re-wraps
+    // into range rather than escaping it.
+    assert_eq!(cycle_agent(9, 1, 3), 1);
+}
+
+#[test]
+fn strip_agent_bar_opens_on_the_rows_own_agent() {
+    use grove_core::agent::Agent;
+    let available = [
+        Agent::Claude,
+        Agent::Codex,
+        Agent::OpenCode,
+        Agent::Terminal,
+    ];
+    // Tab on a row opens the strip with that row's agent already ringed,
+    // so ⏎ straight after is still the plain remembered-agent launch.
+    assert_eq!(agent_sel_for(&available, Agent::Claude), 0);
+    assert_eq!(agent_sel_for(&available, Agent::Codex), 1);
+    assert_eq!(agent_sel_for(&available, Agent::Terminal), 3);
+    // The row's remembered agent is no longer installed (recents outlive
+    // an uninstall): fall back to the first available one, never a stale
+    // index into a list that doesn't contain it.
+    assert_eq!(agent_sel_for(&[Agent::Codex], Agent::Claude), 0);
+    assert_eq!(agent_sel_for(&[], Agent::Claude), 0);
+}

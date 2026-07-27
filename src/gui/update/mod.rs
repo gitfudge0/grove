@@ -22,7 +22,7 @@ pub(crate) use shortcuts::{
 
 use pty_input::{
     escape_should_dismiss, is_copy_shortcut, is_paste_shortcut, keyboard_scroll_intent,
-    should_forward, term_panel_resize_delta, ScrollAmount, MODAL_OPEN,
+    should_forward, term_panel_resize_delta, ScrollAmount, MODAL_OPEN, PALETTE_OPEN,
 };
 use shortcuts::{
     close_focused_session_decision, match_global_shortcut, screen_from_flags,
@@ -68,7 +68,7 @@ fn focus(id: Id) -> Task<Msg> {
 
 /// Moves the text-input cursor with the given [`Id`] to the end of its
 /// content. See [`focus`] for why this wrapper exists.
-fn move_cursor_to_end(id: Id) -> Task<Msg> {
+pub(in crate::gui) fn move_cursor_to_end(id: Id) -> Task<Msg> {
     iced::advanced::widget::operate(
         iced::advanced::widget::operation::text_input::move_cursor_to_end::<()>(id),
     )
@@ -285,9 +285,22 @@ impl Grove {
         // captured by the closure below — refreshed every `subscription()`
         // call, which iced makes on every update, so it never lags by more
         // than the current frame.
+        // `PALETTE_OPEN` is the same trick for the ←→ carve-out: a focused
+        // `text_input` captures the arrows for caret movement, so the
+        // palette's own ←→ bindings only reach `handle_session_launcher_key`
+        // if they're forwarded despite capture (see `should_forward`).
         MODAL_OPEN.store(!matches!(self.app.modal, Modal::None), Ordering::Relaxed);
+        PALETTE_OPEN.store(
+            matches!(self.app.modal, Modal::SessionLauncher),
+            Ordering::Relaxed,
+        );
         let keys = event::listen_with(|ev, status, _| {
-            if !should_forward(&ev, status, MODAL_OPEN.load(Ordering::Relaxed)) {
+            if !should_forward(
+                &ev,
+                status,
+                MODAL_OPEN.load(Ordering::Relaxed),
+                PALETTE_OPEN.load(Ordering::Relaxed),
+            ) {
                 return None;
             }
             match ev {

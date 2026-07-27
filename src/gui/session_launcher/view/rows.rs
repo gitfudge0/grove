@@ -10,19 +10,27 @@ use crate::gui::palette as c;
 use crate::gui::state::{Grove, Msg as GMsg};
 use crate::gui::view::{cap, digit_label, highlighted_line, mod_key_chip};
 use crate::gui::widgets::{keycap_text, launcher_row, modal_list_row_sized, PALETTE_ROW_H};
-use iced::widget::{column, container, row, text, Space};
-use iced::{Color, Element, Length, Padding};
+use iced::border::Radius;
+use iced::widget::{button, column, container, row, text, Space};
+use iced::{Background, Border, Color, Element, Length, Padding, Shadow};
+
+/// One agent icon button in the row-actions strip's agent bar (mock F): a
+/// 26px rounded square, ringed yellow when it's the selected agent.
+const AGENT_BTN: f32 = 26.0;
+/// The strip's "Launch session…" row grows to fit the agent bar; every
+/// other strip row keeps the flat 30px.
+const STRIP_ROW_H: f32 = 30.0;
+const STRIP_LAUNCH_ROW_H: f32 = 42.0;
 
 impl Grove {
     /// Icon (in a fixed 24px slot, so titles align across rows regardless of
     /// icon glyph width) + agent label + mono-muted "project / worktree"
-    /// subtitle — the visual idiom shared by `Recent`/`Combo` rows and the
-    /// options-state pinned context row (same idiom as `attention_dropdown`).
+    /// subtitle — the visual idiom of the `Recent`/`Combo` rows (same idiom
+    /// as `attention_dropdown`).
     /// `agent_ranges`/`subtitle_ranges` are typing-state fuzzy-match char
     /// ranges to render cyan (pass `&[]` where nothing should highlight, e.g.
-    /// root-state `Recent` rows and the options-state context row). `trailing`,
-    /// if given, right-aligns after a filling gap — the row's ⌘-digit or ⏎
-    /// keycap.
+    /// root-state `Recent` rows). `trailing`, if given, right-aligns after a
+    /// filling gap — the row's ⌘-digit or ⏎ keycap.
     pub(super) fn palette_agent_content<'a>(
         &'a self,
         agent: grove_core::agent::Agent,
@@ -36,8 +44,8 @@ impl Grove {
         let title_el = highlighted_line(&title, agent_ranges, c::FG(), UI_FONT, 13.0);
         let subtitle_el =
             highlighted_line(&subtitle, subtitle_ranges, c::FG_MUTE(), MONO_FONT, 10.5);
-        // The agent glyph lights up yellow on the selected row (and the
-        // options-state context row); resting rows keep it muted.
+        // The agent glyph lights up yellow on the selected row; resting
+        // rows keep it muted.
         let icon_color = if active { c::YELLOW() } else { c::FG_MUTE() };
         let icon_slot = container(icon(agent.icon_name(), 16.0, icon_color))
             .width(24.0)
@@ -77,12 +85,12 @@ impl Grove {
             PaletteRow::Recent {
                 proj,
                 wt_path,
-                agent,
+                agent: _,
             }
             | PaletteRow::Combo {
                 proj,
                 wt_path,
-                agent,
+                agent: _,
             } => {
                 let pname = self
                     .app
@@ -108,12 +116,18 @@ impl Grove {
                 let subtitle = format!("{pname} / {wt_name}");
                 let is_recent = matches!(row, PaletteRow::Recent { .. });
 
+                // While the row-actions strip is open on this row, its
+                // agent bar (←→) retitles the row, so the row and the
+                // launch it's about to perform can't disagree — and the
+                // fuzzy-highlight ranges are computed against the shown
+                // label, not the row's original one.
+                let shown_agent = self.palette_row_agent(row);
                 let m = (!input.is_empty()).then(|| {
                     crate::gui::launcher::fuzzy_match_indices(
                         input,
                         &pname,
                         &wt_name,
-                        agent.label(),
+                        shown_agent.label(),
                     )
                 });
                 let agent_ranges: &[(usize, usize)] =
@@ -159,7 +173,7 @@ impl Grove {
 
                 launcher_row(
                     self.palette_agent_content(
-                        *agent,
+                        shown_agent,
                         subtitle,
                         agent_ranges,
                         &subtitle_ranges,
@@ -397,11 +411,88 @@ impl Grove {
         }
     }
 
+    /// The strip's primary "Launch session…" row (mock F2/F3): the plain
+    /// magenta play/label pair on the left, then — right-aligned — the
+    /// ringed agent's own label and a horizontal bar of one small icon
+    /// button per installed agent. ⏎ launches with the ringed one; clicking
+    /// any button launches with that one outright (`RowActionAgentLaunch`),
+    /// and clicking the row's own background launches with whatever is
+    /// currently ringed. Nested buttons are fine here: iced's `button`
+    /// forwards the event to its content first and bails out when the
+    /// content captured it, so an icon button always wins over the row
+    /// underneath it.
+    fn strip_launch_row(&self, active: bool, agent_sel: usize) -> Element<'_, GMsg> {
+        let mut bar = row![].spacing(6).align_y(iced::Alignment::Center);
+        for (i, ag) in self.app.available_agents.iter().enumerate() {
+            let on = i == agent_sel;
+            let glyph_color = if on { c::YELLOW() } else { c::FG_MUTE() };
+            bar = bar.push(
+                button(
+                    container(icon(ag.icon_name(), 15.0, glyph_color))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .align_x(iced::alignment::Horizontal::Center)
+                        .align_y(iced::Alignment::Center),
+                )
+                .width(AGENT_BTN)
+                .height(AGENT_BTN)
+                .padding(0)
+                .on_press(GMsg::SessionLauncher(Msg::RowActionAgentLaunch(i)))
+                .style(move |_, status| {
+                    let hovered = matches!(status, button::Status::Hovered);
+                    button::Style {
+                        background: Some(Background::Color(if on {
+                            c::BG_HL()
+                        } else if hovered {
+                            c::BG_HOVER()
+                        } else {
+                            c::BG_RAIL()
+                        })),
+                        text_color: glyph_color,
+                        border: Border {
+                            color: if on { c::YELLOW() } else { c::BORDER_SOFT() },
+                            width: 1.0,
+                            radius: Radius::from(6.0),
+                        },
+                        shadow: Shadow::default(),
+                        snap: false,
+                    }
+                }),
+            );
+        }
+        let sel_label = self
+            .app
+            .available_agents
+            .get(agent_sel)
+            .map_or("", |ag| ag.label());
+        let content = row![
+            container(icon("play", 13.0, c::MAGENTA()))
+                .width(20.0)
+                .align_x(iced::alignment::Horizontal::Center),
+            text("Launch session…").size(12).color(c::MAGENTA()),
+            Space::new().width(Length::Fill),
+            text(sel_label).font(MONO_FONT).size(12).color(c::FG_DIM()),
+            bar,
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+        modal_list_row_sized(
+            content,
+            active,
+            GMsg::SessionLauncher(Msg::RowActionPick(0)),
+            STRIP_LAUNCH_ROW_H,
+            4.0,
+            12.0,
+        )
+    }
+
     /// The inline contextual-action strip revealed by Tab under a
-    /// highlighted `Recent`/`Combo` row: "Launch session…" (magenta, plus
-    /// OPEN WITH agent picker) and "Delete worktree" (red, trash). `action`
-    /// (`0`/`1`) is the currently-selected action within the strip.
-    /// The inline row-actions strip. `is_main` selects the second action:
+    /// highlighted `Recent`/`Combo` row: "Launch session…" (magenta, play,
+    /// hosting the agent icon bar) and "Delete worktree" (red, trash).
+    /// `action` is the currently-selected action within the strip;
+    /// `agent_sel` is the ringed agent in the bar (index into
+    /// `App::available_agents`), which ⏎ on action 0 launches with.
+    /// `is_main` selects the second action:
     /// the project's default/base checkout can't be deleted (`start_delete`
     /// bounces it to a "can't remove the project's main checkout" message),
     /// so its strip offers "Create worktree…" there instead of "Delete
@@ -416,6 +507,7 @@ impl Grove {
         &self,
         proj: usize,
         action: usize,
+        agent_sel: usize,
         is_main: bool,
     ) -> Element<'_, GMsg> {
         let icon_slot = |name: &'static str, color: Color| {
@@ -432,7 +524,7 @@ impl Grove {
                 content,
                 active,
                 GMsg::SessionLauncher(Msg::RowActionPick(idx)),
-                30.0,
+                STRIP_ROW_H,
                 4.0,
                 12.0,
             )
@@ -442,11 +534,7 @@ impl Grove {
         } else {
             action_row(1, "trash", "Delete worktree", c::RED())
         };
-        let mut rows = column![
-            action_row(0, "play", "Launch session…", c::MAGENTA()),
-            second
-        ]
-        .spacing(1);
+        let mut rows = column![self.strip_launch_row(action == 0, agent_sel), second].spacing(1);
         if self.app.project_themes_enabled() {
             // "contrast" mirrors `SettingRow::Theme::icon_name()` — the app
             // theme row's own icon, reused here since this is the same idea

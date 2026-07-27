@@ -1,5 +1,5 @@
 //! Shared shape of the command palette's presentation state: `LauncherState`
-//! and its nested pane/options/settings/row-actions structs, the palette's
+//! and its nested pane/settings/row-actions structs, the palette's
 //! `Msg`, and the internal `PaletteRow` list-item type. No behavior lives
 //! here — see `palette.rs`/`settings.rs`/`theme_panes.rs`/`keys.rs` for the
 //! `impl Grove` methods that drive this state, and `view.rs` for rendering
@@ -14,13 +14,11 @@ use grove_core::theme;
 /// `app.modal` is `Modal::SessionLauncher` — same idiom as
 /// `Grove::add_project` / `Grove::scripts_editor`.
 ///
-/// Three states, all driven by this payload:
+/// Two list states, plus the drill-ins below:
 /// - root: `input` empty and `browse_all` false — recents + actions list.
 /// - typing/browse-all: `input` non-empty OR `browse_all` true — every
 ///   project×worktree combo, fuzzy-filtered by `input` (unfiltered if empty
 ///   and `browse_all` is what got us here via "+ new session…").
-/// - options: `options` is `Some` — a plain list of agents to launch the
-///   selected row's project/worktree with.
 #[derive(Clone)]
 pub struct LauncherState {
     pub input: String,
@@ -35,7 +33,6 @@ pub struct LauncherState {
     /// Set once the root "+ new session…" action row is activated: forces
     /// the unfiltered every-combo list even while `input` is empty.
     pub browse_all: bool,
-    pub options: Option<LauncherOptions>,
     /// "Switch to session…" drill-in: `Some(selected)` lists every active
     /// session (index into `App::sessions`-derived display order = the
     /// selection cursor within that list). `None` outside this state.
@@ -56,21 +53,6 @@ pub struct LauncherState {
     pub settings: Option<LauncherSettings>,
 }
 
-/// The command palette's "options" state: a resolved (project, worktree)
-/// selection with a plain list of agents to pick from before launch.
-#[derive(Clone)]
-pub struct LauncherOptions {
-    pub proj: usize,
-    /// Index into `launcher_worktrees(proj)`.
-    pub wt: usize,
-    /// Index into `App::available_agents`.
-    pub agent: usize,
-    /// The row-actions strip this options state was entered from (always set —
-    /// `options` is only ever entered via the strip's "Launch session…"
-    /// action). Esc restores this strip instead of dropping to bare root.
-    pub origin: RowActionsState,
-}
-
 /// The command palette's inline contextual-action strip, revealed by Tab
 /// under a highlighted `Recent`/`Combo` row. Identifies the row by
 /// `(proj, wt_path, agent)` rather than a list index, so it stays valid even
@@ -88,6 +70,13 @@ pub struct RowActionsState {
     pub wt_path: String,
     pub agent: grove_core::agent::Agent,
     pub action: usize,
+    /// The agent icon bar hosted on the strip's "Launch session…" row
+    /// (mock F): an index into `App::available_agents`, seeded from the
+    /// row's own `agent` when the strip opens and walked by ←/→ while
+    /// `action == 0`. ⏎ (or a click on one of the icon buttons) launches
+    /// with this agent directly — the arrows only mean "agent" inside the
+    /// strip, so the search caret keeps ←/→ everywhere else.
+    pub agent_sel: usize,
 }
 
 /// Same "identify by content, not list position" principle as
@@ -262,9 +251,10 @@ pub enum Msg {
     /// rendered root/typing/browse-all list; driven by both row click and the
     /// Enter/mod+digit keyboard paths.
     Activate(usize),
-    /// Click an agent row by index into `available_agents`, in options state:
-    /// picks it and immediately launches the session.
-    OptionsPick(usize),
+    /// Click an agent icon button in the row-actions strip's "Launch
+    /// session…" bar (index into `App::available_agents`): selects it and
+    /// launches the strip's row with it immediately, same as ⏎ would.
+    RowActionAgentLaunch(usize),
     /// Click a session row by index into `App::sessions`, in the "switch to
     /// session" drill-in: switches focus to it and closes the palette.
     SwitchSessionPick(usize),

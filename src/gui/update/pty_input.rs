@@ -314,13 +314,34 @@ pub(super) fn pixel_to_cell(x: f32, y: f32) -> PtyCell {
 ///   consumed itself (e.g. copying/pasting into that widget, then again into
 ///   the PTY). Escape's carve-out stays unconditional: `escape_should_dismiss`
 ///   is meant to reach `handle_key` with no modal open too.
-///   Backing store for `should_forward`'s `modal_open` check — see
-///   `Grove::subscription`'s doc comment for why a static is needed here
-///   instead of a captured closure variable.
+/// - ←/→ while the command palette is open: iced's `text_input` captures
+///   ArrowLeft/ArrowRight unconditionally to move its caret
+///   (`iced_widget::text_input`, the `Named::ArrowLeft`/`ArrowRight` arms),
+///   so without this carve-out the palette's own ←→ bindings — the in-place
+///   agent cycler on the selected Recent/Combo row, the App-size row's
+///   zoom -/+ in resize mode, the update-actions strip — never reached
+///   `handle_session_launcher_key` at all. ↑↓/Tab don't need the carve-out
+///   because a single-line `text_input` doesn't handle them (they fall
+///   through its match arm uncaptured), and Enter only captures when
+///   `on_submit` is set, which the palette's field never sets.
+///
+/// Backing store for `should_forward`'s `modal_open` check — see
+/// `Grove::subscription`'s doc comment for why a static is needed here
+/// instead of a captured closure variable.
 pub(super) static MODAL_OPEN: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-pub(super) fn should_forward(ev: &Event, status: event::Status, modal_open: bool) -> bool {
+/// Backing store for `should_forward`'s `palette_open` check (the ←→
+/// carve-out above); same static-instead-of-capture reason as `MODAL_OPEN`.
+pub(super) static PALETTE_OPEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(super) fn should_forward(
+    ev: &Event,
+    status: event::Status,
+    modal_open: bool,
+    palette_open: bool,
+) -> bool {
     if status != event::Status::Captured {
         return true;
     }
@@ -329,6 +350,10 @@ pub(super) fn should_forward(ev: &Event, status: event::Status, modal_open: bool
             key: Key::Named(Named::Escape),
             ..
         }) => true,
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: Key::Named(Named::ArrowLeft | Named::ArrowRight),
+            ..
+        }) if palette_open => true,
         Event::Keyboard(keyboard::Event::KeyPressed { modifiers, .. }) => {
             modal_open && global_mods(*modifiers)
         }
@@ -595,6 +620,7 @@ mod tests {
             assert!(should_forward(
                 &press(Key::Character("a".into())),
                 event::Status::Ignored,
+                false,
                 false
             ));
         }
@@ -606,12 +632,14 @@ mod tests {
             assert!(should_forward(
                 &press(Key::Named(Named::Escape)),
                 event::Status::Captured,
+                false,
                 false
             ));
             assert!(should_forward(
                 &press(Key::Named(Named::Escape)),
                 event::Status::Captured,
-                true
+                true,
+                false
             ));
         }
 
@@ -622,11 +650,68 @@ mod tests {
             assert!(!should_forward(
                 &press(Key::Character("a".into())),
                 event::Status::Captured,
-                true
+                true,
+                false
             ));
             assert!(!should_forward(
                 &press(Key::Named(Named::Enter)),
                 event::Status::Captured,
+                true,
+                false
+            ));
+        }
+
+        /// The palette's ←→ bindings (agent cycler, App-size zoom, the
+        /// update-actions strip) only exist because of this carve-out: the
+        /// focused search `text_input` captures ArrowLeft/ArrowRight for its
+        /// own caret, so without it the presses were swallowed as caret
+        /// movement and never reached `handle_session_launcher_key`.
+        #[test]
+        fn captured_arrows_forward_while_palette_open() {
+            for key in [Named::ArrowLeft, Named::ArrowRight] {
+                assert!(should_forward(
+                    &press(Key::Named(key)),
+                    event::Status::Captured,
+                    true,
+                    true
+                ));
+            }
+        }
+
+        /// Scoped to the palette: every other modal's text field (worktree
+        /// name, add-project, …) keeps ←→ as plain caret movement.
+        #[test]
+        fn captured_arrows_dropped_outside_palette() {
+            for key in [Named::ArrowLeft, Named::ArrowRight] {
+                assert!(!should_forward(
+                    &press(Key::Named(key)),
+                    event::Status::Captured,
+                    true,
+                    false
+                ));
+                assert!(!should_forward(
+                    &press(Key::Named(key)),
+                    event::Status::Captured,
+                    false,
+                    false
+                ));
+            }
+        }
+
+        /// The carve-out is arrows-only — typing must still stay with the
+        /// palette's focused search field while it's open.
+        #[test]
+        fn captured_characters_still_dropped_while_palette_open() {
+            assert!(!should_forward(
+                &press(Key::Character("a".into())),
+                event::Status::Captured,
+                true,
+                true
+            ));
+            assert!(!should_forward(
+                &press(Key::Named(Named::Backspace)),
+                event::Status::Captured,
+                true,
                 true
             ));
         }
@@ -643,13 +728,15 @@ mod tests {
             assert!(should_forward(
                 &press_mods(Key::Character("d".into()), gmods()),
                 event::Status::Captured,
-                true
+                true,
+                false
             ));
             // Named keys chord too (⌘⌫ delete).
             assert!(should_forward(
                 &press_mods(Key::Named(Named::Backspace), gmods()),
                 event::Status::Captured,
-                true
+                true,
+                false
             ));
         }
 
@@ -662,11 +749,13 @@ mod tests {
             assert!(!should_forward(
                 &press_mods(Key::Character("c".into()), gmods()),
                 event::Status::Captured,
+                false,
                 false
             ));
             assert!(!should_forward(
                 &press_mods(Key::Character("v".into()), gmods()),
                 event::Status::Captured,
+                false,
                 false
             ));
         }
@@ -681,12 +770,14 @@ mod tests {
             assert!(!should_forward(
                 &press_mods(Key::Character("d".into()), Modifiers::CTRL),
                 event::Status::Captured,
-                true
+                true,
+                false
             ));
             assert!(!should_forward(
                 &press_mods(Key::Character("d".into()), Modifiers::SHIFT),
                 event::Status::Captured,
-                true
+                true,
+                false
             ));
         }
     }

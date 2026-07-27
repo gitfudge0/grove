@@ -6,7 +6,7 @@ mod rows;
 mod settings_panes;
 mod settings_rows;
 
-use super::state::{LauncherOptions, LauncherSettings, Msg, RowActionsState};
+use super::state::{LauncherSettings, Msg, RowActionsState};
 use crate::gui::icons::icon;
 use crate::gui::metrics::{MONO_FONT, UI_FONT};
 use crate::gui::palette as c;
@@ -20,32 +20,28 @@ use settings_rows::{settings_pane_cue, settings_pane_placeholder};
 
 impl Grove {
     /// Recents-first command palette (Agent View "+ New session", mod+n, grid
-    /// pill). Three states driven by `Modal::SessionLauncher`: root (empty
-    /// input, no options) shows recents + actions; typing/browse-all shows
-    /// every project×worktree combo fuzzy-filtered by `input`; options shows
-    /// the resolved row plus a plain list of agents to launch it with. Esc is
-    /// the only way to close — no header, no close button.
+    /// pill). Two list states driven by `Modal::SessionLauncher`: root (empty
+    /// input) shows recents + actions; typing/browse-all shows every
+    /// project×worktree combo fuzzy-filtered by `input`. Esc is the only way
+    /// to close — no header, no close button.
     ///
     /// Zoned layout: input zone / 1px divider / list zone (fits content, up
     /// to a 380px cap, then scrolls) / 1px divider / footer hint strip — the
     /// footer's own bottom corners are rounded to stay flush with the panel.
     /// The list-zone-through-footer stretch belongs to whichever state is
-    /// live — `settings_body` (`settings_panes.rs`), `switch_pane`,
-    /// `options_pane` or `root_pane` (`panes.rs`); this function owns only
-    /// the shared input zone, the dispatch, and the panel shell.
-    // One arg over the limit; splitting into a param struct would obscure more than it clarifies.
-    #[allow(clippy::too_many_arguments)]
+    /// live — `settings_body` (`settings_panes.rs`), `switch_pane` or
+    /// `root_pane` (`panes.rs`); this function owns only the shared input
+    /// zone, the dispatch, and the panel shell.
     pub(in crate::gui) fn session_launcher_modal<'a>(
         &'a self,
         input: &'a str,
         selected: usize,
         browse_all: bool,
-        options: Option<&'a LauncherOptions>,
         switch: Option<usize>,
         row_actions: Option<&'a RowActionsState>,
         settings: Option<&'a LauncherSettings>,
     ) -> Element<'a, GMsg> {
-        // A cue chip shell shared by the "options" and "switch to session"
+        // A cue chip shell shared by the "switch to session" and settings
         // states' leading slot: mono, cyan text over a soft cyan tint.
         let cue_chip = |label: &'static str| -> Element<'a, GMsg> {
             container(text(label).font(MONO_FONT).size(10).color(c::CYAN()))
@@ -61,12 +57,10 @@ impl Grove {
                 })
                 .into()
         };
-        // In options/switch/settings state, the leading glyph slot becomes a
+        // In switch/settings state, the leading glyph slot becomes a
         // static cue chip instead of the search icon; the typed text
         // underneath is unchanged.
-        let leading: Element<'a, GMsg> = if options.is_some() {
-            cue_chip("options")
-        } else if switch.is_some() {
+        let leading: Element<'a, GMsg> = if switch.is_some() {
             cue_chip("SWITCH TO SESSION")
         } else if let Some(ls) = settings {
             cue_chip(settings_pane_cue(&ls.pane))
@@ -103,8 +97,6 @@ impl Grove {
             self.settings_body(body, input, ls)
         } else if let Some(sel) = switch {
             self.switch_pane(body, input, sel)
-        } else if let Some(r) = options {
-            self.options_pane(body, r)
         } else {
             self.root_pane(body, input, selected, browse_all, row_actions)
         };

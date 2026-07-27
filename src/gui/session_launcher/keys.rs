@@ -1,6 +1,6 @@
-//! Keyboard handling for `Modal::SessionLauncher`, covering all five
-//! palette sub-states (options / switch / settings drill-in with its
-//! sub-panes and resize mode / row-actions strip / root-typing).
+//! Keyboard handling for `Modal::SessionLauncher`, covering all four
+//! palette sub-states (switch / settings drill-in with its sub-panes and
+//! resize mode / row-actions strip / root-typing).
 
 use super::helpers::*;
 use super::state::*;
@@ -11,9 +11,9 @@ use iced::keyboard::{key::Named, Key, Modifiers};
 use iced::Task;
 
 impl Grove {
-    /// Key handling for `Modal::SessionLauncher`, covering all five palette
-    /// sub-states (options / switch / settings drill-in with its sub-panes
-    /// and resize mode / row-actions strip / root-typing). Moved verbatim out
+    /// Key handling for `Modal::SessionLauncher`, covering all four palette
+    /// sub-states (switch / settings drill-in with its sub-panes and resize
+    /// mode / row-actions strip / root-typing). Moved verbatim out
     /// of `handle_modal_key`'s `Modal::SessionLauncher` arm; dispatched from
     /// there via a single delegating match arm, the same shape
     /// `theme_manager_editor::handle_key` delegates from `Modal::ThemeManager`
@@ -32,7 +32,6 @@ impl Grove {
             input,
             selected,
             browse_all,
-            options,
             switch,
             row_actions,
             settings,
@@ -42,47 +41,7 @@ impl Grove {
             return Task::none();
         };
         let (input, selected, browse_all) = (input.clone(), *selected, *browse_all);
-        if let Some(r) = options.clone() {
-            // Options state: ↑↓ move the agent selection (clamped, no
-            // wrap). ←→ are no-ops. Plain letters are never bound —
-            // the search input keeps keyboard focus and owns them
-            // (same convention as Modal::Input / AddProject).
-            let list_delta: Option<i32> = match &key {
-                Key::Named(Named::ArrowDown) => Some(1),
-                Key::Named(Named::ArrowUp) => Some(-1),
-                _ => None,
-            };
-            if let Some(delta) = list_delta {
-                let len = self.app.available_agents.len();
-                let new_agent = crate::gui::launcher::clamp(r.agent, delta, len);
-                if let Some(LauncherState {
-                    options: Some(rr), ..
-                }) = self.launcher_modal_mut()
-                {
-                    rr.agent = new_agent;
-                }
-            } else {
-                match key {
-                    Key::Named(Named::Escape) => {
-                        // Options is only ever entered via the
-                        // row-actions strip's "Launch session…"
-                        // action — Esc returns to that strip rather
-                        // than dropping all the way to bare root.
-                        if let Some(LauncherState {
-                            options,
-                            row_actions,
-                            ..
-                        }) = self.launcher_modal_mut()
-                        {
-                            let origin = options.take().map(|o| o.origin);
-                            *row_actions = origin;
-                        }
-                    }
-                    Key::Named(Named::Enter) => self.launcher_start(),
-                    _ => {}
-                }
-            }
-        } else if let Some(sel) = *switch {
+        if let Some(sel) = *switch {
             // "Switch to session" drill-in: ↑↓ move the session
             // selection (clamped, no wrap); Enter switches focus and
             // closes the palette; Esc backs out to the root list.
@@ -359,14 +318,39 @@ impl Grove {
                 }
             }
         } else if let Some(ra) = row_actions.clone() {
-            // Inline row-actions strip: ↑↓ move between the two
-            // actions (clamped, no wrap); Enter runs the selected
-            // action; Esc collapses the strip back to the plain list.
+            // Inline row-actions strip: ↑↓ move between the actions
+            // (clamped, no wrap); ←→ walk the agent bar hosted on the
+            // "Launch session…" row (action 0 only — a no-op on the
+            // others); Enter runs the selected action; Esc collapses the
+            // strip back to the plain list.
             let list_delta: Option<i32> = match &key {
                 Key::Named(Named::ArrowDown) => Some(1),
                 Key::Named(Named::ArrowUp) => Some(-1),
                 _ => None,
             };
+            let agent_delta: Option<i32> = match &key {
+                Key::Named(Named::ArrowLeft) => Some(-1),
+                Key::Named(Named::ArrowRight) => Some(1),
+                _ => None,
+            };
+            if let Some(delta) = agent_delta {
+                if ra.action == 0 {
+                    let next = cycle_agent(ra.agent_sel, delta, self.app.available_agents.len());
+                    if let Some(LauncherState {
+                        row_actions: Some(rr),
+                        ..
+                    }) = self.launcher_modal_mut()
+                    {
+                        rr.agent_sel = next;
+                    }
+                }
+                // The search field keeps keyboard focus throughout, so
+                // it already moved its own caret on this very arrow (the
+                // subscription forwards it regardless — see
+                // `should_forward`'s ←→ carve-out). Pin the caret back to
+                // the end rather than leaving it drifting mid-query.
+                return crate::gui::update::move_cursor_to_end(crate::gui::view::modal_input_id());
+            }
             if let Some(delta) = list_delta {
                 let base = if self.app.project_themes_enabled() {
                     3
@@ -390,8 +374,12 @@ impl Grove {
                         }
                     }
                     Key::Named(Named::Enter) => {
-                        return self
-                            .launcher_run_row_action(ra.proj, ra.wt_path, ra.agent, ra.action)
+                        return self.launcher_run_row_action(
+                            ra.proj,
+                            ra.wt_path,
+                            ra.agent_sel,
+                            ra.action,
+                        )
                     }
                     _ => {}
                 }

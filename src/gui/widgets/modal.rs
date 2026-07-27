@@ -70,7 +70,7 @@ pub(in crate::gui) fn keycap_text<'a, M: 'a>(
     )
 }
 /// A mono, uppercase, letter-tracked section label ("RECENT", "ACTIONS",
-/// "OPEN WITH") used by both the command palette and modal lists. Iced has no
+/// "SETTINGS") used by both the command palette and modal lists. Iced has no
 /// letter-spacing property, so tracking is faked by joining every character
 /// with a U+2009 thin space (confirmed present in the bundled BlexMono Nerd
 /// Font's `cmap`). `top`/`bottom` are the caller's margin above/below.

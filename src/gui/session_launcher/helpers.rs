@@ -520,6 +520,27 @@ pub(super) fn nth_session_row(rows: &[PaletteRow], n: usize) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// Step the row-actions strip's agent bar one position, wrapping in both
+/// directions. `len == 0` (no agents available at all) stays at 0 rather
+/// than dividing by zero. `cur` is re-wrapped too, so a stale index can't
+/// escape range.
+pub(super) fn cycle_agent(cur: usize, delta: i32, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let len_i = len as i64;
+    (((cur as i64 + delta as i64) % len_i + len_i) % len_i) as usize
+}
+
+/// Where the strip's agent bar starts when it opens on a row: the position
+/// of that row's own agent in `available_agents`, so ⏎ with no arrow press
+/// launches exactly what the row already advertised. Falls back to the
+/// first agent when the row's agent isn't installed anymore (the agents
+/// list is refreshed on every palette open, recents are not).
+pub(super) fn agent_sel_for(available: &[Agent], agent: Agent) -> usize {
+    available.iter().position(|a| *a == agent).unwrap_or(0)
+}
+
 /// A row's [`PaletteRowIdentity`] — the content-based key `resolve_row_by_
 /// identity` matches against, decoupled from the row's transient index.
 pub(super) fn row_identity(row: &PaletteRow) -> PaletteRowIdentity {
