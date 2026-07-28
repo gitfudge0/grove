@@ -555,6 +555,11 @@ impl Grove {
             self.persist_grid_order();
             self.refresh_pty_viewport();
         }
+        // `submit_confirm` can tear down a project/worktree, removing sessions
+        // (and shifting every later index) without touching the grid's view.
+        if self.app.sessions.len() < before.len() {
+            self.reconcile_grid_after_teardown();
+        }
         // The teardown PTY lives outside `app.sessions`, so resize it directly.
         if let Some(s) = self.app.teardown.as_mut().and_then(|t| t.session.as_mut()) {
             s.resize(self.pty_layout.rows, self.pty_layout.sess_cols);
@@ -678,6 +683,7 @@ impl Grove {
                 Err(e) => self.app.set_error_toast(format!("err: {e}")),
                 _ => {}
             }
+            self.reconcile_grid_after_teardown();
             self.set_modal(Modal::None);
             self.rebuild_wt_cache();
             return Task::none();
@@ -689,6 +695,9 @@ impl Grove {
         for wt in &queue {
             self.app.kill_sessions_for_wt(wt);
         }
+        // Teardown drops sessions straight out of `app.sessions`, so the
+        // grid's indices are stale until they're rebuilt from live sessions.
+        self.reconcile_grid_after_teardown();
 
         if let Modal::RemoveProject {
             in_progress,
@@ -754,6 +763,7 @@ impl Grove {
             Err(e) => self.app.set_error_toast(format!("err: {e}")),
             _ => {}
         }
+        self.reconcile_grid_after_teardown();
         self.set_modal(Modal::None);
         self.rebuild_wt_cache();
         Task::none()

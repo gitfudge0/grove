@@ -54,6 +54,7 @@ impl Grove {
                 Task::none()
             }
             session_launcher::Msg::SwitchSessionPick(si) => self.launcher_switch_to(si),
+            session_launcher::Msg::SwitchTerminalPick(ti) => self.launcher_switch_to_terminal(ti),
             session_launcher::Msg::RowActionPick(action) => {
                 let row_actions = self.launcher_row_actions();
                 if let Some(r) = row_actions {

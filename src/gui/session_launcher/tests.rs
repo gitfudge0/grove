@@ -758,3 +758,39 @@ fn strip_agent_bar_opens_on_the_rows_own_agent() {
     assert_eq!(agent_sel_for(&[Agent::Codex], Agent::Claude), 0);
     assert_eq!(agent_sel_for(&[], Agent::Claude), 0);
 }
+
+// ── Switch drill-in: home terminals as a second group ─────────────────
+
+#[test]
+fn switch_terminal_rows_filters_by_label_and_the_home_terminal_subtitle() {
+    let labels = vec![
+        "terminal 1".to_string(),
+        "terminal 2".to_string(),
+        "terminal 3".to_string(),
+    ];
+    // Empty query lists every terminal, in order.
+    assert_eq!(switch_terminal_rows(&labels, ""), vec![0, 1, 2]);
+    // The label's own number narrows to one row.
+    assert_eq!(switch_terminal_rows(&labels, "terminal 2"), vec![1]);
+    // The rendered subtitle is searchable too, so "home" finds them all.
+    assert_eq!(switch_terminal_rows(&labels, "home"), vec![0, 1, 2]);
+    // No match anywhere drops the whole group (and with it its header).
+    assert!(switch_terminal_rows(&labels, "zzz-nope").is_empty());
+}
+
+#[test]
+fn merge_switch_rows_lists_sessions_before_terminals() {
+    assert_eq!(
+        merge_switch_rows(&[3, 0], &[1, 2]),
+        vec![
+            SwitchRow::Session(3),
+            SwitchRow::Session(0),
+            SwitchRow::Terminal(1),
+            SwitchRow::Terminal(2),
+        ]
+    );
+    // Either group filtering to empty just leaves the other one.
+    assert_eq!(merge_switch_rows(&[], &[0]), vec![SwitchRow::Terminal(0)]);
+    assert_eq!(merge_switch_rows(&[7], &[]), vec![SwitchRow::Session(7)]);
+    assert!(merge_switch_rows(&[], &[]).is_empty());
+}

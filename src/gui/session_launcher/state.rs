@@ -34,14 +34,17 @@ pub struct LauncherState {
     /// the unfiltered every-combo list even while `input` is empty.
     pub browse_all: bool,
     /// "Switch to session…" drill-in: `Some(selected)` lists every active
-    /// session (index into `App::sessions`-derived display order = the
-    /// selection cursor within that list). `None` outside this state.
+    /// session followed by every home terminal (position within that
+    /// display order = the selection cursor). `None` outside this state.
     pub switch: Option<usize>,
-    /// The `id` of the session at `switch`'s position, captured whenever
-    /// `switch` is written — same principle as `selected_identity`,
-    /// applied to this drill-in's own list (`Session::id` is the stable
-    /// key here rather than `PaletteRowIdentity`, since a switch-drill-in
-    /// row already *is* a session, with its own never-reused id).
+    /// The `id` of the session/terminal at `switch`'s position, captured
+    /// whenever `switch` is written — same principle as
+    /// `selected_identity`, applied to this drill-in's own list
+    /// (`Session::id` is the stable key here rather than
+    /// `PaletteRowIdentity`, since a switch-drill-in row already *is* a
+    /// session, with its own never-reused id — and home terminals are
+    /// `Session`s too, drawing from the same global id counter, so one
+    /// `u64` identifies a row of either group unambiguously).
     pub switch_identity: Option<u64>,
     /// Inline contextual actions revealed by Tab under a highlighted
     /// `Recent`/`Combo` row (root or typing/browse-all list). `None` when
@@ -195,6 +198,19 @@ pub fn project_theme_preview(
         None
     }
 }
+/// One row of the "switch to session" drill-in's list, in display order:
+/// every switchable agent session first, then every home terminal under its
+/// own TERMINALS header. Both groups share one selection cursor and one
+/// fuzzy filter, so ↑↓ walks straight from the last session into the
+/// terminals.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum SwitchRow {
+    /// Index into `App::sessions`.
+    Session(usize),
+    /// Index into `App::home_terminals`.
+    Terminal(usize),
+}
+
 /// One row of the command palette's list, in display order.
 #[derive(Clone)]
 pub(super) enum PaletteRow {
@@ -258,6 +274,11 @@ pub enum Msg {
     /// Click a session row by index into `App::sessions`, in the "switch to
     /// session" drill-in: switches focus to it and closes the palette.
     SwitchSessionPick(usize),
+    /// Click a home-terminal row by index into `App::home_terminals`, in
+    /// the "switch to session" drill-in: focuses that terminal and closes
+    /// the palette. Separate from `SwitchSessionPick` because the two
+    /// groups index into different vecs.
+    SwitchTerminalPick(usize),
     /// Click one of the two inline contextual-action rows revealed by Tab
     /// under a highlighted `Recent`/`Combo` row (`0` = "Launch session…",
     /// `1` = "Delete worktree").

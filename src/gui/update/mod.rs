@@ -26,7 +26,7 @@ use pty_input::{
 };
 use shortcuts::{
     close_focused_session_decision, match_global_shortcut, screen_from_flags,
-    should_sync_grid_focus, CloseFocusedDecision, Screen,
+    should_sync_grid_focus, terminal_toggle_decision, CloseFocusedDecision, Screen, TerminalToggle,
 };
 
 use super::keys::key_to_bytes;
@@ -187,6 +187,7 @@ impl Grove {
             tile_order: Vec::new(),
             grid_focused: None,
             grid_view_before_zen: false,
+            grid_view_before_terminal: false,
             scripts_editor: None,
             add_project: None,
             launcher: None,
@@ -451,12 +452,55 @@ impl Grove {
     }
 
     pub(in crate::gui) fn on_request_close_home_terminal(&mut self, i: usize) {
+        // Only one confirm-to-kill may be armed at a time; a leftover arm on
+        // the other list would turn a later mod+w into a one-press kill.
+        self.pending_kill = None;
         self.pending_kill_terminal = Some(i);
     }
 
     pub(in crate::gui) fn on_request_kill_session(&mut self, i: usize) {
         self.open_agent_menu = None;
+        self.pending_kill_terminal = None;
         self.pending_kill = Some(i);
+    }
+
+    /// `mod+`` — swap between the home-terminal tab and the agent side,
+    /// restoring whichever context the other side was last showing. Never
+    /// touches `chrome_visible`, so in zen this is purely a content swap.
+    pub(in crate::gui) fn on_toggle_terminal(&mut self) {
+        match terminal_toggle_decision(
+            self.terminal_focused,
+            self.grid_view,
+            self.grid_view_before_terminal,
+        ) {
+            TerminalToggle::Leave { restore_grid } => {
+                self.leave_terminal_tab();
+                self.pty_selection = None;
+                if restore_grid {
+                    self.grid_view_before_terminal = false;
+                    self.grid_view = true;
+                    self.enter_grid();
+                }
+            }
+            TerminalToggle::Enter { exit_grid } => {
+                if exit_grid {
+                    self.grid_view_before_terminal = true;
+                    self.grid_view = false;
+                    self.exit_grid();
+                }
+                // First use with no terminals yet: make one rather than
+                // showing an empty tab. Otherwise last-used terminal wins.
+                if self.app.home_terminals.is_empty() {
+                    self.on_new_home_terminal();
+                }
+                self.terminal_focused = true;
+                self.pty_selection = None;
+                // Focus moved, so any armed confirm-to-kill is stale.
+                self.pending_kill = None;
+                self.pending_kill_terminal = None;
+            }
+        }
+        self.refresh_pty_viewport();
     }
 
     pub(in crate::gui) fn on_set_backend_tmux(&mut self, enabled: bool) {
@@ -951,8 +995,22 @@ impl Grove {
                 }
             }
             GlobalShortcut::NewHomeTerminal => {
+                // On the grid screen the new terminal would be focused but
+                // drawn behind the tiles; drop to the single-session
+                // workspace so it's visible, and let mod+` bring the grid back.
+                if self.grid_view {
+                    self.grid_view_before_terminal = true;
+                    self.grid_view = false;
+                    self.exit_grid();
+                    self.pty_selection = None;
+                    self.refresh_pty_viewport();
+                }
                 self.on_new_home_terminal();
                 self.terminal_focused = true;
+                Task::none()
+            }
+            GlobalShortcut::ToggleTerminal => {
+                self.on_toggle_terminal();
                 Task::none()
             }
             GlobalShortcut::JumpToWaitingSession => self.on_jump_to_waiting_session(),
@@ -1003,6 +1061,8 @@ impl Grove {
         if self.tile_order.is_empty() {
             return;
         }
+        // Focusing a tile means the agent side owns input again.
+        self.leave_terminal_tab();
         let cur = self
             .grid_focused
             .and_then(|si| self.tile_order.iter().position(|&x| x == si));

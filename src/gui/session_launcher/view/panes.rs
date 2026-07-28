@@ -6,7 +6,7 @@
 //! already pushed) and returns it with its own list zone, divider and footer
 //! appended — the shell in `super` owns everything around that.
 
-use super::super::state::{Msg, PaletteRow, RowActionsState};
+use super::super::state::{Msg, PaletteRow, RowActionsState, SwitchRow};
 use crate::gui::icons::icon;
 use crate::gui::metrics::{MONO_FONT, UI_FONT};
 use crate::gui::palette as c;
@@ -301,8 +301,9 @@ impl Grove {
     }
 
     /// "Switch to session" drill-in: every active session across
-    /// every project/worktree. Waiting sessions keep the sidebar's
-    /// amber tint/left bar; the currently-focused session's icon
+    /// every project/worktree, then every home terminal under its own
+    /// TERMINALS header. Waiting sessions keep the sidebar's
+    /// amber tint/left bar; the currently-focused session/terminal's icon
     /// renders yellow (same idiom as the recents' active-row accent).
     pub(super) fn switch_pane<'a>(
         &'a self,
@@ -310,8 +311,8 @@ impl Grove {
         input: &'a str,
         sel: usize,
     ) -> Column<'a, GMsg> {
-        let session_ids = self.switch_session_rows(input);
-        let list_zone: Element<'a, GMsg> = if session_ids.is_empty() {
+        let rows = self.switch_rows(input);
+        let list_zone: Element<'a, GMsg> = if rows.is_empty() {
             container(text("No matching sessions").size(12).color(c::FG_MUTE()))
                 .padding(Padding::from([30, 16]))
                 .width(Length::Fill)
@@ -319,11 +320,68 @@ impl Grove {
                 .into()
         } else {
             let mut list = Column::new().spacing(2);
-            for (i, &si) in session_ids.iter().enumerate() {
+            // Each group labels itself the first time it appears, so a
+            // query that filters one of them away drops its header too.
+            let mut printed_sessions = false;
+            let mut printed_terminals = false;
+            for (i, &switch_row) in rows.iter().enumerate() {
+                let highlighted = i == sel;
+                let si = match switch_row {
+                    SwitchRow::Session(si) => si,
+                    SwitchRow::Terminal(ti) => {
+                        let Some(t) = self.app.home_terminals.get(ti) else {
+                            continue;
+                        };
+                        if !printed_terminals {
+                            let top = if i == 0 { 0.0 } else { 12.0 };
+                            list = list.push(section_header("TERMINALS", top, 6.0));
+                            printed_terminals = true;
+                        }
+                        let is_active =
+                            self.terminal_focused && self.app.active_terminal == Some(ti);
+                        let icon_color = if is_active { c::YELLOW() } else { c::FG_MUTE() };
+                        let title_color = if highlighted { c::FG() } else { c::FG_DIM() };
+                        let icon_slot = container(icon("term", 16.0, icon_color))
+                            .width(24.0)
+                            .align_x(iced::alignment::Horizontal::Center);
+                        let mut content = row![
+                            icon_slot,
+                            column![
+                                text(t.label.clone())
+                                    .font(UI_FONT)
+                                    .size(13)
+                                    .color(title_color),
+                                text("home terminal")
+                                    .font(MONO_FONT)
+                                    .size(10.5)
+                                    .color(c::FG_MUTE()),
+                            ]
+                            .spacing(2),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center);
+                        if highlighted {
+                            content = content
+                                .push(Space::new().width(Length::Fill))
+                                .push(keycap_text("⏎", c::FG_DIM()));
+                        }
+                        list = list.push(launcher_row(
+                            content,
+                            highlighted,
+                            true,
+                            GMsg::SessionLauncher(Msg::SwitchTerminalPick(ti)),
+                            PALETTE_ROW_H,
+                        ));
+                        continue;
+                    }
+                };
                 let Some(s) = self.app.sessions.get(si) else {
                     continue;
                 };
-                let highlighted = i == sel;
+                if !printed_sessions {
+                    list = list.push(section_header("SESSIONS", 0.0, 6.0));
+                    printed_sessions = true;
+                }
                 let waiting = matches!(
                     self.activity_state(s),
                     crate::gui::activity::ActivityState::WaitingForInput

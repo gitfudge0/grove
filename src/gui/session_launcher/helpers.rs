@@ -5,7 +5,7 @@
 //! Settings drill-in's update-actions strip (`view.rs`) and `update.rs`
 //! both depend on.
 
-use super::state::{PaletteRow, PaletteRowIdentity};
+use super::state::{PaletteRow, PaletteRowIdentity, SwitchRow};
 use crate::gui::state::UpgradeMsg;
 use crate::gui::state::{Msg as GMsg, UpgradeState};
 use crate::gui::update::SettingRow;
@@ -706,6 +706,30 @@ pub(in crate::gui) fn update_available_actions(method_unknown: bool) -> Vec<Upda
     actions.push(UpdateAction::SkipVersion);
     actions.push(UpdateAction::CopyUrl);
     actions
+}
+
+/// Home terminals matching `input`, as indices into `App::home_terminals`
+/// in their existing (sidebar) order. Matched on the terminal's own label
+/// ("terminal 2") plus the constant subtitle the drill-in renders for it, so
+/// typing either the number or "term"/"home terminal" finds it — the same
+/// fields-you-can-see rule the session rows follow. Empty `input` matches
+/// everything.
+pub(super) fn switch_terminal_rows(labels: &[String], input: &str) -> Vec<usize> {
+    (0..labels.len())
+        .filter(|&i| crate::gui::launcher::fuzzy_match(input, &labels[i], "", "home terminal"))
+        .collect()
+}
+
+/// Splice the drill-in's two filtered groups into its single display order:
+/// sessions first, then terminals. Kept pure (and separate from the
+/// `Grove` methods that produce each half) so the ordering the selection
+/// cursor walks is directly unit-testable.
+pub(super) fn merge_switch_rows(sessions: &[usize], terminals: &[usize]) -> Vec<SwitchRow> {
+    sessions
+        .iter()
+        .map(|&i| SwitchRow::Session(i))
+        .chain(terminals.iter().map(|&i| SwitchRow::Terminal(i)))
+        .collect()
 }
 
 /// Whether activating the Check-for-updates row expands the actions strip

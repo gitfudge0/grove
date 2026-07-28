@@ -45,7 +45,7 @@ impl Grove {
             // "Switch to session" drill-in: ↑↓ move the session
             // selection (clamped, no wrap); Enter switches focus and
             // closes the palette; Esc backs out to the root list.
-            let len = self.switch_session_rows(&input).len();
+            let len = self.switch_rows(&input).len();
             let list_delta: Option<i32> = match &key {
                 Key::Named(Named::ArrowDown) => Some(1),
                 Key::Named(Named::ArrowUp) => Some(-1),
@@ -66,8 +66,8 @@ impl Grove {
                         self.set_palette_selected(0);
                     }
                     Key::Named(Named::Enter) => {
-                        if let Some(si) = self.resolve_switch_selected(&input) {
-                            return self.launcher_switch_to(si);
+                        if let Some(row) = self.resolve_switch_selected(&input) {
+                            return self.launcher_switch_to_row(row);
                         }
                     }
                     _ => {}

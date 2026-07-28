@@ -1,0 +1,1113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Terminal toggle (mod+`) — Flows &amp; States</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  /* ============================================================
+     BOARD tokens (the Figma-like canvas chrome — NOT Grove's UI)
+     ============================================================ */
+  :root {
+    --board-bg: #f5f5f7;
+    --board-dot: #d9d9dc;
+    --board-surface: #ffffff;
+    --board-border: #e5e7eb;
+    --board-fg: #111827;
+    --board-muted: #6b7280;
+    --board-accent: #9854f1;
+
+    /* ---- GROVE design tokens — light (tokyonight-day) ---- */
+    --bg: #e1e2e7;
+    --bg-rail: #d8d8dd;
+    --bg-strip: #cfcfd4;
+    --bg-hover: #d1d3df;
+    --bg-hl: #c4c8da;
+    --border: #c5cde0;
+    --border-soft: #d5d8e4;
+    --fg: #3760bf;
+    --fg-dim: #6172b0;
+    --fg-mute: #848cb5;
+    --cyan: #007197;
+    --magenta: #9854f1;
+    --green: #587539;
+    --yellow: #8c6c3e;
+    --red: #f52a65;
+    --amber: #a65b47;
+    --sel-strong: rgba(0,113,151,0.22);
+    --sel-soft: rgba(0,113,151,0.10);
+    --sel-ring: rgba(0,113,151,0.50);
+    --scrim: rgba(20,20,26,0.14);
+  }
+
+  html.dark {
+    --board-bg: #0b0d12;
+    --board-dot: #23262e;
+    --board-surface: #161a22;
+    --board-border: #2a2f3a;
+    --board-fg: #e6e8ec;
+    --board-muted: #9199a6;
+    --board-accent: #bb9af7;
+
+    /* ---- GROVE design tokens — dark (TokyoNight, default) ---- */
+    --bg: #1a1b26;
+    --bg-rail: #15161f;
+    --bg-strip: #12121a;
+    --bg-hover: #222535;
+    --bg-hl: #292e42;
+    --border: #353747;
+    --border-soft: #262734;
+    --fg: #c0caf5;
+    --fg-dim: #a9b1d6;
+    --fg-mute: #565f89;
+    --cyan: #7dcfff;
+    --magenta: #bb9af7;
+    --green: #9ece6a;
+    --yellow: #e0af68;
+    --red: #f7768e;
+    --amber: #e6a172;
+    --sel-strong: rgba(125,207,255,0.22);
+    --sel-soft: rgba(125,207,255,0.10);
+    --sel-ring: rgba(125,207,255,0.50);
+    --scrim: rgba(3,3,4,0.16);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--board-bg);
+    color: var(--board-fg);
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    overflow: hidden;
+  }
+
+  /* ---- pan/zoom viewport ---- */
+  #viewport {
+    position: fixed; inset: 0; overflow: hidden; cursor: grab;
+    background-image: radial-gradient(circle, var(--board-dot) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  #viewport.panning { cursor: grabbing; }
+  #canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; padding: 60px; width: max-content; }
+
+  .hud {
+    position: fixed; right: 16px; bottom: 16px; z-index: 10; display: flex; gap: 6px; align-items: center;
+    background: var(--board-surface); border: 1px solid var(--board-border); border-radius: 8px; padding: 6px 8px;
+    font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.12); color: var(--board-fg);
+  }
+  .hud button { border: 1px solid var(--board-border); background: var(--board-surface); color: var(--board-fg); border-radius: 5px; padding: 3px 9px; font: inherit; cursor: pointer; }
+  .hud .zoom-pct { min-width: 46px; text-align: center; color: var(--board-muted); font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  .theme-toggle {
+    position: fixed; right: 16px; top: 16px; z-index: 10; border: 1px solid var(--board-border);
+    background: var(--board-surface); color: var(--board-fg); border-radius: 9999px; padding: 7px 14px;
+    font: inherit; font-size: 13px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+  }
+
+  /* ---- header + legend ---- */
+  .page-header { margin-bottom: 30px; }
+  .page-header h1 { font-size: 28px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .page-header h1 code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 24px; }
+  .page-header .subtitle { font-size: 14px; color: var(--board-muted); margin: 0 0 18px; max-width: 820px; }
+  .legend {
+    display: inline-flex; gap: 20px; flex-wrap: wrap; align-items: center;
+    background: var(--board-surface); border: 1px solid var(--board-border);
+    border-radius: 8px; padding: 11px 16px; font-size: 12px; color: var(--board-muted);
+  }
+  .legend b { color: var(--board-fg); }
+  .legend .tag { display: inline-flex; align-items: center; gap: 7px; }
+  .tag-new, .tag-dec {
+    font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px; font-weight: 700;
+    letter-spacing: 0.06em; padding: 2px 7px; border-radius: 4px;
+  }
+  .tag-new { color: #fff; background: #0f8ab0; }
+  html.dark .tag-new { color: #0b0d12; background: #7dcfff; }
+  .tag-dec { color: #4a4320; background: #f2e39a; border: 1px solid #e6d97a; }
+
+  /* ---- section ---- */
+  .section-heading {
+    font-size: 19px; font-weight: 700; margin: 64px 0 6px; padding-bottom: 8px;
+    border-bottom: 2px solid var(--board-border); display: flex; align-items: baseline; gap: 11px;
+  }
+  .section-heading .sub { font-size: 13px; font-weight: 400; color: var(--board-muted); }
+  .section-letter {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; border-radius: 6px; align-self: center;
+    background: var(--board-accent); color: #fff; font-size: 13px; font-weight: 700;
+  }
+
+  /* ---- frame layout ---- */
+  .frame-row { display: flex; gap: 34px; margin-top: 26px; align-items: flex-start; position: relative; }
+  .frame { position: relative; }
+
+  .frame-caption { margin-bottom: 10px; max-width: 640px; }
+  .frame-id {
+    display: inline-block; font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.03em;
+    color: #fff; background: #111827; border-radius: 4px; padding: 2px 7px; margin-right: 8px;
+  }
+  html.dark .frame-id { background: #3b4152; }
+  .frame-name { font-size: 14px; font-weight: 600; color: var(--board-fg); }
+  .frame-desc { font-size: 12px; color: var(--board-muted); margin: 5px 0 0; line-height: 1.55; max-width: 640px; }
+  .frame-desc code, .frame-desc kbd {
+    font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px;
+    background: var(--board-border); border-radius: 3px; padding: 1px 4px; color: var(--board-fg);
+  }
+  .pin-new {
+    display: inline-block; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 9.5px;
+    font-weight: 700; letter-spacing: 0.06em; padding: 2px 6px; border-radius: 4px; margin-left: 6px;
+    color: #fff; background: #0f8ab0; vertical-align: 2px;
+  }
+  html.dark .pin-new { color: #0b0d12; background: #7dcfff; }
+
+  .frame-card {
+    background: var(--bg); border: 1px solid var(--board-border); border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 10px 30px rgba(0,0,0,0.10);
+    overflow: hidden;
+  }
+  .frame-card.screen { padding: 0; display: flex; flex-direction: column; }
+  .frame-card.desktop { width: 1280px; height: 800px; }
+
+  .connector-row { display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--board-muted); font-size: 26px; align-self: center; padding-top: 40px; }
+  .connector-row .lbl {
+    font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px; letter-spacing: 0.04em;
+    margin-top: 4px; white-space: nowrap; color: var(--board-muted);
+  }
+
+  .sticky-note {
+    display: inline-block; background: #fff8c5; border: 1px solid #e6d97a; color: #4a4320;
+    font-size: 12.5px; line-height: 1.6; padding: 15px 17px; max-width: 460px; border-radius: 3px;
+    box-shadow: 0 6px 16px rgba(0,0,0,0.14); transform: rotate(-1.2deg); margin: 40px 0 10px;
+  }
+  .sticky-note.tilt-r { transform: rotate(1.1deg); }
+  .sticky-note b { color: #2c2810; }
+  .sticky-note code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11.5px; background: rgba(0,0,0,0.06); border-radius: 3px; padding: 1px 4px; }
+
+  /* ============================================================
+     GROVE UI anatomy
+     ============================================================ */
+  .g-app { width: 100%; height: 100%; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font-family: "IBM Plex Sans", system-ui, sans-serif; }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+
+  .g-appbar {
+    height: 44px; flex: 0 0 44px; background: var(--bg-strip); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; padding: 0 16px;
+  }
+  .g-brand { font-size: 14px; font-weight: 700; color: var(--magenta); }
+  .g-appbar-right { display: flex; align-items: center; gap: 12px; }
+  .g-iconbtn { width: 22px; height: 22px; color: var(--fg-mute); display: inline-flex; align-items: center; justify-content: center; }
+  .g-iconbtn svg { width: 15px; height: 15px; }
+
+  .g-body { flex: 1 1 auto; display: flex; min-height: 0; }
+  .g-side { width: 320px; flex: 0 0 320px; background: var(--bg-rail); border-right: 1px solid var(--border); padding: 8px 0; overflow: hidden; }
+
+  .g-row { height: 28px; display: flex; align-items: center; gap: 7px; padding: 0 12px; font-size: 12px; color: var(--fg-dim); }
+  .g-row.project { font-weight: 600; color: var(--fg); font-size: 12.5px; }
+  .g-row.wt { padding-left: 28px; }
+  .g-row.sess { padding-left: 46px; }
+  .g-row.term { padding-left: 22px; }
+  .g-row.active { background: var(--bg-hl); }
+  .g-row.active .lbl { color: var(--cyan); font-weight: 600; }
+  .g-row .lbl { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .g-row .meta { margin-left: auto; font-size: 10px; color: var(--fg-mute); font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  .g-row svg { width: 12px; height: 12px; flex: 0 0 12px; }
+
+  .ic-claude { color: var(--amber); }
+  .ic-codex { color: var(--green); }
+  .ic-term { color: var(--cyan); }
+
+  .g-sechead {
+    display: flex; align-items: center; height: 24px; padding: 0 12px; margin-top: 14px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--fg-mute);
+  }
+  .g-sechead .add { margin-left: auto; color: var(--fg-mute); display: inline-flex; }
+  .g-sechead .add svg { width: 11px; height: 11px; }
+  .g-empty { padding: 6px 12px 0 22px; font-size: 11px; color: var(--fg-mute); font-style: italic; }
+
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; background: var(--green); }
+  .dot.dead { background: var(--fg-mute); }
+
+  .g-ws { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+  .g-sessbar {
+    height: 36px; flex: 0 0 36px; background: var(--bg-strip); display: flex; align-items: center;
+    gap: 8px; padding: 0 14px; border-bottom: 1px solid var(--border-soft);
+  }
+  .g-sessbar svg { width: 13px; height: 13px; }
+  .g-sessbar .title { font-size: 13px; font-weight: 600; color: var(--fg); }
+  .g-sessbar .branch { font-size: 12px; color: var(--fg-dim); }
+  .g-sessbar .tools { margin-left: auto; display: flex; gap: 11px; color: var(--fg-mute); }
+  .g-sessbar .tools svg { width: 13px; height: 13px; }
+
+  .g-pty {
+    flex: 1 1 auto; background: var(--bg); color: var(--fg-dim); overflow: hidden;
+    font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px; line-height: 1.65;
+    padding: 12px 16px; white-space: pre-wrap;
+  }
+  .g-pty .c { color: var(--cyan); }
+  .g-pty .m { color: var(--magenta); }
+  .g-pty .g { color: var(--green); }
+  .g-pty .y { color: var(--yellow); }
+  .g-pty .r { color: var(--red); }
+  .g-pty .a { color: var(--amber); }
+  .g-pty .d { color: var(--fg-mute); }
+  .g-pty .f { color: var(--fg); }
+  .caret { display: inline-block; width: 7px; height: 15px; background: var(--cyan); vertical-align: -3px; }
+
+  .g-status {
+    height: 26px; flex: 0 0 26px; background: var(--bg-strip); display: flex; align-items: center;
+    padding: 0 14px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px;
+    color: var(--fg-dim); gap: 18px; border-top: 1px solid var(--border-soft);
+  }
+  .g-status .k { color: var(--fg-mute); }
+  .g-status .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .keycap {
+    font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; color: var(--fg-dim);
+    background: var(--bg-hl); padding: 2px 6px; border-radius: 4px;
+  }
+  .g-status .ver { color: var(--fg-mute); }
+
+  /* grid view */
+  .g-grid { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 1px; background: var(--border); }
+  .g-tile { background: var(--bg); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .g-tile.focused { outline: 1.5px solid var(--cyan); outline-offset: -1.5px; }
+  .g-tilehead {
+    height: 22px; flex: 0 0 22px; background: var(--bg-strip); display: flex; align-items: center;
+    gap: 6px; padding: 0 8px; font-size: 10px; color: var(--fg-dim);
+  }
+  .g-tile.focused .g-tilehead { background: var(--bg-hl); }
+  .g-tilehead svg { width: 10px; height: 10px; }
+  .modn {
+    margin-left: auto; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 9px;
+    color: var(--fg-mute); background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px;
+  }
+  .g-tile .g-pty { font-size: 11.5px; line-height: 1.55; padding: 8px 10px; }
+
+  /* ============================================================
+     Palette
+     ============================================================ */
+  .pal-frame { position: relative; width: 1280px; height: 800px; }
+  .pal {
+    width: 640px; background: var(--bg-rail); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.42), 0 4px 12px rgba(0,0,0,0.28); overflow: hidden;
+  }
+  .pal-input { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border-soft); }
+  .pal-input > svg { width: 15px; height: 15px; color: var(--fg-mute); flex: 0 0 15px; }
+  .cue {
+    font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px; letter-spacing: 0.06em;
+    color: var(--cyan); background: var(--sel-soft); padding: 2px 6px; border-radius: 4px; white-space: nowrap;
+  }
+  .pal-ph { font-size: 13.5px; color: var(--fg-mute); }
+  .pal-typed { font-size: 13.5px; color: var(--fg); }
+  .pal-group {
+    font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--fg-mute); padding: 12px 18px 4px;
+  }
+  .pal-list { padding: 6px 8px 8px; }
+  .pal-row {
+    height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border-radius: 6px;
+    position: relative;
+  }
+  .pal-row .iconcol { width: 24px; flex: 0 0 24px; display: flex; align-items: center; justify-content: center; }
+  .pal-row .iconcol svg { width: 14px; height: 14px; }
+  .pal-row .t { font-size: 13px; color: var(--fg); line-height: 1.25; }
+  .pal-row .s { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10.5px; color: var(--fg-mute); margin-top: 2px; }
+  .pal-row.sel {
+    background: linear-gradient(90deg, var(--sel-strong), var(--sel-soft));
+    box-shadow: inset 0 0 0 1px var(--sel-ring);
+  }
+  .pal-row.sel::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; border-radius: 2px; background: var(--cyan); }
+  .pal-row .hit { color: var(--cyan); font-weight: 700; }
+  .pal-foot {
+    background: var(--bg-strip); border-top: 1px solid var(--border-soft); padding: 8px 14px;
+    display: flex; gap: 10px; align-items: center;
+  }
+  .pal-foot .lbl { font-size: 11px; color: var(--fg-mute); }
+
+  /* shortcut overlay excerpt */
+  .sc {
+    width: 640px; background: var(--bg-rail); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.42); overflow: hidden;
+  }
+  .sc-head { padding: 14px 18px 10px; border-bottom: 1px solid var(--border-soft); }
+  .sc-head .t { font-size: 14px; font-weight: 600; color: var(--fg); }
+  .sc-head .s { font-size: 11.5px; color: var(--fg-mute); margin-top: 3px; }
+  .sc-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; padding: 12px 14px 16px; }
+  .sc-grouphead {
+    font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--fg-mute); padding: 6px 6px 4px;
+  }
+  .sc-row { display: flex; align-items: center; gap: 10px; padding: 6px 6px; border-radius: 6px; }
+  .sc-row .desc { font-size: 12.5px; color: var(--fg-dim); }
+  .sc-row .keys { margin-left: auto; display: flex; gap: 4px; }
+  .sc-row.newrow { background: var(--sel-soft); box-shadow: inset 0 0 0 1px var(--sel-ring); }
+  .sc-row.newrow .desc { color: var(--fg); font-weight: 600; }
+
+  /* component frame wrapper (natural size) */
+  .comp {
+    background: var(--bg); border: 1px solid var(--board-border); border-radius: 10px; padding: 22px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 10px 30px rgba(0,0,0,0.10); display: inline-block;
+  }
+  .comp.tight { padding: 0; }
+  .side-comp { width: 320px; background: var(--bg-rail); padding: 10px 0; }
+</style>
+</head>
+<body>
+<button class="theme-toggle" id="themeToggle" type="button">☾ Dark</button>
+<div class="hud">
+  <button type="button" id="zoomOut">−</button>
+  <span class="zoom-pct" id="zoomPct">100%</span>
+  <button type="button" id="zoomIn">+</button>
+  <button type="button" id="zoomFit">Fit</button>
+</div>
+<div id="viewport">
+<div id="canvas">
+
+  <div class="page-header">
+    <h1>Terminal toggle (<code>mod+`</code>) — Flows &amp; States</h1>
+    <p class="subtitle">Design review for keyboard switching between agent sessions and home terminals — Grove.
+      One symmetric chord: press it in a session to jump to the last-used home terminal, press it again to land back
+      exactly where you were.</p>
+    <div class="legend">
+      <span class="tag"><span class="tag-new">NEW</span> <b>new behavior</b> introduced by this chord</span>
+      <span class="tag"><span class="tag-dec">DECISION</span> <b>open question</b> called out on a sticky</span>
+      <span class="tag">Frame IDs (<b>A1</b>, <b>B3</b>) group related states; <b>→</b> = pressing <code>mod+`</code></span>
+      <span class="tag">Frames render Grove in the <b>current theme</b> — flip it top-right</span>
+    </div>
+  </div>
+
+  <!-- ================= SECTION A ================= -->
+  <div class="section-heading"><span class="section-letter">A</span> Core toggle <span class="sub">workspace ⇄ terminal</span></div>
+  <div class="frame-row">
+
+    <!-- ---------- A1 ---------- -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">A1</span><span class="frame-name">Workspace — agent session focused</span>
+        <p class="frame-desc">The everyday state: <code>claude · grove</code> is the active session on <code>main</code>.
+          Pressing <kbd>mod+`</kbd> here leaves the session running and focuses the last-used home terminal (see A2).</p>
+      </div>
+      <div class="frame-card screen desktop">
+        <div class="g-app">
+          <div class="g-appbar">
+            <span class="g-brand">grove</span>
+            <div class="g-appbar-right">
+              <span class="g-iconbtn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1"/><rect x="9" y="9" width="5.5" height="5.5" rx="1"/></svg></span>
+              <span class="g-iconbtn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2M3.3 3.3l1.4 1.4M11.3 11.3l1.4 1.4M12.7 3.3l-1.4 1.4M4.7 11.3l-1.4 1.4"/></svg></span>
+            </div>
+          </div>
+          <div class="g-body">
+            <div class="g-side">
+              <div class="g-row project"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.8 4.2 8 1.5l6.2 2.7L8 6.9z"/><path d="M1.8 8 8 10.7 14.2 8"/><path d="M1.8 11.6 8 14.3l6.2-2.7"/></svg><span class="lbl">grove</span><span class="meta">~/dev/grove</span></div>
+              <div class="g-row wt"><span class="lbl">main</span><span class="meta">2</span></div>
+              <div class="g-row sess active"><svg class="ic-claude" viewBox="0 0 16 16"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z" fill="currentColor"/></svg><span class="lbl">claude · toggle chord</span></div>
+              <div class="g-row sess"><svg class="ic-codex" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.4"/><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"/></svg><span class="lbl">codex · attention audit</span></div>
+              <div class="g-row wt"><span class="lbl">feat/palette-icons</span><span class="meta">1</span></div>
+              <div class="g-row sess"><svg class="ic-claude" viewBox="0 0 16 16"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z" fill="currentColor"/></svg><span class="lbl">claude · row-actions strip</span></div>
+
+              <div class="g-sechead">Terminals<span class="add"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg></span></div>
+              <div class="g-row term"><span class="dot"></span><span class="lbl">terminal 1</span></div>
+              <div class="g-row term"><span class="dot"></span><span class="lbl">terminal 2</span></div>
+            </div>
+            <div class="g-ws">
+              <div class="g-sessbar">
+                <svg class="ic-claude" viewBox="0 0 16 16"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z" fill="currentColor"/></svg>
+                <span class="title">claude · toggle chord</span><span class="branch">main</span>
+                <span class="tools">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M6 2.5v11"/></svg>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 5.5 6.2 8.7 3 11.9M8.4 12.4H13"/></svg>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2"/></svg>
+                </span>
+              </div>
+              <div class="g-pty">
+<span class="a">✻</span> <span class="f">Adding the toggle chord</span>
+  <span class="d">⎿</span> Read src/gui/shortcuts.rs (218 lines)
+  <span class="d">⎿</span> Read src/gui/terminal.rs (96 lines)
+
+<span class="c">●</span> The registry already carries <span class="y">ModT</span> for "new terminal", so the
+  symmetric toggle slots in beside it as <span class="y">ToggleTerminal</span>. It needs two
+  pieces of state that already exist:
+
+    <span class="g">terminal_focused: bool</span>   <span class="d">// which pane the workspace renders</span>
+    <span class="g">active_terminal: Option&lt;TerminalId&gt;</span>
+
+<span class="c">●</span> Update(<span class="m">Message::ToggleTerminal</span>) → if terminal_focused, restore the
+  remembered session; otherwise focus active_terminal, creating one when
+  the list is empty.
+
+<span class="c">●</span> <span class="d">Edited src/gui/shortcuts.rs with 14 additions</span>
+      <span class="d">184</span>  <span class="g">+  Binding::new(Mod::Primary, Key::Backquote, Action::ToggleTerminal),</span>
+
+<span class="a">✻</span> <span class="f">Wiring the workspace switch…</span> <span class="caret"></span>
+              </div>
+              <div class="g-status">
+                <span><span class="k">●</span> 3 <span class="k">RUNNING</span></span>
+                <span><span class="k">BACKEND</span> native</span>
+                <span><span class="k">THEME</span> tokyonight</span>
+                <span class="right">
+                  <span class="keycap">mod+p</span><span class="k">palette</span>
+                  <span class="keycap">mod+/</span><span class="k">shortcuts</span>
+                  <span class="ver">v0.44.0</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→<span class="lbl">mod+`</span><span class="lbl">⟵ mod+` back</span></div>
+
+    <!-- ---------- A2 ---------- -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">A2</span><span class="frame-name">Terminal focused<span class="pin-new">NEW</span></span>
+        <p class="frame-desc">Same window, same sidebar, same statusbar — only the workspace pane and the highlight move.
+          The session bar shows <code>terminal 1</code>, the sidebar terminal row is active, and no agent session row is
+          highlighted. Pressing <kbd>mod+`</kbd> again returns to A1 with the identical session restored.</p>
+      </div>
+      <div class="frame-card screen desktop">
+        <div class="g-app">
+          <div class="g-appbar">
+            <span class="g-brand">grove</span>
+            <div class="g-appbar-right">
+              <span class="g-iconbtn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1"/><rect x="9" y="9" width="5.5" height="5.5" rx="1"/></svg></span>
+              <span class="g-iconbtn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2M3.3 3.3l1.4 1.4M11.3 11.3l1.4 1.4M12.7 3.3l-1.4 1.4M4.7 11.3l-1.4 1.4"/></svg></span>
+            </div>
+          </div>
+          <div class="g-body">
+            <div class="g-side">
+              <div class="g-row project"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.8 4.2 8 1.5l6.2 2.7L8 6.9z"/><path d="M1.8 8 8 10.7 14.2 8"/><path d="M1.8 11.6 8 14.3l6.2-2.7"/></svg><span class="lbl">grove</span><span class="meta">~/dev/grove</span></div>
+              <div class="g-row wt"><span class="lbl">main</span><span class="meta">2</span></div>
+              <div class="g-row sess"><svg class="ic-claude" viewBox="0 0 16 16"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z" fill="currentColor"/></svg><span class="lbl">claude · toggle chord</span></div>
+              <div class="g-row sess"><svg class="ic-codex" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.4"/><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"/></svg><span class="lbl">codex · attention audit</span></div>
+              <div class="g-row wt"><span class="lbl">feat/palette-icons</span><span class="meta">1</span></div>
+              <div class="g-row sess"><svg class="ic-claude" viewBox="0 0 16 16"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z" fill="currentColor"/></svg><span class="lbl">claude · row-actions strip</span></div>
+
+              <div class="g-sechead">Terminals<span class="add"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg></span></div>
+              <div class="g-row term active"><span class="dot"></span><span class="lbl">terminal 1</span></div>
+              <div class="g-row term"><span class="dot"></span><span class="lbl">terminal 2</span></div>
+            </div>
+            <div class="g-ws">
+              <div class="g-sessbar">
+                <svg class="ic-term" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 4 5.9 7.3 2.6 10.6"/><path d="M8 11.6h5"/></svg>
+                <span class="title">terminal 1</span><span class="branch">~/dev/grove</span>
+                <span class="tools">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M6 2.5v11"/></svg>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 5.5 6.2 8.7 3 11.9M8.4 12.4H13"/></svg>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2"/></svg>
+                </span>
+              </div>
+              <div class="g-pty">
+<span class="c">~</span> <span class="g">❯</span> git status -sb
+<span class="d">## main...origin/main</span>
+ <span class="y">M</span> src/gui/shortcuts.rs
+ <span class="y">M</span> src/gui/workspace.rs
+<span class="c">~</span> <span class="g">❯</span> cargo check -q
+    <span class="g">Checking</span> grove v0.44.0 (/home/gitfudge/dev/grove)
+    <span class="g">Finished</span> dev [unoptimized + debuginfo] in 4.71s
+<span class="c">~</span> <span class="g">❯</span> <span class="caret"></span>
+              </div>
+              <div class="g-status">
+                <span><span class="k">●</span> 3 <span class="k">RUNNING</span></span>
+                <span><span class="k">BACKEND</span> native</span>
+                <span><span class="k">THEME</span> tokyonight</span>
+                <span class="right">
+                  <span class="keycap">mod+p</span><span class="k">palette</span>
+                  <span class="keycap">mod+/</span><span class="k">shortcuts</span>
+                  <span class="ver">v0.44.0</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="sticky-note">
+    <b>Implementation:</b> nothing new to store. The toggle reuses the existing <code>terminal_focused</code> flag and
+    <code>active_terminal</code>, plus one remembered <code>last_session</code> so the return trip is exact.
+    The chord is <b>symmetric</b> — the same handler in both directions, no "escape" variant — and the statusbar,
+    sidebar scroll position and running-session count are untouched by it.
+  </div>
+
+  <!-- ================= SECTION B ================= -->
+  <div class="section-heading"><span class="section-letter">B</span> From grid and zen <span class="sub">the chord works from every view mode</span></div>
+  <div class="frame-row">
+
+    <!-- ---------- B1 ---------- -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B1</span><span class="frame-name">Grid view — 2×2, tile 2 focused</span>
+        <p class="frame-desc">Four agent sessions tiled, no sidebar. <code>mod+2</code> put focus on the codex tile.
+          Pressing <kbd>mod+`</kbd> here exits the grid to the terminal (B2).</p>
+      </div>
+      <div class="frame-card screen desktop">
+        <div class="g-app">
+          <div class="g-appbar">
+            <span class="g-brand">grove</span>
+            <div class="g-appbar-right">
+              <span class="g-iconbtn" style="color:var(--cyan)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1"/><rect x="9" y="9" width="5.5" height="5.5" rx="1"/></svg></span>
+              <span class="g-iconbtn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2M3.3 3.3l1.4 1.4M11.3 11.3l1.4 1.4M12.7 3.3l-1.4 1.4M4.7 11.3l-1.4 1.4"/></svg></span>
+            </div>
+          </div>
+          <div class="g-body">
+            <div class="g-grid">
+              <div class="g-tile">
+                <div class="g-tilehead"><svg class="ic-claude" viewBox="0 0 16 16"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z" fill="currentColor"/></svg><span>claude · toggle chord</span><span class="modn">mod+1</span></div>
+                <div class="g-pty">
+<span class="c">●</span> Wiring <span class="y">ToggleTerminal</span> into the update loop.
+  <span class="d">⎿</span> Edited src/gui/workspace.rs (+22 −3)
+
+<span class="a">✻</span> <span class="f">Restoring the previous session on the way back…</span>
+                </div>
+              </div>
+              <div class="g-tile focused">
+                <div class="g-tilehead"><svg class="ic-codex" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.4"/><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"/></svg><span>codex · attention audit</span><span class="modn">mod+2</span></div>
+                <div class="g-pty">
+<span class="g">▌</span> Scanning ~/.config/grove/attention for stale
+  state files from dead grove pids.
+
+  <span class="d">3 reaped, 2 live (tmux)</span> <span class="caret"></span>
+                </div>
+              </div>
+              <div class="g-tile">
+                <div class="g-tilehead"><svg class="ic-claude" viewBox="0 0 16 16"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z" fill="currentColor"/></svg><span>claude · row-actions strip</span><span class="modn">mod+3</span></div>
+                <div class="g-pty">
+<span class="c">●</span> Icon bar renders inside the Tab row now.
+  <span class="d">⎿</span> cargo fmt --edition 2021 (2 files)
+
+<span class="y">?</span> Ready for review.
+                </div>
+              </div>
+              <div class="g-tile">
+                <div class="g-tilehead"><svg class="ic-codex" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.4"/><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"/></svg><span>codex · worktree paths</span><span class="modn">mod+4</span></div>
+                <div class="g-pty">
+<span class="g">▌</span> canonicalize() on macOS resolves /private —
+  the root-worktree check now compares canonical
+  paths on both sides.
+
+  <span class="d">tests: 41 passed</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="g-status">
+            <span><span class="k">●</span> 4 <span class="k">RUNNING</span></span>
+            <span><span class="k">BACKEND</span> native</span>
+            <span><span class="k">THEME</span> tokyonight</span>
+            <span class="right">
+              <span class="keycap">mod+p</span><span class="k">palette</span>
+              <span class="keycap">mod+/</span><span class="k">shortcuts</span>
+              <span class="ver">v0.44.0</span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→<span class="lbl">mod+`</span><span class="lbl">⟵ mod+` back to grid</span></div>
+
+    <!-- ---------- B2 ---------- -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B2</span><span class="frame-name">Grid exited → terminal focused<span class="pin-new">NEW</span></span>
+        <p class="frame-desc">The grid collapses to the normal single-pane layout with the terminal focused — identical
+          to A2. Toggling back returns <b>to the grid</b>, with <code>mod+2</code> still the focused tile: the grid state
+          is remembered, not rebuilt.</p>
+      </div>
+      <div class="frame-card screen desktop">
+        <div class="g-app">
+          <div class="g-appbar">
+            <span class="g-brand">grove</span>
+            <div class="g-appbar-right">
+              <span class="g-iconbtn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1"/><rect x="9" y="9" width="5.5" height="5.5" rx="1"/></svg></span>
+              <span class="g-iconbtn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2M3.3 3.3l1.4 1.4M11.3 11.3l1.4 1.4M12.7 3.3l-1.4 1.4M4.7 11.3l-1.4 1.4"/></svg></span>
+            </div>
+          </div>
+          <div class="g-body">
+            <div class="g-side">
+              <div class="g-row project"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.8 4.2 8 1.5l6.2 2.7L8 6.9z"/><path d="M1.8 8 8 10.7 14.2 8"/><path d="M1.8 11.6 8 14.3l6.2-2.7"/></svg><span class="lbl">grove</span><span class="meta">~/dev/grove</span></div>
+              <div class="g-row wt"><span class="lbl">main</span><span class="meta">2</span></div>
+              <div class="g-row sess"><svg class="ic-claude" viewBox="0 0 16 16"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z" fill="currentColor"/></svg><span class="lbl">claude · toggle chord</span></div>
+              <div class="g-row sess"><svg class="ic-codex" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.4"/><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"/></svg><span class="lbl">codex · attention audit</span></div>
+              <div class="g-row wt"><span class="lbl">feat/palette-icons</span><span class="meta">2</span></div>
+              <div class="g-row sess"><svg class="ic-claude" viewBox="0 0 16 16"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z" fill="currentColor"/></svg><span class="lbl">claude · row-actions strip</span></div>
+              <div class="g-row sess"><svg class="ic-codex" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.4"/><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"/></svg><span class="lbl">codex · worktree paths</span></div>
+
+              <div class="g-sechead">Terminals<span class="add"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg></span></div>
+              <div class="g-row term active"><span class="dot"></span><span class="lbl">terminal 1</span></div>
+              <div class="g-row term"><span class="dot"></span><span class="lbl">terminal 2</span></div>
+            </div>
+            <div class="g-ws">
+              <div class="g-sessbar">
+                <svg class="ic-term" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 4 5.9 7.3 2.6 10.6"/><path d="M8 11.6h5"/></svg>
+                <span class="title">terminal 1</span><span class="branch">~/dev/grove</span>
+                <span class="tools">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M6 2.5v11"/></svg>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 5.5 6.2 8.7 3 11.9M8.4 12.4H13"/></svg>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2"/></svg>
+                </span>
+              </div>
+              <div class="g-pty">
+<span class="c">~</span> <span class="g">❯</span> git worktree list
+<span class="d">/home/gitfudge/dev/grove              137e543 [main]</span>
+<span class="d">/home/gitfudge/dev/grove-palette      9dc4e5e [feat/palette-icons]</span>
+<span class="c">~</span> <span class="g">❯</span> ./install.sh
+   <span class="g">Compiling</span> grove v0.44.0
+    <span class="g">Finished</span> release [optimized] in 1m 52s
+   <span class="g">Installed</span> /home/gitfudge/.local/bin/grove
+<span class="c">~</span> <span class="g">❯</span> <span class="caret"></span>
+              </div>
+              <div class="g-status">
+                <span><span class="k">●</span> 4 <span class="k">RUNNING</span></span>
+                <span><span class="k">BACKEND</span> native</span>
+                <span><span class="k">THEME</span> tokyonight</span>
+                <span class="right">
+                  <span class="keycap">mod+p</span><span class="k">palette</span>
+                  <span class="keycap">mod+/</span><span class="k">shortcuts</span>
+                  <span class="ver">v0.44.0</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="frame-row">
+
+    <!-- ---------- B3 ---------- -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B3</span><span class="frame-name">Zen mode — agent PTY full-bleed</span>
+        <p class="frame-desc">No appbar, no sidebar, no statusbar. <kbd>mod+`</kbd> pressed here must not break zen.</p>
+      </div>
+      <div class="frame-card screen desktop">
+        <div class="g-app">
+          <div class="g-pty" style="font-size:13.5px;padding:26px 32px;">
+<span class="a">✻</span> <span class="f">Toggle chord — zen pass</span>
+
+<span class="c">●</span> Zen hides every piece of chrome, so the chord has no visible affordance
+  here. That is fine: the shortcut registry still owns it, and the overlay
+  (<span class="y">mod+/</span>) is reachable without leaving zen.
+
+<span class="c">●</span> The important invariant is that <span class="g">zen stays on</span> across the toggle. The
+  handler swaps the workspace's content, not its view mode:
+
+    <span class="d">match self.view {</span>
+        <span class="d">View::Zen =&gt; { /* keep zen, swap pane */ }</span>
+        <span class="d">View::Grid =&gt; { self.grid_view_before = true; self.view = View::Single }</span>
+        <span class="d">View::Single =&gt; { /* swap pane */ }</span>
+    <span class="d">}</span>
+
+<span class="c">●</span> <span class="d">Edited src/gui/workspace.rs with 9 additions and 2 removals</span>
+
+<span class="a">✻</span> <span class="f">Checking the zen round-trip…</span> <span class="caret"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→<span class="lbl">mod+`</span><span class="lbl">⟵ mod+` back</span></div>
+
+    <!-- ---------- B4 ---------- -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B4</span><span class="frame-name">Zen — terminal full-bleed<span class="pin-new">NEW</span></span>
+        <p class="frame-desc">Zen is preserved; only the content swaps. Still no appbar, sidebar or statusbar —
+          the terminal simply takes over the same full-bleed surface.</p>
+      </div>
+      <div class="frame-card screen desktop">
+        <div class="g-app">
+          <div class="g-pty" style="font-size:13.5px;padding:26px 32px;">
+<span class="c">~</span> <span class="g">❯</span> cargo test toggle -q
+<span class="d">running 6 tests</span>
+<span class="g">test</span> gui::shortcuts::tests::backquote_is_registered <span class="g">... ok</span>
+<span class="g">test</span> gui::workspace::tests::toggle_focuses_last_terminal <span class="g">... ok</span>
+<span class="g">test</span> gui::workspace::tests::toggle_back_restores_session <span class="g">... ok</span>
+<span class="g">test</span> gui::workspace::tests::toggle_preserves_zen <span class="g">... ok</span>
+<span class="g">test</span> gui::workspace::tests::toggle_restores_grid <span class="g">... ok</span>
+<span class="g">test</span> gui::workspace::tests::toggle_creates_terminal_when_empty <span class="g">... ok</span>
+
+<span class="d">test result: </span><span class="g">ok</span><span class="d">. 6 passed; 0 failed; finished in 0.09s</span>
+
+<span class="c">~</span> <span class="g">❯</span> <span class="caret"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="sticky-note tilt-r">
+    <b>DECISION — does <code>grid_view</code> survive the round-trip?</b><br>
+    This mock assumes <b>yes</b>: entering the terminal from the grid stashes <code>grid_view_before</code>, exactly the
+    way zen already stashes <code>grid_view_before_zen</code>, and toggling back restores the grid with the same focused
+    tile. The alternative — the toggle collapses the grid permanently — is one fewer field but makes the chord
+    asymmetric, which is the thing we are trying to avoid. Needs a call before build.
+  </div>
+
+  <!-- ================= SECTION C ================= -->
+  <div class="section-heading"><span class="section-letter">C</span> Edge cases <span class="sub">zero terminals, several terminals, dead terminals</span></div>
+  <div class="frame-row">
+
+    <!-- ---------- C1 ---------- -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">C1</span><span class="frame-name">No terminals yet — auto-create</span>
+        <p class="frame-desc">The <code>TERMINALS</code> section is empty. <kbd>mod+`</kbd> spawns <code>terminal 1</code>
+          in the project root and focuses it, landing on A2. This is the only case where the chord behaves
+          identically to <code>mod+t</code>.</p>
+      </div>
+      <div class="frame-card screen desktop">
+        <div class="g-app">
+          <div class="g-appbar">
+            <span class="g-brand">grove</span>
+            <div class="g-appbar-right">
+              <span class="g-iconbtn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1"/><rect x="9" y="9" width="5.5" height="5.5" rx="1"/></svg></span>
+              <span class="g-iconbtn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2M3.3 3.3l1.4 1.4M11.3 11.3l1.4 1.4M12.7 3.3l-1.4 1.4M4.7 11.3l-1.4 1.4"/></svg></span>
+            </div>
+          </div>
+          <div class="g-body">
+            <div class="g-side">
+              <div class="g-row project"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.8 4.2 8 1.5l6.2 2.7L8 6.9z"/><path d="M1.8 8 8 10.7 14.2 8"/><path d="M1.8 11.6 8 14.3l6.2-2.7"/></svg><span class="lbl">grove</span><span class="meta">~/dev/grove</span></div>
+              <div class="g-row wt"><span class="lbl">main</span><span class="meta">1</span></div>
+              <div class="g-row sess active"><svg class="ic-claude" viewBox="0 0 16 16"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z" fill="currentColor"/></svg><span class="lbl">claude · toggle chord</span></div>
+
+              <div class="g-sechead">Terminals<span class="add"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg></span></div>
+              <div class="g-empty">none yet — mod+t or mod+`</div>
+            </div>
+            <div class="g-ws">
+              <div class="g-sessbar">
+                <svg class="ic-claude" viewBox="0 0 16 16"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z" fill="currentColor"/></svg>
+                <span class="title">claude · toggle chord</span><span class="branch">main</span>
+                <span class="tools">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M6 2.5v11"/></svg>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 5.5 6.2 8.7 3 11.9M8.4 12.4H13"/></svg>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2"/></svg>
+                </span>
+              </div>
+              <div class="g-pty">
+<span class="a">✻</span> <span class="f">Fresh window, no home terminals open</span>
+
+<span class="c">●</span> With an empty terminal list there is nothing to toggle <span class="y">to</span>, so the
+  chord falls through to the create path and focuses the new terminal
+  in one keystroke — no empty-state UI, no error toast.
+
+    <span class="g">if self.terminals.is_empty() { self.spawn_terminal(project_root) }</span>
+
+<span class="c">●</span> The second press then behaves normally and comes back here.
+
+<span class="a">✻</span> <span class="f">Waiting on input…</span> <span class="caret"></span>
+              </div>
+              <div class="g-status">
+                <span><span class="k">●</span> 1 <span class="k">RUNNING</span></span>
+                <span><span class="k">BACKEND</span> native</span>
+                <span><span class="k">THEME</span> tokyonight</span>
+                <span class="right">
+                  <span class="keycap">mod+p</span><span class="k">palette</span>
+                  <span class="keycap">mod+/</span><span class="k">shortcuts</span>
+                  <span class="ver">v0.44.0</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- C2 ---------- -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">C2</span><span class="frame-name">Sidebar excerpt — three terminals</span>
+        <p class="frame-desc">Component frame, natural size. The toggle returns to the <b>last-used</b> terminal
+          (<code>terminal 2</code>), not <code>terminal 1</code> — <code>active_terminal</code> persists across the
+          round-trip and across view-mode changes.</p>
+      </div>
+      <div class="comp tight" style="width:360px;padding:20px;">
+        <div class="side-comp">
+          <div class="g-sechead">Terminals<span class="add"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg></span></div>
+          <div class="g-row term"><span class="dot"></span><span class="lbl">terminal 1</span><span class="meta">~/dev/grove</span></div>
+          <div class="g-row term active"><span class="dot"></span><span class="lbl">terminal 2</span><span class="meta">~/dev/grove</span></div>
+          <div class="g-row term"><span class="dot"></span><span class="lbl">terminal 3</span><span class="meta">~/dev/skills</span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="frame-row">
+
+    <!-- ---------- C3 ---------- -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">C3</span><span class="frame-name">Terminal exited — dead shell</span>
+        <p class="frame-desc">The shell in <code>terminal 1</code> exited; its status dot is muted. The toggle still
+          focuses it and shows the scrollback with <code>[process exited]</code> — nothing is auto-reaped under the
+          user. <code>mod+t</code> opens a fresh one; restart respawns in place.</p>
+      </div>
+      <div class="frame-card screen desktop">
+        <div class="g-app">
+          <div class="g-appbar">
+            <span class="g-brand">grove</span>
+            <div class="g-appbar-right">
+              <span class="g-iconbtn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1"/><rect x="9" y="9" width="5.5" height="5.5" rx="1"/></svg></span>
+              <span class="g-iconbtn"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2M3.3 3.3l1.4 1.4M11.3 11.3l1.4 1.4M12.7 3.3l-1.4 1.4M4.7 11.3l-1.4 1.4"/></svg></span>
+            </div>
+          </div>
+          <div class="g-body">
+            <div class="g-side">
+              <div class="g-row project"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.8 4.2 8 1.5l6.2 2.7L8 6.9z"/><path d="M1.8 8 8 10.7 14.2 8"/><path d="M1.8 11.6 8 14.3l6.2-2.7"/></svg><span class="lbl">grove</span><span class="meta">~/dev/grove</span></div>
+              <div class="g-row wt"><span class="lbl">main</span><span class="meta">2</span></div>
+              <div class="g-row sess"><svg class="ic-claude" viewBox="0 0 16 16"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z" fill="currentColor"/></svg><span class="lbl">claude · toggle chord</span></div>
+              <div class="g-row sess"><svg class="ic-codex" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.4"/><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"/></svg><span class="lbl">codex · attention audit</span></div>
+
+              <div class="g-sechead">Terminals<span class="add"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg></span></div>
+              <div class="g-row term active"><span class="dot dead"></span><span class="lbl">terminal 1</span><span class="meta">exited</span></div>
+              <div class="g-row term"><span class="dot"></span><span class="lbl">terminal 2</span></div>
+            </div>
+            <div class="g-ws">
+              <div class="g-sessbar">
+                <svg class="ic-term" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 4 5.9 7.3 2.6 10.6"/><path d="M8 11.6h5"/></svg>
+                <span class="title">terminal 1</span><span class="branch">~/dev/grove</span>
+                <span class="tools">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M6 2.5v11"/></svg>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 5.5 6.2 8.7 3 11.9M8.4 12.4H13"/></svg>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.2v2M8 12.8v2M1.2 8h2M12.8 8h2"/></svg>
+                </span>
+              </div>
+              <div class="g-pty">
+<span class="c">~</span> <span class="g">❯</span> cargo build --release
+   <span class="g">Compiling</span> grove v0.44.0 (/home/gitfudge/dev/grove)
+    <span class="g">Finished</span> release [optimized] in 1m 47s
+<span class="c">~</span> <span class="g">❯</span> exit
+
+<span class="d">[process exited — status 0]</span>
+<span class="d">mod+t opens a new terminal · restart respawns this one</span>
+              </div>
+              <div class="g-status">
+                <span><span class="k">●</span> 2 <span class="k">RUNNING</span></span>
+                <span><span class="k">BACKEND</span> native</span>
+                <span><span class="k">THEME</span> tokyonight</span>
+                <span class="right">
+                  <span class="keycap">mod+p</span><span class="k">palette</span>
+                  <span class="keycap">mod+/</span><span class="k">shortcuts</span>
+                  <span class="ver">v0.44.0</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ================= SECTION D ================= -->
+  <div class="section-heading"><span class="section-letter">D</span> Palette drill-in <span class="sub">terminals become first-class in mod+s</span></div>
+  <div class="frame-row">
+
+    <!-- ---------- D1 ---------- -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">D1</span><span class="frame-name">SWITCH TO SESSION — terminals listed<span class="pin-new">NEW</span></span>
+        <p class="frame-desc">Component frame, 640px natural width. Home terminals now appear beneath the agent sessions
+          in the <code>mod+s</code> drill-in, so the chord is a shortcut for something the palette can also do.</p>
+      </div>
+      <div class="comp" style="padding:26px;">
+        <div class="pal">
+          <div class="pal-input">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.6"/><path d="M10.4 10.4 14 14" stroke-linecap="round"/></svg>
+            <span class="cue">SWITCH TO SESSION</span>
+            <span class="pal-ph">Filter sessions…</span>
+          </div>
+          <div class="pal-group">Sessions</div>
+          <div class="pal-list">
+            <div class="pal-row">
+              <span class="iconcol"><svg class="ic-claude" viewBox="0 0 16 16"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z" fill="currentColor"/></svg></span>
+              <span><span class="t">claude · toggle chord</span><div class="s">grove / main</div></span>
+            </div>
+            <div class="pal-row">
+              <span class="iconcol"><svg class="ic-codex" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.4"/><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"/></svg></span>
+              <span><span class="t">codex · attention audit</span><div class="s">grove / main</div></span>
+            </div>
+            <div class="pal-row">
+              <span class="iconcol"><svg class="ic-claude" viewBox="0 0 16 16"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z" fill="currentColor"/></svg></span>
+              <span><span class="t">claude · row-actions strip</span><div class="s">grove / feat/palette-icons</div></span>
+            </div>
+          </div>
+          <div class="pal-group">Terminals</div>
+          <div class="pal-list">
+            <div class="pal-row">
+              <span class="iconcol"><svg class="ic-term" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 4 5.9 7.3 2.6 10.6"/><path d="M8 11.6h5"/></svg></span>
+              <span><span class="t">terminal 1</span><div class="s">grove / home terminal</div></span>
+            </div>
+            <div class="pal-row sel">
+              <span class="iconcol"><svg class="ic-term" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 4 5.9 7.3 2.6 10.6"/><path d="M8 11.6h5"/></svg></span>
+              <span><span class="t">terminal 2</span><div class="s">grove / home terminal</div></span>
+            </div>
+          </div>
+          <div class="pal-foot">
+            <span class="keycap">⏎</span><span class="lbl">switch</span>
+            <span class="keycap">esc</span><span class="lbl">back</span>
+            <span class="keycap" style="margin-left:auto">mod+`</span><span class="lbl">toggle terminal</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- D2 ---------- -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">D2</span><span class="frame-name">Drill-in filtered — "ter"</span>
+        <p class="frame-desc">The fuzzy filter runs across both groups: terminal rows survive, and so does the one agent
+          session whose title matches. Matched spans are highlighted in cyan; empty groups drop out entirely.</p>
+      </div>
+      <div class="comp" style="padding:26px;">
+        <div class="pal">
+          <div class="pal-input">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.6"/><path d="M10.4 10.4 14 14" stroke-linecap="round"/></svg>
+            <span class="cue">SWITCH TO SESSION</span>
+            <span class="pal-typed">ter<span class="caret" style="margin-left:1px"></span></span>
+          </div>
+          <div class="pal-group">Sessions</div>
+          <div class="pal-list">
+            <div class="pal-row">
+              <span class="iconcol"><svg class="ic-codex" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.4"/><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"/></svg></span>
+              <span><span class="t">codex · at<span class="hit">te</span>ntion <span class="hit">r</span>eaper</span><div class="s">grove / main</div></span>
+            </div>
+          </div>
+          <div class="pal-group">Terminals</div>
+          <div class="pal-list">
+            <div class="pal-row">
+              <span class="iconcol"><svg class="ic-term" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 4 5.9 7.3 2.6 10.6"/><path d="M8 11.6h5"/></svg></span>
+              <span><span class="t"><span class="hit">ter</span>minal 1</span><div class="s">grove / home terminal</div></span>
+            </div>
+            <div class="pal-row sel">
+              <span class="iconcol"><svg class="ic-term" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 4 5.9 7.3 2.6 10.6"/><path d="M8 11.6h5"/></svg></span>
+              <span><span class="t"><span class="hit">ter</span>minal 2</span><div class="s">grove / home terminal</div></span>
+            </div>
+            <div class="pal-row">
+              <span class="iconcol"><svg class="ic-term" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 4 5.9 7.3 2.6 10.6"/><path d="M8 11.6h5"/></svg></span>
+              <span><span class="t"><span class="hit">ter</span>minal 3</span><div class="s">skills / home terminal</div></span>
+            </div>
+          </div>
+          <div class="pal-foot">
+            <span class="keycap">⏎</span><span class="lbl">switch</span>
+            <span class="keycap">esc</span><span class="lbl">back</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="sticky-note">
+    <b>Palette note:</b> terminals reuse the session row shape rather than getting a bespoke one — same 44px height,
+    same 24px icon column, subtitle in <code>project / context</code> form where the context reads
+    <code>home terminal</code> instead of a branch. Selecting a terminal row does the same thing the chord does, so
+    both paths land on one message: <code>Message::FocusTerminal(id)</code>.
+  </div>
+
+  <!-- ================= SECTION E ================= -->
+  <div class="section-heading"><span class="section-letter">E</span> Shortcut overlay <span class="sub">mod+/ stays truthful</span></div>
+  <div class="frame-row">
+
+    <!-- ---------- E1 ---------- -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">E1</span><span class="frame-name">Overlay excerpt — new registry row<span class="pin-new">NEW</span></span>
+        <p class="frame-desc">Component frame, 640px. The chord is registered in the same table that renders this list,
+          so the overlay documents it automatically — the highlighted row is the only addition.</p>
+      </div>
+      <div class="comp" style="padding:26px;">
+        <div class="sc">
+          <div class="sc-head">
+            <div class="t">Keyboard shortcuts</div>
+            <div class="s">mod = ctrl on Linux/Windows, ⌘ on macOS · press esc to close</div>
+          </div>
+          <div class="sc-cols">
+            <div>
+              <div class="sc-grouphead">Workspace</div>
+              <div class="sc-row"><span class="desc">New terminal</span><span class="keys"><span class="keycap">mod+t</span></span></div>
+              <div class="sc-row newrow"><span class="desc">Toggle terminal</span><span class="keys"><span class="keycap">mod+`</span></span></div>
+              <div class="sc-row"><span class="desc">Toggle grid view</span><span class="keys"><span class="keycap">mod+g</span></span></div>
+              <div class="sc-row"><span class="desc">Toggle zen mode</span><span class="keys"><span class="keycap">mod+enter</span></span></div>
+              <div class="sc-row"><span class="desc">Focus pane 1–4</span><span class="keys"><span class="keycap">mod+1…4</span></span></div>
+            </div>
+            <div>
+              <div class="sc-grouphead">Navigation</div>
+              <div class="sc-row"><span class="desc">Command palette</span><span class="keys"><span class="keycap">mod+p</span></span></div>
+              <div class="sc-row"><span class="desc">Switch to session</span><span class="keys"><span class="keycap">mod+s</span></span></div>
+              <div class="sc-row"><span class="desc">Next / previous session</span><span class="keys"><span class="keycap">mod+j</span><span class="keycap">mod+k</span></span></div>
+              <div class="sc-row"><span class="desc">New agent session</span><span class="keys"><span class="keycap">mod+n</span></span></div>
+              <div class="sc-row"><span class="desc">This overlay</span><span class="keys"><span class="keycap">mod+/</span></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="sticky-note tilt-r">
+    <b>Copy call:</b> the row reads "Toggle terminal", not "Toggle home terminal" — it sits directly under "New terminal"
+    in the Workspace group, so the noun is already established and the shorter label keeps the two-column list even.
+    Grouping under <b>Workspace</b> (rather than Navigation) matches where <code>mod+t</code> already lives.
+  </div>
+
+</div><!-- /#canvas -->
+</div><!-- /#viewport -->
+
+<script>
+(function () {
+  var vp = document.getElementById('viewport'), cv = document.getElementById('canvas');
+  var x = 0, y = 0, z = 1, MIN = 0.1, MAX = 2.5;
+  function apply() {
+    cv.style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + z + ')';
+    document.getElementById('zoomPct').textContent = Math.round(z * 100) + '%';
+  }
+  function fit() {
+    var w = cv.scrollWidth, h = cv.scrollHeight;
+    z = Math.min(MAX, Math.max(MIN, Math.min(innerWidth / w, innerHeight / h) * 0.95));
+    x = (innerWidth - w * z) / 2; y = Math.max(20, (innerHeight - h * z) / 2);
+    apply();
+  }
+  vp.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var nz = Math.min(MAX, Math.max(MIN, z * Math.exp(-e.deltaY * 0.0015)));
+    x = e.clientX - (e.clientX - x) * (nz / z);
+    y = e.clientY - (e.clientY - y) * (nz / z);
+    z = nz; apply();
+  }, { passive: false });
+  var panning = false, px = 0, py = 0;
+  vp.addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    panning = true; px = e.clientX - x; py = e.clientY - y;
+    vp.classList.add('panning'); vp.setPointerCapture(e.pointerId);
+  });
+  vp.addEventListener('pointermove', function (e) {
+    if (panning) { x = e.clientX - px; y = e.clientY - py; apply(); }
+  });
+  vp.addEventListener('pointerup', function () { panning = false; vp.classList.remove('panning'); });
+  document.getElementById('zoomIn').onclick = function () { z = Math.min(MAX, z * 1.25); apply(); };
+  document.getElementById('zoomOut').onclick = function () { z = Math.max(MIN, z / 1.25); apply(); };
+  document.getElementById('zoomFit').onclick = fit;
+  var tgl = document.getElementById('themeToggle');
+  tgl.onclick = function () {
+    var dark = document.documentElement.classList.toggle('dark');
+    this.textContent = dark ? '☀ Light' : '☾ Dark';
+  };
+  // Grove ships dark (TokyoNight) by default — start there.
+  document.documentElement.classList.add('dark');
+  tgl.textContent = '☀ Light';
+  fit();
+})();
+</script>
+</body>
+</html>

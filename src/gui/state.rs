@@ -159,6 +159,10 @@ pub struct Grove {
     pub(in crate::gui) grid_focused: Option<usize>,
     /// True when zen was entered from grid view; exiting zen re-enters grid.
     pub(in crate::gui) grid_view_before_zen: bool,
+    /// True when the terminal tab was entered from grid view; leaving the
+    /// terminal (mod+`) re-enters grid. Set only by the paths that swap the
+    /// grid out for a terminal — a plain mod+g is not the toggle.
+    pub(in crate::gui) grid_view_before_terminal: bool,
     /// Live state for the per-project lifecycle-scripts editor, when open.
     /// `Some` exactly when `app.modal` is `Modal::ScriptsEditor`.
     pub(in crate::gui) scripts_editor: Option<super::scripts_editor::ScriptsEditorState>,

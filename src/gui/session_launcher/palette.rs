@@ -656,8 +656,12 @@ impl Grove {
     /// `switch_to_session_active`.
     pub(super) fn switch_to_session_row_visible(&self) -> bool {
         // At least one session you could actually switch *to* — the active
-        // one is hidden from the drill-in list, so it doesn't count.
+        // one is hidden from the drill-in list, so it doesn't count. Home
+        // terminals count too: the drill-in lists them as a second group,
+        // so one open terminal is reason enough to offer the row even with
+        // no other session around.
         (0..self.app.sessions.len()).any(|i| self.app.active_session != Some(i))
+            || !self.app.home_terminals.is_empty()
     }
 
     /// Whether `PaletteRow::SwitchToSession` is *actionable*: also requires
@@ -686,12 +690,66 @@ impl Grove {
             .collect()
     }
 
+    /// The home terminals matching `input`, as indices into
+    /// `App::home_terminals` — the drill-in's second group. Unlike the
+    /// session list nothing is hidden: a focused (or dead) terminal is
+    /// still a legitimate thing to focus, so every one is listed.
+    pub(super) fn switch_terminal_rows(&self, input: &str) -> Vec<usize> {
+        let labels: Vec<String> = self
+            .app
+            .home_terminals
+            .iter()
+            .map(|t| t.label.clone())
+            .collect();
+        super::helpers::switch_terminal_rows(&labels, input)
+    }
+
+    /// The drill-in's full row list in display order: matching sessions,
+    /// then matching home terminals. Every cursor/identity/activation path
+    /// below indexes into *this*, so the two groups can't disagree about
+    /// what row `n` is.
+    pub(super) fn switch_rows(&self, input: &str) -> Vec<SwitchRow> {
+        super::helpers::merge_switch_rows(
+            &self.switch_session_rows(input),
+            &self.switch_terminal_rows(input),
+        )
+    }
+
+    /// The stable `Session::id` behind a drill-in row, of either group —
+    /// the identity `switch_identity` stores (see `LauncherState`).
+    pub(super) fn switch_row_id(&self, row: SwitchRow) -> Option<u64> {
+        match row {
+            SwitchRow::Session(i) => self.app.sessions.get(i).map(|s| s.id),
+            SwitchRow::Terminal(i) => self.app.home_terminals.get(i).map(|t| t.id),
+        }
+    }
+
     /// Switch focus to `App::sessions[si]` and close the palette. Shared by
     /// the drill-in's Enter key and row-click paths.
     pub(in crate::gui) fn launcher_switch_to(&mut self, si: usize) -> Task<GMsg> {
         self.set_modal(Modal::None);
         self.on_select_session(si);
         Task::none()
+    }
+
+    /// Focus `App::home_terminals[ti]` and close the palette — the terminal
+    /// group's counterpart to `launcher_switch_to`, routed through the same
+    /// handler the sidebar's terminal rows use (`Msg::SelectHomeTerminal`)
+    /// so focus/resize/selection-reset stay in one place. Dispatched
+    /// recursively through `Grove::update` (the idiom this module's doc
+    /// comment describes) rather than calling the handler directly, which
+    /// lives behind `crate::gui::update`'s own visibility.
+    pub(in crate::gui) fn launcher_switch_to_terminal(&mut self, ti: usize) -> Task<GMsg> {
+        self.set_modal(Modal::None);
+        self.update(GMsg::SelectHomeTerminal(ti))
+    }
+
+    /// Activate a resolved drill-in row, whichever group it came from.
+    pub(super) fn launcher_switch_to_row(&mut self, row: SwitchRow) -> Task<GMsg> {
+        match row {
+            SwitchRow::Session(si) => self.launcher_switch_to(si),
+            SwitchRow::Terminal(ti) => self.launcher_switch_to_terminal(ti),
+        }
     }
 
     /// Move the "switch to session" drill-in's cursor to position `idx`
@@ -704,11 +762,8 @@ impl Grove {
             Some(LauncherState { input, .. }) => input.clone(),
             _ => return,
         };
-        let rows = self.switch_session_rows(&input);
-        let identity = rows
-            .get(idx)
-            .and_then(|&si| self.app.sessions.get(si))
-            .map(|s| s.id);
+        let rows = self.switch_rows(&input);
+        let identity = rows.get(idx).copied().and_then(|r| self.switch_row_id(r));
         if let Some(LauncherState {
             switch,
             switch_identity,
@@ -734,11 +789,11 @@ impl Grove {
             }) => *switch_identity,
             _ => None,
         };
-        let rows = self.switch_session_rows(input);
+        let rows = self.switch_rows(input);
         match identity {
             Some(id) => rows
                 .iter()
-                .position(|&si| self.app.sessions.get(si).map(|s| s.id) == Some(id))
+                .position(|&r| self.switch_row_id(r) == Some(id))
                 .unwrap_or(0),
             None => 0,
         }
@@ -756,7 +811,7 @@ impl Grove {
     /// `crate::gui::launcher::session_grid_key` for the analogous
     /// project+path key used elsewhere — an id is simpler and available
     /// here).
-    pub(super) fn resolve_switch_selected(&self, input: &str) -> Option<usize> {
+    pub(super) fn resolve_switch_selected(&self, input: &str) -> Option<SwitchRow> {
         let (sel, identity) = match self.launcher_modal() {
             Some(LauncherState {
                 switch: Some(sel),
@@ -765,11 +820,11 @@ impl Grove {
             }) => (*sel, *switch_identity),
             _ => return None,
         };
-        let rows = self.switch_session_rows(input);
+        let rows = self.switch_rows(input);
         match identity {
             Some(id) => rows
                 .into_iter()
-                .find(|&si| self.app.sessions.get(si).map(|s| s.id) == Some(id)),
+                .find(|&r| self.switch_row_id(r) == Some(id)),
             None => rows.get(sel).copied(),
         }
     }

@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terminal toggle &amp; focus-state fixes &mdash; Test Plan</title>
+<style>
+  :root{
+    --page:#F4F4F2; --ink:#17181B; --gray:#7A7C80; --hair:#E4E4E1; --blue:#2650EE;
+    --accent-contrast:#FFFFFF; --accent-fill:#2650EE;
+    --pri-critical:#C43D3D; --pri-high:#B7791F; --status-pass:#1A7F37;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --page:#161719; --ink:#ECECEA; --gray:#9A9CA2; --hair:#2E2F33; --blue:#5B7CFF;
+      --accent-contrast:#FFFFFF; --accent-fill:#2F4BD6;
+      --pri-critical:#E06C6C; --pri-high:#D9A23F; --status-pass:#3FB950;
+    }
+  }
+  :root[data-theme="dark"]{
+    --page:#161719; --ink:#ECECEA; --gray:#9A9CA2; --hair:#2E2F33; --blue:#5B7CFF;
+    --accent-contrast:#FFFFFF; --accent-fill:#2F4BD6;
+    --pri-critical:#E06C6C; --pri-high:#D9A23F; --status-pass:#3FB950;
+  }
+  :root[data-theme="light"]{
+    --page:#F4F4F2; --ink:#17181B; --gray:#7A7C80; --hair:#E4E4E1; --blue:#2650EE;
+    --accent-contrast:#FFFFFF; --accent-fill:#2650EE;
+    --pri-critical:#C43D3D; --pri-high:#B7791F; --status-pass:#1A7F37;
+  }
+
+  *{box-sizing:border-box;}
+  html,body{
+    background:var(--page); color:var(--ink); margin:0; padding:0;
+    font-family:"Helvetica Neue",Arial,"Segoe UI",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .page{background:var(--page); color:var(--ink); width:100%; position:relative;}
+  .container{width:92%; max-width:1400px; margin:0 auto; padding:64px 0 56px;}
+
+
+  .maintitle{font-size:40px; font-weight:700; line-height:1.15; margin:0 0 56px;}
+  .maintitle .l1{color:var(--ink); display:block;}
+  .maintitle .l2{color:var(--blue); display:block;}
+
+  .sectitle{font-size:30px; font-weight:700; line-height:1.15; margin:0 0 44px;}
+  .sectitle .l1{color:var(--ink); display:block;}
+  .sectitle .l2{color:var(--blue); display:block;}
+
+  section{margin-bottom:80px;}
+  section:last-child{margin-bottom:0;}
+  .hr{border:none; border-top:1px solid var(--hair); margin:0 0 56px;}
+
+  .label{font-size:11px; text-transform:uppercase; letter-spacing:0.14em; color:var(--gray); font-weight:600;}
+  .body-text{font-size:14.5px; color:var(--gray); line-height:1.7; margin:0 0 20px; max-width:52ch;}
+  .body-text:last-child{margin-bottom:0;}
+
+  /* overview layout */
+  .cols{display:flex; gap:72px; margin-bottom:52px;}
+  .col-l{flex:0 0 38%;}
+  .col-r{flex:1;}
+  .numlist{display:flex; flex-direction:column; gap:36px;}
+  .numitem{display:flex; gap:20px; align-items:flex-start;}
+  .numitem .n{font-size:28px; font-weight:700; color:var(--ink); line-height:1; flex-shrink:0; width:36px;}
+  .numitem .t{font-size:16px; font-weight:600; color:var(--ink); margin:0 0 6px;}
+  .numitem .d{font-size:14.5px; color:var(--gray); line-height:1.7; margin:0;}
+
+  .stats{display:flex; border-top:1px solid var(--hair);}
+  .stat{flex:1; padding:28px 28px 0; border-left:1px solid var(--hair);}
+  .stat:first-child{border-left:none; padding-left:0;}
+  .stat .figure{font-size:40px; font-weight:700; color:var(--ink); margin-top:10px;}
+  .stat.accent{background:var(--accent-fill); margin:-1px -28px 0; padding:28px; border-left:none;}
+  .stat.accent .label, .stat.accent .figure{color:var(--accent-contrast);}
+
+  @media (max-width:760px){
+    .cols{flex-direction:column; gap:40px;}
+    .col-l{flex:none;}
+    .stats{flex-direction:column;}
+    .stat{border-left:none; border-top:1px solid var(--hair); padding:24px 0 0;}
+    .stat:first-child{border-top:none;}
+    .stat.accent{margin:-1px 0 0;}
+  }
+
+  .tier-label{margin-bottom:24px;}
+  .tier-block{margin-bottom:52px;}
+  .tier-block:last-child{margin-bottom:0;}
+
+  /* case tables */
+  .table-wrap{overflow-x:auto;}
+  .case-table{width:100%; min-width:900px; border-collapse:collapse;}
+  .case-table col.c-id{width:6%;}
+  .case-table col.c-pri{width:9%;}
+  .case-table col.c-title{width:24%;}
+  .case-table col.c-scenario{width:26%;}
+  .case-table col.c-expected{width:25%;}
+  .case-table col.c-status{width:10%;}
+  .case-table th{
+    font-size:11px; text-transform:uppercase; letter-spacing:0.14em; color:var(--gray);
+    font-weight:600; text-align:left; padding:0 20px 12px 0; border-bottom:2px solid var(--ink);
+    vertical-align:top;
+  }
+  .case-table th:first-child, .case-table td:first-child{padding-left:0;}
+  .case-table td{
+    padding:15px 20px 15px 0; border-bottom:1px solid var(--hair); vertical-align:top;
+  }
+  .case-table tr:last-child td{border-bottom:none;}
+  .case-table td.t-id{font-size:13px; font-weight:700; color:var(--blue);}
+  .case-table td.t-pri{font-size:11px; text-transform:uppercase; font-weight:600;}
+  .case-table td.t-pri.pri-critical{color:var(--pri-critical);}
+  .case-table td.t-pri.pri-high{color:var(--pri-high);}
+  .case-table td.t-pri.pri-medium{color:var(--ink);}
+  .case-table td.t-pri.pri-low{color:var(--gray);}
+  .case-table td.t-pri .dot, .case-table td.t-status .dot{display:inline-block; width:6px; height:6px; border-radius:50%; background:currentColor; margin-right:6px; vertical-align:middle;}
+  .case-table td.t-title{font-size:15px; font-weight:600; color:var(--ink); line-height:1.4;}
+  .case-table td.t-scenario, .case-table td.t-expected{font-size:13.5px; color:var(--gray); line-height:1.65;}
+  .case-table td.t-expected .lab{font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:var(--ink); font-weight:700; margin-right:6px; display:block; margin-bottom:2px;}
+  .case-table td.t-status{font-size:11px;}
+  .st{font-size:11px; text-transform:uppercase; letter-spacing:0.06em; font-weight:700;}
+  .st-pass{color:var(--status-pass);}
+  .st-fail{color:var(--pri-critical);}
+  .st-notrun{color:var(--gray);}
+  .st-note{font-size:11px; color:var(--gray); font-weight:400; text-transform:none; margin-top:4px;}
+  .protects{font-size:12px; color:var(--gray); margin-top:6px;}
+  code{font-family:ui-monospace,"SF Mono",Consolas,monospace; font-size:0.94em;}
+
+  /* gaps */
+  .gap-item{display:flex; gap:20px; margin-bottom:36px;}
+  .gap-item .n-wrap{flex-shrink:0; width:52px; display:flex; align-items:flex-start;}
+  .gap-item .n{font-size:28px; font-weight:700; color:var(--ink);}
+  .gap-circle{width:52px; height:52px; border-radius:50%; background:var(--blue); color:var(--accent-contrast); display:flex; align-items:center; justify-content:center; font-size:24px; font-weight:700;}
+  .gap-item .gt{font-size:17px; font-weight:600; color:var(--ink); margin:0 0 8px;}
+  .gap-item .gd{font-size:14.5px; color:var(--gray); line-height:1.7; margin:0;}
+
+  .oos-list{list-style:none; margin:28px 0 0; padding:0; counter-reset:oos;}
+  .oos-list li{counter-increment:oos; font-size:14.5px; color:var(--gray); line-height:1.7; margin-bottom:18px; padding-left:30px; position:relative;}
+  .oos-list li:last-child{margin-bottom:0;}
+  .oos-list li::before{content:counter(oos)"."; position:absolute; left:0; font-weight:700; color:var(--ink); font-size:14.5px;}
+
+  .footer-line{font-size:12px; color:var(--gray);}
+
+  /* theme switcher */
+  .theme-toggle{
+    position:fixed; top:20px; right:24px; z-index:10; width:36px; height:36px; border-radius:50%;
+    border:1px solid var(--hair); background:var(--page); display:flex; align-items:center; justify-content:center;
+    cursor:pointer; padding:0;
+  }
+  .theme-toggle:focus-visible{outline:2px solid var(--blue); outline-offset:2px;}
+  .theme-toggle svg{width:18px; height:18px; stroke:var(--ink); fill:none;}
+  .theme-toggle .icon-sun{display:none;}
+  .theme-toggle .icon-moon{display:block;}
+  @media (prefers-color-scheme: dark){
+    .theme-toggle .icon-sun{display:block;}
+    .theme-toggle .icon-moon{display:none;}
+  }
+  :root[data-theme="dark"] .theme-toggle .icon-sun{display:block;}
+  :root[data-theme="dark"] .theme-toggle .icon-moon{display:none;}
+  :root[data-theme="light"] .theme-toggle .icon-sun{display:none;}
+  :root[data-theme="light"] .theme-toggle .icon-moon{display:block;}
+</style>
+</head>
+<body>
+
+<div class="page">
+
+<button class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode" type="button">
+  <svg class="icon-moon" viewBox="0 0 24 24" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+  <svg class="icon-sun" viewBox="0 0 24 24" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+</button>
+
+<div class="container">
+
+  <!-- OVERVIEW -->
+  <section>
+    <h1 class="maintitle"><span class="l1">Terminal toggle &amp; focus-state fixes</span><span class="l2">Test plan for mod+` switching and the eight bad states it must not join.</span></h1>
+
+    <div class="cols">
+      <div class="col-l">
+        <p class="body-text">This change is UI-state plumbing, not data. Nothing new is persisted and no session model changes &mdash; all of the risk lives in the interaction of five flags (<code>grid_view</code>, <code>grid_focused</code>, <code>terminal_focused</code>, <code>focused_pane</code>, <code>chrome_visible</code>/<code>grid_view_before_zen</code>) with the focus resolver <code>focused_session()</code> at <code>src/gui/update/pty_input.rs:163</code>, which decides where every keystroke lands.</p>
+        <p class="body-text">Blast radius follows from that resolver. The worst case isn't a cosmetic glitch: it's keystrokes delivered to the wrong live agent PTY (audit finding #4), or silently swallowed with no visible target at all (findings #3 and #5). Either can destroy work in a running agent session, so the plan is deliberately regression-heavy rather than feature-heavy.</p>
+        <p class="body-text">Three tiers. R-cases reproduce the eight audited bad states, each citing the file:line it was found at, and assert the fixed behavior. U-cases cover the new toggle's decision table once per screen &mdash; workspace, grid, zen &mdash; plus the matcher and registry row. I-cases cover the palette drill-in, the mod+/ overlay, and the interplay with the two-press kill confirm.</p>
+        <p class="body-text">No e2e harness exists for an iced app, so screen-level cases are manual. There is precedent for the rest: unit tests already live in <code>src/gui/update/shortcuts.rs</code> (see the matcher test near line 906), so the chord matching and the decision table are directly unit-testable. Full Grove update-loop states are exercisable via <code>Grove::update</code> message sequences <em>if</em> a test constructor exists that doesn't spawn real PTYs &mdash; otherwise the R-tier drops to manual (see gaps).</p>
+      </div>
+      <div class="col-r">
+        <div class="numlist">
+          <div class="numitem">
+            <div class="n">1.</div>
+            <div>
+              <p class="t">terminal_focused survives grid entry</p>
+              <p class="d">The enter branch at <code>layout.rs:189</code> never calls <code>leave_terminal_tab</code>, and <code>mod.rs:917</code> checks <code>terminal_focused</code> before grid &mdash; so mod+w in grid kills an invisible home terminal. The sidebar highlight lies, and once the last terminal dies mod+w becomes a dead key in grid.</p>
+            </div>
+          </div>
+          <div class="numitem">
+            <div class="n">2.</div>
+            <div>
+              <p class="t">mod+t in grid or zen spawns an invisible terminal</p>
+              <p class="d"><code>Scope::Global</code> plus an unconditional <code>terminal_focused = true</code> (<code>mod.rs:953-957</code>): the terminal spawns where nothing renders it, keystrokes keep going to the grid tile's agent, and the terminal is orphaned when grid exits.</p>
+            </div>
+          </div>
+          <div class="numitem">
+            <div class="n">3.</div>
+            <div>
+              <p class="t">Zen plus mod+g twice lands on an empty grid</p>
+              <p class="d"><code>grid_view_before_zen</code> is never cleared by <code>on_toggle_grid_view</code>, so zen exit restores <code>grid_view = true</code> with <code>tile_order</code> already cleared &mdash; a blank pane with a dead keyboard (<code>layout.rs:63-71</code>, <code>225-228</code>).</p>
+            </div>
+          </div>
+          <div class="numitem">
+            <div class="n">4.</div>
+            <div>
+              <p class="t">Worktree teardown with grid open</p>
+              <p class="d"><code>kill_sessions_for_wt</code> (<code>src/app/teardown.rs:35-96</code>) fixes only <code>active_session</code>; <code>tile_order</code> and <code>grid_focused</code> go stale. Tiles render the wrong sessions, keystrokes reach the <em>wrong agent</em>, and the corrupted order is persisted.</p>
+            </div>
+          </div>
+          <div class="numitem">
+            <div class="n">5.</div>
+            <div>
+              <p class="t">Closing the last home terminal while focused</p>
+              <p class="d"><code>terminal_focused = true</code> with <code>active_terminal = None</code> is a keyboard black hole, and mod+w resolves to NoOp (<code>sessions.rs:103-115</code>, <code>terminals.rs:66-76</code>).</p>
+            </div>
+          </div>
+          <div class="numitem">
+            <div class="n">6.</div>
+            <div>
+              <p class="t">Two kill confirms armed at once</p>
+              <p class="d"><code>pending_kill</code> and <code>pending_kill_terminal</code> can be armed simultaneously, and a stale <code>pending_kill</code> survives a focus change &mdash; so a later mod+w is a one-press kill and the two-press safety is bypassed (<code>mod.rs:453-460</code>, <code>sessions.rs:96</code> vs <code>220-221</code>).</p>
+            </div>
+          </div>
+          <div class="numitem">
+            <div class="n">7.</div>
+            <div>
+              <p class="t">mod+j/k cycles from an invisible session</p>
+              <p class="d">From a terminal tab, cycling starts at the hidden <code>active_session</code> and lands on an arbitrary session; the in-grid cycle and select variants never call <code>leave_terminal_tab</code> (<code>sessions.rs:344-393</code>).</p>
+            </div>
+          </div>
+          <div class="numitem">
+            <div class="n">8.</div>
+            <div>
+              <p class="t">focused_pane = Panel stale across grid exit</p>
+              <p class="d"><code>on_toggle_grid_view</code>'s exit branch sets <code>active_session</code> without calling <code>reset_focused_pane()</code>, so input targets another worktree's panel or silently falls back while the UI still draws panel focus (<code>pty_input.rs:141-179</code>).</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="label">Test cases</div><div class="figure">23</div></div>
+      <div class="stat accent"><div class="label">Passed</div><div class="figure">7</div></div>
+      <div class="stat"><div class="label">Failed</div><div class="figure">0</div></div>
+      <div class="stat"><div class="label">Not run</div><div class="figure">16</div></div>
+    </div>
+  </section>
+
+  <hr class="hr" />
+
+  <!-- REGRESSION -->
+  <section>
+    <h1 class="sectitle"><span class="l1">Coverage</span><span class="l2">Regression &mdash; the eight audited states.</span></h1>
+
+    <div class="tier-block">
+      <div class="tier-label"><span class="label">Regression &mdash; audited bad states &mdash; 8 cases</span></div>
+      <div class="table-wrap">
+        <table class="case-table">
+          <colgroup><col class="c-id"><col class="c-pri"><col class="c-title"><col class="c-scenario"><col class="c-expected"><col class="c-status"></colgroup>
+          <thead><tr><th>ID</th><th>Priority</th><th>Test Case</th><th>Scenario</th><th>Expected</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="t-id">R4</td>
+              <td class="t-pri pri-critical"><span class="dot"></span>Critical</td>
+              <td class="t-title">Deleting a worktree that owns a grid tile reconciles tile_order and grid_focused</td>
+              <td class="t-scenario">Open grid with tiles from at least two worktrees, focus a tile, then delete/teardown the worktree owning one of the visible tiles &mdash; <code>kill_sessions_for_wt</code> (<code>src/app/teardown.rs:35-96</code>) currently repairs only <code>active_session</code>. Type into the grid immediately after.<div class="protects">Protects: live agent PTYs in surviving worktrees; persisted grid tile order</div></td>
+              <td class="t-expected"><code>tile_order</code> drops the dead session ids and <code>grid_focused</code> clamps into range, so remaining tiles render the sessions they are labelled with, no out-of-range blank tile appears, keystrokes reach the focused tile's own agent and never another worktree's, and the order written to disk is the reconciled one.</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; Grove::new() has no test seam (reads real config, spawns heartbeat); fix implemented, verify by hand</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">R1</td>
+              <td class="t-pri pri-high">High</td>
+              <td class="t-title">Entering grid from a focused terminal tab clears terminal_focused</td>
+              <td class="t-scenario">Focus a home terminal, press mod+g to enter grid (<code>layout.rs:189</code> enter branch), then press mod+w. Today <code>mod.rs:917</code> checks <code>terminal_focused</code> first and targets the invisible terminal.<div class="protects">Protects: home terminal processes not shown on screen</div></td>
+              <td class="t-expected">Grid entry clears or suspends <code>terminal_focused</code>; mod+w in grid targets the <code>grid_focused</code> tile, the sidebar highlight matches what is on screen, and mod+g back returns to the terminal tab (symmetric by design decision).</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; Grove::new() has no test seam (reads real config, spawns heartbeat); fix implemented, verify by hand</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">R3</td>
+              <td class="t-pri pri-high">High</td>
+              <td class="t-title">grid &rarr; zen &rarr; mod+g &rarr; mod+g &rarr; zen exit never lands on an empty grid</td>
+              <td class="t-scenario">From grid, press mod+Enter (zen), then mod+g twice, then mod+Enter to exit zen &mdash; <code>grid_view_before_zen</code> is never cleared by <code>on_toggle_grid_view</code> (<code>layout.rs:63-71</code>, <code>225-228</code>) so zen exit restores <code>grid_view = true</code> over a cleared <code>tile_order</code>.</td>
+              <td class="t-expected">The sequence ends in a populated, focusable state: either the grid is rebuilt via reconcile, or <code>on_toggle_grid_view</code> clears <code>grid_view_before_zen</code> so zen exit returns to the workspace. Either way the keyboard is live and a session is visible.</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; Grove::new() has no test seam (reads real config, spawns heartbeat); fix implemented, verify by hand</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">R5</td>
+              <td class="t-pri pri-high">High</td>
+              <td class="t-title">Closing the last home terminal while focused falls back to the agent session</td>
+              <td class="t-scenario">With exactly one home terminal, focus it and close it (mod+w twice, or let the shell exit) &mdash; today this leaves <code>terminal_focused = true</code> with <code>active_terminal = None</code> (<code>sessions.rs:103-115</code>, <code>terminals.rs:66-76</code>). Then type.</td>
+              <td class="t-expected"><code>terminal_focused</code> is cleared on the close path, the workspace falls back to <code>active_session</code>, keystrokes reach that agent, and mod+w resolves to the session kill request rather than NoOp.</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; Grove::new() has no test seam (reads real config, spawns heartbeat); fix implemented, verify by hand</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">R6</td>
+              <td class="t-pri pri-high">High</td>
+              <td class="t-title">A focus change disarms any pending kill confirm</td>
+              <td class="t-scenario">Press mod+w on a session to arm <code>pending_kill</code>, then focus a home terminal (or toggle with mod+`) without confirming, then press mod+w again &mdash; today <code>pending_kill</code> and <code>pending_kill_terminal</code> can both be armed (<code>mod.rs:453-460</code>, <code>sessions.rs:96</code> vs <code>220-221</code>).<div class="protects">Protects: two-press kill safety on live agent sessions</div></td>
+              <td class="t-expected">Any focus change disarms both pending kills; at most one confirm is ever armed, and mod+w after a focus change always starts back at Request, never a one-press kill.</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; Grove::new() has no test seam (reads real config, spawns heartbeat); fix implemented, verify by hand</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">R2</td>
+              <td class="t-pri pri-medium">Medium</td>
+              <td class="t-title">mod+t from grid or zen never creates an invisible focused terminal</td>
+              <td class="t-scenario">From grid, press mod+t; repeat from zen. Today the chord is <code>Scope::Global</code> and sets <code>terminal_focused = true</code> unconditionally (<code>mod.rs:953-957</code>), so the terminal spawns off-screen while typing still reaches the grid tile's agent.</td>
+              <td class="t-expected">From grid, mod+t exits grid (or defers the spawn) so the new terminal is visible and receives input; from zen it swaps the zen content visibly. In no path does a focused terminal exist that isn't rendered, and no terminal is orphaned when grid exits.</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; Grove::new() has no test seam (reads real config, spawns heartbeat); fix implemented, verify by hand</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">R7</td>
+              <td class="t-pri pri-medium">Medium</td>
+              <td class="t-title">mod+j/k from a terminal tab cycles from the last visible session</td>
+              <td class="t-scenario">Focus a home terminal, then press mod+j &mdash; today the cycle starts from the hidden <code>active_session</code> and lands somewhere arbitrary. Repeat the cycle and select variants from inside grid, which never call <code>leave_terminal_tab</code> (<code>sessions.rs:344-393</code>).</td>
+              <td class="t-expected">Cycling from a terminal tab starts at the last visible agent session (or is otherwise a documented, deterministic starting point), and the in-grid cycle/select paths clear <code>terminal_focused</code> so the landing session is the one that gets keystrokes.</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; Grove::new() has no test seam (reads real config, spawns heartbeat); fix implemented, verify by hand</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">R8</td>
+              <td class="t-pri pri-medium">Medium</td>
+              <td class="t-title">Exiting grid onto a different session resets focused_pane</td>
+              <td class="t-scenario">Focus a worktree panel (<code>focused_pane = Panel</code>), enter grid, move focus to a tile owned by a different worktree, then exit grid with mod+g &mdash; the exit branch of <code>on_toggle_grid_view</code> sets <code>active_session</code> without <code>reset_focused_pane()</code> (<code>pty_input.rs:141-179</code>).</td>
+              <td class="t-expected">Grid exit resets <code>focused_pane</code> exactly as <code>on_select_session</code> does, so input goes to the newly active session's own pane and the drawn focus ring matches the resolver's answer.</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; Grove::new() has no test seam (reads real config, spawns heartbeat); fix implemented, verify by hand</div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <hr class="hr" />
+
+  <!-- UNIT -->
+  <section>
+    <h1 class="sectitle"><span class="l1">Coverage</span><span class="l2">Unit &mdash; the toggle decision table.</span></h1>
+
+    <div class="tier-block">
+      <div class="tier-label"><span class="label">Unit &mdash; matcher and per-screen decision table &mdash; 8 cases</span></div>
+      <div class="table-wrap">
+        <table class="case-table">
+          <colgroup><col class="c-id"><col class="c-pri"><col class="c-title"><col class="c-scenario"><col class="c-expected"><col class="c-status"></colgroup>
+          <thead><tr><th>ID</th><th>Priority</th><th>Test Case</th><th>Scenario</th><th>Expected</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="t-id">U1</td>
+              <td class="t-pri pri-high">High</td>
+              <td class="t-title">mod+` matches ToggleTerminal in all three scopes and has a registry row</td>
+              <td class="t-scenario">Table-drive the matcher over <code>Scope::Workspace</code>, <code>Scope::Grid</code>, and <code>Scope::Zen</code> with the mod+backtick chord, following the existing matcher test near <code>src/gui/update/shortcuts.rs:906</code>; separately assert the <code>SHORTCUTS</code> registry contains the row.</td>
+              <td class="t-expected">All three scopes resolve to the ToggleTerminal action, and the registry entry exists so the mod+/ overlay lists the chord without a second hand-maintained source of truth.</td>
+              <td class="t-status"><span class="st st-pass">Pass</span><div class="st-note">toggle_terminal_matches_on_every_screen, bare_backtick_is_not_a_shortcut</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">U2</td>
+              <td class="t-pri pri-high">High</td>
+              <td class="t-title">Workspace with terminals: toggle focuses the last-used terminal</td>
+              <td class="t-scenario">Workspace view, at least one home terminal exists, <code>active_terminal</code> set from a previous visit, an agent session active. Dispatch the toggle once.</td>
+              <td class="t-expected"><code>terminal_focused</code> becomes true, <code>active_terminal</code> is unchanged (last-used, not reset to the first), and <code>focused_session()</code> resolves to that terminal &mdash; the resolver, not just the flag, is the assertion.</td>
+              <td class="t-status"><span class="st st-pass">Pass</span><div class="st-note">via terminal_toggle_decision helper tests</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">U3</td>
+              <td class="t-pri pri-high">High</td>
+              <td class="t-title">Toggling back restores the exact agent session &mdash; double-toggle is identity</td>
+              <td class="t-scenario">From the U2 end state, dispatch the toggle a second time. Snapshot <code>active_session</code>, <code>focused_pane</code>, and <code>grid_view</code> before the first toggle and compare after the second.</td>
+              <td class="t-expected"><code>terminal_focused</code> is false, <code>active_session</code> is the exact session that was focused before &mdash; not merely the first in the list &mdash; and the full snapshot matches: two presses are a no-op on state.</td>
+              <td class="t-status"><span class="st st-pass">Pass</span><div class="st-note">via terminal_toggle_decision helper tests</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">U4</td>
+              <td class="t-pri pri-high">High</td>
+              <td class="t-title">Zero terminals: toggle auto-creates terminal 1 and focuses it</td>
+              <td class="t-scenario">Workspace with <code>home_terminals</code> empty. Press the toggle, then press it again.<div class="protects">Protects: the shared on_new_home_terminal spawn path</div></td>
+              <td class="t-expected">First press routes through <code>on_new_home_terminal</code>, creating terminal 1 and focusing it &mdash; the toggle is never a dead key. Second press returns to the agent session, so the empty-state path lands in the same symmetric behavior as U3.</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; Grove::new() has no test seam (reads real config, spawns heartbeat); fix implemented, verify by hand</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">U5</td>
+              <td class="t-pri pri-high">High</td>
+              <td class="t-title">Grid: toggle exits to the terminal and returns to grid with the same focused tile</td>
+              <td class="t-scenario">Grid view with several tiles and a specific <code>grid_focused</code> index. Press the toggle (chosen design: grid exits and remembers itself via <code>grid_view_before_terminal</code>), then press again.</td>
+              <td class="t-expected">First press shows the terminal &mdash; visible and receiving input, never the invisible state of R1/R2. Second press restores grid with the same <code>grid_focused</code> tile, not tile zero, and <code>tile_order</code> untouched.</td>
+              <td class="t-status"><span class="st st-pass">Pass</span><div class="st-note">via terminal_toggle_decision helper tests</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">U6</td>
+              <td class="t-pri pri-medium">Medium</td>
+              <td class="t-title">Zen: toggle swaps content only, chrome and grid memory untouched</td>
+              <td class="t-scenario">Zen mode (<code>chrome_visible = false</code>) entered from grid so <code>grid_view_before_zen</code> is true. Toggle to the terminal and back.<div class="protects">Protects: the zen-exit restore path exercised by R3</div></td>
+              <td class="t-expected">Only the rendered content swaps: <code>chrome_visible</code> stays false in both directions and <code>grid_view_before_zen</code> is not read or written by the toggle, so exiting zen afterwards still restores what zen was entered from.</td>
+              <td class="t-status"><span class="st st-pass">Pass</span><div class="st-note">via terminal_toggle_decision helper tests</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">U7</td>
+              <td class="t-pri pri-medium">Medium</td>
+              <td class="t-title">Multiple terminals: last-used wins on the return trip</td>
+              <td class="t-scenario">Create terminals 1 and 2, select terminal 2, toggle away to the agent, then toggle back.</td>
+              <td class="t-expected">Terminal 2 is focused, not terminal 1 &mdash; <code>active_terminal</code> persists across the round trip, which is what makes the chord feel like "the other place" rather than "some terminal".</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; Grove::new() has no test seam (reads real config, spawns heartbeat); fix implemented, verify by hand</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">U8</td>
+              <td class="t-pri pri-medium">Medium</td>
+              <td class="t-title">Dead terminal: toggle focuses the exited terminal, does not spawn a duplicate</td>
+              <td class="t-scenario"><code>active_terminal</code> points at a terminal whose shell has exited but whose tab is still listed (status dot mute). Press the toggle.</td>
+              <td class="t-expected">The exited terminal is focused with its scrollback intact and its mute status dot &mdash; the auto-create path from U4 fires only on an empty list, so a dead-but-present terminal never silently spawns a second one.</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; Grove::new() has no test seam (reads real config, spawns heartbeat); fix implemented, verify by hand</div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <hr class="hr" />
+
+  <!-- INTEGRATION + MANUAL -->
+  <section>
+    <h1 class="sectitle"><span class="l1">Coverage</span><span class="l2">Integration &amp; manual.</span></h1>
+
+    <div class="tier-block">
+      <div class="tier-label"><span class="label">Integration &mdash; palette, overlay, interplay &mdash; 5 cases</span></div>
+      <div class="table-wrap">
+        <table class="case-table">
+          <colgroup><col class="c-id"><col class="c-pri"><col class="c-title"><col class="c-scenario"><col class="c-expected"><col class="c-status"></colgroup>
+          <thead><tr><th>ID</th><th>Priority</th><th>Test Case</th><th>Scenario</th><th>Expected</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="t-id">I1</td>
+              <td class="t-pri pri-high">High</td>
+              <td class="t-title">Palette switch-to-session drill-in lists home terminals and switching focuses them</td>
+              <td class="t-scenario">Open the palette, drill into switch-to-session with several agent sessions and two home terminals present. Move to a terminal row and press Enter.</td>
+              <td class="t-expected">A TERMINALS section renders beneath the agent sessions with both terminals; Enter switches to that terminal, sets <code>terminal_focused</code> and <code>active_terminal</code>, closes the palette, and the next keystroke lands in that terminal's PTY.</td>
+              <td class="t-status"><span class="st st-pass">Pass</span><div class="st-note">merge_switch_rows_lists_sessions_before_terminals</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">I3</td>
+              <td class="t-pri pri-high">High</td>
+              <td class="t-title">mod+` while the palette is open types a backtick instead of toggling</td>
+              <td class="t-scenario">Open the palette (and separately, any modal), then press the toggle chord &mdash; the PALETTE_OPEN / MODAL_OPEN gate at <code>mod.rs:724</code> is what must catch it.<div class="protects">Protects: existing palette and modal input capture for every other chord</div></td>
+              <td class="t-expected">The chord goes to the palette input and does not fire the toggle; no focus state changes behind the overlay, so dismissing the palette leaves exactly the state it was opened from.</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; Grove::new() has no test seam (reads real config, spawns heartbeat); fix implemented, verify by hand</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">I2</td>
+              <td class="t-pri pri-medium">Medium</td>
+              <td class="t-title">Fuzzy filter matches across both groups with correct highlight spans</td>
+              <td class="t-scenario">In the drill-in, type a query matching one agent session and one terminal by name/number; inspect the rendered rows and their match spans.</td>
+              <td class="t-expected">Both groups filter independently and keep their section headers only while non-empty; cyan match spans render on terminal rows the same way they already do on session rows, with the byte offsets aligning to the displayed label.</td>
+              <td class="t-status"><span class="st st-pass">Pass</span><div class="st-note">switch_terminal_rows_filters_by_label_and_the_home_terminal_subtitle</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">I4</td>
+              <td class="t-pri pri-medium">Medium</td>
+              <td class="t-title">Toggling disarms an armed kill confirm</td>
+              <td class="t-scenario">Arm mod+w on a session, then press the toggle instead of confirming, then press mod+w in the terminal &mdash; the same underlying invariant as R6, driven through the new chord.</td>
+              <td class="t-expected">The toggle clears <code>pending_kill</code> (and <code>pending_kill_terminal</code>), so the mod+w in the terminal is a fresh Request, not an inherited confirm from the session side.</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; Grove::new() has no test seam (reads real config, spawns heartbeat); fix implemented, verify by hand</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">I5</td>
+              <td class="t-pri pri-medium">Medium</td>
+              <td class="t-title">mod+/ overlay shows the new row with the right chord glyph per platform</td>
+              <td class="t-scenario">Open the shortcuts overlay on macOS and on Linux and read the ToggleTerminal row.</td>
+              <td class="t-expected">The row is present, grouped with the other navigation chords, and renders the cmd glyph on macOS and ctrl/alt text on Linux &mdash; driven by the registry entry from U1, not a hardcoded string.</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; Grove::new() has no test seam (reads real config, spawns heartbeat); fix implemented, verify by hand</div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="tier-block">
+      <div class="tier-label"><span class="label">Manual &mdash; no iced e2e harness &mdash; 2 cases</span></div>
+      <div class="table-wrap">
+        <table class="case-table">
+          <colgroup><col class="c-id"><col class="c-pri"><col class="c-title"><col class="c-scenario"><col class="c-expected"><col class="c-status"></colgroup>
+          <thead><tr><th>ID</th><th>Priority</th><th>Test Case</th><th>Scenario</th><th>Expected</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="t-id">M1</td>
+              <td class="t-pri pri-medium">Medium</td>
+              <td class="t-title">Full keyboard round-trip smoke with truthful sidebar highlights</td>
+              <td class="t-scenario">By hand in a real Grove: workspace &rarr; mod+` to terminal &rarr; mod+g to grid &rarr; mod+Enter to zen &rarr; back out the same way, typing a marker string at every stop.</td>
+              <td class="t-expected">Every marker lands in the pane that is visibly focused, the sidebar highlight matches the rendered content at each step, and the sequence returns to the starting session with no orphaned or invisible terminal left behind.</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; no iced e2e harness</div></td>
+            </tr>
+            <tr>
+              <td class="t-id">M2</td>
+              <td class="t-pri pri-low">Low</td>
+              <td class="t-title">tmux-backed terminals survive a toggle round-trip with correct resize</td>
+              <td class="t-scenario">With the tmux backend, open a home terminal running a full-screen TUI, toggle away to an agent and back, including one round trip that changes the window size in between.<div class="protects">Protects: tmux session attach/detach and viewport resize behavior</div></td>
+              <td class="t-expected">The tmux session stays attached across the round trip, scrollback and the TUI layout survive, and the viewport is resized to the current pane dimensions on return rather than keeping the pre-toggle geometry.</td>
+              <td class="t-status"><span class="st st-notrun">Not run</span><div class="st-note">manual &mdash; no iced e2e harness</div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <hr class="hr" />
+
+  <!-- GAPS + OOS + FOOTER -->
+  <section>
+    <h1 class="sectitle"><span class="l1">Known</span><span class="l2">Gaps.</span></h1>
+
+    <div class="gap-item">
+      <div class="n-wrap"><div class="gap-circle">!</div></div>
+      <div>
+        <p class="gt">1. The whole R tier depends on a testable Grove constructor</p>
+        <p class="gd">Every regression case asserts on update-loop state, which means constructing a <code>Grove</code> and driving <code>Grove::update</code> with message sequences &mdash; without spawning real PTYs, real worktrees, or a real tmux server. If no such test constructor exists today, R1&ndash;R8 all degrade to manual verification, and the Critical case R4 (wrong-agent keystrokes) is exactly the one you least want resting on someone remembering to click through it. This is the single biggest coverage risk in the plan and worth resolving before the fixes land. Confirmed after implementation: no such seam exists &mdash; <code>Grove::new()</code> reads the real config and spawns the heartbeat &mdash; so the R-cases were fixed in code but remain manually verifiable only, and the seven cases that did land as automated tests all sit on the pure matcher and decision helpers instead.</p>
+      </div>
+    </div>
+    <div class="gap-item">
+      <div class="n-wrap"><div class="n">2.</div></div>
+      <div>
+        <p class="gt">Worktree-panel terminal focus is deliberately untested here</p>
+        <p class="gd">The <code>wt_terminals</code> panel has its own focus interactions that overlap the same five flags, but the toggle does not touch it by design decision. Those paths are left uncovered on purpose rather than by oversight &mdash; if the toggle later grows to include panel terminals, this plan needs a fourth tier, not an amendment.</p>
+      </div>
+    </div>
+    <div class="gap-item">
+      <div class="n-wrap"><div class="n">3.</div></div>
+      <div>
+        <p class="gt">Visual rendering of the new palette section is not covered</p>
+        <p class="gd">I1 and I2 assert the TERMINALS section exists, filters, and highlights, but nothing here judges whether it <em>looks</em> right &mdash; section spacing, dot colors, how it reads against the agent rows across the ~40 derived themes. That is a visual call, settled in mock review, not a pass/fail case.</p>
+      </div>
+    </div>
+
+    <div class="label" style="margin-top:16px;">Out of scope</div>
+    <ul class="oos-list">
+      <li>Worktree-panel terminals (<code>wt_terminals</code>) as toggle targets &mdash; the chord addresses home terminals only.</li>
+      <li>Dedicated terminal cycling shortcuts (next/previous terminal) &mdash; separate chords, separate change.</li>
+      <li>Merging <code>home_terminals</code> into the session list as a unified model &mdash; a refactor this feature deliberately does not require.</li>
+      <li>Performance of the toggle (frame time, PTY resize cost) &mdash; no measurable risk at the switching frequency a human keyboard produces.</li>
+      <li>The existing semantics of the mod+t chord beyond the R2 visibility fix &mdash; unchanged by design decision.</li>
+    </ul>
+
+    <hr class="hr" style="margin-top:56px;" />
+    <p class="footer-line">Grove &middot; test plan &middot; terminal toggle (mod+`) &middot; 2026-07-28 &middot; statuses reflect the post-implementation run: cargo build and cargo test --workspace green, 7 passed, 16 pending manual verification</p>
+  </section>
+
+</div>
+</div>
+
+<script>
+  (function(){
+    var btn = document.getElementById('themeToggle');
+    btn.addEventListener('click', function(){
+      var root = document.documentElement;
+      var current = root.dataset.theme || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      root.dataset.theme = current === 'dark' ? 'light' : 'dark';
+    });
+  })();
+</script>
+</body>
+</html>

@@ -68,6 +68,11 @@ impl Grove {
                 // Zen was entered from grid view: restore grid.
                 self.grid_view = true;
                 self.grid_view_before_zen = false;
+                // Anything that emptied `tile_order` while zenned (a kill,
+                // a grid toggle) would restore a blank grid with dead keys.
+                if self.tile_order.is_empty() {
+                    self.enter_grid();
+                }
             }
             self.refresh_pty_viewport();
         } else if self.grid_view {
@@ -81,6 +86,11 @@ impl Grove {
                 self.on_grid_tile_zen(si);
                 return Task::none();
             }
+            // An empty grid has no tile to zen into. Still drop out of grid
+            // the way `on_grid_tile_zen` does, so zen never stacks on top of
+            // a chrome-less grid; exiting zen restores it.
+            self.grid_view = false;
+            self.grid_view_before_zen = true;
             self.app.chrome_visible = false;
             self.refresh_pty_viewport();
         } else {
@@ -191,43 +201,108 @@ impl Grove {
         // Entering/leaving grid changes which pane can own a
         // selection — drop any stale one rather than mis-render it.
         self.pty_selection = None;
+        // A manual grid toggle cancels the "restore grid on zen exit" intent;
+        // leaving it set would later re-enter grid with no tiles built.
+        self.grid_view_before_zen = false;
         if self.grid_view {
-            let live_keys: Vec<String> = self
-                .app
-                .sessions
-                .iter()
-                .map(|s| crate::gui::launcher::session_grid_key(&s.project, &s.wt_path))
-                .collect();
-            self.tile_order =
-                crate::gui::launcher::reconcile_tile_order(&live_keys, &self.app.store.grid_order);
-            // Open with a focused tile so the directional shortcuts
-            // (mod+hjkl to move focus, mod+alt+hjkl to move the tile)
-            // work on the first keypress. Keep the active session's
-            // tile if it has one — yanking focus elsewhere on entry
-            // would be a surprise — otherwise focus the first tile.
-            let focus = self
-                .app
-                .active_session
-                .filter(|si| self.tile_order.contains(si))
-                .or_else(|| self.tile_order.first().copied());
-            self.grid_focused = focus;
-            if let Some(si) = focus {
-                self.app.active_session = Some(si);
-                self.acknowledge_session(si);
-            }
-            self.drag.grid_drag = None;
+            // A home terminal is invisible behind the tiles, and would keep
+            // stealing mod+w / keystrokes from the focused tile.
+            self.leave_terminal_tab();
+            self.enter_grid();
         } else {
-            // Carry the focused tile into the normal workspace.
-            if let Some(si) = self.grid_focused {
-                self.app.active_session = Some(si);
-                self.leave_terminal_tab();
-            }
-            self.persist_grid_order();
-            self.tile_order.clear();
-            self.grid_focused = None;
-            self.drag.grid_drag = None;
+            self.exit_grid();
         }
         self.refresh_pty_viewport();
+    }
+
+    /// Build `tile_order` from the persisted order and pick the tile that
+    /// takes keyboard focus. Shared by every path that shows the grid, so
+    /// they can't drift (`mod+g`, the terminal toggle, the zen-exit restore).
+    /// Does not set `grid_view` or reflow the PTYs — the caller owns both.
+    pub(super) fn enter_grid(&mut self) {
+        // Zen hides the chrome, but `mod+g` (and the terminal toggle's grid
+        // restore) stay reachable there. A grid with no appbar or statusbar
+        // isn't a screen `screen_from_flags` can even name — it reports Zen —
+        // so showing the grid always ends zen rather than stacking the two.
+        self.app.chrome_visible = true;
+        let live_keys: Vec<String> = self
+            .app
+            .sessions
+            .iter()
+            .map(|s| crate::gui::launcher::session_grid_key(&s.project, &s.wt_path))
+            .collect();
+        self.tile_order =
+            crate::gui::launcher::reconcile_tile_order(&live_keys, &self.app.store.grid_order);
+        // Open with a focused tile so the directional shortcuts
+        // (mod+hjkl to move focus, mod+alt+hjkl to move the tile)
+        // work on the first keypress. Keep the active session's
+        // tile if it has one — yanking focus elsewhere on entry
+        // would be a surprise — otherwise focus the first tile.
+        let focus = self
+            .app
+            .active_session
+            .filter(|si| self.tile_order.contains(si))
+            .or_else(|| self.tile_order.first().copied());
+        self.grid_focused = focus;
+        if let Some(si) = focus {
+            self.app.active_session = Some(si);
+            self.acknowledge_session(si);
+        }
+        self.drag.grid_drag = None;
+    }
+
+    /// Carry the focused tile into the single-session workspace and tear the
+    /// grid bookkeeping down. Counterpart to [`Grove::enter_grid`]; likewise
+    /// leaves `grid_view` and the PTY reflow to the caller.
+    pub(super) fn exit_grid(&mut self) {
+        if let Some(si) = self.grid_focused {
+            self.app.active_session = Some(si);
+            self.leave_terminal_tab();
+            // The panel re-anchors to this session's worktree, so a stale
+            // `Panel` focus would type into a different worktree's shell.
+            self.reset_focused_pane();
+        }
+        self.persist_grid_order();
+        self.tile_order.clear();
+        self.grid_focused = None;
+        self.drag.grid_drag = None;
+    }
+
+    /// Re-derive the grid's view of the session list after sessions were
+    /// removed behind the GUI's back (project/worktree teardown mutates
+    /// `app.sessions` directly and only fixes `active_session`). Without this
+    /// `tile_order` keeps stale indices, so tiles render — and route
+    /// keystrokes to — the wrong agent, and that order gets persisted.
+    pub(in crate::gui) fn reconcile_grid_after_teardown(&mut self) {
+        if !self.grid_view && !self.grid_view_before_zen {
+            self.tile_order.clear();
+            self.grid_focused = None;
+            return;
+        }
+        let live_keys: Vec<String> = self
+            .app
+            .sessions
+            .iter()
+            .map(|s| crate::gui::launcher::session_grid_key(&s.project, &s.wt_path))
+            .collect();
+        self.tile_order =
+            crate::gui::launcher::reconcile_tile_order(&live_keys, &self.app.store.grid_order);
+        if self
+            .grid_focused
+            .is_none_or(|si| !self.tile_order.contains(&si))
+        {
+            self.set_grid_focus(self.tile_order.first().copied());
+        }
+        if self.app.active_session.is_none() {
+            self.app.active_session = self.grid_focused;
+        }
+        if self.grid_view {
+            if self.tile_order.is_empty() {
+                // Nothing left to tile — fall back to the normal workspace.
+                self.grid_view = false;
+            }
+            self.refresh_pty_viewport();
+        }
     }
 
     pub(super) fn on_grid_drag_start(&mut self, tile_idx: usize) -> Task<Msg> {

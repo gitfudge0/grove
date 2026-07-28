@@ -93,6 +93,8 @@ impl Grove {
             self.app.home_terminals[i].resize(self.pty_layout.rows, self.pty_layout.cols);
             self.terminal_focused = true;
             self.pty_selection = None;
+            // Focus moved to a terminal: both confirm-to-kill arms are stale.
+            self.pending_kill = None;
             self.pending_kill_terminal = None;
             // Symmetry with new/close/restart: don't rely on `resize`
             // happening to dirty the target to surface the right frame.
@@ -110,6 +112,11 @@ impl Grove {
             other => other,
         };
         self.app.close_home_terminal(i);
+        // Nothing left to show on the terminal tab — staying focused there
+        // would swallow every keystroke with no PTY to send it to.
+        if self.app.active_terminal.is_none() {
+            self.leave_terminal_tab();
+        }
         self.pty_selection = None;
         self.invalidate_pty_render_cache();
     }
@@ -356,12 +363,23 @@ impl Grove {
             };
             let si = self.tile_order[pos];
             self.app.active_session = Some(si);
+            self.leave_terminal_tab();
             self.sync_grid_focus();
             self.acknowledge_session(si);
             return Task::none();
         }
         if self.app.sessions.is_empty() {
             return Task::none();
+        }
+        // Coming back from the terminal tab, the first press just reveals the
+        // session that was already active — advancing off a session the user
+        // can't see is disorienting.
+        if self.terminal_focused {
+            if let Some(cur) = self.app.active_session {
+                self.on_select_session(cur);
+                return Task::none();
+            }
+            self.leave_terminal_tab();
         }
         let next = match self.app.active_session {
             Some(cur) => crate::app::cycle(cur, delta, self.app.sessions.len()),
@@ -379,6 +397,7 @@ impl Grove {
         if self.grid_view {
             if let Some(&si) = self.tile_order.get(n) {
                 self.app.active_session = Some(si);
+                self.leave_terminal_tab();
                 self.sync_grid_focus();
                 self.acknowledge_session(si);
             }

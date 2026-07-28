@@ -64,6 +64,9 @@ pub(crate) enum GlobalShortcut {
     CloseFocusedSession,
     /// Spawn a new home terminal and focus it.
     NewHomeTerminal,
+    /// Swap between the home-terminal tab and whatever the agent side was
+    /// showing (grid or single session), preserving the other side's context.
+    ToggleTerminal,
     /// Select the first session currently waiting for input, in tree order.
     JumpToWaitingSession,
     /// Move keyboard focus between grid tiles by `(dx, dy)`. Grid screen only.
@@ -265,6 +268,18 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         triggers: &["t", "T"],
         display_keys: "t",
         description: "New home terminal",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    // Backtick is matched on the modifier-independent `key`, but a layout that
+    // reports the shifted char instead would send `~` — accept both so the
+    // chord can't go dead on non-mac (where `global_mods` requires Shift).
+    ShortcutDef {
+        action: Some(GlobalShortcut::ToggleTerminal),
+        triggers: &["`", "~"],
+        display_keys: "`",
+        description: "toggle terminal",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -516,6 +531,36 @@ pub(super) fn close_focused_session_decision(
     }
 }
 
+/// What `GlobalShortcut::ToggleTerminal` should do on the current screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TerminalToggle {
+    /// Leave the terminal tab. `restore_grid` when the terminal was entered
+    /// from the grid, so the grid comes back exactly as it was.
+    Leave { restore_grid: bool },
+    /// Show the terminal tab. `exit_grid` first when the grid is open — a
+    /// terminal drawn behind the tiles would be invisible.
+    Enter { exit_grid: bool },
+}
+
+/// Pure decision logic for the terminal toggle, kept a free function so the
+/// round-trip (agent -> terminal -> same agent context) is testable without
+/// constructing a full `Grove`.
+pub(super) fn terminal_toggle_decision(
+    terminal_focused: bool,
+    grid_view: bool,
+    grid_view_before_terminal: bool,
+) -> TerminalToggle {
+    if terminal_focused {
+        TerminalToggle::Leave {
+            restore_grid: grid_view_before_terminal,
+        }
+    } else {
+        TerminalToggle::Enter {
+            exit_grid: grid_view,
+        }
+    }
+}
+
 /// New value for `grid_focused` after the active session changes, given
 /// whether the grid is showing or will show again once zen exits. `None`
 /// means "leave `grid_focused` alone" — outside the grid (and not zenned in
@@ -608,7 +653,10 @@ pub(crate) fn slide_progress(start: std::time::Instant, now: std::time::Instant)
 
 #[cfg(test)]
 mod tests {
-    use super::{match_global_shortcut, slide_progress, GlobalShortcut, Screen, GRID_SLIDE};
+    use super::{
+        match_global_shortcut, screen_from_flags, slide_progress, terminal_toggle_decision,
+        GlobalShortcut, Screen, TerminalToggle, GRID_SLIDE,
+    };
     use iced::keyboard::{key::Named, Key, Modifiers};
     use smol_str::SmolStr;
 
@@ -622,6 +670,98 @@ mod tests {
 
     fn ch(s: &str) -> Key {
         Key::Character(SmolStr::new(s))
+    }
+
+    /// `mod+g` and the terminal toggle's grid restore both stay reachable from
+    /// zen, so they could otherwise leave `chrome_visible=false` with
+    /// `grid_view=true` — a grid with no appbar or statusbar. That pair is not
+    /// a state the screen model can even name (it reports Zen, not Grid),
+    /// which is why every grid-entry path clears zen first.
+    #[test]
+    fn chromeless_grid_is_not_a_nameable_screen() {
+        assert_eq!(screen_from_flags(false, true), Screen::Zen);
+        // What the grid-entry paths must produce instead.
+        assert_eq!(screen_from_flags(true, true), Screen::Grid);
+    }
+
+    /// mod+` is Global-scoped: it must reach the toggle from the workspace,
+    /// the grid, and zen alike (in zen it swaps content without unhiding the
+    /// chrome).
+    #[test]
+    fn toggle_terminal_matches_on_every_screen() {
+        for screen in [Screen::Workspace, Screen::Grid, Screen::Zen] {
+            assert_eq!(
+                match_global_shortcut(&ch("`"), gmods(), screen),
+                Some(GlobalShortcut::ToggleTerminal),
+                "backtick on {screen:?}"
+            );
+            assert_eq!(
+                match_global_shortcut(&ch("~"), gmods(), screen),
+                Some(GlobalShortcut::ToggleTerminal),
+                "tilde on {screen:?}"
+            );
+        }
+    }
+
+    /// Backtick without the platform modifier is a literal PTY character and
+    /// must fall through rather than be swallowed by the toggle.
+    #[test]
+    fn bare_backtick_is_not_a_shortcut() {
+        assert_eq!(
+            match_global_shortcut(&ch("`"), Modifiers::empty(), Screen::Workspace),
+            None
+        );
+    }
+
+    /// From the agent side the toggle shows the terminal, exiting the grid
+    /// first only when the grid is what's showing.
+    #[test]
+    fn toggle_from_agent_side_enters_terminal() {
+        assert_eq!(
+            terminal_toggle_decision(false, false, false),
+            TerminalToggle::Enter { exit_grid: false }
+        );
+        assert_eq!(
+            terminal_toggle_decision(false, true, false),
+            TerminalToggle::Enter { exit_grid: true }
+        );
+    }
+
+    /// From the terminal the toggle leaves it, restoring the grid exactly when
+    /// the terminal was entered from the grid.
+    #[test]
+    fn toggle_from_terminal_leaves_and_restores_prior_context() {
+        assert_eq!(
+            terminal_toggle_decision(true, false, false),
+            TerminalToggle::Leave {
+                restore_grid: false
+            }
+        );
+        assert_eq!(
+            terminal_toggle_decision(true, false, true),
+            TerminalToggle::Leave { restore_grid: true }
+        );
+    }
+
+    /// Round trip: whatever the agent side was showing is what comes back.
+    /// `Enter { exit_grid }` records the flag that `Leave` then restores.
+    #[test]
+    fn toggle_round_trip_restores_the_same_screen() {
+        for grid_view in [false, true] {
+            let TerminalToggle::Enter { exit_grid } =
+                terminal_toggle_decision(false, grid_view, false)
+            else {
+                panic!("agent side must enter the terminal");
+            };
+            // `exit_grid` is exactly what the handler stores in
+            // `grid_view_before_terminal`.
+            assert_eq!(
+                terminal_toggle_decision(true, false, exit_grid),
+                TerminalToggle::Leave {
+                    restore_grid: grid_view
+                }
+            );
+        }
     }
 
     #[test]
