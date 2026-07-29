@@ -91,7 +91,7 @@ impl App {
     /// spawn failure.
     fn build_home_terminal(&mut self, label: String, rows: u16, cols: u16) -> Option<Session> {
         let home = Self::home_dir();
-        let args = Agent::Terminal.launch_args(false);
+        let args = Agent::Terminal.launch_args(false, false);
         match Session::spawn(
             label,
             String::new(),
@@ -215,7 +215,7 @@ impl App {
     fn spawn_wt_terminal(&mut self, wt_path: &str, rows: u16, cols: u16) {
         self.wt_terminal_seq += 1;
         let label = format!("wt-terminal {}", self.wt_terminal_seq);
-        let args = Agent::Terminal.launch_args(false);
+        let args = Agent::Terminal.launch_args(false, false);
         match Session::spawn(
             label,
             String::new(),

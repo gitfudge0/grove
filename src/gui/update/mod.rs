@@ -518,6 +518,11 @@ impl Grove {
         self.report_setting_save(res);
     }
 
+    pub(in crate::gui) fn on_chrome_toggle(&mut self, v: bool) {
+        let res = self.app.set_chrome_enabled(v);
+        self.report_setting_save(res);
+    }
+
     pub(in crate::gui) fn on_project_themes_toggle(&mut self, v: bool) {
         let res = self.app.set_project_themes_enabled(v);
         self.report_setting_save(res);
@@ -586,6 +591,7 @@ impl Grove {
             Msg::SkipPermissionsEnable => self.on_set_skip_permissions(true),
             Msg::SkipPermissionsDisable => self.on_set_skip_permissions(false),
             Msg::TelemetryToggle(v) => self.on_telemetry_toggle(v),
+            Msg::ChromeToggle(v) => self.on_chrome_toggle(v),
             Msg::ProjectThemesToggle(v) => self.on_project_themes_toggle(v),
             Msg::ChooseTmux(enabled) => self.choose_tmux(enabled),
             Msg::AgentPickerSelect(i) => self.agent_picker_select(i),

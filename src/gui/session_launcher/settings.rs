@@ -26,7 +26,7 @@ impl Grove {
         browse_all: bool,
         old: usize,
     ) {
-        if !matches!(s, SettingRow::ProjectThemes | SettingRow::Telemetry) {
+        if !s.is_toggle() {
             return;
         }
         let rows = self.palette_rows(input, browse_all);
@@ -83,6 +83,10 @@ impl Grove {
             }
             SettingRow::Telemetry => {
                 self.on_telemetry_toggle(!self.app.telemetry_enabled());
+                self.reselect_after_toggle(s)
+            }
+            SettingRow::Chrome => {
+                self.on_chrome_toggle(!self.app.chrome_enabled());
                 self.reselect_after_toggle(s)
             }
             SettingRow::CheckUpdates => {
@@ -419,6 +423,13 @@ impl Grove {
             }
             SettingRow::Telemetry => {
                 if self.app.telemetry_enabled() {
+                    "On".to_string()
+                } else {
+                    "Off".to_string()
+                }
+            }
+            SettingRow::Chrome => {
+                if self.app.chrome_enabled() {
                     "On".to_string()
                 } else {
                     "Off".to_string()

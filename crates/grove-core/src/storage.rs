@@ -110,6 +110,10 @@ pub struct Store {
     /// pre-existing hardcoded behavior for upgrading users.
     #[serde(default)]
     pub dangerously_skip_permissions_enabled: Option<bool>,
+    /// Whether launched Claude sessions get `--chrome` (the Claude in Chrome
+    /// integration). None means unset; treated as `false`.
+    #[serde(default)]
+    pub chrome_enabled: Option<bool>,
     /// Whether anonymous usage telemetry is sent. None means unset; treated
     /// as `true` (opt-out model) to match existing settings-field conventions.
     #[serde(default)]
@@ -366,6 +370,7 @@ mod tests {
             last_update_check: None,
             skipped_version: None,
             dangerously_skip_permissions_enabled: Some(false),
+            chrome_enabled: Some(true),
             telemetry_enabled: Some(true),
             grid_order: vec![],
             theme_follow_system: true,
@@ -428,6 +433,46 @@ mod tests {
         );
         assert!(store.dangerously_skip_permissions_enabled.is_none());
         assert!(store.recent_launches.is_empty());
+    }
+
+    /// U4: a config file written before `chrome_enabled` existed must still
+    /// parse, leaving the field `None` (= off).
+    #[test]
+    fn store_without_chrome_key_parses_as_none() {
+        let json = r#"{"projects":[],"dangerously_skip_permissions_enabled":true}"#;
+        let store: Store = serde_json::from_str(json).expect("deserialize legacy store");
+        assert!(store.chrome_enabled.is_none());
+        assert_eq!(store.dangerously_skip_permissions_enabled, Some(true));
+    }
+
+    /// U5: `chrome_enabled` survives a real `save()` -> `load()` round trip
+    /// through `GROVE_CONFIG_DIR`-overridden on-disk config.
+    #[test]
+    fn chrome_enabled_round_trips_through_save_and_load() {
+        let _lock = CONFIG_DIR_ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let dir = std::env::temp_dir().join(format!(
+            "grove_test_chrome_enabled_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let _guard = EnvVarGuard::set(CONFIG_DIR_ENV, dir.to_str().expect("utf8 path"));
+
+        let store = Store {
+            chrome_enabled: Some(true),
+            ..Store::default()
+        };
+        save(&store).expect("save");
+
+        let recovered = load().expect("load");
+        assert_eq!(recovered.chrome_enabled, Some(true));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// A corrupted JSON file must make `write_atomic` + a subsequent manual

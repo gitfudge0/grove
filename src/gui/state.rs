@@ -468,6 +468,8 @@ pub enum Msg {
     SkipPermissionsDisable,
     /// Toggled the "share anonymous usage data" checkbox in settings.
     TelemetryToggle(bool),
+    /// Toggled the "let Claude control Chrome" checkbox in settings.
+    ChromeToggle(bool),
     /// Toggle the universal "Project themes" setting (Settings → Appearance).
     ProjectThemesToggle(bool),
     ProjectClicked(usize),

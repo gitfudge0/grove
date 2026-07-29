@@ -23,7 +23,7 @@ impl App {
             .filter(|a| self.available_agents.contains(a));
         if let Some(agent) = default {
             let label = path_basename(&wt_path);
-            let args = agent.launch_args(self.skip_permissions_enabled());
+            let args = agent.launch_args(self.skip_permissions_enabled(), self.chrome_enabled());
             self.spawn_session(
                 label,
                 project,

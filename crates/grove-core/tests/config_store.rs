@@ -123,6 +123,7 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
         last_update_check: Some(1_700_000_000),
         skipped_version: Some("v0.9.0".into()),
         dangerously_skip_permissions_enabled: Some(true),
+        chrome_enabled: Some(true),
         telemetry_enabled: Some(false),
         grid_order: vec!["myapp::/home/user/myapp".into()],
         theme_follow_system: true,

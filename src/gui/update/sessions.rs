@@ -427,7 +427,10 @@ impl Grove {
         } else {
             crate::app::path_basename(&w.path)
         };
-        let args = agent.launch_args(self.app.skip_permissions_enabled());
+        let args = agent.launch_args(
+            self.app.skip_permissions_enabled(),
+            self.app.chrome_enabled(),
+        );
         let use_tmux = self.app.use_tmux();
         match Session::spawn(
             label,

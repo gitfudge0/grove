@@ -339,6 +339,16 @@ impl Grove {
         .height(ROW_H)
         .padding(Padding::from([0, 10]));
 
+        let chrome_row = container(modal_checkbox(
+            "Claude in Chrome".into(),
+            self.app.chrome_enabled(),
+            c::CYAN(),
+            Some(Msg::ChromeToggle),
+        ))
+        .height(ROW_H)
+        .align_y(Center)
+        .padding(Padding::from([0, 10]));
+
         let telemetry_row = container(modal_checkbox(
             "Share anonymous usage data".into(),
             self.app.telemetry_enabled(),
@@ -355,6 +365,8 @@ impl Grove {
             backend_row,
             skip_perms_row,
             caption_promoted("Skip lets agents run any command without asking."),
+            chrome_row,
+            caption_promoted("Lets Claude read and control your Chrome tabs."),
             telemetry_row,
         ]
         .spacing(4);

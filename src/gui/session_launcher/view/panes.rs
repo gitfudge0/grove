@@ -263,10 +263,8 @@ impl Grove {
                 Some(PaletteRow::Recent { .. } | PaletteRow::Combo { .. })
             );
             let setting_enter_label: Option<&'static str> = match highlighted {
-                Some(PaletteRow::Setting(SettingRow::ProjectThemes | SettingRow::Telemetry)) => {
-                    Some("toggle")
-                }
-                Some(PaletteRow::Setting(_) | PaletteRow::Settings) => Some("open"),
+                Some(PaletteRow::Setting(s)) => Some(if s.is_toggle() { "toggle" } else { "open" }),
+                Some(PaletteRow::Settings) => Some("open"),
                 _ => None,
             };
             // Row-highlighted footer orders tab before ⏎ ("navigate · tab

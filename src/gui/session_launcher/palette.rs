@@ -68,7 +68,10 @@ impl Grove {
             return;
         };
         let label = crate::gui::launcher::default_label(w.is_main, &pname, &w.path);
-        let args = ag.launch_args(self.app.skip_permissions_enabled());
+        let args = ag.launch_args(
+            self.app.skip_permissions_enabled(),
+            self.app.chrome_enabled(),
+        );
         let before = self.session_keys();
         self.set_modal(Modal::None);
         self.launcher = None;

@@ -382,22 +382,22 @@ fn theme_pane_tab_cycles_dark_light_system() {
 
 #[test]
 fn settings_root_scroll_offset_accounts_for_headers_and_clamps() {
-    // The full unfiltered list: 8 rows across 4 sections. Element walk
+    // The full unfiltered list: 9 rows across 4 sections. Element walk
     // (2px column spacing throughout): first header 19px (0+13+6), later
     // headers 31px (12+13+6), rows 44px — content = 4 headers (112) +
-    // 8 rows (352) + 11 gaps (22) = 486px against the 364px viewport
+    // 9 rows (396) + 12 gaps (24) = 532px against the 364px viewport
     // (the 380px max_height minus the same container's 2·8px padding),
-    // so max scroll = 122.
+    // so max scroll = 168.
     let rows = SettingRow::ALL;
     // Row 0 sits right under the first header: centering clamps to 0.
     assert_eq!(settings_root_scroll_offset(&rows, 0), 0.0);
-    // The last row (CheckUpdates, y = 442) clamps to the bottom:
-    // content_h − viewport_h = 486 − 364…
-    assert_eq!(settings_root_scroll_offset(&rows, 7), 122.0);
+    // The last row (CheckUpdates, y = 488) clamps to the bottom:
+    // content_h − viewport_h = 532 − 364…
+    assert_eq!(settings_root_scroll_offset(&rows, 8), 168.0);
     // …which leaves all 44px of it inside the viewport: its bottom edge
     // (y + row) sits exactly at the viewport's bottom (offset + 364).
-    let max_offset = settings_root_scroll_offset(&rows, 7);
-    assert!(442.0 + 44.0 <= max_offset + 364.0);
+    let max_offset = settings_root_scroll_offset(&rows, 8);
+    assert!(488.0 + 44.0 <= max_offset + 364.0);
     // A row past a mid-list header (Backend, first of AGENTS/TERMINAL):
     // y = 192 → centered 192 − (364 − 44)/2 = 32. Uniform-height math
     // (i·46) would put y at 138 and clamp the centering to 0 — the

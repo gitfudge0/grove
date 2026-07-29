@@ -307,6 +307,21 @@ impl App {
             .unwrap_or(false)
     }
 
+    pub(crate) fn chrome_enabled(&self) -> bool {
+        self.store.chrome_enabled.unwrap_or(false)
+    }
+
+    pub(crate) fn set_chrome_enabled(&mut self, enabled: bool) -> Result<()> {
+        self.store.chrome_enabled = Some(enabled);
+        storage::save(&self.store)?;
+        self.set_toast(if enabled {
+            "Chrome control enabled for new Claude sessions"
+        } else {
+            "Chrome control disabled for new Claude sessions"
+        });
+        Ok(())
+    }
+
     pub(crate) fn set_skip_permissions_enabled(&mut self, enabled: bool) -> Result<()> {
         self.store.dangerously_skip_permissions_enabled = Some(enabled);
         storage::save(&self.store)?;
@@ -497,7 +512,7 @@ impl App {
             return;
         };
         let label = path_basename(&wt_path);
-        let args = agent.launch_args(self.skip_permissions_enabled());
+        let args = agent.launch_args(self.skip_permissions_enabled(), self.chrome_enabled());
         self.spawn_session(
             label,
             project,

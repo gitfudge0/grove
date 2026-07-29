@@ -57,14 +57,28 @@ impl Agent {
         }
     }
 
-    pub fn launch_args(self, skip_permissions: bool) -> Vec<String> {
+    /// Flags accumulate, so enabling both toggles yields both flags; order is
+    /// deterministic (skip-permissions first, then `--chrome`). Only Claude
+    /// supports `--chrome` (the Claude in Chrome integration).
+    pub fn launch_args(self, skip_permissions: bool, chrome: bool) -> Vec<String> {
+        let mut args: Vec<String> = Vec::new();
         match self {
-            Agent::Claude if skip_permissions => vec!["--dangerously-skip-permissions".into()],
-            Agent::Codex if skip_permissions => {
-                vec!["--dangerously-bypass-approvals-and-sandbox".into()]
+            Agent::Claude => {
+                if skip_permissions {
+                    args.push("--dangerously-skip-permissions".into());
+                }
+                if chrome {
+                    args.push("--chrome".into());
+                }
             }
-            _ => vec![],
+            Agent::Codex => {
+                if skip_permissions {
+                    args.push("--dangerously-bypass-approvals-and-sandbox".into());
+                }
+            }
+            Agent::OpenCode | Agent::Terminal => {}
         }
+        args
     }
 
     /// How to actually invoke this agent's CLI, as a `(program, prefix_args)`
@@ -237,6 +251,29 @@ fn resolve_on_path(name: &str) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// U1: the chrome toggle alone yields exactly `--chrome` for Claude.
+    #[test]
+    fn claude_chrome_only() {
+        assert_eq!(Agent::Claude.launch_args(false, true), vec!["--chrome"]);
+    }
+
+    /// U2: both toggles accumulate — neither flag swallows the other — and
+    /// the order is skip-permissions first, then `--chrome`.
+    #[test]
+    fn claude_both_flags_accumulate_in_order() {
+        let args = Agent::Claude.launch_args(true, true);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args, vec!["--dangerously-skip-permissions", "--chrome"]);
+    }
+
+    /// U3: `--chrome` is Claude-only; no other agent ever gets it.
+    #[test]
+    fn chrome_flag_is_claude_only() {
+        for agent in [Agent::Codex, Agent::OpenCode, Agent::Terminal] {
+            assert!(agent.launch_args(false, true).is_empty());
+        }
+    }
 
     #[cfg(windows)]
     #[test]

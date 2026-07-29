@@ -12,19 +12,21 @@ pub(crate) enum SettingRow {
     Backend,
     Permissions,
     Telemetry,
+    Chrome,
     DefaultAgent,
     CheckUpdates,
 }
 
 impl SettingRow {
     /// Every setting, in section/definition (= drill-in display) order.
-    pub(in crate::gui) const ALL: [SettingRow; 8] = [
+    pub(in crate::gui) const ALL: [SettingRow; 9] = [
         SettingRow::Theme,
         SettingRow::AppSize,
         SettingRow::ProjectThemes,
         SettingRow::Backend,
         SettingRow::Permissions,
         SettingRow::Telemetry,
+        SettingRow::Chrome,
         SettingRow::DefaultAgent,
         SettingRow::CheckUpdates,
     ];
@@ -37,6 +39,7 @@ impl SettingRow {
             SettingRow::Backend => "Backend",
             SettingRow::Permissions => "Permissions",
             SettingRow::Telemetry => "Telemetry",
+            SettingRow::Chrome => "Claude in Chrome",
             SettingRow::DefaultAgent => "Default agent",
             SettingRow::CheckUpdates => "Check for updates",
         }
@@ -63,6 +66,7 @@ impl SettingRow {
             // is the closest existing stand-in.
             SettingRow::Permissions => "ring",
             SettingRow::Telemetry => "check",
+            SettingRow::Chrome => "check",
             // Mock uses a bot glyph; `sparkle` is the closest existing
             // "agent/AI" stand-in.
             SettingRow::DefaultAgent => "sparkle",
@@ -75,12 +79,23 @@ impl SettingRow {
     pub(in crate::gui) fn section(self) -> &'static str {
         match self {
             SettingRow::Theme | SettingRow::AppSize | SettingRow::ProjectThemes => "APPEARANCE",
-            SettingRow::Backend | SettingRow::Permissions | SettingRow::Telemetry => {
-                "AGENTS / TERMINAL"
-            }
+            SettingRow::Backend
+            | SettingRow::Permissions
+            | SettingRow::Telemetry
+            | SettingRow::Chrome => "AGENTS / TERMINAL",
             SettingRow::DefaultAgent => "TOOLS",
             SettingRow::CheckUpdates => "UPDATES",
         }
+    }
+
+    /// Rows that flip in place instead of opening a pane. Toggles render a
+    /// checkbox glyph rather than their icon, get no chevron, and re-anchor
+    /// the palette cursor after flipping.
+    pub(in crate::gui) fn is_toggle(self) -> bool {
+        matches!(
+            self,
+            SettingRow::ProjectThemes | SettingRow::Telemetry | SettingRow::Chrome
+        )
     }
 }
 

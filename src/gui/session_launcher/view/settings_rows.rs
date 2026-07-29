@@ -35,46 +35,45 @@ impl Grove {
         let label_ranges: &[(usize, usize)] = m.as_ref().map_or(&[][..], |m| m.project.as_slice());
         let label_el = highlighted_line(label, label_ranges, c::FG(), UI_FONT, 13.0);
 
-        let icon_slot: Element<'a, GMsg> =
-            if matches!(s, SettingRow::ProjectThemes | SettingRow::Telemetry) {
-                // A non-interactive checkbox glyph modeled on
-                // `modal_checkbox`'s checked-state border/background colors
-                // (`settings_modal`'s own toggle rows) — the whole row is
-                // already the click target here, so this isn't the real
-                // `checkbox` widget, just its visual idiom.
-                let checked = value == "On";
-                let box_el = container(if checked {
-                    icon("check", 10.0, c::MAGENTA())
-                } else {
-                    Space::new().width(10.0).height(10.0).into()
-                })
-                .width(14.0)
-                .height(14.0)
-                .align_x(iced::alignment::Horizontal::Center)
-                .align_y(iced::Alignment::Center)
-                .style(move |_| container::Style {
-                    background: Some(Background::Color(if checked {
-                        c::BG_HL()
-                    } else {
-                        c::BG()
-                    })),
-                    border: Border {
-                        color: if checked { c::MAGENTA() } else { c::BORDER() },
-                        width: 1.0,
-                        radius: Radius::from(4.0),
-                    },
-                    ..Default::default()
-                });
-                container(box_el)
-                    .width(24.0)
-                    .align_x(iced::alignment::Horizontal::Center)
-                    .into()
+        let icon_slot: Element<'a, GMsg> = if s.is_toggle() {
+            // A non-interactive checkbox glyph modeled on
+            // `modal_checkbox`'s checked-state border/background colors
+            // (`settings_modal`'s own toggle rows) — the whole row is
+            // already the click target here, so this isn't the real
+            // `checkbox` widget, just its visual idiom.
+            let checked = value == "On";
+            let box_el = container(if checked {
+                icon("check", 10.0, c::MAGENTA())
             } else {
-                container(icon(s.icon_name(), 16.0, c::FG_MUTE()))
-                    .width(24.0)
-                    .align_x(iced::alignment::Horizontal::Center)
-                    .into()
-            };
+                Space::new().width(10.0).height(10.0).into()
+            })
+            .width(14.0)
+            .height(14.0)
+            .align_x(iced::alignment::Horizontal::Center)
+            .align_y(iced::Alignment::Center)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(if checked {
+                    c::BG_HL()
+                } else {
+                    c::BG()
+                })),
+                border: Border {
+                    color: if checked { c::MAGENTA() } else { c::BORDER() },
+                    width: 1.0,
+                    radius: Radius::from(4.0),
+                },
+                ..Default::default()
+            });
+            container(box_el)
+                .width(24.0)
+                .align_x(iced::alignment::Horizontal::Center)
+                .into()
+        } else {
+            container(icon(s.icon_name(), 16.0, c::FG_MUTE()))
+                .width(24.0)
+                .align_x(iced::alignment::Horizontal::Center)
+                .into()
+        };
 
         // Async status renders inline in the value slot (E2): CheckUpdates
         // mirrors `settings_modal`'s status line — a spinner while checking,
@@ -106,7 +105,7 @@ impl Grove {
         .align_y(iced::Alignment::Center);
         // The chevron promises a deeper level — toggles flip in place and
         // never open one, so they don't get it.
-        if !matches!(s, SettingRow::ProjectThemes | SettingRow::Telemetry) {
+        if !s.is_toggle() {
             content =
                 content
                     .push(Space::new().width(8))
