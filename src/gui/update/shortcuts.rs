@@ -11,10 +11,11 @@ pub(in crate::gui) fn global_mods(mods: Modifiers) -> bool {
     return mods.control() && mods.shift();
 }
 
-/// Modifier for "new session in current worktree": Cmd+Alt (mac) / Ctrl+Alt
+/// Shared modifier for every `requires_alt` chord (e.g. "new session in
+/// current worktree", "new home terminal"): Cmd+Alt (mac) / Ctrl+Alt
 /// (elsewhere), independent of [`global_mods`] (which already requires Shift
 /// on non-mac and so can't be reused as a base for an Alt chord there).
-fn new_session_in_worktree_mods(mods: Modifiers) -> bool {
+fn alt_chord_mods(mods: Modifiers) -> bool {
     #[cfg(target_os = "macos")]
     return mods.logo() && mods.alt() && !mods.control();
     #[cfg(not(target_os = "macos"))]
@@ -62,7 +63,8 @@ pub(crate) enum GlobalShortcut {
     SelectSession(usize),
     ShortcutOverlay,
     CloseFocusedSession,
-    /// Spawn a new home terminal and focus it.
+    /// Create and focus a new home terminal — mod+Alt+T, reachable from the
+    /// agent side or while already showing the terminal tab.
     NewHomeTerminal,
     /// Swap between the home-terminal tab and whatever the agent side was
     /// showing (grid or single session), preserving the other side's context.
@@ -264,24 +266,21 @@ pub(crate) const SHORTCUTS: &[ShortcutDef] = &[
         literal: false,
     },
     ShortcutDef {
-        action: Some(GlobalShortcut::NewHomeTerminal),
+        action: Some(GlobalShortcut::ToggleTerminal),
         triggers: &["t", "T"],
         display_keys: "t",
-        description: "New home terminal",
+        description: "toggle terminal",
         scopes: G,
         requires_alt: false,
         literal: false,
     },
-    // Backtick is matched on the modifier-independent `key`, but a layout that
-    // reports the shifted char instead would send `~` — accept both so the
-    // chord can't go dead on non-mac (where `global_mods` requires Shift).
     ShortcutDef {
-        action: Some(GlobalShortcut::ToggleTerminal),
-        triggers: &["`", "~"],
-        display_keys: "`",
-        description: "toggle terminal",
+        action: Some(GlobalShortcut::NewHomeTerminal),
+        triggers: &["t", "T"],
+        display_keys: "t",
+        description: "New terminal",
         scopes: G,
-        requires_alt: false,
+        requires_alt: true,
         literal: false,
     },
     ShortcutDef {
@@ -416,30 +415,26 @@ pub(super) fn match_global_shortcut(
     screen: Screen,
 ) -> Option<GlobalShortcut> {
     // Checked ahead of `global_mods`: on non-mac, `global_mods` already
-    // requires Shift, so Ctrl+Alt+N (no Shift) would never reach it. This
-    // chord is Cmd+Alt+N (mac) / Ctrl+Alt+N (elsewhere), independent of the
-    // platform's base global-shortcut modifier.
+    // requires Shift, so an Alt chord (no Shift) would never reach it. Every
+    // `requires_alt: true` row (Cmd+Alt on mac / Ctrl+Alt elsewhere,
+    // independent of the platform's base global-shortcut modifier) is
+    // resolved here instead of the registry lookup below.
     //
     // On mac this early check is technically redundant now that the registry
     // lookup below honors `requires_alt`: `global_mods` there is just
-    // `logo() && !control()`, which Cmd+Alt+N already satisfies, so the
-    // registry `.find()` alone would resolve it to `NewSessionInWorktree`.
-    // It still has to stay because non-mac needs it — `global_mods` there
-    // requires Shift, which Ctrl+Alt+N (no Shift) never has, so non-mac
-    // can't reach the registry lookup at all for this chord.
-    if new_session_in_worktree_mods(mods) {
+    // `logo() && !control()`, which any Cmd+Alt chord already satisfies, so
+    // the registry `.find()` alone would resolve it correctly. It still has
+    // to stay because non-mac needs it — `global_mods` there requires Shift,
+    // which an Alt chord (no Shift) never has, so non-mac can't reach the
+    // registry lookup at all for these chords.
+    if alt_chord_mods(mods) {
         if let Key::Character(s) = key {
-            if s.eq_ignore_ascii_case("n") {
-                // Global today, but scope-checked like everything else below
-                // rather than bypassing it, so a future rescoping can't be
-                // missed here.
-                let scopes = SHORTCUTS
-                    .iter()
-                    .find(|d| d.action == Some(GlobalShortcut::NewSessionInWorktree))
-                    .map_or(G, |d| d.scopes);
-                if scope_allows(scopes, screen) {
-                    return Some(GlobalShortcut::NewSessionInWorktree);
-                }
+            let s = s.as_str();
+            if let Some(def) = SHORTCUTS
+                .iter()
+                .find(|d| d.action.is_some() && d.requires_alt && d.triggers.contains(&s))
+            {
+                return def.action.filter(|_| scope_allows(def.scopes, screen));
             }
         }
     }
@@ -684,33 +679,23 @@ mod tests {
         assert_eq!(screen_from_flags(true, true), Screen::Grid);
     }
 
-    /// mod+` is Global-scoped: it must reach the toggle from the workspace,
+    /// mod+t is Global-scoped: it must reach the toggle from the workspace,
     /// the grid, and zen alike (in zen it swaps content without unhiding the
     /// chrome).
     #[test]
     fn toggle_terminal_matches_on_every_screen() {
         for screen in [Screen::Workspace, Screen::Grid, Screen::Zen] {
             assert_eq!(
-                match_global_shortcut(&ch("`"), gmods(), screen),
+                match_global_shortcut(&ch("t"), gmods(), screen),
                 Some(GlobalShortcut::ToggleTerminal),
-                "backtick on {screen:?}"
+                "lowercase t on {screen:?}"
             );
             assert_eq!(
-                match_global_shortcut(&ch("~"), gmods(), screen),
+                match_global_shortcut(&ch("T"), gmods(), screen),
                 Some(GlobalShortcut::ToggleTerminal),
-                "tilde on {screen:?}"
+                "uppercase T on {screen:?}"
             );
         }
-    }
-
-    /// Backtick without the platform modifier is a literal PTY character and
-    /// must fall through rather than be swallowed by the toggle.
-    #[test]
-    fn bare_backtick_is_not_a_shortcut() {
-        assert_eq!(
-            match_global_shortcut(&ch("`"), Modifiers::empty(), Screen::Workspace),
-            None
-        );
     }
 
     /// From the agent side the toggle shows the terminal, exiting the grid
@@ -914,7 +899,7 @@ mod tests {
     }
 
     /// Pins Bug 7's fix directly, non-mac only: a chord that carries Shift (so
-    /// `new_session_in_worktree_mods`'s `!shift()` fails and the early-check
+    /// `alt_chord_mods`'s `!shift()` fails and the early-check
     /// never fires) but still satisfies `global_mods` (Ctrl+Shift) and holds
     /// Alt must still resolve through the registry alone, proving the registry
     /// lookup — not just the early-check — is `requires_alt`-correct.
@@ -926,6 +911,30 @@ mod tests {
         assert_eq!(
             match_global_shortcut(&ch("n"), mods, Screen::Workspace),
             Some(NewSessionInWorktree)
+        );
+    }
+
+    /// mod+Alt+T always creates a new home terminal, whether or not one
+    /// already exists — a distinct chord from the plain mod+t toggle, which
+    /// stays unaffected (Bug 7's shared-trigger, `requires_alt`-differentiated
+    /// pattern, same as `p`/`NewSession` vs. alt+`n`/`NewSessionInWorktree`).
+    #[test]
+    fn alt_t_maps_to_new_home_terminal() {
+        use GlobalShortcut::*;
+        let alt = alt_mods();
+        let screen = Screen::Workspace;
+        assert_eq!(
+            match_global_shortcut(&ch("t"), alt, screen),
+            Some(NewHomeTerminal)
+        );
+        assert_eq!(
+            match_global_shortcut(&ch("T"), alt, screen),
+            Some(NewHomeTerminal)
+        );
+        // Plain platform modifier (no Alt) on `t` is unaffected — still toggles.
+        assert_eq!(
+            match_global_shortcut(&ch("t"), gmods(), screen),
+            Some(ToggleTerminal)
         );
     }
 

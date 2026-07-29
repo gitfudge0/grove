@@ -464,7 +464,7 @@ impl Grove {
         self.pending_kill = Some(i);
     }
 
-    /// `mod+`` — swap between the home-terminal tab and the agent side,
+    /// `mod+t` — swap between the home-terminal tab and the agent side,
     /// restoring whichever context the other side was last showing. Never
     /// touches `chrome_visible`, so in zen this is purely a content swap.
     pub(in crate::gui) fn on_toggle_terminal(&mut self) {
@@ -997,7 +997,7 @@ impl Grove {
             GlobalShortcut::NewHomeTerminal => {
                 // On the grid screen the new terminal would be focused but
                 // drawn behind the tiles; drop to the single-session
-                // workspace so it's visible, and let mod+` bring the grid back.
+                // workspace so it's visible, and let mod+t bring the grid back.
                 if self.grid_view {
                     self.grid_view_before_terminal = true;
                     self.grid_view = false;
