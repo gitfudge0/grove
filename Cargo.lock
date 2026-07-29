@@ -1286,7 +1286,7 @@ dependencies = [
 
 [[package]]
 name = "grove"
-version = "0.44.0"
+version = "0.45.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1309,7 +1309,7 @@ dependencies = [
 
 [[package]]
 name = "grove-core"
-version = "0.44.0"
+version = "0.45.0"
 dependencies = [
  "dirs",
  "fs-err",

@@ -2,7 +2,7 @@
 members = ["crates/grove-core"]
 
 [workspace.package]
-version = "0.44.0"
+version = "0.45.0"
 edition = "2021"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
