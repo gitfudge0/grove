@@ -139,6 +139,10 @@ fn svg_for(name: &str) -> String {
         }
         // Circular arrow — restart / relaunch.
         "restart" => r#"<path d="M13 8a5 5 0 1 1-1.7-3.75M13 2.5V5h-2.5"/>"#,
+        // Counter-clockwise arrow with a corner tick — "restore" (un-archive).
+        // Distinct from `restart`, which spins the other way and reads as
+        // "relaunch this session".
+        "restore" => r#"<path d="M3.2 8a4.8 4.8 0 1 0 1.5-3.5"/><path d="M2.6 2.6v3.1h3.1"/>"#,
         "edit" => r#"<path d="M11.5 2.5l2 2L6 12l-2.5.5L4 10z"/>"#,
         // I-beam text cursor — "rename" (distinct from the "edit" pencil).
         "rename" => r#"<path d="M5 3h6M8 3v10M5 13h6"/>"#,

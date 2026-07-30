@@ -398,8 +398,17 @@ impl App {
             .sum();
     }
 
+    /// The selected project, or `None` when the selection is not on a *visible*
+    /// project. Archived projects are hidden from the sidebar, so returning one
+    /// here would let the whole app (new worktree, scripts editor, teardown,
+    /// `refresh_worktrees`) target a project the user cannot see or reach.
+    /// Filtering here makes "the selection is always a visible project" hold by
+    /// construction rather than being re-established at every mutation site.
     pub(crate) fn selected_project(&self) -> Option<&Project> {
-        self.store.projects.get(self.proj_idx)
+        self.store
+            .projects
+            .get(self.proj_idx)
+            .filter(|p| !p.archived)
     }
 
     pub(crate) fn refresh_worktrees(&mut self) {
@@ -601,6 +610,7 @@ impl App {
             path,
             scripts: grove_core::storage::ProjectScripts::default(),
             theme: None,
+            archived: false,
         });
         storage::save(&self.store)?;
         self.proj_idx = self.store.projects.len() - 1;
@@ -678,7 +688,9 @@ pub(crate) fn test_app(sessions: Vec<Session>) -> App {
     }
 }
 
-/// Spawn a cheap real session (a `true` shell script — exits immediately)
+/// Spawn a cheap real session (a shell that `exec`s `cat`, which blocks on
+/// its PTY until the `Session` is dropped — never exiting on its own, so no
+/// monitor thread can race an `Exited` status over the forced one below)
 /// and force its backend/status to the scenario under test. `Session`'s
 /// PTY/child fields are private to `session.rs` and can't be constructed
 /// directly, but `backend` and `status` are `pub`, so overwriting them
@@ -690,7 +702,7 @@ pub(crate) fn spawn_test_session(
     tmux: bool,
 ) -> Session {
     use grove_core::session::SessionBackend;
-    let mut s = Session::spawn_script("t".into(), "p".into(), ".".into(), "true", ".")
+    let mut s = Session::spawn_script("t".into(), "p".into(), ".".into(), "exec cat", ".")
         .expect("spawn test session");
     if tmux {
         s.backend = SessionBackend::Tmux {

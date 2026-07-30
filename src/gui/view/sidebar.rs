@@ -11,6 +11,7 @@ use crate::gui::rows::{
 use crate::gui::state::{Grove, Msg};
 use crate::gui::widgets::{
     divider_h, divider_v, ghost_scrollable, section_header, sidebar_agent_menu_overlay,
+    sidebar_empty, sidebar_empty_copy,
 };
 use grove_core::git::Worktree;
 use grove_core::session::{Session, SessionStatus};
@@ -237,7 +238,9 @@ impl Grove {
         // meant one mutex acquisition per worktree per frame.
         let git_states = self.git_state.lock().ok();
         let pulse = self.attention_pulse();
-        for (pi, p) in self.app.store.projects.iter().enumerate() {
+        let mut any_active = false;
+        for (pi, p) in self.app.store.active_projects() {
+            any_active = true;
             let (pname, ppath) = (p.name.as_str(), p.path.as_str());
             let expanded = !self.collapsed.contains(&pi);
             let is_git = is_repo_cached(ppath);
@@ -348,6 +351,15 @@ impl Grove {
             }
         }
 
+        // Nothing to render in the tree: distinguish "no projects at all" from
+        // "every project is archived" — the fixes differ. The TERMINALS section
+        // below still renders; only the project tree is empty.
+        if let Some((title, subtitle)) =
+            sidebar_empty_copy(self.app.store.projects.len(), usize::from(any_active))
+        {
+            col = col.push(sidebar_empty(title, subtitle));
+        }
+
         if !self.terminals_collapsed {
             // Expanded: every terminal already renders its own row below, so
             // the header's activity dot (a "something's running in here" cue
@@ -379,7 +391,7 @@ impl Grove {
     /// skipping sessions hidden under a collapsed project or worktree.
     fn tree_session_order(&self) -> Vec<usize> {
         let mut order = Vec::new();
-        for (pi, _p) in self.app.store.projects.iter().enumerate() {
+        for (pi, _p) in self.app.store.active_projects() {
             if self.collapsed.contains(&pi) {
                 continue;
             }
@@ -413,9 +425,7 @@ impl Grove {
         for (pi, pname) in self
             .app
             .store
-            .projects
-            .iter()
-            .enumerate()
+            .active_projects()
             .map(|(i, p)| (i, p.name.as_str()))
         {
             acc_y += ROW_H; // project row

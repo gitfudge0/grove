@@ -191,11 +191,76 @@ fn agent_menu<'a>(proj: usize, wt: usize, is_main: bool, available: &[Agent]) ->
         })
         .into()
 }
+/// Title/subtitle for the sidebar project-tree empty state, or `None` when the
+/// tree has rows to render.
+///
+/// Split out as pure logic so the branch choice is testable without a widget
+/// harness. The two states must never share copy: each has a different fix, and
+/// one message would send the user to the wrong place.
+pub(in crate::gui) fn sidebar_empty_copy(
+    total_projects: usize,
+    active_projects: usize,
+) -> Option<(&'static str, &'static str)> {
+    match (total_projects, active_projects) {
+        (_, a) if a > 0 => None,
+        (0, _) => Some(("No projects yet", "Add one with + above.")),
+        _ => Some((
+            "All projects archived",
+            "Restore one from Settings → Archived projects.",
+        )),
+    }
+}
+
+/// In-panel empty state for the sidebar project tree (mock frames C1 / C2).
+/// The docked TERMINALS section still renders below this — only the tree is
+/// empty, not the rail.
+pub(in crate::gui) fn sidebar_empty<'a>(title: &'a str, subtitle: &'a str) -> Element<'a, Msg> {
+    container(
+        column![
+            text(title).size(14).color(c::FG_DIM()),
+            text(subtitle).size(12).color(c::FG_MUTE()),
+        ]
+        .spacing(6)
+        .align_x(iced::Alignment::Center),
+    )
+    .padding(Padding::from([30, 16]))
+    .width(Length::Fill)
+    .align_x(iced::alignment::Horizontal::Center)
+    .into()
+}
+
 pub(in crate::gui) fn empty_workspace<'a>() -> Element<'a, Msg> {
     container(
         column![
             text("no session selected").size(14).color(c::FG_DIM()),
             text("click a worktree's start button to spawn an agent")
+                .size(12)
+                .color(c::FG_MUTE()),
+        ]
+        .spacing(6)
+        .align_x(iced::Alignment::Center),
+    )
+    .center_x(Length::Fill)
+    .center_y(Length::Fill)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(|_| container::Style {
+        background: Some(Background::Color(c::BG())),
+        ..Default::default()
+    })
+    .into()
+}
+
+/// Same chrome as `empty_workspace()`, for the zero-active-projects case only
+/// (mock frame C3). Deliberately a sibling rather than an edit to
+/// `empty_workspace()`: with at least one active project, "click a worktree's
+/// start button" is the correct instruction and must stay. With none, there is
+/// no visible worktree to click, so that copy would be actively misleading.
+pub(in crate::gui) fn empty_no_projects_workspace<'a>() -> Element<'a, Msg> {
+    container(
+        column![
+            text("No active projects").size(14).color(c::FG_DIM()),
+            text("Add or restore a project to get started.")
                 .size(12)
                 .color(c::FG_MUTE()),
         ]
@@ -323,4 +388,34 @@ pub(in crate::gui) fn slot_badge<'a>(label: &'static str) -> Element<'a, Msg> {
         ..Default::default()
     })
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sidebar_empty_copy;
+
+    /// Any active project means the tree renders rows — no empty state at all.
+    #[test]
+    fn active_projects_suppress_the_empty_state() {
+        assert!(sidebar_empty_copy(1, 1).is_none());
+        assert!(sidebar_empty_copy(5, 2).is_none());
+    }
+
+    /// C2 vs C1: the two causes must not share copy, because the fix differs
+    /// (add a project vs restore one from Settings).
+    #[test]
+    fn empty_and_all_archived_pick_distinct_copy() {
+        let none = sidebar_empty_copy(0, 0).expect("no projects at all is an empty state");
+        assert_eq!(none, ("No projects yet", "Add one with + above."));
+
+        let archived = sidebar_empty_copy(3, 0).expect("all-archived is an empty state");
+        assert_eq!(
+            archived,
+            (
+                "All projects archived",
+                "Restore one from Settings → Archived projects."
+            )
+        );
+        assert_ne!(none, archived);
+    }
 }

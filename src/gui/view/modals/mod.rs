@@ -2,13 +2,16 @@
 //! `*_modal` renderer (input/confirm/remove-project/settings/theme
 //! picker/theme manager/shortcut overlay/teardown/changelog/...), split by
 //! family:
-//! - [`confirm`]       — input/confirm/remove-project/message/teardown
+//! - [`confirm`]       — input/confirm/remove-project/archive-gate/message/
+//!   teardown
+//! - [`archived_projects`] — the archived-projects list
 //! - [`settings`]      — project settings, tmux choice, agent picker, the
 //!   settings modal itself, and the shortcut overlay
 //! - [`upgrade`]        — update-in-progress and changelog
 //! - [`theme_picker`]  — the app/project theme picker
 //! - [`theme_manager`] — the custom-theme list/manage modal
 
+mod archived_projects;
 mod confirm;
 mod settings;
 mod theme_manager;
@@ -56,6 +59,10 @@ impl Grove {
                 current,
                 errors,
             ),
+            Modal::ArchiveProject { name, sessions, .. } => {
+                self.archive_project_modal(name, sessions)
+            }
+            Modal::ArchivedProjects => self.archived_projects_modal(),
             Modal::Message(message) => self.message_modal(message),
             Modal::TmuxChoice => self.tmux_choice_modal(),
             Modal::AgentPicker {

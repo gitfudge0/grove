@@ -14,8 +14,8 @@ use crate::gui::state::GridDragMsg;
 use crate::gui::state::{FocusedPane, Grove, Msg, PtyCacheEntry, PtyCell, PtyPane};
 use crate::gui::update::platform_mod_label;
 use crate::gui::widgets::{
-    divider_h, divider_v, dot, empty_terminals_workspace, empty_workspace, icon_btn, tool_btn,
-    tool_btn_toggle, vline,
+    divider_h, divider_v, dot, empty_no_projects_workspace, empty_terminals_workspace,
+    empty_workspace, icon_btn, tool_btn, tool_btn_toggle, vline,
 };
 use grove_core::git::Worktree;
 use grove_core::session::{Session, SessionStatus};
@@ -192,6 +192,9 @@ impl Grove {
             ]
             .height(Length::Fill)
             .into(),
+            // With no visible project, "click a worktree's start button" names
+            // something the user cannot see; every other case keeps that copy.
+            _ if self.app.store.active_projects().next().is_none() => empty_no_projects_workspace(),
             _ => empty_workspace(),
         };
 

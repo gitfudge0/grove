@@ -7,8 +7,8 @@ use crate::gui::icons::icon;
 use crate::gui::metrics::{MONO_FONT, ROW_H};
 use crate::gui::palette as c;
 use crate::gui::session_launcher;
+use crate::gui::state::{ArchiveMsg, ThemePickerMsg, UpgradeMsg};
 use crate::gui::state::{Grove, Msg, UpgradeState};
-use crate::gui::state::{ThemePickerMsg, UpgradeMsg};
 use crate::gui::update::{platform_mod_label, Scope, ShortcutDef, SHORTCUTS};
 use crate::gui::widgets::{
     control_btn_sized, control_icon_btn, divider_h, dot, footer_hint, ghost_scrollable, icon_btn,
@@ -295,6 +295,32 @@ impl Grove {
         ]
         .spacing(4);
 
+        // ── projects ─────────────────────────────────────────────────────
+        // Shown with "0" rather than hidden when nothing is archived: a row
+        // that only appears after the first archive makes the feature
+        // undiscoverable at exactly the moment the user needs to know where
+        // their project went.
+        let archived_row = modal_list_row(
+            row![
+                text("Archived projects").size(12).color(c::FG()),
+                Space::new().width(Length::Fill),
+                text(self.app.store.archived_count().to_string())
+                    .size(12)
+                    .color(c::FG_DIM()),
+                Space::new().width(8),
+                icon("chev-right", 12.0, c::FG_MUTE()),
+            ]
+            .align_y(Center),
+            false,
+            Msg::Archive(ArchiveMsg::OpenList),
+        );
+        let projects = column![
+            section_header("PROJECTS", 0.0, 0.0),
+            Space::new().height(2),
+            archived_row,
+        ]
+        .spacing(4);
+
         // ── agents / terminal ────────────────────────────────────────────
         let tmux_on = self.app.use_tmux();
         let backend_seg = container(
@@ -461,6 +487,8 @@ impl Grove {
         // ── body (scrolls once content exceeds the cap) ─────────────────────
         let sections = column![
             appearance,
+            divider_h(c::BORDER_SOFT()),
+            projects,
             divider_h(c::BORDER_SOFT()),
             agents_terminal,
             divider_h(c::BORDER_SOFT()),

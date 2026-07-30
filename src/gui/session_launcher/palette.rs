@@ -33,8 +33,10 @@ impl Grove {
     /// needs it, and refreshes `available_agents` for the same reason.
     pub(in crate::gui) fn open_session_launcher(&mut self) {
         self.app.refresh_available_agents();
-        let n = self.app.store.projects.len();
-        for i in 0..n {
+        // Archived projects never appear in any palette row, so warming their
+        // worktree cache would be a pure wasted `git worktree list` per open.
+        let active: Vec<usize> = self.app.store.active_projects().map(|(i, _)| i).collect();
+        for i in active {
             self.ensure_wt_cached(i);
         }
         self.set_modal(Modal::SessionLauncher);
@@ -378,7 +380,7 @@ impl Grove {
             return Task::none();
         };
         let rows = self.palette_rows(input, *browse_all);
-        let zero_projects = self.app.store.projects.is_empty();
+        let zero_projects = self.app.store.active_projects().next().is_none();
         let root_mode = input.is_empty() && !*browse_all && !zero_projects;
         let y = palette_scroll_offset(&rows, *selected, root_mode);
         scroll_to(
@@ -496,18 +498,23 @@ impl Grove {
     /// Typing/browse-all: every `(proj, wt)` combo across every project,
     /// fuzzy-filtered by `input`.
     pub(super) fn palette_rows(&self, input: &str, browse_all: bool) -> Vec<PaletteRow> {
-        if self.app.store.projects.is_empty() {
+        // Zero *active* projects behaves exactly like a genuinely empty store:
+        // an all-archived store has nothing to launch into either.
+        if self.app.store.active_projects().next().is_none() {
             return vec![PaletteRow::AddProject, PaletteRow::TerminalHome];
         }
         if input.is_empty() && !browse_all {
             let mut rows = Vec::new();
             for r in self.app.store.recent_launches.iter().take(6) {
+                // Resolved against ACTIVE projects only — an archived
+                // project's recent launches must not keep showing up. The
+                // yielded index is the true index into `store.projects`.
                 let Some(proj) = self
                     .app
                     .store
-                    .projects
-                    .iter()
-                    .position(|p| p.name == r.project)
+                    .active_projects()
+                    .find(|(_, p)| p.name == r.project)
+                    .map(|(i, _)| i)
                 else {
                     continue;
                 };
@@ -541,6 +548,11 @@ impl Grove {
                     let Some(p) = self.app.store.projects.get(proj) else {
                         continue;
                     };
+                    // `root_project_order` walks every index (so `proj` stays
+                    // a true index); archived projects are skipped here.
+                    if p.archived {
+                        continue;
+                    }
                     for w in self.launcher_worktrees(proj) {
                         if count >= 6 {
                             break 'projects;
@@ -592,7 +604,7 @@ impl Grove {
             // absent from recents — tied at `usize::MAX` — keep their
             // relative store order).
             let mut scored: Vec<(u32, usize, PaletteRow)> = Vec::new();
-            for (proj, p) in self.app.store.projects.iter().enumerate() {
+            for (proj, p) in self.app.store.active_projects() {
                 for w in self.launcher_worktrees(proj) {
                     let name = if w.branch.is_empty() {
                         crate::app::path_basename(&w.path)

@@ -73,6 +73,16 @@ pub struct Project {
     /// instead of the global one. `None` means "Default (follow app)".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// Archived: hidden from the main projects list but still present in
+    /// `Store::projects` (see `Store::active_projects`). Skipped when false so
+    /// `projects.json` stays clean for the overwhelmingly common active case,
+    /// matching how `ProjectScripts`' fields are handled above.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub archived: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -148,6 +158,36 @@ pub struct Store {
     /// config files load with an empty history.
     #[serde(default)]
     pub recent_launches: Vec<RecentLaunch>,
+}
+
+impl Store {
+    /// Projects visible in the UI, paired with their TRUE index into
+    /// `self.projects`.
+    ///
+    /// Archived projects stay in `projects` so every index-keyed thing in the
+    /// GUI (`proj_idx`, the per-project worktree caches, `Modal::ScriptsEditor`)
+    /// stays valid. Callers MUST use the yielded index and never re-`enumerate`
+    /// the filtered sequence — renumbering hands those callers the wrong
+    /// project. Note the ordering below: `.enumerate()` comes BEFORE
+    /// `.filter()`; swapping them renumbers the survivors from zero, which is
+    /// the single bug this whole design exists to avoid.
+    pub fn active_projects(&self) -> impl Iterator<Item = (usize, &Project)> {
+        self.projects
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| !p.archived)
+    }
+
+    /// Archived projects with their TRUE index, for the archived-projects list.
+    /// Same `.enumerate()`-before-`.filter()` contract as `active_projects`.
+    pub fn archived_projects(&self) -> impl Iterator<Item = (usize, &Project)> {
+        self.projects.iter().enumerate().filter(|(_, p)| p.archived)
+    }
+
+    /// Count of archived projects, for the Settings row.
+    pub fn archived_count(&self) -> usize {
+        self.archived_projects().count()
+    }
 }
 
 /// Env var that, when set to a non-empty value, overrides the grove config
@@ -353,12 +393,14 @@ mod tests {
                     path: "/home/user/myapp".into(),
                     scripts: ProjectScripts::default(),
                     theme: None,
+                    archived: false,
                 },
                 Project {
                     name: "other".into(),
                     path: "/tmp/other".into(),
                     scripts: ProjectScripts::default(),
                     theme: Some("dracula".into()),
+                    archived: true,
                 },
             ],
             default_agent: Some(Agent::Claude),
@@ -409,6 +451,14 @@ mod tests {
         assert_eq!(recovered.theme_light.as_deref(), Some("tokyonight-day"));
         assert!(recovered.project_themes_enabled);
         assert_eq!(recovered.projects[1].theme.as_deref(), Some("dracula"));
+        assert!(
+            !recovered.projects[0].archived,
+            "active project must round-trip as active"
+        );
+        assert!(
+            recovered.projects[1].archived,
+            "archived project must round-trip as archived"
+        );
         assert_eq!(recovered.recent_launches, original.recent_launches);
     }
 
@@ -706,5 +756,209 @@ mod tests {
         assert!(dir.join("projects.json").exists());
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    // ── archived projects ────────────────────────────────────────────────
+
+    /// Test helper: `n` projects named `p0..p{n-1}`, archived exactly at the
+    /// given indices.
+    fn store_with_archived_at(n: usize, archived: &[usize]) -> Store {
+        Store {
+            projects: (0..n)
+                .map(|i| Project {
+                    name: format!("p{i}"),
+                    path: format!("/tmp/p{i}"),
+                    scripts: ProjectScripts::default(),
+                    theme: None,
+                    archived: archived.contains(&i),
+                })
+                .collect(),
+            ..Store::default()
+        }
+    }
+
+    /// S1: every existing user's `projects.json` predates `archived`. Such a
+    /// file must still parse, with every project treated as active.
+    #[test]
+    fn legacy_projects_without_archived_key_default_to_active() {
+        let json = r#"{
+            "projects": [
+                { "name": "myapp", "path": "/home/user/myapp", "scripts": {} },
+                { "name": "other", "path": "/tmp/other", "scripts": {} }
+            ],
+            "onboarded": true
+        }"#;
+        assert!(
+            !json.contains("archived"),
+            "the legacy fixture must not mention archived at all"
+        );
+
+        let store: Store = serde_json::from_str(json).expect("deserialize legacy store");
+
+        assert_eq!(store.projects.len(), 2);
+        for p in &store.projects {
+            assert!(
+                !p.archived,
+                "legacy project {} must default to active, not archived",
+                p.name
+            );
+        }
+    }
+
+    /// S2: the archived flag survives a real `save()` -> `load()` cycle and is
+    /// actually present in the bytes on disk.
+    #[test]
+    fn archived_survives_save_and_load() {
+        let _lock = CONFIG_DIR_ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let dir = std::env::temp_dir().join(format!(
+            "grove_test_archived_round_trip_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let _guard = EnvVarGuard::set(CONFIG_DIR_ENV, dir.to_str().expect("utf8 path"));
+
+        let store = store_with_archived_at(3, &[1]);
+        save(&store).expect("save");
+
+        let recovered = load().expect("load");
+        let flags: Vec<bool> = recovered.projects.iter().map(|p| p.archived).collect();
+        assert_eq!(
+            flags,
+            vec![false, true, false],
+            "archived flags must match by position after save+load"
+        );
+
+        let raw = fs::read_to_string(config_path().expect("config_path")).expect("read raw json");
+        assert!(
+            raw.contains("\"archived\""),
+            "the archived project must write an \"archived\" key: {raw}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// S3: pins the `skip_serializing_if` decision — an all-active store must
+    /// not write `archived` at all, so upgrading never bloats projects.json.
+    #[test]
+    fn archived_false_is_omitted_from_serialized_json() {
+        let store = store_with_archived_at(3, &[]);
+        let json = serde_json::to_string_pretty(&store).expect("serialize");
+        assert!(
+            !json.contains("archived"),
+            "archived: false must be skipped during serialization: {json}"
+        );
+    }
+
+    /// S5: `archived` is a strict bool — a string value is a parse error, not a
+    /// coerced truthy value.
+    #[test]
+    fn non_bool_archived_value_returns_parse_error() {
+        let json = r#"{"projects":[{"name":"a","path":"/tmp/a","scripts":{},"archived":"yes"}]}"#;
+        let result: Result<Store, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "a non-bool archived value must fail to parse rather than being coerced"
+        );
+    }
+
+    /// H1: archived projects at the FRONT are the case a renumbering bug hides
+    /// behind — a `.filter()`-before-`.enumerate()` implementation returns
+    /// `[0, 1, 2]` here instead of the true indices.
+    #[test]
+    fn active_projects_yields_true_indices_with_archived_at_front() {
+        let store = store_with_archived_at(5, &[0, 1]);
+        let idx: Vec<usize> = store.active_projects().map(|(i, _)| i).collect();
+        assert_eq!(
+            idx,
+            vec![2, 3, 4],
+            "active_projects must yield TRUE indices into store.projects, not renumbered ones"
+        );
+    }
+
+    /// H2: same invariant with the archived projects interleaved.
+    #[test]
+    fn active_projects_yields_true_indices_when_interleaved() {
+        let store = store_with_archived_at(5, &[1, 3]);
+        let idx: Vec<usize> = store.active_projects().map(|(i, _)| i).collect();
+        assert_eq!(
+            idx,
+            vec![0, 2, 4],
+            "interleaved archived projects must not shift the surviving indices"
+        );
+    }
+
+    /// H3: tail-archived, single-archived, and none-archived shapes.
+    #[test]
+    fn active_projects_handles_tail_single_and_none_archived() {
+        let tail = store_with_archived_at(4, &[3]);
+        assert_eq!(
+            tail.active_projects().map(|(i, _)| i).collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "archived tail project must simply be dropped"
+        );
+
+        let middle = store_with_archived_at(3, &[1]);
+        assert_eq!(
+            middle.active_projects().map(|(i, _)| i).collect::<Vec<_>>(),
+            vec![0, 2],
+            "a single archived project must leave the others' indices intact"
+        );
+
+        let none = store_with_archived_at(4, &[]);
+        assert_eq!(
+            none.active_projects().map(|(i, _)| i).collect::<Vec<_>>(),
+            (0..4).collect::<Vec<_>>(),
+            "with nothing archived, active_projects must be equivalent to plain enumerate()"
+        );
+    }
+
+    /// H4: an entirely archived store yields an empty iterator without
+    /// panicking, and the archived-side helpers report the full set.
+    #[test]
+    fn all_archived_yields_empty_iterator_and_correct_counts() {
+        let store = store_with_archived_at(3, &[0, 1, 2]);
+        assert_eq!(store.active_projects().count(), 0);
+        assert!(store.active_projects().next().is_none());
+        assert_eq!(store.archived_count(), 3);
+        assert_eq!(
+            store
+                .archived_projects()
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "archived_projects must also yield TRUE indices"
+        );
+    }
+
+    /// S6: guard against scope creep — `archived` lives on `Project` only, so a
+    /// single project serializes exactly one `"archived"` key and nothing
+    /// per-worktree was invented alongside it.
+    #[test]
+    fn archived_is_project_level_not_worktree_level() {
+        let project = Project {
+            name: "myapp".into(),
+            path: "/home/user/myapp".into(),
+            scripts: ProjectScripts::default(),
+            theme: None,
+            archived: true,
+        };
+        let json = serde_json::to_string(&project).expect("serialize project");
+        let recovered: Project = serde_json::from_str(&json).expect("deserialize project");
+
+        assert!(
+            recovered.archived,
+            "archived flag must survive a round trip"
+        );
+        assert_eq!(
+            json.matches("\"archived\"").count(),
+            1,
+            "exactly one archived key per project — no per-worktree variant: {json}"
+        );
     }
 }

@@ -97,6 +97,11 @@ pub struct Grove {
     /// Worktree currently under the mouse — drives reveal of the per-row
     /// action buttons (play / terminal / more). `None` when no row is hovered.
     pub(in crate::gui) hovered_wt: Option<(usize, usize)>,
+    /// TRUE `store.projects` index of the archived-projects row under the
+    /// mouse, driving that row's hover fill. Same descendant-hover mechanism
+    /// as `hovered_wt`: the row has no press action of its own, so
+    /// `button::Status` can't supply the hover state.
+    pub(in crate::gui) hovered_archived: Option<usize>,
     /// True while the workspace/focus is showing a home terminal rather than
     /// the tree's agent sessions. Flipped by `SelectHomeTerminal` and cleared
     /// by `leave_terminal_tab()`.
@@ -215,6 +220,18 @@ pub struct Grove {
     /// overlapping sweeps, mirroring `git_poll_inflight`. Plain `bool` (not
     /// an atomic) because it is only ever touched from `update()`.
     pub(in crate::gui) wt_rebuild_inflight: bool,
+    /// Monotonic generation of `wt_cache`'s index space, bumped by
+    /// `rebuild_wt_cache` (the single point where the cache is invalidated —
+    /// every add / remove / archive / restore path routes through it).
+    ///
+    /// Each off-thread sweep is stamped with the generation it was launched
+    /// under and `on_wt_cache_rebuilt` drops the whole batch on a mismatch.
+    /// Without it, a sweep that raced a project *removal* would fold its
+    /// results onto shifted indices — every entry after the removed project
+    /// naming a different project than the one actually swept, while still
+    /// being in range. Deliberately not a length comparison: filtering the
+    /// fan-out to active projects makes lengths differ legitimately.
+    pub(in crate::gui) wt_cache_gen: u64,
     /// Live modifier-key state, tracked via `Msg::ModifiersChanged` — see
     /// its doc comment for why this needs its own channel rather than
     /// reading `mods` off `Msg::KeyPress`.
@@ -454,9 +471,15 @@ pub enum Msg {
     WindowFocusChanged(bool),
     WindowResized(Size),
     /// An off-thread `git worktree list` sweep finished: one worktree list per
-    /// project, in `store.projects` order. Folded into `wt_cache` by
-    /// `on_wt_cache_rebuilt`.
-    WtCacheRebuilt(Vec<Vec<Worktree>>),
+    /// swept project, each paired with its TRUE `store.projects` index (the
+    /// sweep covers active projects only, so positions are not indices), plus
+    /// the `wt_cache_gen` the sweep was launched under so
+    /// `on_wt_cache_rebuilt` can tell whether those indices still mean what
+    /// they meant at launch. Folded into `wt_cache` by `on_wt_cache_rebuilt`.
+    WtCacheRebuilt {
+        generation: u64,
+        lists: Vec<(usize, Vec<Worktree>)>,
+    },
     /// The OS asked to close the window (exit_on_close_request is off; grove
     /// decides whether running native sessions warrant a confirm first).
     CloseRequested(iced::window::Id),
@@ -666,6 +689,38 @@ pub enum Msg {
     SessionLauncher(super::session_launcher::Msg),
     /// Theme-manager modal messages, handled by `Grove::on_theme_manager`.
     ThemeManager(ThemeManagerMsg),
+    /// Project archive/restore messages, handled by `Grove::on_archive`.
+    Archive(ArchiveMsg),
+}
+
+/// Archive/restore messages (`Modal::ArchiveProject` and
+/// `Modal::ArchivedProjects`), dispatched as a family from `Grove::update`
+/// into `Grove::on_archive`.
+///
+/// Every `usize` here is a TRUE index into `store.projects` (as yielded by
+/// `Store::active_projects`/`archived_projects`), never a position within a
+/// filtered sequence — a renumbered index would archive or delete the wrong
+/// project.
+#[derive(Debug, Clone)]
+pub enum ArchiveMsg {
+    /// Kill every session of the gated project via the shared
+    /// `App::kill_sessions_for_project`, then recompute the gate.
+    KillSessions,
+    /// Archive the gated project. A no-op while the gate is still blocked —
+    /// the same precondition the disabled Archive button encodes.
+    Confirm,
+    /// Open the archived-projects list (Settings → Archived projects).
+    OpenList,
+    /// Un-archive the project at this TRUE index.
+    Restore(usize),
+    /// Route "delete permanently" into the EXISTING remove-project confirm
+    /// flow for this TRUE index. There is one destructive path, not two.
+    Delete(usize),
+    /// Close the archived-projects list.
+    CloseList,
+    /// Mouse entered/left an archived-projects row (TRUE index), driving that
+    /// row's hover fill.
+    Hover(Option<usize>),
 }
 
 /// Theme-manager modal messages (`Modal::ThemeManager`), dispatched as a

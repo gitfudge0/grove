@@ -52,6 +52,11 @@ pub enum Msg {
     /// (from the Project Settings modal's "Project theme" row). Handled by
     /// the parent, not by `update` in this module.
     OpenProjectThemePicker { proj: usize },
+    /// Open the blocking archive gate for this project (the footer's
+    /// "Archive project"). Intercepted by the parent for the same reason as
+    /// `OpenProjectThemePicker`: the gate is a `Modal` variant owned by the
+    /// app layer, not by this editor.
+    ArchiveProject { proj: usize },
 }
 
 /// Open the per-project lifecycle-scripts editor, seeding the three
@@ -117,7 +122,7 @@ pub fn update(editor: &mut Option<ScriptsEditorState>, app: &mut App, msg: Msg) 
         // Handled by the parent (`cancel_modal` is shared with other modals);
         // unreachable here in practice, but keep the match exhaustive.
         Msg::Cancel => {}
-        Msg::OpenProjectThemePicker { .. } => {}
+        Msg::OpenProjectThemePicker { .. } | Msg::ArchiveProject { .. } => {}
     }
     Task::none()
 }
@@ -299,7 +304,16 @@ pub fn view(grove: &Grove) -> Element<'_, GMsg> {
             scroll_area,
         ]
         .spacing(4),
+        // Archive sits left, away from Cancel/Save, so it can never be
+        // mis-clicked as the dialog's affirmative action. No caption: the
+        // semantics ("nothing is deleted") live in the gate modal's copy
+        // rather than being restated here.
         row![
+            modal_action(
+                "Archive project",
+                ModalBtn::Danger,
+                GMsg::Scripts(Msg::ArchiveProject { proj: ed.proj }),
+            ),
             Space::new().width(Length::Fill),
             modal_action("Cancel", ModalBtn::Plain, GMsg::Scripts(Msg::Cancel)),
             modal_action("Save", ModalBtn::Primary, GMsg::Scripts(Msg::Save)),

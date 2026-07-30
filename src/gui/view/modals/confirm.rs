@@ -126,6 +126,191 @@ impl Grove {
         modal_panel(body.into(), 480.0)
     }
 
+    /// `Modal::ArchiveProject` — the blocking archive gate, in both its states:
+    /// BLOCKED while `sessions` is non-empty (Archive genuinely inert, with a
+    /// per-session strip and a kill-all action) and CLEARED once it is empty.
+    /// Same panel either way, so the transition after a kill reads as the same
+    /// dialog clearing rather than a new one appearing.
+    pub(super) fn archive_project_modal<'a>(
+        &'a self,
+        name: &'a str,
+        sessions: &'a [(String, String, bool)],
+    ) -> Element<'a, Msg> {
+        use crate::gui::state::ArchiveMsg;
+        use crate::gui::widgets::dot;
+        use iced::widget::text::Wrapping;
+
+        let blocked = !sessions.is_empty();
+        let copy = |s: String| text(s).size(13).color(c::FG_DIM()).wrapping(Wrapping::Word);
+
+        let body_zone = if blocked {
+            // One row per SESSION, never per worktree — a worktree can hold
+            // several, so the same worktree name legitimately repeats here.
+            // Rows are not filtered to live sessions (the gate's set must match
+            // what the kill actually kills), so each row reports its own real
+            // status rather than every row claiming to be running.
+            let mut strip = column![].spacing(4);
+            for (wt, agent, running) in sessions {
+                strip = strip.push(
+                    row![
+                        dot(if *running { c::GREEN() } else { c::FG_MUTE() }),
+                        text(wt.clone())
+                            .size(11)
+                            .color(c::FG())
+                            .font(iced::Font::MONOSPACE),
+                        text(agent.clone()).size(11).color(c::FG_DIM()),
+                        Space::new().width(Length::Fill),
+                        text(if *running { "running" } else { "exited" })
+                            .size(11)
+                            .color(c::FG_MUTE()),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                );
+            }
+            // `modal_action` only takes a `&'static str`, and this label
+            // carries the live session count, so the shared Danger styling is
+            // reproduced here rather than the count being dropped.
+            let kill = iced::widget::button(
+                text(format!("Kill all sessions ({})", sessions.len())).size(12),
+            )
+            .on_press(Msg::Archive(ArchiveMsg::KillSessions))
+            .padding(Padding::from([6, 12]))
+            .style(|_, status| {
+                let hovered = matches!(status, iced::widget::button::Status::Hovered);
+                iced::widget::button::Style {
+                    background: Some(Background::Color(if hovered {
+                        c::BG_HOVER()
+                    } else {
+                        c::BG_HL()
+                    })),
+                    text_color: c::RED(),
+                    border: Border {
+                        color: c::RED(),
+                        width: 1.0,
+                        radius: Radius::from(4.0),
+                    },
+                    ..Default::default()
+                }
+            });
+            strip = strip.push(Space::new().height(2)).push(
+                container(kill)
+                    .width(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center),
+            );
+            let strip = container(strip)
+                .width(Length::Fill)
+                .padding(Padding::from([6, 10]))
+                .style(|_| container::Style {
+                    background: Some(Background::Color(c::BG())),
+                    border: Border {
+                        color: c::BORDER_SOFT(),
+                        width: 1.0,
+                        radius: Radius::from(6.0),
+                    },
+                    ..Default::default()
+                });
+            column![
+                copy(format!(
+                    "'{name}' has open sessions. Kill them before archiving."
+                )),
+                strip,
+                text("Nothing on disk is deleted. Worktrees stay exactly as they are.")
+                    .size(11)
+                    .color(c::FG_MUTE())
+                    .wrapping(Wrapping::Word),
+            ]
+            .spacing(12)
+        } else {
+            let note = container(
+                row![
+                    dot(c::GREEN()),
+                    text("All sessions stopped. Worktrees untouched on disk.")
+                        .size(11)
+                        .color(c::FG_DIM()),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            )
+            .width(Length::Fill)
+            .padding(Padding::from([6, 10]))
+            .style(|_| container::Style {
+                background: Some(Background::Color(c::BG_HL())),
+                border: Border {
+                    radius: Radius::from(4.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            column![
+                copy(format!(
+                    "'{name}' will be hidden from the sidebar. Nothing is deleted — its scripts, \
+                     theme, and worktrees all stay exactly as they are."
+                )),
+                copy("Restore it any time from Settings → Archived projects.".to_string()),
+                note,
+            ]
+            .spacing(12)
+        };
+
+        // A `button` with no `on_press` is genuinely inert in Iced, which is
+        // the point: the blocked Archive is disabled in fact, not merely
+        // styled to look that way. (`modal_action` always takes a message, so
+        // the disabled variant can't go through it.)
+        let archive_btn: Element<'a, Msg> = if blocked {
+            iced::widget::button(text("Archive").size(12))
+                .padding(Padding::from([6, 12]))
+                .style(|_, _| iced::widget::button::Style {
+                    background: None,
+                    text_color: c::FG_MUTE(),
+                    border: Border {
+                        color: c::BORDER_SOFT(),
+                        width: 1.0,
+                        radius: Radius::from(4.0),
+                    },
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            modal_action(
+                "Archive",
+                ModalBtn::Primary,
+                Msg::Archive(ArchiveMsg::Confirm),
+            )
+        };
+
+        let mut actions = row![
+            crate::gui::widgets::footer_hint("y", "archive"),
+            crate::gui::widgets::footer_hint("n", "cancel"),
+            Space::new().width(Length::Fill),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+        if blocked {
+            actions = actions.push(
+                text("Archive is unavailable while sessions are running.")
+                    .size(11)
+                    .color(c::FG_MUTE()),
+            );
+        }
+        let footer = crate::gui::widgets::modal_footer_row(
+            actions
+                .push(modal_action("Cancel", ModalBtn::Plain, Msg::ModalCancel))
+                .push(archive_btn)
+                .into(),
+        );
+
+        let body = column![
+            modal_header(&format!("Archive '{name}'?"), c::AMBER()),
+            divider_h(c::BORDER_SOFT()),
+            container(body_zone).padding(Padding::from([14, 16])),
+            divider_h(c::BORDER_SOFT()),
+            footer,
+        ];
+
+        modal_panel(body.into(), 420.0)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn remove_project_modal<'a>(
         &'a self,

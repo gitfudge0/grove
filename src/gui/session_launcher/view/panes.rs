@@ -53,7 +53,8 @@ impl Grove {
         row_actions: Option<&'a RowActionsState>,
     ) -> Column<'a, GMsg> {
         let rows = self.palette_rows(input, browse_all);
-        let zero_projects = self.app.store.projects.is_empty();
+        // Must match `palette_rows`' guard: all-archived reads as empty.
+        let zero_projects = self.app.store.active_projects().next().is_none();
         let root_mode = input.is_empty() && !browse_all && !zero_projects;
 
         let list_zone: Element<'a, GMsg> = if rows.is_empty() {

@@ -167,6 +167,7 @@ impl Grove {
             pending_kill: None,
             pending_kill_terminal: None,
             hovered_wt: None,
+            hovered_archived: None,
             terminal_focused: false,
             term_panel_open: false,
             terminals_collapsed: false,
@@ -205,6 +206,7 @@ impl Grove {
             git_poll_inflight: std::sync::Arc::default(),
             wt_rebuild_pending: false,
             wt_rebuild_inflight: false,
+            wt_cache_gen: 0,
             live_mods: Modifiers::empty(),
         };
         // Prime the per-project worktree cache so `view()` never has to shell
@@ -584,7 +586,9 @@ impl Grove {
                 self.terminals_collapsed = !self.terminals_collapsed;
             }
             Msg::WindowResized(size) => self.on_window_resized(size),
-            Msg::WtCacheRebuilt(lists) => self.on_wt_cache_rebuilt(lists),
+            Msg::WtCacheRebuilt { generation, lists } => {
+                self.on_wt_cache_rebuilt(generation, lists);
+            }
             Msg::CloseRequested(id) => return self.on_close_requested(id),
             Msg::BackendNative => self.on_set_backend_tmux(false),
             Msg::BackendTmux => self.on_set_backend_tmux(true),
@@ -684,6 +688,7 @@ impl Grove {
             Msg::GridTileZen(si) => self.on_grid_tile_zen(si),
             Msg::SessionLauncher(msg) => return self.on_session_launcher(msg),
             Msg::ThemeManager(msg) => return self.on_theme_manager(msg),
+            Msg::Archive(msg) => return self.on_archive(msg),
         }
         Task::none()
     }
@@ -1209,15 +1214,20 @@ impl Grove {
         use crate::gui::state::TreeExpand;
         self.collapsed.clear();
         self.collapsed_wt.clear();
+        // Archived projects are skipped: the sets are index-keyed on TRUE
+        // project indices, and recording collapse state for a row nobody can
+        // see is dead state. A project that is later restored comes back
+        // collapsed, like any project the user has not touched yet.
+        let active: Vec<usize> = self.app.store.active_projects().map(|(i, _)| i).collect();
         match self.tree_expand {
             TreeExpand::All => {}
             TreeExpand::Collapsed => {
-                for pi in 0..self.app.store.projects.len() {
+                for pi in active {
                     self.collapsed.insert(pi);
                 }
             }
             TreeExpand::SessionsOnly => {
-                for pi in 0..self.app.store.projects.len() {
+                for pi in active {
                     if !self.project_has_sessionful_worktree(pi) {
                         self.collapsed.insert(pi);
                     }
@@ -1297,7 +1307,10 @@ impl Grove {
     /// the set `tree_view` iterates when building worktree rows.
     fn visible_worktree_paths(&self) -> Vec<String> {
         let mut paths = Vec::new();
-        for pi in 0..self.app.store.projects.len() {
+        // Independently walks every project, so it does NOT inherit the
+        // sidebar's filter — archived projects must be skipped here too, or
+        // `git status` keeps polling worktrees nothing renders.
+        for (pi, _) in self.app.store.active_projects() {
             if self.collapsed.contains(&pi) {
                 continue;
             }
@@ -1328,8 +1341,16 @@ impl Grove {
     /// `maybe_rebuild_wt_cache`, kicked from the next `Msg::Tick`. Until the
     /// result lands, inactive projects render with no worktrees, exactly as
     /// they already do on a cold cache.
+    ///
+    /// Bumps `wt_cache_gen`: this is the single invalidation point for the
+    /// cache (`switch_active_project` moves entries between `wt_cache` and
+    /// `app.worktrees` but never changes the index space), and every path that
+    /// changes the project list's shape — add, remove, archive, restore,
+    /// onboarding — calls it, so any sweep launched before this point is now
+    /// stale and must not be folded in.
     pub(super) fn rebuild_wt_cache(&mut self) {
         self.wt_cache.clear();
+        self.wt_cache_gen = self.wt_cache_gen.wrapping_add(1);
         let n = self.app.store.projects.len();
         if self.app.proj_idx >= n {
             self.app.proj_idx = n.saturating_sub(1);
@@ -1341,42 +1362,70 @@ impl Grove {
     /// Kick off the off-thread `git worktree list` sweep requested by
     /// `rebuild_wt_cache`, unless one is already in flight. Mirrors the
     /// git-status poll's in-flight guard so requests never overlap.
+    ///
+    /// The sweep is stamped with the current `wt_cache_gen`; if the project
+    /// list changes shape while it runs, the generation moves on and
+    /// `on_wt_cache_rebuilt` discards the result wholesale.
     pub(super) fn maybe_rebuild_wt_cache(&mut self) -> Task<Msg> {
         if !self.wt_rebuild_pending || self.wt_rebuild_inflight {
             return Task::none();
         }
         self.wt_rebuild_pending = false;
         self.wt_rebuild_inflight = true;
-        let paths: Vec<String> = self
+        // Archived projects are never rendered, so they are excluded from the
+        // fan-out. The TRUE `store.projects` index travels with each path so
+        // the fold below can reassociate by index — validity of those indices
+        // is carried by the generation stamp, never by a length comparison:
+        // filtering one side and length-checking the other silently discarded
+        // every batch.
+        let generation = self.wt_cache_gen;
+        let targets: Vec<(usize, String)> = self
             .app
             .store
-            .projects
-            .iter()
-            .map(|p| p.path.clone())
+            .active_projects()
+            .map(|(i, p)| (i, p.path.clone()))
             .collect();
+        let paths: Vec<String> = targets.iter().map(|(_, path)| path.clone()).collect();
+        let indices: Vec<usize> = targets.into_iter().map(|(i, _)| i).collect();
         Task::perform(
             // `list_worktrees_many` fans the subprocesses out itself; running
             // it inside the async block keeps it off the UI thread, the same
             // shape `remove_worktree_task` uses.
-            async move { grove_core::git::list_worktrees_many(&paths) },
-            Msg::WtCacheRebuilt,
+            async move {
+                let lists = grove_core::git::list_worktrees_many(&paths);
+                (generation, indices.into_iter().zip(lists).collect())
+            },
+            |(generation, lists)| Msg::WtCacheRebuilt { generation, lists },
         )
     }
 
-    /// Fold a finished worktree sweep into `wt_cache`. A sweep whose length no
-    /// longer matches the project list raced a project add/remove — its
-    /// indices are meaningless, so it is dropped and the rebuild that caused
-    /// the change re-requests a fresh one.
-    fn on_wt_cache_rebuilt(&mut self, lists: Vec<Vec<grove_core::git::Worktree>>) {
+    /// Fold a finished worktree sweep into `wt_cache`.
+    ///
+    /// Each entry carries the true `store.projects` index it was collected
+    /// for, which only means anything as long as the project list has not
+    /// changed shape since the sweep launched: removing a project shifts every
+    /// later index down by one, so an in-flight entry tagged `4` would land on
+    /// a *different* project — in range, so no bound check catches it, and a
+    /// launch from such a row would start a session in the wrong repository.
+    /// The generation stamp is what catches that, and a mismatched batch is
+    /// worthless in full (the shift invalidates the whole index association,
+    /// not one tag), so it is dropped entirely. Same discipline as
+    /// `maybe_poll_git_state`'s in-flight guard: recognise the stale async
+    /// result rather than trusting it.
+    fn on_wt_cache_rebuilt(
+        &mut self,
+        generation: u64,
+        lists: Vec<(usize, Vec<grove_core::git::Worktree>)>,
+    ) {
         self.wt_rebuild_inflight = false;
-        if lists.len() != self.app.store.projects.len() {
-            return;
-        }
-        for (i, wts) in lists.into_iter().enumerate() {
-            if i != self.app.proj_idx {
-                self.wt_cache.insert(i, wts);
-            }
-        }
+        fold_wt_batch(
+            &mut self.wt_cache,
+            self.wt_cache_gen,
+            generation,
+            self.app.proj_idx,
+            self.app.store.projects.len(),
+            lists,
+        );
     }
 
     /// Run strip action `idx` (⏎ or click). `StartUpdate`'s handler replaces
@@ -1445,4 +1494,93 @@ fn now_unix() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// The stale-batch decision and fold behind [`Grove::on_wt_cache_rebuilt`],
+/// split out as a free function over plain data: `Grove::new` needs a real
+/// config directory and a running app, so this is the only reachable seam for
+/// testing the generation guard.
+///
+/// `current_gen` is the live `wt_cache_gen`, `batch_gen` the one the sweep was
+/// launched under. On a mismatch the batch is dropped whole — see
+/// [`Grove::on_wt_cache_rebuilt`] for why per-entry salvage is wrong.
+fn fold_wt_batch(
+    cache: &mut std::collections::HashMap<usize, Vec<grove_core::git::Worktree>>,
+    current_gen: u64,
+    batch_gen: u64,
+    active_idx: usize,
+    proj_len: usize,
+    lists: Vec<(usize, Vec<grove_core::git::Worktree>)>,
+) {
+    if batch_gen != current_gen {
+        return;
+    }
+    for (i, wts) in lists {
+        // The active project's list lives in `app.worktrees`, not the cache.
+        // The bound check is redundant once the generation matches (the index
+        // space is the one that was swept), but kept as a cheap defensive
+        // guard rather than trusting a caller-supplied index.
+        if i == active_idx || i >= proj_len {
+            continue;
+        }
+        cache.insert(i, wts);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fold_wt_batch;
+    use grove_core::git::Worktree;
+    use std::collections::HashMap;
+
+    fn wt(path: &str) -> Vec<Worktree> {
+        vec![Worktree {
+            path: path.to_string(),
+            branch: "main".to_string(),
+            mtime: None,
+            is_main: false,
+        }]
+    }
+
+    /// A sweep that raced a project removal carries indices from the *old*
+    /// index space: every tag after the removed project now names a different
+    /// project, while staying in range. The generation stamp is the only thing
+    /// that can tell — so a stale batch must leave the cache untouched.
+    #[test]
+    fn stale_generation_drops_whole_batch() {
+        let mut cache: HashMap<usize, Vec<Worktree>> = HashMap::new();
+        cache.insert(1, wt("/kept"));
+        fold_wt_batch(
+            &mut cache,
+            7,
+            6,
+            0,
+            5,
+            vec![(1, wt("/wrong-repo")), (4, wt("/also-wrong"))],
+        );
+        assert_eq!(cache.len(), 1, "stale batch must not add entries");
+        assert_eq!(cache[&1][0].path, "/kept", "stale batch must not overwrite");
+    }
+
+    /// The matching-generation path still folds, still skips the active
+    /// project (its list lives in `app.worktrees`), and still refuses an
+    /// out-of-range index.
+    #[test]
+    fn matching_generation_folds_and_skips() {
+        let mut cache: HashMap<usize, Vec<Worktree>> = HashMap::new();
+        fold_wt_batch(
+            &mut cache,
+            3,
+            3,
+            2,
+            4,
+            vec![
+                (0, wt("/zero")),
+                (2, wt("/active")),
+                (4, wt("/out-of-range")),
+            ],
+        );
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache[&0][0].path, "/zero");
+    }
 }

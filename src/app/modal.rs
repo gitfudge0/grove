@@ -38,6 +38,25 @@ pub enum Modal {
         current: String,
         errors: Vec<String>,
     },
+    /// Blocking archive gate for the project at `idx`. Archiving is a
+    /// view-level hide, but it is refused while the project still has live
+    /// sessions — they would be stranded under a project the user can no
+    /// longer see. `sessions` is the rendered snapshot of that gate, one entry
+    /// per SESSION (never per worktree — a single worktree can hold several),
+    /// recomputed after every kill so the modal never renders a stale count.
+    ArchiveProject {
+        idx: usize,
+        name: String,
+        /// Rendered rows: (worktree display name, agent label, is_running).
+        /// Deliberately NOT filtered to running sessions — the set must stay
+        /// identical to what `kill_sessions_for_project` kills — so each row
+        /// carries its real liveness and the modal labels it honestly.
+        sessions: Vec<(String, String, bool)>,
+    },
+    /// The archived-projects list (Settings → Archived projects). Marker only:
+    /// every row is derived live from `store.archived_projects()`, so a
+    /// restore/delete needs no state here to invalidate.
+    ArchivedProjects,
     Message(String),
     TmuxChoice,
     AgentPicker {

@@ -144,6 +144,26 @@ impl Grove {
                 },
                 _ => {}
             },
+            // y/n mirrors the destructive-confirm convention (`confirm_modal`,
+            // the theme manager's delete). `y` routes through
+            // `ArchiveMsg::Confirm`, which re-checks the blocked precondition,
+            // so it cannot bypass the disabled Archive button.
+            Modal::ArchiveProject { .. } => match key {
+                Key::Named(Named::Escape) => self.cancel_modal(),
+                Key::Character(s) => match s.as_str() {
+                    "y" | "Y" => {
+                        return self.on_archive(crate::gui::state::ArchiveMsg::Confirm);
+                    }
+                    "n" | "N" => self.cancel_modal(),
+                    _ => {}
+                },
+                _ => {}
+            },
+            Modal::ArchivedProjects => {
+                if matches!(key, Key::Named(Named::Escape)) {
+                    self.cancel_modal();
+                }
+            }
             Modal::Message(_) => match key {
                 Key::Named(Named::Escape | Named::Enter) => self.cancel_modal(),
                 Key::Character(s) if matches!(s.as_str(), "q" | "Q") => self.cancel_modal(),
@@ -402,6 +422,17 @@ impl Grove {
                 self.app.open_project_theme_picker(proj);
                 self.scroll_theme_picker_to_selection()
             }
+            // Same EXCEPTION as `OpenProjectThemePicker` above:
+            // `ArchiveProject` is a `Modal` variant with no backing
+            // `Grove`-owned `Option` field, so the parent owns opening it.
+            // Unlike the theme-picker round trip this is a one-way door, so
+            // `set_modal` (which clears `self.scripts_editor`) is correct —
+            // the unsaved script buffers are deliberately discarded, exactly
+            // as Cancel would.
+            crate::gui::scripts_editor::Msg::ArchiveProject { proj } => {
+                self.open_archive_gate(proj);
+                Task::none()
+            }
             crate::gui::scripts_editor::Msg::Cancel => {
                 self.cancel_modal();
                 Task::none()
@@ -659,6 +690,110 @@ impl Grove {
     /// Begin executing a confirmed remove-project action. If the user opted
     /// to delete worktrees on disk, kick off the recursive teardown task;
     /// otherwise finalize inline and close the modal.
+    /// One rendered row per SESSION of `project` — never per worktree, since
+    /// sessions are per-worktree and one worktree can hold several. Built from
+    /// the shared `App::session_indices_for_project` so the gate counts exactly
+    /// the set `kill_sessions_for_project` would kill.
+    ///
+    /// Deliberately NOT filtered to live sessions: exited sessions stay in
+    /// `app.sessions` (that is how the sidebar shows exited rows) and killing
+    /// the project's sessions clears them too, so filtering here would make the
+    /// gate's count disagree with the killer's. Each row instead carries its
+    /// real liveness so the modal can say "running" or "exited" truthfully.
+    fn archive_gate_sessions(&self, project: &str) -> Vec<(String, String, bool)> {
+        self.app
+            .session_indices_for_project(project)
+            .into_iter()
+            .filter_map(|i| self.app.sessions.get(i))
+            .map(|s| {
+                let wt = if s.branch.is_empty() {
+                    std::path::Path::new(&s.wt_path)
+                        .file_name()
+                        .map_or_else(|| s.wt_path.clone(), |f| f.to_string_lossy().into_owned())
+                } else {
+                    s.branch.clone()
+                };
+                (wt, s.agent.label().to_string(), s.is_running())
+            })
+            .collect()
+    }
+
+    fn open_archive_gate(&mut self, proj: usize) {
+        let Some(name) = self.app.store.projects.get(proj).map(|p| p.name.clone()) else {
+            return;
+        };
+        let sessions = self.archive_gate_sessions(&name);
+        self.set_modal(Modal::ArchiveProject {
+            idx: proj,
+            name,
+            sessions,
+        });
+    }
+
+    /// Recompute the gate's session snapshot in place, so the modal re-renders
+    /// in the cleared state right after a kill instead of showing a cached
+    /// count that no longer matches reality.
+    fn refresh_archive_gate(&mut self) {
+        let Modal::ArchiveProject { name, .. } = &self.app.modal else {
+            return;
+        };
+        let fresh = self.archive_gate_sessions(&name.clone());
+        if let Modal::ArchiveProject { sessions, .. } = &mut self.app.modal {
+            *sessions = fresh;
+        }
+    }
+
+    pub(in crate::gui) fn on_archive(&mut self, msg: crate::gui::state::ArchiveMsg) -> Task<Msg> {
+        use crate::gui::state::ArchiveMsg as A;
+        match msg {
+            A::KillSessions => {
+                let Modal::ArchiveProject { name, .. } = &self.app.modal else {
+                    return Task::none();
+                };
+                // The one and only kill path — the gate never grew its own.
+                self.app.kill_sessions_for_project(&name.clone());
+                // Killing drops sessions straight out of `app.sessions`, so
+                // the grid's indices are stale until rebuilt from live
+                // sessions (same reason `kick_off_remove_project` does this).
+                self.reconcile_grid_after_teardown();
+                self.refresh_archive_gate();
+            }
+            A::Confirm => {
+                let Modal::ArchiveProject { idx, sessions, .. } = &self.app.modal else {
+                    return Task::none();
+                };
+                // The precondition the disabled Archive button encodes,
+                // enforced here too — the keyboard path (`y`) reaches this
+                // same arm, so styling alone would have let `y` bypass the
+                // gate entirely.
+                if !sessions.is_empty() {
+                    return Task::none();
+                }
+                let idx = *idx;
+                self.app.archive_project(idx);
+                self.set_modal(Modal::None);
+                self.rebuild_wt_cache();
+            }
+            A::OpenList => self.set_modal(Modal::ArchivedProjects),
+            A::Restore(idx) => {
+                self.app.restore_project(idx);
+                self.rebuild_wt_cache();
+            }
+            // Deliberately the EXISTING remove flow (opt-in "also remove
+            // worktrees" defaulting to false), not a second destructive path.
+            // Grove is one-modal-deep, so this replaces the list; cancelling
+            // the remove lands on no modal rather than back on the list —
+            // exactly how the theme manager's own delete confirm behaves.
+            A::Delete(idx) => self.app.open_remove_project_modal(idx),
+            // Mirrors `theme_manager_close`: the list is reached from Settings
+            // but closes to `Modal::None`, since Grove has no modal stack to
+            // return through.
+            A::CloseList => self.set_modal(Modal::None),
+            A::Hover(idx) => self.hovered_archived = idx,
+        }
+        Task::none()
+    }
+
     pub(super) fn kick_off_remove_project(&mut self) -> Task<Msg> {
         let (idx, also, project_path, mut queue) = match &self.app.modal {
             Modal::RemoveProject {
