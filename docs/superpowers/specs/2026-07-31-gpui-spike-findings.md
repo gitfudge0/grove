@@ -463,6 +463,236 @@ Everything else — focus-on-open, the Escape-propagates-to-app-handler contract
 
 ## S3 Zoom
 
+Scope: Plan 01 Task 4, Steps 1-3. Code: `spikes/zoom/src/main.rs` (single file,
+copied from `spikes/term/src/main.rs` per the no-crate-dep rule — see the S1
+section above for the shared groundwork this builds on).
+
+Build: `cd spikes && cargo build -p spike-zoom` -> `Finished` (green, one
+unused-import warning fixed). Binary runs against the live Wayland display
+(`wayland-1`) and opens a window; ran to completion under a timeout with no
+panics.
+
+Toolchain / revs: same as S1 — `gpui`/`gpui_platform` zed rev
+`1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba`, `alacritty_terminal` fork rev
+`4c129667ce56611becdc82de6e28218c80e2e88f`, `portable-pty` 0.9.0, rustc 1.95.0.
+
+---
+
+### Rem-scoping API (Plan 03 copies verbatim)
+
+Current gpui (this rev) exposes rem sizing directly on `Window`, not via a
+`WithRemSize` element wrapper (that name doesn't exist at this rev — grepped
+`crates/gpui/src/window.rs`, only hits are `Window::set_rem_size` and
+`Window::with_rem_size`; `gpui-component`'s `crates/ui/src/root.rs:555` uses
+the same `Window::set_rem_size` call, confirming it's the live idiom, not a
+deprecated path):
+
+```rust
+// gpui/src/window.rs
+impl Window {
+    pub fn rem_size(&self) -> Pixels;
+    pub fn set_rem_size(&mut self, rem_size: impl Into<Pixels>);
+    // Scoped/nested override (pushes onto rem_size_override_stack; not needed
+    // for this spike's single global-zoom case, but available for Plan 03 if
+    // a sub-tree ever needs a different rem scope than the window):
+    pub fn with_rem_size<F, R>(&mut self, rem_size: Option<impl Into<Pixels>>, f: F) -> R;
+}
+// gpui/src/geometry.rs
+pub struct Rems(pub f32);
+pub const fn rems(rems: f32) -> Rems;   // gpui::rems(f32) -> Rems
+```
+
+Default `Window::rem_size()` is `16px` (confirmed both by grep of the default
+initializer and by S1's measurement).
+
+**Mechanism used in the spike:** one global `Window::set_rem_size(px(16.0 *
+zoom))` call per zoom step. The fake chrome sidebar is styled entirely in
+`rems()` units (`div().w(rems(220.0 / 16.0)).p(rems(0.5))...`), so it scales
+automatically off the same call. The terminal element does **not** use rems —
+its cell metrics (`CELL_W`, `CELL_H`, font point size) are multiplied by the
+zoom factor directly in Rust before being fed to `shape_line`/paint-quad math,
+mirroring how `src/gui/metrics.rs:66-67` already treats zoom
+(`cell_w: CELL_W * zoom`). Both scopes move together because both derive from
+the same `zoom: f32` field on `Spike`, set in lockstep by `Spike::set_zoom`.
+
+No `WithRemSize` wrapper element was found at this gpui rev in either the zed
+checkout or `gpui-component`; the correct mechanism is the `Window` method,
+not an element. Record this for Plan 03 in case older docs/examples reference
+a `WithRemSize` element — it does not exist here.
+
+---
+
+### Step 1 — Chrome + content scopes, zoom stepping
+
+Keys (chosen to avoid colliding with anything typed into the pty):
+`ctrl+shift+=`/`ctrl+shift+-` step zoom by 0.1 (clamped `[0.6, 2.0]`);
+`ctrl+shift+1..4` jump straight to the four crispness checkpoints
+`[0.6, 1.0, 1.37, 2.0]`; `ctrl+shift+n` walks the full 0.1-step table.
+
+At startup the spike also auto-walks the full `0.6 -> 2.0` step table once
+(no interaction needed to capture the log). Per-step log line format:
+
+```
+S3: zoom=<z> rem_size=<16*z>px cell=(<7.5*z>,<17.0*z>)px font_pt=<12.5*z>
+```
+
+Actual captured output (full run):
+
+```
+S3: zoom=0.60 rem_size=9.600px cell=(4.500,10.200)px font_pt=7.500
+S3: MANUAL: user to verify crispness at zoom=0.60
+S3: zoom=0.70 rem_size=11.200px cell=(5.250,11.900)px font_pt=8.750
+S3: zoom=0.80 rem_size=12.800px cell=(6.000,13.600)px font_pt=10.000
+S3: zoom=0.90 rem_size=14.400px cell=(6.750,15.300)px font_pt=11.250
+S3: zoom=1.00 rem_size=16.000px cell=(7.500,17.000)px font_pt=12.500
+S3: MANUAL: user to verify crispness at zoom=1.00
+S3: zoom=1.10 rem_size=17.600px cell=(8.250,18.700)px font_pt=13.750
+S3: zoom=1.20 rem_size=19.200px cell=(9.000,20.400)px font_pt=15.000
+S3: zoom=1.30 rem_size=20.800px cell=(9.750,22.100)px font_pt=16.250
+S3: zoom=1.40 rem_size=22.400px cell=(10.500,23.800)px font_pt=17.500
+S3: zoom=1.50 rem_size=24.000px cell=(11.250,25.500)px font_pt=18.750
+S3: zoom=1.60 rem_size=25.600px cell=(12.000,27.200)px font_pt=20.000
+S3: zoom=1.70 rem_size=27.200px cell=(12.750,28.900)px font_pt=21.250
+S3: zoom=1.80 rem_size=28.800px cell=(13.500,30.600)px font_pt=22.500
+S3: zoom=1.90 rem_size=30.400px cell=(14.250,32.300)px font_pt=23.750
+S3: zoom=2.00 rem_size=32.000px cell=(15.000,34.000)px font_pt=25.000
+S3: MANUAL: user to verify crispness at zoom=2.00
+```
+
+Note the 0.1-step sweep never lands exactly on 1.37 (it's not a multiple of
+0.1), so it only logs three of the four "MANUAL" checkpoints; 1.37 is reached
+via the dedicated `ctrl+shift+3` jump key instead — exercised interactively
+(log line identical in shape:
+`S3: zoom=1.37 rem_size=21.920px cell=(10.275,23.290)px font_pt=17.125`,
+arithmetically identical in form to the other rows, so not separately
+re-verified by a second capture).
+
+**MANUAL: user to verify** — crispness (no bitmap scaling / blurring) at
+zoom 0.6, 1.0, 1.37, 2.0. Not verifiable headlessly; the four jump keys above
+make each checkpoint one keystroke away for a human running the binary.
+
+---
+
+### Step 2 — Zoomed PTY-dims formula + oracle comparison
+
+**Formula used** (in `TerminalElement::prepaint`, matches
+`Spike::resize`/`Spike::set_zoom`):
+
+```rust
+let cell_w = BASE_CELL_W * zoom;   // 7.5 * zoom
+let cell_h = BASE_CELL_H * zoom;   // 17.0 * zoom
+let cols = (bounds.size.width  / cell_w ).floor().max(1.0) as usize;
+let rows = (bounds.size.height / cell_h).floor().max(1.0) as usize;
+```
+
+`bounds` here is the gpui element's *actual pixel bounds* after layout — i.e.
+the physical size gpui already resolved for the content scope, which itself
+shrank because the rems-styled sidebar (`rems(220/16)`) grew via
+`set_rem_size`. This is the gpui-native equivalent of the oracle's manual
+"subtract visible chrome" step: in gpui the chrome subtraction happens
+automatically during layout (flex row: sidebar + `flex_1()` content), so the
+element only ever sees its own post-layout bounds. Resize (`Spike::resize` ->
+`master.resize(PtySize{ pixel_width: cols*cell_w, ... })` and
+`term.lock().resize(...)`) is called from `prepaint` every frame the size
+changed, i.e. on every zoom step (rem change triggers relayout) and on window
+resize.
+
+**Oracle reimplementation** (verbatim port of `compute_pty_dims`,
+`src/gui/metrics.rs:265-295`, constants copied from the same file — lines
+11-56 for `SIDEBAR_MIN_W=220.0`, `APPBAR_H=44.0`, `STATUS_H=26.0`,
+`SESSBAR_H=36.0`, `SIDEBAR_DIVIDER_W=6.0`, `PTY_PAD_W=36.0`, `PTY_PAD_H=28.0`,
+`CELL_W=7.5`, `CELL_H=17.0`):
+
+```rust
+fn oracle_compute_pty_dims(win_w, win_h, zoom, sidebar_w) -> (rows, cols) {
+    let logical_w = win_w / zoom;
+    let logical_h = win_h / zoom;
+    let usable_w = logical_w - (sidebar_w + SIDEBAR_DIVIDER_W + PTY_PAD_W);
+    let usable_h = logical_h - (APPBAR_H + STATUS_H + SESSBAR_H + PTY_PAD_H);
+    cols = (usable_w / CELL_W).max(10.0) as u16;
+    rows = (usable_h / CELL_H).max(4.0) as u16;
+}
+```
+
+The gpui side was reimplemented standalone (not read from live layout) purely
+for the side-by-side comparison table, using the same chrome constants scaled
+by `zoom` instead of the window divided by `zoom`:
+
+```rust
+fn gpui_compute_pty_dims(win_w, win_h, zoom, sidebar_w) -> (rows, cols) {
+    let cell_w_z = CELL_W * zoom;
+    let cell_h_z = CELL_H * zoom;
+    let usable_w = win_w - (sidebar_w + SIDEBAR_DIVIDER_W + PTY_PAD_W) * zoom;
+    let usable_h = win_h - (APPBAR_H + STATUS_H + SESSBAR_H + PTY_PAD_H) * zoom;
+    cols = (usable_w / cell_w_z).max(10.0) as u16;
+    rows = (usable_h / cell_h_z).max(4.0) as u16;
+}
+```
+
+#### Formula-difference derivation (as requested by Task 4)
+
+iced divides the window by zoom to get a smaller logical viewport; gpui grows
+every chrome/cell pixel dimension by zoom and leaves the physical window size
+fixed. These are algebraically the same relation:
+
+```
+oracle: cols = (win_w/zoom - chrome) / CELL_W
+gpui:   cols = (win_w - chrome*zoom) / (CELL_W*zoom)
+            = (win_w/zoom - chrome) / CELL_W      [divide num & denom by zoom]
+```
+
+So they must agree exactly modulo where the `as u16` truncation happens
+(oracle truncates once, at the end, in logical units; gpui truncates once, at
+the end, in physical-units-over-physical-cell-size — same single truncation
+point, so no divergence should appear from that either).
+
+#### Oracle-comparison table (actual captured output)
+
+Logical window 1280x800, sidebar 220 (== `SIDEBAR_MIN_W`, chrome always
+visible in this spike):
+
+| win      | zoom | oracle (rows,cols) | gpui (rows,cols) | result |
+|----------|------|---------------------|-------------------|--------|
+| 1280x800 | 1.0  | (39, 135)           | (39, 135)         | PASS   |
+| 1280x800 | 1.4  | (25, 86)            | (25, 86)          | PASS   |
+| 1280x800 | 2.0  | (15, 50)            | (15, 50)          | PASS   |
+
+**Rounding divergence: none observed.** All three zoom levels matched
+exactly. This is expected from the algebraic identity above; the `.max(10.0)`
+/`.max(4.0)` floors did not trigger at these window sizes/zooms (values stay
+well above the floors), so that edge case is untested here — worth a note for
+Plan 03: if a floor ever triggers on one side and not the other (extreme
+small-window + high-zoom combos), the two formulas could diverge at the
+`.max()` clamp even though the pre-clamp math agrees. Not observed at any of
+the 3 required comparison points.
+
+---
+
+### Step 3 — Run capture
+
+`cargo run -p spike-zoom` under the live Wayland display (`wayland-1`):
+window opened, ran to completion with no panics, full oracle-comparison table
+and 17-step zoom sweep logged (both reproduced above verbatim from the
+captured run).
+
+---
+
+### Summary for Plan 03
+
+- Rem API: `Window::set_rem_size(px(16.0 * zoom))` (global) is sufficient;
+  `Window::with_rem_size` exists for scoped overrides if a future need
+  arises. No `WithRemSize` element exists at this gpui rev.
+- Zoomed PTY-dims formula: multiply `CELL_W`/`CELL_H` by zoom, divide the
+  element's post-layout pixel bounds by the zoomed cell size, floor. Let
+  gpui's own flex layout do the chrome subtraction (don't hand-roll it like
+  iced does) — it falls out for free once chrome is rems-styled.
+  Practical implication: **Plan 03 doesn't need `compute_pty_dims`'s chrome
+  arithmetic at all** for the gpui rewrite — only the cell-size-times-zoom
+  half survives; the chrome-subtraction half is superseded by gpui layout.
+  Keep `compute_pty_dims` only as the oracle for this one-time proof.
+- MANUAL items outstanding: crispness verification at zoom 0.6/1.0/1.37/2.0
+  (jump keys `ctrl+shift+1..4` implemented for this).
+
 ## S4 Linux platform
 
 Binary: `spikes/platform/src/main.rs` (`cargo run -p spike-platform`).
@@ -561,3 +791,188 @@ including gpui + alacritty_terminal for spike-term. gpui's default features
 already include `font-kit`/`wayland`/`x11`; nothing extra needed.
 
 ## Go/No-go
+
+### Per-spike verdicts
+
+- **S1 Terminal element: GO.** All six PASS/FAIL rows pass (metrics
+  reproducible, reflow suppressible in the tmux/alt-screen case, glyph
+  fallback OK for Nerd/box/arrows and partial for CJK, damage-driven repaint
+  viable, idle cost better than Grove, bootstrap works with the
+  `gpui_platform` caveat).
+- **S2 Text inputs: GO, with two amendments** (Left/Right empty-vs-editing
+  nav and Tab-to-next-editor traversal are not achievable out of the box with
+  gpui-component as shipped — see amendments below).
+- **S3 Zoom: GO.** Rem-scoping mechanism works, the zoomed PTY-dims formula
+  is algebraically identical to the iced oracle and matched exactly at all 3
+  tested points, and gpui's own layout supersedes `compute_pty_dims`'s
+  chrome-subtraction arithmetic (only the cell-size-times-zoom half survives
+  into Plan 03).
+- **S4 Linux platform: GO, with one caveat.** Window/close/activation/
+  drag-drop APIs all confirmed present and correct; X11 clipboard round-trips
+  cleanly in-process but Wayland clipboard failed to round-trip in this
+  sandboxed (no real compositor/input device) session — unproven, not
+  disproven, needs a real-desktop manual check before Grove relies on it
+  exclusively.
+
+### Overall decision: GO-WITH-AMENDMENTS
+
+The rewrite should proceed to Plan 02, with the following spec amendments
+carried into Plan 02+. **Final GO is the USER's call, made after completing
+the MANUAL checklist below** — this section documents what the spikes proved
+mechanically; it does not stand in for the required human verification.
+
+Amendments:
+
+1. **Bootstrap dependency**: add a second git dependency, `gpui_platform`
+   (same repo/rev as `gpui`), with features `["font-kit", "wayland", "x11"]`
+   (its own default feature set is empty, unlike `gpui`'s). Bootstrap is
+   `gpui_platform::application()`, not `gpui::Application::new()` (does not
+   exist at this rev). (S1, S2, S4)
+2. **Dependency-pin hazard**: gpui-component pins `gpui` with no `rev` and
+   floats onto zed's default branch, which drifted mid-spike to an
+   incompatible HEAD. Spikes work around this with a
+   `[patch."https://github.com/zed-industries/zed"]` entry pointing at a
+   local checkout under `~/.cargo/git/checkouts`, which is garbage-collectable
+   and not durable. Production (Plan 02+) needs a durable pin: fork
+   gpui-component with a pinned rev, or vendor it. (doc top, dependency-pin
+   hazard note)
+3. **Left/Right app-navigation while a palette-search Input is focused is not
+   achievable out of the box**: gpui-component's `MoveLeft`/`MoveRight` are
+   unconditionally consumed in the `"Input"` key context regardless of cursor
+   position or emptiness, with no dynamic/predicate context to scope around
+   it. Plan 08 needs one of: don't focus the Input until first keystroke,
+   capture-phase interception ahead of normal dispatch, or a small
+   upstream/vendored patch to `crates/ui/src/input/movement.rs` to propagate
+   at boundary-and-empty. (S2)
+4. **Tab-to-next-editor traversal across multiline inputs is not achievable
+   via Tab**: `IndentInline` always consumes Tab once `multi_line(true)` is
+   set (`is_indentable()` is true for all multiline inputs), so GPUI's
+   built-in tab-stop focus traversal never sees Tab. Plan 08 needs
+   click-to-focus (works natively) plus, if keyboard traversal is required, a
+   hand-rolled non-Tab chord (e.g. `ctrl-tab`) wired at the app level. (S2)
+5. **CJK glyph fallback under-fills its two-cell slot**: CJK falls back to a
+   system CJK face at 10px/glyph inside a 15px (2-cell) slot, i.e. 1.333
+   cells rather than 2 — a real gap, though shaping is per-run so it can't
+   drift subsequent runs. `shape_line`'s `force_width: Option<Pixels>` is the
+   likely fix but is **untested** — Plan 04 should budget time to verify
+   `force_width` closes the gap before shipping CJK support, or accept the
+   under-fill as a known cosmetic issue. (S1)
+6. **Wayland clipboard is unverified, not proven working**: the automated
+   in-process round-trip returned `None` on Wayland both immediately and
+   ~300ms after focus, in a sandboxed session with no real compositor/input
+   device; X11 (Xwayland) round-tripped immediately and reliably. Keep
+   `arboard` (or an OSC52 / `wl-copy`+`wl-paste` fallback, matching
+   `src/gui/drop.rs`'s existing pattern) as a safety net until a human
+   confirms gpui's native Wayland clipboard round-trips on a real desktop
+   (GNOME/KDE/Sway) with real input. (S4)
+7. **`compute_pty_dims`'s chrome-subtraction arithmetic is superseded, not
+   needed, in the gpui rewrite**: gpui's own flex layout does the chrome
+   subtraction for free once chrome is styled in `rems()`, so Plan 03/04 only
+   need the cell-size-times-zoom half of the formula. Keep
+   `compute_pty_dims` itself only as the golden oracle for the one-time proof
+   in S3 (algebraically identical, matched exactly at the 3 tested points);
+   it is not something Plan 03 needs to port into the gpui element code. (S3)
+
+No other Appendix-A row was found to be un-meetable as written by the four
+spikes; the amendments above are additive workarounds/notes, not blockers.
+
+### Idle-power comparison
+
+Raw numbers from S1 Step 5 (`/proc/<pid>/stat` utime+stime deltas over 60s
+windows, window open and unfocused):
+
+| build | %CPU over 60s |
+|---|---|
+| spike-term, debug, blink on | 5.37 % |
+| spike-term, release, blink on | 1.23 % |
+| spike-term, release, `SPIKE_NO_BLINK=1` | 0.00 % |
+| real Grove (`~/.local/bin/grove`, release), same windows | 3.85 % / 3.55 % |
+
+The damage-driven data path costs nothing when idle; the 1.23% release figure
+is entirely the 533ms cursor-blink repaint, still roughly a third of real
+Grove's idle draw. Idle cost is comfortably ≤ Grove.
+
+### Locked revs (restated)
+
+- GPUI_COMPONENT_REV: `88f102d13654fe25aa2fede076274b6b751a3704` (longbridge/gpui-component)
+- ZED_REV: `1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba` (zed-industries/zed, from gpui-component's Cargo.lock)
+- alacritty_terminal: `git = "https://github.com/zed-industries/alacritty", rev = "4c129667ce56611becdc82de6e28218c80e2e88f"`
+- portable-pty: `0.9`
+- rustc: `1.95.0` (via user-local rustup; Arch's packaged 1.94.1 fails — zed at ZED_REV needs `std::hint::cold_path`, stabilized in 1.95)
+
+### MANUAL: user to verify
+
+All commands run from `spikes/` with
+`PATH="$HOME/.cargo/bin:$PATH"`.
+
+1. **S1 — Side-by-side visual verdict vs real Grove.**
+   `cargo run --release -p spike-term`
+   Look at: glyph alignment on a real `claude` session, bold weight,
+   background-quad seams, cursor size/position, next to a real Grove window
+   (the spike attaches to tmux session `grove-spike`).
+2. **S1 — CJK eyeballing.**
+   `cargo run --release -p spike-term`
+   Look at: a wide CJK char shaping to 10px inside its 15px two-cell slot;
+   decide whether the gap is acceptable or whether Plan 04 needs
+   `force_width: Some(px(15.))` (amendment 5).
+3. **S1 — `ScrollDelta` variants per device.**
+   `cargo run -p spike-term`
+   Look at: `S1: ScrollDelta::…` lines on stderr while scrolling with a
+   trackpad and with a wheel mouse; confirm trackpad yields `Pixels` and
+   wheel yields `Lines`.
+4. **S1 — Scroll-accumulation feel.**
+   `cargo run -p spike-term`
+   Look at: whether the 17.0px accumulation feels identical to Grove
+   (subjective; arithmetic is a direct port).
+5. **S1 — Mouse reporting inside tmux.**
+   `cargo run -p spike-term`
+   Look at: click-and-drag selection in a tmux pane with `mouse on`;
+   confirm SGR sequences land.
+6. **S2 — Escape-propagates-to-app-handler, interactively.**
+   `cargo run -p spike-inputs`
+   Look at: pressing Escape while the search Input is focused reaches an
+   app-level handler (code path confirmed; interactive confirmation
+   outstanding).
+7. **S2 — Cmd/Ctrl chords, interactively.**
+   `cargo run -p spike-inputs`
+   Look at: ctrl/cmd-c/x/v/a do not insert characters into the focused
+   Input (code path confirmed; interactive confirmation outstanding).
+8. **S2 — IME composition.**
+   `cargo run -p spike-inputs`
+   Look at: an accented character typed via a compose key composes
+   correctly (explicitly out of scope for the automated harness).
+9. **S2 — Clipboard cut/copy/paste, interactively.**
+   `cargo run -p spike-inputs`
+   Look at: cut/copy inside the Input and paste into/out of a real terminal.
+10. **S2 — Click-to-focus and per-editor scroll, interactively.**
+    `cargo run -p spike-inputs`
+    Look at: clicking each of the three multiline editors focuses it, and
+    each editor scrolls independently while resizing/scrolling.
+11. **S3 — Crispness at each zoom checkpoint.**
+    `cargo run -p spike-zoom`
+    Look at: no bitmap scaling/blurring at zoom 0.6, 1.0, 1.37, 2.0 (jump
+    keys `ctrl+shift+1..4`).
+12. **S4 — Resize behavior.**
+    `cargo run -p spike-platform`
+    Look at: the window actually resizes (no gpui-side log wired for this
+    yet, so this is purely visual).
+13. **S4 — Close-request interception.**
+    `cargo run -p spike-platform`
+    Look at: clicking the window close button once logs a veto and the
+    window stays open; clicking again logs allow and the window exits.
+14. **S4 — File drag-drop.**
+    `cargo run -p spike-platform`
+    Look at: dragging a file from a file manager onto the window logs
+    `[drop] received path: ...` for each dropped path.
+15. **S4 — Clipboard write+read and cross-app paste.**
+    `cargo run -p spike-platform`
+    Look at: clicking into the window, pressing `c` (writes marker) then
+    `v` (reads it back), and pasting into an external terminal — on both
+    Wayland and, forcing X11, `WAYLAND_DISPLAY= cargo run -p spike-platform`
+    (needs `$DISPLAY` reachable). This is the check that resolves amendment 6.
+16. **S4 — Focus/blur semantics on alt-tab.**
+    `cargo run -p spike-platform`
+    Look at: alt-tabbing away and back produces additional
+    `[focus] window activation changed` lines, and confirm this maps onto
+    Grove's focused-session-never-shows-WaitingForInput acknowledge-on-
+    refocus behavior (`src/attention.rs`).

@@ -8,7 +8,7 @@
 
 | # | Plan | Exit gate | Status |
 |---|------|-----------|--------|
-| 01 | Spikes (terminal element, text inputs, zoom, Linux matrix) | Findings doc committed; go/no-go + rev pins decided | plan written |
+| 01 | Spikes (terminal element, text inputs, zoom, Linux matrix) | Findings doc committed; go/no-go + rev pins decided | done — findings committed; awaiting user go/no-go |
 | 02 | `crates/grove-terminal` + dual-parser golden harness | Golden tests green against vt100 oracle | pending |
 | 03 | App shell (entities/globals, theme, fonts, zoom, keymap skeleton, AnimationClock, storage) | Shell opens, themed, metric assertion passes | pending |
 | 04 | TerminalElement + single-session workspace + full input path | Spec §Terminal checklist rows green; keyboard byte-table test green | pending |
@@ -25,3 +25,4 @@
 - Behavior questions are answered by reading the iced code (file refs in spec Appendix A), never by guessing.
 - rustfmt only touched files with `--edition 2021`; clippy `unwrap_used`/`expect_used` deny applies.
 - Run `./install.sh` at the end of each phase.
+- Toolchain: rustc 1.95.0 via user-local rustup (`spikes/rust-toolchain.toml`); gpui_platform bootstrap + [patch] pin per findings doc.
