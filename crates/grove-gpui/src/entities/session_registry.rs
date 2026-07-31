@@ -123,6 +123,11 @@ pub struct SessionRegistry {
     /// Pinned TERMINALS section. Positional identity, parallel vectors.
     home: Vec<SessionMeta>,
     home_terms: Vec<Entity<TerminalSession>>,
+    /// Per-worktree panel shells, keyed by absolute worktree path, with an
+    /// active index per path (Plan 07 Task 6 Step 1).
+    wt: HashMap<String, Vec<SessionMeta>>,
+    wt_terms: HashMap<SessionId, Entity<TerminalSession>>,
+    wt_active: HashMap<String, usize>,
     /// Extra CLI args `attention::prepare` produced, awaiting the spawn call
     /// that consumes them ([`Self::take_attention_args`]).
     attention_args: HashMap<SessionId, Vec<String>>,
@@ -301,6 +306,21 @@ impl SessionRegistry {
         self.home_terms.push(term);
     }
 
+    /// Swap a fresh shell into slot `i`, keeping its metadata (and so its
+    /// label) — the restart path (`src/app/terminals.rs:38-53`). Returns the
+    /// old entity so the caller can drop it. The caller must only reach here
+    /// **after** the replacement spawned successfully.
+    pub fn replace_home(
+        &mut self,
+        i: usize,
+        term: Entity<TerminalSession>,
+    ) -> Option<Entity<TerminalSession>> {
+        if i >= self.home_terms.len() {
+            return None;
+        }
+        Some(std::mem::replace(&mut self.home_terms[i], term))
+    }
+
     /// Bookkeeping half of a home-terminal close. Returns the removed entity so
     /// the caller can kill it. The **respawn** of a last-terminal close is the
     /// caller's job (it needs a `Context` to spawn) — see
@@ -321,6 +341,131 @@ impl SessionRegistry {
     #[must_use]
     pub fn home_terminals_need_spawn(&self) -> bool {
         self.home.is_empty()
+    }
+
+    // ── per-worktree panel shells (Plan 07 Task 6 Step 1) ───────────────
+    //
+    // The third collection beside `order` and `home`, ported in *shape* from
+    // `App::wt_terminals`/`wt_active_terminal` (`src/app/terminals.rs:110-176`)
+    // — the iced types themselves are app-owned and off limits. Shells are
+    // `Agent::Terminal` at the worktree root and **native, not tmux**: they are
+    // convenience shells, not agents that must survive a restart, so
+    // `attention::prepare` returns `None` and there is nothing to thread down
+    // (the same argument as `sidebar.rs:297-301` makes for home terminals).
+
+    /// The shells of the panel for `wt_path` (empty if none spawned yet).
+    #[must_use]
+    pub fn wt_shells(&self, wt_path: &str) -> &[SessionMeta] {
+        self.wt.get(wt_path).map_or(&[][..], Vec::as_slice)
+    }
+
+    /// Active shell index within the panel for `wt_path`.
+    #[must_use]
+    pub fn active_wt_shell_idx(&self, wt_path: &str) -> Option<usize> {
+        self.wt_active.get(wt_path).copied()
+    }
+
+    /// The active shell's live entity, if any.
+    #[must_use]
+    pub fn active_wt_shell(&self, wt_path: &str) -> Option<&Entity<TerminalSession>> {
+        let i = self.active_wt_shell_idx(wt_path)?;
+        let id = self.wt.get(wt_path)?.get(i)?.id;
+        self.wt_terms.get(&id)
+    }
+
+    /// The entity of the shell at `idx`, for the view's per-shell cache.
+    #[must_use]
+    pub fn wt_shell(&self, wt_path: &str, idx: usize) -> Option<&Entity<TerminalSession>> {
+        let id = self.wt.get(wt_path)?.get(idx)?.id;
+        self.wt_terms.get(&id)
+    }
+
+    /// The next `terminal N` label — panel shells share the home terminals'
+    /// sequence, exactly as `App::next_terminal_label` does for both.
+    pub fn next_wt_label(&mut self) -> String {
+        self.next_home_label()
+    }
+
+    /// Record a spawned panel shell and select it (`spawn_wt_terminal`).
+    pub fn push_wt_shell(
+        &mut self,
+        wt_path: &str,
+        meta: SessionMeta,
+        term: Option<Entity<TerminalSession>>,
+    ) {
+        let id = meta.id;
+        let shells = self.wt.entry(wt_path.to_string()).or_default();
+        shells.push(meta);
+        let idx = shells.len() - 1;
+        if let Some(term) = term {
+            self.wt_terms.insert(id, term);
+        }
+        self.wt_active.insert(wt_path.to_string(), idx);
+    }
+
+    /// Whether the panel for `wt_path` still needs its first shell
+    /// (`ensure_wt_terminal`, `src/app/terminals.rs:133-149`). The spawn itself
+    /// needs a `Context`, so it stays the caller's job.
+    #[must_use]
+    pub fn wt_shells_need_spawn(&self, wt_path: &str) -> bool {
+        self.wt_shells(wt_path).is_empty()
+    }
+
+    /// Focus the panel shell at `idx` (`select_wt_terminal`). Out of range is a
+    /// no-op, never a clamp.
+    pub fn select_wt_shell(&mut self, wt_path: &str, idx: usize) {
+        if idx < self.wt_shells(wt_path).len() {
+            self.wt_active.insert(wt_path.to_string(), idx);
+        }
+    }
+
+    /// Close the panel shell at `idx` and shift the active index the way
+    /// [`Self::close_home`]'s caller does (`close_wt_terminal`,
+    /// `src/app/terminals.rs:172-201`). Unlike the home terminal this does
+    /// **not** respawn when the last one closes — an empty panel is a valid
+    /// state. Returns the removed entity so the caller can kill it.
+    pub fn close_wt_shell(&mut self, wt_path: &str, idx: usize) -> Option<Entity<TerminalSession>> {
+        let shells = self.wt.get_mut(wt_path)?;
+        if idx >= shells.len() {
+            return None;
+        }
+        let meta = shells.remove(idx);
+        let removed = self.wt_terms.remove(&meta.id);
+        let len = shells.len();
+        let new_active = match self.wt_active.get(wt_path).copied() {
+            Some(a) if a == idx => (len > 0).then(|| idx.min(len - 1)),
+            Some(a) if a > idx => Some(a - 1),
+            other => other,
+        };
+        match new_active {
+            Some(a) => {
+                self.wt_active.insert(wt_path.to_string(), a);
+            }
+            None => {
+                self.wt_active.remove(wt_path);
+            }
+        }
+        removed
+    }
+
+    /// Test seam: record a panel shell's metadata without an entity.
+    #[cfg(test)]
+    fn push_wt_meta(&mut self, wt_path: &str) {
+        let id = self.next_id();
+        let label = self.next_wt_label();
+        self.push_wt_shell(
+            wt_path,
+            SessionMeta {
+                id,
+                project: String::new(),
+                wt_path: wt_path.to_string(),
+                agent: Agent::Terminal,
+                label,
+                spawned_at: Instant::now(),
+                attention: None,
+            },
+            None,
+        );
     }
 
     /// Test seam: record a home terminal's metadata without an entity.
@@ -428,5 +573,91 @@ mod tests {
         assert_eq!(label(a).as_deref(), Some("claude 1"));
         assert_eq!(label(b).as_deref(), Some("codex 1"));
         assert_eq!(label(c).as_deref(), Some("claude 2"));
+    }
+
+    // ── panel shells (Plan 07 Task 6 Step 1) ────────────────────────────
+
+    /// `ensure_wt_terminal` (`src/app/terminals.rs:133-149`): the first shell
+    /// is spawned on demand and something is always selected afterwards.
+    #[test]
+    fn a_worktree_starts_with_no_shell_and_selects_the_first_one_added() {
+        let mut r = SessionRegistry::new();
+        assert!(r.wt_shells_need_spawn("/a"));
+        assert_eq!(r.active_wt_shell_idx("/a"), None);
+
+        r.push_wt_meta("/a");
+        assert!(!r.wt_shells_need_spawn("/a"));
+        assert_eq!(r.wt_shells("/a").len(), 1);
+        assert_eq!(r.active_wt_shell_idx("/a"), Some(0));
+    }
+
+    /// Adding focuses the new shell; selecting is bounds-checked, never a
+    /// clamp (`select_wt_terminal`).
+    #[test]
+    fn adding_a_shell_focuses_it_and_selection_is_bounds_checked() {
+        let mut r = SessionRegistry::new();
+        r.push_wt_meta("/a");
+        r.push_wt_meta("/a");
+        assert_eq!(r.active_wt_shell_idx("/a"), Some(1));
+
+        r.select_wt_shell("/a", 0);
+        assert_eq!(r.active_wt_shell_idx("/a"), Some(0));
+        r.select_wt_shell("/a", 9);
+        assert_eq!(r.active_wt_shell_idx("/a"), Some(0));
+    }
+
+    /// `close_wt_terminal` (`src/app/terminals.rs:172-201`) — the same index
+    /// shift `close_home` does, and the collection may reach zero.
+    #[test]
+    fn closing_shells_shifts_the_active_index_and_may_empty_the_panel() {
+        let mut r = SessionRegistry::new();
+        for _ in 0..3 {
+            r.push_wt_meta("/a");
+        }
+        // Closing a shell *before* the active one shifts it down.
+        r.select_wt_shell("/a", 2);
+        r.close_wt_shell("/a", 0);
+        assert_eq!(r.active_wt_shell_idx("/a"), Some(1));
+        assert_eq!(r.wt_shells("/a").len(), 2);
+
+        // Closing the active one refocuses whatever filled its slot.
+        r.select_wt_shell("/a", 0);
+        r.close_wt_shell("/a", 0);
+        assert_eq!(r.active_wt_shell_idx("/a"), Some(0));
+
+        // Closing the last one leaves an empty panel — no respawn.
+        r.close_wt_shell("/a", 0);
+        assert!(r.wt_shells("/a").is_empty());
+        assert_eq!(r.active_wt_shell_idx("/a"), None);
+        assert!(r.wt_shells_need_spawn("/a"));
+        // Out-of-range closes are no-ops, not panics.
+        assert!(r.close_wt_shell("/a", 4).is_none());
+        assert!(r.close_wt_shell("/nope", 0).is_none());
+    }
+
+    /// Closing the *last* shell of a stack refocuses the new last slot, not a
+    /// hole past the end.
+    #[test]
+    fn closing_the_last_shell_clamps_the_focus_back() {
+        let mut r = SessionRegistry::new();
+        r.push_wt_meta("/a");
+        r.push_wt_meta("/a");
+        assert_eq!(r.active_wt_shell_idx("/a"), Some(1));
+        r.close_wt_shell("/a", 1);
+        assert_eq!(r.active_wt_shell_idx("/a"), Some(0));
+    }
+
+    /// Panels are per worktree: one path's shells never move another's.
+    #[test]
+    fn panels_are_keyed_per_worktree() {
+        let mut r = SessionRegistry::new();
+        r.push_wt_meta("/a");
+        r.push_wt_meta("/b");
+        r.push_wt_meta("/b");
+        assert_eq!(r.wt_shells("/a").len(), 1);
+        assert_eq!(r.wt_shells("/b").len(), 2);
+        r.close_wt_shell("/b", 0);
+        assert_eq!(r.wt_shells("/a").len(), 1);
+        assert_eq!(r.active_wt_shell_idx("/a"), Some(0));
     }
 }

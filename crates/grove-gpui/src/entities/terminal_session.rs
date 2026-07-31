@@ -74,6 +74,9 @@ pub struct TerminalSession {
     /// Latched once [`Self::alive`] observes the child reaped: a reaped child
     /// cannot come back, and `try_wait` must never be called again after it.
     exited: bool,
+    /// Why the spawn failed, when it did — the message the error toast
+    /// carries. `Some` implies `pty.is_none()`.
+    spawn_error: Option<String>,
     /// Tmux pane pid, captured once at spawn — there is no cheap live handle
     /// to the pane's foreground process (`session.rs:511-522`).
     pane_pid: Option<u32>,
@@ -97,6 +100,7 @@ impl TerminalSession {
         cx: &mut Context<Self>,
     ) -> Self {
         let cwd = target.cwd.clone();
+        let mut spawn_error = None;
         let spawned = match spawn_tmux(&cwd, target, extra_args, state_file) {
             Ok(v) => Some(v),
             Err(e) => {
@@ -105,6 +109,9 @@ impl TerminalSession {
                     Ok(v) => Some(v),
                     Err(e) => {
                         tracing::error!("grove-gpui: could not spawn a PTY: {e}");
+                        // Kept for the toast producers, which have no `Result`
+                        // to inspect (see `Self::spawn_error`).
+                        spawn_error = Some(e.clone());
                         None
                     }
                 }
@@ -131,6 +138,7 @@ impl TerminalSession {
             last_scroll_at: None,
             last_output_at: Instant::now(),
             exited: false,
+            spawn_error,
             pane_pid,
             _reader: Self::spawn_reader(rx, cx),
         }
@@ -450,6 +458,14 @@ impl TerminalSession {
     /// Time since output last arrived (`tick.rs:145-149`).
     pub fn output_age(&self) -> Duration {
         Instant::now().saturating_duration_since(self.last_output_at)
+    }
+
+    /// Why the spawn failed, if it did. `Some` means there is no PTY at all —
+    /// the toast producers (`src/app/terminals.rs:104-108`,
+    /// `src/gui/update/sessions.rs:479-483`) read this, since gpui's `spawn`
+    /// always returns a session rather than a `Result`.
+    pub fn spawn_error(&self) -> Option<&str> {
+        self.spawn_error.as_deref()
     }
 
     /// The equivalent of `SessionStatus::Running`. A session with no PTY at

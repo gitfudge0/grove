@@ -34,7 +34,9 @@ pub enum ChromeAction {
     CloseAttentionQueue,
     /// A dropdown row: jump to that session (and close the dropdown).
     SelectWaiting(SessionId),
-    /// Plan 07 — the grid/agent view.
+    /// The zen pill: straight to the first waiting session, no dropdown.
+    JumpToWaiting,
+    /// The grid/agent view.
     ToggleGridView,
     /// Plan 08 — the session launcher (the `+` segment and the `palette` chip).
     OpenSessionLauncher,
@@ -274,6 +276,51 @@ fn attention_pill(ctx: &AppbarCtx) -> AnyElement {
             MouseButton::Left,
             on_chrome(&ctx.dispatch, ChromeAction::ToggleAttentionQueue),
         )
+        .into_any_element()
+}
+
+/// The floating zen pill (`src/gui/view/appbar.rs:244-305`) — the Plan 06
+/// deferral. Top-right over the terminal, 12px from each edge; it is **not** a
+/// dropdown, so there is no backdrop and nothing to dismiss: clicking jumps
+/// straight to the first waiting session.
+pub fn zen_attention_pill(ctx: &AppbarCtx) -> AnyElement {
+    let dot_color = Hsla {
+        a: pill_dot_alpha(ctx.pulse),
+        ..c::AMBER()
+    };
+    let bg = Hsla {
+        a: 0.08,
+        ..c::AMBER()
+    };
+    let bg_hover = Hsla {
+        a: 0.14,
+        ..c::AMBER()
+    };
+    let pill = div()
+        .id("zen-attention-pill")
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .px(px(8.0))
+        .py(px(2.0))
+        .rounded(px(999.0))
+        .border_1()
+        .border_color(c::AMBER())
+        .bg(bg)
+        .hover(move |s| s.bg(bg_hover))
+        .child(div().size(px(6.0)).rounded_full().bg(dot_color))
+        // The bare count, not the appbar pill's "{n} need you" copy.
+        .child(ui_text(ctx.waiting.len().to_string(), 11.0, c::AMBER()))
+        .on_mouse_down(
+            MouseButton::Left,
+            on_chrome(&ctx.dispatch, ChromeAction::JumpToWaiting),
+        );
+
+    div()
+        .absolute()
+        .top(px(12.0))
+        .right(px(12.0))
+        .child(pill)
         .into_any_element()
 }
 

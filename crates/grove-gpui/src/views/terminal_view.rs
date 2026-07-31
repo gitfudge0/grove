@@ -51,9 +51,10 @@ pub struct TerminalView {
     drag: Option<PtyDrag>,
     /// `pty_press_focused` (`pty_input.rs:36-39,104-108`): the press that gave
     /// this element focus swallows its own release, so refocusing never moves
-    /// the caret (a second click does). Load-bearing as of Plan 05: a click
+    /// the caret (a second click does). Load-bearing as of Plan 05 (a click
     /// that switches focus from the sidebar or another session must not move
-    /// the caret.
+    /// the caret) and more so since Plan 07, where several views — grid tiles,
+    /// the agent and the panel shell — are focusable at the same time.
     press_focused: bool,
     scroll: ScrollAccum,
     /// The element's post-layout bounds, published by `prepaint` so pointer
@@ -265,8 +266,12 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // With one session, the only focus transition a press can cause is the
-        // window/element one.
+        // As of Plan 07 there are many `TerminalView`s alive at once — a tile
+        // per grid session, the agent, the panel shell — so a press here may
+        // be taking focus from any of them, not just from the window or the
+        // sidebar. The rule is unchanged and now load-bearing for all of
+        // them: the press that *gives* this element focus is focus-only, and
+        // its release is swallowed below so refocusing never moves the caret.
         self.press_focused = !self.focus.is_focused(window);
         window.focus(&self.focus, cx);
 

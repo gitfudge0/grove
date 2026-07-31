@@ -504,6 +504,99 @@ pub struct SelectSession {
     pub index: usize,
 }
 
+/// Move keyboard focus one tile in the grid. The second data-carrying action
+/// (carried amendment 3): gpui `actions!` only generates unit structs, and this
+/// one carries `(dx, dy)`.
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = grove, no_json)]
+pub struct GridMove {
+    pub dx: i32,
+    pub dy: i32,
+}
+
+/// Swap the focused tile with its neighbor. Same shape as [`GridMove`]; the
+/// modifier is what tells them apart (`grid_swap_mods`, `shortcuts.rs:25-32`).
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = grove, no_json)]
+pub struct GridSwap {
+    pub dx: i32,
+    pub dy: i32,
+}
+
+/// Ctrl+Shift+←/→ steps the terminal panel by ±`TERM_PANEL_PORTION_STEP`.
+/// Bound **only** in the workspace context (recorded ambiguity 4), so that
+/// closing the panel lets those keys fall through to the PTY exactly as
+/// `term_panel_resize_delta`'s `Screen::Workspace` check does
+/// (`pty_input.rs:413-423`).
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = grove, no_json)]
+pub struct AdjustTermPanel {
+    pub delta: i16,
+}
+
+/// The directional keys the grid accepts and the `(dx, dy)` each carries —
+/// h/j/k/l **and** the four arrows, exactly the by-hand arm at
+/// `shortcuts.rs:446-463`.
+pub const GRID_DIRECTIONS: &[(&str, i32, i32)] = &[
+    ("h", -1, 0),
+    ("l", 1, 0),
+    ("k", 0, -1),
+    ("j", 0, 1),
+    ("left", -1, 0),
+    ("right", 1, 0),
+    ("up", 0, -1),
+    ("down", 0, 1),
+];
+
+/// The chord prefixes that mean "swap" rather than "move". Port of
+/// `grid_swap_mods` (`shortcuts.rs:25-36`): on macOS the swap modifier is Alt
+/// **or** Shift, because Cmd+Opt+H collides with the OS "Hide Others"
+/// shortcut; elsewhere [`platform_mod_prefix`] already carries Shift, so only
+/// Alt distinguishes the two.
+pub fn grid_swap_prefixes() -> Vec<String> {
+    if cfg!(target_os = "macos") {
+        vec!["cmd-alt-".to_string(), "cmd-shift-".to_string()]
+    } else {
+        vec![format!("{}alt-", platform_mod_prefix())]
+    }
+}
+
+/// The grid's move/swap bindings, generated from the registry's two
+/// display-only grid rows and scoped to the `Grid` key context.
+fn grid_bindings() -> Vec<KeyBinding> {
+    let ctx = Some(Screen::Grid.key_context());
+    let prefix = platform_mod_prefix();
+    let swap_prefixes = grid_swap_prefixes();
+    let mut out = Vec::new();
+    for &(key, dx, dy) in GRID_DIRECTIONS {
+        out.push(KeyBinding::new(
+            &format!("{prefix}{key}"),
+            GridMove { dx, dy },
+            ctx,
+        ));
+        for sp in &swap_prefixes {
+            out.push(KeyBinding::new(
+                &format!("{sp}{key}"),
+                GridSwap { dx, dy },
+                ctx,
+            ));
+        }
+    }
+    out
+}
+
+/// The panel-resize step, workspace context only (recorded ambiguity 4). The
+/// registry row stays display-only for the Plan 08 overlay.
+fn term_panel_bindings() -> Vec<KeyBinding> {
+    #[allow(clippy::cast_possible_wrap)]
+    let step = crate::entities::workspace_state::TERM_PANEL_PORTION_STEP as i16;
+    let ctx = Some(Screen::Workspace.key_context());
+    vec![
+        KeyBinding::new("ctrl-shift-right", AdjustTermPanel { delta: step }, ctx),
+        KeyBinding::new("ctrl-shift-left", AdjustTermPanel { delta: -step }, ctx),
+    ]
+}
+
 /// The nine `mod+1..9` bindings, generated from the registry's display-only
 /// `1–9` row so the registry stays the single source of truth.
 fn select_session_bindings() -> Vec<KeyBinding> {
@@ -556,6 +649,8 @@ pub fn bindings() -> Vec<KeyBinding> {
         }
     }
     out.extend(select_session_bindings());
+    out.extend(grid_bindings());
+    out.extend(term_panel_bindings());
     out
 }
 
@@ -570,12 +665,6 @@ mod tests {
     fn every_actionable_row_produces_a_binding() {
         for def in SHORTCUTS {
             let Some(sc) = def.action else { continue };
-            if matches!(
-                sc,
-                GlobalShortcut::GridMove(..) | GlobalShortcut::GridSwap(..)
-            ) {
-                continue;
-            }
             let ks = keystrokes_for(def);
             assert!(
                 !ks.is_empty(),
@@ -593,24 +682,99 @@ mod tests {
         assert!(!bindings().is_empty());
     }
 
-    /// Plan 05 Task 6 Step 1: after this phase the only registry actions
-    /// without a `KeyBinding` are the grid ones (Plan 07).
+    /// Plan 07 carried amendment 3: the grid carve-out is **deleted**. Every
+    /// registry action now has a `KeyBinding`, with no exceptions; the
+    /// dynamic-chord ones are bound through their own payload actions.
     #[test]
-    fn only_the_grid_actions_remain_unbound() {
+    fn no_registry_action_is_left_unbound() {
         for def in SHORTCUTS {
             let Some(sc) = def.action else { continue };
-            if binding_for("ctrl-x", sc, None).is_none() {
+            assert!(
+                binding_for("ctrl-x", sc, None).is_some(),
+                "{sc:?} has no binding"
+            );
+        }
+        assert_eq!(select_session_bindings().len(), 9);
+        // 8 directions × (1 move + 1 swap chord per platform modifier set).
+        let per_dir = 1 + grid_swap_prefixes().len();
+        assert_eq!(grid_bindings().len(), GRID_DIRECTIONS.len() * per_dir);
+        assert_eq!(term_panel_bindings().len(), 2);
+    }
+
+    /// Each direction key carries the `(dx, dy)` the by-hand iced arm gave it
+    /// (`shortcuts.rs:446-463`), and h/j/k/l agree with their arrow twins.
+    #[test]
+    fn every_grid_direction_carries_its_delta() {
+        let by_key = |k: &str| {
+            GRID_DIRECTIONS
+                .iter()
+                .find(|(key, ..)| *key == k)
+                .map(|&(_, dx, dy)| (dx, dy))
+        };
+        assert_eq!(by_key("h"), Some((-1, 0)));
+        assert_eq!(by_key("l"), Some((1, 0)));
+        assert_eq!(by_key("k"), Some((0, -1)));
+        assert_eq!(by_key("j"), Some((0, 1)));
+        assert_eq!(by_key("left"), by_key("h"));
+        assert_eq!(by_key("right"), by_key("l"));
+        assert_eq!(by_key("up"), by_key("k"));
+        assert_eq!(by_key("down"), by_key("j"));
+        assert_eq!(GRID_DIRECTIONS.len(), 8);
+    }
+
+    /// `grid_swap_mods` (`shortcuts.rs:25-36`): Alt *or* Shift on macOS, Alt
+    /// alone elsewhere — and never the same chord as a plain move.
+    #[test]
+    fn the_swap_modifier_set_is_platform_correct() {
+        let swap = grid_swap_prefixes();
+        if cfg!(target_os = "macos") {
+            assert_eq!(swap, vec!["cmd-alt-".to_string(), "cmd-shift-".to_string()]);
+        } else {
+            assert_eq!(swap, vec!["ctrl-shift-alt-".to_string()]);
+        }
+        for p in &swap {
+            assert_ne!(p.as_str(), platform_mod_prefix());
+        }
+    }
+
+    /// Recorded ambiguity 4: the panel step is workspace-scoped, so with the
+    /// panel closed the chord falls through to the PTY, and it never shadows
+    /// the grid's own arrow chords.
+    #[test]
+    fn the_panel_step_is_workspace_scoped_only() {
+        let Some(row) = SHORTCUTS
+            .iter()
+            .find(|d| d.description == "Resize terminal panel")
+        else {
+            unreachable!("the panel-resize row must stay in the registry");
+        };
+        // Still display-only — the binding is hand-made, not registry-derived.
+        assert!(row.action.is_none());
+        assert!(keystrokes_for(row).is_empty());
+        assert_eq!(row.scopes, &[Scope::Screen(Screen::Workspace)]);
+        assert!(!scope_allows(row.scopes, Screen::Grid));
+        assert!(!scope_allows(row.scopes, Screen::Zen));
+    }
+
+    /// The terminal tab is **not** a fourth `Screen` (Task 3 Step 3): iced's
+    /// own enum has exactly three variants (`shortcuts.rs:87-91`) and
+    /// `terminal_focused` is orthogonal to it, so `screen_from_flags` and
+    /// `contexts_for` already agree and no fifth state is invented here.
+    #[test]
+    fn the_screen_model_has_exactly_three_states() {
+        for screen in [Screen::Grid, Screen::Workspace, Screen::Zen] {
+            assert!(!screen.key_context().is_empty());
+            assert!(!screen.label().is_empty());
+        }
+        // Every context a registry row can ask for is one of the three.
+        for def in SHORTCUTS {
+            for ctx in contexts_for(def).into_iter().flatten() {
                 assert!(
-                    matches!(
-                        sc,
-                        GlobalShortcut::GridMove(..) | GlobalShortcut::GridSwap(..)
-                    ),
-                    "{sc:?} has no binding and is not a grid action"
+                    ["Grid", "Workspace", "Zen"].contains(&ctx),
+                    "unexpected key context {ctx}"
                 );
             }
         }
-        // `SelectSession` is now bound through its own payload action.
-        assert_eq!(select_session_bindings().len(), 9);
     }
 
     #[test]

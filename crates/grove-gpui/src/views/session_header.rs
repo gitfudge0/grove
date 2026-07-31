@@ -20,7 +20,127 @@ pub const SESSBAR_H: f32 = 36.0;
 
 /// The longest a context title may be before the middle is collapsed
 /// (`terminal.rs:538`).
-const CONTEXT_MAX_CHARS: usize = 80;
+pub const CONTEXT_MAX_CHARS: usize = 80;
+
+/// What the session bar's right-hand tool cluster asks the workspace to do
+/// (Plan 07 Task 5 Step 4, recorded ambiguity 2 — `terminal.rs:592-620`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolAction {
+    /// Plan 08 stub, shown only when the project has a run script configured.
+    RunScript,
+    ToggleTermPanel,
+    ToggleZen,
+    /// Two-step: the first press arms, the second kills.
+    RequestKill,
+    Kill,
+}
+
+pub type ToolDispatch = std::rc::Rc<dyn Fn(ToolAction, &mut gpui::Window, &mut gpui::App)>;
+
+/// The right-hand tool cluster's inputs, resolved by the caller.
+#[derive(Clone)]
+pub struct ToolCluster {
+    /// `terminal.rs:560-590` — the button exists only for a project with a
+    /// non-blank run script.
+    pub has_run_script: bool,
+    /// Drives the `term` button's *toggle* styling.
+    pub term_panel_open: bool,
+    /// The zen tooltip flips while the chrome is hidden.
+    pub chrome_visible: bool,
+    /// Whether this session's kill is already armed.
+    pub confirming_kill: bool,
+    pub dispatch: ToolDispatch,
+}
+
+/// A labelled tool button (`src/gui/widgets/buttons.rs:340-410`'s
+/// `tool_btn`/`tool_btn_toggle`). `active` renders the cyan "on" state the
+/// `term` toggle uses; `danger` turns the hover red.
+pub fn tool_btn(
+    id: &'static str,
+    icon_name: &'static str,
+    label: &str,
+    danger: bool,
+    active: bool,
+    on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let base = if active { c::CYAN() } else { c::FG_DIM() };
+    let hover_color = if danger { c::RED() } else { c::FG() };
+    div()
+        .id(id)
+        .h(px(22.0))
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .px(px(8.0))
+        .rounded(px(4.0))
+        .hover(move |s| s.bg(c::BG_HOVER()).text_color(hover_color))
+        .child(crate::icons::icon(icon_name, 12.0, base))
+        .child(label_text(label.to_string(), 12.0, base, false))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            move |_: &gpui::MouseDownEvent, window: &mut gpui::Window, cx: &mut gpui::App| {
+                on_click(window, cx);
+            },
+        )
+        .into_any_element()
+}
+
+/// The cluster itself: run script (Plan 08 stub) │ term toggle │ zen │ kill.
+fn tools(cluster: &ToolCluster) -> AnyElement {
+    let mut row = div().flex().items_center().gap(px(4.0));
+    if cluster.has_run_script {
+        let d = std::rc::Rc::clone(&cluster.dispatch);
+        row = row.child(tool_btn(
+            "sess-run",
+            "play",
+            "run script",
+            false,
+            false,
+            move |window, cx| d(ToolAction::RunScript, window, cx),
+        ));
+    }
+    let d_term = std::rc::Rc::clone(&cluster.dispatch);
+    let d_zen = std::rc::Rc::clone(&cluster.dispatch);
+    let d_kill = std::rc::Rc::clone(&cluster.dispatch);
+    let kill_action = if cluster.confirming_kill {
+        ToolAction::Kill
+    } else {
+        ToolAction::RequestKill
+    };
+    row.child(tool_btn(
+        "sess-term",
+        "term",
+        "terminal",
+        false,
+        cluster.term_panel_open,
+        move |window, cx| d_term(ToolAction::ToggleTermPanel, window, cx),
+    ))
+    .child(tool_btn(
+        "sess-zen",
+        "zen",
+        if cluster.chrome_visible {
+            "zen"
+        } else {
+            "exit zen"
+        },
+        false,
+        false,
+        move |window, cx| d_zen(ToolAction::ToggleZen, window, cx),
+    ))
+    .child(tool_btn(
+        "sess-kill",
+        "trash",
+        if cluster.confirming_kill {
+            "confirm kill"
+        } else {
+            "kill"
+        },
+        true,
+        false,
+        move |window, cx| d_kill(kill_action, window, cx),
+    ))
+    .into_any_element()
+}
 
 /// One session as the header draws it. Everything is resolved by the caller,
 /// so the renderer touches no entity and Plan 07 can build one per tile.
@@ -83,8 +203,13 @@ fn label_text(content: impl Into<gpui::SharedString>, size: f32, color: Hsla, bo
     }
 }
 
-/// The bar plus its `BORDER_SOFT()` hairline beneath.
-pub fn session_header(data: &SessionHeaderData, tick: u64) -> AnyElement {
+/// The bar plus its `BORDER_SOFT()` hairline beneath. `cluster` is `None` for
+/// bars with no tools (Plan 06's call sites); Plan 07's session bar passes one.
+pub fn session_header(
+    data: &SessionHeaderData,
+    tick: u64,
+    cluster: Option<&ToolCluster>,
+) -> AnyElement {
     let mut identity = div()
         .flex()
         .items_center()
@@ -146,7 +271,11 @@ pub fn session_header(data: &SessionHeaderData, tick: u64) -> AnyElement {
                 .px(px(12.0))
                 .bg(c::BG_STRIP())
                 .overflow_hidden()
-                .child(identity),
+                .child(div().flex_1().overflow_hidden().child(identity))
+                .when_some(cluster, |d, cluster| {
+                    d.child(crate::views::terminal_tab::vline())
+                        .child(tools(cluster))
+                }),
         )
         .child(div().h(px(1.0)).w_full().bg(c::BORDER_SOFT()))
         .into_any_element()

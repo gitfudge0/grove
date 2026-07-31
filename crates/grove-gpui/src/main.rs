@@ -9,6 +9,7 @@ mod app;
 mod assets;
 mod entities;
 mod fonts;
+mod grid;
 mod icons;
 mod keymap;
 mod platform;
