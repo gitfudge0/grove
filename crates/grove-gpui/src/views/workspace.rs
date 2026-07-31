@@ -24,6 +24,7 @@ use crate::settings::SettingsState;
 use crate::theme as c;
 use crate::views::appbar::{self, AppbarCtx, ChromeAction, WaitingRow};
 use crate::views::grid::{self, GridAction, GridCtx, TileData};
+use crate::views::modals::{ModalEvent, ModalLayer};
 use crate::views::rows;
 use crate::views::session_header::{self, SessionHeaderData, ToolAction, ToolCluster};
 use crate::views::sidebar::{self, Sidebar};
@@ -44,6 +45,8 @@ pub struct Workspace {
     activity: Entity<ActivityStore>,
     toast: Entity<ToastState>,
     sidebar: Entity<Sidebar>,
+    /// The single modal slot, rendered above everything (Plan 08 Task 2).
+    modals: Entity<ModalLayer>,
     /// One view per session, cached by id so switching does not respawn
     /// anything (Task 6 Step 2).
     views: HashMap<SessionId, Entity<TerminalView>>,
@@ -110,6 +113,19 @@ impl Workspace {
             |cx| Sidebar::new(state, tree, registry, activity, clock, cx)
         });
 
+        let modals = cx.new({
+            let (state, registry, tree, toast, activity, clock) = (
+                state.clone(),
+                registry.clone(),
+                tree.clone(),
+                toast.clone(),
+                activity.clone(),
+                clock.clone(),
+            );
+            |cx| ModalLayer::new(state, registry, tree, toast, activity, clock, cx)
+        });
+        sidebar.update(cx, |s, _| s.set_modals(modals.clone(), toast.clone()));
+
         let observers = vec![
             // The clock drives the cursor blink inside the terminal; the
             // workspace repaints with it so chrome animations stay in phase.
@@ -121,6 +137,10 @@ impl Workspace {
             cx.observe(&activity, |_, _, cx| cx.notify()),
             // The toast's own TTL task clears it; the statusbar repaints with it.
             cx.observe(&toast, |_, _, cx| cx.notify()),
+            // The modal layer repaints the window and hands back the effects
+            // it cannot perform itself.
+            cx.observe(&modals, |_, _, cx| cx.notify()),
+            cx.subscribe(&modals, Self::on_modal_event),
         ];
 
         Self {
@@ -132,6 +152,7 @@ impl Workspace {
             activity,
             toast,
             sidebar,
+            modals,
             views: HashMap::new(),
             home_views: HashMap::new(),
             panel_views: HashMap::new(),
@@ -360,11 +381,11 @@ impl Workspace {
             ChromeAction::JumpToWaiting => self.jump_to_waiting(cx),
             ChromeAction::ToggleGridView => self.toggle_grid(cx),
             ChromeAction::OpenSessionLauncher => {
-                tracing::debug!("OpenSessionLauncher: modal — Plan 08");
+                self.open_modal(crate::modal::Modal::SessionLauncher(Box::default()), cx);
             }
-            ChromeAction::OpenSettings => tracing::debug!("OpenSettings: modal — Plan 08"),
+            ChromeAction::OpenSettings => self.open_modal(crate::modal::Modal::Settings, cx),
             ChromeAction::OpenShortcutOverlay => {
-                tracing::debug!("OpenShortcutOverlay: modal — Plan 08");
+                self.open_modal(crate::modal::Modal::ShortcutOverlay, cx);
             }
         }
     }
@@ -428,7 +449,9 @@ impl Workspace {
 
     fn tool_action(&mut self, action: ToolAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
-            ToolAction::RunScript => tracing::debug!("RunScript: Plan 08"),
+            // `on_run_script` (`src/gui/update/sessions.rs:147-177`): the run
+            // script opens the terminal panel for the active worktree.
+            ToolAction::RunScript => self.toggle_term_panel(window, cx),
             ToolAction::ToggleTermPanel => self.toggle_term_panel(window, cx),
             ToolAction::ToggleZen => self.toggle_zen(cx),
             ToolAction::RequestKill => {
@@ -848,6 +871,84 @@ impl Workspace {
 
     // ── the four screens' bodies (Tasks 4-6) ────────────────────────────
 
+    // ── the modal layer (Plan 08) ───────────────────────────────────────
+
+    /// The single entry point for opening a modal from the workspace. Opening
+    /// replaces whatever was open; there is no stack.
+    pub(crate) fn open_modal(&mut self, modal: crate::modal::Modal, cx: &mut Context<Self>) {
+        self.modals.clone().update(cx, |l, cx| l.open(modal, cx));
+    }
+
+    /// Effects the layer cannot perform for itself.
+    fn on_modal_event(
+        &mut self,
+        _layer: Entity<ModalLayer>,
+        event: &ModalEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            ModalEvent::Quit => {
+                // Plan 09 owns `flush_ui_zoom_save` on every exit path; it
+                // hooks here, immediately before the window is removed.
+                cx.quit();
+            }
+            ModalEvent::Closed => cx.notify(),
+            ModalEvent::SpawnAgent {
+                project,
+                wt_path,
+                agent,
+            } => {
+                let snap = self.snapshot(cx);
+                let Some(p) = snap.projects.iter().find(|p| &p.name == project) else {
+                    return;
+                };
+                let Some(wt) = p.worktrees.iter().position(|w| &w.path == wt_path) else {
+                    return;
+                };
+                let (proj, agent) = (p.idx, *agent);
+                self.sidebar
+                    .clone()
+                    .update(cx, |s, cx| s.spawn_session(proj, wt, agent, cx));
+            }
+            ModalEvent::NewHomeTerminal => {
+                self.sidebar
+                    .clone()
+                    .update(cx, Sidebar::spawn_home_terminal);
+            }
+            ModalEvent::SelectSession(id) => {
+                let snap = self.snapshot(cx);
+                let id = *id;
+                self.state.update(cx, |s, cx| {
+                    s.select_session(id, &snap);
+                    cx.notify();
+                });
+            }
+            ModalEvent::SelectTerminal(i) => {
+                let count = self.registry.read(cx).home_terminal_count();
+                let i = *i;
+                self.state.update(cx, |s, cx| {
+                    s.select_home_terminal(i, count);
+                    cx.notify();
+                });
+            }
+            ModalEvent::WorktreeAdded | ModalEvent::TreeInvalidated => {
+                let active = {
+                    let store = &cx.global::<SettingsState>().store;
+                    let idx = self.state.read(cx).proj_idx();
+                    store.projects.get(idx).map(|p| p.path.clone())
+                };
+                self.tree.clone().update(cx, |t, cx| {
+                    t.rebuild_wt_cache();
+                    if let Some(path) = active {
+                        t.set_active_worktrees(grove_core::git::list_worktrees(&path));
+                    }
+                    cx.notify();
+                });
+                cx.notify();
+            }
+        }
+    }
+
     /// A dispatch closure of any action kind, routed back into `self`.
     #[allow(clippy::type_complexity)]
     fn dispatcher<A: 'static>(
@@ -1093,18 +1194,6 @@ impl Workspace {
 }
 
 /// Logs and does nothing. Each stub names the plan that implements it.
-macro_rules! stub_action {
-    ($div:expr, $action:ty, $plan:literal) => {
-        $div.on_action(|_: &$action, _: &mut Window, _: &mut App| {
-            tracing::debug!(concat!(
-                stringify!($action),
-                ": not implemented yet — ",
-                $plan
-            ));
-        })
-    };
-}
-
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The single zoom application point. `WithRemSize` does not exist at
@@ -1170,11 +1259,17 @@ impl Render for Workspace {
         // exactly what `keymap::contexts_for` binds into. There is no fourth
         // screen: iced's own `Screen` enum has three variants
         // (`shortcuts.rs:87-91`) and the terminal tab is orthogonal to it.
+        // While a modal is open the workspace stops declaring its screen
+        // context, so no screen-scoped chord can fire from behind the scrim.
+        // The modal declares its own context instead (spec §4); that, plus the
+        // layer claiming every key its verdict table names, is what replaces
+        // iced's `MODAL_OPEN` static (carried decision 3).
+        let modal_open = self.modals.read(cx).is_open();
         let screen_context = self.state.read(cx).screen().key_context();
 
         let root = div()
             .track_focus(&self.focus)
-            .key_context(screen_context)
+            .when(!modal_open, |d| d.key_context(screen_context))
             .on_action(Self::zoom_in)
             .on_action(Self::zoom_out)
             .on_action(Self::zoom_reset)
@@ -1225,11 +1320,27 @@ impl Render for Workspace {
                     cx.notify();
                 });
             }));
-        let root = stub_action!(root, keymap::NewSession, "Plan 08");
-        let root = stub_action!(root, keymap::NewSessionInWorktree, "Plan 08");
-        let root = stub_action!(root, keymap::SwitchSession, "Plan 08");
-        let root = stub_action!(root, keymap::Settings, "Plan 08");
-        let root = stub_action!(root, keymap::ShortcutOverlay, "Plan 08");
+        // Plan 08 Task 3/5: the five stub actions open real modals. The three
+        // palette entry points differ only in which list state the palette
+        // opens into, which Task 5 fills.
+        let root = root
+            .on_action(cx.listener(|this, _: &keymap::NewSession, _, cx| {
+                this.open_modal(crate::modal::Modal::SessionLauncher(Box::default()), cx);
+            }))
+            .on_action(
+                cx.listener(|this, _: &keymap::NewSessionInWorktree, _, cx| {
+                    this.open_modal(crate::modal::Modal::SessionLauncher(Box::default()), cx);
+                }),
+            )
+            .on_action(cx.listener(|this, _: &keymap::SwitchSession, _, cx| {
+                this.open_modal(crate::modal::Modal::SessionLauncher(Box::default()), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keymap::Settings, _, cx| {
+                this.open_modal(crate::modal::Modal::Settings, cx);
+            }))
+            .on_action(cx.listener(|this, _: &keymap::ShortcutOverlay, _, cx| {
+                this.open_modal(crate::modal::Modal::ShortcutOverlay, cx);
+            }));
 
         // The divider drags (sidebar and split alike) and the tile drag all
         // need pointer events that outlive their hit zones, and the root is the
@@ -1414,6 +1525,9 @@ impl Render for Workspace {
             .when(queue_open && chrome_visible, |d| {
                 d.child(appbar::attention_dropdown(&appbar_ctx))
             })
+            // The modal layer is rendered LAST, so it paints above every other
+            // layer including the attention dropdown and the zen pill.
+            .when(modal_open, |d| d.child(self.modals.clone()))
     }
 }
 

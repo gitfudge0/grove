@@ -32,8 +32,13 @@ rust-embed = { workspace = true, features = ["include-exclude"] }
 futures.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-# NO gpui-component in this phase — see Global Constraints (durable-pin decision
-# is deferred to Plan 08).
+# The add-project wizard's directory autocomplete: `fs-err` for error messages
+# that name the path, `dirs` for `~` expansion (both already in the graph).
+fs-err.workspace = true
+dirs.workspace = true
+# Vendored, not a git dep: see vendor/gpui-component/README.md for the source,
+# rev, license and the full list of manifest edits.
+gpui-component.workspace = true
 
 # macOS dock badge / attention bounce (`src/platform/dock.rs`). Same version
 # the iced `grove` crate already uses, so there is one `objc` in the graph.

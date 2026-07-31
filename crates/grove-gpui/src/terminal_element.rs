@@ -153,12 +153,16 @@ impl Element for TerminalElement {
         // `with_current` is an atomic-load snapshot, not a lock, so the global
         // fallback is equally free to read per frame.
         let pinned = self.project.as_ref().and_then(|name| {
-            // Plan 08: launcher/picker live preview — `Some(None)` will mean
-            // "preview the global theme", `None` means "no preview".
+            // Plan 08 carried decision 7: the ONE live-preview hook. The theme
+            // picker and the launcher's theme pane both drive it through
+            // `ThemePreview`; `Some(None)` means "preview the global theme",
+            // `None` means "no preview" and the persisted pin wins. There is
+            // deliberately no second theme-override path.
+            let preview = crate::views::modals::theme_picker::ThemePreview::for_project(cx, name);
             project_theme_override(
                 &cx.global::<crate::settings::SettingsState>().store,
                 name,
-                None,
+                preview,
             )
         });
         let render_grid = |theme: &Theme| {

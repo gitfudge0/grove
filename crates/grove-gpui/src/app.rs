@@ -114,6 +114,23 @@ pub fn boot(cx: &mut gpui::App) {
     cx.set_global(SettingsState::new(store));
     cx.set_global(ThemeState::new(follow_system, dark_name, light_name));
     cx.set_global(ZoomState::new(zoom));
+
+    // 9. gpui-component's globals and its `"Input"`-context bindings, from the
+    //    vendored copy (`vendor/gpui-component/README.md`). This MUST run
+    //    before `keymap::bindings()`: a modal's `"<Modal…> > Input"` binding
+    //    and gpui-component's plain `"Input"` binding match at the same
+    //    dispatch node, so the tie is broken by registration order and the
+    //    later one wins (`gpui/src/keymap.rs:187-189`). Registering Grove's
+    //    keys second is what lets a modal claim ←/→ and Tab back from the
+    //    caret — see `views::modals::input`'s module doc.
+    //
+    //    Grove does NOT mount gpui-component's `Root` view. `Root` binds
+    //    `ctrl-c` to its own `Copy` action in the `"Root"` context
+    //    (`vendor/gpui-component/ui/src/root.rs:24-32`), which would shadow
+    //    the PTY's Ctrl+C for every terminal in the window. Nothing Grove
+    //    uses (Sheet/Dialog/Notification/tooltip overlays) needs `Root`.
+    gpui_component::init(cx);
+
     cx.bind_keys(crate::keymap::bindings());
 }
 

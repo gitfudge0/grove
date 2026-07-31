@@ -2,6 +2,7 @@
 
 pub mod appbar;
 pub mod grid;
+pub mod modals;
 pub mod rows;
 pub mod session_header;
 pub mod sidebar;

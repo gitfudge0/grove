@@ -5,13 +5,17 @@
 #![deny(unsafe_code)]
 
 mod activity;
+mod add_project;
 mod app;
 mod assets;
 mod entities;
 mod fonts;
 mod grid;
 mod icons;
+mod keyboard_matrix;
 mod keymap;
+mod launcher;
+mod modal;
 mod platform;
 mod settings;
 mod terminal;

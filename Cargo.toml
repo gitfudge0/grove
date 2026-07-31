@@ -5,6 +5,15 @@ members = ["crates/grove-core", "crates/grove-terminal", "crates/grove-gpui"]
 # `cargo build`/`cargo test` working for the iced app and the core crates.
 # Build it explicitly: `cargo +1.95.0 build -p grove-gpui`.
 default-members = [".", "crates/grove-core", "crates/grove-terminal"]
+# Vendored third-party source (gpui rewrite plan 08 Task 1). A path dependency
+# is otherwise auto-promoted to a workspace member, which would subject
+# vendored code to our `[lints]` and to `--all-targets` clippy. See
+# vendor/gpui-component/README.md for provenance.
+exclude = [
+    "vendor/gpui-component/ui",
+    "vendor/gpui-component/macros",
+    "vendor/gpui-component/assets",
+]
 
 [workspace.package]
 version = "0.45.0"
@@ -66,6 +75,10 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab5
 # gpui_platform's own default features are EMPTY — without wayland/x11 the Linux
 # platform has no backend. Bootstrap lives here, not in gpui.
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba", features = ["font-kit", "wayland", "x11"] }
+# Vendored at GPUI_COMPONENT_REV 88f102d13654fe25aa2fede076274b6b751a3704 and
+# consumed by path so the pin is durable and offline. Provenance, the crate
+# subset and every manifest edit: vendor/gpui-component/README.md.
+gpui-component = { path = "vendor/gpui-component/ui" }
 rust-embed = "8"
 futures = "0.3"
 # Promoted from the root package's `[dependencies]` (same version + features) so

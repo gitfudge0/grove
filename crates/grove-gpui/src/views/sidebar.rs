@@ -64,6 +64,12 @@ struct DividerDrag {
 }
 
 pub struct Sidebar {
+    /// The single modal slot; row actions that open a modal go through it.
+    /// Set by `Workspace::new` right after both entities exist.
+    modals: Option<Entity<crate::views::modals::ModalLayer>>,
+    /// The statusbar toast slot, for the spawn-failure producer.
+    toast: Option<Entity<crate::entities::toast::ToastState>>,
+
     pub state: Entity<WorkspaceState>,
     pub tree: Entity<ProjectTree>,
     pub registry: Entity<SessionRegistry>,
@@ -96,6 +102,8 @@ impl Sidebar {
             cx.observe(&clock, |_, _, cx| cx.notify()),
         ];
         Self {
+            modals: None,
+            toast: None,
             state,
             tree,
             registry,
@@ -106,6 +114,24 @@ impl Sidebar {
             last_divider_press: None,
             rows: Vec::new(),
             _observers: observers,
+        }
+    }
+
+    /// Hand the sidebar the modal slot. Called by `Workspace::new`; both
+    /// entities have to exist first, so it cannot be a constructor argument.
+    pub fn set_modals(
+        &mut self,
+        modals: Entity<crate::views::modals::ModalLayer>,
+        toast: Entity<crate::entities::toast::ToastState>,
+    ) {
+        self.modals = Some(modals);
+        self.toast = Some(toast);
+    }
+
+    /// Open a modal from a row action, if the slot has been handed over.
+    fn open_modal(&mut self, modal: crate::modal::Modal, cx: &mut Context<Self>) {
+        if let Some(layer) = self.modals.clone() {
+            layer.update(cx, |l, cx| l.open(modal, cx));
         }
     }
 
@@ -225,17 +251,87 @@ impl Sidebar {
                 cx.notify();
             }),
             RowAction::SpawnAgent(proj, wt, agent) => self.spawn_session(proj, wt, agent, cx),
-            RowAction::AddWorktree(_) => tracing::debug!("AddWorktree: modal — Plan 08"),
-            RowAction::DeleteWorktree(..) => tracing::debug!("DeleteWorktree: modal — Plan 08"),
-            RowAction::RemoveProject(_) => tracing::debug!("RemoveProject: modal — Plan 08"),
-            RowAction::ProjectScripts(_) => tracing::debug!("ProjectScripts: modal — Plan 08"),
-            RowAction::RunScript(..) => tracing::debug!("RunScript: Plan 08"),
+            // The worktree-name prompt (`src/app/mod.rs:442`).
+            RowAction::AddWorktree(proj) => {
+                self.state.update(cx, |s, cx| {
+                    s.select_project(proj);
+                    cx.notify();
+                });
+                self.open_modal(
+                    crate::modal::Modal::Input {
+                        title: "New worktree".into(),
+                        buffer: String::new(),
+                        note: None,
+                    },
+                    cx,
+                );
+            }
+            // Confirm first; accepting starts the teardown (`app/mod.rs:487`).
+            RowAction::DeleteWorktree(proj, wt) => {
+                let Some(path) = snap
+                    .projects
+                    .iter()
+                    .find(|p| p.idx == proj)
+                    .and_then(|p| p.worktrees.get(wt))
+                    .map(|w| w.path.clone())
+                else {
+                    return;
+                };
+                self.open_modal(
+                    crate::modal::Modal::Confirm {
+                        title: "Delete worktree?".into(),
+                        prompt: format!("'{path}' will be removed from disk."),
+                        destructive: true,
+                        kind: crate::modal::ConfirmKind::RemoveWorktree(path),
+                    },
+                    cx,
+                );
+            }
+            RowAction::RemoveProject(idx) => {
+                if let Some(layer) = self.modals.clone() {
+                    layer.update(cx, |l, cx| l.open_remove_project(idx, cx));
+                }
+            }
+            // Task 6 fills the editor view; the slot opens now, seeded from
+            // the project's persisted scripts.
+            RowAction::ProjectScripts(idx) => {
+                let state = {
+                    let store = &cx.global::<crate::settings::SettingsState>().store;
+                    store
+                        .projects
+                        .get(idx)
+                        .map(|p| crate::modal::ScriptsEditorState {
+                            project_path: p.path.clone(),
+                            setup: p.scripts.setup.clone().unwrap_or_default(),
+                            run: p.scripts.run.clone().unwrap_or_default(),
+                            teardown: p.scripts.teardown.clone().unwrap_or_default(),
+                        })
+                };
+                if let Some(state) = state {
+                    self.open_modal(crate::modal::Modal::ScriptsEditor(Box::new(state)), cx);
+                }
+            }
+            // `on_run_script` (`src/gui/update/sessions.rs:147-177`) opens the
+            // worktree's terminal panel; the workspace owns that split.
+            RowAction::RunScript(proj, wt) => {
+                self.state.update(cx, |s, cx| {
+                    s.select_worktree(proj, wt, &snap);
+                    if !s.term_panel_open() {
+                        s.toggle_term_panel(true);
+                    }
+                    cx.notify();
+                });
+            }
+            // Task 4 fills the wizard; the slot opens now.
+            RowAction::AddProject => {
+                self.open_modal(crate::modal::Modal::AddProject(Box::default()), cx);
+            }
         }
     }
 
     // ── registry mutation ───────────────────────────────────────────────
 
-    fn spawn_session(&mut self, proj: usize, wt: usize, agent: Agent, cx: &mut Context<Self>) {
+    pub fn spawn_session(&mut self, proj: usize, wt: usize, agent: Agent, cx: &mut Context<Self>) {
         self.state.update(cx, |s, cx| {
             s.set_open_agent_menu(None);
             cx.notify();
@@ -274,6 +370,15 @@ impl Sidebar {
                 cx,
             )
         });
+        // Recorded ambiguity 7 (`src/gui/update/sessions.rs:482`): a PTY that
+        // never came up is reported here, the one place every spawn path —
+        // the rail strip, the agent picker and the launcher — funnels through.
+        if let Some(e) = session.read(cx).spawn_error() {
+            let msg = format!("failed to start session: {e}");
+            if let Some(toast) = self.toast.clone() {
+                toast.update(cx, |t, cx| t.set_error(msg, cx));
+            }
+        }
         self.registry.update(cx, |r, cx| {
             r.attach(id, session);
             cx.notify();
@@ -613,8 +718,11 @@ impl Sidebar {
                     .text_color(c::FG_MUTE())
                     .hover(|s| s.bg(c::BG_HOVER()).text_color(c::FG()))
                     .child(crate::icons::icon("plus", 12.0, c::FG_MUTE()))
-                    .on_mouse_down(MouseButton::Left, move |_, _, _| {
-                        tracing::debug!("AddProject: modal — Plan 08");
+                    .on_mouse_down(MouseButton::Left, {
+                        let dispatch = std::rc::Rc::clone(&dispatch);
+                        move |_: &MouseDownEvent, window: &mut Window, cx: &mut App| {
+                            dispatch(RowAction::AddProject, window, cx);
+                        }
                     }),
             )
             .child(toggle.on_mouse_down(MouseButton::Left, {

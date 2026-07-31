@@ -144,6 +144,51 @@ impl TerminalSession {
         }
     }
 
+    /// Spawn a one-shot **script** in a native PTY, for the teardown modal's
+    /// embedded terminal. Mirrors `grove_core::session::Session::spawn_script`
+    /// (`crates/grove-core/src/session.rs:288-321`): the login shell with
+    /// `-lc` (`-Command` on Windows), the script as one argument, `cwd` set,
+    /// and the same `TERM`/`LC_ALL` environment. Always native — a teardown
+    /// script must die with the modal, so it never gets a tmux sidecar.
+    pub fn spawn_script(script: &str, cwd: &str, cx: &mut Context<Self>) -> Self {
+        let mut cmd = CommandBuilder::new(grove_core::env_path::login_shell());
+        #[cfg(windows)]
+        cmd.arg("-Command");
+        #[cfg(not(windows))]
+        cmd.arg("-lc");
+        cmd.arg(script);
+        cmd.cwd(cwd);
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("LC_ALL", "en_US.UTF-8");
+
+        let mut spawn_error = None;
+        let mut pty = match grove_terminal::pty::spawn(cmd, INIT_ROWS, INIT_COLS) {
+            Ok(pty) => Some(pty),
+            Err(e) => {
+                tracing::error!("grove-gpui: could not spawn the teardown script: {e}");
+                spawn_error = Some(e.to_string());
+                None
+            }
+        };
+        let rx = pty.as_mut().and_then(PtyHandle::take_receiver);
+        Self {
+            term: GroveTerm::new(INIT_ROWS, INIT_COLS),
+            pty,
+            backend: Backend::Native,
+            rows: INIT_ROWS,
+            cols: INIT_COLS,
+            last_damage_gen: 0,
+            tmux_copy_mode: false,
+            last_input_at: None,
+            last_scroll_at: None,
+            last_output_at: Instant::now(),
+            exited: false,
+            spawn_error,
+            pane_pid: None,
+            _reader: Self::spawn_reader(rx, cx),
+        }
+    }
+
     /// Bridge the PTY's blocking `std::sync::mpsc` channel onto gpui's
     /// foreground executor — findings §S1 Step 5, and the whole reason
     /// `PtyHandle::take_receiver` exists.

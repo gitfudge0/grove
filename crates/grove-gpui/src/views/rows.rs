@@ -406,6 +406,8 @@ pub enum RowAction {
     NewHomeTerminal,
     ToggleTerminalsSection,
     ToggleCollapseAll,
+    /// The rail header's `+` — opens the add-project wizard (Task 4).
+    AddProject,
 }
 
 /// The one place a row's click becomes a state change.

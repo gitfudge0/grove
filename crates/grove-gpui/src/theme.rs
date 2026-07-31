@@ -334,6 +334,85 @@ impl ThemeState {
     }
 }
 
+// ── custom-theme management (Plan 08 Task 6 Step 4) ──────────────────────
+//
+// Every mutation goes through `grove_core::theme_file::save` and then
+// `load_custom`, so `theme::CUSTOM` and `themes.json` can never disagree.
+// grove-core stays the owner of the file format; nothing here reimplements it.
+
+/// A blank custom theme, as the paste-first editor's starting buffer.
+pub fn new_theme_template() -> String {
+    let base = theme::by_name(DEFAULT_DARK_THEME)
+        .or_else(|| theme::BUILTINS.first().cloned())
+        .unwrap_or_else(|| theme::BUILTINS[0].clone());
+    let mut draft = base;
+    draft.name = std::borrow::Cow::Owned("my theme".to_string());
+    grove_core::theme_file::to_named_lines(&draft)
+}
+
+fn persist_custom(themes: &[theme::Theme]) -> Result<(), String> {
+    grove_core::theme_file::save(themes).map_err(|e| e.to_string())?;
+    theme::load_custom();
+    Ok(())
+}
+
+pub fn delete_custom_theme(name: &str) -> Result<(), String> {
+    let mut themes = theme::all_custom_themes();
+    themes.retain(|t| t.name != name);
+    persist_custom(&themes)
+}
+
+pub fn rename_custom_theme(from: &str, to: &str) -> Result<(), String> {
+    if to.trim().is_empty() {
+        return Err("name required".into());
+    }
+    let mut themes = theme::all_custom_themes();
+    let Some(t) = themes.iter_mut().find(|t| t.name == from) else {
+        return Err(format!("'{from}' not found"));
+    };
+    t.name = std::borrow::Cow::Owned(to.to_string());
+    persist_custom(&themes)
+}
+
+pub fn duplicate_custom_theme(name: &str) -> Result<(), String> {
+    let mut themes = theme::all_custom_themes();
+    let Some(src) = themes.iter().find(|t| t.name == name).cloned() else {
+        return Err(format!("'{name}' not found"));
+    };
+    let mut copy = src;
+    let mut candidate = format!("{name} copy");
+    let mut n = 2;
+    while themes.iter().any(|t| t.name == candidate) {
+        candidate = format!("{name} copy {n}");
+        n += 1;
+    }
+    copy.name = std::borrow::Cow::Owned(candidate);
+    themes.push(copy);
+    persist_custom(&themes)
+}
+
+/// Save the paste-first editor's buffer. The buffer is `to_named_lines`'
+/// output (or a pasted equivalent), so it round-trips through
+/// `theme_file::parse_paste` onto a draft derived from the default theme.
+pub fn save_custom_theme_json(buffer: &str) -> Result<(), String> {
+    let parsed = grove_core::theme_file::parse_paste(buffer)?;
+    let base = theme::by_name(DEFAULT_DARK_THEME).unwrap_or_else(|| theme::BUILTINS[0].clone());
+    let mut draft = base;
+    grove_core::theme_file::apply_pasted_colors(&mut draft, &parsed);
+    let name = buffer
+        .lines()
+        .find_map(|l| l.strip_prefix("name:").map(|v| v.trim().to_string()))
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "my theme".to_string());
+    draft.name = std::borrow::Cow::Owned(name.clone());
+    let mut themes = theme::all_custom_themes();
+    match themes.iter_mut().find(|t| t.name == name) {
+        Some(existing) => *existing = draft,
+        None => themes.push(draft),
+    }
+    persist_custom(&themes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
