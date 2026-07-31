@@ -145,6 +145,27 @@ impl Root {
         root.update(cx, |root, cx| f(root, window, cx))
     }
 
+    /// Like [`Root::update`], but a no-op returning `None` when the window's
+    /// root view is not a [`Root`].
+    ///
+    /// Grove patch: an app may legitimately use its own view as the window
+    /// root (Grove does — mounting `Root` would shadow the PTY's ctrl-c with
+    /// `Root`'s own `Copy` binding). `Input` still needs to run, so the paths
+    /// it reaches use the tolerant form instead of panicking.
+    pub fn try_update<F, R>(window: &mut Window, cx: &mut App, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut Self, &mut Window, &mut Context<Self>) -> R,
+    {
+        let root = window.root::<Root>().flatten()?;
+        Some(root.update(cx, |root, cx| f(root, window, cx)))
+    }
+
+    /// Like [`Root::read`], but `None` when the window's root view is not a
+    /// [`Root`]. See [`Root::try_update`].
+    pub fn try_read<'a>(window: &'a Window, cx: &'a App) -> Option<&'a Self> {
+        Some(window.root::<Root>().flatten()?.read(cx))
+    }
+
     pub fn read<'a>(window: &'a Window, cx: &'a App) -> &'a Self {
         &window
             .root::<Root>()

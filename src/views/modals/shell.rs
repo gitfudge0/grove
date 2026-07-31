@@ -388,3 +388,201 @@ pub fn body_text(content: impl Into<SharedString>) -> Div {
 pub fn note_text(content: impl Into<SharedString>) -> Div {
     ui(content, 11.0, c::RED())
 }
+
+/// A full-bleed 1px horizontal rule in the soft border tone, used between
+/// Settings' sections and around its header/footer zones
+/// (`src/gui/widgets/primitives.rs:54-62`, `divider_h`).
+pub fn divider_h() -> Div {
+    div().w_full().h(px(1.0)).bg(c::BORDER_SOFT())
+}
+
+/// A muted, indented one-liner shown under a section header or row to explain
+/// what a control does (`src/gui/view/modals/settings.rs:141-145`).
+pub fn caption(content: impl Into<SharedString>) -> Div {
+    div().px(px(10.0)).child(ui(content, 11.0, c::FG_MUTE()))
+}
+
+/// One shade up from [`caption`] — reserved for safety-relevant captions,
+/// e.g. skip-permissions (`src/gui/view/modals/settings.rs:148-152`).
+pub fn caption_promoted(content: impl Into<SharedString>) -> Div {
+    div().px(px(10.0)).child(ui(content, 11.0, c::FG_DIM()))
+}
+
+/// A flat, borderless icon button in a fixed-width hoverable box — the zoom
+/// `-`/`+` glyphs, the header close icon and the Tools/Updates refresh icons
+/// all share this shape (`src/gui/widgets/buttons.rs:419-451`, `icon_btn`).
+pub fn flat_icon_btn(
+    id: impl Into<gpui::ElementId>,
+    name: &'static str,
+    box_w: f32,
+    icon_size: f32,
+    on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<Div> {
+    div()
+        .id(id)
+        .w(px(box_w))
+        .h(px(22.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.0))
+        .hover(|s| s.bg(c::BG_HOVER()))
+        .cursor_pointer()
+        .child(crate::icons::icon(name, icon_size, c::FG_DIM()))
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            on_click(window, cx);
+        })
+}
+
+/// A flat, borderless text button in the same 22px-tall shape as
+/// [`flat_icon_btn`] — used for the zoom percentage's reset label
+/// (`src/gui/widgets/buttons.rs:455-495`, `control_btn_sized`).
+pub fn flat_text_btn(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    text_size: f32,
+    h_padding: f32,
+    on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(22.0))
+        .px(px(h_padding))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.0))
+        .hover(|s| s.bg(c::BG_HOVER()))
+        .cursor_pointer()
+        .child(mono(label, text_size, c::FG_DIM()))
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            on_click(window, cx);
+        })
+}
+
+/// Which edge of a joined segmented-control group a [`seg_button`] sits at —
+/// only the group's outer corners round (`src/gui/widgets/buttons.rs:11-18`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegSide {
+    Left,
+    Right,
+}
+
+/// One segment of a two-way segmented control (Backend Native|Tmux,
+/// Permissions Skip|Safe, the theme picker's Dark|Light). `on_click: None`
+/// renders the segment inert — used for the side that is already active, so
+/// clicking it can never toggle the control back off
+/// (`src/gui/widgets/buttons.rs:20-100`, `seg_button`/`seg_button_danger`).
+pub fn seg_button(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    active: bool,
+    side: SegSide,
+    danger: bool,
+    on_click: Option<OnToggle>,
+) -> AnyElement {
+    let text_color = if active {
+        if danger {
+            c::RED()
+        } else {
+            c::FG()
+        }
+    } else {
+        c::FG_DIM()
+    };
+    let mut d = div()
+        .id(id)
+        .px(px(12.0))
+        .py(px(4.0))
+        .when(active, |d| {
+            d.bg(if danger { c::RED_WASH() } else { c::BG_HL() })
+        })
+        .map(|d| match side {
+            SegSide::Left => d.rounded_tl(px(5.0)).rounded_bl(px(5.0)),
+            SegSide::Right => d.rounded_tr(px(5.0)).rounded_br(px(5.0)),
+        })
+        .child(mono(label, 11.0, text_color));
+    if let Some(f) = on_click {
+        d = d
+            .cursor_pointer()
+            .hover(|s| s.bg(c::BG_HOVER()))
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| f(window, cx));
+    }
+    d.into_any_element()
+}
+
+/// The bordered wrapper a joined segmented-control group sits in — 1px
+/// `BORDER`, radius 6, no internal gap between segments
+/// (`src/gui/widgets/buttons.rs:119-127`, `skip_perms_seg`'s container).
+pub fn seg_group(content: impl IntoElement) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .border_1()
+        .border_color(c::BORDER())
+        .rounded(px(6.0))
+        .child(content)
+}
+
+/// Command palette row height — taller than the shared 28px [`ROW_H`]-style
+/// modal row, per the palette redesign (`src/gui/widgets/rows.rs:73`,
+/// `PALETTE_ROW_H`).
+pub const PALETTE_ROW_H: f32 = 44.0;
+
+/// A fixed 24px icon slot so titles line up across rows regardless of glyph
+/// width (`src/gui/widgets/rows.rs:27-51`, `palette_agent_content`'s
+/// `icon_slot`).
+pub fn icon_slot(name: &str, size: f32, color: Hsla) -> Div {
+    div()
+        .w(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(crate::icons::icon(name, size, color))
+}
+
+/// The cue chip shown in the palette's leading glyph slot when a drill-in
+/// (Switch to session, Settings) replaces the search icon: mono, cyan text
+/// over a soft cyan tint (`src/gui/session_launcher/view/mod.rs:44-59`).
+pub fn cue_chip(label: impl Into<SharedString>) -> Div {
+    div()
+        .px(px(6.0))
+        .py(px(2.0))
+        .rounded(px(4.0))
+        .bg(c::SEL_TINT_SOFT())
+        .child(mono(label, 10.0, c::CYAN()))
+}
+
+/// A palette results row: [`PALETTE_ROW_H`]-tall, radius 6, 12px horizontal
+/// padding. `selected` gets the cyan tint + ring the iced original paints as
+/// a gradient (`src/gui/widgets/rows.rs:88-141`, `launcher_row`) — flattened
+/// here to a solid [`crate::theme::SEL_TINT_SOFT`] fill, since gpui's `Div`
+/// has no gradient-background primitive at this rev.
+pub fn palette_row(
+    id: impl Into<gpui::ElementId>,
+    selected: bool,
+    dispatch: &ModalDispatch,
+    click: ModalClick,
+    content: impl IntoElement,
+) -> gpui::Stateful<Div> {
+    let dispatch = std::rc::Rc::clone(dispatch);
+    div()
+        .id(id)
+        .w_full()
+        .h(px(PALETTE_ROW_H))
+        .px(px(12.0))
+        .rounded(px(6.0))
+        .flex()
+        .items_center()
+        .when(selected, |d| {
+            d.bg(c::SEL_TINT_SOFT())
+                .border_1()
+                .border_color(c::SEL_RING())
+        })
+        .when(!selected, |d| d.hover(|s| s.bg(c::BG_HOVER())))
+        .cursor_pointer()
+        .child(content)
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            dispatch(click.clone(), window, cx);
+        })
+}

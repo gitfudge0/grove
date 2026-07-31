@@ -46,6 +46,36 @@ pub struct PanelCtx {
     pub dispatch: PanelDispatch,
 }
 
+/// A small floating hint label matching iced's `Self::hint` chrome
+/// (`common.rs:199-220`): `BG_STRIP` fill, `BORDER` border, `[4, 8]` padding,
+/// 11px `FG_DIM` text.
+fn hint_tooltip(
+    label: &'static str,
+    _window: &mut Window,
+    cx: &mut App,
+) -> gpui::AnyView {
+    cx.new(|_| HintTooltip { label }).into()
+}
+
+struct HintTooltip {
+    label: &'static str,
+}
+
+impl gpui::Render for HintTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(8.0))
+            .py(px(4.0))
+            .rounded(px(4.0))
+            .bg(c::BG_STRIP())
+            .border_1()
+            .border_color(c::BORDER())
+            .text_size(px(11.0))
+            .text_color(c::FG_DIM())
+            .child(self.label)
+    }
+}
+
 fn on_panel(
     dispatch: &PanelDispatch,
     action: PanelAction,
@@ -57,7 +87,15 @@ fn on_panel(
 /// The tab strip, its hairline, and the active shell's PTY
 /// (`terminal.rs:234-316`).
 pub fn term_panel(ctx: &PanelCtx) -> AnyElement {
-    let mut tabs = div().flex().items_center().gap(px(6.0)).overflow_hidden();
+    // Horizontally scrollable so many shells stay reachable even when the
+    // strip is narrower than their combined width (`terminal.rs:285-296`
+    // wrapped the same strip in a horizontal `scrollable`).
+    let mut tabs = div()
+        .id("panel-tab-strip")
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .overflow_x_scroll();
     for (i, tab) in ctx.tabs.iter().enumerate() {
         tabs = tabs.child(shell_tab(i, tab, ctx));
     }
@@ -96,6 +134,7 @@ pub fn term_panel(ctx: &PanelCtx) -> AnyElement {
                 .rounded(px(4.0))
                 .hover(|s| s.bg(c::BG_HOVER()))
                 .child(crate::icons::icon("collapse-right", 13.0, c::FG_MUTE()))
+                .tooltip(|window, cx| hint_tooltip("collapse panel", window, cx))
                 .on_mouse_down(
                     MouseButton::Left,
                     on_panel(&ctx.dispatch, PanelAction::Collapse),
@@ -162,6 +201,7 @@ fn shell_tab(idx: usize, tab: &ShellTab, ctx: &PanelCtx) -> AnyElement {
                 .text_color(c::FG_MUTE())
                 .hover(|s| s.text_color(c::RED()))
                 .child(crate::icons::icon("close", 11.0, c::FG_MUTE()))
+                .tooltip(|window, cx| hint_tooltip("close shell", window, cx))
                 .on_mouse_down(
                     MouseButton::Left,
                     on_panel(&ctx.dispatch, PanelAction::CloseShell(idx)),

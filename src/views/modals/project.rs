@@ -719,6 +719,33 @@ fn archive_project_modal(
     .into_any_element()
 }
 
+/// A 22×22 row action mini-button. `glyph`/`hover_bg` distinguish restore
+/// (cyan on the neutral hover fill) from delete (red on a red wash) — the
+/// same idiom as `iced`'s `mini` (`archived_projects.rs:18-40`).
+fn archive_mini(
+    id: &'static str,
+    icon_name: &'static str,
+    glyph: gpui::Hsla,
+    hover_bg: gpui::Hsla,
+    dispatch: &ModalDispatch,
+    click: ModalClick,
+) -> AnyElement {
+    let dispatch = dispatch.clone();
+    div()
+        .id(id)
+        .size(px(22.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.0))
+        .hover(move |s| s.bg(hover_bg))
+        .child(crate::icons::icon(icon_name, 12.0, glyph))
+        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+            dispatch(click.clone(), window, cx);
+        })
+        .into_any_element()
+}
+
 /// `archived_projects_modal` (`view/modals/archived_projects.rs:23-158`): a
 /// marker modal whose every row derives live from `store.archived_projects()`.
 fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
@@ -728,57 +755,117 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
         .map(|(i, p)| (i, p.name.clone(), p.path.clone()))
         .collect();
 
-    let body = if rows.is_empty() {
-        div().child(body_text("No archived projects."))
+    let body: AnyElement = if rows.is_empty() {
+        div()
+            .w_full()
+            .py(px(30.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(c::FG_MUTE())
+                    .child("No archived projects."),
+            )
+            .into_any_element()
     } else {
-        let mut list = div().flex().flex_col().gap(px(4.0));
+        let mut list = div()
+            .id("archived-projects-list")
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .max_h(px(360.0))
+            .overflow_y_scroll();
         for (idx, name, path) in &rows {
+            let slot = div()
+                .w(px(48.0))
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .child(archive_mini(
+                    "arch-restore",
+                    "restore",
+                    c::CYAN(),
+                    c::BG_HOVER(),
+                    dispatch,
+                    ModalClick::RestoreArchived(*idx),
+                ))
+                .child(archive_mini(
+                    "arch-delete",
+                    "trash",
+                    c::RED(),
+                    c::RED_WASH(),
+                    dispatch,
+                    ModalClick::DeleteArchived(*idx),
+                ));
+
             list = list.child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.0))
-                    .px(px(8.0))
-                    .py(px(5.0))
-                    .rounded(px(4.0))
-                    .bg(c::BG_HL())
+                    .gap(px(10.0))
+                    .w_full()
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .rounded(px(6.0))
+                    .hover(|s| s.bg(c::BG_HL()))
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(12.0))
+                            .overflow_hidden()
+                            .text_size(px(13.0))
                             .text_color(c::FG())
                             .child(name.clone()),
                     )
                     .child(
                         div()
+                            .flex_1()
+                            .overflow_hidden()
                             .font(gpui::font(crate::fonts::MONO_FAMILY))
-                            .text_size(px(10.0))
+                            .text_size(px(11.0))
                             .text_color(c::FG_MUTE())
-                            .child(path.clone()),
+                            .child(crate::views::session_header::truncate_middle(path, 44)),
                     )
-                    .child(click_action(
-                        "arch-restore",
-                        "restore",
-                        ModalBtn::Primary,
-                        dispatch,
-                        ModalClick::RestoreArchived(*idx),
-                    ))
-                    .child(click_action(
-                        "arch-delete",
-                        "delete",
-                        ModalBtn::Danger,
-                        dispatch,
-                        ModalClick::DeleteArchived(*idx),
-                    )),
+                    .child(slot),
             );
         }
-        list
+        list.into_any_element()
     };
+
+    let close_dispatch = dispatch.clone();
+    let header = div().w_full().px(px(16.0)).py(px(14.0)).child(
+        div()
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .flex_1()
+                    .font(gpui::font(crate::fonts::UI_FAMILY))
+                    .text_size(px(13.0))
+                    .text_color(c::CYAN())
+                    .child("Archived projects"),
+            )
+            .child(
+                div()
+                    .id("arch-list-close")
+                    .size(px(22.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.0))
+                    .hover(|s| s.bg(c::BG_HOVER()))
+                    .child(crate::icons::icon("close", 12.0, c::FG_MUTE()))
+                    .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                        close_dispatch(ModalClick::Cancel, window, cx);
+                    }),
+            ),
+    );
 
     modal_panel(
         520.0,
         div()
-            .child(modal_header("Archived projects", c::CYAN()))
+            .child(header)
             .child(modal_body(body))
             .child(modal_footer_hints(&[("esc", "close")])),
     )

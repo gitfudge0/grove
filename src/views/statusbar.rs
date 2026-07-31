@@ -51,7 +51,7 @@ pub fn statusbar(ctx: &StatusbarCtx) -> AnyElement {
         .flex()
         .items_center()
         .gap(px(6.0))
-        .child(div().size(px(6.0)).rounded_full().bg(if ctx.running > 0 {
+        .child(div().size(px(7.0)).rounded_full().bg(if ctx.running > 0 {
             c::GREEN()
         } else {
             c::FG_MUTE()

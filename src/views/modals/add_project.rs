@@ -8,7 +8,7 @@
 //! `src/gui/update/onboarding.rs` (incl. the `Modal::TmuxChoice` handoff at
 //! :97).
 
-use gpui::{div, prelude::*, px, AnyElement, App, Context, Window};
+use gpui::{div, prelude::*, px, AnyElement, App, Context, Div, Hsla, Window};
 
 use crate::add_project::{self, ChooseOutcome, GitProbe, SubmitOutcome};
 use crate::settings::SettingsState;
@@ -49,6 +49,7 @@ impl ModalLayer {
             }
             ModalClick::OnboardSkip => self.onboard_skip(cx),
             ModalClick::OnboardAdvance => self.onboard_advance(window, cx),
+            ModalClick::OnboardBack => self.onboard_back(window, cx),
             ModalClick::OnboardPickAgent(i) => {
                 if let Some(Modal::Onboarding { agent_sel, .. }) = self.slot.get_mut() {
                     *agent_sel = i;
@@ -324,6 +325,23 @@ impl ModalLayer {
     }
 
     // ── onboarding ──────────────────────────────────────────────────────
+
+    /// "Back": step regression only (`app/onboarding.rs:127-135`). No
+    /// unwinding of a project already registered on the way forward — the
+    /// iced original doesn't either.
+    pub(super) fn onboard_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_wizard_buffers(cx);
+        let prev = match self.slot.get() {
+            Some(Modal::Onboarding { step, .. }) => step.prev(),
+            _ => None,
+        };
+        if let Some(prev) = prev {
+            if let Some(Modal::Onboarding { step, .. }) = self.slot.get_mut() {
+                *step = prev;
+            }
+            self.rebuild_fields(window, cx);
+        }
+    }
 
     /// Escape or "Skip": mark onboarding done and get out of the way.
     pub(super) fn onboard_skip(&mut self, cx: &mut Context<Self>) {
@@ -646,6 +664,75 @@ fn details(
     .into_any_element()
 }
 
+/// Whether `git` resolves on `PATH` (`git show main:src/gui/view/common.rs`'s
+/// `git_on_path`, ported verbatim — no gpui equivalent exists yet).
+fn git_on_path() -> bool {
+    static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var_os("PATH").is_some_and(|paths| {
+            std::env::split_paths(&paths)
+                .any(|dir| fs_err::metadata(dir.join("git")).is_ok_and(|m| m.is_file()))
+        })
+    })
+}
+
+/// A small filled status dot, the shared shape every wizard list row and the
+/// welcome bullets use.
+fn dot(color: Hsla) -> Div {
+    div().size(px(6.0)).rounded_full().bg(color)
+}
+
+/// One bulleted value-prop line on the welcome step: a magenta mark, a bold
+/// lead, and a muted explanation (iced `onboard_point`, onboarding.rs:387-409).
+fn onboard_point(lead: &'static str, body: &'static str) -> Div {
+    div()
+        .flex()
+        .gap(px(10.0))
+        .child(div().pt(px(6.0)).child(dot(c::MAGENTA())))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(div().text_size(px(14.0)).text_color(c::FG()).child(lead))
+                .child(body_text(body)),
+        )
+}
+
+/// One detected-tool row on the environment step: a status dot, the tool
+/// name, a muted description, and a right-aligned Found/Missing/Optional tag
+/// (iced `onboard_env_row`, onboarding.rs:413-449).
+fn onboard_env_row(found: bool, optional: bool, name: &'static str, meta: &'static str) -> Div {
+    let (dotc, tag, tagc) = if found {
+        (c::GREEN(), "Found", c::GREEN())
+    } else if optional {
+        (c::AMBER(), "Optional", c::AMBER())
+    } else {
+        (c::FG_MUTE(), "Missing", c::FG_MUTE())
+    };
+    div()
+        .w_full()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(12.0))
+        .py(px(8.0))
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(c::BORDER())
+        .bg(c::BG_STRIP())
+        .child(dot(dotc))
+        .child(div().text_size(px(13.0)).text_color(c::FG()).child(name))
+        .child(
+            div()
+                .text_size(px(12.0))
+                .text_color(c::FG_MUTE())
+                .child(meta),
+        )
+        .child(div().flex_1())
+        .child(div().text_size(px(11.0)).text_color(tagc).child(tag))
+}
+
 /// The first-run wizard. Full-viewport with no sidebar, statusbar or scrim —
 /// the layer already renders it as a screen replacement (recorded ambiguity 1)
 /// and the entrance animation is applied there.
@@ -654,7 +741,9 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
         step,
         path,
         dir_sel,
+        name,
         note,
+        added_proj,
         agent_sel,
         perms_skip,
         ..
@@ -662,184 +751,355 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     else {
         return div().into_any_element();
     };
-    let _ = cx;
 
-    let steps = OnboardStep::ALL;
-    let index = steps.iter().position(|s| s == step).unwrap_or(0);
-    let dots = {
-        let mut row = div().flex().items_center().gap(px(6.0));
-        for i in 0..steps.len() {
-            row = row.child(div().size(px(6.0)).rounded_full().bg(if i == index {
-                c::CYAN()
-            } else {
-                c::BG_HL()
-            }));
-        }
-        row
-    };
+    // ── progress rail: per-step label, magenta done/current/pending tri-state
+    // (iced onboarding.rs:60-81). ────────────────────────────────────────────
+    let mut rail = div().flex().items_center().gap(px(10.0));
+    for s in OnboardStep::flow() {
+        let s = *s;
+        let (dotc, txtc) = if s == *step {
+            (c::MAGENTA(), c::FG())
+        } else if s.index_in() < step.index_in() {
+            (c::MAGENTA(), c::FG_DIM())
+        } else {
+            (c::BORDER(), c::FG_MUTE())
+        };
+        rail = rail.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(5.0))
+                .child(dot(dotc))
+                .child(div().text_size(px(10.0)).text_color(txtc).child(s.label())),
+        );
+    }
 
-    let body = match step {
+    // ── step body ────────────────────────────────────────────────────────
+    let body: AnyElement = match step {
         OnboardStep::Welcome => div()
             .flex()
             .flex_col()
             .gap(px(10.0))
             .child(
                 div()
-                    .text_size(px(24.0))
-                    .text_color(c::FG())
-                    .child("Welcome to Grove"),
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .child(crate::icons::icon("grid", 32.0, c::CYAN()))
+                    .child(
+                        div()
+                            .text_size(px(32.0))
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(c::FG())
+                            .child("grove"),
+                    ),
             )
-            .child(body_text(
-                "A worktree launchpad for AI coding agents. Three short steps \
-                 and you're running.",
-            )),
+            .child(
+                div()
+                    .text_size(px(15.0))
+                    .text_color(c::FG_DIM())
+                    .child("a worktree launchpad for AI coding agents"),
+            )
+            .child(div().h(px(20.0)))
+            .child(onboard_point(
+                "Sessions are the unit of work",
+                "Every agent you spawn lives in a managed session that survives navigation; switch between them in two keystrokes.",
+            ))
+            .child(onboard_point(
+                "Worktrees, not branches",
+                "Grove treats Git worktrees as a first-class primitive: create, list, and run agents inside them.",
+            ))
+            .child(onboard_point(
+                "Quiet and keyboard-first",
+                "The app stays out of the way so terminal output stays primary. This takes about a minute.",
+            ))
+            .into_any_element(),
+
         OnboardStep::Environment => {
-            let agents = super::confirm::available_agents();
-            let mut list = div().flex().flex_col().gap(px(4.0));
-            for a in &agents {
-                list = list.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(crate::icons::icon(a.icon_name(), 13.0, c::GREEN()))
-                        .child(body_text(a.label().to_string())),
-                );
+            let rows = [
+                (git_on_path(), false, "Git", "Version control"),
+                (
+                    grove_core::agent::Agent::Claude.available(),
+                    false,
+                    "Claude",
+                    "Claude Code",
+                ),
+                (
+                    grove_core::agent::Agent::Codex.available(),
+                    false,
+                    "Codex",
+                    "Codex CLI",
+                ),
+                (
+                    grove_core::agent::Agent::OpenCode.available(),
+                    false,
+                    "OpenCode",
+                    "OpenCode CLI",
+                ),
+                (
+                    grove_core::tmux::available(),
+                    true,
+                    "tmux",
+                    "Persists sessions across restarts",
+                ),
+            ];
+            let mut list = div().flex().flex_col().gap(px(6.0));
+            for (found, optional, n, meta) in rows {
+                list = list.child(onboard_env_row(found, optional, n, meta));
             }
             div()
                 .flex()
                 .flex_col()
                 .gap(px(10.0))
+                .child(div().text_size(px(20.0)).text_color(c::FG()).child("Environment"))
+                .child(body_text(
+                    "Grove spawns agents from your PATH; it doesn't install or authenticate \
+                     them. Only Git is required to get going.",
+                ))
+                .child(div().h(px(4.0)))
+                .child(list)
+                .into_any_element()
+        }
+
+        OnboardStep::Project => {
+            let mut d = div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(div().text_size(px(20.0)).text_color(c::FG()).child("Add your first project"))
+                .child(body_text(
+                    "Point Grove at a Git repository, or any plain folder for ad-hoc sessions.",
+                ))
+                // gpui has letter-spacing; the literal spaced strings are kept
+                // anyway so this reads identically to the iced original.
                 .child(
                     div()
-                        .text_size(px(18.0))
-                        .text_color(c::FG())
-                        .child("Your environment"),
-                )
-                .child(body_text("Agents found on your PATH:"))
-                .child(list)
-                .child(body_text(if grove_core::tmux::available() {
-                    "tmux found — sessions can survive a restart."
-                } else {
-                    "tmux not found — sessions will be native."
-                }))
-        }
-        OnboardStep::Project => {
-            let mut d = div().flex().flex_col().gap(px(10.0)).child(
-                div()
-                    .text_size(px(18.0))
-                    .text_color(c::FG())
-                    .child("Add your first project"),
-            );
+                        .text_size(px(11.0))
+                        .text_color(c::FG_MUTE())
+                        .child("R E P O S I T O R Y   O R   F O L D E R"),
+                );
+            let mut path_row = div().flex().items_center().gap(px(8.0));
             if let Some(f) = field(layer, 0) {
-                d = d.child(f);
+                path_row = path_row.child(div().flex_1().child(f));
             }
-            d = d.child(dir_list(path, *dir_sel, dispatch));
-            if let Some(f) = field(layer, 1) {
-                d = d.child(body_text("Project name (optional)")).child(f);
-            }
-            if let Some(note) = note {
-                d = d.child(note_text(note.clone()));
-            }
-            d.child(div().flex().gap(px(8.0)).child(click_action(
+            path_row = path_row.child(click_action(
                 "ob-browse",
-                "Browse…",
+                if layer.picker_open { "Waiting…" } else { "Browse…" },
                 ModalBtn::Plain,
                 dispatch,
                 ModalClick::WizardBrowse,
-            )))
+            ));
+            d = d.child(path_row);
+
+            if !path.trim().is_empty() {
+                d = d
+                    .child(div().text_size(px(11.0)).text_color(c::FG_MUTE()).child("M A T C H E S"))
+                    .child(dir_list(path, *dir_sel, dispatch));
+            }
+
+            if name.is_some() {
+                d = d.child(div().text_size(px(11.0)).text_color(c::FG_MUTE()).child("N A M E"));
+                if let Some(f) = field(layer, 1) {
+                    d = d.child(f);
+                }
+            }
+
+            if let Some(note) = note {
+                d = d.child(note_text(note.clone()));
+            }
+            d.child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(c::FG_MUTE())
+                    .child("Tab to complete · ↑↓ to select · Enter to continue · Or skip setup"),
+            )
+            .into_any_element()
         }
+
         OnboardStep::Session => {
-            let agents = super::confirm::available_agents();
-            let mut list = div().flex().flex_col().gap(px(4.0));
-            for (i, a) in agents.iter().enumerate() {
-                list = list.child(click_row(
-                    gpui::SharedString::from(format!("ob-agent-{i}")),
-                    i == *agent_sel,
-                    dispatch,
-                    ModalClick::OnboardPickAgent(i),
+            let project = added_proj
+                .and_then(|i| cx.global::<SettingsState>().store.projects.get(i).cloned());
+            let mut d = div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(div().text_size(px(20.0)).text_color(c::FG()).child("Start your first session"));
+
+            match &project {
+                Some(p) => {
+                    d = d.child(body_text(format!("Launch an agent inside {}.", p.name)));
+                    let agents = super::confirm::available_agents();
+                    let mut list = div().flex().flex_col().gap(px(0.0));
+                    for (i, a) in agents.iter().enumerate() {
+                        let active = i == *agent_sel;
+                        list = list.child(click_row(
+                            gpui::SharedString::from(format!("ob-agent-{i}")),
+                            active,
+                            dispatch,
+                            ModalClick::OnboardPickAgent(i),
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(if active { c::FG() } else { c::FG_DIM() })
+                                .child(a.label().to_string()),
+                        ));
+                    }
+                    d = d.child(
+                        div()
+                            .w_full()
+                            .rounded(px(4.0))
+                            .border_1()
+                            .border_color(c::BORDER())
+                            .bg(c::BG_STRIP())
+                            .child(list),
+                    );
+                }
+                None => {
+                    d = d.child(body_text(
+                        "No project added. You can add one any time from the sidebar. \
+                         Finish to start using Grove.",
+                    ));
+                }
+            }
+
+            let (perms_label_color, perms_line) = if *perms_skip {
+                (c::YELLOW(), "Skip: agents run any command without asking")
+            } else {
+                (c::FG_MUTE(), "Safe: agents ask before running commands")
+            };
+            d.child(div().h(px(4.0)))
+                .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.0))
-                        .child(crate::icons::icon(a.icon_name(), 13.0, c::FG_DIM()))
-                        .child(body_text(a.label().to_string())),
-                ));
-            }
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(10.0))
+                        .gap(px(20.0))
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(c::FG_MUTE())
+                                .child("P E R M I S S I O N S"),
+                        )
+                        .child(super::shell::seg_group(
+                            div()
+                                .flex()
+                                .items_center()
+                                .child(super::shell::seg_button(
+                                    "ob-perms-skip",
+                                    "Skip",
+                                    *perms_skip,
+                                    super::shell::SegSide::Left,
+                                    true,
+                                    (!*perms_skip).then(|| -> super::shell::OnToggle {
+                                        let dispatch = std::rc::Rc::clone(dispatch);
+                                        Box::new(move |window, cx| {
+                                            dispatch(ModalClick::OnboardPerms(true), window, cx);
+                                        })
+                                    }),
+                                ))
+                                .child(super::shell::seg_button(
+                                    "ob-perms-safe",
+                                    "Safe",
+                                    !*perms_skip,
+                                    super::shell::SegSide::Right,
+                                    false,
+                                    (*perms_skip).then(|| -> super::shell::OnToggle {
+                                        let dispatch = std::rc::Rc::clone(dispatch);
+                                        Box::new(move |window, cx| {
+                                            dispatch(ModalClick::OnboardPerms(false), window, cx);
+                                        })
+                                    }),
+                                )),
+                        ),
+                    ),
+                )
                 .child(
                     div()
-                        .text_size(px(18.0))
-                        .text_color(c::FG())
-                        .child("Your first session"),
+                        .text_size(px(11.0))
+                        .text_color(perms_label_color)
+                        .child(perms_line),
                 )
-                .child(body_text("Default agent:"))
-                .child(list)
-                .child(body_text("Permission prompts:"))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.0))
-                        .child(click_action(
-                            "ob-perms-safe",
-                            "Ask me (safe)",
-                            if *perms_skip {
-                                ModalBtn::Plain
-                            } else {
-                                ModalBtn::Primary
-                            },
-                            dispatch,
-                            ModalClick::OnboardPerms(false),
-                        ))
-                        .child(click_action(
-                            "ob-perms-skip",
-                            "Skip prompts",
-                            if *perms_skip {
-                                ModalBtn::Danger
-                            } else {
-                                ModalBtn::Plain
-                            },
-                            dispatch,
-                            ModalClick::OnboardPerms(true),
-                        )),
-                )
+                .into_any_element()
         }
     };
 
-    div()
-        .w(px(680.0))
+    // ── footer ────────────────────────────────────────────────────────────
+    let next_label = match step {
+        OnboardStep::Welcome => "Get started",
+        OnboardStep::Session => "Launch session",
+        _ => "Continue",
+    };
+    let count = format!("{} / {}", step.index_in() + 1, OnboardStep::flow().len());
+    let mut footer = div()
         .flex()
-        .flex_col()
-        .gap(px(24.0))
-        .child(body)
+        .items_center()
+        .gap(px(8.0))
         .child(
             div()
+                .text_size(px(12.0))
+                .text_color(c::FG_MUTE())
+                .child(count),
+        )
+        .child(div().flex_1())
+        .child(click_action(
+            "ob-skip",
+            "Skip setup",
+            ModalBtn::Plain,
+            dispatch,
+            ModalClick::OnboardSkip,
+        ));
+    if step.prev().is_some() {
+        footer = footer.child(click_action(
+            "ob-back",
+            "Back",
+            ModalBtn::Plain,
+            dispatch,
+            ModalClick::OnboardBack,
+        ));
+    }
+    footer = footer.child(click_action(
+        "ob-next",
+        next_label,
+        ModalBtn::Primary,
+        dispatch,
+        ModalClick::OnboardAdvance,
+    ));
+
+    // Small top-left wordmark — the wizard's only persistent chrome, distinct
+    // from the larger centered wordmark the Welcome step's body renders.
+    let brand = div()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .child(crate::icons::icon("grid", 15.0, c::CYAN()))
+        .child(
+            div()
+                .font_weight(gpui::FontWeight::BOLD)
+                .text_size(px(14.0))
+                .text_color(c::MAGENTA())
+                .child("grove"),
+        );
+
+    let content = div()
+        .w(px(560.0))
+        .flex()
+        .flex_col()
+        .gap(px(22.0))
+        .child(rail)
+        .child(div().w(px(560.0)).child(body));
+
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .child(div().px(px(20.0)).py(px(16.0)).child(brand))
+        .child(
+            div()
+                .flex_1()
+                .w_full()
                 .flex()
                 .items_center()
-                .gap(px(12.0))
-                .child(dots)
-                .child(div().flex_1())
-                .child(click_action(
-                    "ob-skip",
-                    "Skip",
-                    ModalBtn::Plain,
-                    dispatch,
-                    ModalClick::OnboardSkip,
-                ))
-                .child(click_action(
-                    "ob-next",
-                    if *step == OnboardStep::Session {
-                        "Finish"
-                    } else {
-                        "Continue"
-                    },
-                    ModalBtn::Primary,
-                    dispatch,
-                    ModalClick::OnboardAdvance,
-                )),
+                .justify_center()
+                .child(content),
         )
+        .child(div().w_full().px(px(20.0)).py(px(16.0)).child(footer))
         .into_any_element()
 }

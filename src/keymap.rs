@@ -493,6 +493,29 @@ actions!(
     ]
 );
 
+// The keys a *modal* claims back from a focused `Input`.
+//
+// gpui-component binds `up`/`down`/`left`/`right`/`tab`/`shift-tab`/`enter`
+// in the plain `"Input"` context, and a matched binding stops dispatch before
+// the modal layer's bubble-phase `on_key_down` ever runs. These actions are
+// bound in the **descendant** context `"<ModalKind> > Input"`, which matches
+// at the same node and therefore wins on registration order (Grove binds
+// after `gpui_component::init`; see `app.rs`). `ModalLayer` handles each one
+// by feeding the equivalent keystroke back through the same verdict table its
+// `on_key_down` uses, so there is exactly one decision path.
+actions!(
+    grove_modal,
+    [
+        ModalUp,
+        ModalDown,
+        ModalLeft,
+        ModalRight,
+        ModalTab,
+        ModalShiftTab,
+        ModalEnter,
+    ]
+);
+
 /// `mod+1..9` — the one **data-carrying** action (Plan 03 deviation 3). The
 /// `actions!` macro only generates unit structs, so this one is derived by hand.
 /// `no_json` keeps the derive off `serde`/`schemars`, which grove-gpui does not
@@ -597,6 +620,39 @@ fn term_panel_bindings() -> Vec<KeyBinding> {
     ]
 }
 
+/// The `"<ModalKind> > Input"` bindings that hand the modal back the keys a
+/// focused field would otherwise swallow. Derived from
+/// [`crate::views::modals::input::InputPolicy`] so the bindings and the
+/// field's own policy can never disagree.
+///
+/// A multiline buffer claims nothing: Enter is a newline, ↑/↓ move the caret
+/// and Tab indents (`modals::input`'s module doc).
+pub fn modal_input_bindings() -> Vec<KeyBinding> {
+    use crate::views::modals::input::{InputPolicy, ModalInput};
+
+    let mut out = Vec::new();
+    for kind in crate::modal::ModalKind::ALL {
+        let policy = InputPolicy::for_modal(kind);
+        if policy.multi_line {
+            continue;
+        }
+        let ctx = ModalInput::override_context(kind);
+        let ctx = Some(ctx.as_str());
+        out.push(KeyBinding::new("up", ModalUp, ctx));
+        out.push(KeyBinding::new("down", ModalDown, ctx));
+        out.push(KeyBinding::new("enter", ModalEnter, ctx));
+        if policy.wants_tab {
+            out.push(KeyBinding::new("tab", ModalTab, ctx));
+            out.push(KeyBinding::new("shift-tab", ModalShiftTab, ctx));
+        }
+        if policy.wants_arrows {
+            out.push(KeyBinding::new("left", ModalLeft, ctx));
+            out.push(KeyBinding::new("right", ModalRight, ctx));
+        }
+    }
+    out
+}
+
 /// The nine `mod+1..9` bindings, generated from the registry's display-only
 /// `1–9` row so the registry stays the single source of truth.
 fn select_session_bindings() -> Vec<KeyBinding> {
@@ -651,6 +707,9 @@ pub fn bindings() -> Vec<KeyBinding> {
     out.extend(select_session_bindings());
     out.extend(grid_bindings());
     out.extend(term_panel_bindings());
+    // Last, so a modal's `"… > Input"` binding also out-ranks anything above
+    // it on a registration-order tie.
+    out.extend(modal_input_bindings());
     out
 }
 

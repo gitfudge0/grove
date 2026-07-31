@@ -1242,6 +1242,35 @@ impl Workspace {
             dispatch: tool_dispatch,
         };
         let body = self.body_view(cx);
+        if header.is_none() && body.is_none() {
+            // No active session: mirror iced's `empty_workspace()` /
+            // `empty_no_projects_workspace()` (`src/gui/widgets/primitives.rs:222-276`),
+            // reusing the grid's shared "nothing here" panel (`views/grid.rs:117-129`)
+            // so the chrome matches the grid's own zero-tile empty state.
+            let has_active_projects = cx
+                .global::<SettingsState>()
+                .store
+                .active_projects()
+                .next()
+                .is_some();
+            let empty = if has_active_projects {
+                grid::empty_state(
+                    "no session selected",
+                    "click a worktree's start button to spawn an agent",
+                )
+            } else {
+                grid::empty_state("No active projects", "Add or restore a project to get started.")
+            };
+            return div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .h_full()
+                .overflow_hidden()
+                .bg(c::BG())
+                .child(empty)
+                .into_any_element();
+        }
         let column = div()
             .flex()
             .flex_col()

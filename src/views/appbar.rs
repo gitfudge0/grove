@@ -220,13 +220,13 @@ fn cog(ctx: &AppbarCtx) -> AnyElement {
     div()
         .id("appbar-cog")
         .relative()
-        .size(px(22.0))
+        .size(px(28.0))
         .flex()
         .items_center()
         .justify_center()
         .rounded(px(4.0))
         .hover(|s| s.bg(c::BG_HOVER()))
-        .child(icon("cog", 13.0, c::FG_MUTE()))
+        .child(icon("cog", 15.0, c::FG_DIM()))
         .when(ctx.upgrade_available, |d| {
             d.child(
                 div()
@@ -271,7 +271,7 @@ fn attention_pill(ctx: &AppbarCtx) -> AnyElement {
         .border_color(c::AMBER())
         .bg(bg)
         .hover(move |s| s.bg(bg_hover))
-        .child(div().size(px(6.0)).rounded_full().bg(dot_color))
+        .child(div().size(px(7.0)).rounded_full().bg(dot_color))
         .child(ui_text(pill_label(ctx.waiting.len()), 11.0, c::AMBER()))
         .on_mouse_down(
             MouseButton::Left,

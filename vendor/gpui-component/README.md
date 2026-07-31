@@ -103,3 +103,19 @@ Applied to `assets/Cargo.toml` only:
    **removed**. Cargo resolves target-gated deps for *every* target, so keeping
    it would drag the zed `reqwest` git fork into `Cargo.lock`. Grove never
    builds for wasm.
+
+Applied to `ui/src` (source, not manifests):
+
+8. **`Root` is optional.** Grove uses its own `Workspace` as the window root
+   view — mounting `ui::Root` would bind `ctrl-c` to `Root`'s `Copy` action in
+   the `"Root"` context and shadow the PTY's Ctrl+C for every terminal
+   (`src/app.rs`). `Input` nevertheless reached `Root::read`/`Root::update`,
+   both of which `.expect(...)` a mounted `Root`, so opening any modal with a
+   text field panicked. Added `Root::try_read` / `Root::try_update`
+   (`ui/src/root.rs`) — the same lookup via `window.root::<Root>()`, returning
+   `None` instead of panicking — and switched the three `Input`-reachable call
+   sites to them: the focused-input set and its `on_next_frame` reset
+   (`ui/src/input/element.rs`) and the blur path (`ui/src/input/state.rs`).
+   The panicking `Root::read`/`Root::update` are unchanged, as are the
+   `Root`-only paths (dialogs, sheets, notifications, the window text-selection
+   controller) that can only run once a `Root` is actually mounted.

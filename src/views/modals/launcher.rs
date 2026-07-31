@@ -20,7 +20,8 @@ use crate::settings::SettingsState;
 use crate::theme as c;
 
 use super::shell::{
-    body_text, click_row, modal_body, modal_footer_hints, modal_panel, section_header,
+    body_text, click_row, cue_chip, divider_h, icon_slot, keycap_text, modal_footer_hints,
+    modal_panel, palette_row, section_header,
 };
 use super::{Modal, ModalClick, ModalDispatch, ModalEvent, ModalLayer};
 use crate::modal::{LauncherSlotState, LauncherView};
@@ -383,6 +384,17 @@ impl ModalLayer {
 
 // ── the view ─────────────────────────────────────────────────────────────
 
+/// The leading glyph slot: the search icon in every state except the two
+/// drill-ins, which show a static cue chip instead
+/// (`src/gui/session_launcher/view/mod.rs:60-69`).
+fn leading_glyph(view: LauncherView) -> AnyElement {
+    match view {
+        LauncherView::Switch => cue_chip("SWITCH TO SESSION").into_any_element(),
+        LauncherView::Settings => cue_chip("SETTINGS").into_any_element(),
+        _ => crate::icons::icon("search", 16.0, c::FG_MUTE()).into_any_element(),
+    }
+}
+
 pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     let Some(Modal::SessionLauncher(st)) = layer.slot().get() else {
         return div().into_any_element();
@@ -391,9 +403,13 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     let search = layer.fields.first().map(|f| {
         div()
             .w_full()
-            .px(px(14.0))
-            .py(px(10.0))
-            .child(gpui_component::input::Input::new(f.state()).w_full())
+            .px(px(16.0))
+            .py(px(14.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .child(leading_glyph(st.view))
+            .child(gpui_component::input::Input::new(f.state()).flex_1())
     });
 
     let list: AnyElement = match st.view {
@@ -402,6 +418,12 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
         LauncherView::RowActions => row_actions(st, dispatch),
         _ => row_list(layer, st, dispatch, cx),
     };
+    let list_zone = div()
+        .id("palette-list")
+        .max_h(px(380.0))
+        .overflow_y_scroll()
+        .p(px(8.0))
+        .child(list);
 
     let hints: &[(&'static str, &'static str)] = match st.view {
         LauncherView::RowActions => &[
@@ -423,8 +445,9 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
         640.0,
         div()
             .children(search)
-            .child(div().h(px(1.0)).w_full().bg(c::BORDER_SOFT()))
-            .child(modal_body(list))
+            .child(divider_h())
+            .child(list_zone)
+            .child(divider_h())
             .child(modal_footer_hints(hints)),
     )
     .into_any_element()
@@ -471,6 +494,51 @@ fn row_label(row: &PaletteRow, cx: &App) -> (String, String, &'static str) {
     }
 }
 
+/// The icon + stacked title/subtitle idiom every palette row shares —
+/// `palette_agent_content` (`src/gui/session_launcher/view/rows.rs:26-61`).
+/// `selected` lights the icon and title up and, when `show_hint` is set,
+/// right-aligns a trailing "⏎" keycap.
+fn palette_row_content(
+    icon: &str,
+    title: String,
+    subtitle: String,
+    selected: bool,
+    show_hint: bool,
+) -> impl IntoElement {
+    let icon_color = if selected { c::YELLOW() } else { c::FG_MUTE() };
+    let title_color = if selected { c::FG() } else { c::FG_DIM() };
+    let mut row = div()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .w_full()
+        .child(icon_slot(icon, 16.0, icon_color))
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .text_color(title_color)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .font(gpui::font(crate::fonts::MONO_FAMILY))
+                        .text_size(px(10.5))
+                        .text_color(c::FG_MUTE())
+                        .child(subtitle),
+                ),
+        );
+    if selected && show_hint {
+        row = row.child(keycap_text("⏎", c::FG_DIM()));
+    }
+    row
+}
+
 fn row_list(
     layer: &ModalLayer,
     st: &LauncherSlotState,
@@ -498,39 +566,43 @@ fn row_list(
         }
         let (title, sub, icon) = row_label(row, cx);
         let selected = i == st.sel;
-        list = list.child(click_row(
+        let show_hint = matches!(
+            row,
+            PaletteRow::Recent { .. } | PaletteRow::Combo { .. } | PaletteRow::Setting(_)
+        );
+        list = list.child(palette_row(
             gpui::SharedString::from(format!("palette-{i}")),
             selected,
             dispatch,
             ModalClick::SelectRow(i),
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .w_full()
-                .child(crate::icons::icon(
-                    icon,
-                    13.0,
-                    if selected { c::FG() } else { c::FG_MUTE() },
-                ))
-                .child(
-                    div()
-                        .flex_1()
-                        .text_size(px(12.0))
-                        .text_color(if selected { c::FG() } else { c::FG_DIM() })
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(c::FG_MUTE())
-                        .child(sub),
-                ),
+            palette_row_content(icon, title, sub, selected, show_hint),
         ));
+        // The inline safety warning under a selected Permissions row — the
+        // same string the Settings pane promotes (`panes.rs:24-42`).
+        if selected
+            && matches!(
+                row,
+                PaletteRow::Setting(crate::launcher::SettingRow::Permissions)
+            )
+        {
+            list = list.child(
+                div()
+                    .pt(px(4.0))
+                    .pb(px(2.0))
+                    .pl(px(44.0))
+                    .pr(px(12.0))
+                    .text_size(px(11.0))
+                    .text_color(c::FG_DIM())
+                    .child("Skip lets agents run any command without asking."),
+            );
+        }
     }
     list.into_any_element()
 }
 
+/// Session/terminal rows in the Switch drill-in: same icon+title/subtitle
+/// idiom as the results list, plus the sidebar's waiting-session amber tint
+/// (`src/gui/session_launcher/view/panes.rs:302-462`).
 fn switch_list(
     layer: &ModalLayer,
     st: &LauncherSlotState,
@@ -543,41 +615,70 @@ fn switch_list(
     }
     let registry = layer.registry.read(cx);
     let mut list = div().flex().flex_col().gap(px(2.0));
+    let mut printed_sessions = false;
+    let mut printed_terminals = false;
     for (i, row) in rows.iter().enumerate() {
-        let (label, sub) = match row {
-            SwitchRow::Session(j) => registry.all().get(*j).map_or_else(
-                || (String::new(), String::new()),
-                |m| (m.project.clone(), m.agent.label().to_string()),
-            ),
-            SwitchRow::Terminal(j) => registry.home_terminals().get(*j).map_or_else(
-                || (String::new(), String::new()),
-                |m| (m.label.clone(), "home terminal".to_string()),
-            ),
+        let selected = i == st.sel;
+        let (icon, label, sub, waiting) = match row {
+            SwitchRow::Session(j) => {
+                if !printed_sessions {
+                    list = list.child(section_header("SESSIONS", 0.0, 6.0));
+                    printed_sessions = true;
+                }
+                registry.all().get(*j).map_or_else(
+                    || ("term", String::new(), String::new(), false),
+                    |m| {
+                        let waiting = layer.activity.read(cx).state_of(m.id)
+                            == crate::activity::ActivityState::WaitingForInput;
+                        let label = if waiting {
+                            format!("{} (waiting)", m.agent.label())
+                        } else {
+                            m.agent.label().to_string()
+                        };
+                        (
+                            m.agent.icon_name(),
+                            label,
+                            format!(
+                                "{} / {}",
+                                m.project,
+                                std::path::Path::new(&m.wt_path)
+                                    .file_name()
+                                    .map_or_else(String::new, |f| f.to_string_lossy().into_owned())
+                            ),
+                            waiting,
+                        )
+                    },
+                )
+            }
+            SwitchRow::Terminal(j) => {
+                if !printed_terminals {
+                    let top = if i == 0 { 0.0 } else { 12.0 };
+                    list = list.child(section_header("TERMINALS", top, 6.0));
+                    printed_terminals = true;
+                }
+                registry.home_terminals().get(*j).map_or_else(
+                    || ("term", String::new(), String::new(), false),
+                    |m| ("term", m.label.clone(), "home terminal".to_string(), false),
+                )
+            }
         };
-        list = list.child(click_row(
+        let content = palette_row_content(icon, label, sub, selected, true);
+        let row_el = palette_row(
             gpui::SharedString::from(format!("switch-{i}")),
-            i == st.sel,
+            selected,
             dispatch,
             ModalClick::SelectRow(i),
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .w_full()
-                .child(
-                    div()
-                        .flex_1()
-                        .text_size(px(12.0))
-                        .text_color(c::FG_DIM())
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(c::FG_MUTE())
-                        .child(sub),
-                ),
-        ));
+            content,
+        );
+        // Waiting sessions keep the sidebar's amber tint, same idiom as
+        // `views::rows`'s waiting row.
+        if waiting {
+            let mut tint = c::AMBER();
+            tint.a = 0.12;
+            list = list.child(div().rounded(px(6.0)).bg(tint).child(row_el));
+        } else {
+            list = list.child(row_el);
+        }
     }
     list.into_any_element()
 }
@@ -590,37 +691,47 @@ fn settings_list(st: &LauncherSlotState, dispatch: &ModalDispatch, cx: &App) -> 
             list = list.child(section_header(s.section(), 8.0, 4.0));
             last_section = Some(s.section());
         }
-        list = list.child(click_row(
+        let selected = i == st.sel;
+        list = list.child(palette_row(
             gpui::SharedString::from(format!("lset-{i}")),
-            i == st.sel,
+            selected,
             dispatch,
             ModalClick::SelectRow(i),
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .w_full()
-                .child(crate::icons::icon(s.icon_name(), 13.0, c::FG_MUTE()))
-                .child(
-                    div()
-                        .flex_1()
-                        .text_size(px(12.0))
-                        .text_color(c::FG_DIM())
-                        .child(s.label()),
-                )
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(c::FG_MUTE())
-                        .child(super::settings::setting_value(s, cx)),
-                ),
+            palette_row_content(
+                s.icon_name(),
+                s.label().to_string(),
+                super::settings::setting_value(s, cx),
+                selected,
+                true,
+            ),
         ));
+        // The inline safety warning under a selected Permissions row (B3 in
+        // the palette redesign) — `panes.rs:24-42`.
+        if selected && matches!(s, crate::launcher::SettingRow::Permissions) {
+            list = list.child(
+                div()
+                    .pt(px(4.0))
+                    .pb(px(2.0))
+                    .pl(px(44.0))
+                    .pr(px(12.0))
+                    .text_size(px(11.0))
+                    .text_color(c::FG_DIM())
+                    .child("Skip lets agents run any command without asking."),
+            );
+        }
     }
     list.into_any_element()
 }
 
+/// One agent icon button in the row-actions strip's agent bar: a 26px
+/// rounded square, ringed yellow when it is the selected agent
+/// (`src/gui/session_launcher/view/rows.rs:17-18`, `AGENT_BTN`).
+const AGENT_BTN: f32 = 26.0;
+
 /// The Tab-revealed action strip, with its agent icon bar. ←/→ walk the bar,
-/// which is exactly the carve-out the caret would otherwise eat.
+/// which is exactly the carve-out the caret would otherwise eat
+/// (`src/gui/session_launcher/view/rows.rs`, the strip's `Launch session…`
+/// row).
 fn row_actions(st: &LauncherSlotState, dispatch: &ModalDispatch) -> AnyElement {
     let agents = super::confirm::available_agents();
     let mut bar = div().flex().items_center().gap(px(6.0));
@@ -628,14 +739,21 @@ fn row_actions(st: &LauncherSlotState, dispatch: &ModalDispatch) -> AnyElement {
         let selected = i == st.sel;
         bar = bar.child(click_row(
             gpui::SharedString::from(format!("strip-agent-{i}")),
-            selected,
+            false,
             dispatch,
             ModalClick::SelectRow(i),
-            crate::icons::icon(
-                a.icon_name(),
-                14.0,
-                if selected { c::FG() } else { c::FG_MUTE() },
-            ),
+            div()
+                .size(px(AGENT_BTN))
+                .rounded(px(6.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(selected, |d| d.border_1().border_color(c::YELLOW()))
+                .child(crate::icons::icon(
+                    a.icon_name(),
+                    14.0,
+                    if selected { c::YELLOW() } else { c::FG_MUTE() },
+                )),
         ));
     }
     div()

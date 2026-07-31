@@ -8,18 +8,93 @@
 //! `crate::terminal_element::project_theme_override`'s `preview` argument
 //! (carried decision 7) — there is no second theme-override path.
 
-use gpui::{div, prelude::*, px, AnyElement, App, Context};
+use gpui::{div, prelude::*, px, AnyElement, App, Context, Hsla, SharedString};
 use grove_core::theme::{Theme, ThemeKind};
 
 use crate::settings::SettingsState;
 use crate::theme as c;
 
 use super::shell::{
-    body_text, click_action, click_checkbox, click_row, modal_body, modal_footer_hints,
-    modal_header, modal_panel, note_text, ModalBtn,
+    body_text, caption, click_action, click_checkbox, click_row, divider_h, modal_body,
+    modal_footer_hints, modal_header, modal_panel, note_text, seg_button, seg_group, ModalBtn,
+    OnToggle, SegSide,
 };
 use super::{Modal, ModalClick, ModalDispatch, ModalLayer};
 use crate::modal::{ThemePickerReturn, ThemePickerScope};
+
+/// A tooltip-carrying icon mini button for a `ThemeManager` row action
+/// (edit/rename/duplicate/delete) — `src/gui/widgets/buttons.rs`'
+/// `action_mini`/`action_mini_danger`, ported to gpui's icon sprite + the
+/// built-in `.tooltip()` hover hint (`theme_manager.rs:192-218`).
+fn action_mini(
+    id: &'static str,
+    icon_name: &'static str,
+    hint: &'static str,
+    danger: bool,
+    dispatch: &ModalDispatch,
+    click: ModalClick,
+) -> AnyElement {
+    let dispatch = std::rc::Rc::clone(dispatch);
+    let color = if danger { c::RED() } else { c::FG_MUTE() };
+    div()
+        .id(id)
+        .size(px(22.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.0))
+        .hover(|s| s.bg(c::BG_HOVER()))
+        .cursor_pointer()
+        .child(crate::icons::icon(icon_name, 13.0, color))
+        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+            dispatch(click.clone(), window, cx);
+        })
+        .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(hint).build(window, cx))
+        .into_any_element()
+}
+
+/// The 11-swatch palette strip previewing a whole theme, in
+/// `grove_core::theme::FIELD_NAMES` order — `ThemeManager`'s row preview
+/// (`theme_manager.rs:18-37`). Distinct from [`swatch`], which is the
+/// 4-color glance `ThemePicker` rows use.
+fn swatch_strip(t: &Theme) -> impl IntoElement {
+    let mut strip = div().flex().items_center().gap(px(2.0));
+    for i in 0..grove_core::theme::FIELD_NAMES.len() {
+        let color = Hsla::from(c::ic(t.field(i)));
+        strip = strip.child(
+            div()
+                .size(px(10.0))
+                .rounded(px(2.0))
+                .border_1()
+                .border_color(c::BORDER())
+                .bg(color),
+        );
+    }
+    strip
+}
+
+/// The DARK/LIGHT kind badge next to a `ThemeManager` row's name
+/// (`theme_manager.rs:145-160`).
+fn kind_badge(kind: ThemeKind) -> impl IntoElement {
+    let label: SharedString = match kind {
+        ThemeKind::Dark => "DARK".into(),
+        ThemeKind::Light => "LIGHT".into(),
+    };
+    div()
+        .px(px(5.0))
+        .py(px(1.0))
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(c::BORDER())
+        .bg(c::BG_HL())
+        .child(
+            div()
+                .font(gpui::font(crate::fonts::UI_FAMILY))
+                .text_size(px(9.0))
+                .text_color(c::FG_MUTE())
+                .child(label),
+        )
+}
 
 /// The live project-theme preview an open picker is driving, if any.
 ///
@@ -409,31 +484,37 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
     let themes = selectable(kind);
     let offset = crate::launcher::scroll_offset_for(0, sel, 8, themes.len());
 
-    let tabs = div()
-        .flex()
-        .gap(px(6.0))
-        .child(click_action(
-            "tp-dark",
-            "Dark",
-            if *dark_tab {
-                ModalBtn::Primary
-            } else {
-                ModalBtn::Plain
-            },
-            dispatch,
-            ModalClick::ThemePickerTab(true),
-        ))
-        .child(click_action(
-            "tp-light",
-            "Light",
-            if *dark_tab {
-                ModalBtn::Plain
-            } else {
-                ModalBtn::Primary
-            },
-            dispatch,
-            ModalClick::ThemePickerTab(false),
-        ));
+    let tabs = seg_group(
+        div()
+            .flex()
+            .items_center()
+            .child(seg_button(
+                "tp-dark",
+                "Dark",
+                *dark_tab,
+                SegSide::Left,
+                false,
+                (!*dark_tab).then(|| -> OnToggle {
+                    let dispatch = std::rc::Rc::clone(dispatch);
+                    Box::new(move |window, cx| {
+                        dispatch(ModalClick::ThemePickerTab(true), window, cx);
+                    })
+                }),
+            ))
+            .child(seg_button(
+                "tp-light",
+                "Light",
+                !*dark_tab,
+                SegSide::Right,
+                false,
+                (*dark_tab).then(|| -> OnToggle {
+                    let dispatch = std::rc::Rc::clone(dispatch);
+                    Box::new(move |window, cx| {
+                        dispatch(ModalClick::ThemePickerTab(false), window, cx);
+                    })
+                }),
+            )),
+    );
 
     let mut list = div().flex().flex_col().gap(px(2.0));
     if matches!(scope, ThemePickerScope::Project(_)) {
@@ -556,90 +637,274 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
         .into_any_element();
     }
 
-    let themes = grove_core::theme::all_custom_themes();
-    let mut list = div().flex().flex_col().gap(px(2.0));
-    if themes.is_empty() {
-        list = list.child(body_text("No custom themes yet."));
-    }
-    for (i, t) in themes.iter().enumerate() {
-        let is_renaming = rename.as_ref().is_some_and(|(from, _)| *from == t.name);
-        let is_pending = pending_delete.as_deref() == Some(t.name.as_ref());
-        list = list.child(click_row(
-            gpui::SharedString::from(format!("tm-{i}")),
-            i == *selected,
-            dispatch,
-            ModalClick::ThemeSelect(i),
+    // A pending delete swaps the whole panel for a confirm-shaped dialog
+    // (header/body/footer) rather than an inline row, matching every other
+    // destructive confirmation in the app (`theme_manager.rs:55-86`). Key
+    // handling (y/esc) is unaffected — it lives in `crate::modal`.
+    if let Some(name) = pending_delete {
+        let body_zone = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(body_text(format!("Delete theme \"{name}\"?")))
+            .child(caption("This cannot be undone."))
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(click_action(
+                        "tm-del-cancel",
+                        "Cancel",
+                        ModalBtn::Plain,
+                        dispatch,
+                        ModalClick::ThemeDeleteCancel,
+                    ))
+                    .child(click_action(
+                        "tm-del-confirm",
+                        "Delete",
+                        ModalBtn::Danger,
+                        dispatch,
+                        ModalClick::ThemeDeleteConfirm,
+                    )),
+            );
+        return modal_panel(
+            420.0,
             div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .w_full()
-                .child(
-                    div()
-                        .flex_1()
-                        .text_size(px(12.0))
-                        .text_color(if is_pending { c::RED() } else { c::FG_DIM() })
-                        .child(if is_renaming {
-                            rename
-                                .as_ref()
-                                .map_or_else(|| t.name.to_string(), |(_, buf)| buf.clone())
-                        } else {
-                            t.name.to_string()
-                        }),
-                )
-                .child(swatch(t))
-                .child(click_action(
-                    "tm-rename",
-                    "rename",
-                    ModalBtn::Plain,
-                    dispatch,
-                    ModalClick::ThemeRenameStart(i),
-                ))
-                .child(click_action(
-                    "tm-dup",
-                    "duplicate",
-                    ModalBtn::Plain,
-                    dispatch,
-                    ModalClick::ThemeDuplicate(i),
-                ))
-                .child(click_action(
-                    "tm-edit",
-                    "edit",
-                    ModalBtn::Plain,
-                    dispatch,
-                    ModalClick::ThemeEditOpen(i),
-                ))
-                .child(click_action(
-                    "tm-del",
-                    "delete",
-                    ModalBtn::Danger,
-                    dispatch,
-                    ModalClick::ThemeDeleteRequest(i),
-                )),
-        ));
+                .child(modal_header("Delete theme", c::RED()))
+                .child(modal_body(body_zone))
+                .child(modal_footer_hints(&[("y", "delete"), ("esc", "cancel")])),
+        )
+        .into_any_element();
     }
 
-    let mut body = div().flex().flex_col().gap(px(10.0)).child(list);
-    if let Some(err) = rename_error {
-        body = body.child(note_text(err.clone()));
-    }
-    if let Some(name) = pending_delete {
-        body = body.child(note_text(format!("Delete '{name}'?  y / n")));
-    }
-    body = body.child(div().flex().gap(px(8.0)).child(click_action(
-        "tm-new",
-        "New theme",
-        ModalBtn::Primary,
-        dispatch,
-        ModalClick::ThemeNew,
-    )));
+    let themes = grove_core::theme::all_custom_themes();
+    let list_content: AnyElement = if themes.is_empty() {
+        div()
+            .w_full()
+            .py(px(30.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(body_text(
+                "No custom themes yet — create one or paste a palette.",
+            ))
+            .into_any_element()
+    } else {
+        let mut list = div().flex().flex_col().gap(px(4.0));
+        for (i, t) in themes.iter().enumerate() {
+            let is_renaming = rename.as_ref().is_some_and(|(from, _)| *from == t.name);
+            let row_el: AnyElement = if is_renaming {
+                let buf = rename
+                    .as_ref()
+                    .map_or_else(|| t.name.to_string(), |(_, buf)| buf.clone());
+                // A real gpui-component `Input` needs a field `mod.rs` owns
+                // (`build_fields` has no ThemeManager-rename arm and this
+                // file cannot add one), so this falls back to a styled
+                // editable-looking buffer row: the live rename buffer plus a
+                // blinking-caret glyph, in the same selected-tint container
+                // the iced original uses (`theme_manager.rs:106-141`).
+                let mut col = div().flex().flex_col().gap(px(4.0)).child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .w_full()
+                        .child(
+                            div()
+                                .flex_1()
+                                .px(px(8.0))
+                                .py(px(4.0))
+                                .rounded(px(4.0))
+                                .bg(c::BG())
+                                .border_1()
+                                .border_color(c::BORDER())
+                                .flex()
+                                .items_center()
+                                .child(div().text_size(px(12.0)).text_color(c::FG()).child(buf))
+                                .child(div().w(px(1.0)).h(px(13.0)).ml(px(2.0)).bg(c::FG_DIM())),
+                        )
+                        .child(click_action(
+                            "tm-rename-save",
+                            "Save",
+                            ModalBtn::Primary,
+                            dispatch,
+                            ModalClick::ThemeRenameCommit,
+                        ))
+                        .child(click_action(
+                            "tm-rename-cancel",
+                            "Cancel",
+                            ModalBtn::Plain,
+                            dispatch,
+                            // No `ModalClick` variant exists for a
+                            // mouse-driven rename-cancel (only
+                            // `ModalAction::ThemeManagerRenameCancel`,
+                            // reached from the keyboard verdict table in
+                            // `crate::modal`, which `ModalDispatch`
+                            // cannot invoke) — `mod.rs` is read-only so
+                            // one cannot be added here. `ThemeRenameStart`
+                            // re-seeds `rename` to `(name, name)`, which
+                            // is what Cancel would produce anyway since
+                            // this fallback buffer never diverges from
+                            // the original name (no live-typing dispatch
+                            // exists either). Escape still cancels
+                            // correctly via the keyboard path.
+                            ModalClick::ThemeRenameStart(i),
+                        )),
+                );
+                if let Some(err) = rename_error {
+                    col = col.child(note_text(err.clone()));
+                }
+                div()
+                    .w_full()
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .rounded(px(6.0))
+                    .bg(c::SEL_TINT_STRONG())
+                    .border_1()
+                    .border_color(c::SEL_RING())
+                    .child(col)
+                    .into_any_element()
+            } else {
+                let active = i == *selected;
+                let name_zone = div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(if active { c::FG() } else { c::FG_DIM() })
+                            .child(t.name.to_string()),
+                    )
+                    .child(kind_badge(t.kind));
+                let icons = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.0))
+                    .child(action_mini(
+                        "tm-edit",
+                        "edit",
+                        "edit",
+                        false,
+                        dispatch,
+                        ModalClick::ThemeEditOpen(i),
+                    ))
+                    .child(action_mini(
+                        "tm-rename",
+                        "rename",
+                        "rename",
+                        false,
+                        dispatch,
+                        ModalClick::ThemeRenameStart(i),
+                    ))
+                    .child(action_mini(
+                        "tm-dup",
+                        "duplicate",
+                        "duplicate",
+                        false,
+                        dispatch,
+                        ModalClick::ThemeDuplicate(i),
+                    ))
+                    .child(action_mini(
+                        "tm-del",
+                        "trash",
+                        "delete",
+                        true,
+                        dispatch,
+                        ModalClick::ThemeDeleteRequest(i),
+                    ));
+                click_row(
+                    gpui::SharedString::from(format!("tm-{i}")),
+                    active,
+                    dispatch,
+                    ModalClick::ThemeSelect(i),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .w_full()
+                        .child(name_zone)
+                        .child(swatch_strip(t))
+                        .child(icons),
+                )
+                .into_any_element()
+            };
+            list = list.child(row_el);
+        }
+        div()
+            .id("theme-manager-list")
+            .max_h(px(360.0))
+            .overflow_y_scroll()
+            .w_full()
+            .child(list)
+            .into_any_element()
+    };
+
+    // Bare title + a close icon button — the Settings modal's header shape —
+    // since like Settings every row action here persists immediately, there
+    // is no unsaved state a Cancel/Save footer would guard
+    // (`theme_manager.rs:214-222`).
+    let header = modal_header_row_with_close(dispatch);
+
+    let body_zone = div()
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .child(div().flex().justify_end().child(click_action(
+            "tm-new",
+            "+ New theme",
+            ModalBtn::Primary,
+            dispatch,
+            ModalClick::ThemeNew,
+        )))
+        .child(list_content);
 
     modal_panel(
-        620.0,
+        560.0,
         div()
-            .child(modal_header("Manage themes", c::MAGENTA()))
-            .child(modal_body(body))
-            .child(modal_footer_hints(&[("↑↓", "browse"), ("esc", "close")])),
+            .child(header)
+            .child(divider_h())
+            .child(modal_body(body_zone))
+            .child(divider_h())
+            .child(modal_footer_hints(&[("↑↓", "select"), ("esc", "close")])),
     )
     .into_any_element()
+}
+
+/// `modal_header`'s bare-title shape plus a trailing close icon button
+/// (`theme_manager.rs:214-222`).
+fn modal_header_row_with_close(dispatch: &ModalDispatch) -> impl IntoElement {
+    let dispatch2 = std::rc::Rc::clone(dispatch);
+    div().w_full().px(px(16.0)).py(px(14.0)).child(
+        div()
+            .flex()
+            .items_center()
+            .w_full()
+            .child(
+                div()
+                    .flex_1()
+                    .font(gpui::font(crate::fonts::UI_FAMILY))
+                    .text_size(px(13.0))
+                    .text_color(c::MAGENTA())
+                    .child("Manage themes"),
+            )
+            .child(
+                div()
+                    .id("tm-close")
+                    .size(px(22.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.0))
+                    .hover(|s| s.bg(c::BG_HOVER()))
+                    .cursor_pointer()
+                    .child(crate::icons::icon("close", 12.0, c::FG_MUTE()))
+                    .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                        dispatch2(ModalClick::Cancel, window, cx);
+                    }),
+            ),
+    )
 }

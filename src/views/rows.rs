@@ -193,6 +193,7 @@ pub enum TreeRow {
         name: String,
         branch: String,
         is_main: bool,
+        is_git: bool,
         active: bool,
         expanded: bool,
         has_run: bool,
@@ -218,6 +219,7 @@ pub enum TreeRow {
         idx: usize,
         active: bool,
         pending_kill: bool,
+        running: bool,
     },
 }
 
@@ -249,7 +251,7 @@ pub fn flatten(
     ws: &WorkspaceState,
     activity: &ActivityStore,
     git_suffix: &HashMap<String, String>,
-    home_terminal_count: usize,
+    home_running: &[bool],
 ) -> Vec<TreeRow> {
     let mut rows = Vec::new();
     let mut any_active = false;
@@ -286,6 +288,7 @@ pub fn flatten(
                 name: w.name.clone(),
                 branch: w.branch.clone(),
                 is_main: w.is_main,
+                is_git: p.is_git,
                 active: p.idx == ws.proj_idx() && wi == ws.wt_idx(),
                 expanded: wt_expanded,
                 has_run: p.has_run,
@@ -323,14 +326,15 @@ pub fn flatten(
         // (`sidebar.rs:363-372`). The divider above it is the view's job.
         rows.push(TreeRow::TerminalsHeader {
             expanded: true,
-            count: home_terminal_count,
+            count: home_running.len(),
             activity_dot: false,
         });
-        for i in 0..home_terminal_count {
+        for (i, &running) in home_running.iter().enumerate() {
             rows.push(TreeRow::Terminal {
                 idx: i,
                 active: ws.terminal_focused() && ws.active_terminal() == Some(i),
                 pending_kill: ws.pending_kill_terminal() == Some(i),
+                running,
             });
         }
     }
@@ -487,8 +491,14 @@ fn tool_button(
         .items_center()
         .justify_center()
         .rounded(px(4.0))
+        .border_1()
+        .border_color(gpui::transparent_black())
         .text_color(c::FG_MUTE())
-        .hover(move |s| s.bg(hover_bg).text_color(hover_fg))
+        .hover(move |s| {
+            s.bg(hover_bg)
+                .text_color(hover_fg)
+                .border_color(c::BORDER_SOFT())
+        })
         .child(icons::icon(glyph, size, c::FG_MUTE()))
         .on_mouse_down(MouseButton::Left, ctx.on(action))
         .into_any_element()
@@ -549,7 +559,8 @@ pub fn render_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
             idx,
             active,
             pending_kill,
-        } => terminal_row(*idx, *active, *pending_kill, ctx),
+            running,
+        } => terminal_row(*idx, *active, *pending_kill, *running, ctx),
     }
 }
 
@@ -663,6 +674,7 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         name,
         branch,
         is_main,
+        is_git,
         active,
         expanded,
         has_run,
@@ -678,8 +690,26 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
     let twist = if *expanded { "chev-down" } else { "chev-right" };
     let hovered = ctx.hovered_wt == Some((proj, wt));
 
-    let mut label = div().flex().flex_col().overflow_hidden();
-    label = label.child(ui_text(name.clone(), 13.0, c::FG_DIM()).overflow_hidden());
+    // Non-git project root: flag it so the user knows sessions run directly in
+    // the project path with no branch isolation / worktrees
+    // (`src/gui/rows.rs:326-349`).
+    let no_git = *is_main && !*is_git;
+
+    let mut label = if no_git {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(5.0))
+            .overflow_hidden()
+            .child(ui_text(name.clone(), 13.0, c::FG_DIM()).overflow_hidden())
+            .child(icons::icon("no-git", 11.0, c::FG_MUTE()))
+            .child(ui_text("no git", 10.0, c::FG_MUTE()))
+    } else {
+        div().flex().flex_col().overflow_hidden()
+    };
+    if !no_git {
+        label = label.child(ui_text(name.clone(), 13.0, c::FG_DIM()).overflow_hidden());
+    }
     if show_branch {
         // Branch chip: a soft-bordered pill under the name.
         label = label.child(
@@ -741,7 +771,7 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
             ));
         }
         strip.into_any_element()
-    } else if *is_main {
+    } else if *is_main && *is_git {
         div().px(px(8.0)).child(main_tag()).into_any_element()
     } else {
         div().into_any_element()
@@ -754,9 +784,12 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         .flex()
         .items_center()
         .when(*active, |d| d.bg(c::BG_HL()))
-        .on_mouse_move({
+        .on_hover({
             let dispatch = Rc::clone(&ctx.dispatch);
-            move |_, window, cx| dispatch(RowAction::HoverWorktree(Some((proj, wt))), window, cx)
+            move |hovered, window, cx| {
+                let target = if *hovered { Some((proj, wt)) } else { None };
+                dispatch(RowAction::HoverWorktree(target), window, cx);
+            }
         })
         .child(
             div()
@@ -851,6 +884,7 @@ fn session_row(
         .id(SharedString::from(format!("sess-{}", id.raw())))
         .h(px(ROW_H))
         .w_full()
+        .relative()
         .flex()
         .items_center()
         .gap(px(8.0))
@@ -862,14 +896,25 @@ fn session_row(
                 a: 0.12,
                 ..c::AMBER()
             })
-            .border_l(px(3.0))
-            .border_color(c::AMBER())
         })
         .hover(|s| s.bg(c::BG_HOVER()))
         .on_mouse_down(MouseButton::Left, ctx.on(RowAction::SelectSession(id)))
         .child(state_glyph(state, ctx.tick, ctx.pulse))
         .child(meta)
         .child(close)
+        // Overlaid rather than a `border_l` so the amber accent never shifts
+        // the row content (`src/gui/rows.rs:539-566`).
+        .when(state == ActivityState::WaitingForInput, |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .top(px(0.0))
+                    .left(px(0.0))
+                    .bottom(px(0.0))
+                    .w(px(3.0))
+                    .bg(c::AMBER()),
+            )
+        })
         .into_any_element()
 }
 
@@ -913,8 +958,14 @@ pub fn terminals_header(
                 .child(icons::icon(twist, 10.0, c::FG_MUTE()))
                 .child(icons::icon("term", 11.0, c::FG_MUTE()))
                 .child(ui_text(tracked("TERMINALS"), 10.0, c::FG_MUTE()))
-                .child(ui_text(format!("{count}"), 10.0, c::FG_MUTE()))
-                .when(activity_dot, |d| d.child(dot(c::GREEN()))),
+                .child(
+                    ui_text(format!("{count}"), 10.0, c::FG_MUTE())
+                        .px(px(6.0))
+                        .py(px(1.0))
+                        .rounded(px(3.0))
+                        .bg(c::BORDER_SOFT()),
+                )
+                .when(activity_dot, |d| d.child(dot(c::CYAN()))),
         )
         .child(tool_button(
             "term-new",
@@ -928,7 +979,13 @@ pub fn terminals_header(
         .into_any_element()
 }
 
-fn terminal_row(idx: usize, active: bool, pending_kill: bool, ctx: &RowCtx) -> AnyElement {
+fn terminal_row(
+    idx: usize,
+    active: bool,
+    pending_kill: bool,
+    running: bool,
+    ctx: &RowCtx,
+) -> AnyElement {
     // No synthetic "terminal N" name — the icon plus the shell's own title,
     // falling back to `~` (`src/gui/rows.rs:596-600`).
     let context = ctx
@@ -937,7 +994,13 @@ fn terminal_row(idx: usize, active: bool, pending_kill: bool, ctx: &RowCtx) -> A
         .cloned()
         .flatten()
         .unwrap_or_else(|| "~".to_string());
-    let name_color = if active { c::CYAN() } else { c::FG() };
+    let name_color = if active {
+        c::CYAN()
+    } else if running {
+        c::FG()
+    } else {
+        c::FG_MUTE()
+    };
     let close = if pending_kill {
         tool_button(
             "term-kill",
@@ -1150,7 +1213,13 @@ mod tests {
     }
 
     fn rows_of(snap: &TreeSnapshot, ws: &WorkspaceState, homes: usize) -> Vec<TreeRow> {
-        flatten(snap, ws, &ActivityStore::new(), &HashMap::new(), homes)
+        flatten(
+            snap,
+            ws,
+            &ActivityStore::new(),
+            &HashMap::new(),
+            &vec![false; homes],
+        )
     }
 
     /// A compact shape description, so order assertions read as the tree.
@@ -1337,7 +1406,7 @@ mod tests {
         ws.toggle_terminals_collapsed();
         let mut suffixes = HashMap::new();
         suffixes.insert("/g".to_string(), "+2".to_string());
-        let rows = flatten(&snap, &ws, &ActivityStore::new(), &suffixes, 0);
+        let rows = flatten(&snap, &ws, &ActivityStore::new(), &suffixes, &[]);
         let found: Vec<Option<String>> = rows
             .iter()
             .filter_map(|r| match r {

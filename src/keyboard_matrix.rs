@@ -585,3 +585,123 @@ fn the_three_carve_outs_survive_without_either_static() {
         keymap::platform_mod_label()
     );
 }
+
+// ── modal fields: the keys reclaimed from a focused `Input` ──────────────
+//
+// gpui-component binds up/down/left/right/tab/shift-tab/enter in the plain
+// `"Input"` context, and a matched binding ends dispatch before the modal
+// layer's bubble-phase `on_key_down` runs. Grove registers the same chords in
+// the descendant context `"<ModalKind> > Input"`, which matches at the same
+// node and therefore wins on registration order. These two tests pin both
+// halves: the bindings exist, and they out-rank the `"Input"` ones.
+
+/// The full binding set as gpui would see it: gpui-component's `"Input"`
+/// bindings first (`gpui_component::init`), Grove's second (`app.rs`).
+fn keymap_as_registered() -> gpui::Keymap {
+    use gpui_component::input::{
+        Enter, Escape, IndentInline, MoveDown, MoveLeft, MoveRight, MoveUp,
+    };
+
+    let mut bindings = vec![
+        gpui::KeyBinding::new("up", MoveUp, Some("Input")),
+        gpui::KeyBinding::new("down", MoveDown, Some("Input")),
+        gpui::KeyBinding::new("left", MoveLeft, Some("Input")),
+        gpui::KeyBinding::new("right", MoveRight, Some("Input")),
+        gpui::KeyBinding::new("tab", IndentInline, Some("Input")),
+        gpui::KeyBinding::new(
+            "enter",
+            Enter {
+                secondary: false,
+                shift: false,
+            },
+            Some("Input"),
+        ),
+        gpui::KeyBinding::new("escape", Escape, Some("Input")),
+    ];
+    bindings.extend(keymap::bindings());
+    gpui::Keymap::new(bindings)
+}
+
+/// The dispatch stack a focused modal field presents: the modal layer's
+/// `key_context`, then the `Input` element's own.
+fn modal_field_stack(kind: ModalKind) -> Vec<gpui::KeyContext> {
+    vec![
+        gpui::KeyContext::try_from(kind.key_context()).unwrap(),
+        gpui::KeyContext::try_from("Input").unwrap(),
+    ]
+}
+
+/// The name of the action that wins for `key` while `kind`'s field is focused.
+fn winning_action(kind: ModalKind, key: &str) -> String {
+    let keymap = keymap_as_registered();
+    let keystroke = gpui::Keystroke::parse(key).unwrap();
+    let (matched, _) = keymap.bindings_for_input(&[keystroke], &modal_field_stack(kind));
+    matched
+        .first()
+        .map_or_else(|| "<none>".to_string(), |b| b.action().name().to_string())
+}
+
+/// Every single-line modal registers its `"<ModalKind> > Input"` bindings —
+/// otherwise the modal layer never sees ↑/↓/Enter at all (the bug this
+/// replaces: `bindings()` registered zero modal-context bindings).
+#[test]
+fn every_single_line_modal_binds_the_keys_its_field_would_swallow() {
+    use crate::views::modals::input::InputPolicy;
+
+    for kind in ModalKind::ALL {
+        let policy = InputPolicy::for_modal(kind);
+        if policy.multi_line {
+            // A multiline buffer keeps Enter/↑/↓/Tab for the caret.
+            continue;
+        }
+        let ctx = format!("{} > Input", kind.key_context());
+        let mut keys: Vec<&str> = vec!["up", "down", "enter"];
+        if policy.wants_tab {
+            keys.push("tab");
+            keys.push("shift-tab");
+        }
+        if policy.wants_arrows {
+            keys.push("left");
+            keys.push("right");
+        }
+        for key in keys {
+            let found = keymap::modal_input_bindings().into_iter().any(|b| {
+                b.predicate().is_some_and(|p| p.to_string() == ctx)
+                    && b.keystrokes().len() == 1
+                    && b.keystrokes()[0].inner().unparse() == key
+            });
+            assert!(found, "{kind:?} has no `{ctx}` binding for {key}");
+        }
+    }
+}
+
+/// …and the modal binding, not gpui-component's `"Input"` one, is what gpui
+/// picks. Registration order is the tie-breaker, so this is the assertion that
+/// fails if `bindings()` is ever registered before `gpui_component::init`.
+#[test]
+fn the_modal_binding_out_ranks_the_input_binding() {
+    // The palette claims ←/→ too (`wants_arrows`).
+    for key in ["up", "down", "enter", "left", "right"] {
+        let winner = winning_action(ModalKind::SessionLauncher, key);
+        assert!(
+            winner.starts_with("grove_modal::"),
+            "{key} in the palette went to {winner}"
+        );
+    }
+    // Tab is claimed only where the modal asked for it.
+    assert!(winning_action(ModalKind::AddProject, "tab").starts_with("grove_modal::"));
+    assert!(!winning_action(ModalKind::SessionLauncher, "tab").starts_with("grove_modal::"));
+    // A multiline buffer keeps everything: Enter is a newline, Tab indents.
+    for key in ["up", "down", "enter", "tab"] {
+        let winner = winning_action(ModalKind::ScriptsEditor, key);
+        assert!(
+            !winner.starts_with("grove_modal::"),
+            "the scripts editor lost {key} to {winner}"
+        );
+    }
+    // Escape is nobody's action here — it still propagates to `on_key_down`.
+    assert_eq!(
+        winning_action(ModalKind::SessionLauncher, "escape"),
+        "input::Escape"
+    );
+}

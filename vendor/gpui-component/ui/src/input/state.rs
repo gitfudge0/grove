@@ -2381,7 +2381,8 @@ impl InputState {
         self.blink_cursor.update(cx, |cursor, cx| {
             cursor.stop(cx);
         });
-        Root::update(window, cx, |root, _, _| {
+        // Grove patch: tolerant of a window whose root view is not `Root`.
+        Root::try_update(window, cx, |root, _, _| {
             root.focused_input = None;
         });
         self.clamp_number_value(window, cx);

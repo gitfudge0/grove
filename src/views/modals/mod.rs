@@ -33,8 +33,8 @@ pub mod shell;
 pub mod theme_picker;
 
 use gpui::{
-    div, prelude::*, AnimationExt as _, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyDownEvent, Window,
+    div, prelude::*, px, AnimationExt as _, App, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, KeyDownEvent, Window,
 };
 
 use crate::entities::activity_store::ActivityStore;
@@ -117,6 +117,7 @@ pub enum ModalClick {
     WizardToggleInitGit,
     OnboardSkip,
     OnboardAdvance,
+    OnboardBack,
     OnboardPickAgent(usize),
     OnboardPerms(bool),
 }
@@ -367,10 +368,38 @@ impl ModalLayer {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(modal) = self.slot.get() else {
+        let Some((key, mods)) = Self::translate(ev) else {
             return;
         };
-        let Some((key, mods)) = Self::translate(ev) else {
+        self.handle_key(key, mods, window, cx);
+    }
+
+    /// The keys a focused `Input` would otherwise swallow arrive as actions
+    /// instead (`keymap::modal_input_bindings`), already stripped of their
+    /// keystroke. They re-enter the *same* decision path here, so there is one
+    /// verdict table and not two.
+    fn on_modal_key(
+        &mut self,
+        key: ModalKey,
+        shift: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mods = ModalMods {
+            shift,
+            ..ModalMods::default()
+        };
+        self.handle_key(key, mods, window, cx);
+    }
+
+    fn handle_key(
+        &mut self,
+        key: ModalKey,
+        mods: ModalMods,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(modal) = self.slot.get() else {
             return;
         };
         let ctx = KeyCtx {
@@ -612,9 +641,9 @@ impl ModalLayer {
             }
             Modal::ScriptsEditor(st) => {
                 for (placeholder, initial) in [
-                    ("setup script", &st.setup),
-                    ("run script", &st.run),
-                    ("teardown script", &st.teardown),
+                    ("npm install", &st.setup),
+                    ("npm run dev", &st.run),
+                    ("docker compose down", &st.teardown),
                 ] {
                     self.fields
                         .push(ModalInput::multi_line(placeholder, initial, 6, window, cx));
@@ -739,12 +768,15 @@ impl Render for ModalLayer {
                 .child(
                     div()
                         .child(panel)
-                        // Spec §4's entrance animation.
+                        // Spec §4's entrance animation: matches the iced
+                        // original's 200ms fade + 8px settle
+                        // (`onboarding.rs:47-56`) rather than the plain
+                        // 320ms opacity-only fade this replaces.
                         .with_animation(
                             "onboarding-enter",
-                            gpui::Animation::new(std::time::Duration::from_millis(320))
+                            gpui::Animation::new(std::time::Duration::from_millis(200))
                                 .with_easing(gpui::ease_out_quint()),
-                            gpui::Styled::opacity,
+                            |el, delta| el.opacity(delta).pt(px(8.0 * (1.0 - delta))),
                         ),
                 )
         } else if kind.top_drops() {
@@ -758,6 +790,40 @@ impl Render for ModalLayer {
             .key_context(kind.key_context())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key_down))
+            // The keys a focused `Input` would swallow, reclaimed as actions.
+            .on_action(cx.listener(|this, _: &crate::keymap::ModalUp, window, cx| {
+                this.on_modal_key(ModalKey::Up, false, window, cx);
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::keymap::ModalDown, window, cx| {
+                    this.on_modal_key(ModalKey::Down, false, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::keymap::ModalLeft, window, cx| {
+                    this.on_modal_key(ModalKey::Left, false, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::keymap::ModalRight, window, cx| {
+                    this.on_modal_key(ModalKey::Right, false, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::keymap::ModalTab, window, cx| {
+                    this.on_modal_key(ModalKey::Tab, false, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::keymap::ModalShiftTab, window, cx| {
+                    this.on_modal_key(ModalKey::Tab, true, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::keymap::ModalEnter, window, cx| {
+                    this.on_modal_key(ModalKey::Enter, false, window, cx);
+                }),
+            )
             .absolute()
             .top_0()
             .left_0()

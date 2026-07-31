@@ -11,7 +11,7 @@ use std::rc::Rc;
 use gpui::{div, prelude::*, px, AnyElement, App, Entity, Window};
 
 use crate::theme as c;
-use crate::views::grid::{empty_state, PTY_PAD_H, PTY_PAD_W};
+use crate::views::grid::{PTY_PAD_H, PTY_PAD_W};
 use crate::views::session_header::{tool_btn, truncate_middle, SESSBAR_H};
 use crate::views::terminal_view::TerminalView;
 
@@ -37,10 +37,63 @@ pub struct TerminalTabCtx {
     pub dispatch: TabDispatch,
 }
 
+/// Shown in the terminal tab when every home terminal has been closed
+/// (`primitives.rs:279-320`'s `empty_terminals_workspace`): the same
+/// `empty_state` chrome, plus a mod+t keycap hint.
+fn empty_terminals_state() -> AnyElement {
+    let keycap_content: AnyElement = if cfg!(target_os = "macos") {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(1.0))
+            .child(crate::icons::icon("command", 10.0, c::FG_DIM()))
+            .child(
+                div()
+                    .font(gpui::font(crate::fonts::MONO_FAMILY))
+                    .text_size(px(11.0))
+                    .text_color(c::FG_DIM())
+                    .child("t"),
+            )
+            .into_any_element()
+    } else {
+        div()
+            .font(gpui::font(crate::fonts::MONO_FAMILY))
+            .text_size(px(11.0))
+            .text_color(c::FG_DIM())
+            .child(format!("{}+t", crate::keymap::platform_mod_label()))
+            .into_any_element()
+    };
+
+    let hint = div()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .child(crate::views::modals::shell::keycap(keycap_content))
+        .child(
+            div()
+                .font(gpui::font(crate::fonts::MONO_FAMILY))
+                .text_size(px(10.0))
+                .text_color(c::FG_MUTE())
+                .child("open a terminal"),
+        );
+
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(6.0))
+        .size_full()
+        .bg(c::BG())
+        .child(crate::views::rows::ui_text("no terminals open", 14.0, c::FG_DIM()))
+        .child(hint)
+        .into_any_element()
+}
+
 /// The bar plus the active home terminal's PTY.
 pub fn terminal_tab(ctx: &TerminalTabCtx) -> AnyElement {
     let Some(view) = ctx.view.clone() else {
-        return empty_state("no terminals open", "open one from the TERMINALS section");
+        return empty_terminals_state();
     };
     div()
         .flex()

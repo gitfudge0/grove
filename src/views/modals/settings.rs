@@ -19,11 +19,15 @@ use crate::settings::SettingsState;
 use crate::theme as c;
 
 use super::shell::{
-    body_text, click_action, click_checkbox, click_row, modal_body, modal_footer_hints,
-    modal_header, modal_panel, section_header, ModalBtn,
+    body_text, caption, caption_promoted, click_action, click_checkbox, click_row, divider_h,
+    flat_icon_btn, flat_text_btn, modal_body, modal_checkbox, modal_footer_hints, modal_footer_row,
+    modal_header, modal_header_row, modal_panel, section_header, seg_button, seg_group, ModalBtn,
+    OnToggle, SegSide,
 };
 use super::{Modal, ModalClick, ModalDispatch, ModalLayer, SettingToggle};
 use crate::modal::{ScriptsEditorState, ThemePickerReturn, ThemePickerScope};
+use crate::views::workspace::Workspace;
+use crate::zoom::{ZoomState, ZOOM_DEFAULT, ZOOM_STEP};
 
 /// The current value shown on a settings row.
 pub fn setting_value(row: SettingRow, cx: &App) -> String {
@@ -439,44 +443,63 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     match layer.slot().get() {
         Some(Modal::Settings) => settings_modal(layer, dispatch, cx),
         Some(Modal::ShortcutOverlay) => shortcut_overlay(layer.state.read(cx).screen()),
-        Some(Modal::ScriptsEditor(st)) => scripts_editor(layer, st, dispatch),
+        Some(Modal::ScriptsEditor(st)) => scripts_editor(layer, st, dispatch, cx),
         Some(Modal::Updating) => updating_modal(layer, dispatch, cx),
         Some(Modal::Changelog { .. }) => changelog_modal(layer, dispatch, cx),
         _ => div().into_any_element(),
     }
 }
 
+/// A drill-in settings row: label, value, and a trailing chevron when
+/// `chevron` is set (App theme / Archived projects — the rows that open
+/// another modal; `src/gui/view/modals/settings.rs:230-243,303-316`).
 fn settings_row(
     id: &'static str,
     label: &'static str,
     value: String,
+    chevron: bool,
     dispatch: &ModalDispatch,
     click: ModalClick,
 ) -> impl IntoElement {
-    click_row(
-        id,
-        false,
-        dispatch,
-        click,
-        div()
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .w_full()
-            .child(
-                div()
-                    .flex_1()
-                    .text_size(px(12.0))
-                    .text_color(c::FG_DIM())
-                    .child(label),
-            )
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(c::FG_MUTE())
-                    .child(value),
-            ),
-    )
+    let mut row = div()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .w_full()
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(12.0))
+                .text_color(c::FG())
+                .child(label),
+        )
+        .child(
+            div()
+                .text_size(px(12.0))
+                .text_color(c::FG_DIM())
+                .child(value),
+        );
+    if chevron {
+        row = row.child(crate::icons::icon("chev-right", 12.0, c::FG_MUTE()));
+    }
+    click_row(id, false, dispatch, click, row)
+}
+
+/// A checkbox row wired to a raw persist-and-repaint closure rather than a
+/// [`ModalClick`] — for the two boolean rows (`ProjectThemes`, `Telemetry`)
+/// whose toggle path lives in [`ModalLayer::activate_setting`] but has no
+/// [`SettingToggle`] variant of its own. `cx.refresh_windows()` stands in for
+/// the entity's own `cx.notify()`, which this closure's `&mut App` has no
+/// access to.
+fn raw_checkbox(
+    id: &'static str,
+    label: &'static str,
+    checked: bool,
+    accent: gpui::Hsla,
+    on_toggle: impl Fn(&mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let handler: OnToggle = Box::new(on_toggle);
+    modal_checkbox(id, label, checked, accent, Some(handler))
 }
 
 /// Every control persists immediately; there is no apply/cancel footer.
@@ -484,27 +507,114 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let store = &cx.global::<SettingsState>().store;
     let archived = store.archived_count();
     let tmux_on = store.tmux_enabled.unwrap_or(false);
+    let skip_perms_on = store.dangerously_skip_permissions_enabled.unwrap_or(false);
 
-    let body = div()
+    // ── header ───────────────────────────────────────────────────────────
+    let header = modal_header_row(
+        div()
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(13.0))
+                    .text_color(c::CYAN())
+                    .child("Settings"),
+            )
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(c::FG_MUTE())
+                    .child("Changes save automatically."),
+            )
+            .child(div().w(px(10.0)))
+            .child(flat_icon_btn("set-close", "close", 28.0, 15.0, {
+                let dispatch = std::rc::Rc::clone(dispatch);
+                move |window, cx| dispatch(ModalClick::Cancel, window, cx)
+            })),
+    );
+
+    // ── appearance ───────────────────────────────────────────────────────
+    let zoom_pct = format!("{:.0}%", cx.global::<ZoomState>().zoom * 100.0);
+    let app_size_row = div()
+        .flex()
+        .items_center()
+        .h(px(28.0))
+        .px(px(10.0))
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(12.0))
+                .text_color(c::FG())
+                .child("App size"),
+        )
+        .child(seg_group(
+            div()
+                .flex()
+                .items_center()
+                .child(flat_icon_btn(
+                    "set-zoom-out",
+                    "minus",
+                    20.0,
+                    13.0,
+                    |_, cx| {
+                        Workspace::set_zoom(cx.global::<ZoomState>().zoom - ZOOM_STEP, cx);
+                    },
+                ))
+                .child(flat_text_btn(
+                    "set-zoom-reset",
+                    zoom_pct,
+                    12.0,
+                    2.0,
+                    |_, cx| {
+                        Workspace::set_zoom(ZOOM_DEFAULT, cx);
+                    },
+                ))
+                .child(flat_icon_btn("set-zoom-in", "plus", 20.0, 13.0, |_, cx| {
+                    Workspace::set_zoom(cx.global::<ZoomState>().zoom + ZOOM_STEP, cx);
+                })),
+        ));
+
+    let appearance = div()
         .flex()
         .flex_col()
-        .gap(px(2.0))
+        .gap(px(4.0))
         .child(section_header("APPEARANCE", 4.0, 4.0))
         .child(settings_row(
             "set-theme",
             "App theme",
             setting_value(SettingRow::Theme, cx),
+            true,
             dispatch,
             ModalClick::OpenThemePicker,
         ))
+        // Not in the iced original (`settings_iced.rs`) — the gpui-only entry
+        // point into `ThemeManager` (custom-theme CRUD), kept here since
+        // nothing else in Settings opens it.
         .child(settings_row(
             "set-manage-themes",
             "Manage themes…",
             String::new(),
+            true,
             dispatch,
             ModalClick::OpenThemeManager,
         ))
-        .child(click_checkbox(
+        .child(app_size_row)
+        .child(div().px(px(10.0)).child(raw_checkbox(
+            "set-project-themes",
+            "Project themes",
+            store.project_themes_enabled,
+            c::MAGENTA(),
+            |_, cx| {
+                SettingsState::update(cx, |store| {
+                    store.project_themes_enabled = !store.project_themes_enabled;
+                });
+                SettingsState::flush_now(cx);
+                cx.refresh_windows();
+            },
+        )))
+        .child(caption("Let each project pin its PTYs to a specific theme"))
+        .child(div().px(px(10.0)).child(click_checkbox(
             "set-follow-system",
             "Follow system appearance",
             store.theme_follow_system,
@@ -512,72 +622,248 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
             true,
             dispatch,
             ModalClick::ToggleSetting(SettingToggle::ThemeFollowSystem),
-        ))
+        )));
+
+    // ── projects ─────────────────────────────────────────────────────────
+    // Shown with "0" rather than hidden when nothing is archived (see the
+    // iced original's comment at `settings.rs:299-302`): a row that only
+    // appears after the first archive makes the feature undiscoverable at
+    // exactly the moment the user needs to know where their project went.
+    let projects = div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(section_header("PROJECTS", 10.0, 4.0))
+        .child(settings_row(
+            "set-archived",
+            "Archived projects",
+            format!("{archived}"),
+            true,
+            dispatch,
+            ModalClick::OpenArchivedProjects,
+        ));
+
+    // ── agents / terminal ────────────────────────────────────────────────
+    let backend_row = div()
+        .flex()
+        .items_center()
+        .h(px(28.0))
+        .px(px(10.0))
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(12.0))
+                .text_color(c::FG())
+                .child("Backend"),
+        )
+        .child(seg_group(
+            div()
+                .flex()
+                .items_center()
+                .child(seg_button(
+                    "set-backend-native",
+                    "Native",
+                    !tmux_on,
+                    SegSide::Left,
+                    false,
+                    tmux_on.then(|| -> OnToggle {
+                        let dispatch = std::rc::Rc::clone(dispatch);
+                        Box::new(move |window, cx| {
+                            dispatch(ModalClick::ToggleSetting(SettingToggle::Tmux), window, cx);
+                        })
+                    }),
+                ))
+                .child(seg_button(
+                    "set-backend-tmux",
+                    "Tmux",
+                    tmux_on,
+                    SegSide::Right,
+                    false,
+                    (!tmux_on).then(|| -> OnToggle {
+                        let dispatch = std::rc::Rc::clone(dispatch);
+                        Box::new(move |window, cx| {
+                            dispatch(ModalClick::ToggleSetting(SettingToggle::Tmux), window, cx);
+                        })
+                    }),
+                )),
+        ));
+
+    let perms_row = div()
+        .flex()
+        .items_center()
+        .h(px(28.0))
+        .px(px(10.0))
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(12.0))
+                .text_color(c::FG())
+                .child("Permissions"),
+        )
+        .child(seg_group(
+            div()
+                .flex()
+                .items_center()
+                .child(seg_button(
+                    "set-perms-skip",
+                    "Skip",
+                    skip_perms_on,
+                    SegSide::Left,
+                    true,
+                    (!skip_perms_on).then(|| -> OnToggle {
+                        let dispatch = std::rc::Rc::clone(dispatch);
+                        Box::new(move |window, cx| {
+                            dispatch(
+                                ModalClick::ToggleSetting(SettingToggle::SkipPermissions),
+                                window,
+                                cx,
+                            );
+                        })
+                    }),
+                ))
+                .child(seg_button(
+                    "set-perms-safe",
+                    "Safe",
+                    !skip_perms_on,
+                    SegSide::Right,
+                    false,
+                    skip_perms_on.then(|| -> OnToggle {
+                        let dispatch = std::rc::Rc::clone(dispatch);
+                        Box::new(move |window, cx| {
+                            dispatch(
+                                ModalClick::ToggleSetting(SettingToggle::SkipPermissions),
+                                window,
+                                cx,
+                            );
+                        })
+                    }),
+                )),
+        ));
+
+    let agents_terminal = div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
         .child(section_header("AGENTS / TERMINAL", 10.0, 4.0))
-        // The tmux setting Plan 06/07 deferred here (`settings.rs:325`).
-        .child(click_checkbox(
-            "set-tmux",
-            "Use tmux for new sessions",
-            tmux_on,
-            c::GREEN(),
-            true,
-            dispatch,
-            ModalClick::ToggleSetting(SettingToggle::Tmux),
+        .child(backend_row)
+        .child(perms_row)
+        .child(caption_promoted(
+            "Skip lets agents run any command without asking.",
         ))
-        .child(click_checkbox(
-            "set-perms",
-            "Skip agent permission prompts",
-            store.dangerously_skip_permissions_enabled.unwrap_or(false),
-            c::RED(),
-            true,
-            dispatch,
-            ModalClick::ToggleSetting(SettingToggle::SkipPermissions),
-        ))
-        .child(click_checkbox(
+        .child(div().px(px(10.0)).child(click_checkbox(
             "set-chrome",
-            "Claude in Chrome control",
+            "Claude in Chrome",
             store.chrome_enabled.unwrap_or(false),
             c::BLUE(),
             true,
             dispatch,
             ModalClick::ToggleSetting(SettingToggle::Chrome),
+        )))
+        .child(caption_promoted(
+            "Lets Claude read and control your Chrome tabs.",
         ))
-        .child(section_header("PROJECTS", 10.0, 4.0))
-        // The archived-projects row Plan 06/07 deferred here
-        // (`settings.rs:305`).
-        .child(settings_row(
-            "set-archived",
-            "Archived projects",
-            format!("{archived}"),
-            dispatch,
-            ModalClick::OpenArchivedProjects,
-        ))
-        .child(section_header("TOOLS", 10.0, 4.0))
-        .children(layer.tools.iter().map(|st| tool_row(st, dispatch, cx)))
-        .child(click_action(
-            "set-tools-refresh",
-            "Re-detect tools",
-            ModalBtn::Plain,
-            dispatch,
-            ModalClick::RefreshTools,
-        ))
-        .child(section_header("UPDATES", 10.0, 4.0))
-        .child(update_status_line(layer, cx))
-        .children(update_actions(layer, dispatch, cx))
-        .child(settings_row(
-            "set-changelog",
-            "View changelog",
-            format!("v{}", env!("CARGO_PKG_VERSION")),
-            dispatch,
-            ModalClick::OpenChangelog,
-        ));
+        .child(div().px(px(10.0)).child(raw_checkbox(
+            "set-telemetry",
+            "Share anonymous usage data",
+            SettingsState::telemetry_enabled(store),
+            c::MAGENTA(),
+            |_, cx| {
+                let enabled =
+                    !SettingsState::telemetry_enabled(&cx.global::<SettingsState>().store);
+                SettingsState::update(cx, move |store| store.telemetry_enabled = Some(enabled));
+                SettingsState::flush_now(cx);
+                // Takes effect immediately, not at the next launch
+                // (`src/app/mod.rs:339-344`).
+                crate::telemetry::set_enabled(enabled);
+                cx.refresh_windows();
+            },
+        )));
+
+    // ── tools ────────────────────────────────────────────────────────────
+    let tools_header = div()
+        .flex()
+        .items_center()
+        .pr(px(10.0))
+        .child(div().flex_1().child(section_header("TOOLS", 10.0, 4.0)))
+        .child(flat_icon_btn("set-tools-refresh", "restart", 28.0, 15.0, {
+            let dispatch = std::rc::Rc::clone(dispatch);
+            move |window, cx| dispatch(ModalClick::RefreshTools, window, cx)
+        }));
+    let tools_section = div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(tools_header)
+        .children(layer.tools.iter().map(|st| tool_row(st, dispatch, cx)));
+
+    // ── the scrolling body: sections above the updates strip ───────────────
+    let sections = div()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(appearance)
+        .child(divider_h())
+        .child(projects)
+        .child(divider_h())
+        .child(agents_terminal)
+        .child(divider_h())
+        .child(tools_section);
+
+    let scroll_body = div()
+        .id("settings-scroll")
+        .max_h(px(420.0))
+        .overflow_y_scroll()
+        .child(sections);
+
+    let mut body_zone = div().flex().flex_col().gap(px(10.0)).child(scroll_body);
+    body_zone = body_zone.children(update_actions(layer, dispatch, cx));
+
+    // ── footer: the version/status strip merges into the shared chrome,
+    // with an [esc] close hint trailing on the right
+    // (`src/gui/view/modals/settings.rs:589-609`). ─────────────────────────
+    let current_ver = env!("CARGO_PKG_VERSION");
+    let footer = modal_footer_row(
+        div()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(c::FG_DIM())
+                    .child(format!("v{current_ver}")),
+            )
+            .child(update_status_line(layer, cx))
+            .child(flat_icon_btn(
+                "set-updates-refresh",
+                "restart",
+                24.0,
+                12.0,
+                {
+                    let dispatch = std::rc::Rc::clone(dispatch);
+                    move |window, cx| dispatch(ModalClick::CheckUpdates, window, cx)
+                },
+            ))
+            .child(div().flex_1())
+            .child(click_action(
+                "set-changelog",
+                "View changelog",
+                ModalBtn::Plain,
+                dispatch,
+                ModalClick::OpenChangelog,
+            ))
+            .child(div().w(px(10.0)))
+            .child(super::shell::footer_hint("esc", "close")),
+    );
 
     modal_panel(
-        560.0,
+        580.0,
         div()
-            .child(modal_header("Settings", c::CYAN()))
-            .child(modal_body(body))
-            .child(modal_footer_hints(&[("esc", "close")])),
+            .child(header)
+            .child(divider_h())
+            .child(modal_body(body_zone))
+            .child(divider_h())
+            .child(footer),
     )
     .into_any_element()
 }
@@ -850,73 +1136,188 @@ fn scripts_editor(
     layer: &ModalLayer,
     st: &ScriptsEditorState,
     dispatch: &ModalDispatch,
+    cx: &App,
 ) -> AnyElement {
-    let editor = |i: usize, label: &'static str| {
-        let mut d = div().flex().flex_col().gap(px(4.0)).flex_1().child(
+    let store = &cx.global::<SettingsState>().store;
+    let project = store.projects.iter().find(|p| p.path == st.project_path);
+    let project_name = project.map_or_else(|| st.project_path.clone(), |p| p.name.clone());
+    let themes_enabled = store.project_themes_enabled;
+    // While Project themes is off nothing actually applies the pin, so the
+    // displayed value must show "Default" rather than the stale pinned name
+    // (which would otherwise look active when it isn't).
+    let pinned_name = if themes_enabled {
+        project.and_then(|p| p.theme.as_deref())
+    } else {
+        None
+    };
+    let value_text = pinned_name.unwrap_or("Default (follow app)").to_string();
+    let value_color = if pinned_name.is_some() {
+        c::CYAN()
+    } else {
+        c::FG_DIM()
+    };
+
+    let theme_row_content = div()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .w_full()
+        .child(
             div()
-                .text_size(px(10.0))
-                .text_color(c::FG_MUTE())
-                .child(label),
-        );
+                .flex_1()
+                .text_size(px(12.0))
+                .text_color(if themes_enabled {
+                    c::FG()
+                } else {
+                    c::FG_MUTE()
+                })
+                .child("Project theme"),
+        )
+        .child(
+            div()
+                .text_size(px(12.0))
+                .text_color(value_color)
+                .child(value_text),
+        )
+        .child(crate::icons::icon("chev-right", 12.0, c::FG_MUTE()));
+
+    let theme_row: AnyElement = if themes_enabled {
+        click_row(
+            "se-theme-row",
+            false,
+            dispatch,
+            ModalClick::OpenProjectTheme,
+            theme_row_content,
+        )
+        .into_any_element()
+    } else {
+        div()
+            .flex()
+            .items_center()
+            .px(px(8.0))
+            .py(px(5.0))
+            .child(theme_row_content)
+            .into_any_element()
+    };
+
+    let theme_caption = if themes_enabled {
+        "Pin every PTY in this project to a specific theme"
+    } else {
+        "Enable Project themes in Settings to use this"
+    };
+
+    let project_theme_section = div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(section_header("PROJECT THEME", 0.0, 0.0))
+        .child(theme_row)
+        .child(caption(theme_caption));
+
+    let field = |i: usize, label: &'static str, desc: &'static str| {
+        let mut d = div()
+            .flex()
+            .flex_col()
+            .gap(px(5.0))
+            .w_full()
+            .child(div().text_size(px(12.0)).text_color(c::FG()).child(label))
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(c::FG_MUTE())
+                    .child(desc),
+            );
         if let Some(f) = layer.fields.get(i) {
             d = d.child(gpui_component::input::Input::new(f.state()).w_full());
         }
         d
     };
 
+    let fields = div()
+        .flex()
+        .flex_col()
+        .gap(px(16.0))
+        .child(field(
+            0,
+            "Setup",
+            "Runs once when a new worktree is created, inside the new worktree's directory. \
+             Use it to install dependencies, copy ignored env files, or start the services \
+             an agent needs before you begin working.",
+        ))
+        .child(field(
+            1,
+            "Run",
+            "Runs on demand when you press the play button (worktree row or session header). \
+             It opens an interactive terminal tab, so it suits dev servers, test watchers, \
+             or any command you want to watch and interact with.",
+        ))
+        .child(field(
+            2,
+            "Teardown",
+            "Runs when you delete the worktree, before it is removed from disk. Use it to \
+             stop services, tear down databases, or clean up anything setup created. \
+             Deletion proceeds once it exits.",
+        ));
+
+    let scroll_area = div()
+        .id("scripts-editor-scroll")
+        .max_h(px(480.0))
+        .overflow_y_scroll()
+        .child(fields);
+
+    let lifecycle_section = div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(section_header("LIFECYCLE SCRIPTS", 0.0, 0.0))
+        .child(caption(
+            "Shell snippets shared by every worktree of this project, run via $SHELL -lc. \
+             Leave a field blank to disable that step.",
+        ))
+        .child(scroll_area);
+
+    let footer_row = div()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .child(click_action(
+            "se-archive",
+            "Archive project",
+            ModalBtn::Danger,
+            dispatch,
+            ModalClick::OpenArchiveGate,
+        ))
+        .child(div().flex_1())
+        .child(click_action(
+            "se-cancel",
+            "Cancel",
+            ModalBtn::Plain,
+            dispatch,
+            ModalClick::Cancel,
+        ))
+        .child(click_action(
+            "se-save",
+            "Save",
+            ModalBtn::Primary,
+            dispatch,
+            ModalClick::Save,
+        ));
+
     modal_panel(
-        760.0,
+        560.0,
         div()
             .child(modal_header(
-                format!("Scripts — {}", st.project_path),
+                format!("Project Settings — {project_name}"),
                 c::CYAN(),
             ))
             .child(modal_body(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(10.0))
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(10.0))
-                            .child(editor(0, "setup"))
-                            .child(editor(1, "run"))
-                            .child(editor(2, "teardown")),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(8.0))
-                            .child(click_action(
-                                "se-save",
-                                "Save",
-                                ModalBtn::Primary,
-                                dispatch,
-                                ModalClick::Save,
-                            ))
-                            .child(click_action(
-                                "se-cancel",
-                                "Cancel",
-                                ModalBtn::Plain,
-                                dispatch,
-                                ModalClick::Cancel,
-                            ))
-                            .child(click_action(
-                                "se-theme",
-                                "Project theme",
-                                ModalBtn::Plain,
-                                dispatch,
-                                ModalClick::OpenProjectTheme,
-                            ))
-                            .child(click_action(
-                                "se-archive",
-                                "Archive project",
-                                ModalBtn::Danger,
-                                dispatch,
-                                ModalClick::OpenArchiveGate,
-                            )),
-                    ),
+                    .gap(px(12.0))
+                    .child(project_theme_section)
+                    .child(lifecycle_section)
+                    .child(footer_row),
             ))
             // Tab INDENTS inside a buffer; traversal is a click or ctrl-tab
             // (carried decision 2). The footer says so rather than lying.
@@ -945,7 +1346,14 @@ fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                 Stage::Installing => "Installing…",
                 Stage::Done => "Finishing…",
             };
-            div().child(body_text(label)).into_any_element()
+            let tick = layer.clock.read(cx).tick();
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .child(crate::icons::spinner(16.0, c::FG_DIM(), tick))
+                .child(body_text(label))
+                .into_any_element()
         }
         UpgradeState::Updated => div()
             .flex()
@@ -1015,7 +1423,14 @@ fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
 fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     let body = match layer.upgrade.read(cx).changelog() {
         ChangelogState::Idle | ChangelogState::Loading => {
-            div().child(body_text("Loading…")).into_any_element()
+            let tick = layer.clock.read(cx).tick();
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .child(crate::icons::spinner(16.0, c::FG_DIM(), tick))
+                .child(body_text("Loading…"))
+                .into_any_element()
         }
         ChangelogState::Error(e) => div()
             .child(body_text(format!("Couldn't load changelog: {e}")))
@@ -1029,6 +1444,7 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
                 let mut head = div().flex().items_center().gap(px(8.0)).child(
                     div()
                         .text_size(px(13.0))
+                        .font_weight(gpui::FontWeight::BOLD)
                         .text_color(c::FG())
                         .child(n.tag.clone()),
                 );
@@ -1040,10 +1456,10 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
                             .child(n.name.clone()),
                     );
                 }
+                head = head.child(div().flex_1());
                 if !n.date.is_empty() {
                     head = head.child(
                         div()
-                            .flex_1()
                             .text_size(px(11.0))
                             .text_color(c::FG_MUTE())
                             .child(n.date.clone()),
@@ -1059,8 +1475,9 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
                 );
             }
             div()
+                .id("changelog-scroll")
                 .max_h(px(420.0))
-                .overflow_hidden()
+                .overflow_y_scroll()
                 .child(list)
                 .into_any_element()
         }

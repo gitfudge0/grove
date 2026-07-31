@@ -70,6 +70,29 @@ impl OnboardStep {
         OnboardStep::Project,
         OnboardStep::Session,
     ];
+
+    /// The wizard's fixed step sequence.
+    pub fn flow() -> &'static [OnboardStep] {
+        &Self::ALL
+    }
+
+    pub fn index_in(self) -> usize {
+        Self::flow().iter().position(|s| *s == self).unwrap_or(0)
+    }
+
+    pub fn prev(self) -> Option<OnboardStep> {
+        self.index_in().checked_sub(1).map(|i| Self::flow()[i])
+    }
+
+    /// Short label shown in the progress rail.
+    pub fn label(self) -> &'static str {
+        match self {
+            OnboardStep::Welcome => "welcome",
+            OnboardStep::Environment => "environment",
+            OnboardStep::Project => "project",
+            OnboardStep::Session => "session",
+        }
+    }
 }
 
 /// Whether a theme picker edits the app theme or one project's pinned theme

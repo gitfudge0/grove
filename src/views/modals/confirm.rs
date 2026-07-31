@@ -18,8 +18,8 @@ use crate::settings::SettingsState;
 use crate::theme as c;
 
 use super::shell::{
-    body_text, click_action, click_row, modal_body, modal_footer_hints, modal_header, modal_panel,
-    note_text, ModalBtn,
+    body_text, click_action, click_row, divider_h, modal_body, modal_footer_hints, modal_header,
+    modal_panel, note_text, ModalBtn,
 };
 use super::{Modal, ModalClick, ModalDispatch, ModalEvent, ModalLayer};
 use crate::modal::ConfirmKind;
@@ -271,54 +271,68 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
 }
 
 /// The generic single-field prompt (`view/modals/confirm.rs:18-69`): title,
-/// the field, and an inline red note cleared on the next edit.
+/// the field, and an inline red note cleared on the next edit. Zoned exactly
+/// as the iced original — header / divider / input-zone / divider /
+/// buttons-zone / divider / footer (`confirm.rs:33-67`) — with the same
+/// leading `git-branch` icon in the field row (`confirm.rs:33-40`).
 fn input_modal(
     layer: &ModalLayer,
     title: &str,
     note: Option<&str>,
     dispatch: &ModalDispatch,
 ) -> AnyElement {
-    let mut body = div().flex().flex_col().gap(px(8.0));
+    let mut input_zone = div().flex().flex_col().gap(px(8.0));
     if let Some(field) = layer.fields.first() {
-        body = body.child(
+        input_zone = input_zone.child(
             div()
                 .w_full()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
                 .px(px(10.0))
                 .py(px(6.0))
                 .rounded(px(6.0))
                 .bg(c::BG())
                 .border_1()
                 .border_color(c::BORDER())
-                .child(gpui_component::input::Input::new(field.state()).w_full()),
+                .child(crate::icons::icon("git-branch", 16.0, c::FG_MUTE()))
+                .child(gpui_component::input::Input::new(field.state()).flex_1()),
         );
     }
+
+    let mut buttons_zone = div().flex().flex_col().gap(px(8.0));
     if let Some(note) = note {
-        body = body.child(note_text(note.to_string()));
+        buttons_zone = buttons_zone.child(note_text(note.to_string()));
     }
+    buttons_zone = buttons_zone.child(
+        div()
+            .flex()
+            .gap(px(8.0))
+            .child(click_action(
+                "in-ok",
+                "Create",
+                ModalBtn::Primary,
+                dispatch,
+                ModalClick::Submit,
+            ))
+            .child(click_action(
+                "in-cancel",
+                "Cancel",
+                ModalBtn::Plain,
+                dispatch,
+                ModalClick::Cancel,
+            )),
+    );
+
     modal_panel(
         420.0,
         div()
             .child(modal_header(title.to_string(), c::CYAN()))
-            .child(modal_body(body))
-            .child(modal_body(
-                div()
-                    .flex()
-                    .gap(px(8.0))
-                    .child(click_action(
-                        "in-ok",
-                        "Create",
-                        ModalBtn::Primary,
-                        dispatch,
-                        ModalClick::Submit,
-                    ))
-                    .child(click_action(
-                        "in-cancel",
-                        "Cancel",
-                        ModalBtn::Plain,
-                        dispatch,
-                        ModalClick::Cancel,
-                    )),
-            ))
+            .child(divider_h())
+            .child(modal_body(input_zone))
+            .child(divider_h())
+            .child(modal_body(buttons_zone))
+            .child(divider_h())
             .child(modal_footer_hints(&[
                 ("⏎", "confirm"),
                 ("esc", "cancel"),

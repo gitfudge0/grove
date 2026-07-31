@@ -574,11 +574,24 @@ impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snap = self.snapshot(cx);
         let git_suffix = self.tree.read(cx).git_suffixes();
-        let home_count = self.registry.read(cx).home_terminal_count();
+        // Whether each home shell is actually running, not merely present —
+        // the docked TERMINALS header's activity dot lights only when one is
+        // (`src/gui/view/sidebar.rs:61-70,114-119`).
+        let home_running: Vec<bool> = {
+            let home_count = self.registry.read(cx).home_terminal_count();
+            let entities: Vec<_> = (0..home_count)
+                .map(|i| self.registry.read(cx).home_terminal(i).cloned())
+                .collect();
+            entities
+                .into_iter()
+                .map(|e| e.is_some_and(|s| s.update(cx, |t, _| t.alive())))
+                .collect()
+        };
+        let home_count = home_running.len();
         let (rows, tick, pulse, width, terminals_collapsed, open_menu, hovered_wt, next_glyph) = {
             let ws = self.state.read(cx);
             let activity = self.activity.read(cx);
-            let rows = rows::flatten(&snap, ws, activity, &git_suffix, home_count);
+            let rows = rows::flatten(&snap, ws, activity, &git_suffix, &home_running);
             let next_glyph = match ws.tree_expand().next() {
                 TreeExpand::SessionsOnly => "expand-sessions",
                 TreeExpand::All => "expand-all",
@@ -641,7 +654,7 @@ impl Render for Sidebar {
                 .child(rows::terminals_header(
                     false,
                     home_count,
-                    home_count > 0,
+                    home_running.iter().any(|&r| r),
                     &ctx,
                 ));
         }
@@ -782,13 +795,57 @@ impl Sidebar {
         proj: usize,
         wt: usize,
         top: f32,
-        _is_main: bool,
+        is_main: bool,
         ctx: &RowCtx,
     ) -> impl IntoElement {
+        // Click-away backdrop: a full-bleed transparent layer beneath the menu
+        // that dismisses it (`src/gui/widgets/primitives.rs:74-110`).
+        let backdrop = div().absolute().top(px(0.0)).left(px(0.0)).size_full().on_mouse_down(
+            MouseButton::Left,
+            {
+                let dispatch = Rc::clone(&ctx.dispatch);
+                move |_, window, cx| dispatch(RowAction::OpenAgentMenu(None), window, cx)
+            },
+        );
+
+        let item = |label: &'static str,
+                    icon_name: Option<&'static str>,
+                    danger: bool,
+                    action: RowAction,
+                    ctx: &RowCtx| {
+            let dispatch = Rc::clone(&ctx.dispatch);
+            let (fg, hover_fg) = if danger {
+                (c::RED(), c::RED())
+            } else {
+                (c::FG_DIM(), c::FG())
+            };
+            let mut row = div()
+                .id(SharedString::from(format!("menu-{proj}-{wt}-{label}")))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(10.0))
+                .py(px(4.0))
+                .text_color(fg)
+                .hover(move |s| s.bg(c::BG_HOVER()).text_color(hover_fg));
+            if let Some(glyph) = icon_name {
+                row = row.child(crate::icons::icon(glyph, 12.0, fg));
+            }
+            row.child(
+                div()
+                    .font(gpui::font(crate::fonts::UI_FAMILY))
+                    .text_size(px(12.0))
+                    .child(label),
+            )
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                dispatch(action, window, cx);
+            })
+        };
+
         let mut menu = div()
             .absolute()
             .top(px(top + f32::from(self.scroll.offset().y)))
-            .left(px(40.0))
+            .right(px(8.0))
             .flex()
             .flex_col()
             .py(px(4.0))
@@ -796,35 +853,40 @@ impl Sidebar {
             .bg(c::BG_STRIP())
             .border_1()
             .border_color(c::BORDER());
-        for agent in &ctx.available {
-            let dispatch = Rc::clone(&ctx.dispatch);
-            let agent = *agent;
-            menu = menu.child(
-                div()
-                    .id(SharedString::from(format!(
-                        "menu-{proj}-{wt}-{}",
-                        agent.label()
-                    )))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .px(px(10.0))
-                    .py(px(4.0))
-                    .text_color(c::FG_DIM())
-                    .hover(|s| s.bg(c::BG_HOVER()).text_color(c::FG()))
-                    .child(crate::icons::icon(agent.icon_name(), 12.0, c::FG_DIM()))
-                    .child(
-                        div()
-                            .font(gpui::font(crate::fonts::UI_FAMILY))
-                            .text_size(px(12.0))
-                            .child(agent.label()),
-                    )
-                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                        dispatch(RowAction::SpawnAgent(proj, wt, agent), window, cx);
-                    }),
-            );
+        // Same availability gate as the inline spawn chips, and the same
+        // agent subset as the iced menu — only Codex/OpenCode
+        // (`src/gui/widgets/primitives.rs:74-165`).
+        for agent in [Agent::Codex, Agent::OpenCode] {
+            if !ctx.available.contains(&agent) {
+                continue;
+            }
+            menu = menu.child(item(
+                agent.label(),
+                Some(agent.icon_name()),
+                false,
+                RowAction::SpawnAgent(proj, wt, agent),
+                ctx,
+            ));
         }
-        menu
+        if !is_main {
+            menu = menu
+                .child(div().h(px(1.0)).mx(px(0.0)).my(px(3.0)).bg(c::BORDER()))
+                .child(item(
+                    "delete",
+                    None,
+                    true,
+                    RowAction::DeleteWorktree(proj, wt),
+                    ctx,
+                ));
+        }
+
+        div()
+            .absolute()
+            .top(px(0.0))
+            .left(px(0.0))
+            .size_full()
+            .child(backdrop)
+            .child(menu)
     }
 
     /// A 1px `BORDER()` line centred in a 6px hit zone with a horizontal-resize

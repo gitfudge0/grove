@@ -87,7 +87,7 @@ pub fn tool_btn(
 
 /// The cluster itself: run script (Plan 08 stub) │ term toggle │ zen │ kill.
 fn tools(cluster: &ToolCluster) -> AnyElement {
-    let mut row = div().flex().items_center().gap(px(4.0));
+    let mut row = div().flex().items_center().gap(px(12.0));
     if cluster.has_run_script {
         let d = std::rc::Rc::clone(&cluster.dispatch);
         row = row.child(tool_btn(
@@ -268,7 +268,7 @@ pub fn session_header(
                 .w_full()
                 .flex()
                 .items_center()
-                .px(px(12.0))
+                .px(px(16.0))
                 .bg(c::BG_STRIP())
                 .overflow_hidden()
                 .child(div().flex_1().overflow_hidden().child(identity))
