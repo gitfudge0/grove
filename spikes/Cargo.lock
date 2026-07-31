@@ -6241,6 +6241,14 @@ dependencies = [
 [[package]]
 name = "spike-zoom"
 version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "futures",
+ "gpui",
+ "gpui_platform",
+ "portable-pty",
+]
 
 [[package]]
 name = "spin"
