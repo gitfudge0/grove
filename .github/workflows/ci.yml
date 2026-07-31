@@ -56,13 +56,19 @@ jobs:
       # Cargo.toml). Collapsing this into one pass would either let
       # production code slip past the deny, or force test code to stop
       # unwrapping.
+      # grove-gpui is deliberately NOT built in CI: it needs rustc >= 1.95 and
+      # Linux GUI system deps this runner does not install, and it is excluded
+      # from `default-members` (gpui rewrite plan 03, Task 1). An all-members
+      # flag would pull it in regardless, so every invocation below names the
+      # members explicitly. grove-gpui joins CI in Plan 10, when iced is deleted
+      # and it becomes the product.
       - name: Clippy (all targets, tests allowed to unwrap)
-        run: cargo clippy --workspace --all-targets -- -D warnings -A clippy::unwrap_used -A clippy::expect_used
+        run: cargo clippy -p grove -p grove-core -p grove-terminal --all-targets -- -D warnings -A clippy::unwrap_used -A clippy::expect_used
 
       # Production paths only (no --all-targets, so #[cfg(test)] modules
       # aren't compiled here) — the Cargo.toml unwrap/expect denies apply.
       - name: Clippy (production code)
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy -p grove -p grove-core -p grove-terminal -- -D warnings
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -72,11 +78,11 @@ jobs:
       # nextest gives per-test process isolation and the retry/flaky policy in
       # .config/nextest.toml (profile `ci`).
       - name: Run tests
-        run: cargo nextest run --workspace --locked --profile ci
+        run: cargo nextest run -p grove -p grove-core -p grove-terminal --locked --profile ci
 
       # nextest cannot run doctests, so they need a separate `cargo test` pass.
       - name: Run doctests
-        run: cargo test --doc --workspace --locked
+        run: cargo test --doc -p grove -p grove-core -p grove-terminal --locked
 
   hygiene:
     name: Hygiene (typos, unused deps)

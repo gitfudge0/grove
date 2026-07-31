@@ -1,0 +1,32 @@
+[package]
+name = "grove-gpui"
+# Not on crates.io (see root Cargo.toml).
+publish = false
+version.workspace = true
+edition.workspace = true
+# NOT `rust-version.workspace = true` (that says 1.94, which is false here):
+# zed at ZED_REV uses `std::hint::cold_path`, which needs rustc >= 1.95. See
+# docs/superpowers/plans/2026-07-31-gpui-rewrite-03-app-shell.md (toolchain split).
+rust-version = "1.95"
+license.workspace = true
+description = "Grove's gpui shell — the app shell for the gpui rewrite"
+
+[[bin]]
+name = "grove-gpui"
+path = "src/main.rs"
+
+[dependencies]
+grove-core = { path = "../grove-core" }
+gpui.workspace = true
+gpui_platform.workspace = true
+# `include-exclude` keeps the embed to `assets/fonts` — the icon PNGs and the
+# macOS bundle art have no business inside this binary.
+rust-embed = { workspace = true, features = ["include-exclude"] }
+futures.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+# NO gpui-component in this phase — see Global Constraints (durable-pin decision
+# is deferred to Plan 08). NO grove-terminal yet — Plan 04 adds it.
+
+[lints]
+workspace = true
