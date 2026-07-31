@@ -5,6 +5,11 @@
 //! is a place where the two parsers cannot be made to agree without patching a
 //! dependency, so it is pinned down by a test that fails loudly if the behavior
 //! ever changes.
+//!
+//! Plan 10 Task 7 Step 2 deleted the vt100 oracle. What vt100 *did* survives as
+//! prose in each test's doc comment plus the frozen dumps blessed from it; what
+//! remains executable is the `GroveTerm` side, which is the side that can still
+//! regress.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -15,7 +20,7 @@
 
 mod common;
 
-use common::{apply_inverse, normalize_cell_text, oracle, CellDump, ScreenDump};
+use common::{apply_inverse, normalize_cell_text, CellDump, ScreenDump};
 use grove_terminal::GroveTerm;
 
 fn grove(bytes: &[u8], rows: u16, cols: u16) -> GroveTerm {
@@ -62,9 +67,9 @@ fn dump(t: &GroveTerm) -> ScreenDump {
 /// screen. This plan does not patch alacritty; it pins the difference down.
 ///
 /// Practically this is benign — Grove's terminals run agents inside tmux, i.e.
-/// on the alternate screen, where the two parsers agree (that is what
-/// `golden_after_resize_matches` covers). The spec sentence is amended by this
-/// test rather than implemented.
+/// on the alternate screen, where the two parsers agreed (that is what the
+/// frozen `__resize*` cases in `tests/golden.rs` cover). The spec sentence is
+/// amended by this test rather than implemented.
 #[test]
 fn primary_screen_reflow_is_a_known_divergence() {
     let f = common::fixture("resize-storm-primary");
@@ -73,37 +78,23 @@ fn primary_screen_reflow_is_a_known_divergence() {
         "this fixture must be a primary-screen capture"
     );
 
-    let mut p = oracle::parser(&f.bytes, f.rows, f.cols);
     let mut t = grove(&f.bytes, f.rows, f.cols);
     // Narrow enough that every recorded line must wrap.
-    oracle::resize(&mut p, 34, 40);
     t.resize(34, 40);
-
-    let want = oracle::dump(&p);
     let got = dump(&t);
-    assert_ne!(
-        want.cells, got.cells,
-        "the primary-screen reflow divergence has disappeared — if alacritty \
-         gained a no-reflow knob, adopt it and delete this test"
-    );
 
-    // The specific shape: vt100 truncates each logical line at the new width,
-    // so every non-blank row still starts a fresh line. alacritty rewraps, so
-    // continuation rows carrying the tail of the previous line appear.
-    let vt_rows = common::render_rows(&want);
+    // The specific shape: vt100 truncated each logical line at the new width, so
+    // every non-blank row still started a fresh line. alacritty rewraps, so
+    // continuation rows carrying the tail of the previous line appear. With the
+    // oracle gone only the alacritty half is executable — but that is the half
+    // that can regress, and a continuation row is exactly what "reflowed" means.
     let al_rows = common::render_rows(&got);
-    assert!(
-        vt_rows
-            .iter()
-            .filter(|r| !r.trim().is_empty())
-            .all(|r| r.starts_with("primary line")),
-        "vt100 unexpectedly produced a continuation row: {vt_rows:?}"
-    );
     assert!(
         al_rows
             .iter()
             .any(|r| r.trim_start().starts_with("mps over the lazy dog")),
-        "alacritty did not rewrap the long lines: {al_rows:?}"
+        "alacritty did not rewrap the long lines — if it gained a no-reflow \
+         knob, adopt it and delete this test: {al_rows:?}"
     );
 
     // Plan 10 Task 4: freeze the *reflowed* screen too. This is the one dump
@@ -143,16 +134,10 @@ fn primary_screen_reflow_is_a_known_divergence() {
 #[test]
 fn ed2_scrollback_retention_is_a_known_divergence() {
     let f = common::fixture("activity-snippets");
-    let mut p = oracle::parser(&f.bytes, f.rows, f.cols);
-    p.set_scrollback(usize::MAX);
-    let vt_history = p.screen().scrollback();
     let t = grove(&f.bytes, f.rows, f.cols);
 
-    assert_eq!(
-        vt_history, 0,
-        "vt100 started retaining ED-2 cleared screens; re-evaluate the shared \
-         selection probes"
-    );
+    // vt100 held 0 rows of history here (measured while the oracle was in the
+    // tree, Plan 10 Task 7 Step 2); alacritty holds a screen's worth.
     assert!(
         t.history_size() > 0,
         "alacritty stopped retaining ED-2 cleared screens; this divergence is \
@@ -161,35 +146,28 @@ fn ed2_scrollback_retention_is_a_known_divergence() {
 }
 
 /// Scrollback-crossing selections, on the one fixture whose history both
-/// parsers agree on (a bare shell streaming 500 lines — no clears, so the
-/// `ED 2` divergence above never bites).
+/// parsers agreed on (a bare shell streaming 500 lines — no clears, so the
+/// `ED 2` divergence above never bites). The expected texts were frozen from
+/// the oracle before it was deleted, so this remains a real regression test.
 #[test]
 fn selection_into_scrollback_matches_where_history_agrees() {
     let f = common::fixture("resize-storm-primary");
-    let mut p = oracle::parser(&f.bytes, f.rows, f.cols);
     let mut t = grove(&f.bytes, f.rows, f.cols);
-    p.set_scrollback(usize::MAX);
-    let vt_history = p.screen().scrollback();
-    p.set_scrollback(0);
-    assert_eq!(
-        vt_history,
-        t.history_size(),
-        "the parsers no longer agree on this fixture's history size"
-    );
     assert!(
-        vt_history > 40,
+        t.history_size() > 40,
         "fixture has too little scrollback to probe"
     );
 
-    let r = f.rows as usize;
-    for (a, b) in [
-        ((r + 1, 0), (r - 1, 20)),
-        ((r + 5, 0), (r + 1, 30)),
-        ((r + 12, 4), (r + 9, 60)),
-        ((r + 3, 30), (r + 7, 2)),
-    ] {
-        let want = oracle::selection_text(&mut p, a, b);
-        let got = t.selection_text(a, b);
-        assert_eq!(want, got, "selection_text({a:?}, {b:?}) differs");
+    let mut probes: Vec<common::SelectionProbe> = Vec::new();
+    for (a, b) in common::scrollback_selection_probes(f.rows) {
+        probes.push(((a, b), t.selection_text(a, b)));
     }
+    common::assert_expected(
+        common::SCROLLBACK_SELECTION_CASE,
+        &common::serialize_selection_probes(&probes),
+        &[
+            "Blessed from the vt100 oracle (Plan 10 Task 7 Step 2) while it was",
+            "still in the tree. Do NOT re-bless from GroveTerm.",
+        ],
+    );
 }

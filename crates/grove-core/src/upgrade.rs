@@ -301,8 +301,7 @@ fn have(bin: &str) -> bool {
     Command::new(bin)
         .arg("--version")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Shallow-clone the release tag and `cargo install --path . --force`. Avoids root.
@@ -515,7 +514,7 @@ fn apply_dmg(release: &Release, progress: &(dyn Fn(Stage) + Send + Sync)) -> Res
 
     let result = (|| -> Result<()> {
         progress(Stage::Downloading);
-        let payload = download_checked(url, Duration::from_secs(300))
+        let payload = download_checked(url, Duration::from_mins(5))
             .map_err(|e| UpgradeError::DownloadDmg(Box::new(e)))?;
 
         // Verify against the published checksum when the release has one. The

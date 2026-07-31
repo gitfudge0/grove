@@ -117,7 +117,7 @@ pub fn list_worktrees(project_path: &str) -> Vec<Worktree> {
     // `git worktree list` always emits the main checkout first; keep it pinned
     // at the top and sort only the linked worktrees by recency.
     if result.len() > 1 {
-        result[1..].sort_by(|a, b| b.mtime.cmp(&a.mtime));
+        result[1..].sort_by_key(|w| std::cmp::Reverse(w.mtime));
     }
     // Guarantee the project root is always present at the top, even if git
     // emitted nothing (not a repo / fresh init with no HEAD) or somehow didn't
@@ -355,7 +355,7 @@ pub fn add_worktree(project_path: &str, project_name: &str, name: &str) -> Resul
             tracing::debug!(status = ?s, "git show-ref: branch does not exist");
         }
     }
-    let branch_exists = branch_exists_status.map(|s| s.success()).unwrap_or(false);
+    let branch_exists = branch_exists_status.is_ok_and(|s| s.success());
 
     let mut args = vec!["-C", project_path, "worktree", "add"];
     if !branch_exists {

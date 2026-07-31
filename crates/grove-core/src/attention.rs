@@ -22,7 +22,7 @@
 //! Windows sessions simply keep the existing running/idle baseline.
 
 use crate::agent::Agent;
-use crate::session::Result;
+use crate::error::Result;
 use fs_err as fs;
 use std::path::{Path, PathBuf};
 

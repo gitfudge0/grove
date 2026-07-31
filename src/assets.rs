@@ -13,10 +13,11 @@ use rust_embed::RustEmbed;
 
 /// The repo's `assets/` directory, embedded at compile time.
 #[derive(RustEmbed)]
-// Relative to this crate's manifest dir, i.e. the repo-root `assets/` the iced
-// app already ships. `$CARGO_MANIFEST_DIR` interpolation would need rust-embed's
+// Relative to this crate's manifest dir, which is the repo root (Plan 10 Task 7
+// Step 3 promoted this crate into the root `grove` package).
+// `$CARGO_MANIFEST_DIR` interpolation would need rust-embed's
 // `interpolate-folder-path` feature; a plain relative path needs nothing.
-#[folder = "../../assets"]
+#[folder = "assets"]
 #[include = "fonts/*"]
 pub struct Assets;
 

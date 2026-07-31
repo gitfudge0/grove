@@ -1,5 +1,5 @@
 use crate::agent::Agent;
-use crate::session::{Result, SessionError};
+use crate::error::{Result, SessionError};
 use fs_err as fs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

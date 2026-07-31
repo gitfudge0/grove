@@ -3,6 +3,11 @@
 # commit nobody touched. Pinning makes local and CI lint results identical,
 # and makes bumping the toolchain (and therefore Clippy's lint set) an
 # explicit, reviewable change instead of something that happens to us.
+#
+# Moved 1.94.1 -> 1.95.0 by gpui rewrite plan 10 Task 7 Step 4: zed at ZED_REV
+# uses `std::hint::cold_path`, which needs rustc >= 1.95. Until the cutover this
+# was a split (a second toolchain file for the gpui crate); now the whole
+# workspace builds on one channel.
 [toolchain]
-channel = "1.94.1"
+channel = "1.95.0"
 components = ["rustfmt", "clippy"]

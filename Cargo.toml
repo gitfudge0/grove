@@ -1,10 +1,5 @@
 [workspace]
-members = ["crates/grove-core", "crates/grove-terminal", "crates/grove-gpui"]
-# grove-gpui needs rustc >= 1.95 (zed at ZED_REV uses std::hint::cold_path); the
-# system default is 1.94.1. Excluding it from default-members keeps bare
-# `cargo build`/`cargo test` working for the iced app and the core crates.
-# Build it explicitly: `cargo +1.95.0 build -p grove-gpui`.
-default-members = [".", "crates/grove-core", "crates/grove-terminal"]
+members = ["crates/grove-core", "crates/grove-terminal"]
 # Vendored third-party source (gpui rewrite plan 08 Task 1). A path dependency
 # is otherwise auto-promoted to a workspace member, which would subject
 # vendored code to our `[lints]` and to `--all-targets` clippy. See
@@ -15,19 +10,25 @@ exclude = [
     "vendor/gpui-component/assets",
 ]
 
+# `log` is declared by the vendored gpui-component crate and reached only
+# through macros cargo-machete's regex scan cannot see. The vendored manifests
+# are third-party source we do not edit, so the ignore lives here.
+[workspace.metadata.cargo-machete]
+ignored = ["log"]
+
 [workspace.package]
 version = "0.45.0"
 edition = "2021"
-rust-version = "1.94"
+rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 
 # Denied in production paths only. CI runs a second `--all-targets` pass with
 # these allowed, so test modules keep using unwrap() freely.
 [workspace.lints.rust]
 # objc 0.2's macros expand `cfg(feature = "cargo-clippy")`; register the
-# value so `unexpected_cfgs` stays quiet on macOS. The `#![allow]` in
-# src/gui/dock.rs doesn't reach lints raised inside external macro
-# expansions, so this workspace-level registration is the reliable fix.
+# value so `unexpected_cfgs` stays quiet on macOS. A crate-level `#![allow]`
+# doesn't reach lints raised inside external macro expansions, so this
+# workspace-level registration is the reliable fix.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
 
 [workspace.lints.clippy]
@@ -40,7 +41,7 @@ must_use_candidate = "allow"          # #[must_use] on every getter is noise
 missing_errors_doc = "allow"          # internal binary, errors are self-evident
 missing_panics_doc = "allow"          # ditto for panics
 doc_markdown = "allow"                # prose comments aren't rustdoc-formatted
-too_many_lines = "allow"              # iced `view`/`update` fns are naturally long
+too_many_lines = "allow"              # gpui `render` fns are naturally long
 module_name_repetitions = "allow"     # gui::session::SessionState reads fine
 cast_possible_truncation = "allow"    # GUI layout math is f32<->int by nature
 cast_precision_loss = "allow"         # ditto
@@ -55,7 +56,7 @@ fn_params_excessive_bools = "allow"   # ditto
 unreadable_literal = "allow"          # color/keycode literals read better raw
 match_same_arms = "allow"             # keeping arms separate documents intent
 unused_self = "allow"                 # method form kept for API symmetry
-needless_pass_by_value = "allow"      # iced messages are moved by design
+needless_pass_by_value = "allow"      # gpui event/action values are moved by design
 option_option = "allow"               # "unset vs cleared" is a real distinction here
 ref_option = "allow"                  # &Option<T> keeps call sites simple
 single_match_else = "allow"           # match reads better than if-let here
@@ -81,18 +82,16 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1a246efd
 gpui-component = { path = "vendor/gpui-component/ui" }
 rust-embed = "8"
 futures = "0.3"
-# Promoted from the root package's `[dependencies]` (same version + features) so
-# the iced app and grove-gpui share ONE arboard in the graph — gpui rewrite
-# plan 04 Task 1 Step 2.
+# Promoted from the root package's `[dependencies]` (same version + features) —
+# gpui rewrite plan 04 Task 1 Step 2.
 arboard = { version = "3", features = ["wayland-data-control"] }
-# Promoted alongside arboard: OSC 52 clipboard writes need it in both front
-# ends (gpui rewrite plan 04 Task 5 Step 5).
+# Promoted alongside arboard: OSC 52 clipboard writes need it (gpui rewrite
+# plan 04 Task 5 Step 5).
 base64 = "0.22"
 portable-pty = "0.9"
 serde_json = "1"
 anyhow = "1"
 dirs = "5"
-vt100 = "0.15"
 ureq = { version = "2", features = ["tls"], default-features = false }
 semver = "1"
 tracing = "0.1"
@@ -133,26 +132,41 @@ copyright = "Copyright (c) 2026 Grove"
 
 [dependencies]
 grove-core = { path = "crates/grove-core" }
-anyhow.workspace = true
-dirs.workspace = true
-serde_json.workspace = true
-vt100.workspace = true
-fs-err.workspace = true
+grove-terminal = { path = "crates/grove-terminal" }
+# `grove_terminal::pty::spawn` takes a `portable_pty::CommandBuilder`, which
+# grove-terminal does not re-export — same workspace entry, same version.
+portable-pty.workspace = true
 arboard.workspace = true
 base64.workspace = true
-iced = { version = "0.14.0", features = ["tokio", "advanced", "svg", "canvas"] }
-ureq.workspace = true
-semver.workspace = true
-tokio = { version = "1", features = ["time"] }
-rfd = "0.17"
+gpui.workspace = true
+gpui_platform.workspace = true
+# `include-exclude` keeps the embed to `assets/fonts` — the icon PNGs and the
+# macOS bundle art have no business inside this binary.
+rust-embed = { workspace = true, features = ["include-exclude"] }
+futures.workspace = true
+anyhow.workspace = true
 tracing.workspace = true
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# The add-project wizard's directory autocomplete: `fs-err` for error messages
+# that name the path, `dirs` for `~` expansion (both already in the graph).
+fs-err.workspace = true
+dirs.workspace = true
+# Telemetry's PostHog POST (`src/telemetry.rs`) — the one network call in this
+# crate that does not go through `grove_core::upgrade`. Same workspace entry
+# grove-core already consumes, so no new crate enters `Cargo.lock`.
+ureq.workspace = true
+serde_json.workspace = true
+# Vendored, not a git dep: see vendor/gpui-component/README.md for the source,
+# rev, license and the full list of manifest edits.
+gpui-component.workspace = true
 
 [lints]
 workspace = true
 
+# macOS dock badge / attention bounce (`src/platform/dock.rs`).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
 
 [dev-dependencies]
-smol_str = "0.2"
+# Tests construct a `grove_core::upgrade::Release`, whose `version` field is a
+# `semver::Version`.
+semver.workspace = true

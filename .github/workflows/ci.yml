@@ -43,32 +43,48 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          # GUI (iced) + bundling prerequisites.
+          # gpui (Linux) + bundling prerequisites. Derived from this branch's
+          # actual dependency graph, not copied from upstream docs:
+          #   fontconfig/freetype  zed-font-kit -> yeslogic-fontconfig-sys and
+          #                        freetype-sys, both pkg-config probes that
+          #                        emit -lfontconfig / -lfreetype
+          #   xkbcommon(+x11), xcb xkbcommon 0.8 links them directly (no
+          #                        build.rs); `ldd target/release/grove` shows
+          #                        libxkbcommon, libxkbcommon-x11, libxcb
+          #   wayland              wayland-sys is used in dlopen mode, so it is
+          #                        a *runtime* need, not a link-time one; kept
+          #                        so a future non-dlopen build does not break
+          #   rsvg/ssl/pkg-config/dpkg  unchanged (bundling + TLS)
+          # Vulkan is loaded at runtime by ash; CI never opens a window, so no
+          # libvulkan here.
           sudo apt-get install -y \
-            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
+            libfontconfig1-dev libfreetype-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev \
+            libwayland-dev \
             librsvg2-dev libssl-dev pkg-config dpkg
 
+      # NOT `--all`: cargo-fmt's `--all` walks every package whose manifest
+      # lives under the workspace root, including the `exclude`d vendored
+      # gpui-component crates, which are third-party source we do not reformat.
+      # Naming the three real members keeps the check on our own code.
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: cargo fmt -p grove -p grove-core -p grove-terminal -- --check
 
       # Two clippy passes are intentional: tests may `unwrap()`/`expect()`
       # freely, but production code may not (see [lints.clippy] in
       # Cargo.toml). Collapsing this into one pass would either let
       # production code slip past the deny, or force test code to stop
       # unwrapping.
-      # grove-gpui is deliberately NOT built in CI: it needs rustc >= 1.95 and
-      # Linux GUI system deps this runner does not install, and it is excluded
-      # from `default-members` (gpui rewrite plan 03, Task 1). An all-members
-      # flag would pull it in regardless, so every invocation below names the
-      # members explicitly. grove-gpui joins CI in Plan 10, when iced is deleted
-      # and it becomes the product.
+      # `--workspace` is safe here: the three vendored gpui-component crates
+      # are workspace-`exclude`d (see Cargo.toml), so they are never linted or
+      # tested as members even though they are path dependencies.
       - name: Clippy (all targets, tests allowed to unwrap)
-        run: cargo clippy -p grove -p grove-core -p grove-terminal --all-targets -- -D warnings -A clippy::unwrap_used -A clippy::expect_used
+        run: cargo clippy --workspace --all-targets -- -D warnings -A clippy::unwrap_used -A clippy::expect_used
 
       # Production paths only (no --all-targets, so #[cfg(test)] modules
       # aren't compiled here) — the Cargo.toml unwrap/expect denies apply.
       - name: Clippy (production code)
-        run: cargo clippy -p grove -p grove-core -p grove-terminal -- -D warnings
+        run: cargo clippy --workspace -- -D warnings
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -78,11 +94,11 @@ jobs:
       # nextest gives per-test process isolation and the retry/flaky policy in
       # .config/nextest.toml (profile `ci`).
       - name: Run tests
-        run: cargo nextest run -p grove -p grove-core -p grove-terminal --locked --profile ci
+        run: cargo nextest run --workspace --locked --profile ci
 
       # nextest cannot run doctests, so they need a separate `cargo test` pass.
       - name: Run doctests
-        run: cargo test --doc -p grove -p grove-core -p grove-terminal --locked
+        run: cargo test --doc --workspace --locked
 
   hygiene:
     name: Hygiene (typos, unused deps)

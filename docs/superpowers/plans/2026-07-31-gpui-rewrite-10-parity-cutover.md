@@ -628,7 +628,7 @@ lost), and rewrite `Cargo.toml`, `rust-toolchain.toml`, `.github/workflows/ci.ym
 **Order matters.** Each step leaves the tree in a state the next step can
 verify. Do not batch them.
 
-- [ ] **Step 1: Last look at the oracle**
+- [x] **Step 1: Last look at the oracle**
 
 Before deleting anything, confirm every open question is closed:
 - Task 5's open-decisions section has the user's answers.
@@ -639,7 +639,7 @@ Before deleting anything, confirm every open question is closed:
   and confirm none of them is a TODO that still needs the oracle. Report the
   count.
 
-- [ ] **Step 2: Delete vt100 and re-base the golden harness**
+- [x] **Step 2: Delete vt100 and re-base the golden harness**
 
 1. `crates/grove-terminal/tests/golden.rs` + `divergence.rs`: drop the oracle
    leg of every assertion (Task 4 Step 4 kept three-way agreement; now it is
@@ -667,7 +667,7 @@ grep -rn "vt100" --include='*.rs' --include='*.toml' . | grep -v '^./target' | g
 cargo test -p grove-terminal -p grove-core 2>&1 | tail -5
 ```
 
-- [ ] **Step 3: Delete the iced app and relocate grove-gpui to `src/`**
+- [x] **Step 3: Delete the iced app and relocate grove-gpui to `src/`**
 
 **Mechanism — promote grove-gpui *into* the existing root `grove` package.**
 Not a crate rename in `crates/`, not a virtual workspace root. Concretely:
@@ -716,7 +716,7 @@ GROVE_GPUI_SELFTEST=1 ./target/release/grove   # the Plan 03 metric assertion: c
 
 The selftest passing is the proof the font embed survived the move.
 
-- [ ] **Step 4: Unify the toolchain**
+- [x] **Step 4: Unify the toolchain**
 
 Root `rust-toolchain.toml` → `channel = "1.95.0"`, components `["rustfmt",
 "clippy"]`, keeping its existing "pinned, not stable" comment (the reasoning is
@@ -725,7 +725,7 @@ zed at ZED_REV uses `std::hint::cold_path`. `spikes/rust-toolchain.toml` is now
 redundant but harmless — leave it; the spikes are throwaway scaffolding and
 deleting them is not this plan's job.
 
-- [ ] **Step 5: Clean grove-core's 9 clippy-1.95 lints** *(the grove-core
+- [x] **Step 5: Clean grove-core's 9 clippy-1.95 lints** *(the grove-core
       amendment protocol is lifted for exactly this)*
 
 ```bash
@@ -744,7 +744,7 @@ count, the after count, and every `#[allow]` added.
 `cargo test -p grove-core` must be green before and after, with the same test
 count (minus whatever `session.rs` owned).
 
-- [ ] **Step 6: Restore CI to `--workspace` and unify it**
+- [x] **Step 6: Restore CI to `--workspace` and unify it**
 
 `.github/workflows/ci.yml`:
 - Replace all four `-p grove -p grove-core -p grove-terminal` invocations
@@ -766,7 +766,7 @@ count (minus whatever `session.rs` owned).
 - `macos-latest` in the matrix now builds the gpui app on macOS. Expect this to
   be the riskiest CI change; it cannot be verified locally.
 
-- [ ] **Step 7: Update `install.sh`**
+- [x] **Step 7: Update `install.sh`**
 
 Read it end to end first. Most of it needs **no** change, because Step 3 kept
 the package and binary named `grove`. Check and fix only:
@@ -782,7 +782,7 @@ the package and binary named `grove`. Check and fix only:
 If `install.sh` genuinely needs no edit, **say so explicitly in your report**
 rather than editing it to look like work was done.
 
-- [ ] **Step 8: Full verification (worker half)**
+- [x] **Step 8: Full verification (worker half)**
 
 ```bash
 cargo fmt --all -- --check

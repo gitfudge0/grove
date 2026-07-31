@@ -8,13 +8,14 @@ ignore = [
     # (never ships in the binary). Revisit when the dependent upgrades away
     # from it.
     "RUSTSEC-2024-0436",
-    # rustybuzz 0.20.1 is unmaintained, pulled in via iced's text-shaping
-    # stack. Not directly replaceable by Grove. Revisit on an iced release
+    # rustybuzz 0.20.1 is unmaintained, pulled in via gpui's SVG stack
+    # (gpui -> usvg -> rustybuzz). Not directly replaceable by Grove. Revisit
+    # on a gpui/usvg release
     # that moves off it.
     "RUSTSEC-2026-0206",
-    # ttf-parser 0.25.1 is unmaintained, same iced font stack as
+    # ttf-parser 0.25.1 is unmaintained, same usvg stack as
     # rustybuzz above, same reasoning: not directly replaceable by Grove,
-    # revisit on an iced release that moves off it.
+    # revisit on a gpui/usvg release that moves off it.
     "RUSTSEC-2026-0192",
     # quick-xml 0.39.4: quadratic runtime when parsing hostile XML.
     # Reached only through wayland-scanner, a proc-macro that parses the
@@ -52,10 +53,10 @@ allow = [
     "Zlib",
     "Unicode-3.0",
     "Unicode-DFS-2016",
-    # clipboard-win, error-code: via arboard / iced's clipboard stack.
+    # clipboard-win, error-code: via arboard (Windows targets only).
     # Permissive, no attribution required.
     "BSL-1.0",
-    # hexf-parse: via iced. Public-domain dedication.
+    # hexf-parse: via wgpu's naga. Public-domain dedication.
     "CC0-1.0",
     # option-ext: via dirs. Weak, file-level copyleft; using it unmodified
     # as a library imposes nothing on Grove.

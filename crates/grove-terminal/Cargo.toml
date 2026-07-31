@@ -13,9 +13,6 @@ alacritty_terminal.workspace = true
 portable-pty.workspace = true
 
 [dev-dependencies]
-# ORACLE ONLY — never a normal dependency. vt100 is the in-tree parser the
-# golden harness compares against; it must not leak into production paths.
-vt100.workspace = true
 serde_json.workspace = true
 # Project convention (clippy.toml disallowed_methods): fs_err over std::fs, so
 # IO errors name the offending path.

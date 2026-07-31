@@ -21,8 +21,8 @@ use alacritty_terminal::vte::ansi::{Color as AColor, NamedColor, Processor, StdS
 use crate::cell::{Cell, Snapshot};
 use crate::color::TermColor;
 
-/// Scrollback depth, matching `crates/grove-core/src/session.rs`'s vt100
-/// parser so both sides of the golden harness retain the same history.
+/// Scrollback depth. Matches the value the deleted iced app's vt100 parser
+/// used, so the frozen golden dumps retain the same history.
 pub const SCROLLING_HISTORY: usize = 5000;
 
 /// How the inner app wants mouse events reported.
@@ -229,7 +229,7 @@ impl GroveTerm {
 
     /// Total BEL count seen on this stream. Monotonic; callers diff it.
     pub fn bell_count(&self) -> usize {
-        self.listener.state.lock().map(|s| s.bells).unwrap_or(0)
+        self.listener.state.lock().map_or(0, |s| s.bells)
     }
 
     pub fn app_cursor(&self) -> bool {
@@ -640,24 +640,17 @@ mod tests {
 
     use super::*;
 
-    /// vt100's equivalent of `mouse_mode`/`encoding`, so the mapping is checked
-    /// against the parser Grove ships today rather than against my reading of
-    /// the DEC private modes.
-    fn oracle_modes(bytes: &[u8]) -> (vt100::MouseProtocolMode, vt100::MouseProtocolEncoding) {
-        let mut p = vt100::Parser::new(24, 80, 0);
-        p.process(bytes);
-        (
-            p.screen().mouse_protocol_mode(),
-            p.screen().mouse_protocol_encoding(),
-        )
-    }
-
     fn modes(bytes: &[u8]) -> (MouseMode, MouseEncoding) {
         let mut t = GroveTerm::new(24, 80);
         t.process(bytes);
         (t.mouse_mode(), t.encoding())
     }
 
+    /// The expected values here were originally cross-checked against the
+    /// vt100 parser by a sibling test (`..._agree_with_the_vt100_oracle`),
+    /// deleted with vt100 in Plan 10 Task 7 Step 2. The table it validated is
+    /// what remains, and it is the assertion that matters: these are the DEC
+    /// private modes, independently derived, not a snapshot of `GroveTerm`.
     #[test]
     fn mouse_mode_and_encoding_track_the_dec_private_modes() {
         let cases: &[(&[u8], MouseMode, MouseEncoding)] = &[
@@ -688,41 +681,6 @@ mod tests {
         ];
         for (bytes, mode, encoding) in cases {
             assert_eq!(modes(bytes), (*mode, *encoding), "for {bytes:?}");
-        }
-    }
-
-    #[test]
-    fn mouse_mode_and_encoding_agree_with_the_vt100_oracle() {
-        let streams: &[&[u8]] = &[
-            b"",
-            b"\x1b[?1000h",
-            b"\x1b[?1002h",
-            b"\x1b[?1003h",
-            b"\x1b[?1000h\x1b[?1006h",
-            b"\x1b[?1002h\x1b[?1005h",
-            b"\x1b[?1003h\x1b[?1003l",
-            b"\x1b[?1000h\x1b[?1002h\x1b[?1006h",
-        ];
-        for bytes in streams {
-            let (mode, encoding) = modes(bytes);
-            let (vt_mode, vt_encoding) = oracle_modes(bytes);
-            let want_mode = match vt_mode {
-                vt100::MouseProtocolMode::None => MouseMode::None,
-                vt100::MouseProtocolMode::Press => MouseMode::Normal,
-                vt100::MouseProtocolMode::PressRelease => MouseMode::Normal,
-                vt100::MouseProtocolMode::ButtonMotion => MouseMode::Button,
-                vt100::MouseProtocolMode::AnyMotion => MouseMode::Any,
-            };
-            let want_encoding = match vt_encoding {
-                vt100::MouseProtocolEncoding::Default => MouseEncoding::Default,
-                vt100::MouseProtocolEncoding::Sgr => MouseEncoding::Sgr,
-                vt100::MouseProtocolEncoding::Utf8 => MouseEncoding::Utf8,
-            };
-            assert_eq!(
-                (mode, encoding),
-                (want_mode, want_encoding),
-                "vt100 said {vt_mode:?}/{vt_encoding:?} for {bytes:?}"
-            );
         }
     }
 

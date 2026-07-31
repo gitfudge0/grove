@@ -6,3 +6,18 @@ mis = "mis"
 # "unparseable" is the spelling used consistently in Grove's docs and error
 # text; typos' dictionary prefers "unparsable".
 unparseable = "unparseable"
+# `nl -ba` is the coreutils flag for "number all lines" (scripts/).
+ba = "ba"
+# `c0caf5` — a TokyoNight hex colour, split by the checker into words.
+caf = "caf"
+# "PNG"/"PNGs" split at the word boundary in prose about screenshots.
+PN = "PN"
+
+[files]
+# Recorded PTY byte streams and the dumps frozen from them. They are binary
+# terminal output (timestamps, box drawing, SGR sequences), not prose, so a
+# spell checker has nothing meaningful to say about them.
+extend-exclude = [
+    "crates/grove-terminal/tests/fixtures/*",
+    "crates/grove-terminal/tests/expected/*",
+]

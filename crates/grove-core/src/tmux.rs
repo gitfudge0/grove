@@ -81,13 +81,13 @@ pub fn available() -> bool {
             tracing::warn!(status = ?s, "tmux command failed");
         }
     }
-    status.map(|s| s.success()).unwrap_or(false)
+    status.is_ok_and(|s| s.success())
 }
 
 pub fn has_session(name: &str) -> bool {
     let mut c = tmux();
     c.args(["has-session", "-t", &exact(name)]);
-    run_silent(c).map(|s| s.success()).unwrap_or(false)
+    run_silent(c).is_ok_and(|s| s.success())
 }
 
 /// Single-quote shell-escape so tmux's parser hands the command through intact.

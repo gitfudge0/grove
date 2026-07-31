@@ -1,6 +1,5 @@
 //! Shared test scaffolding: the fixture corpus loader, the neutral
-//! `ScreenDump` comparison value both parsers must produce, and the **frozen
-//! expected-dump** serializer.
+//! `ScreenDump` comparison value, and the **frozen expected-dump** serializer.
 //!
 //! # Why the expected dumps are committed text files (Plan 10 Task 4)
 //!
@@ -30,7 +29,23 @@
 //! The format is text, not bincode/JSON, so a diff is reviewable in a PR. The
 //! blank-cell normalization ([`normalize_cell_text`]) and the INVERSE swap
 //! ([`apply_inverse`]) are applied before serialization, so the frozen text is
-//! the *same* neutral dump the two parsers already agree on.
+//! the *same* neutral dump the two parsers already agreed on.
+//!
+//! # The vt100 bug the oracle had to work around (Plan 10 Task 7 Step 2)
+//!
+//! The oracle (`tests/common/oracle.rs`) is deleted, and with it the only
+//! written record of a real vt100 defect. It is preserved here because it is a
+//! fact about a third-party crate, not about our code, and it must not vanish
+//! silently:
+//!
+//! > **vt100 0.15.2 panics on deep scrollback.** `grid.rs:125`'s `visible_rows`
+//! > computes `rows_len - scrollback_offset` without a guard, so an offset
+//! > larger than the number of retained rows underflows. The oracle worked
+//! > around it by clamping the scrollback offset before every read.
+//!
+//! **No further action is needed.** vt100 leaves the tree with this commit; the
+//! note exists so that a future reader who reintroduces vt100 — as an oracle or
+//! otherwise — knows the workaround was deliberate and why.
 //!
 //! Every item here is used by at least one integration test target, but not by
 //! all of them, so `dead_code` is allowed module-wide.
@@ -43,8 +58,6 @@
 )]
 
 use std::path::{Path, PathBuf};
-
-pub mod oracle;
 
 /// A recorded PTY byte stream plus the geometry it was recorded at.
 #[derive(Debug, Clone)]
@@ -114,9 +127,10 @@ pub fn fixture(label: &str) -> Fixture {
 /// full-screen span, and a mid-screen multi-row span.
 ///
 /// Deliberately confined to the visible screen. Selections that reach into
-/// scrollback are covered separately, on a fixture whose history the two
-/// parsers agree on — see `ed2_scrollback_retention_is_a_known_divergence` in
-/// `tests/divergence.rs` for why a shared deep-scrollback probe cannot exist.
+/// scrollback are covered separately by [`scrollback_selection_probes`], on a
+/// fixture whose history the two parsers agreed on — see
+/// `ed2_scrollback_retention_is_a_known_divergence` in `tests/divergence.rs`
+/// for why a shared deep-scrollback probe could not exist.
 pub fn selection_probes(rows: u16) -> Vec<((usize, usize), (usize, usize))> {
     let r = rows as usize;
     vec![
@@ -128,10 +142,11 @@ pub fn selection_probes(rows: u16) -> Vec<((usize, usize), (usize, usize))> {
     ]
 }
 
-/// The resize script `golden_after_resize_matches` replays.
+/// The resize script the frozen `__resize<rows>x<cols>` cases replay.
 pub const RESIZE_SCRIPT: &[(u16, u16)] = &[(20, 60), (40, 140), (34, 120), (10, 200)];
 
-/// Chunk boundaries `golden_chunking_invariance` feeds a fixture at.
+/// Chunk boundaries `golden_chunking_invariance` and the frozen
+/// `__chunk<size>` cases feed a fixture at.
 pub const CHUNK_SIZES: &[usize] = &[1, 7, 64, 4096];
 
 // ---------------------------------------------------------------------------
@@ -283,6 +298,7 @@ pub fn expected_cases() -> Vec<String> {
         }
     }
     out.push(DIVERGENCE_REFLOW_CASE.to_string());
+    out.push(SCROLLBACK_SELECTION_CASE.to_string());
     out.sort();
     out
 }
@@ -294,6 +310,44 @@ pub fn expected_cases() -> Vec<String> {
 /// screen in scrollback — is a scalar history-size assertion, not a screen, so
 /// it has no `.dump` file. It stays asserted in `tests/divergence.rs`.)
 pub const DIVERGENCE_REFLOW_CASE: &str = "resize-storm-primary__reflow34x40__DIVERGENCE";
+
+/// The scrollback-crossing selection probes, frozen from the oracle (Plan 10
+/// Task 7 Step 2). `selection_into_scrollback_matches_where_history_agrees` was
+/// a pure oracle comparison; freezing its probe outputs is what lets it survive
+/// the oracle's deletion as a real regression test rather than be dropped.
+pub const SCROLLBACK_SELECTION_CASE: &str = "resize-storm-primary__scrollback_selection";
+
+/// The probe rectangles for [`SCROLLBACK_SELECTION_CASE`]: spans that start in
+/// scrollback (row index > the visible height) and end on the visible screen,
+/// including one with reversed endpoints.
+pub fn scrollback_selection_probes(rows: u16) -> Vec<((usize, usize), (usize, usize))> {
+    let r = rows as usize;
+    vec![
+        ((r + 1, 0), (r - 1, 20)),
+        ((r + 5, 0), (r + 1, 30)),
+        ((r + 12, 4), (r + 9, 60)),
+        ((r + 3, 30), (r + 7, 2)),
+    ]
+}
+
+/// Probe-only serialization, for cases that freeze selection text without a
+/// screen (the screen itself is already frozen by the `__base` case).
+pub fn serialize_selection_probes(probes: &[SelectionProbe]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::new();
+    for ((a, b), text) in probes {
+        let _ = writeln!(
+            s,
+            "selection_text(({},{}),({},{})) \"{}\"",
+            a.0,
+            a.1,
+            b.0,
+            b.1,
+            text.as_deref().map_or("<none>".to_string(), escape)
+        );
+    }
+    s
+}
 
 pub fn expected_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/expected")
@@ -423,8 +477,10 @@ pub fn assert_expected(case: &str, text: &str, header: &[&str]) {
 
     let want = fs_err::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
-            "missing expected dump {}: {e}\nre-bless with GROVE_TERM_BLESS=1 \
-             ONLY while the vt100 oracle still exists",
+            "missing expected dump {}: {e}\nthese files were blessed from the \
+             vt100 oracle, which no longer exists — re-blessing with \
+             GROVE_TERM_BLESS=1 would replace an independent expectation with \
+             the model's own output",
             path.display()
         )
     });

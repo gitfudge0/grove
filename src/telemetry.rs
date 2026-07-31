@@ -1,4 +1,9 @@
 //! Anonymous product telemetry (PostHog). No-ops until an API key is set.
+//!
+//! A behavior-verbatim port of the iced app's `src/telemetry.rs`.
+//! Deliberately **not** hoisted into grove-core: iced is deleted in
+//! Plan 10, and a two-month-old shared module is not worth the amendment
+//! (rewrite Constraint 3, foreseen candidate 2). No gpui types live here.
 
 // Supplied at build time via `GROVE_POSTHOG_KEY`; telemetry no-ops when unset.
 const POSTHOG_API_KEY: Option<&str> = option_env!("GROVE_POSTHOG_KEY");
@@ -166,9 +171,34 @@ fn send(event: &str, props: Vec<(&'static str, serde_json::Value)>) {
 // ponytail: hourly ping, PostHog dedupes into DAU; no need for day-boundary logic
 pub fn start_heartbeat() {
     std::thread::spawn(|| loop {
-        std::thread::sleep(std::time::Duration::from_secs(3600));
+        std::thread::sleep(Duration::from_hours(1));
         track("heartbeat", vec![]);
     });
+}
+
+/// The scrubbing panic hook (`src/main.rs:11-30`). Installed from `main`
+/// **before** `app::boot`, so a panic inside boot is still reported.
+///
+/// The panic *message* never leaves the machine — it is logged locally and
+/// only the scrubbed `file:line:col` location is transmitted. `track_blocking`
+/// because a thread spawned from a panicking process may never get to run.
+pub fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".to_string());
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_default();
+        tracing::error!(panic = %msg, location = %location, "grove-gpui panicked");
+        track_blocking("panic", vec![("location", scrub_paths(&location).into())]);
+        previous(info);
+    }));
 }
 
 #[cfg(test)]
@@ -206,5 +236,16 @@ mod tests {
     #[test]
     fn home_prefix_is_not_matched_mid_segment() {
         assert_eq!(scrub("/home/tester2/x"), "<path>");
+    }
+
+    /// Three gates, and the first one is a compile-time constant: no key is
+    /// baked into a test build, so nothing can leave the machine no matter
+    /// what the runtime toggle says (carried decision 3).
+    #[test]
+    fn nothing_is_transmitted_without_a_compiled_in_key() {
+        assert!(super::api_key().is_none());
+        super::set_enabled(true);
+        assert!(!super::enabled());
+        super::set_enabled(false);
     }
 }
