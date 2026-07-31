@@ -68,6 +68,13 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab5
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba", features = ["font-kit", "wayland", "x11"] }
 rust-embed = "8"
 futures = "0.3"
+# Promoted from the root package's `[dependencies]` (same version + features) so
+# the iced app and grove-gpui share ONE arboard in the graph — gpui rewrite
+# plan 04 Task 1 Step 2.
+arboard = { version = "3", features = ["wayland-data-control"] }
+# Promoted alongside arboard: OSC 52 clipboard writes need it in both front
+# ends (gpui rewrite plan 04 Task 5 Step 5).
+base64 = "0.22"
 portable-pty = "0.9"
 serde_json = "1"
 anyhow = "1"
@@ -118,8 +125,8 @@ dirs.workspace = true
 serde_json.workspace = true
 vt100.workspace = true
 fs-err.workspace = true
-arboard = { version = "3", features = ["wayland-data-control"] }
-base64 = "0.22"
+arboard.workspace = true
+base64.workspace = true
 iced = { version = "0.14.0", features = ["tokio", "advanced", "svg", "canvas"] }
 ureq.workspace = true
 semver.workspace = true

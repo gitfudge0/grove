@@ -51,10 +51,40 @@ impl ZoomState {
         fonts::FONT_SIZE * self.zoom
     }
 
+    /// Logical PTY grid for an element laid out at `bounds` — findings
+    /// amendment 7. `compute_pty_dims`'s chrome subtraction
+    /// (`src/gui/metrics.rs:265-295`) is superseded by gpui layout: the
+    /// element's own post-layout bounds already exclude every piece of chrome,
+    /// so there is nothing left to subtract.
+    ///
+    /// Returns `(rows, cols)`. Degenerate bounds (zero, negative, NaN) clamp to
+    /// a 1x1 grid — a PTY may never be sized 0.
+    pub fn pty_dims(&self, width_px: f32, height_px: f32) -> (u16, u16) {
+        (fit(height_px, self.cell_h()), fit(width_px, self.cell_w()))
+    }
+
     /// The rem size this zoom level implies.
     pub fn rem_size(&self) -> f32 {
         REM_BASE * self.zoom
     }
+}
+
+/// How many whole `cell`-sized slots fit in `extent`, clamped to `1..=u16::MAX`.
+/// NaN and non-positive inputs collapse to 1.
+fn fit(extent: f32, cell: f32) -> u16 {
+    if !cell.is_finite() || cell <= 0.0 {
+        return 1;
+    }
+    // NaN fails every comparison, so it falls through both guards to the
+    // clamp below.
+    let n = (extent / cell).floor();
+    if n.is_nan() || n < 1.0 {
+        return 1;
+    }
+    if n >= f32::from(u16::MAX) {
+        return u16::MAX;
+    }
+    n as u16
 }
 
 /// Clamp then snap to the 0.1 grid, then clamp again — verbatim behavior from
@@ -116,6 +146,44 @@ mod tests {
         assert_eq!(snap(1.26), 1.3);
         assert_eq!(snap(-5.0), ZOOM_MIN);
         assert_eq!(snap(99.0), ZOOM_MAX);
+    }
+
+    #[test]
+    fn pty_dims_at_the_default_window_size() {
+        // 1280x800 (main.rs WINDOW_W/H) at zoom 1.0: 800/17 = 47.05 -> 47,
+        // 1280/7.5 = 170.67 -> 170.
+        assert_eq!(ZoomState::new(1.0).pty_dims(1280.0, 800.0), (47, 170));
+    }
+
+    #[test]
+    fn pty_dims_clamp_degenerate_bounds() {
+        let z = ZoomState::new(1.0);
+        assert_eq!(z.pty_dims(0.0, 0.0), (1, 1));
+        assert_eq!(z.pty_dims(-100.0, -100.0), (1, 1));
+        assert_eq!(z.pty_dims(f32::NAN, f32::NAN), (1, 1));
+        assert_eq!(z.pty_dims(f32::INFINITY, f32::NAN), (1, u16::MAX));
+        // A bound smaller than one cell is still a 1x1 grid, never 0.
+        assert_eq!(z.pty_dims(3.0, 4.0), (1, 1));
+    }
+
+    #[test]
+    fn pty_dims_halve_at_double_zoom() {
+        // Floor, not round: 800/34 = 23.52 -> 23 (not 24), 1280/15 = 85.33 -> 85.
+        assert_eq!(ZoomState::new(2.0).pty_dims(1280.0, 800.0), (23, 85));
+    }
+
+    #[test]
+    fn pty_dims_floor_a_fractional_cell() {
+        // zoom 0.6: cell_w = 4.5, cell_h = 10.2. 1000/4.5 = 222.2 -> 222,
+        // 1000/10.2 = 98.03 -> 98. The fractional remainder is dropped.
+        assert_eq!(ZoomState::new(0.6).pty_dims(1000.0, 1000.0), (98, 222));
+    }
+
+    #[test]
+    fn pty_dims_never_exceed_u16() {
+        let z = ZoomState::new(1.0);
+        let (rows, cols) = z.pty_dims(1e30, 1e30);
+        assert_eq!((rows, cols), (u16::MAX, u16::MAX));
     }
 
     #[test]

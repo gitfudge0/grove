@@ -17,6 +17,13 @@ path = "src/main.rs"
 
 [dependencies]
 grove-core = { path = "../grove-core" }
+grove-terminal = { path = "../grove-terminal" }
+# `grove_terminal::pty::spawn` takes a `portable_pty::CommandBuilder`, which
+# grove-terminal does not re-export — same workspace entry, same version.
+portable-pty.workspace = true
+# Same workspace entry the iced app uses — one arboard version in the graph.
+arboard.workspace = true
+base64.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 # `include-exclude` keeps the embed to `assets/fonts` — the icon PNGs and the
@@ -26,7 +33,7 @@ futures.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 # NO gpui-component in this phase — see Global Constraints (durable-pin decision
-# is deferred to Plan 08). NO grove-terminal yet — Plan 04 adds it.
+# is deferred to Plan 08).
 
 [lints]
 workspace = true

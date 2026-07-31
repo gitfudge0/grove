@@ -26,6 +26,8 @@ pub struct PtyHandle {
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     rx: Receiver<Vec<u8>>,
+    /// Set once [`PtyHandle::take_receiver`] has handed the channel away.
+    rx_taken: bool,
 }
 
 impl PtyHandle {
@@ -69,7 +71,35 @@ impl PtyHandle {
             writer,
             child,
             rx,
+            rx_taken: false,
         })
+    }
+
+    /// Take ownership of the output channel, once.
+    ///
+    /// [`PtyHandle::drain`] is the non-blocking API, which forces a consumer to
+    /// poll. A UI that wants **zero idle wakeups** needs to *block* on the
+    /// channel from its own thread instead — and it cannot, because
+    /// [`PtyHandle::receiver`] only lends a `&Receiver` and `Receiver` is
+    /// `!Sync`, so the borrow cannot cross a thread boundary while the handle
+    /// itself stays here for `write`/`resize`. Handing the `Receiver` over by
+    /// value is the minimum that makes a blocking reader expressible.
+    ///
+    /// Afterwards this handle's own channel is disconnected: `receiver()`
+    /// yields a dead channel and `drain()` reports the PTY as closed. The
+    /// caller that took the receiver owns EOF detection from then on
+    /// (`recv()` returning `Err` means the child went away).
+    ///
+    /// Returns `None` on every call after the first.
+    pub fn take_receiver(&mut self) -> Option<Receiver<Vec<u8>>> {
+        if self.rx_taken {
+            return None;
+        }
+        self.rx_taken = true;
+        // The paired sender is dropped immediately, so the replacement channel
+        // reads as disconnected — which is exactly the truth for this handle.
+        let (_dead_tx, dead_rx) = channel::<Vec<u8>>();
+        Some(std::mem::replace(&mut self.rx, dead_rx))
     }
 
     /// Send input to the child.
@@ -162,6 +192,40 @@ mod tests {
         assert!(saw_eof, "PTY never reached EOF");
         assert!(
             term.tail_contents(5).contains("hello-from-pty"),
+            "child output never reached the model: {:?}",
+            term.tail_contents(5)
+        );
+        let _ = handle.kill();
+    }
+
+    /// The taken receiver carries the child's output and reports EOF itself;
+    /// the handle it came from is left disconnected, and a second take fails.
+    #[test]
+    fn take_receiver_hands_the_channel_over_exactly_once() {
+        let mut cmd = CommandBuilder::new("echo");
+        cmd.arg("taken-channel");
+        cmd.env("TERM", "xterm-256color");
+        let mut handle = spawn(cmd, 24, 80).expect("spawn");
+
+        let rx = handle
+            .take_receiver()
+            .expect("first take yields the channel");
+        assert!(
+            handle.take_receiver().is_none(),
+            "the channel must only be handed over once"
+        );
+        assert!(
+            handle.drain().is_none(),
+            "a handle whose channel was taken reports itself closed"
+        );
+
+        // Blocking reads on the taken channel see the output, then EOF.
+        let mut term = crate::GroveTerm::new(24, 80);
+        while let Ok(chunk) = rx.recv_timeout(Duration::from_secs(10)) {
+            term.process(&chunk);
+        }
+        assert!(
+            term.tail_contents(5).contains("taken-channel"),
             "child output never reached the model: {:?}",
             term.tail_contents(5)
         );

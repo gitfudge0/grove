@@ -9,6 +9,7 @@ use crate::entities::animation_clock::AnimationClock;
 use crate::keymap;
 use crate::settings::SettingsState;
 use crate::theme as c;
+use crate::views::terminal_view::TerminalView;
 use crate::zoom::{self, ZoomState};
 
 /// Default sidebar width (`src/gui/metrics.rs:9`).
@@ -27,7 +28,13 @@ fn r(px_at_1x: f32) -> gpui::Rems {
 
 pub struct Workspace {
     focus: FocusHandle,
-    clock: Entity<AnimationClock>,
+    /// Kept alive here: dropping the clock entity would stop every animation
+    /// in the window, including the terminal cursor blink.
+    _clock: Entity<AnimationClock>,
+    terminal: Entity<TerminalView>,
+    /// The terminal takes focus on the first frame so keystrokes land without
+    /// a click; `window.focus` needs a `&mut Window`, which `new` has not got.
+    focused_terminal: bool,
     _clock_observer: gpui::Subscription,
 }
 
@@ -40,18 +47,25 @@ impl Focusable for Workspace {
 impl Workspace {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let clock = cx.new(AnimationClock::new);
-        // Observing the clock is what proves the tick drives repaints end to
-        // end: the body's counter only advances because of this.
+        // The clock drives the cursor blink inside the terminal; the workspace
+        // itself repaints with it so chrome animations stay in phase.
         let observer = cx.observe(&clock, |_, _, cx| cx.notify());
+        // Plan 05 replaces this single hardcoded session with a registry.
+        let terminal = cx.new({
+            let clock = clock.clone();
+            |cx| TerminalView::new(clock, cx)
+        });
         Self {
             focus: cx.focus_handle(),
-            clock,
+            _clock: clock,
+            terminal,
+            focused_terminal: false,
             _clock_observer: observer,
         }
     }
 
     /// Applies a new zoom level: state, the debounced persist, repaint.
-    fn set_zoom(zoom_value: f32, cx: &mut App) {
+    pub(crate) fn set_zoom(zoom_value: f32, cx: &mut App) {
         let snapped = zoom::snap(zoom_value);
         if cx.global::<ZoomState>().zoom == snapped {
             return;
@@ -94,9 +108,13 @@ impl Render for Workspace {
         let zoom_value = cx.global::<ZoomState>().zoom;
         window.set_rem_size(px(zoom::REM_BASE * zoom_value));
 
-        let tick = self.clock.read(cx).tick();
-        let theme_name = grove_core::theme::with_current(|t| t.name.to_string());
-        let body_text = format!("grove — theme {theme_name} · zoom {zoom_value:.1}× · tick {tick}");
+        // Plan 03's debug line (theme / zoom / tick) is deleted here, as that
+        // plan said this phase would: the live terminal is the proof now.
+        if !self.focused_terminal {
+            self.focused_terminal = true;
+            let handle = self.terminal.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+        }
 
         let root = div()
             .track_focus(&self.focus)
@@ -117,8 +135,8 @@ impl Render for Workspace {
         let root = stub_action!(root, keymap::ToggleTerminal, "Plan 07");
         let root = stub_action!(root, keymap::NewHomeTerminal, "Plan 07");
         let root = stub_action!(root, keymap::JumpToWaitingSession, "Plan 05");
-        let root = stub_action!(root, keymap::ScrollHalfPageUp, "Plan 04");
-        let root = stub_action!(root, keymap::ScrollHalfPageDown, "Plan 04");
+        let root = stub_action!(root, keymap::ScrollHalfPageUp, "Plan 05");
+        let root = stub_action!(root, keymap::ScrollHalfPageDown, "Plan 05");
 
         root.flex()
             .flex_row()
@@ -137,19 +155,14 @@ impl Render for Workspace {
                     .h_full()
                     // App bar placeholder (Plan 06).
                     .child(div().h(r(APPBAR_H)).w_full().bg(c::BG_STRIP()))
+                    // Body: one live terminal session.
                     .child(
-                        // Body. The text exists purely so a human can see
-                        // theme, zoom and clock working in one glance —
-                        // Plan 04 deletes it.
                         div()
                             .flex()
                             .flex_1()
                             .w_full()
-                            .items_center()
-                            .justify_center()
                             .bg(c::BG())
-                            .text_color(c::FG_DIM())
-                            .child(body_text),
+                            .child(self.terminal.clone()),
                     )
                     // Status bar placeholder (Plan 06).
                     .child(div().h(r(STATUS_H)).w_full().bg(c::BG_STRIP())),

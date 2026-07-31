@@ -2816,10 +2816,14 @@ name = "grove-gpui"
 version = "0.45.0"
 dependencies = [
  "anyhow",
+ "arboard",
+ "base64",
  "futures",
  "gpui",
  "gpui_platform",
  "grove-core",
+ "grove-terminal",
+ "portable-pty",
  "rust-embed",
  "tracing",
 ]

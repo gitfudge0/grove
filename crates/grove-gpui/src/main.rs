@@ -8,6 +8,8 @@ mod entities;
 mod fonts;
 mod keymap;
 mod settings;
+mod terminal;
+mod terminal_element;
 mod theme;
 mod views;
 mod zoom;
