@@ -1,0 +1,53 @@
+# BLESSED FROM GroveTerm (alacritty), NOT from the vt100 oracle.
+# 
+# Master plan row 02: `Term::resize` hardcodes
+# `self.grid.resize(!is_alt, ..)`
+# (alacritty_terminal/src/term/mod.rs:677), so the primary screen
+# ALWAYS rewraps and the alternate screen NEVER does. vt100 rewraps
+# neither. Plan 02 pinned the difference down rather than patching
+# alacritty; spec §3's "reflow-on-resize is suppressed" is amended
+# by `primary_screen_reflow_is_a_known_divergence`, not implemented.
+# 
+# This file therefore records what alacritty does, on purpose. A
+# diff here means alacritty's reflow changed.
+geometry 34x40
+r0 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r1 c0 "primary line 485: the quick brown fox ju" fg=Default bg=Default bold=false
+r2 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r3 c0 "primary line 486: the quick brown fox ju" fg=Default bg=Default bold=false
+r4 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r5 c0 "primary line 487: the quick brown fox ju" fg=Default bg=Default bold=false
+r6 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r7 c0 "primary line 488: the quick brown fox ju" fg=Default bg=Default bold=false
+r8 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r9 c0 "primary line 489: the quick brown fox ju" fg=Default bg=Default bold=false
+r10 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r11 c0 "primary line 490: the quick brown fox ju" fg=Default bg=Default bold=false
+r12 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r13 c0 "primary line 491: the quick brown fox ju" fg=Default bg=Default bold=false
+r14 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r15 c0 "primary line 492: the quick brown fox ju" fg=Default bg=Default bold=false
+r16 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r17 c0 "primary line 493: the quick brown fox ju" fg=Default bg=Default bold=false
+r18 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r19 c0 "primary line 494: the quick brown fox ju" fg=Default bg=Default bold=false
+r20 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r21 c0 "primary line 495: the quick brown fox ju" fg=Default bg=Default bold=false
+r22 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r23 c0 "primary line 496: the quick brown fox ju" fg=Default bg=Default bold=false
+r24 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r25 c0 "primary line 497: the quick brown fox ju" fg=Default bg=Default bold=false
+r26 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r27 c0 "primary line 498: the quick brown fox ju" fg=Default bg=Default bold=false
+r28 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r29 c0 "primary line 499: the quick brown fox ju" fg=Default bg=Default bold=false
+r30 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r31 c0 "primary line 500: the quick brown fox ju" fg=Default bg=Default bold=false
+r32 c0 "mps over the lazy dog again and again   " fg=Default bg=Default bold=false
+r33 c0 "                                        " fg=Default bg=Default bold=false
+-- trailer --
+cursor (33,0,visible=true)
+title <none>
+bell_count 0
+display_offset 0
+app_cursor false

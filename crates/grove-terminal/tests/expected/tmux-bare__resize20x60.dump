@@ -1,0 +1,30 @@
+# Blessed from the vt100 oracle (Plan 10 Task 4).
+# Cumulative walk of common::RESIZE_SCRIPT on an alt-screen
+# fixture, where both parsers agree that resize never reflows.
+geometry 20x60
+r0 c0 "                                                            " fg=Default bg=Default bold=false
+r1 c0 "                                                            " fg=Default bg=Default bold=false
+r2 c0 "                                                            " fg=Default bg=Default bold=false
+r3 c0 "                                                            " fg=Default bg=Default bold=false
+r4 c0 "                                                            " fg=Default bg=Default bold=false
+r5 c0 "                                                            " fg=Default bg=Default bold=false
+r6 c0 "                                                            " fg=Default bg=Default bold=false
+r7 c0 "                                                            " fg=Default bg=Default bold=false
+r8 c0 "                                                            " fg=Default bg=Default bold=false
+r9 c0 "                                                            " fg=Default bg=Default bold=false
+r10 c0 "                                                            " fg=Default bg=Default bold=false
+r11 c0 "                                                            " fg=Default bg=Default bold=false
+r12 c0 "                                                            " fg=Default bg=Default bold=false
+r13 c0 "                                                            " fg=Default bg=Default bold=false
+r14 c0 "                                                            " fg=Default bg=Default bold=false
+r15 c0 "                                                            " fg=Default bg=Default bold=false
+r16 c0 "                                                            " fg=Default bg=Default bold=false
+r17 c0 "                                                            " fg=Default bg=Default bold=false
+r18 c0 "                                                            " fg=Default bg=Default bold=false
+r19 c0 "                                                            " fg=Default bg=Default bold=false
+-- trailer --
+cursor (0,0,visible=true)
+title <none>
+bell_count 0
+display_offset 0
+app_cursor false

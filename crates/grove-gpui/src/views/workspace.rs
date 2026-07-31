@@ -25,7 +25,7 @@ use crate::keymap;
 use crate::settings::SettingsState;
 use crate::theme as c;
 use crate::views::appbar::{self, AppbarCtx, ChromeAction, WaitingRow};
-use crate::views::grid::{self, GridAction, GridCtx, TileData};
+use crate::views::grid::{self, GridAction, GridCtx, TileData, PTY_PAD_H, PTY_PAD_W};
 use crate::views::modals::{ModalEvent, ModalLayer};
 use crate::views::rows;
 use crate::views::session_header::{self, SessionHeaderData, ToolAction, ToolCluster};
@@ -1261,6 +1261,12 @@ impl Workspace {
                     .flex_1()
                     .w_full()
                     .overflow_hidden()
+                    // iced's `pty()` container padding, reproduced from the
+                    // `compute_pty_dims` fudge constant so the cell grid
+                    // matches (`views::grid::PTY_PAD_W` carries the full
+                    // derivation and the `src/gui/metrics.rs:21-22` citation).
+                    .px(px(PTY_PAD_W / 2.0))
+                    .py(px(PTY_PAD_H / 2.0))
                     // A click on the agent PTY moves the input intent back to
                     // the agent (`focus_pane`, `pty_input.rs:146-158`); the
                     // keystrokes themselves follow gpui focus, which the
@@ -1804,5 +1810,161 @@ mod tests {
         assert!((statusbar::STATUS_H - 26.0).abs() < f32::EPSILON);
         assert!((session_header::SESSBAR_H - 36.0).abs() < f32::EPSILON);
         assert!((sidebar::SIDEBAR_DIVIDER_W - 6.0).abs() < f32::EPSILON);
+    }
+
+    // ── single-session PTY padding parity (Plan 10 Task 1) ───────────────
+    //
+    // Row 07 deviation 5: grid tiles and the terminal panel mirror iced's
+    // `pty()` padding, but the single-session body was **unpadded**, so it
+    // handed the terminal element ~5 more columns than the iced build shows.
+    // The fix is `PTY_PAD_W`/`PTY_PAD_H` (`views/grid.rs`) applied half per
+    // side to the single-session body and the terminal tab.
+
+    /// `compute_pty_dims` (`src/gui/metrics.rs:265-295`), reimplemented
+    /// **here** as the oracle — never exported from production code (carried
+    /// amendment 1). Note it keeps `PTY_PAD_*` and `SESSBAR_H` even when the
+    /// chrome is hidden; only the appbar/statusbar and the sidebar drop out.
+    fn oracle_pty_dims(
+        win_w: f32,
+        win_h: f32,
+        zoom: f32,
+        chrome_visible: bool,
+        sidebar_w: f32,
+    ) -> (u16, u16) {
+        const ICED_APPBAR_H: f32 = 44.0;
+        const ICED_STATUS_H: f32 = 26.0;
+        const ICED_SESSBAR_H: f32 = 36.0;
+        const ICED_SIDEBAR_DIVIDER_W: f32 = 6.0;
+        const ICED_PTY_PAD_W: f32 = 36.0;
+        const ICED_PTY_PAD_H: f32 = 28.0;
+        const ICED_CELL_W: f32 = 7.5;
+        const ICED_CELL_H: f32 = 17.0;
+
+        let zoom = zoom.max(0.1);
+        let logical_w = win_w / zoom;
+        let logical_h = win_h / zoom;
+        let visible_w = if chrome_visible {
+            sidebar_w + ICED_SIDEBAR_DIVIDER_W
+        } else {
+            0.0
+        };
+        let visible_h = if chrome_visible {
+            ICED_APPBAR_H + ICED_STATUS_H
+        } else {
+            0.0
+        };
+        let usable_w = logical_w - (visible_w + ICED_PTY_PAD_W);
+        let usable_h = logical_h - (visible_h + ICED_SESSBAR_H + ICED_PTY_PAD_H);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            let cols = (usable_w / ICED_CELL_W).max(10.0) as u16;
+            let rows = (usable_h / ICED_CELL_H).max(4.0) as u16;
+            (rows, cols)
+        }
+    }
+
+    /// What gpui's layout actually hands the single-session terminal element:
+    /// the root column minus the appbar (+ its 1px hairline) and the
+    /// statusbar, the row minus the sidebar and its 6px divider, then the
+    /// session header (+ its 1px hairline) and the body's own `PTY_PAD_*`
+    /// padding. The element sizes itself from those bounds in `prepaint`.
+    fn gpui_session_body_dims(
+        win_w: f32,
+        win_h: f32,
+        zoom: f32,
+        chrome_visible: bool,
+        sidebar_w: f32,
+    ) -> (u16, u16) {
+        use crate::views::grid::{PTY_PAD_H, PTY_PAD_W};
+
+        let chrome_w = if chrome_visible {
+            sidebar_w + sidebar::SIDEBAR_DIVIDER_W
+        } else {
+            0.0
+        };
+        let chrome_h = if chrome_visible {
+            (appbar::APPBAR_H + 1.0) + statusbar::STATUS_H
+        } else {
+            0.0
+        };
+        let body_w = win_w - chrome_w - PTY_PAD_W;
+        let body_h = win_h - chrome_h - (session_header::SESSBAR_H + 1.0) - PTY_PAD_H;
+        ZoomState::new(zoom).pty_dims(body_w, body_h)
+    }
+
+    /// Plan 10 Task 1's matrix. `(win_w, win_h, zoom, sidebar_w, chrome)`.
+    const PARITY_MATRIX: [(f32, f32, f32, f32, bool); 5] = [
+        (1280.0, 800.0, 1.0, 320.0, true),
+        (1280.0, 800.0, 1.0, 220.0, true),
+        (1280.0, 800.0, 2.0, 320.0, true),
+        (1280.0, 800.0, 0.6, 320.0, true),
+        (1280.0, 800.0, 1.0, 320.0, false),
+    ];
+
+    /// **Exact, delta 0** — the assertion Plan 07's two parity tests set the
+    /// shape for. Holds at zoom 1.0 for every chrome/sidebar combination in
+    /// the matrix; see
+    /// [`zoom_scales_cells_not_chrome_so_the_oracle_diverges`] for why the
+    /// zoom rows are asserted separately rather than with a tolerance.
+    #[test]
+    fn the_single_session_body_matches_the_iced_oracle_exactly() {
+        for (w, h, zoom, sidebar, chrome) in PARITY_MATRIX {
+            if (zoom - 1.0).abs() > f32::EPSILON {
+                continue;
+            }
+            let got = gpui_session_body_dims(w, h, zoom, chrome, sidebar);
+            let want = oracle_pty_dims(w, h, zoom, chrome, sidebar);
+            assert_eq!(
+                got, want,
+                "{w}x{h} zoom={zoom} sidebar={sidebar} chrome={chrome}"
+            );
+        }
+    }
+
+    /// **A recorded architectural divergence, not a bug** (findings amendment
+    /// 7). iced applies `ui_zoom` as the *application scale factor*, so the
+    /// whole viewport shrinks and `compute_pty_dims` divides every chrome
+    /// constant by the zoom. gpui applies zoom as `rem_size` + cell size only
+    /// — the appbar, statusbar, sidebar and session header are `px()`-sized
+    /// and do **not** scale — so a zoomed grove-gpui keeps its chrome and
+    /// gives the terminal proportionally more cells than iced does.
+    ///
+    /// Pinned here with concrete numbers so a future layout change has to
+    /// come past this test. The user decides at the Phase B gate whether the
+    /// gpui behavior is the one to keep; padding the body cannot close it,
+    /// because the gap grows with zoom.
+    #[test]
+    fn zoom_scales_cells_not_chrome_so_the_oracle_diverges() {
+        // zoom 2.0, sidebar 320, chrome visible.
+        assert_eq!(
+            gpui_session_body_dims(1280.0, 800.0, 2.0, true, 320.0),
+            (19, 61)
+        );
+        assert_eq!(oracle_pty_dims(1280.0, 800.0, 2.0, true, 320.0), (15, 37));
+        // zoom 0.6, sidebar 320, chrome visible.
+        assert_eq!(
+            gpui_session_body_dims(1280.0, 800.0, 0.6, true, 320.0),
+            (65, 204)
+        );
+        assert_eq!(oracle_pty_dims(1280.0, 800.0, 0.6, true, 320.0), (70, 236));
+    }
+
+    /// The arithmetic tests above model the element tree; this one checks the
+    /// tree is actually built that way. grove-gpui has no gpui test harness,
+    /// so — like [`every_exit_path_flushes_first`] — the guard is source
+    /// level. Both single-session-style bodies must carry the padding, since
+    /// iced routes both through the same `pty()` (`terminal.rs:189`, `:401`).
+    #[test]
+    fn both_single_session_bodies_carry_the_pty_padding() {
+        for (name, src) in [
+            ("workspace.rs", include_str!("workspace.rs")),
+            ("terminal_tab.rs", include_str!("terminal_tab.rs")),
+        ] {
+            assert!(
+                src.contains(".px(px(PTY_PAD_W / 2.0))")
+                    && src.contains(".py(px(PTY_PAD_H / 2.0))"),
+                "{name} does not pad its PTY body by PTY_PAD_W/PTY_PAD_H"
+            );
+        }
     }
 }

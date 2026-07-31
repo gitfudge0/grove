@@ -11,7 +11,7 @@ use std::rc::Rc;
 use gpui::{div, prelude::*, px, AnyElement, App, Entity, Window};
 
 use crate::theme as c;
-use crate::views::grid::empty_state;
+use crate::views::grid::{empty_state, PTY_PAD_H, PTY_PAD_W};
 use crate::views::session_header::{tool_btn, truncate_middle, SESSBAR_H};
 use crate::views::terminal_view::TerminalView;
 
@@ -48,7 +48,20 @@ pub fn terminal_tab(ctx: &TerminalTabCtx) -> AnyElement {
         .size_full()
         .bg(c::BG())
         .child(home_terminal_bar(ctx))
-        .child(div().flex().flex_1().w_full().overflow_hidden().child(view))
+        .child(
+            // Same `pty()` padding as the single-session body: iced routes
+            // both through `self.pty(PtyPane::Agent, …)`
+            // (`src/gui/view/terminal.rs:189`, `:401`), so the tab's grid
+            // must match it too. See `views::grid::PTY_PAD_W`.
+            div()
+                .flex()
+                .flex_1()
+                .w_full()
+                .overflow_hidden()
+                .px(px(PTY_PAD_W / 2.0))
+                .py(px(PTY_PAD_H / 2.0))
+                .child(view),
+        )
         .into_any_element()
 }
 

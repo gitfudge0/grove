@@ -105,6 +105,28 @@ fn primary_screen_reflow_is_a_known_divergence() {
             .any(|r| r.trim_start().starts_with("mps over the lazy dog")),
         "alacritty did not rewrap the long lines: {al_rows:?}"
     );
+
+    // Plan 10 Task 4: freeze the *reflowed* screen too. This is the one dump
+    // case blessed from `GroveTerm` rather than from the oracle, because here
+    // the oracle is by definition wrong — see the file's own header.
+    common::assert_expected(
+        common::DIVERGENCE_REFLOW_CASE,
+        &common::serialize_dump(&got, &common::Probes::default()),
+        &[
+            "BLESSED FROM GroveTerm (alacritty), NOT from the vt100 oracle.",
+            "",
+            "Master plan row 02: `Term::resize` hardcodes",
+            "`self.grid.resize(!is_alt, ..)`",
+            "(alacritty_terminal/src/term/mod.rs:677), so the primary screen",
+            "ALWAYS rewraps and the alternate screen NEVER does. vt100 rewraps",
+            "neither. Plan 02 pinned the difference down rather than patching",
+            "alacritty; spec §3's \"reflow-on-resize is suppressed\" is amended",
+            "by `primary_screen_reflow_is_a_known_divergence`, not implemented.",
+            "",
+            "This file therefore records what alacritty does, on purpose. A",
+            "diff here means alacritty's reflow changed.",
+        ],
+    );
 }
 
 /// **Known divergence: alacritty keeps an `ED 2`-cleared screen in scrollback.**

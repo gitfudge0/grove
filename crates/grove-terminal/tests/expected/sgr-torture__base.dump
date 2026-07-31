@@ -1,0 +1,111 @@
+# Blessed from the vt100 oracle (Plan 10 Task 4) while it was
+# still in the tree. Do NOT re-bless from GroveTerm.
+geometry 24x80
+r0 c0 "F0" fg=Ansi(0) bg=Default bold=false
+r0 c2 "F1" fg=Ansi(1) bg=Default bold=false
+r0 c4 "F2" fg=Ansi(2) bg=Default bold=false
+r0 c6 "F3" fg=Ansi(3) bg=Default bold=false
+r0 c8 "F4" fg=Ansi(4) bg=Default bold=false
+r0 c10 "F5" fg=Ansi(5) bg=Default bold=false
+r0 c12 "F6" fg=Ansi(6) bg=Default bold=false
+r0 c14 "F7" fg=Ansi(7) bg=Default bold=false
+r0 c16 "B0" fg=Default bg=Ansi(0) bold=false
+r0 c18 "B1" fg=Default bg=Ansi(1) bold=false
+r0 c20 "B2" fg=Default bg=Ansi(2) bold=false
+r0 c22 "B3" fg=Default bg=Ansi(3) bold=false
+r0 c24 "B4" fg=Default bg=Ansi(4) bold=false
+r0 c26 "B5" fg=Default bg=Ansi(5) bold=false
+r0 c28 "B6" fg=Default bg=Ansi(6) bold=false
+r0 c30 "B7" fg=Default bg=Ansi(7) bold=false
+r0 c32 "                                                " fg=Default bg=Default bold=false
+r1 c0 "f0" fg=Ansi(8) bg=Default bold=false
+r1 c2 "f1" fg=Ansi(9) bg=Default bold=false
+r1 c4 "f2" fg=Ansi(10) bg=Default bold=false
+r1 c6 "f3" fg=Ansi(11) bg=Default bold=false
+r1 c8 "f4" fg=Ansi(12) bg=Default bold=false
+r1 c10 "f5" fg=Ansi(13) bg=Default bold=false
+r1 c12 "f6" fg=Ansi(14) bg=Default bold=false
+r1 c14 "f7" fg=Ansi(15) bg=Default bold=false
+r1 c16 "b0" fg=Default bg=Ansi(8) bold=false
+r1 c18 "b1" fg=Default bg=Ansi(9) bold=false
+r1 c20 "b2" fg=Default bg=Ansi(10) bold=false
+r1 c22 "b3" fg=Default bg=Ansi(11) bold=false
+r1 c24 "b4" fg=Default bg=Ansi(12) bold=false
+r1 c26 "b5" fg=Default bg=Ansi(13) bold=false
+r1 c28 "b6" fg=Default bg=Ansi(14) bold=false
+r1 c30 "b7" fg=Default bg=Ansi(15) bold=false
+r1 c32 "                                                " fg=Default bg=Default bold=false
+r2 c0 "#" fg=Ansi(0) bg=Default bold=false
+r2 c1 "@" fg=Ansi(0) bg=Ansi(0) bold=false
+r2 c2 " " fg=Default bg=Default bold=false
+r2 c3 "#" fg=Ansi(7) bg=Default bold=false
+r2 c4 "@" fg=Ansi(7) bg=Ansi(7) bold=false
+r2 c5 " " fg=Default bg=Default bold=false
+r2 c6 "#" fg=Ansi(8) bg=Default bold=false
+r2 c7 "@" fg=Ansi(8) bg=Ansi(8) bold=false
+r2 c8 " " fg=Default bg=Default bold=false
+r2 c9 "#" fg=Ansi(15) bg=Default bold=false
+r2 c10 "@" fg=Ansi(15) bg=Ansi(15) bold=false
+r2 c11 " " fg=Default bg=Default bold=false
+r2 c12 "#" fg=Ansi(16) bg=Default bold=false
+r2 c13 "@" fg=Ansi(16) bg=Ansi(16) bold=false
+r2 c14 " " fg=Default bg=Default bold=false
+r2 c15 "#" fg=Ansi(231) bg=Default bold=false
+r2 c16 "@" fg=Ansi(231) bg=Ansi(231) bold=false
+r2 c17 " " fg=Default bg=Default bold=false
+r2 c18 "#" fg=Ansi(232) bg=Default bold=false
+r2 c19 "@" fg=Ansi(232) bg=Ansi(232) bold=false
+r2 c20 " " fg=Default bg=Default bold=false
+r2 c21 "#" fg=Ansi(255) bg=Default bold=false
+r2 c22 "@" fg=Ansi(255) bg=Ansi(255) bold=false
+r2 c23 "                                                         " fg=Default bg=Default bold=false
+r3 c0 "T" fg=Rgb(0, 0, 0) bg=Default bold=false
+r3 c1 "U" fg=Rgb(0, 0, 0) bg=Rgb(0, 0, 0) bold=false
+r3 c2 " " fg=Default bg=Default bold=false
+r3 c3 "T" fg=Rgb(255, 255, 255) bg=Default bold=false
+r3 c4 "U" fg=Rgb(255, 255, 255) bg=Rgb(255, 255, 255) bold=false
+r3 c5 " " fg=Default bg=Default bold=false
+r3 c6 "T" fg=Rgb(13, 37, 210) bg=Default bold=false
+r3 c7 "U" fg=Rgb(13, 37, 210) bg=Rgb(13, 37, 210) bold=false
+r3 c8 " " fg=Default bg=Default bold=false
+r3 c9 "T" fg=Rgb(200, 5, 99) bg=Default bold=false
+r3 c10 "U" fg=Rgb(200, 5, 99) bg=Rgb(200, 5, 99) bold=false
+r3 c11 "                                                                     " fg=Default bg=Default bold=false
+r4 c0 "BOLD" fg=Default bg=Default bold=true
+r4 c4 " plain INVERSE plain " fg=Default bg=Default bold=false
+r4 c25 "BOTH" fg=Ansi(4) bg=Ansi(1) bold=true
+r4 c29 "                                                   " fg=Default bg=Default bold=false
+r5 c0 "bells                                                                           " fg=Default bg=Default bold=false
+r6 c0 "wide: 日 本 語 テ キ ス ト  中 文 字 符                                                    " fg=Default bg=Default bold=false
+r7 c0 "nerd:  ok                                                                  " fg=Default bg=Default bold=false
+r8 c0 "back on primary                                                                 " fg=Default bg=Default bold=false
+r9 c0 "                                                                                " fg=Default bg=Default bold=false
+r10 c0 "                                                                                " fg=Default bg=Default bold=false
+r11 c0 "                                                                                " fg=Default bg=Default bold=false
+r12 c0 "                                                                                " fg=Default bg=Default bold=false
+r13 c0 "                                                                                " fg=Default bg=Default bold=false
+r14 c0 "                                                                                " fg=Default bg=Default bold=false
+r15 c0 "                                                                                " fg=Default bg=Default bold=false
+r16 c0 "                                                                                " fg=Default bg=Default bold=false
+r17 c0 "                                                                                " fg=Default bg=Default bold=false
+r18 c0 "                                                                                " fg=Default bg=Default bold=false
+r19 c0 "                                                                                " fg=Default bg=Default bold=false
+r20 c0 "                                                                                " fg=Default bg=Default bold=false
+r21 c0 "                                                                                " fg=Default bg=Default bold=false
+r22 c0 "                                                                                " fg=Default bg=Default bold=false
+r23 c0 "                                                                                " fg=Default bg=Default bold=false
+-- trailer --
+cursor (9,0,visible=true)
+title final-title
+bell_count 3
+display_offset 0
+app_cursor false
+tail_contents(1) "back on primary"
+tail_contents(5) "BOLD plain INVERSE plain BOTH\nbells\nwide: 日本語テキスト 中文字符\nnerd:  ok\nback on primary"
+tail_contents(20) "F0F1F2F3F4F5F6F7B0B1B2B3B4B5B6B7\nf0f1f2f3f4f5f6f7b0b1b2b3b4b5b6b7\n#@ #@ #@ #@ #@ #@ #@ #@\nTU TU TU TU\nBOLD plain INVERSE plain BOTH\nbells\nwide: 日本語テキスト 中文字符\nnerd:  ok\nback on primary"
+tail_contents(60) "F0F1F2F3F4F5F6F7B0B1B2B3B4B5B6B7\nf0f1f2f3f4f5f6f7b0b1b2b3b4b5b6b7\n#@ #@ #@ #@ #@ #@ #@ #@\nTU TU TU TU\nBOLD plain INVERSE plain BOTH\nbells\nwide: 日本語テキスト 中文字符\nnerd:  ok\nback on primary"
+selection_text((0,0),(0,10)) "<none>"
+selection_text((3,2),(0,40)) "<none>"
+selection_text((0,40),(3,2)) "<none>"
+selection_text((23,0),(0,5)) "F0F1F2F3F4F5F6F7B0B1B2B3B4B5B6B7\nf0f1f2f3f4f5f6f7b0b1b2b3b4b5b6b7\n#@ #@ #@ #@ #@ #@ #@ #@\nTU TU TU TU\nBOLD plain INVERSE plain BOTH\nbells\nwide: 日本語テキスト 中文字符\nnerd:  ok\nback on primary"
+selection_text((12,0),(6,30)) "<none>"

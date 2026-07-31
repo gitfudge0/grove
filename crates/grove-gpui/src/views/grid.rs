@@ -45,6 +45,24 @@ pub const TILE_PTY_PAD_W: f32 = 32.0;
 /// (`src/gui/metrics.rs:55-56`).
 pub const TILE_PTY_PAD_H: f32 = 24.0;
 
+/// Horizontal padding inside the **single-session** / terminal-tab PTY
+/// container. `src/gui/metrics.rs:21-22` defines `PTY_PAD_W = 36.0` /
+/// `PTY_PAD_H = 28.0` and `compute_pty_dims` (`metrics.rs:265-295`) subtracts
+/// them from the viewport to derive `(rows, cols)`. Those two numbers are a
+/// **fudge constant, not a container padding**: iced's `pty()` container is
+/// padded `[12, 16]` (`src/gui/view/terminal.rs:790`) — i.e. 32×24, the same
+/// as `TILE_PTY_PAD_*` — so the extra 4px per axis is slack that keeps the
+/// iced scrollable from ever showing a scrollbar.
+///
+/// grove-gpui's terminal element derives its grid from its own post-layout
+/// bounds, so reproducing iced's *result* means padding the container by the
+/// full fudge constant, half per side. Cited here because `src/gui/metrics.rs`
+/// is deleted in this plan's Phase C and this comment is the only record that
+/// survives.
+pub const PTY_PAD_W: f32 = 36.0;
+/// Vertical half of the same fudge constant (`src/gui/metrics.rs:22`).
+pub const PTY_PAD_H: f32 = 28.0;
+
 /// What a click inside the grid asks the workspace to do. Tiles never reach
 /// into state themselves (the `rows::RowAction` contract).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -1,0 +1,42 @@
+# Blessed from the vt100 oracle (Plan 10 Task 4) while it was
+# still in the tree. Do NOT re-bless from GroveTerm.
+geometry 24x80
+r0 c0 "Running 42 tests                                                                " fg=Default bg=Default bold=false
+r1 c0 "test term::tests::snapshot ... ok                                               " fg=Default bg=Default bold=false
+r2 c0 "test term::tests::resize ... ok                                                 " fg=Default bg=Default bold=false
+r3 c0 "test result: ok. 42 passed; 0 failed                                            " fg=Default bg=Default bold=false
+r4 c0 "                                                                                " fg=Default bg=Default bold=false
+r5 c0 "                                                                                " fg=Default bg=Default bold=false
+r6 c0 "                                                                                " fg=Default bg=Default bold=false
+r7 c0 "                                                                                " fg=Default bg=Default bold=false
+r8 c0 "                                                                                " fg=Default bg=Default bold=false
+r9 c0 "                                                                                " fg=Default bg=Default bold=false
+r10 c0 "                                                                                " fg=Default bg=Default bold=false
+r11 c0 "                                                                                " fg=Default bg=Default bold=false
+r12 c0 "                                                                                " fg=Default bg=Default bold=false
+r13 c0 "                                                                                " fg=Default bg=Default bold=false
+r14 c0 "                                                                                " fg=Default bg=Default bold=false
+r15 c0 "                                                                                " fg=Default bg=Default bold=false
+r16 c0 "                                                                                " fg=Default bg=Default bold=false
+r17 c0 "                                                                                " fg=Default bg=Default bold=false
+r18 c0 "                                                                                " fg=Default bg=Default bold=false
+r19 c0 "                                                                                " fg=Default bg=Default bold=false
+r20 c0 "                                                                                " fg=Default bg=Default bold=false
+r21 c0 "                                                                                " fg=Default bg=Default bold=false
+r22 c0 "                                                                                " fg=Default bg=Default bold=false
+r23 c0 "                                                                                " fg=Default bg=Default bold=false
+-- trailer --
+cursor (5,0,visible=true)
+title <none>
+bell_count 0
+display_offset 0
+app_cursor false
+tail_contents(1) "test result: ok. 42 passed; 0 failed"
+tail_contents(5) "Running 42 tests\ntest term::tests::snapshot ... ok\ntest term::tests::resize ... ok\ntest result: ok. 42 passed; 0 failed"
+tail_contents(20) "Running 42 tests\ntest term::tests::snapshot ... ok\ntest term::tests::resize ... ok\ntest result: ok. 42 passed; 0 failed"
+tail_contents(60) "Running 42 tests\ntest term::tests::snapshot ... ok\ntest term::tests::resize ... ok\ntest result: ok. 42 passed; 0 failed"
+selection_text((0,0),(0,10)) "<none>"
+selection_text((3,2),(0,40)) "<none>"
+selection_text((0,40),(3,2)) "<none>"
+selection_text((23,0),(0,5)) "Running 42 tests\ntest term::tests::snapshot ... ok\ntest term::tests::resize ... ok\ntest result: ok. 42 passed; 0 failed"
+selection_text((12,0),(6,30)) "<none>"

@@ -15,8 +15,8 @@
 mod common;
 
 use common::{
-    apply_inverse, describe_cell_mismatch, load_all, normalize_cell_text, oracle, selection_probes,
-    CellDump, ScreenDump, CHUNK_SIZES, RESIZE_SCRIPT,
+    apply_inverse, assert_expected, describe_cell_mismatch, load_all, normalize_cell_text, oracle,
+    selection_probes, serialize_dump, CellDump, Probes, ScreenDump, CHUNK_SIZES, RESIZE_SCRIPT,
 };
 use grove_terminal::GroveTerm;
 
@@ -230,4 +230,146 @@ fn golden_selection_text_matches() {
             );
         }
     }
+}
+
+// 9 — the freeze (Plan 10 Task 4) -------------------------------------------
+
+/// **Three-way agreement: model vs oracle vs frozen file.**
+///
+/// This is the test that makes the freeze trustworthy. While vt100 is still in
+/// the tree every case is asserted on all three legs at once, so a frozen file
+/// cannot be wrong without this failing. Plan 10 Task 7 Step 2 deletes only the
+/// **oracle** leg, leaving model-vs-file — a real regression test, because the
+/// file was blessed from an independent parser rather than from the model
+/// itself. See `tests/common/mod.rs`'s module doc for the alternatives that
+/// were rejected.
+///
+/// Re-bless with, and only with, the oracle still present:
+/// ```text
+/// GROVE_TERM_BLESS=1 cargo test -p grove-terminal --test golden
+/// ```
+#[test]
+fn golden_dumps_match_the_frozen_files() {
+    for f in load_all() {
+        // ── base: the whole stream in one blob, plus the probe outputs ──
+        let want = oracle::dump_bytes(&f.bytes, f.rows, f.cols);
+        let mut t = grove(&f.bytes, f.rows, f.cols);
+        let got = dump(&t);
+        assert_eq!(want.cells, got.cells, "fixture `{}`: oracle leg", f.label);
+
+        let mut p = oracle::parser(&f.bytes, f.rows, f.cols);
+        let mut probes = Probes::default();
+        for n in [1usize, 5, 20, 60] {
+            let o = oracle::tail_contents(&mut p, n);
+            let g = t.tail_contents(n);
+            assert_eq!(o, g, "fixture `{}`: tail_contents({n}) oracle leg", f.label);
+            probes.tails.push((n, g));
+        }
+        for (a, b) in selection_probes(f.rows) {
+            let o = oracle::selection_text(&mut p, a, b);
+            let g = t.selection_text(a, b);
+            assert_eq!(
+                o, g,
+                "fixture `{}`: selection_text({a:?},{b:?}) oracle leg",
+                f.label
+            );
+            probes.selections.push(((a, b), g));
+        }
+        assert_expected(
+            &format!("{}__base", f.label),
+            &serialize_dump(&got, &probes),
+            &[
+                "Blessed from the vt100 oracle (Plan 10 Task 4) while it was",
+                "still in the tree. Do NOT re-bless from GroveTerm.",
+            ],
+        );
+
+        // ── chunking: the same stream split at each boundary ──
+        for &size in CHUNK_SIZES {
+            let mut ct = GroveTerm::new(f.rows, f.cols);
+            for chunk in f.bytes.chunks(size) {
+                ct.process(chunk);
+            }
+            let cgot = dump(&ct);
+            assert_eq!(
+                want.cells, cgot.cells,
+                "fixture `{}`: oracle leg at chunk size {size}",
+                f.label
+            );
+            assert_expected(
+                &format!("{}__chunk{size}", f.label),
+                &serialize_dump(&cgot, &Probes::default()),
+                &[
+                    "Blessed from the vt100 oracle (Plan 10 Task 4).",
+                    "Chunk-boundary invariance: identical to the __base screen.",
+                ],
+            );
+        }
+
+        // ── resize: alt-screen fixtures only ──
+        if !f.alt_screen {
+            continue;
+        }
+        let mut rp = oracle::parser(&f.bytes, f.rows, f.cols);
+        t = grove(&f.bytes, f.rows, f.cols);
+        for &(rows, cols) in RESIZE_SCRIPT {
+            oracle::resize(&mut rp, rows, cols);
+            t.resize(rows, cols);
+            let rwant = oracle::dump(&rp);
+            let rgot = dump(&t);
+            if rwant.cells != rgot.cells {
+                panic!(
+                    "after resize to {rows}x{cols}: {}",
+                    describe_cell_mismatch(&f.label, &rwant, &rgot)
+                );
+            }
+            assert_expected(
+                &format!("{}__resize{rows}x{cols}", f.label),
+                &serialize_dump(&rgot, &Probes::default()),
+                &[
+                    "Blessed from the vt100 oracle (Plan 10 Task 4).",
+                    "Cumulative walk of common::RESIZE_SCRIPT on an alt-screen",
+                    "fixture, where both parsers agree that resize never reflows.",
+                ],
+            );
+        }
+    }
+}
+
+// 10 — the drift guard -------------------------------------------------------
+
+/// A frozen file with no case, or a case with no file, is a fixture that has
+/// silently lost its assertion. Both directions fail here.
+#[test]
+fn every_frozen_file_has_a_case_and_every_case_has_a_file() {
+    use std::collections::BTreeSet;
+
+    // Under `GROVE_TERM_BLESS=1` the files are being written by a sibling test
+    // in the same binary; the guard would race it. It is meaningful only
+    // against a settled tree.
+    if common::blessing() {
+        return;
+    }
+    let cases: BTreeSet<String> = common::expected_cases().into_iter().collect();
+    let dir = common::expected_dir();
+    let files: BTreeSet<String> = fs_err::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+        .filter_map(std::result::Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "dump"))
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .collect();
+
+    let orphan_files: Vec<&String> = files.difference(&cases).collect();
+    let missing_files: Vec<&String> = cases.difference(&files).collect();
+    assert!(
+        orphan_files.is_empty(),
+        "expected/ holds {} file(s) no case produces: {orphan_files:?}",
+        orphan_files.len()
+    );
+    assert!(
+        missing_files.is_empty(),
+        "{} case(s) have no frozen file: {missing_files:?}",
+        missing_files.len()
+    );
 }

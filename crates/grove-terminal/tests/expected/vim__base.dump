@@ -1,0 +1,52 @@
+# Blessed from the vt100 oracle (Plan 10 Task 4) while it was
+# still in the tree. Do NOT re-bless from GroveTerm.
+geometry 34x120
+r0 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r1 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r2 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r3 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r4 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r5 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r6 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r7 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r8 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r9 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r10 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r11 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r12 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r13 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r14 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r15 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r16 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r17 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r18 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r19 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r20 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r21 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r22 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r23 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r24 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r25 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r26 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r27 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r28 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r29 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r30 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r31 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r32 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+r33 c0 "                                                                                                                        " fg=Default bg=Default bold=false
+-- trailer --
+cursor (0,0,visible=true)
+title <none>
+bell_count 0
+display_offset 0
+app_cursor false
+tail_contents(1) ""
+tail_contents(5) ""
+tail_contents(20) ""
+tail_contents(60) ""
+selection_text((0,0),(0,10)) "<none>"
+selection_text((3,2),(0,40)) "<none>"
+selection_text((0,40),(3,2)) "<none>"
+selection_text((33,0),(0,5)) "<none>"
+selection_text((17,0),(8,30)) "<none>"

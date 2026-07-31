@@ -4,3 +4,4 @@
 # local tooling output
 .impeccable/
 .fudge-ship/
+target/parity-shots/
