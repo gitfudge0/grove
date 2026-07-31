@@ -81,7 +81,8 @@ pub struct AppbarCtx {
     /// Plan 07 stub field; the combo's *appearance* is conditional on it
     /// (`appbar.rs:46`) and only the `false` shape is reachable this phase.
     pub grid_view: bool,
-    /// Plan 09 stubs this to `false`; the cog's green dot renders off.
+    /// Whether a release is on offer — `upgrade_state::upgrade_available`,
+    /// which is `matches!(state, Available(_))` and nothing else.
     pub upgrade_available: bool,
     pub dispatch: Dispatch,
 }
@@ -213,8 +214,8 @@ fn view_control(ctx: &AppbarCtx) -> AnyElement {
         .into_any_element()
 }
 
-/// Cog → Plan 08 Settings, with the `GREEN()` upgrade dot overlaid top-right
-/// only while an upgrade is available — stubbed off this phase (Plan 09).
+/// Cog → Settings, with the `GREEN()` upgrade dot overlaid top-right only
+/// while an upgrade is available (`src/gui/view/appbar.rs:29`).
 fn cog(ctx: &AppbarCtx) -> AnyElement {
     div()
         .id("appbar-cog")

@@ -141,6 +141,18 @@ impl PtyHandle {
         }
     }
 
+    /// The child's process id.
+    ///
+    /// Needed by the gpui shell's attention classifier: the native-agent
+    /// poller keys on the session's process-tree root, and the native backend
+    /// now runs the agent itself rather than a login shell. `None` only when
+    /// the platform cannot report one — note that `portable_pty` keeps
+    /// reporting the id **after** the child is reaped, so a caller that cares
+    /// about liveness must ask [`PtyHandle::try_wait`] as well.
+    pub fn child_pid(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
     /// Whether the child has exited, without blocking.
     pub fn try_wait(&mut self) -> std::io::Result<bool> {
         self.child.try_wait().map(|s| s.is_some())
@@ -162,6 +174,18 @@ mod tests {
 
     use super::*;
     use std::time::{Duration, Instant};
+
+    /// A live child reports a stable, non-zero pid.
+    #[test]
+    fn child_pid_is_reported_while_the_child_lives() {
+        let mut cmd = CommandBuilder::new("sleep");
+        cmd.arg("30");
+        let mut handle = spawn(cmd, 24, 80).expect("spawn");
+        let pid = handle.child_pid().expect("a live child has a pid");
+        assert!(pid > 0);
+        assert_eq!(handle.child_pid(), Some(pid), "the id is stable");
+        handle.kill().expect("kill");
+    }
 
     /// End-to-end smoke test: a real child on a real PTY, its output arriving
     /// through the channel, feeding a real `GroveTerm`.

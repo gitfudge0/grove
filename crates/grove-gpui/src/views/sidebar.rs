@@ -344,6 +344,15 @@ impl Sidebar {
             return;
         };
         let (name, cwd) = (project.name.clone(), worktree.path.clone());
+        // Where iced builds them (`src/app/spawn.rs:26-32`): the agent's own
+        // flags, from the persisted Permissions / Claude-in-Chrome settings.
+        let args = {
+            let store = &cx.global::<SettingsState>().store;
+            agent.launch_args(
+                store.dangerously_skip_permissions_enabled.unwrap_or(false),
+                store.chrome_enabled.unwrap_or(false),
+            )
+        };
         let (id, extra_args, state_file, target) = self.registry.update(cx, |r, cx| {
             let id = r.insert_meta(name.clone(), cwd.clone(), agent);
             let label = r.meta(id).map_or_else(String::new, |m| m.label.clone());
@@ -359,6 +368,7 @@ impl Sidebar {
                     agent,
                     project: name,
                     label,
+                    args,
                 },
             )
         });
@@ -370,19 +380,47 @@ impl Sidebar {
                 cx,
             )
         });
+        let tmux_name = match session.read(cx).backend() {
+            crate::entities::terminal_session::Backend::Tmux { name } => Some(name.clone()),
+            crate::entities::terminal_session::Backend::Native => None,
+        };
+        let tmux_backed = tmux_name.is_some();
+        let spawn_error = session.read(cx).spawn_error().map(str::to_string);
         // Recorded ambiguity 7 (`src/gui/update/sessions.rs:482`): a PTY that
         // never came up is reported here, the one place every spawn path —
         // the rail strip, the agent picker and the launcher — funnels through.
-        if let Some(e) = session.read(cx).spawn_error() {
+        if let Some(e) = spawn_error.as_deref() {
+            crate::telemetry::track("error", vec![("kind", "spawn_failed".into())]);
             let msg = format!("failed to start session: {e}");
             if let Some(toast) = self.toast.clone() {
                 toast.update(cx, |t, cx| t.set_error(msg, cx));
             }
         }
         self.registry.update(cx, |r, cx| {
-            r.attach(id, session);
+            r.attach(id, session, tmux_name);
             cx.notify();
         });
+        if spawn_error.is_none() {
+            // `src/gui/update/sessions.rs:463-472` — the counts are read after
+            // the attach, so the new session is included exactly as iced's are.
+            let (open, open_tmux) = {
+                let r = self.registry.read(cx);
+                (
+                    r.len() as u64,
+                    r.all().iter().filter(|m| m.tmux).count() as u64,
+                )
+            };
+            crate::telemetry::track(
+                "session_created",
+                vec![
+                    ("agent", agent.label().into()),
+                    ("tmux", tmux_backed.into()),
+                    ("open_sessions", open.into()),
+                    ("open_native", (open - open_tmux).into()),
+                    ("open_tmux", open_tmux.into()),
+                ],
+            );
+        }
         let snap = self.snapshot(cx);
         self.state.update(cx, |s, cx| {
             s.select_session(id, &snap);
@@ -415,6 +453,9 @@ impl Sidebar {
                     label,
                     spawned_at: Instant::now(),
                     attention: None,
+                    // Home terminals and panel shells are always native.
+                    tmux: false,
+                    tmux_name: None,
                 },
                 session,
             );

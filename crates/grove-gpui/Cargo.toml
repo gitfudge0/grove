@@ -36,6 +36,11 @@ tracing.workspace = true
 # that name the path, `dirs` for `~` expansion (both already in the graph).
 fs-err.workspace = true
 dirs.workspace = true
+# Telemetry's PostHog POST (`src/telemetry.rs`) — the one network call in this
+# crate that does not go through `grove_core::upgrade`. Same workspace entry
+# grove-core already consumes, so no new crate enters `Cargo.lock`.
+ureq.workspace = true
+serde_json.workspace = true
 # Vendored, not a git dep: see vendor/gpui-component/README.md for the source,
 # rev, license and the full list of manifest edits.
 gpui-component.workspace = true
@@ -44,6 +49,11 @@ gpui-component.workspace = true
 # the iced `grove` crate already uses, so there is one `objc` in the graph.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
+
+[dev-dependencies]
+# Tests construct a `grove_core::upgrade::Release`, whose `version` field is a
+# `semver::Version`. Dev-only: no production path in this crate parses semver.
+semver.workspace = true
 
 [lints]
 workspace = true

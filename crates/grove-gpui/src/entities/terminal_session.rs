@@ -105,7 +105,7 @@ impl TerminalSession {
             Ok(v) => Some(v),
             Err(e) => {
                 tracing::warn!("grove-gpui: tmux unavailable ({e}); falling back to a native PTY");
-                match spawn_native(&cwd, state_file) {
+                match spawn_native(&cwd, target, extra_args, state_file) {
                     Ok(v) => Some(v),
                     Err(e) => {
                         tracing::error!("grove-gpui: could not spawn a PTY: {e}");
@@ -130,6 +130,55 @@ impl TerminalSession {
             term: GroveTerm::new(INIT_ROWS, INIT_COLS),
             pty,
             backend,
+            rows: INIT_ROWS,
+            cols: INIT_COLS,
+            last_damage_gen: 0,
+            tmux_copy_mode: false,
+            last_input_at: None,
+            last_scroll_at: None,
+            last_output_at: Instant::now(),
+            exited: false,
+            spawn_error,
+            pane_pid,
+            _reader: Self::spawn_reader(rx, cx),
+        }
+    }
+
+    /// Re-attach to a tmux session a previous grove run created
+    /// (`crates/grove-core/src/session.rs:327-347`). It **skips**
+    /// `tmux::new_session` and `session_meta::write` — the session and its
+    /// sidecar already exist — and does the three things `attach_tmux` does:
+    /// re-apply the embedded-client configuration, spawn the attach PTY, and
+    /// capture the pane pid.
+    ///
+    /// Attention is `None` and stays `None`: the hook files are keyed
+    /// `{grove-pid}-{session-id}`, so a session that outlived the previous
+    /// grove keeps appending to a path this process must not read (recorded
+    /// ambiguity 8). Classification falls through to the native-Claude poller
+    /// and then to the screen-scrape.
+    /// Mirrors [`Self::spawn`]'s shape: a failure yields a session carrying a
+    /// [`Self::spawn_error`] rather than a `Result`, so the caller drops it and
+    /// moves on.
+    pub fn attach_existing(name: &str, cx: &mut Context<Self>) -> Self {
+        let mut spawn_error = None;
+        let mut pty = None;
+        if tmux::has_session(name) {
+            tmux::configure_embedded_session(name);
+            match grove_terminal::pty::spawn(tmux_attach_cmd(name), INIT_ROWS, INIT_COLS) {
+                Ok(p) => pty = Some(p),
+                Err(e) => spawn_error = Some(e.to_string()),
+            }
+        } else {
+            spawn_error = Some(format!("tmux session {name} is gone"));
+        }
+        let rx = pty.as_mut().and_then(PtyHandle::take_receiver);
+        let pane_pid = tmux::pane_pid(name);
+        Self {
+            term: GroveTerm::new(INIT_ROWS, INIT_COLS),
+            pty,
+            backend: Backend::Tmux {
+                name: name.to_string(),
+            },
             rows: INIT_ROWS,
             cols: INIT_COLS,
             last_damage_gen: 0,
@@ -531,18 +580,14 @@ impl TerminalSession {
     }
 
     /// Process-tree root for `claude_agents::Poller::status_for`
-    /// (`session.rs:511-522`).
-    ///
-    /// **Deviation:** the iced build reads the live child pid for
-    /// `Backend::Native`. `grove_terminal::PtyHandle` exposes no pid accessor
-    /// and grove-terminal is read-only this phase (Global Constraint 3), so
-    /// native sessions return `None`. That costs nothing today: the native
-    /// backend is only the no-tmux fallback, which spawns a bare login shell
-    /// and never an agent, and the poller is consulted for live Claude
-    /// sessions only.
+    /// (`session.rs:511-522`). tmux reports the pane's pid; the native backend
+    /// reports the PTY child, which since the `spawn_native` port **is** the
+    /// agent. `exited` gates it because `portable_pty` keeps reporting a
+    /// reaped child's id.
     pub fn root_pid(&self) -> Option<u32> {
         match &self.backend {
-            Backend::Native => None,
+            Backend::Native if self.exited => None,
+            Backend::Native => self.pty.as_ref().and_then(PtyHandle::child_pid),
             Backend::Tmux { .. } => self.pane_pid,
         }
     }
@@ -593,7 +638,14 @@ fn spawn_tmux(
         INIT_ROWS,
         INIT_COLS,
         &agent.program(),
-        extra_args,
+        // The caller's launch flags first, the attention args after
+        // (`crates/grove-core/src/session.rs:190`).
+        &target
+            .args
+            .iter()
+            .cloned()
+            .chain(extra_args.iter().cloned())
+            .collect::<Vec<_>>(),
         &env,
     )
     .map_err(|e| e.to_string())?;
@@ -613,20 +665,7 @@ fn spawn_tmux(
     }
     tmux::configure_embedded_session(&name);
 
-    let mut cmd = CommandBuilder::new("tmux");
-    cmd.arg("-L");
-    cmd.arg(tmux::SOCKET);
-    // `-u` forces UTF-8 output to this client even with no UTF-8 locale in the
-    // environment. Without it tmux reads the client as non-UTF-8 and downgrades
-    // box-drawing to ACS/DEC line-drawing escapes (`session.rs:362-367`).
-    cmd.arg("-u");
-    cmd.arg("attach-session");
-    cmd.arg("-t");
-    cmd.arg(format!("={name}"));
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("LC_ALL", "en_US.UTF-8");
-
-    match grove_terminal::pty::spawn(cmd, INIT_ROWS, INIT_COLS) {
+    match grove_terminal::pty::spawn(tmux_attach_cmd(&name), INIT_ROWS, INIT_COLS) {
         Ok(pty) => Ok((pty, Backend::Tmux { name })),
         Err(e) => {
             tmux::kill_session(&name);
@@ -635,22 +674,90 @@ fn spawn_tmux(
     }
 }
 
-/// The escape hatch: a bare login shell on a PTY, so the visual checklist is
-/// runnable on a machine without tmux (`session.rs:238-268` in spirit).
-fn spawn_native(cwd: &str, state_file: Option<&Path>) -> Result<(PtyHandle, Backend), String> {
-    let mut cmd = CommandBuilder::new(grove_core::env_path::login_shell());
+/// The embedded-client attach command line, shared by a fresh spawn and a
+/// reattach (`crates/grove-core/src/session.rs:349-383`).
+///
+/// `-u` forces UTF-8 output to this client even with no UTF-8 locale in the
+/// environment. Without it tmux reads the client as non-UTF-8 and downgrades
+/// box-drawing to ACS/DEC line-drawing escapes (`session.rs:362-367`).
+fn tmux_attach_cmd(name: &str) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new("tmux");
+    cmd.arg("-L");
+    cmd.arg(tmux::SOCKET);
+    cmd.arg("-u");
+    cmd.arg("attach-session");
+    cmd.arg("-t");
+    cmd.arg(format!("={name}"));
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("LC_ALL", "en_US.UTF-8");
+    cmd
+}
+
+/// The native fallback, a full port of `Session::spawn_native`
+/// (`crates/grove-core/src/session.rs:238-279`): the agent's own binary, its
+/// prefix args, the caller's launch flags, then the attention args. Grove's
+/// no-tmux path runs the *agent*, not a bare login shell.
+///
+/// `Agent::Terminal` resolves through the same `invocation()` call and still
+/// yields the login shell, so home terminals and panel shells are unchanged.
+fn spawn_native(
+    cwd: &str,
+    target: &SpawnTarget,
+    extra_args: &[String],
+    state_file: Option<&Path>,
+) -> Result<(PtyHandle, Backend), String> {
+    let (program, prefix_args) = target.agent.invocation();
+    let mut cmd = CommandBuilder::new(program);
+    for a in prefix_args {
+        cmd.arg(a);
+    }
+    for a in &target.args {
+        cmd.arg(a);
+    }
+    for a in extra_args {
+        cmd.arg(a);
+    }
     cmd.cwd(cwd);
-    // The shell inherits it, so an agent started by hand inside this fallback
-    // shell still reports through the hook pipeline (`session.rs:240-279`).
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("LC_ALL", "en_US.UTF-8");
     if let Some(path) = state_file {
         cmd.env(
             grove_core::attention::STATE_FILE_ENV,
             path.display().to_string(),
         );
     }
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("LC_ALL", "en_US.UTF-8");
     grove_terminal::pty::spawn(cmd, INIT_ROWS, INIT_COLS)
         .map(|pty| (pty, Backend::Native))
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use grove_core::agent::Agent;
+
+    /// The `spawn_native` port must not change what a home terminal or a panel
+    /// shell runs: `Agent::Terminal` resolves through the very same
+    /// `invocation()` call and still yields the login shell, with no flags
+    /// (Task 6 Step 2).
+    #[test]
+    fn a_terminal_target_still_invokes_the_login_shell_with_no_flags() {
+        let (program, prefix) = Agent::Terminal.invocation();
+        assert_eq!(program, grove_core::env_path::login_shell());
+        assert!(prefix.is_empty());
+        assert!(Agent::Terminal.launch_args(true, true).is_empty());
+    }
+
+    /// The two settings that were inert before this phase now produce flags
+    /// the spawn chain passes through on **both** backends.
+    #[test]
+    fn the_permission_and_chrome_settings_produce_claudes_flags() {
+        assert!(Agent::Claude.launch_args(false, false).is_empty());
+        assert_eq!(
+            Agent::Claude.launch_args(true, true),
+            vec![
+                "--dangerously-skip-permissions".to_string(),
+                "--chrome".to_string()
+            ]
+        );
+    }
 }

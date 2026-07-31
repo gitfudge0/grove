@@ -17,7 +17,9 @@ mod keymap;
 mod launcher;
 mod modal;
 mod platform;
+mod reattach;
 mod settings;
+mod telemetry;
 mod terminal;
 mod terminal_element;
 mod theme;
@@ -39,6 +41,10 @@ const WINDOW_W: f32 = 1280.0;
 const WINDOW_H: f32 = 800.0;
 
 fn main() {
+    // Before `app::boot`, so a panic inside boot is still reported. The panic
+    // *message* stays on this machine; only the scrubbed location is sent
+    // (`src/main.rs:11-30`).
+    telemetry::install_panic_hook();
     gpui_platform::application()
         .with_assets(Assets)
         .run(|cx: &mut gpui::App| {
@@ -69,9 +75,13 @@ fn main() {
                 }),
                 ..Default::default()
             };
-            // Plan 09: intercept close-request here (the iced app runs
-            // `exit_on_close_request(false)` so it can confirm/teardown
-            // first). For now the window closes normally.
+            // The close-request interception is registered by `Workspace` on
+            // its first render, not here: `Window::on_window_should_close`
+            // needs the `Workspace` entity to count running native sessions
+            // and to run `shutdown`, and the first render is the one place
+            // that has both a `&mut Window` and `&mut Context<Workspace>`
+            // (the same reason `observe_window_activation` is registered
+            // there). See `views::workspace::Workspace::register_close_hook`.
             let window = match cx.open_window(opts, |_window, cx| cx.new(Workspace::new)) {
                 Ok(w) => w,
                 Err(e) => {

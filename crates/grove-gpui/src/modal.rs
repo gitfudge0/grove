@@ -215,7 +215,7 @@ pub enum Modal {
     },
     /// Per-project lifecycle-scripts editor.
     ScriptsEditor(Box<ScriptsEditorState>),
-    /// Apply-in-progress overlay (Plan 09 fills the live stages).
+    /// Apply-in-progress overlay, driven by the live `UpgradeState`.
     Updating,
     /// Release notes. Overlays Settings and returns to it on dismiss
     /// (`src/gui/update/upgrade.rs:127-149`).

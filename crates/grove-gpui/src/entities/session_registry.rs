@@ -26,6 +26,7 @@ use std::time::Instant;
 use gpui::Entity;
 use grove_core::agent::Agent;
 use grove_core::attention::{self, AttentionFiles};
+use grove_core::tmux;
 
 use crate::entities::terminal_session::TerminalSession;
 
@@ -75,6 +76,14 @@ pub struct SessionMeta {
     /// (`crates/grove-core/src/attention.rs:110-121`): the **pid prefix** is
     /// what makes it safe, not the id's provenance.
     pub attention: Option<AttentionFiles>,
+    /// Whether the live PTY ended up tmux-backed. Recorded by [`SessionRegistry::attach`]
+    /// (the backend is decided by the spawn, not by the metadata) so
+    /// `session_ended` telemetry can report it without reading the entity.
+    pub tmux: bool,
+    /// The tmux session name, for tmux-backed sessions. The reconciliation in
+    /// [`crate::reattach`] dedupes on it, which is what makes the startup scan
+    /// and the tmux-toggle re-scan the same call.
+    pub tmux_name: Option<String>,
 }
 
 /// Where a new session opens. Replaces [`TerminalSession::spawn`]'s hardcoded
@@ -87,6 +96,13 @@ pub struct SpawnTarget {
     /// terminals, which belong to no project.
     pub project: String,
     pub label: String,
+    /// The agent's own launch flags —
+    /// `Agent::launch_args(skip_permissions, chrome)` — built by the caller
+    /// exactly where iced builds them (`src/app/spawn.rs:26-32`). They are
+    /// chained **before** the attention `extra_args` on both backends
+    /// (`crates/grove-core/src/session.rs:190,254-259`); without this field
+    /// the Permissions and Claude-in-Chrome settings are inert.
+    pub args: Vec<String>,
 }
 
 impl SpawnTarget {
@@ -98,7 +114,10 @@ impl SpawnTarget {
             cwd: home_dir(),
             agent: Agent::Terminal,
             project: String::new(),
+            // `Agent::Terminal` has no flags; `launch_args` returns empty for
+            // it either way, and saying so here keeps the home path honest.
             label,
+            args: Vec::new(),
         }
     }
 }
@@ -182,7 +201,35 @@ impl SessionRegistry {
             label,
             spawned_at: Instant::now(),
             attention,
+            tmux: false,
+            tmux_name: None,
         });
+        id
+    }
+
+    /// Record a **reattached** tmux session's metadata at `at`, the index
+    /// [`crate::reattach::plan`] computed. No `attention::prepare`: the agent
+    /// process was spawned by a previous grove run and its hook files are keyed
+    /// to that run's pid, so this session has no attention state at all and the
+    /// classifier falls through to the poller and the screen-scrape
+    /// (`crates/grove-core/src/session.rs:344`; recorded ambiguity 8).
+    pub fn insert_reattached(&mut self, at: usize, d: &tmux::DiscoveredSession) -> SessionId {
+        let id = self.next_id();
+        let at = at.min(self.order.len());
+        self.order.insert(
+            at,
+            SessionMeta {
+                id,
+                project: d.project.clone(),
+                wt_path: d.wt_path.clone(),
+                agent: d.agent,
+                label: d.label.clone(),
+                spawned_at: Instant::now(),
+                attention: None,
+                tmux: true,
+                tmux_name: Some(d.name.clone()),
+            },
+        );
         id
     }
 
@@ -200,8 +247,19 @@ impl SessionRegistry {
         format!("{} {n}", agent.label().to_lowercase())
     }
 
-    pub fn attach(&mut self, id: SessionId, term: Entity<TerminalSession>) {
+    /// `tmux_name` is the spawned session's actual backend — the requested one
+    /// can differ (tmux missing from `$PATH` falls back to native).
+    pub fn attach(
+        &mut self,
+        id: SessionId,
+        term: Entity<TerminalSession>,
+        tmux_name: Option<String>,
+    ) {
         self.terms.insert(id, term);
+        if let Some(m) = self.order.iter_mut().find(|m| m.id == id) {
+            m.tmux = tmux_name.is_some();
+            m.tmux_name = tmux_name;
+        }
     }
 
     /// Removes a session and cleans up its attention files
@@ -212,6 +270,19 @@ impl SessionRegistry {
         self.attention_args.remove(&id);
         let pos = self.order.iter().position(|m| m.id == id)?;
         let meta = self.order.remove(pos);
+        // `src/gui/update/sessions.rs:261-269` — reported from the one place
+        // every removal funnels through, so no kill path can miss it.
+        crate::telemetry::track(
+            "session_ended",
+            vec![
+                ("agent", meta.agent.label().into()),
+                (
+                    "duration_min",
+                    (meta.spawned_at.elapsed().as_secs() / 60).into(),
+                ),
+                ("tmux", meta.tmux.into()),
+            ],
+        );
         if let Some(files) = meta.attention.as_ref() {
             attention::cleanup(files);
         }
@@ -463,6 +534,9 @@ impl SessionRegistry {
                 label,
                 spawned_at: Instant::now(),
                 attention: None,
+                // Home terminals and panel shells are always native.
+                tmux: false,
+                tmux_name: None,
             },
             None,
         );
@@ -480,6 +554,9 @@ impl SessionRegistry {
             label,
             spawned_at: Instant::now(),
             attention: None,
+            // Home terminals and panel shells are always native.
+            tmux: false,
+            tmux_name: None,
         });
     }
 }

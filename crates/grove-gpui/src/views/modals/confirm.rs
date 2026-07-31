@@ -116,11 +116,15 @@ impl ModalLayer {
                 if let Err(e) = git::copy_worktree_includes(&project.path, &path) {
                     tracing::warn!("grove-gpui: worktree includes not copied: {e}");
                 }
+                crate::telemetry::track("worktree_created", vec![]);
                 self.toast
                     .update(cx, |t, cx| t.set_toast(format!("added {name}"), cx));
                 cx.emit(ModalEvent::WorktreeAdded);
             }
-            Err(e) => self.open(Modal::Message(format!("Worktree failed: {e}")), cx),
+            Err(e) => {
+                crate::telemetry::track("error", vec![("kind", "worktree_failed".into())]);
+                self.open(Modal::Message(format!("Worktree failed: {e}")), cx);
+            }
         }
     }
 
@@ -142,8 +146,9 @@ impl ModalLayer {
         if matches!(kind, ConfirmKind::Quit) {
             self.close(cx);
             if yes {
-                // `SettingsState::flush_now` on every exit path is Plan 09's;
-                // it hooks here, right before the window closes.
+                // The flush itself is `Workspace::shutdown`, run by the
+                // workspace's `ModalEvent::Quit` arm right before `cx.quit()`
+                // — one flush, three callers (carried decision 7).
                 cx.emit(ModalEvent::Quit);
             }
             return;
@@ -194,6 +199,9 @@ impl ModalLayer {
             "tmux disabled for new sessions"
         };
         self.toast.update(cx, |t, cx| t.set_toast(msg, cx));
+        if enabled {
+            cx.emit(ModalEvent::TmuxEnabled);
+        }
         self.close(cx);
     }
 

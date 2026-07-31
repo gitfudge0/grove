@@ -108,7 +108,30 @@ pub fn boot(cx: &mut gpui::App) {
     //    chrome unusable.
     let zoom = resolve_zoom(&store);
 
-    // Plan 09: telemetry (`app_launched`, heartbeat) + the scrubbing panic hook.
+    // 7b. Telemetry, in the order `Grove::new` makes the same three calls
+    //     (`src/gui/update/mod.rs:102-118`): the stored preference gates the
+    //     runtime atomic first, so `app_launched` cannot transmit for a user
+    //     who opted out. The panic hook is installed earlier still, in `main`.
+    crate::telemetry::set_enabled(SettingsState::telemetry_enabled(&store));
+    crate::telemetry::track(
+        "app_launched",
+        vec![
+            (
+                "theme",
+                store
+                    .theme
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string())
+                    .into(),
+            ),
+            ("project_count", (store.projects.len() as u64).into()),
+            (
+                "tmux_enabled",
+                (grove_core::tmux::available() && store.tmux_enabled.unwrap_or(false)).into(),
+            ),
+        ],
+    );
+    crate::telemetry::start_heartbeat();
 
     // 8. Globals, in dependency order.
     cx.set_global(SettingsState::new(store));

@@ -6,4 +6,6 @@ pub mod project_tree;
 pub mod session_registry;
 pub mod terminal_session;
 pub mod toast;
+pub mod upgrade;
+pub mod upgrade_state;
 pub mod workspace_state;

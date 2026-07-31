@@ -3021,7 +3021,10 @@ dependencies = [
  "objc",
  "portable-pty",
  "rust-embed",
+ "semver",
+ "serde_json",
  "tracing",
+ "ureq",
 ]
 
 [[package]]

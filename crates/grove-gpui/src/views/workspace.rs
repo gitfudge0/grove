@@ -16,6 +16,8 @@ use crate::entities::project_tree::ProjectTree;
 use crate::entities::session_registry::{SessionId, SessionRegistry};
 use crate::entities::terminal_session::TerminalSession;
 use crate::entities::toast::ToastState;
+use crate::entities::upgrade::Upgrade;
+use crate::entities::upgrade_state::upgrade_available;
 use crate::entities::workspace_state::{
     term_portion_for_cursor, LiveTile, PtyPane, WorkspaceState,
 };
@@ -47,6 +49,9 @@ pub struct Workspace {
     sidebar: Entity<Sidebar>,
     /// The single modal slot, rendered above everything (Plan 08 Task 2).
     modals: Entity<ModalLayer>,
+    /// The self-update flow: the three check triggers, the changelog and the
+    /// apply. Kept alive here; dropping it would cancel every timer.
+    upgrade: Entity<Upgrade>,
     /// One view per session, cached by id so switching does not respawn
     /// anything (Task 6 Step 2).
     views: HashMap<SessionId, Entity<TerminalView>>,
@@ -66,6 +71,16 @@ pub struct Workspace {
     /// `observe_window_activation` needs a `&mut Window`, which `new` has not
     /// got — registered on the first frame instead.
     activation_observed: bool,
+    /// The agent pane's PTY dims as of the last frame. A reattached session is
+    /// resized to these the moment it attaches, so tmux does not report a
+    /// stale geometry on the first frame (`src/gui/update/mod.rs:135-139`).
+    last_pty_dims: (u16, u16),
+    /// The startup tmux scan runs once, on the first frame.
+    tmux_discovered: bool,
+    /// `Window::on_window_should_close` is registered on the first frame for
+    /// the same reason, and additionally needs *this* entity (it counts the
+    /// running native sessions and runs [`Workspace::shutdown`]).
+    close_hook_registered: bool,
     observers: Vec<gpui::Subscription>,
 }
 
@@ -113,16 +128,19 @@ impl Workspace {
             |cx| Sidebar::new(state, tree, registry, activity, clock, cx)
         });
 
+        let upgrade = cx.new(Upgrade::new);
+
         let modals = cx.new({
-            let (state, registry, tree, toast, activity, clock) = (
+            let (state, registry, tree, toast, activity, clock, upgrade) = (
                 state.clone(),
                 registry.clone(),
                 tree.clone(),
                 toast.clone(),
                 activity.clone(),
                 clock.clone(),
+                upgrade.clone(),
             );
-            |cx| ModalLayer::new(state, registry, tree, toast, activity, clock, cx)
+            |cx| ModalLayer::new(state, registry, tree, toast, activity, clock, upgrade, cx)
         });
         sidebar.update(cx, |s, _| s.set_modals(modals.clone(), toast.clone()));
 
@@ -141,6 +159,8 @@ impl Workspace {
             // it cannot perform itself.
             cx.observe(&modals, |_, _, cx| cx.notify()),
             cx.subscribe(&modals, Self::on_modal_event),
+            // The cog's dot and the Settings modal both read this entity.
+            cx.observe(&upgrade, |_, _, cx| cx.notify()),
         ];
 
         Self {
@@ -153,6 +173,7 @@ impl Workspace {
             toast,
             sidebar,
             modals,
+            upgrade,
             views: HashMap::new(),
             home_views: HashMap::new(),
             panel_views: HashMap::new(),
@@ -161,6 +182,9 @@ impl Workspace {
             logical_win_w: 1280.0,
             focused_once: false,
             activation_observed: false,
+            close_hook_registered: false,
+            last_pty_dims: (24, 80),
+            tmux_discovered: false,
             observers,
         }
     }
@@ -177,14 +201,17 @@ impl Workspace {
     }
 
     fn zoom_in(_: &keymap::ZoomIn, _: &mut Window, cx: &mut App) {
+        crate::telemetry::track("zoom_changed", vec![]);
         Self::set_zoom(cx.global::<ZoomState>().zoom + zoom::ZOOM_STEP, cx);
     }
 
     fn zoom_out(_: &keymap::ZoomOut, _: &mut Window, cx: &mut App) {
+        crate::telemetry::track("zoom_changed", vec![]);
         Self::set_zoom(cx.global::<ZoomState>().zoom - zoom::ZOOM_STEP, cx);
     }
 
     fn zoom_reset(_: &keymap::ZoomReset, _: &mut Window, cx: &mut App) {
+        crate::telemetry::track("zoom_changed", vec![]);
         Self::set_zoom(zoom::ZOOM_DEFAULT, cx);
     }
 
@@ -242,6 +269,141 @@ impl Workspace {
         SettingsState::update(cx, |s| s.grid_order = keys);
     }
 
+    // ── the exit paths ──────────────────────────────────────────────────
+
+    /// **The** flush. Every process-terminating path calls this and nothing
+    /// else, so "did we persist?" is a structural property rather than a
+    /// discipline (carried decision 7; iced's authoritative list is
+    /// `src/gui/update/layout.rs:518-522`): the close request, the quit
+    /// confirm, and the post-update restart.
+    ///
+    /// Idempotent by construction — the staged grid order is `take`n, and
+    /// `flush_now` no-ops unless something is dirty — so calling it twice
+    /// writes once.
+    pub(crate) fn shutdown(&mut self, cx: &mut Context<Self>) {
+        self.persist_grid_order(cx);
+        SettingsState::flush_now(cx);
+    }
+
+    /// Exit path 3 of 3: the post-update restart, in `on_restart_app`'s exact
+    /// order (`src/gui/update/upgrade.rs:115-125`) — relaunch first (the
+    /// process exits either way, so a failed relaunch is the one chance to say
+    /// anything about it), then the shared flush, then exit.
+    fn restart_after_update(&mut self, cx: &mut Context<Self>) {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Err(e) = std::process::Command::new(&exe).spawn() {
+                tracing::error!(exe = %exe.display(), error = %e, "failed to relaunch after update");
+            }
+        }
+        self.shutdown(cx);
+        std::process::exit(0);
+    }
+
+    /// Running **native** sessions: the ones that die with the window.
+    /// tmux-backed sessions survive grove and must never block a quit
+    /// (`src/gui/update/modals.rs:339-341`, `src/app/mod.rs:273-279`).
+    fn native_sessions_running(&self, cx: &mut App) -> usize {
+        let ids: Vec<SessionId> = self.registry.read(cx).all().iter().map(|m| m.id).collect();
+        ids.into_iter()
+            .filter(|&id| {
+                let Some(term) = self.registry.read(cx).session(id).cloned() else {
+                    return false;
+                };
+                term.update(cx, |t, _| {
+                    matches!(
+                        t.backend(),
+                        crate::entities::terminal_session::Backend::Native
+                    ) && t.alive()
+                })
+            })
+            .count()
+    }
+
+    /// Exit path 1 of 3: the window's close button / `mod+q`. Returning
+    /// `false` vetoes the close, which is gpui's analogue of iced's
+    /// `exit_on_close_request(false)` + `close_requests()` subscription
+    /// (findings §S4; `src/gui/update/modals.rs:338-362`).
+    fn register_close_hook(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |_window, cx| {
+            this.update(cx, |this, cx| {
+                let running = this.native_sessions_running(cx);
+                if running == 0 {
+                    this.shutdown(cx);
+                    return true;
+                }
+                // Known, preserved gap: grove is one modal deep, so this
+                // clobbers whatever was open and cancelling does not restore
+                // it (`modal.rs`'s own passing test).
+                this.open_modal(crate::modal::Modal::quit_confirm(running), cx);
+                false
+            })
+            .unwrap_or(true)
+        });
+    }
+
+    // ── tmux sidecar discovery and reattach (Task 5) ────────────────────
+
+    /// Attach every tmux session a previous grove run left behind, in the
+    /// order [`crate::reattach::plan`] computed.
+    ///
+    /// Startup and the Settings tmux-toggle re-scan are the **same** call
+    /// (`src/app/mod.rs:219-224` and `:347-366`); the plan's dedupe on tmux
+    /// name is what makes running it twice safe. Reattached sessions keep
+    /// their tmux backend even when the saved preference now says native —
+    /// the oracle says so explicitly (`:217-219`).
+    ///
+    /// Failures are **silent** (`src/app/util.rs:12-13`): a tmux server that
+    /// died between `list-sessions` and the attach must not stop grove from
+    /// starting, so a failed attach is logged at `warn` and the rest continue.
+    fn discover_tmux_sessions(&mut self, cx: &mut Context<Self>) {
+        if !grove_core::tmux::available() {
+            return;
+        }
+        let discovered = grove_core::tmux::list_grove_sessions();
+        if discovered.is_empty() {
+            return;
+        }
+        let plan = {
+            let existing = self.registry.read(cx).all().to_vec();
+            let store = &cx.global::<SettingsState>().store;
+            let paths: HashMap<String, String> = store
+                .active_projects()
+                .map(|(_, p)| (p.name.clone(), p.path.clone()))
+                .collect();
+            let wt_order = |project: &str| -> Vec<String> {
+                paths.get(project).map_or_else(Vec::new, |path| {
+                    grove_core::git::list_worktrees(path)
+                        .into_iter()
+                        .map(|w| w.path)
+                        .collect()
+                })
+            };
+            crate::reattach::plan(&discovered, &existing, &wt_order)
+        };
+        let dims = self.last_pty_dims;
+        for entry in plan {
+            let name = entry.session.name.clone();
+            let session = cx.new(|cx| TerminalSession::attach_existing(&name, cx));
+            if let Some(err) = session.read(cx).spawn_error().map(str::to_string) {
+                tracing::warn!(session = %name, error = %err, "reattach failed; skipping");
+                continue;
+            }
+            let id = self
+                .registry
+                .update(cx, |r, _| r.insert_reattached(entry.at, &entry.session));
+            // Resize immediately so tmux reports the right geometry on the
+            // first frame rather than after a resize
+            // (`src/gui/update/mod.rs:135-139`).
+            session.update(cx, |s, _| s.resize(dims.0, dims.1));
+            self.registry.update(cx, |r, cx| {
+                r.attach(id, session, Some(name.clone()));
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
     /// `mod+g` (`layout.rs:199-216`).
     fn toggle_grid(&mut self, cx: &mut Context<Self>) {
         let (live, saved) = (self.live_tiles(cx), Self::saved_grid_order(cx));
@@ -282,6 +444,11 @@ impl Workspace {
 
     /// The directional grid chords (`update/mod.rs:1071-1116`).
     fn grid_move(&mut self, dx: i32, dy: i32, swap: bool, cx: &mut Context<Self>) {
+        if !swap {
+            // `GlobalShortcut::GridMove` only — the swap chord is untracked in
+            // iced too (`src/gui/update/mod.rs:1029`).
+            crate::telemetry::track("tile_moved", vec![]);
+        }
         self.state.update(cx, |s, cx| {
             if swap {
                 s.grid_swap(dx, dy);
@@ -380,10 +547,8 @@ impl Workspace {
             // waiting session (`appbar.rs:277`).
             ChromeAction::JumpToWaiting => self.jump_to_waiting(cx),
             ChromeAction::ToggleGridView => self.toggle_grid(cx),
-            ChromeAction::OpenSessionLauncher => {
-                self.open_modal(crate::modal::Modal::SessionLauncher(Box::default()), cx);
-            }
-            ChromeAction::OpenSettings => self.open_modal(crate::modal::Modal::Settings, cx),
+            ChromeAction::OpenSessionLauncher => self.open_launcher(cx),
+            ChromeAction::OpenSettings => self.open_settings(cx),
             ChromeAction::OpenShortcutOverlay => {
                 self.open_modal(crate::modal::Modal::ShortcutOverlay, cx);
             }
@@ -688,6 +853,7 @@ impl Workspace {
             agent: grove_core::agent::Agent::Terminal,
             project: String::new(),
             label: label.clone(),
+            args: Vec::new(),
         };
         let session = cx.new(|cx| TerminalSession::spawn(&target, &[], None, cx));
         if let Some(err) = session.read(cx).spawn_error().map(str::to_string) {
@@ -704,6 +870,9 @@ impl Workspace {
             label,
             spawned_at: std::time::Instant::now(),
             attention: None,
+            // Home terminals and panel shells are always native.
+            tmux: false,
+            tmux_name: None,
         };
         self.registry.update(cx, |r, cx| {
             r.push_wt_shell(wt_path, meta, Some(session));
@@ -879,6 +1048,18 @@ impl Workspace {
         self.modals.clone().update(cx, |l, cx| l.open(modal, cx));
     }
 
+    /// The palette's three entry points (`src/gui/update/palette.rs:15`).
+    fn open_launcher(&mut self, cx: &mut Context<Self>) {
+        crate::telemetry::track("launcher_opened", vec![]);
+        self.open_modal(crate::modal::Modal::SessionLauncher(Box::default()), cx);
+    }
+
+    /// `on_open_settings` (`src/gui/update/mod.rs:551-555`).
+    fn open_settings(&mut self, cx: &mut Context<Self>) {
+        crate::telemetry::track("settings_opened", vec![]);
+        self.open_modal(crate::modal::Modal::Settings, cx);
+    }
+
     /// Effects the layer cannot perform for itself.
     fn on_modal_event(
         &mut self,
@@ -888,11 +1069,17 @@ impl Workspace {
     ) {
         match event {
             ModalEvent::Quit => {
-                // Plan 09 owns `flush_ui_zoom_save` on every exit path; it
-                // hooks here, immediately before the window is removed.
+                // Exit path 2 of 3 (`submit_modal_confirm` →
+                // `iced::exit()`, `src/gui/update/modals.rs:558-576`).
+                self.shutdown(cx);
                 cx.quit();
             }
             ModalEvent::Closed => cx.notify(),
+            // The Settings tmux row (or the first-run choice) switched the
+            // backend on: re-scan, exactly as `discover_tmux_sessions` does
+            // in iced (`src/app/mod.rs:288-292,347-366`).
+            ModalEvent::TmuxEnabled => self.discover_tmux_sessions(cx),
+            ModalEvent::RestartApp => self.restart_after_update(cx),
             ModalEvent::SpawnAgent {
                 project,
                 wt_path,
@@ -1224,12 +1411,46 @@ impl Render for Workspace {
         // Window activation: `window_focused` gates the "focused session is
         // never waiting" rule, and regaining focus acknowledges the visible
         // session (`layout.rs:34-49`).
+        // The only close interception in the app (carried decision 6). It is
+        // registered here rather than in `main.rs` because it needs this
+        // entity, and the first render is the one place with both a
+        // `&mut Window` and a `Context<Self>`.
+        if !self.close_hook_registered {
+            self.close_hook_registered = true;
+            self.register_close_hook(window, cx);
+        }
+
+        // The agent pane's dims, cached for reattach (the element itself
+        // resizes what it paints; a session that is attached but not on
+        // screen still needs a truthful size).
+        {
+            let size = window.viewport_size();
+            let body_w = f32::from(size.width) - self.state.read(cx).sidebar_width();
+            let body_h =
+                f32::from(size.height) - (appbar::APPBAR_H + statusbar::STATUS_H) * zoom_value;
+            self.last_pty_dims = ZoomState::new(zoom_value).pty_dims(body_w, body_h);
+        }
+
+        // Startup discovery, once, after the first frame's geometry is known
+        // (`src/app/mod.rs:219-224`).
+        if !self.tmux_discovered {
+            self.tmux_discovered = true;
+            self.discover_tmux_sessions(cx);
+        }
+
         if !self.activation_observed {
             self.activation_observed = true;
             let activity = self.activity.clone();
+            let upgrade = self.upgrade.clone();
             let sub = cx.observe_window_activation(window, move |_, window, cx| {
                 let active = window.is_window_active();
                 activity.update(cx, |a, cx| a.set_window_focused(active, cx));
+                // The refocus check rides the observer Plan 06 already
+                // registered rather than adding a second one
+                // (`src/gui/update/upgrade.rs:193-196`).
+                if active {
+                    upgrade.update(cx, Upgrade::check_if_due);
+                }
             });
             self.observers.push(sub);
         }
@@ -1325,18 +1546,18 @@ impl Render for Workspace {
         // opens into, which Task 5 fills.
         let root = root
             .on_action(cx.listener(|this, _: &keymap::NewSession, _, cx| {
-                this.open_modal(crate::modal::Modal::SessionLauncher(Box::default()), cx);
+                this.open_launcher(cx);
             }))
             .on_action(
                 cx.listener(|this, _: &keymap::NewSessionInWorktree, _, cx| {
-                    this.open_modal(crate::modal::Modal::SessionLauncher(Box::default()), cx);
+                    this.open_launcher(cx);
                 }),
             )
             .on_action(cx.listener(|this, _: &keymap::SwitchSession, _, cx| {
-                this.open_modal(crate::modal::Modal::SessionLauncher(Box::default()), cx);
+                this.open_launcher(cx);
             }))
             .on_action(cx.listener(|this, _: &keymap::Settings, _, cx| {
-                this.open_modal(crate::modal::Modal::Settings, cx);
+                this.open_settings(cx);
             }))
             .on_action(cx.listener(|this, _: &keymap::ShortcutOverlay, _, cx| {
                 this.open_modal(crate::modal::Modal::ShortcutOverlay, cx);
@@ -1377,8 +1598,9 @@ impl Render for Workspace {
             // Resolved once, handed to the pill and the dropdown alike.
             waiting: self.waiting_rows(cx),
             grid_view: self.state.read(cx).grid_view(),
-            // Plan 09 owns the real upgrade state; the dot renders off.
-            upgrade_available: false,
+            // `matches!(state, Available(_))` and nothing else
+            // (`src/gui/view/appbar.rs:29`).
+            upgrade_available: upgrade_available(self.upgrade.read(cx).state()),
             dispatch: std::rc::Rc::clone(&dispatch),
         };
         let statusbar_ctx = {
@@ -1534,6 +1756,45 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The** structural guarantee (carried decision 7): there are exactly
+    /// three process-terminating paths — the close request, the quit confirm
+    /// and the post-update restart — and each one is immediately preceded by
+    /// `shutdown`, which is the only flush. A fourth exit added without one
+    /// fails here rather than silently losing the user's zoom and grid order.
+    ///
+    /// A source-level guard because grove-gpui has no gpui test harness: the
+    /// flush's own idempotence and its debounce-defeating write are asserted
+    /// directly in `settings::tests`.
+    #[test]
+    fn every_exit_path_flushes_first() {
+        let src = include_str!("workspace.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        // The primitives that end the process or let the window go.
+        let exits: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| {
+                let l = l.trim();
+                l == "cx.quit();" || l == "std::process::exit(0);" || l == "return true;"
+            })
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            exits.len(),
+            3,
+            "expected exactly three exit paths, found {}",
+            exits.len()
+        );
+        for i in exits {
+            let preceding = lines[i.saturating_sub(3)..i].join("\n");
+            assert!(
+                preceding.contains("shutdown(cx);"),
+                "the exit at line {} does not flush first:\n{preceding}",
+                i + 1
+            );
+        }
+    }
 
     /// The chrome heights are the `src/gui/metrics.rs:15-17` values, and the
     /// three bars agree with the workspace on what they cost vertically.

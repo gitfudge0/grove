@@ -42,11 +42,13 @@ use crate::entities::animation_clock::AnimationClock;
 use crate::entities::project_tree::ProjectTree;
 use crate::entities::session_registry::SessionRegistry;
 use crate::entities::toast::ToastState;
+use crate::entities::upgrade::Upgrade;
 use crate::entities::workspace_state::WorkspaceState;
 use crate::modal::{
     key_verdict, CancelOutcome, KeyCtx, Modal, ModalAction, ModalKey, ModalKeyVerdict, ModalKind,
     ModalMods, ModalSlot,
 };
+use crate::settings::SettingsState;
 
 use self::input::ModalInput;
 
@@ -85,6 +87,15 @@ pub enum ModalClick {
     OpenThemePicker,
     OpenThemeManager,
     OpenChangelog,
+    /// Updates: a manual check, the apply, skip, copy-url and the restart.
+    CheckUpdates,
+    StartUpdate,
+    SkipVersion,
+    CopyReleaseUrl,
+    RestartApp,
+    /// Settings → Tools: re-run detection, or adopt a tool as the default.
+    RefreshTools,
+    SetDefaultAgent(grove_core::agent::Agent),
     /// Settings toggles, by the store key they flip.
     ToggleSetting(SettingToggle),
     /// ThemeManager row actions.
@@ -130,6 +141,10 @@ pub enum ModalEvent {
     Quit,
     /// The slot became empty; focus goes back to the body.
     Closed,
+    /// tmux was switched on; the workspace re-scans for sidecar sessions.
+    TmuxEnabled,
+    /// The post-update restart: relaunch, flush, exit.
+    RestartApp,
     /// Spawn an agent session through `Sidebar::spawn_session`, so the toast
     /// producer covers a failure exactly once (recorded ambiguity 7).
     SpawnAgent {
@@ -176,6 +191,12 @@ pub struct ModalLayer {
     toast: Entity<ToastState>,
     activity: Entity<ActivityStore>,
     clock: Entity<AnimationClock>,
+    /// The upgrade flow the Updates/Changelog views render and act on.
+    pub(super) upgrade: Entity<Upgrade>,
+    /// The Settings → Tools rows, detected off-thread whenever Settings opens
+    /// or the refresh button is clicked (`src/gui/update/upgrade.rs:158-191`).
+    pub(super) tools: Vec<settings::ToolStatus>,
+    tools_task: Option<gpui::Task<()>>,
     /// The teardown script's live PTY view. Modal-owned, never in the
     /// registry — a teardown PTY must not appear in the rail, exactly as
     /// iced keeps it out of `app.sessions` (`src/app/modal.rs:163-175`).
@@ -194,6 +215,10 @@ impl Focusable for ModalLayer {
 }
 
 impl ModalLayer {
+    // One owner, one constructor: the layer genuinely needs every entity it is
+    // handed, and a `Deps` struct here would only move the same eight names one
+    // indirection away.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         state: Entity<WorkspaceState>,
         registry: Entity<SessionRegistry>,
@@ -201,6 +226,7 @@ impl ModalLayer {
         toast: Entity<ToastState>,
         activity: Entity<ActivityStore>,
         clock: Entity<AnimationClock>,
+        upgrade: Entity<Upgrade>,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -215,6 +241,9 @@ impl ModalLayer {
             toast,
             activity,
             clock,
+            upgrade,
+            tools: Vec::new(),
+            tools_task: None,
             teardown_view: None,
             teardown_session: None,
             teardown_poll: None,
@@ -246,6 +275,11 @@ impl ModalLayer {
     /// dropped with it; the new one's is built on the next render, which is
     /// the first point a `&mut Window` exists.
     pub fn open(&mut self, modal: Modal, cx: &mut Context<Self>) {
+        // `on_open_settings` dispatches the tool scan alongside opening the
+        // modal (`src/gui/update/mod.rs:551-555`).
+        if matches!(modal.kind(), ModalKind::Settings) {
+            self.detect_tools(cx);
+        }
         self.slot.open(modal);
         self.fields.clear();
         self.needs_focus = true;
@@ -340,9 +374,11 @@ impl ModalLayer {
             return;
         };
         let ctx = KeyCtx {
-            // Plan 09 owns the live upgrade stages; nothing is ever in flight
-            // here yet, so `Updating`'s Escape always closes for now.
-            update_in_flight: false,
+            // Genuinely in flight now: `escape_closes` is the real answer, and
+            // an apply refuses Escape until it lands.
+            update_in_flight: !crate::entities::upgrade_state::escape_closes(
+                self.upgrade.read(cx).state(),
+            ),
             is_shortcut_overlay_chord: false,
         };
         let verdict = key_verdict(modal, key, mods, ctx);
@@ -466,6 +502,25 @@ impl ModalLayer {
             }
             ModalClick::Submit => self.submit(window, cx),
             ModalClick::ToggleDefaultAgent => self.toggle_default_agent(cx),
+            ModalClick::CheckUpdates => {
+                self.upgrade.update(cx, |u, cx| u.check(true, cx));
+            }
+            ModalClick::StartUpdate => {
+                self.upgrade.update(cx, Upgrade::start_update);
+                self.open(Modal::Updating, cx);
+            }
+            ModalClick::SkipVersion => {
+                self.upgrade.update(cx, Upgrade::skip);
+                cx.notify();
+            }
+            ModalClick::CopyReleaseUrl => self.copy_release_url(cx),
+            ModalClick::RestartApp => cx.emit(ModalEvent::RestartApp),
+            ModalClick::RefreshTools => self.detect_tools(cx),
+            ModalClick::SetDefaultAgent(agent) => {
+                SettingsState::update(cx, move |store| store.default_agent = Some(agent));
+                SettingsState::flush_now(cx);
+                cx.notify();
+            }
             other => self.on_click_late(other, window, cx),
         }
     }

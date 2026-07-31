@@ -9,6 +9,10 @@
 
 use gpui::{div, prelude::*, px, AnyElement, App, Context, Window};
 
+use grove_core::agent::Agent;
+
+use crate::entities::upgrade::Upgrade;
+use crate::entities::upgrade_state::{ChangelogState, UpgradeState};
 use crate::keymap::{self, Scope, ShortcutDef, SHORTCUTS};
 use crate::launcher::SettingRow;
 use crate::settings::SettingsState;
@@ -46,7 +50,7 @@ pub fn setting_value(row: SettingRow, cx: &App) -> String {
                 "ask me".to_string()
             }
         }
-        SettingRow::Telemetry => on_off(store.telemetry_enabled.unwrap_or(false)),
+        SettingRow::Telemetry => on_off(SettingsState::telemetry_enabled(store)),
         SettingRow::Chrome => on_off(store.chrome_enabled.unwrap_or(false)),
         SettingRow::DefaultAgent => store
             .default_agent
@@ -103,12 +107,19 @@ impl ModalLayer {
                 self.open_theme_picker(ThemePickerScope::App, ThemePickerReturn::Settings, cx);
             }
             ModalClick::OpenThemeManager => self.open_theme_manager(cx),
-            ModalClick::OpenChangelog => self.open(
-                Modal::Changelog {
-                    return_to_settings: true,
-                },
-                cx,
-            ),
+            ModalClick::OpenChangelog => {
+                // The changelog closes Settings on the way in and reopens it on
+                // the way out; the round trip is already a passing state-machine
+                // test, so this only supplies the data
+                // (`src/gui/update/upgrade.rs:127-149`).
+                self.upgrade.update(cx, Upgrade::fetch_changelog);
+                self.open(
+                    Modal::Changelog {
+                        return_to_settings: true,
+                    },
+                    cx,
+                );
+            }
             ModalClick::ToggleSetting(t) => self.toggle_setting(t, cx),
             ModalClick::ThemeSelect(i) => {
                 if let Some(Modal::ThemeManager { selected, .. }) = self.slot.get_mut() {
@@ -187,6 +198,10 @@ impl ModalLayer {
         }
         SettingsState::update(cx, move |store| store.tmux_enabled = Some(enabled));
         SettingsState::flush_now(cx);
+        if enabled {
+            // The re-scan the workspace owns (`src/app/mod.rs:288-292`).
+            cx.emit(super::ModalEvent::TmuxEnabled);
+        }
         cx.notify();
     }
 
@@ -210,19 +225,23 @@ impl ModalLayer {
                 cx.notify();
             }
             SettingRow::Telemetry => {
-                SettingsState::update(cx, |store| {
-                    let cur = store.telemetry_enabled.unwrap_or(false);
-                    store.telemetry_enabled = Some(!cur);
-                });
+                let enabled =
+                    !SettingsState::telemetry_enabled(&cx.global::<SettingsState>().store);
+                SettingsState::update(cx, |store| store.telemetry_enabled = Some(enabled));
                 SettingsState::flush_now(cx);
+                // Takes effect immediately, not at the next launch
+                // (`src/app/mod.rs:339-344`).
+                crate::telemetry::set_enabled(enabled);
                 cx.notify();
             }
             SettingRow::Chrome => self.toggle_setting(SettingToggle::Chrome, cx),
             SettingRow::Backend => self.toggle_setting(SettingToggle::Tmux, cx),
             SettingRow::Permissions => self.toggle_setting(SettingToggle::SkipPermissions, cx),
-            SettingRow::CheckUpdates => self.open(Modal::Updating, cx),
-            // Plan 09 owns the live upgrade stages; the app-size and
-            // default-agent panes are the Settings modal's own rows.
+            // A **manual** check, not a modal that claims to be one
+            // (`src/gui/update/upgrade.rs:26-32`).
+            SettingRow::CheckUpdates => self.upgrade.update(cx, |u, cx| u.check(true, cx)),
+            // The app-size and default-agent panes are the Settings modal's
+            // own rows.
             SettingRow::AppSize | SettingRow::DefaultAgent => self.open(Modal::Settings, cx),
         }
     }
@@ -325,13 +344,104 @@ impl ModalLayer {
 
 // ── the views ────────────────────────────────────────────────────────────
 
+/// One row of the Settings → Tools section (`src/gui/state.rs`'s `ToolStatus`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolStatus {
+    pub agent: Agent,
+    pub installed: bool,
+    pub version: Option<String>,
+    /// Drives the "Detecting…" placeholder while the off-thread scan runs.
+    pub detecting: bool,
+}
+
+/// The tools shown, in display order. `Terminal` is omitted — always
+/// available, no version (`src/gui/update/upgrade.rs:154-157`).
+pub const SETTINGS_TOOLS: [Agent; 3] = [Agent::Claude, Agent::Codex, Agent::OpenCode];
+
+/// The status text and whether it reads as a live value (a version) or as
+/// muted status. Pure, so the three states are testable without a subprocess
+/// (`src/gui/view/modals/settings.rs:441-452`).
+#[must_use]
+pub fn tool_status_text(st: &ToolStatus) -> (String, bool) {
+    if st.detecting {
+        ("Detecting…".to_string(), false)
+    } else if !st.installed {
+        ("Not installed".to_string(), false)
+    } else {
+        (
+            st.version
+                .clone()
+                .unwrap_or_else(|| "installed".to_string()),
+            true,
+        )
+    }
+}
+
+impl ModalLayer {
+    /// Mark every Tools row as detecting and dispatch the off-thread
+    /// availability + version scan (`detect_tools_task`,
+    /// `src/gui/update/upgrade.rs:158-191`). `--version` is a short
+    /// subprocess, but running three of them on the UI thread is still three
+    /// too many.
+    pub(super) fn detect_tools(&mut self, cx: &mut Context<Self>) {
+        self.tools = SETTINGS_TOOLS
+            .iter()
+            .map(|&agent| ToolStatus {
+                agent,
+                installed: false,
+                version: None,
+                detecting: true,
+            })
+            .collect();
+        cx.notify();
+        let scan = cx.background_spawn(async {
+            SETTINGS_TOOLS
+                .iter()
+                .map(|&agent| {
+                    let installed = agent.available();
+                    let version = if installed { agent.version() } else { None };
+                    ToolStatus {
+                        agent,
+                        installed,
+                        version,
+                        detecting: false,
+                    }
+                })
+                .collect::<Vec<_>>()
+        });
+        self.tools_task = Some(cx.spawn(async move |this, cx| {
+            let tools = scan.await;
+            let _ = this.update(cx, |this, cx| {
+                this.tools = tools;
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Copy the offered release's URL and raise the oracle's toast
+    /// (`src/gui/update/upgrade.rs:77-82`).
+    pub(super) fn copy_release_url(&mut self, cx: &mut Context<Self>) {
+        let Some(url) = self
+            .upgrade
+            .read(cx)
+            .available()
+            .map(|r| r.html_url.clone())
+        else {
+            return;
+        };
+        crate::terminal::clipboard::copy(&url);
+        self.toast
+            .update(cx, |t, cx| t.set_toast("release url copied", cx));
+    }
+}
+
 pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     match layer.slot().get() {
-        Some(Modal::Settings) => settings_modal(dispatch, cx),
+        Some(Modal::Settings) => settings_modal(layer, dispatch, cx),
         Some(Modal::ShortcutOverlay) => shortcut_overlay(layer.state.read(cx).screen()),
         Some(Modal::ScriptsEditor(st)) => scripts_editor(layer, st, dispatch),
-        Some(Modal::Updating) => updating_modal(dispatch),
-        Some(Modal::Changelog { .. }) => changelog_modal(dispatch),
+        Some(Modal::Updating) => updating_modal(layer, dispatch, cx),
+        Some(Modal::Changelog { .. }) => changelog_modal(layer, dispatch, cx),
         _ => div().into_any_element(),
     }
 }
@@ -370,7 +480,7 @@ fn settings_row(
 }
 
 /// Every control persists immediately; there is no apply/cancel footer.
-fn settings_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
+fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     let store = &cx.global::<SettingsState>().store;
     let archived = store.archived_count();
     let tmux_on = store.tmux_enabled.unwrap_or(false);
@@ -442,7 +552,18 @@ fn settings_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
             dispatch,
             ModalClick::OpenArchivedProjects,
         ))
+        .child(section_header("TOOLS", 10.0, 4.0))
+        .children(layer.tools.iter().map(|st| tool_row(st, dispatch, cx)))
+        .child(click_action(
+            "set-tools-refresh",
+            "Re-detect tools",
+            ModalBtn::Plain,
+            dispatch,
+            ModalClick::RefreshTools,
+        ))
         .child(section_header("UPDATES", 10.0, 4.0))
+        .child(update_status_line(layer, cx))
+        .children(update_actions(layer, dispatch, cx))
         .child(settings_row(
             "set-changelog",
             "View changelog",
@@ -459,6 +580,149 @@ fn settings_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
             .child(modal_footer_hints(&[("esc", "close")])),
     )
     .into_any_element()
+}
+
+/// One Tools row: a status dot that carries its state by **shape** as well as
+/// colour (filled for installed, hollow for missing, so it survives
+/// grayscale), the agent, its version, and the default-agent selector
+/// (`src/gui/view/modals/settings.rs:396-482`).
+fn tool_row(st: &ToolStatus, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
+    let (status, is_value) = tool_status_text(st);
+    let label_color = if st.installed { c::FG() } else { c::FG_DIM() };
+    let status_color = if is_value { c::FG_DIM() } else { c::FG_MUTE() };
+    let is_default = cx.global::<SettingsState>().store.default_agent == Some(st.agent);
+    let dot = div().w(px(7.0)).h(px(7.0)).rounded(px(3.5)).map(|d| {
+        if st.installed {
+            d.bg(c::GREEN())
+        } else {
+            d.border_1().border_color(c::FG_MUTE())
+        }
+    });
+    let mut row = div()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .w_full()
+        .px(px(8.0))
+        .py(px(5.0))
+        .child(dot)
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(12.0))
+                .text_color(label_color)
+                .child(cap(st.agent.label())),
+        )
+        .child(
+            div()
+                .text_size(px(12.0))
+                .text_color(status_color)
+                .child(status),
+        );
+    if is_default {
+        row = row.child(
+            div()
+                .text_size(px(10.0))
+                .text_color(c::CYAN())
+                .child("Default"),
+        );
+    } else if st.installed {
+        row = row.child(click_action(
+            "set-default-agent",
+            "Set default",
+            ModalBtn::Plain,
+            dispatch,
+            ModalClick::SetDefaultAgent(st.agent),
+        ));
+    }
+    row.into_any_element()
+}
+
+/// Capitalize an agent label for display (`cap`, `view/modals/settings.rs`).
+fn cap(s: &str) -> String {
+    let mut chars = s.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().collect::<String>() + chars.as_str()
+    })
+}
+
+/// The Updates status line — the same six sentences iced shows
+/// (`src/gui/view/modals/settings.rs:505-526`).
+fn update_status_line(layer: &ModalLayer, cx: &App) -> AnyElement {
+    let (text, color) = match layer.upgrade.read(cx).state() {
+        UpgradeState::Idle => ("Not checked yet".to_string(), c::FG_MUTE()),
+        UpgradeState::Checking => ("Checking…".to_string(), c::FG_MUTE()),
+        UpgradeState::UpToDate => ("Up to date".to_string(), c::FG_DIM()),
+        UpgradeState::Error(e) => (format!("Check failed: {e}"), c::FG_MUTE()),
+        UpgradeState::Available(r) => (format!("Update available: {}", r.tag), c::GREEN()),
+        // Updating/Updated/UpdateFailed live in the progress modal.
+        _ => ("Updating…".to_string(), c::FG_DIM()),
+    };
+    div()
+        .px(px(8.0))
+        .py(px(4.0))
+        .text_size(px(11.0))
+        .text_color(color)
+        .child(text)
+        .into_any_element()
+}
+
+/// Update / Skip / Copy URL, plus the release-note preview — shown only when a
+/// release is on offer. `Update now` is withheld for an unclassifiable install
+/// (`InstallMethod::Unknown` cannot self-apply), matching the palette's
+/// `update_available_actions` guard.
+fn update_actions(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Vec<AnyElement> {
+    let upgrade = layer.upgrade.read(cx);
+    let Some(release) = upgrade.available() else {
+        return Vec::new();
+    };
+    let mut row = div().flex().items_center().gap(px(8.0)).px(px(8.0));
+    if upgrade.method() != grove_core::upgrade::InstallMethod::Unknown {
+        row = row.child(click_action(
+            "up-now",
+            "Update now",
+            ModalBtn::Primary,
+            dispatch,
+            ModalClick::StartUpdate,
+        ));
+    }
+    row = row
+        .child(click_action(
+            "up-skip",
+            "Skip this version",
+            ModalBtn::Plain,
+            dispatch,
+            ModalClick::SkipVersion,
+        ))
+        .child(click_action(
+            "up-copy",
+            "Copy URL",
+            ModalBtn::Plain,
+            dispatch,
+            ModalClick::CopyReleaseUrl,
+        ));
+    let mut out = vec![row.into_any_element()];
+    if !release.body.is_empty() {
+        let preview: String = release
+            .body
+            .lines()
+            .take(6)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .take(300)
+            .collect();
+        out.push(
+            div()
+                .px(px(8.0))
+                .pt(px(4.0))
+                .text_size(px(11.0))
+                .text_color(c::FG_MUTE())
+                .child(preview)
+                .into_any_element(),
+        );
+    }
+    out
 }
 
 /// Generated from `keymap::SHORTCUTS`, filtered by the current screen, plus
@@ -665,46 +929,143 @@ fn scripts_editor(
     .into_any_element()
 }
 
-/// The upgrade shell. Plan 09 owns the live stages, the changelog fetch and
-/// apply/restart — this renders whatever the current state reports and nothing
-/// more.
-fn updating_modal(dispatch: &ModalDispatch) -> AnyElement {
-    modal_panel(
-        420.0,
-        div()
-            .child(modal_header("Updates", c::CYAN()))
-            .child(modal_body(
+/// The apply-in-progress modal. Escape is genuinely refused while a stage is
+/// in flight (`escape_closes`), so the footer only offers a hint once the
+/// apply has landed — exactly as iced does
+/// (`src/gui/view/modals/upgrade.rs:16-97`).
+fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
+    use grove_core::upgrade::Stage;
+
+    let state = layer.upgrade.read(cx).state().clone();
+    let body = match &state {
+        UpgradeState::Updating(stage) => {
+            let label = match stage {
+                Stage::Downloading => "Downloading…",
+                Stage::Building => "Building…",
+                Stage::Installing => "Installing…",
+                Stage::Done => "Finishing…",
+            };
+            div().child(body_text(label)).into_any_element()
+        }
+        UpgradeState::Updated => div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(body_text("Update installed. Restart Grove to apply"))
+            .child(
                 div()
                     .flex()
-                    .flex_col()
                     .gap(px(8.0))
-                    .child(body_text(format!(
-                        "Grove v{} — you are up to date.",
-                        env!("CARGO_PKG_VERSION")
-                    )))
-                    // Plan 09 fills the live stages (Updating polling, apply,
-                    // restart). Not a stub that claims to be done.
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(c::FG_MUTE())
-                            .child("Live update stages arrive in gpui rewrite plan 09."),
-                    )
                     .child(click_action(
-                        "up-changelog",
-                        "View changelog",
+                        "up-restart",
+                        "Restart",
+                        ModalBtn::Primary,
+                        dispatch,
+                        ModalClick::RestartApp,
+                    ))
+                    .child(click_action(
+                        "up-later",
+                        "Later",
                         ModalBtn::Plain,
                         dispatch,
-                        ModalClick::OpenChangelog,
+                        ModalClick::Cancel,
                     )),
+            )
+            .into_any_element(),
+        UpgradeState::UpdateFailed(e) => div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(body_text("Update failed"))
+            // `UpgradeError`'s own `Display`, deliberately unchanged
+            // (recorded ambiguity 7).
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(c::FG_MUTE())
+                    .child(e.clone()),
+            )
+            .child(click_action(
+                "up-close",
+                "Close",
+                ModalBtn::Plain,
+                dispatch,
+                ModalClick::Cancel,
             ))
-            .child(modal_footer_hints(&[("esc", "close")])),
-    )
-    .into_any_element()
+            .into_any_element(),
+        _ => div().child(body_text("Updating…")).into_any_element(),
+    };
+
+    let panel = div()
+        .child(modal_header("Updating Grove", c::MAGENTA()))
+        .child(modal_body(body));
+    let panel = match &state {
+        // No hint while it runs: the key is refused, and a footer that says
+        // otherwise would be a lie.
+        UpgradeState::Updating(_) => panel,
+        UpgradeState::Updated => panel.child(modal_footer_hints(&[("esc", "later")])),
+        _ => panel.child(modal_footer_hints(&[("esc", "close")])),
+    };
+    modal_panel(420.0, panel).into_any_element()
 }
 
-/// Overlays Settings and returns to it on dismiss (carried decision 4).
-fn changelog_modal(dispatch: &ModalDispatch) -> AnyElement {
+/// Overlays Settings and returns to it on dismiss (carried decision 4). The
+/// round trip is the state machine's; this renders `ChangelogState`'s three
+/// states (`src/gui/view/modals/upgrade.rs:98-182`).
+fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
+    let body = match layer.upgrade.read(cx).changelog() {
+        ChangelogState::Idle | ChangelogState::Loading => {
+            div().child(body_text("Loading…")).into_any_element()
+        }
+        ChangelogState::Error(e) => div()
+            .child(body_text(format!("Couldn't load changelog: {e}")))
+            .into_any_element(),
+        ChangelogState::Loaded(notes) if notes.is_empty() => div()
+            .child(body_text("No releases yet."))
+            .into_any_element(),
+        ChangelogState::Loaded(notes) => {
+            let mut list = div().flex().flex_col().gap(px(18.0));
+            for n in notes {
+                let mut head = div().flex().items_center().gap(px(8.0)).child(
+                    div()
+                        .text_size(px(13.0))
+                        .text_color(c::FG())
+                        .child(n.tag.clone()),
+                );
+                if !n.name.is_empty() && n.name != n.tag {
+                    head = head.child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(c::FG_DIM())
+                            .child(n.name.clone()),
+                    );
+                }
+                if !n.date.is_empty() {
+                    head = head.child(
+                        div()
+                            .flex_1()
+                            .text_size(px(11.0))
+                            .text_color(c::FG_MUTE())
+                            .child(n.date.clone()),
+                    );
+                }
+                list = list.child(
+                    div().flex().flex_col().gap(px(4.0)).child(head).child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(c::FG_MUTE())
+                            .child(grove_core::upgrade::clean_markdown(&n.body)),
+                    ),
+                );
+            }
+            div()
+                .max_h(px(420.0))
+                .overflow_hidden()
+                .child(list)
+                .into_any_element()
+        }
+    };
+
     modal_panel(
         520.0,
         div()
@@ -714,13 +1075,7 @@ fn changelog_modal(dispatch: &ModalDispatch) -> AnyElement {
                     .flex()
                     .flex_col()
                     .gap(px(8.0))
-                    .child(body_text(format!("Grove v{}", env!("CARGO_PKG_VERSION"))))
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(c::FG_MUTE())
-                            .child("Release-note fetch arrives in gpui rewrite plan 09."),
-                    )
+                    .child(body)
                     .child(click_action(
                         "cl-close",
                         "Back to Settings",
@@ -737,6 +1092,65 @@ fn changelog_modal(dispatch: &ModalDispatch) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Terminal` is not a Tools row: it is always available and has no
+    /// version (`src/gui/update/upgrade.rs:154-157`).
+    #[test]
+    fn the_tools_list_omits_the_plain_terminal() {
+        assert_eq!(
+            SETTINGS_TOOLS,
+            [Agent::Claude, Agent::Codex, Agent::OpenCode]
+        );
+        assert!(!SETTINGS_TOOLS.contains(&Agent::Terminal));
+    }
+
+    /// The three Tools states, and which of them reads as a live value rather
+    /// than as muted status.
+    #[test]
+    fn a_tool_row_reports_detecting_then_missing_or_its_version() {
+        let base = ToolStatus {
+            agent: Agent::Claude,
+            installed: false,
+            version: None,
+            detecting: true,
+        };
+        assert_eq!(tool_status_text(&base), ("Detecting…".to_string(), false));
+
+        let missing = ToolStatus {
+            detecting: false,
+            ..base.clone()
+        };
+        assert_eq!(
+            tool_status_text(&missing),
+            ("Not installed".to_string(), false)
+        );
+
+        let installed = ToolStatus {
+            installed: true,
+            detecting: false,
+            version: Some("1.2.3".to_string()),
+            ..base.clone()
+        };
+        assert_eq!(tool_status_text(&installed), ("1.2.3".to_string(), true));
+
+        // Installed but version-less still reads as installed, never blank.
+        let versionless = ToolStatus {
+            installed: true,
+            detecting: false,
+            version: None,
+            ..base
+        };
+        assert_eq!(
+            tool_status_text(&versionless),
+            ("installed".to_string(), true)
+        );
+    }
+
+    #[test]
+    fn agent_labels_are_capitalized_for_display() {
+        assert_eq!(cap("claude"), "Claude");
+        assert_eq!(cap(""), "");
+    }
 
     /// Drift guard (Task 6 Step 2): every registry row with a display label
     /// appears in the overlay for at least one screen. The registry is the
