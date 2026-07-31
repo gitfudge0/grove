@@ -35,5 +35,10 @@ tracing.workspace = true
 # NO gpui-component in this phase — see Global Constraints (durable-pin decision
 # is deferred to Plan 08).
 
+# macOS dock badge / attention bounce (`src/platform/dock.rs`). Same version
+# the iced `grove` crate already uses, so there is one `objc` in the graph.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
 [lints]
 workspace = true

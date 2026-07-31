@@ -34,7 +34,7 @@ use gpui::{
 };
 use grove_core::agent::Agent;
 
-use crate::activity::ActivityStore;
+use crate::entities::activity_store::ActivityStore;
 use crate::entities::animation_clock::AnimationClock;
 use crate::entities::project_tree::ProjectTree;
 use crate::entities::session_registry::SessionRegistry;
@@ -248,12 +248,16 @@ impl Sidebar {
             return;
         };
         let (name, cwd) = (project.name.clone(), worktree.path.clone());
-        let (id, target) = self.registry.update(cx, |r, cx| {
+        let (id, extra_args, state_file, target) = self.registry.update(cx, |r, cx| {
             let id = r.insert_meta(name.clone(), cwd.clone(), agent);
             let label = r.meta(id).map_or_else(String::new, |m| m.label.clone());
+            let extra_args = r.take_attention_args(id);
+            let state_file = r.attention_files(id).map(|f| f.state_file.clone());
             cx.notify();
             (
                 id,
+                extra_args,
+                state_file,
                 crate::entities::session_registry::SpawnTarget {
                     cwd,
                     agent,
@@ -262,8 +266,14 @@ impl Sidebar {
                 },
             )
         });
-        let session =
-            cx.new(|cx| crate::entities::terminal_session::TerminalSession::spawn(&target, cx));
+        let session = cx.new(|cx| {
+            crate::entities::terminal_session::TerminalSession::spawn(
+                &target,
+                &extra_args,
+                state_file.as_deref(),
+                cx,
+            )
+        });
         self.registry.update(cx, |r, cx| {
             r.attach(id, session);
             cx.notify();
@@ -284,8 +294,11 @@ impl Sidebar {
                 crate::entities::session_registry::SpawnTarget::home(label),
             )
         });
-        let session =
-            cx.new(|cx| crate::entities::terminal_session::TerminalSession::spawn(&target, cx));
+        // Home terminals are `Agent::Terminal`: `attention::prepare` returns
+        // `None` for them, so there is nothing to thread down.
+        let session = cx.new(|cx| {
+            crate::entities::terminal_session::TerminalSession::spawn(&target, &[], None, cx)
+        });
         let count = self.registry.update(cx, |r, cx| {
             let id = r.next_home_id();
             r.push_home(
@@ -296,6 +309,7 @@ impl Sidebar {
                     agent: Agent::Terminal,
                     label,
                     spawned_at: Instant::now(),
+                    attention: None,
                 },
                 session,
             );
@@ -436,6 +450,12 @@ impl Render for Sidebar {
             )
         };
         self.rows.clone_from(&rows);
+        // Publish the flattened order so the attention queue resolves in tree
+        // order without the `ActivityStore` reaching into a view. Deliberately
+        // without `cx.notify()`: this is derived data that changed *because* a
+        // repaint was already under way.
+        let order = self.visible_session_order();
+        self.state.update(cx, |s, _| s.set_visible_order(order));
 
         let ctx = self.row_ctx(&rows, tick, pulse, hovered_wt, cx);
         let menu_top = open_menu.and_then(|open| rows::agent_menu_top(&rows, open));
@@ -499,19 +519,43 @@ impl Sidebar {
         hovered_wt: Option<(usize, usize)>,
         cx: &mut Context<Self>,
     ) -> RowCtx {
+        // Live OSC titles (Plan 05 deviation 5 closes here). `session_context`
+        // strips the worktree name, the internal label and the agent label,
+        // then `sanitize_ui_text` drops the emoji/box-drawing the UI font
+        // cannot render — the header applies the same filter
+        // (`common.rs:179-190`).
+        //
+        // The iced `cached_context` memo (`rows.rs:748`) exists because the
+        // sanitize ran per frame per row inside `view()`. It is **not** ported:
+        // no profile showed it mattering here, and the same omission was
+        // recorded for Plan 05's PTY-theme memo. Revisit only with a profile.
         let registry = self.registry.read(cx);
         let mut session_text = std::collections::HashMap::new();
         for row in rows {
             if let TreeRow::Session { id, .. } = row {
                 if let Some(meta) = registry.meta(*id) {
-                    // Plan 06 supplies live OSC titles; until then the row
-                    // shows the agent alone, which is what a title-less
-                    // session shows in the iced build too.
-                    session_text.insert(*id, (meta.agent, None));
+                    let context = registry
+                        .session(*id)
+                        .and_then(|e| e.read(cx).title())
+                        .and_then(|raw| {
+                            rows::session_context(
+                                &raw,
+                                &rows::path_basename(&meta.wt_path),
+                                &meta.label,
+                                meta.agent.label(),
+                            )
+                        });
+                    session_text.insert(*id, (meta.agent, context));
                 }
             }
         }
-        let terminal_text = vec![None; registry.home_terminal_count()];
+        let terminal_text = (0..registry.home_terminal_count())
+            .map(|i| {
+                let label = registry.home_terminals().get(i)?.label.clone();
+                let raw = registry.home_terminal(i)?.read(cx).title()?;
+                rows::terminal_context(&raw, &label)
+            })
+            .collect();
         let weak = cx.entity().downgrade();
         RowCtx {
             tick,

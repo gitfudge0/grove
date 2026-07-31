@@ -25,6 +25,7 @@ use std::time::Instant;
 
 use gpui::Entity;
 use grove_core::agent::Agent;
+use grove_core::attention::{self, AttentionFiles};
 
 use crate::entities::terminal_session::TerminalSession;
 
@@ -62,6 +63,18 @@ pub struct SessionMeta {
     /// out of the OSC title to make the context text (`src/gui/rows.rs:778`).
     pub label: String,
     pub spawned_at: Instant,
+    /// The zero-setup attention hook files this session was spawned with, if
+    /// its agent/platform supports them (`attention::prepare` returns `None`
+    /// for OpenCode, Terminal and Windows).
+    ///
+    /// **Keyed on grove-gpui's [`SessionId`], not grove-core's
+    /// `NEXT_SESSION_ID`** — grove-gpui never constructs a
+    /// `grove_core::session::Session`. The resulting file name is
+    /// `{our pid}-{our SessionId}.state`, which is exactly the invariant the
+    /// startup GC and the cross-run collision argument rely on
+    /// (`crates/grove-core/src/attention.rs:110-121`): the **pid prefix** is
+    /// what makes it safe, not the id's provenance.
+    pub attention: Option<AttentionFiles>,
 }
 
 /// Where a new session opens. Replaces [`TerminalSession::spawn`]'s hardcoded
@@ -110,6 +123,9 @@ pub struct SessionRegistry {
     /// Pinned TERMINALS section. Positional identity, parallel vectors.
     home: Vec<SessionMeta>,
     home_terms: Vec<Entity<TerminalSession>>,
+    /// Extra CLI args `attention::prepare` produced, awaiting the spawn call
+    /// that consumes them ([`Self::take_attention_args`]).
+    attention_args: HashMap<SessionId, Vec<String>>,
     next_id: u64,
     /// Monotonic counter behind each terminal's internal label
     /// (`src/app/mod.rs:96-101`).
@@ -137,6 +153,22 @@ impl SessionRegistry {
     pub fn insert_meta(&mut self, project: String, wt_path: String, agent: Agent) -> SessionId {
         let id = self.next_id();
         let label = self.next_agent_label(agent);
+        // Before the PTY exists, mirroring `session.rs:155-175`: the state file
+        // must be keyed to the id the hooks will write under, so the id is
+        // allocated first and `prepare` runs before anything is spawned.
+        // `prepare` writes a real settings file under the user's config dir;
+        // the pure bookkeeping tests below must not litter it (they never
+        // spawn, so nothing would ever read what they wrote).
+        let prepared = if cfg!(test) {
+            None
+        } else {
+            attention::prepare(agent, id.0)
+        };
+        let (args, attention) = match prepared {
+            Some((args, files)) => (args, Some(files)),
+            None => (Vec::new(), None),
+        };
+        self.attention_args.insert(id, args);
         self.order.push(SessionMeta {
             id,
             project,
@@ -144,8 +176,16 @@ impl SessionRegistry {
             agent,
             label,
             spawned_at: Instant::now(),
+            attention,
         });
         id
+    }
+
+    /// The extra agent CLI args (`--settings …` / `-c notify=…`) for a session
+    /// whose PTY has not been spawned yet. Taken, not borrowed: they are used
+    /// exactly once, by the spawn that follows [`Self::insert_meta`].
+    pub fn take_attention_args(&mut self, id: SessionId) -> Vec<String> {
+        self.attention_args.remove(&id).unwrap_or_default()
     }
 
     /// `agent N`, N counting that agent kind's sessions ever recorded — the
@@ -159,10 +199,24 @@ impl SessionRegistry {
         self.terms.insert(id, term);
     }
 
+    /// Removes a session and cleans up its attention files
+    /// (`session.rs:530-535` — a killed session must not leave a `.state`
+    /// behind for the next run's GC to guess at).
     pub fn remove(&mut self, id: SessionId) -> Option<SessionMeta> {
         self.terms.remove(&id);
+        self.attention_args.remove(&id);
         let pos = self.order.iter().position(|m| m.id == id)?;
-        Some(self.order.remove(pos))
+        let meta = self.order.remove(pos);
+        if let Some(files) = meta.attention.as_ref() {
+            attention::cleanup(files);
+        }
+        Some(meta)
+    }
+
+    /// The state file to truncate when the user acknowledges this session.
+    #[must_use]
+    pub fn attention_files(&self, id: SessionId) -> Option<&AttentionFiles> {
+        self.meta(id).and_then(|m| m.attention.as_ref())
     }
 
     #[must_use]
@@ -280,6 +334,7 @@ impl SessionRegistry {
             agent: Agent::Terminal,
             label,
             spawned_at: Instant::now(),
+            attention: None,
         });
     }
 }

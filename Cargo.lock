@@ -2823,6 +2823,7 @@ dependencies = [
  "gpui_platform",
  "grove-core",
  "grove-terminal",
+ "objc",
  "portable-pty",
  "rust-embed",
  "tracing",

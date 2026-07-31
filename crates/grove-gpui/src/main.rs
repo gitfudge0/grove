@@ -1,6 +1,8 @@
 //! Grove's gpui shell. Bootstrap is `gpui_platform::application()` — `gpui`
 //! alone has no `Platform` constructor at this rev (spike findings §S1).
-#![forbid(unsafe_code)]
+// `deny`, not `forbid`: `platform::dock` needs one audited `allow` for the
+// Objective-C runtime on macOS. Everywhere else this is still a hard stop.
+#![deny(unsafe_code)]
 
 mod activity;
 mod app;
@@ -9,6 +11,7 @@ mod entities;
 mod fonts;
 mod icons;
 mod keymap;
+mod platform;
 mod settings;
 mod terminal;
 mod terminal_element;

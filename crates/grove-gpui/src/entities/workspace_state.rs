@@ -192,6 +192,16 @@ pub struct WorkspaceState {
     pending_kill_terminal: Option<usize>,
     // layout
     sidebar_width: f32,
+    /// The sidebar's flattened session order, refreshed each time the rail
+    /// rebuilds its rows. Cached here so the attention queue can be resolved
+    /// in **tree order** without the `ActivityStore` reaching into a view.
+    visible_order: Vec<SessionId>,
+    /// Whether the appbar's attention dropdown is open
+    /// (`Grove::attention_queue_open`, `update/mod.rs:619-627`).
+    attention_queue_open: bool,
+    /// Sessions the user has focused since the last drain. See
+    /// [`Self::acknowledge`].
+    pending_acks: Vec<SessionId>,
     // Plan 07 owns these; declared so the single-owner rule is not violated.
     focused_pane: FocusedPane,
     grid_view: bool,
@@ -215,6 +225,9 @@ impl Default for WorkspaceState {
             pending_kill: None,
             pending_kill_terminal: None,
             sidebar_width: RAIL_W,
+            visible_order: Vec::new(),
+            attention_queue_open: false,
+            pending_acks: Vec::new(),
             focused_pane: FocusedPane::default(),
             grid_view: false,
             zen: false,
@@ -283,6 +296,18 @@ impl WorkspaceState {
     pub fn zen(&self) -> bool {
         self.zen
     }
+    pub fn attention_queue_open(&self) -> bool {
+        self.attention_queue_open
+    }
+
+    /// `update/mod.rs:619-627`. Plan 08 also closes it when a modal opens
+    /// (`:795-801`); there are no modals yet.
+    pub fn toggle_attention_queue(&mut self) {
+        self.attention_queue_open = !self.attention_queue_open;
+    }
+    pub fn close_attention_queue(&mut self) {
+        self.attention_queue_open = false;
+    }
     pub fn project_collapsed(&self, proj: usize) -> bool {
         self.collapsed.contains(&proj)
     }
@@ -293,10 +318,43 @@ impl WorkspaceState {
     // ── transitions ─────────────────────────────────────────────────────
 
     /// Every focus transition acknowledges the session it lands on
-    /// (spec §4: "Attention is never event-driven"). One call site set for
-    /// Plan 06 to fill, rather than five to find.
-    pub fn acknowledge(&mut self, _id: SessionId) {
-        // Plan 06: truncates the attention state file.
+    /// (spec §4: "Attention is never event-driven").
+    ///
+    /// Acknowledgment has two halves — `Tracker::acknowledge` and truncating
+    /// the hook state file (`update/mod.rs:697-707`; the file must be
+    /// truncated too, or a stale `needs-you` resurfaces the moment the user
+    /// looks away). **Deviation from the plan's sketch:** both halves are
+    /// applied by
+    /// [`crate::entities::activity_store::ActivityStore::acknowledge`], which
+    /// owns the trackers and holds the registry handle that knows the file
+    /// path. `WorkspaceState` owns neither and its transitions are pure
+    /// (`&mut self`, no `Context`), so it records the id here instead. The
+    /// store observes this entity and drains within the same frame — every
+    /// existing call site already notifies in the same update — so the
+    /// observable behavior is unchanged.
+    pub fn acknowledge(&mut self, id: SessionId) {
+        if !self.pending_acks.contains(&id) {
+            self.pending_acks.push(id);
+        }
+    }
+
+    /// Drained by the `ActivityStore`'s observer.
+    pub fn take_pending_acks(&mut self) -> Vec<SessionId> {
+        std::mem::take(&mut self.pending_acks)
+    }
+
+    /// The sidebar's flattened session order — the order the attention queue,
+    /// `mod+N` and next/prev cycling all share.
+    #[must_use]
+    pub fn visible_session_order(&self) -> &[SessionId] {
+        &self.visible_order
+    }
+
+    /// Published by the rail every time it rebuilds its rows. Deliberately
+    /// does **not** notify: it is derived data that changed *because* a
+    /// repaint was already happening.
+    pub fn set_visible_order(&mut self, order: Vec<SessionId>) {
+        self.visible_order = order;
     }
 
     /// `src/gui/update/sessions.rs:225-246` folded together with
@@ -306,6 +364,8 @@ impl WorkspaceState {
         self.open_agent_menu = None;
         self.pending_kill = None;
         self.pending_kill_terminal = None;
+        // Selecting a session closes the attention dropdown (`sessions.rs:229`).
+        self.attention_queue_open = false;
         self.active_session = Some(id);
         self.terminal_focused = false;
         self.acknowledge(id);

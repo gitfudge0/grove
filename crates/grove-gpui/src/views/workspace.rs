@@ -7,30 +7,26 @@
 
 use std::collections::HashMap;
 
-use gpui::{div, prelude::*, px, rems, App, Context, Entity, FocusHandle, Focusable, Window};
+use gpui::{div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, Window};
 
-use crate::activity::{ActivityState, ActivityStore};
+use crate::activity::ActivityState;
+use crate::entities::activity_store::ActivityStore;
 use crate::entities::animation_clock::AnimationClock;
 use crate::entities::project_tree::ProjectTree;
 use crate::entities::session_registry::{SessionId, SessionRegistry};
 use crate::entities::terminal_session::TerminalSession;
+use crate::entities::toast::ToastState;
 use crate::entities::workspace_state::WorkspaceState;
 use crate::keymap;
 use crate::settings::SettingsState;
 use crate::theme as c;
+use crate::views::appbar::{self, AppbarCtx, ChromeAction, WaitingRow};
+use crate::views::rows;
+use crate::views::session_header::{self, SessionHeaderData};
 use crate::views::sidebar::{self, Sidebar};
+use crate::views::statusbar::{self, StatusbarCtx};
 use crate::views::terminal_view::TerminalView;
 use crate::zoom::{self, ZoomState};
-
-/// App bar height (`src/gui/metrics.rs:15`).
-const APPBAR_H: f32 = 44.0;
-/// Status bar height (`src/gui/metrics.rs:16`).
-const STATUS_H: f32 = 26.0;
-
-/// Chrome is authored in `rems` so a single `set_rem_size` scales all of it.
-fn r(px_at_1x: f32) -> gpui::Rems {
-    rems(px_at_1x / zoom::REM_BASE)
-}
 
 pub struct Workspace {
     focus: FocusHandle,
@@ -41,6 +37,7 @@ pub struct Workspace {
     registry: Entity<SessionRegistry>,
     tree: Entity<ProjectTree>,
     activity: Entity<ActivityStore>,
+    toast: Entity<ToastState>,
     sidebar: Entity<Sidebar>,
     /// One view per session, cached by id so switching does not respawn
     /// anything (Task 6 Step 2).
@@ -49,7 +46,10 @@ pub struct Workspace {
     /// The terminal takes focus on the first frame so keystrokes land without
     /// a click; `window.focus` needs a `&mut Window`, which `new` has not got.
     focused_once: bool,
-    _observers: Vec<gpui::Subscription>,
+    /// `observe_window_activation` needs a `&mut Window`, which `new` has not
+    /// got — registered on the first frame instead.
+    activation_observed: bool,
+    observers: Vec<gpui::Subscription>,
 }
 
 impl Focusable for Workspace {
@@ -64,7 +64,10 @@ impl Workspace {
         let state = cx.new(|cx| WorkspaceState::new(&cx.global::<SettingsState>().store, 1280.0));
         let registry = cx.new(|_| SessionRegistry::new());
         let tree = cx.new(|_| ProjectTree::new());
-        let activity = cx.new(|_| ActivityStore::new());
+        let activity = cx.new({
+            let (state, registry) = (state.clone(), registry.clone());
+            |cx| ActivityStore::start(state, registry, cx)
+        });
 
         // Seed the active project's worktrees so the rail has something to draw
         // on the first frame (`App::refresh_worktrees`).
@@ -79,6 +82,8 @@ impl Workspace {
                 t.set_active_worktrees(grove_core::git::list_worktrees(&path));
             });
         }
+
+        let toast = cx.new(|_| ToastState::new());
 
         let sidebar = cx.new({
             let (state, tree, registry, activity, clock) = (
@@ -98,6 +103,10 @@ impl Workspace {
             // Selection changes repaint the body (Task 6 Step 2).
             cx.observe(&state, |_, _, cx| cx.notify()),
             cx.observe(&registry, |_, _, cx| cx.notify()),
+            // The 480ms pass repaints the chrome that reads it.
+            cx.observe(&activity, |_, _, cx| cx.notify()),
+            // The toast's own TTL task clears it; the statusbar repaints with it.
+            cx.observe(&toast, |_, _, cx| cx.notify()),
         ];
 
         Self {
@@ -107,11 +116,13 @@ impl Workspace {
             registry,
             tree,
             activity,
+            toast,
             sidebar,
             views: HashMap::new(),
             home_views: HashMap::new(),
             focused_once: false,
-            _observers: observers,
+            activation_observed: false,
+            observers,
         }
     }
 
@@ -178,24 +189,152 @@ impl Workspace {
         });
     }
 
-    /// The first waiting session in visible order (`update/mod.rs:728-739`).
-    /// **Stub-gated:** Plan 06's classifier reports `Idle` for everything
-    /// today, so this is a no-op — that is correct, not broken; the wiring is
-    /// what this phase owes.
+    /// The first waiting session in visible order (`update/mod.rs:728-739`),
+    /// snapped to the live screen **before** it is selected — deliberately
+    /// unlike a manual `mod+j/k` switch (`sessions.rs:210-223`). Selecting
+    /// acknowledges, and Plan 07's dropdown closes off the same transition
+    /// (`:229`).
     fn jump_to_waiting(&mut self, cx: &mut Context<Self>) {
-        let order = self.visible_order(cx);
-        let waiting = {
+        let waiting = self.activity.read(cx).waiting_sessions().first().copied();
+        let Some(id) = waiting.or_else(|| {
             let activity = self.activity.read(cx);
-            order
+            self.visible_order(cx)
                 .into_iter()
                 .find(|&id| activity.state_of(id) == ActivityState::WaitingForInput)
+        }) else {
+            return;
         };
-        let Some(id) = waiting else { return };
+        if let Some(session) = self.registry.read(cx).session(id).cloned() {
+            session.update(cx, |s, cx| {
+                s.snap_to_bottom();
+                cx.notify();
+            });
+        }
         let snap = self.snapshot(cx);
         self.state.update(cx, |s, cx| {
             s.select_session(id, &snap);
             cx.notify();
         });
+    }
+
+    // ── window chrome (Tasks 5 & 6) ─────────────────────────────────────
+
+    /// The single place an appbar/statusbar click becomes a state change.
+    /// Everything Plan 07/08 owns logs a stub naming its plan.
+    fn chrome(&mut self, action: ChromeAction, cx: &mut Context<Self>) {
+        match action {
+            ChromeAction::ToggleAttentionQueue => self.state.update(cx, |s, cx| {
+                s.toggle_attention_queue();
+                cx.notify();
+            }),
+            ChromeAction::CloseAttentionQueue => self.state.update(cx, |s, cx| {
+                s.close_attention_queue();
+                cx.notify();
+            }),
+            ChromeAction::SelectWaiting(id) => self.select_waiting(id, cx),
+            ChromeAction::ToggleGridView => {
+                tracing::debug!("ToggleGridView: not implemented yet — Plan 07");
+            }
+            ChromeAction::OpenSessionLauncher => {
+                tracing::debug!("OpenSessionLauncher: modal — Plan 08");
+            }
+            ChromeAction::OpenSettings => tracing::debug!("OpenSettings: modal — Plan 08"),
+            ChromeAction::OpenShortcutOverlay => {
+                tracing::debug!("OpenShortcutOverlay: modal — Plan 08");
+            }
+        }
+    }
+
+    /// A dropdown row: snap to the live screen first, then select — which
+    /// acknowledges and closes the dropdown (`sessions.rs:210-223,229`).
+    fn select_waiting(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        if let Some(session) = self.registry.read(cx).session(id).cloned() {
+            session.update(cx, |s, cx| {
+                s.snap_to_bottom();
+                cx.notify();
+            });
+        }
+        let snap = self.snapshot(cx);
+        self.state.update(cx, |s, cx| {
+            s.select_session(id, &snap);
+            cx.notify();
+        });
+    }
+
+    /// The attention queue, resolved **once** per frame and shared by the pill
+    /// and the dropdown (Task 4 Step 5).
+    fn waiting_rows(&self, cx: &App) -> Vec<WaitingRow> {
+        let activity = self.activity.read(cx);
+        let registry = self.registry.read(cx);
+        activity
+            .waiting_sessions()
+            .iter()
+            .filter_map(|&id| {
+                let meta = registry.meta(id)?;
+                Some(WaitingRow {
+                    id,
+                    agent_label: meta.agent.label(),
+                    project: meta.project.clone(),
+                    wt_path: meta.wt_path.clone(),
+                    state: activity.state_of(id),
+                })
+            })
+            .collect()
+    }
+
+    /// The header for whatever the body is showing. Parameterized by session so
+    /// Plan 07 reuses it per grid tile.
+    fn header_data(
+        &self,
+        snap: &crate::entities::workspace_state::TreeSnapshot,
+        cx: &App,
+    ) -> Option<SessionHeaderData> {
+        let ws = self.state.read(cx);
+        let (terminal_focused, active_terminal, active_session) = (
+            ws.terminal_focused(),
+            ws.active_terminal(),
+            ws.active_session(),
+        );
+        let registry = self.registry.read(cx);
+        let (meta, entity) = if terminal_focused {
+            let i = active_terminal?;
+            (
+                registry.home_terminals().get(i)?.clone(),
+                registry.home_terminal(i)?.clone(),
+            )
+        } else {
+            let id = active_session?;
+            (registry.meta(id)?.clone(), registry.session(id)?.clone())
+        };
+        let title = entity.read(cx).title();
+        let context = title.as_deref().and_then(|raw| {
+            if terminal_focused {
+                rows::terminal_context(raw, &meta.label)
+            } else {
+                rows::session_context(
+                    raw,
+                    &rows::path_basename(&meta.wt_path),
+                    &meta.label,
+                    meta.agent.label(),
+                )
+            }
+        });
+        // Branchless sessions (home terminals) find no worktree and skip the
+        // segment entirely (`terminal.rs:530-535`).
+        let branch = snap
+            .projects
+            .iter()
+            .flat_map(|p| p.worktrees.iter())
+            .find(|w| w.path == meta.wt_path)
+            .map_or_else(String::new, |w| w.branch.clone());
+        let state = self.activity.read(cx).state_of(meta.id);
+        Some(SessionHeaderData {
+            label: meta.label.clone(),
+            branch,
+            context,
+            icon_name: meta.agent.icon_name(),
+            running: state != ActivityState::Exited,
+        })
     }
 
     /// Arms the two-step confirm on whatever is focused
@@ -318,6 +457,29 @@ impl Render for Workspace {
             .clone()
             .update(cx, |t, cx| t.maybe_poll_git_state(paths, cx));
 
+        // Window activation: `window_focused` gates the "focused session is
+        // never waiting" rule, and regaining focus acknowledges the visible
+        // session (`layout.rs:34-49`).
+        if !self.activation_observed {
+            self.activation_observed = true;
+            let activity = self.activity.clone();
+            let sub = cx.observe_window_activation(window, move |_, window, cx| {
+                let active = window.is_window_active();
+                activity.update(cx, |a, cx| a.set_window_focused(active, cx));
+            });
+            self.observers.push(sub);
+        }
+
+        // Carried amendment 5: a waiting session is what feeds the frame
+        // clock's `animating` term, or the amber pulse would never animate.
+        let waiting = self.activity.read(cx).waiting_count();
+        let has_ptys =
+            !self.registry.read(cx).is_empty() || self.registry.read(cx).home_terminal_count() > 0;
+        let window_active = window.is_window_active();
+        self.clock.clone().update(cx, |clock, cx| {
+            clock.set_busy_inputs(false, has_ptys, window_active, waiting > 0, false, cx);
+        });
+
         let body = self.body_view(cx);
         if !self.focused_once {
             if let Some(view) = body.as_ref() {
@@ -366,32 +528,104 @@ impl Render for Workspace {
         // and the root is the only element wide enough to deliver them.
         let root = sidebar::root_drag_listeners(&self.sidebar, root);
 
+        // ── the chrome (Task 6 Step 3) ──────────────────────────────────
+        let dispatch: appbar::Dispatch = {
+            let weak = cx.entity().downgrade();
+            std::rc::Rc::new(move |action, _window, cx: &mut App| {
+                let _ = weak.update(cx, |this: &mut Self, cx| this.chrome(action, cx));
+            })
+        };
+        let snap = self.snapshot(cx);
+        let header = self.header_data(&snap, cx);
+        let appbar_ctx = AppbarCtx {
+            sidebar_width: self.state.read(cx).sidebar_width(),
+            tick: self.clock.read(cx).tick(),
+            pulse: self.activity.read(cx).pulse(),
+            // Resolved once, handed to the pill and the dropdown alike.
+            waiting: self.waiting_rows(cx),
+            grid_view: self.state.read(cx).grid_view(),
+            // Plan 09 owns the real upgrade state; the dot renders off.
+            upgrade_available: false,
+            dispatch: std::rc::Rc::clone(&dispatch),
+        };
+        let statusbar_ctx = {
+            let registry = self.registry.read(cx);
+            let activity = self.activity.read(cx);
+            let running = registry
+                .all()
+                .iter()
+                .filter(|m| activity.state_of(m.id) != ActivityState::Exited)
+                .count();
+            let store = &cx.global::<SettingsState>().store;
+            StatusbarCtx {
+                running,
+                backend: if grove_core::tmux::available() {
+                    "tmux"
+                } else {
+                    "native"
+                },
+                theme_name: store
+                    .theme
+                    .clone()
+                    .unwrap_or_else(|| crate::theme::DEFAULT_DARK_THEME.to_string()),
+                skip_permissions: store.dangerously_skip_permissions_enabled.unwrap_or(false),
+                toast: self.toast.read(cx).current().cloned(),
+                dispatch,
+            }
+        };
+        let queue_open =
+            self.state.read(cx).attention_queue_open() && !appbar_ctx.waiting.is_empty();
+
+        // Plan 07 owns zen's chrome-hidden branch and its floating pill; this
+        // stays true until then.
+        let chrome_visible = true;
+
         root.flex()
-            .flex_row()
+            .flex_col()
+            .relative()
             .size_full()
             .bg(c::BG())
             .text_color(c::FG())
-            .child(self.sidebar.clone())
+            .when(chrome_visible, |d| d.child(appbar::appbar(&appbar_ctx)))
             .child(
                 div()
                     .flex()
-                    .flex_col()
+                    .flex_row()
                     .flex_1()
-                    .h_full()
-                    // App bar placeholder (Plan 06).
-                    .child(div().h(r(APPBAR_H)).w_full().bg(c::BG_STRIP()))
-                    // Body: the ACTIVE session, or the active home terminal.
+                    .w_full()
+                    .overflow_hidden()
+                    .child(self.sidebar.clone())
                     .child(
+                        // The body: session header atop the terminal. Whatever
+                        // the chrome costs in height comes out of the
+                        // terminal's rows for free — the element derives its
+                        // dims from its own bounds in `prepaint` (Plan 04
+                        // amendment 7), so there is no PTY-dim wiring here.
                         div()
                             .flex()
+                            .flex_col()
                             .flex_1()
-                            .w_full()
+                            .h_full()
                             .bg(c::BG())
-                            .when_some(body, gpui::ParentElement::child),
-                    )
-                    // Status bar placeholder (Plan 06).
-                    .child(div().h(r(STATUS_H)).w_full().bg(c::BG_STRIP())),
+                            .when_some(header, |d, h| {
+                                d.child(session_header::session_header(&h, appbar_ctx.tick))
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_1()
+                                    .w_full()
+                                    .overflow_hidden()
+                                    .when_some(body, gpui::ParentElement::child),
+                            ),
+                    ),
             )
+            .when(chrome_visible, |d| {
+                d.child(statusbar::statusbar(&statusbar_ctx))
+            })
+            .when(queue_open, |d| {
+                d.child(appbar::attention_dropdown(&appbar_ctx))
+            })
     }
 }
 
@@ -399,10 +633,13 @@ impl Render for Workspace {
 mod tests {
     use super::*;
 
+    /// The chrome heights are the `src/gui/metrics.rs:15-17` values, and the
+    /// three bars agree with the workspace on what they cost vertically.
     #[test]
-    fn rems_are_derived_from_the_pixel_constants() {
-        assert_eq!(r(APPBAR_H).0, 44.0 / 16.0);
-        assert_eq!(r(STATUS_H).0, 26.0 / 16.0);
-        assert_eq!(r(sidebar::SIDEBAR_DIVIDER_W).0, 6.0 / 16.0);
+    fn the_chrome_heights_match_the_iced_metrics() {
+        assert!((appbar::APPBAR_H - 44.0).abs() < f32::EPSILON);
+        assert!((statusbar::STATUS_H - 26.0).abs() < f32::EPSILON);
+        assert!((session_header::SESSBAR_H - 36.0).abs() < f32::EPSILON);
+        assert!((sidebar::SIDEBAR_DIVIDER_W - 6.0).abs() < f32::EPSILON);
     }
 }

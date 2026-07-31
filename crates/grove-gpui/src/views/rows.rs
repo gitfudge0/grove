@@ -29,7 +29,8 @@ use gpui::{
 };
 use grove_core::agent::Agent;
 
-use crate::activity::{most_urgent, ActivityState, ActivityStore};
+use crate::activity::{most_urgent, ActivityState};
+use crate::entities::activity_store::ActivityStore;
 use crate::entities::session_registry::SessionId;
 use crate::entities::workspace_state::{TreeSnapshot, WorkspaceState};
 use crate::theme as c;
@@ -437,7 +438,7 @@ impl RowCtx {
 /// Status glyph in a fixed 14px slot (`src/gui/rows.rs:870-892`). Working spins
 /// on the clock tick; WaitingForInput **dims** rather than hides, so the row
 /// layout never moves.
-fn state_glyph(state: ActivityState, tick: u64, pulse: f32) -> AnyElement {
+pub fn state_glyph(state: ActivityState, tick: u64, pulse: f32) -> AnyElement {
     let inner = match state {
         ActivityState::Working => icons::spinner(11.0, c::GREEN(), tick),
         ActivityState::WaitingForInput => icons::icon(
@@ -491,7 +492,7 @@ fn tool_button(
         .into_any_element()
 }
 
-fn ui_text(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
+pub fn ui_text(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
     div()
         .font(gpui::font(fonts::UI_FAMILY))
         .text_size(px(size))

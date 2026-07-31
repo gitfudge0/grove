@@ -18,6 +18,7 @@
 // mechanical; several accessors have no caller until their consumer lands.
 #![allow(dead_code)]
 
+use std::path::Path;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -67,6 +68,15 @@ pub struct TerminalSession {
     /// semantics match `session.rs:604-605,642` from the start.
     last_input_at: Option<Instant>,
     last_scroll_at: Option<Instant>,
+    /// When output last arrived (`session.rs:432`). Stamped at spawn so a
+    /// silent session reads as "quiet since spawn", never "quiet forever".
+    last_output_at: Instant,
+    /// Latched once [`Self::alive`] observes the child reaped: a reaped child
+    /// cannot come back, and `try_wait` must never be called again after it.
+    exited: bool,
+    /// Tmux pane pid, captured once at spawn — there is no cheap live handle
+    /// to the pane's foreground process (`session.rs:511-522`).
+    pane_pid: Option<u32>,
     /// Dropping the `Task` stops the reader, so this field *is* the reader.
     _reader: Task<()>,
 }
@@ -75,13 +85,23 @@ impl TerminalSession {
     /// Spawn a session at an explicit target: a tmux-backed agent when tmux is
     /// available, otherwise a plain PTY so the element still renders on a box
     /// without tmux.
-    pub fn spawn(target: &SpawnTarget, cx: &mut Context<Self>) -> Self {
+    /// `extra_args` and `state_file` are the zero-setup attention plumbing
+    /// (`grove_core::attention::prepare`), threaded down from the registry:
+    /// the args are appended to the *agent's* args and `GROVE_STATE_FILE`
+    /// carries the state file into the agent's environment
+    /// (`session.rs:222-238` for tmux, `:240-279` for native).
+    pub fn spawn(
+        target: &SpawnTarget,
+        extra_args: &[String],
+        state_file: Option<&Path>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let cwd = target.cwd.clone();
-        let spawned = match spawn_tmux(&cwd, target) {
+        let spawned = match spawn_tmux(&cwd, target, extra_args, state_file) {
             Ok(v) => Some(v),
             Err(e) => {
                 tracing::warn!("grove-gpui: tmux unavailable ({e}); falling back to a native PTY");
-                match spawn_native(&cwd) {
+                match spawn_native(&cwd, state_file) {
                     Ok(v) => Some(v),
                     Err(e) => {
                         tracing::error!("grove-gpui: could not spawn a PTY: {e}");
@@ -95,6 +115,10 @@ impl TerminalSession {
             None => (None, Backend::Native),
         };
         let rx = pty.as_mut().and_then(PtyHandle::take_receiver);
+        let pane_pid = match &backend {
+            Backend::Tmux { name } => tmux::pane_pid(name),
+            Backend::Native => None,
+        };
         Self {
             term: GroveTerm::new(INIT_ROWS, INIT_COLS),
             pty,
@@ -105,6 +129,9 @@ impl TerminalSession {
             tmux_copy_mode: false,
             last_input_at: None,
             last_scroll_at: None,
+            last_output_at: Instant::now(),
+            exited: false,
+            pane_pid,
             _reader: Self::spawn_reader(rx, cx),
         }
     }
@@ -172,6 +199,7 @@ impl TerminalSession {
     /// generation counter, so this comparison is the entire damage gate
     /// (findings §S1 Step 5).
     fn ingest(&mut self, chunks: &[Vec<u8>], cx: &mut Context<Self>) {
+        self.last_output_at = Instant::now();
         for chunk in chunks {
             self.term.process(chunk);
         }
@@ -398,6 +426,73 @@ impl TerminalSession {
     pub fn scroll_age(&self) -> Option<Duration> {
         self.last_scroll_at.map(|t| t.elapsed())
     }
+
+    // ── the attention classifier's signal surface (Plan 06 Task 2) ───────
+
+    /// The OSC 0/1/2 window title the inner app last emitted (`term.rs:220`).
+    pub fn title(&self) -> Option<String> {
+        self.term.title()
+    }
+
+    /// Cumulative BEL count (`term.rs:231`). The classifier diffs it against
+    /// what it has already consumed.
+    pub fn bell_count(&self) -> usize {
+        self.term.bell_count()
+    }
+
+    /// The last `n` rows of the parsed grid, newline-joined (`term.rs:299`).
+    /// `&mut self` because the model's own accessor needs it; grove-gpui does
+    /// not add interior mutability to work around that.
+    pub fn tail_contents(&mut self, n: usize) -> String {
+        self.term.tail_contents(n)
+    }
+
+    /// Time since output last arrived (`tick.rs:145-149`).
+    pub fn output_age(&self) -> Duration {
+        Instant::now().saturating_duration_since(self.last_output_at)
+    }
+
+    /// The equivalent of `SessionStatus::Running`. A session with no PTY at
+    /// all (the spawn failed) is **not** alive.
+    pub fn alive(&mut self) -> bool {
+        if self.exited {
+            return false;
+        }
+        let Some(pty) = self.pty.as_mut() else {
+            return false;
+        };
+        // A reaped child cannot come back: latch and never ask again.
+        if pty.try_wait().unwrap_or(false) {
+            self.exited = true;
+            return false;
+        }
+        true
+    }
+
+    /// Process-tree root for `claude_agents::Poller::status_for`
+    /// (`session.rs:511-522`).
+    ///
+    /// **Deviation:** the iced build reads the live child pid for
+    /// `Backend::Native`. `grove_terminal::PtyHandle` exposes no pid accessor
+    /// and grove-terminal is read-only this phase (Global Constraint 3), so
+    /// native sessions return `None`. That costs nothing today: the native
+    /// backend is only the no-tmux fallback, which spawns a bare login shell
+    /// and never an agent, and the poller is consulted for live Claude
+    /// sessions only.
+    pub fn root_pid(&self) -> Option<u32> {
+        match &self.backend {
+            Backend::Native => None,
+            Backend::Tmux { .. } => self.pane_pid,
+        }
+    }
+
+    /// Snap the view back to the live screen, as
+    /// `on_jump_to_waiting_session` does before selecting
+    /// (`sessions.rs:210-218`) — deliberately unlike a manual `mod+j/k`
+    /// switch. The same `scroll_to(0)` typing already performs.
+    pub fn snap_to_bottom(&mut self) {
+        self.term.scroll_to(0);
+    }
 }
 
 /// The manual-checklist escape hatch (`GROVE_GPUI_SESSION_CWD`), now only the
@@ -411,15 +506,36 @@ pub fn default_cwd() -> String {
 
 /// Create the persistent tmux session and attach an embedded client to it,
 /// reproducing `session.rs:177-236` (create + sidecar) and `:349-384` (attach).
-fn spawn_tmux(cwd: &str, target: &SpawnTarget) -> Result<(PtyHandle, Backend), String> {
+fn spawn_tmux(
+    cwd: &str,
+    target: &SpawnTarget,
+    extra_args: &[String],
+    state_file: Option<&Path>,
+) -> Result<(PtyHandle, Backend), String> {
     if !tmux::available() {
         return Err("tmux not on PATH".to_string());
     }
     let agent = target.agent;
     let n = tmux::next_free_n(cwd, agent);
     let name = tmux::make_name(cwd, agent, n);
-    tmux::new_session(&name, cwd, INIT_ROWS, INIT_COLS, &agent.program(), &[], &[])
-        .map_err(|e| e.to_string())?;
+    let env: Vec<(String, String)> = state_file
+        .map(|p| {
+            vec![(
+                grove_core::attention::STATE_FILE_ENV.to_string(),
+                p.display().to_string(),
+            )]
+        })
+        .unwrap_or_default();
+    tmux::new_session(
+        &name,
+        cwd,
+        INIT_ROWS,
+        INIT_COLS,
+        &agent.program(),
+        extra_args,
+        &env,
+    )
+    .map_err(|e| e.to_string())?;
     // Without the sidecar the session can't be rediscovered after a restart —
     // kill it rather than orphan it (`session.rs:213-227`).
     if let Err(e) = session_meta::write(
@@ -460,9 +576,17 @@ fn spawn_tmux(cwd: &str, target: &SpawnTarget) -> Result<(PtyHandle, Backend), S
 
 /// The escape hatch: a bare login shell on a PTY, so the visual checklist is
 /// runnable on a machine without tmux (`session.rs:238-268` in spirit).
-fn spawn_native(cwd: &str) -> Result<(PtyHandle, Backend), String> {
+fn spawn_native(cwd: &str, state_file: Option<&Path>) -> Result<(PtyHandle, Backend), String> {
     let mut cmd = CommandBuilder::new(grove_core::env_path::login_shell());
     cmd.cwd(cwd);
+    // The shell inherits it, so an agent started by hand inside this fallback
+    // shell still reports through the hook pipeline (`session.rs:240-279`).
+    if let Some(path) = state_file {
+        cmd.env(
+            grove_core::attention::STATE_FILE_ENV,
+            path.display().to_string(),
+        );
+    }
     cmd.env("TERM", "xterm-256color");
     cmd.env("LC_ALL", "en_US.UTF-8");
     grove_terminal::pty::spawn(cmd, INIT_ROWS, INIT_COLS)
