@@ -1,0 +1,8 @@
+{
+  "alt_screen": true,
+  "cols": 120,
+  "how": "recorder on 'tmux new-session -A -s capcodex'; send-keys launched 'codex' then one turn ('Write a haiku about terminal emulators.')",
+  "label": "codex-tmux",
+  "recorded": "2026-07-31",
+  "rows": 34
+}

@@ -1,0 +1,1561 @@
+[?1049h[22;0;0t[?1h=[H[2J[?12l[?25h[?1000l[?1002l[?1003l[?1006l[?1005l[?2004h[?2031h[?996n(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[c[>c[>q]10;?\]11;?\[1;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[capstorm]1:tmux*                                                                         "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[1;1H[18t[14t(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[1;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[capstorm]1:tmux*                                                                         "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[1;1H                                                                                                                        [1;1H[?25l[?12l[?25h[?25l[?12l[?25h[1;33r[1;1H[2;33r[32S[1;1H[K[34m[1m┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m]
+└─[[35m$[34m] <>(B[m [K[1;34r[2;10H[1;33r[1;1H[2;33r[32S[1;1H[K[34m[1m┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m]
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K[1;34r[2;29H(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[2;29H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[33m[H05[34m[1m](B[m[K[34m[1m
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[capstorm]1:tmux*                       "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[2;29H[1;23r[1;1H[2;23r[22S[1;1H[K[34m[1m┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m]
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [1;24r[3;29H[?25l[30m[42m[24;1H[capstorm]1:zsh*                        "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[3;29H(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[3;29H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[34m[1m[H└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K[34m[1m
+┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m](B[m[K[34m[1m
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[capstorm]1:zsh*                                                                          "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[3;29H[1;33r[1;1H[2;33r[32S[1;1H[K[34m[1m┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m]
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [1;34r[2;29H(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[2;29H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[33m[H05[34m[1m](B[m[K[34m[1m
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[capstorm]1:zsh*                        "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[2;29H[1;23r[1;1H[2;23r[22S[1;1H[K[34m[1m┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m]
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [1;24r[3;29H(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[3;29H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[34m[1m[H└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K[34m[1m
+┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m](B[m[K[34m[1m
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[capstorm]1:zsh*                                                                          "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[3;29H[1;33r[1;1H[2;33r[32S[1;1H[K[34m[1m┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m]
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [1;34r[2;29H(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[2;29H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[33m[H05[34m[1m](B[m[K[34m[1m
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[capstorm]1:zsh*                        "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[2;29H[1;23r[1;1H[2;23r[22S[1;1H[K[34m[1m┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m]
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [1;24r[3;29Hffor i in $(seq 1 400); do echo "streaming [4;1H[Klline $i: lorem ipsum dolor sit amet consectetur"; sleep 0.05; done[3;29H[33mfor[6C[35m$([32mseq[6C[35m)[2C[33mdo[39m [32mecho[39m [33m"streaming line [36m$i[33m: lorem ipsum dolor sit amet consectetur"[2C[32msleep[7C[33mdone(B[m
+streaming line 1: lorem ipsum dolor sit amet consectetur
+streaming line 2: lorem ipsum dolor sit amet consectetur
+streaming line 3: lorem ipsum dolor sit amet consectetur
+streaming line 4: lorem ipsum dolor sit amet consectetur
+streaming line 5: lorem ipsum dolor sit amet consectetur
+streaming line 6: lorem ipsum dolor sit amet consectetur
+streaming line 7: lorem ipsum dolor sit amet consectetur
+(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[12;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[34m[1m[H└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K[34m[1m
+┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m](B[m[K[34m[1m
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [33mfor[39m i in [35m$([32mseq[39m 1 400[35m)[39m; [33mdo[39m [32mecho[39m [33m"streaming line [36m$i[33m: lorem ipsum dolor sit amet consectetur"[39m; [32msleep[39m 0.05; [33mdone[39m[K
+streaming line 1: lorem ipsum dolor sit amet consectetur[K
+streaming line 2: lorem ipsum dolor sit amet consectetur[K
+streaming line 3: lorem ipsum dolor sit amet consectetur[K
+streaming line 4: lorem ipsum dolor sit amet consectetur[K
+streaming line 5: lorem ipsum dolor sit amet consectetur[K
+streaming line 6: lorem ipsum dolor sit amet consectetur[K
+streaming line 7: lorem ipsum dolor sit amet consectetur[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[capstorm]1:zsh*                                                                          "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[12;1Hstreaming line 8: lorem ipsum dolor sit amet consectetur
+streaming line 9: lorem ipsum dolor sit amet consectetur
+streaming line 10: lorem ipsum dolor sit amet consectetur
+[?25l[30m[42m[34d[capstorm]1:sleep*                                                                        "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[15;1Hstreaming line 11: lorem ipsum dolor sit amet consectetur
+streaming line 12: lorem ipsum dolor sit amet consectetur
+streaming line 13: lorem ipsum dolor sit amet consectetur
+streaming line 14: lorem ipsum dolor sit amet consectetur
+(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[19;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[34m[1m[H┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m](B[m[K[34m[1m
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [33mfor[39m i in [35m$([32mseq[39m 1 400[35m)[39m; [33mdo[39m [32mecho[39m [33m"streaming line [36m$i[33m: lorem ipsum dolor sit amet consectetur"[39m; [32msleep[39m 0.05; [33mdone[39m[K
+streaming line 1: lorem ipsum dolor sit amet consectetur[K
+streaming line 2: lorem ipsum dolor sit amet consectetur[K
+streaming line 3: lorem ipsum dolor sit amet consectetur[K
+streaming line 4: lorem ipsum dolor sit amet consectetur[K
+streaming line 5: lorem ipsum dolor sit amet consectetur[K
+streaming line 6: lorem ipsum dolor sit amet consectetur[K
+streaming line 7: lorem ipsum dolor sit amet consectetur[K
+streaming line 8: lorem ipsum dolor sit amet consectetur[K
+streaming line 9: lorem ipsum dolor sit amet consectetur[K
+streaming line 10: lorem ipsum dolor sit amet consectetur[K
+streaming line 11: lorem ipsum dolor sit amet consectetur[K
+streaming line 12: lorem ipsum dolor sit amet consectetur[K
+streaming line 13: lorem ipsum dolor sit amet consectetur[K
+streaming line 14: lorem ipsum dolor sit amet consectetur[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[capstorm]1:sleep*                      "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[19;1Hstreaming line 15: lorem ipsum dolor sit amet consectetur
+streaming line 16: lorem ipsum dolor sit amet consectetur
+streaming line 17: lorem ipsum dolor sit amet consectetur
+streaming line 18: lorem ipsum dolor sit amet consectetur
+[1;23r[23;1H
+[Astreaming line 19: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 20: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 21: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 22: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[29;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[34m[1m[H└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K[34m[1m
+┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m](B[m[K[34m[1m
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K[34m[1m
+┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m](B[m[K[34m[1m
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [33mfor[39m i in [35m$([32mseq[39m 1 400[35m)[39m; [33mdo[39m [32mecho[39m [33m"streaming line [36m$i[33m: lorem ipsum dolor sit amet consectetur"[39m; [32msleep[39m 0.05; [33mdone[39m[K
+streaming line 1: lorem ipsum dolor sit amet consectetur[K
+streaming line 2: lorem ipsum dolor sit amet consectetur[K
+streaming line 3: lorem ipsum dolor sit amet consectetur[K
+streaming line 4: lorem ipsum dolor sit amet consectetur[K
+streaming line 5: lorem ipsum dolor sit amet consectetur[K
+streaming line 6: lorem ipsum dolor sit amet consectetur[K
+streaming line 7: lorem ipsum dolor sit amet consectetur[K
+streaming line 8: lorem ipsum dolor sit amet consectetur[K
+streaming line 9: lorem ipsum dolor sit amet consectetur[K
+streaming line 10: lorem ipsum dolor sit amet consectetur[K
+streaming line 11: lorem ipsum dolor sit amet consectetur[K
+streaming line 12: lorem ipsum dolor sit amet consectetur[K
+streaming line 13: lorem ipsum dolor sit amet consectetur[K
+streaming line 14: lorem ipsum dolor sit amet consectetur[K
+streaming line 15: lorem ipsum dolor sit amet consectetur[K
+streaming line 16: lorem ipsum dolor sit amet consectetur[K
+streaming line 17: lorem ipsum dolor sit amet consectetur[K
+streaming line 18: lorem ipsum dolor sit amet consectetur[K
+streaming line 19: lorem ipsum dolor sit amet consectetur[K
+streaming line 20: lorem ipsum dolor sit amet consectetur[K
+streaming line 21: lorem ipsum dolor sit amet consectetur[K
+streaming line 22: lorem ipsum dolor sit amet consectetur[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[capstorm]1:sleep*                                                                        "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[29;1Hstreaming line 23: lorem ipsum dolor sit amet consectetur
+streaming line 24: lorem ipsum dolor sit amet consectetur
+streaming line 25: lorem ipsum dolor sit amet consectetur
+streaming line 26: lorem ipsum dolor sit amet consectetur
+[1;33r[33;1H
+[Astreaming line 27: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 28: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 29: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 30: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[23;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 9: lorem ipsum dolor sit amet consectetur[K
+streaming line 10: lorem ipsum dolor sit amet consectetur[K
+streaming line 11: lorem ipsum dolor sit amet consectetur[K
+streaming line 12: lorem ipsum dolor sit amet consectetur[K
+streaming line 13: lorem ipsum dolor sit amet consectetur[K
+streaming line 14: lorem ipsum dolor sit amet consectetur[K
+streaming line 15: lorem ipsum dolor sit amet consectetur[K
+streaming line 16: lorem ipsum dolor sit amet consectetur[K
+streaming line 17: lorem ipsum dolor sit amet consectetur[K
+streaming line 18: lorem ipsum dolor sit amet consectetur[K
+streaming line 19: lorem ipsum dolor sit amet consectetur[K
+streaming line 20: lorem ipsum dolor sit amet consectetur[K
+streaming line 21: lorem ipsum dolor sit amet consectetur[K
+streaming line 22: lorem ipsum dolor sit amet consectetur[K
+streaming line 23: lorem ipsum dolor sit amet consectetur[K
+streaming line 24: lorem ipsum dolor sit amet consectetur[K
+streaming line 25: lorem ipsum dolor sit amet consectetur[K
+streaming line 26: lorem ipsum dolor sit amet consectetur[K
+streaming line 27: lorem ipsum dolor sit amet consectetur[K
+streaming line 28: lorem ipsum dolor sit amet consectetur[K
+streaming line 29: lorem ipsum dolor sit amet consectetur[K
+streaming line 30: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                      "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[23;1H[1;23r[23;1H
+[Astreaming line 31: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 32: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 33: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 34: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 35: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 36: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 37: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[33;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 6: lorem ipsum dolor sit amet consectetur[K
+streaming line 7: lorem ipsum dolor sit amet consectetur[K
+streaming line 8: lorem ipsum dolor sit amet consectetur[K
+streaming line 9: lorem ipsum dolor sit amet consectetur[K
+streaming line 10: lorem ipsum dolor sit amet consectetur[K
+streaming line 11: lorem ipsum dolor sit amet consectetur[K
+streaming line 12: lorem ipsum dolor sit amet consectetur[K
+streaming line 13: lorem ipsum dolor sit amet consectetur[K
+streaming line 14: lorem ipsum dolor sit amet consectetur[K
+streaming line 15: lorem ipsum dolor sit amet consectetur[K
+streaming line 16: lorem ipsum dolor sit amet consectetur[K
+streaming line 17: lorem ipsum dolor sit amet consectetur[K
+streaming line 18: lorem ipsum dolor sit amet consectetur[K
+streaming line 19: lorem ipsum dolor sit amet consectetur[K
+streaming line 20: lorem ipsum dolor sit amet consectetur[K
+streaming line 21: lorem ipsum dolor sit amet consectetur[K
+streaming line 22: lorem ipsum dolor sit amet consectetur[K
+streaming line 23: lorem ipsum dolor sit amet consectetur[K
+streaming line 24: lorem ipsum dolor sit amet consectetur[K
+streaming line 25: lorem ipsum dolor sit amet consectetur[K
+streaming line 26: lorem ipsum dolor sit amet consectetur[K
+streaming line 27: lorem ipsum dolor sit amet consectetur[K
+streaming line 28: lorem ipsum dolor sit amet consectetur[K
+streaming line 29: lorem ipsum dolor sit amet consectetur[K
+streaming line 30: lorem ipsum dolor sit amet consectetur[K
+streaming line 31: lorem ipsum dolor sit amet consectetur[K
+streaming line 32: lorem ipsum dolor sit amet consectetur[K
+streaming line 33: lorem ipsum dolor sit amet consectetur[K
+streaming line 34: lorem ipsum dolor sit amet consectetur[K
+streaming line 35: lorem ipsum dolor sit amet consectetur[K
+streaming line 36: lorem ipsum dolor sit amet consectetur[K
+streaming line 37: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                                                                        "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[33;1H[1;33r[33;1H
+[Astreaming line 38: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 39: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 40: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 41: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 42: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 43: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 44: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 45: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[23;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 24: lorem ipsum dolor sit amet consectetur[K
+streaming line 25: lorem ipsum dolor sit amet consectetur[K
+streaming line 26: lorem ipsum dolor sit amet consectetur[K
+streaming line 27: lorem ipsum dolor sit amet consectetur[K
+streaming line 28: lorem ipsum dolor sit amet consectetur[K
+streaming line 29: lorem ipsum dolor sit amet consectetur[K
+streaming line 30: lorem ipsum dolor sit amet consectetur[K
+streaming line 31: lorem ipsum dolor sit amet consectetur[K
+streaming line 32: lorem ipsum dolor sit amet consectetur[K
+streaming line 33: lorem ipsum dolor sit amet consectetur[K
+streaming line 34: lorem ipsum dolor sit amet consectetur[K
+streaming line 35: lorem ipsum dolor sit amet consectetur[K
+streaming line 36: lorem ipsum dolor sit amet consectetur[K
+streaming line 37: lorem ipsum dolor sit amet consectetur[K
+streaming line 38: lorem ipsum dolor sit amet consectetur[K
+streaming line 39: lorem ipsum dolor sit amet consectetur[K
+streaming line 40: lorem ipsum dolor sit amet consectetur[K
+streaming line 41: lorem ipsum dolor sit amet consectetur[K
+streaming line 42: lorem ipsum dolor sit amet consectetur[K
+streaming line 43: lorem ipsum dolor sit amet consectetur[K
+streaming line 44: lorem ipsum dolor sit amet consectetur[K
+streaming line 45: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                      "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[23;1H[1;23r[23;1H
+[Astreaming line 46: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 47: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 48: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 49: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 50: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 51: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 52: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[33;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 21: lorem ipsum dolor sit amet consectetur[K
+streaming line 22: lorem ipsum dolor sit amet consectetur[K
+streaming line 23: lorem ipsum dolor sit amet consectetur[K
+streaming line 24: lorem ipsum dolor sit amet consectetur[K
+streaming line 25: lorem ipsum dolor sit amet consectetur[K
+streaming line 26: lorem ipsum dolor sit amet consectetur[K
+streaming line 27: lorem ipsum dolor sit amet consectetur[K
+streaming line 28: lorem ipsum dolor sit amet consectetur[K
+streaming line 29: lorem ipsum dolor sit amet consectetur[K
+streaming line 30: lorem ipsum dolor sit amet consectetur[K
+streaming line 31: lorem ipsum dolor sit amet consectetur[K
+streaming line 32: lorem ipsum dolor sit amet consectetur[K
+streaming line 33: lorem ipsum dolor sit amet consectetur[K
+streaming line 34: lorem ipsum dolor sit amet consectetur[K
+streaming line 35: lorem ipsum dolor sit amet consectetur[K
+streaming line 36: lorem ipsum dolor sit amet consectetur[K
+streaming line 37: lorem ipsum dolor sit amet consectetur[K
+streaming line 38: lorem ipsum dolor sit amet consectetur[K
+streaming line 39: lorem ipsum dolor sit amet consectetur[K
+streaming line 40: lorem ipsum dolor sit amet consectetur[K
+streaming line 41: lorem ipsum dolor sit amet consectetur[K
+streaming line 42: lorem ipsum dolor sit amet consectetur[K
+streaming line 43: lorem ipsum dolor sit amet consectetur[K
+streaming line 44: lorem ipsum dolor sit amet consectetur[K
+streaming line 45: lorem ipsum dolor sit amet consectetur[K
+streaming line 46: lorem ipsum dolor sit amet consectetur[K
+streaming line 47: lorem ipsum dolor sit amet consectetur[K
+streaming line 48: lorem ipsum dolor sit amet consectetur[K
+streaming line 49: lorem ipsum dolor sit amet consectetur[K
+streaming line 50: lorem ipsum dolor sit amet consectetur[K
+streaming line 51: lorem ipsum dolor sit amet consectetur[K
+streaming line 52: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                                                                        "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[33;1H[1;33r[33;1H
+[Astreaming line 53: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 54: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 55: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 56: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[?7727h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[33;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 25: lorem ipsum dolor sit amet consectetur[K
+streaming line 26: lorem ipsum dolor sit amet consectetur[K
+streaming line 27: lorem ipsum dolor sit amet consectetur[K
+streaming line 28: lorem ipsum dolor sit amet consectetur[K
+streaming line 29: lorem ipsum dolor sit amet consectetur[K
+streaming line 30: lorem ipsum dolor sit amet consectetur[K
+streaming line 31: lorem ipsum dolor sit amet consectetur[K
+streaming line 32: lorem ipsum dolor sit amet consectetur[K
+streaming line 33: lorem ipsum dolor sit amet consectetur[K
+streaming line 34: lorem ipsum dolor sit amet consectetur[K
+streaming line 35: lorem ipsum dolor sit amet consectetur[K
+streaming line 36: lorem ipsum dolor sit amet consectetur[K
+streaming line 37: lorem ipsum dolor sit amet consectetur[K
+streaming line 38: lorem ipsum dolor sit amet consectetur[K
+streaming line 39: lorem ipsum dolor sit amet consectetur[K
+streaming line 40: lorem ipsum dolor sit amet consectetur[K
+streaming line 41: lorem ipsum dolor sit amet consectetur[K
+streaming line 42: lorem ipsum dolor sit amet consectetur[K
+streaming line 43: lorem ipsum dolor sit amet consectetur[K
+streaming line 44: lorem ipsum dolor sit amet consectetur[K
+streaming line 45: lorem ipsum dolor sit amet consectetur[K
+streaming line 46: lorem ipsum dolor sit amet consectetur[K
+streaming line 47: lorem ipsum dolor sit amet consectetur[K
+streaming line 48: lorem ipsum dolor sit amet consectetur[K
+streaming line 49: lorem ipsum dolor sit amet consectetur[K
+streaming line 50: lorem ipsum dolor sit amet consectetur[K
+streaming line 51: lorem ipsum dolor sit amet consectetur[K
+streaming line 52: lorem ipsum dolor sit amet consectetur[K
+streaming line 53: lorem ipsum dolor sit amet consectetur[K
+streaming line 54: lorem ipsum dolor sit amet consectetur[K
+streaming line 55: lorem ipsum dolor sit amet consectetur[K
+streaming line 56: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                                                                        "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[33;1H[1;33r[33;1H
+[Astreaming line 57: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 58: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 59: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 60: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[23;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 39: lorem ipsum dolor sit amet consectetur[K
+streaming line 40: lorem ipsum dolor sit amet consectetur[K
+streaming line 41: lorem ipsum dolor sit amet consectetur[K
+streaming line 42: lorem ipsum dolor sit amet consectetur[K
+streaming line 43: lorem ipsum dolor sit amet consectetur[K
+streaming line 44: lorem ipsum dolor sit amet consectetur[K
+streaming line 45: lorem ipsum dolor sit amet consectetur[K
+streaming line 46: lorem ipsum dolor sit amet consectetur[K
+streaming line 47: lorem ipsum dolor sit amet consectetur[K
+streaming line 48: lorem ipsum dolor sit amet consectetur[K
+streaming line 49: lorem ipsum dolor sit amet consectetur[K
+streaming line 50: lorem ipsum dolor sit amet consectetur[K
+streaming line 51: lorem ipsum dolor sit amet consectetur[K
+streaming line 52: lorem ipsum dolor sit amet consectetur[K
+streaming line 53: lorem ipsum dolor sit amet consectetur[K
+streaming line 54: lorem ipsum dolor sit amet consectetur[K
+streaming line 55: lorem ipsum dolor sit amet consectetur[K
+streaming line 56: lorem ipsum dolor sit amet consectetur[K
+streaming line 57: lorem ipsum dolor sit amet consectetur[K
+streaming line 58: lorem ipsum dolor sit amet consectetur[K
+streaming line 59: lorem ipsum dolor sit amet consectetur[K
+streaming line 60: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                      "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[23;1H[1;23r[23;1H
+[Astreaming line 61: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 62: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 63: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 64: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 65: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 66: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 67: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 68: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[33;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 37: lorem ipsum dolor sit amet consectetur[K
+streaming line 38: lorem ipsum dolor sit amet consectetur[K
+streaming line 39: lorem ipsum dolor sit amet consectetur[K
+streaming line 40: lorem ipsum dolor sit amet consectetur[K
+streaming line 41: lorem ipsum dolor sit amet consectetur[K
+streaming line 42: lorem ipsum dolor sit amet consectetur[K
+streaming line 43: lorem ipsum dolor sit amet consectetur[K
+streaming line 44: lorem ipsum dolor sit amet consectetur[K
+streaming line 45: lorem ipsum dolor sit amet consectetur[K
+streaming line 46: lorem ipsum dolor sit amet consectetur[K
+streaming line 47: lorem ipsum dolor sit amet consectetur[K
+streaming line 48: lorem ipsum dolor sit amet consectetur[K
+streaming line 49: lorem ipsum dolor sit amet consectetur[K
+streaming line 50: lorem ipsum dolor sit amet consectetur[K
+streaming line 51: lorem ipsum dolor sit amet consectetur[K
+streaming line 52: lorem ipsum dolor sit amet consectetur[K
+streaming line 53: lorem ipsum dolor sit amet consectetur[K
+streaming line 54: lorem ipsum dolor sit amet consectetur[K
+streaming line 55: lorem ipsum dolor sit amet consectetur[K
+streaming line 56: lorem ipsum dolor sit amet consectetur[K
+streaming line 57: lorem ipsum dolor sit amet consectetur[K
+streaming line 58: lorem ipsum dolor sit amet consectetur[K
+streaming line 59: lorem ipsum dolor sit amet consectetur[K
+streaming line 60: lorem ipsum dolor sit amet consectetur[K
+streaming line 61: lorem ipsum dolor sit amet consectetur[K
+streaming line 62: lorem ipsum dolor sit amet consectetur[K
+streaming line 63: lorem ipsum dolor sit amet consectetur[K
+streaming line 64: lorem ipsum dolor sit amet consectetur[K
+streaming line 65: lorem ipsum dolor sit amet consectetur[K
+streaming line 66: lorem ipsum dolor sit amet consectetur[K
+streaming line 67: lorem ipsum dolor sit amet consectetur[K
+streaming line 68: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                                                                        "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[33;1H[1;33r[33;1H
+[Astreaming line 69: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 70: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 71: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 72: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 73: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 74: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 75: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[23;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 54: lorem ipsum dolor sit amet consectetur[K
+streaming line 55: lorem ipsum dolor sit amet consectetur[K
+streaming line 56: lorem ipsum dolor sit amet consectetur[K
+streaming line 57: lorem ipsum dolor sit amet consectetur[K
+streaming line 58: lorem ipsum dolor sit amet consectetur[K
+streaming line 59: lorem ipsum dolor sit amet consectetur[K
+streaming line 60: lorem ipsum dolor sit amet consectetur[K
+streaming line 61: lorem ipsum dolor sit amet consectetur[K
+streaming line 62: lorem ipsum dolor sit amet consectetur[K
+streaming line 63: lorem ipsum dolor sit amet consectetur[K
+streaming line 64: lorem ipsum dolor sit amet consectetur[K
+streaming line 65: lorem ipsum dolor sit amet consectetur[K
+streaming line 66: lorem ipsum dolor sit amet consectetur[K
+streaming line 67: lorem ipsum dolor sit amet consectetur[K
+streaming line 68: lorem ipsum dolor sit amet consectetur[K
+streaming line 69: lorem ipsum dolor sit amet consectetur[K
+streaming line 70: lorem ipsum dolor sit amet consectetur[K
+streaming line 71: lorem ipsum dolor sit amet consectetur[K
+streaming line 72: lorem ipsum dolor sit amet consectetur[K
+streaming line 73: lorem ipsum dolor sit amet consectetur[K
+streaming line 74: lorem ipsum dolor sit amet consectetur[K
+streaming line 75: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                      "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[23;1H[1;23r[23;1H
+[Astreaming line 76: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 77: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 78: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 79: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 80: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 81: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 82: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 83: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[33;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 52: lorem ipsum dolor sit amet consectetur[K
+streaming line 53: lorem ipsum dolor sit amet consectetur[K
+streaming line 54: lorem ipsum dolor sit amet consectetur[K
+streaming line 55: lorem ipsum dolor sit amet consectetur[K
+streaming line 56: lorem ipsum dolor sit amet consectetur[K
+streaming line 57: lorem ipsum dolor sit amet consectetur[K
+streaming line 58: lorem ipsum dolor sit amet consectetur[K
+streaming line 59: lorem ipsum dolor sit amet consectetur[K
+streaming line 60: lorem ipsum dolor sit amet consectetur[K
+streaming line 61: lorem ipsum dolor sit amet consectetur[K
+streaming line 62: lorem ipsum dolor sit amet consectetur[K
+streaming line 63: lorem ipsum dolor sit amet consectetur[K
+streaming line 64: lorem ipsum dolor sit amet consectetur[K
+streaming line 65: lorem ipsum dolor sit amet consectetur[K
+streaming line 66: lorem ipsum dolor sit amet consectetur[K
+streaming line 67: lorem ipsum dolor sit amet consectetur[K
+streaming line 68: lorem ipsum dolor sit amet consectetur[K
+streaming line 69: lorem ipsum dolor sit amet consectetur[K
+streaming line 70: lorem ipsum dolor sit amet consectetur[K
+streaming line 71: lorem ipsum dolor sit amet consectetur[K
+streaming line 72: lorem ipsum dolor sit amet consectetur[K
+streaming line 73: lorem ipsum dolor sit amet consectetur[K
+streaming line 74: lorem ipsum dolor sit amet consectetur[K
+streaming line 75: lorem ipsum dolor sit amet consectetur[K
+streaming line 76: lorem ipsum dolor sit amet consectetur[K
+streaming line 77: lorem ipsum dolor sit amet consectetur[K
+streaming line 78: lorem ipsum dolor sit amet consectetur[K
+streaming line 79: lorem ipsum dolor sit amet consectetur[K
+streaming line 80: lorem ipsum dolor sit amet consectetur[K
+streaming line 81: lorem ipsum dolor sit amet consectetur[K
+streaming line 82: lorem ipsum dolor sit amet consectetur[K
+streaming line 83: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                                                                        "fudgemachine" 06:06 31-Jul-26(B[m[?12l[?25h[33;1H[1;33r[33;1H
+[Astreaming line 84: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 85: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 86: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 87: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 88: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 89: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 90: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[23;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 69: lorem ipsum dolor sit amet consectetur[K
+streaming line 70: lorem ipsum dolor sit amet consectetur[K
+streaming line 71: lorem ipsum dolor sit amet consectetur[K
+streaming line 72: lorem ipsum dolor sit amet consectetur[K
+streaming line 73: lorem ipsum dolor sit amet consectetur[K
+streaming line 74: lorem ipsum dolor sit amet consectetur[K
+streaming line 75: lorem ipsum dolor sit amet consectetur[K
+streaming line 76: lorem ipsum dolor sit amet consectetur[K
+streaming line 77: lorem ipsum dolor sit amet consectetur[K
+streaming line 78: lorem ipsum dolor sit amet consectetur[K
+streaming line 79: lorem ipsum dolor sit amet consectetur[K
+streaming line 80: lorem ipsum dolor sit amet consectetur[K
+streaming line 81: lorem ipsum dolor sit amet consectetur[K
+streaming line 82: lorem ipsum dolor sit amet consectetur[K
+streaming line 83: lorem ipsum dolor sit amet consectetur[K
+streaming line 84: lorem ipsum dolor sit amet consectetur[K
+streaming line 85: lorem ipsum dolor sit amet consectetur[K
+streaming line 86: lorem ipsum dolor sit amet consectetur[K
+streaming line 87: lorem ipsum dolor sit amet consectetur[K
+streaming line 88: lorem ipsum dolor sit amet consectetur[K
+streaming line 89: lorem ipsum dolor sit amet consectetur[K
+streaming line 90: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                      "fudgemachine" 06:06 31-Jul-26(B[m[?12l[?25h[23;1H[1;23r[23;1H
+[Astreaming line 91: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 92: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 93: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 94: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 95: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 96: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 97: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 98: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[33;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 67: lorem ipsum dolor sit amet consectetur[K
+streaming line 68: lorem ipsum dolor sit amet consectetur[K
+streaming line 69: lorem ipsum dolor sit amet consectetur[K
+streaming line 70: lorem ipsum dolor sit amet consectetur[K
+streaming line 71: lorem ipsum dolor sit amet consectetur[K
+streaming line 72: lorem ipsum dolor sit amet consectetur[K
+streaming line 73: lorem ipsum dolor sit amet consectetur[K
+streaming line 74: lorem ipsum dolor sit amet consectetur[K
+streaming line 75: lorem ipsum dolor sit amet consectetur[K
+streaming line 76: lorem ipsum dolor sit amet consectetur[K
+streaming line 77: lorem ipsum dolor sit amet consectetur[K
+streaming line 78: lorem ipsum dolor sit amet consectetur[K
+streaming line 79: lorem ipsum dolor sit amet consectetur[K
+streaming line 80: lorem ipsum dolor sit amet consectetur[K
+streaming line 81: lorem ipsum dolor sit amet consectetur[K
+streaming line 82: lorem ipsum dolor sit amet consectetur[K
+streaming line 83: lorem ipsum dolor sit amet consectetur[K
+streaming line 84: lorem ipsum dolor sit amet consectetur[K
+streaming line 85: lorem ipsum dolor sit amet consectetur[K
+streaming line 86: lorem ipsum dolor sit amet consectetur[K
+streaming line 87: lorem ipsum dolor sit amet consectetur[K
+streaming line 88: lorem ipsum dolor sit amet consectetur[K
+streaming line 89: lorem ipsum dolor sit amet consectetur[K
+streaming line 90: lorem ipsum dolor sit amet consectetur[K
+streaming line 91: lorem ipsum dolor sit amet consectetur[K
+streaming line 92: lorem ipsum dolor sit amet consectetur[K
+streaming line 93: lorem ipsum dolor sit amet consectetur[K
+streaming line 94: lorem ipsum dolor sit amet consectetur[K
+streaming line 95: lorem ipsum dolor sit amet consectetur[K
+streaming line 96: lorem ipsum dolor sit amet consectetur[K
+streaming line 97: lorem ipsum dolor sit amet consectetur[K
+streaming line 98: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                                                                        "fudgemachine" 06:06 31-Jul-26(B[m[?12l[?25h[33;1H[1;33r[33;1H
+[Astreaming line 99: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 100: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 101: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 102: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 103: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 104: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 105: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 106: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[23;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 85: lorem ipsum dolor sit amet consectetur[K
+streaming line 86: lorem ipsum dolor sit amet consectetur[K
+streaming line 87: lorem ipsum dolor sit amet consectetur[K
+streaming line 88: lorem ipsum dolor sit amet consectetur[K
+streaming line 89: lorem ipsum dolor sit amet consectetur[K
+streaming line 90: lorem ipsum dolor sit amet consectetur[K
+streaming line 91: lorem ipsum dolor sit amet consectetur[K
+streaming line 92: lorem ipsum dolor sit amet consectetur[K
+streaming line 93: lorem ipsum dolor sit amet consectetur[K
+streaming line 94: lorem ipsum dolor sit amet consectetur[K
+streaming line 95: lorem ipsum dolor sit amet consectetur[K
+streaming line 96: lorem ipsum dolor sit amet consectetur[K
+streaming line 97: lorem ipsum dolor sit amet consectetur[K
+streaming line 98: lorem ipsum dolor sit amet consectetur[K
+streaming line 99: lorem ipsum dolor sit amet consectetur[K
+streaming line 100: lorem ipsum dolor sit amet consectetur[K
+streaming line 101: lorem ipsum dolor sit amet consectetur[K
+streaming line 102: lorem ipsum dolor sit amet consectetur[K
+streaming line 103: lorem ipsum dolor sit amet consectetur[K
+streaming line 104: lorem ipsum dolor sit amet consectetur[K
+streaming line 105: lorem ipsum dolor sit amet consectetur[K
+streaming line 106: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                      "fudgemachine" 06:06 31-Jul-26(B[m[?12l[?25h[23;1H[1;23r[23;1H
+[Astreaming line 107: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 108: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 109: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 110: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 111: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 112: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 113: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[33;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 82: lorem ipsum dolor sit amet consectetur[K
+streaming line 83: lorem ipsum dolor sit amet consectetur[K
+streaming line 84: lorem ipsum dolor sit amet consectetur[K
+streaming line 85: lorem ipsum dolor sit amet consectetur[K
+streaming line 86: lorem ipsum dolor sit amet consectetur[K
+streaming line 87: lorem ipsum dolor sit amet consectetur[K
+streaming line 88: lorem ipsum dolor sit amet consectetur[K
+streaming line 89: lorem ipsum dolor sit amet consectetur[K
+streaming line 90: lorem ipsum dolor sit amet consectetur[K
+streaming line 91: lorem ipsum dolor sit amet consectetur[K
+streaming line 92: lorem ipsum dolor sit amet consectetur[K
+streaming line 93: lorem ipsum dolor sit amet consectetur[K
+streaming line 94: lorem ipsum dolor sit amet consectetur[K
+streaming line 95: lorem ipsum dolor sit amet consectetur[K
+streaming line 96: lorem ipsum dolor sit amet consectetur[K
+streaming line 97: lorem ipsum dolor sit amet consectetur[K
+streaming line 98: lorem ipsum dolor sit amet consectetur[K
+streaming line 99: lorem ipsum dolor sit amet consectetur[K
+streaming line 100: lorem ipsum dolor sit amet consectetur[K
+streaming line 101: lorem ipsum dolor sit amet consectetur[K
+streaming line 102: lorem ipsum dolor sit amet consectetur[K
+streaming line 103: lorem ipsum dolor sit amet consectetur[K
+streaming line 104: lorem ipsum dolor sit amet consectetur[K
+streaming line 105: lorem ipsum dolor sit amet consectetur[K
+streaming line 106: lorem ipsum dolor sit amet consectetur[K
+streaming line 107: lorem ipsum dolor sit amet consectetur[K
+streaming line 108: lorem ipsum dolor sit amet consectetur[K
+streaming line 109: lorem ipsum dolor sit amet consectetur[K
+streaming line 110: lorem ipsum dolor sit amet consectetur[K
+streaming line 111: lorem ipsum dolor sit amet consectetur[K
+streaming line 112: lorem ipsum dolor sit amet consectetur[K
+streaming line 113: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                                                                        "fudgemachine" 06:06 31-Jul-26(B[m[?12l[?25h[33;1H[1;33r[33;1H
+[Astreaming line 114: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 115: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 116: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 117: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 118: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 119: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 120: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 121: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[23;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 100: lorem ipsum dolor sit amet consectetur[K
+streaming line 101: lorem ipsum dolor sit amet consectetur[K
+streaming line 102: lorem ipsum dolor sit amet consectetur[K
+streaming line 103: lorem ipsum dolor sit amet consectetur[K
+streaming line 104: lorem ipsum dolor sit amet consectetur[K
+streaming line 105: lorem ipsum dolor sit amet consectetur[K
+streaming line 106: lorem ipsum dolor sit amet consectetur[K
+streaming line 107: lorem ipsum dolor sit amet consectetur[K
+streaming line 108: lorem ipsum dolor sit amet consectetur[K
+streaming line 109: lorem ipsum dolor sit amet consectetur[K
+streaming line 110: lorem ipsum dolor sit amet consectetur[K
+streaming line 111: lorem ipsum dolor sit amet consectetur[K
+streaming line 112: lorem ipsum dolor sit amet consectetur[K
+streaming line 113: lorem ipsum dolor sit amet consectetur[K
+streaming line 114: lorem ipsum dolor sit amet consectetur[K
+streaming line 115: lorem ipsum dolor sit amet consectetur[K
+streaming line 116: lorem ipsum dolor sit amet consectetur[K
+streaming line 117: lorem ipsum dolor sit amet consectetur[K
+streaming line 118: lorem ipsum dolor sit amet consectetur[K
+streaming line 119: lorem ipsum dolor sit amet consectetur[K
+streaming line 120: lorem ipsum dolor sit amet consectetur[K
+streaming line 121: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                      "fudgemachine" 06:06 31-Jul-26(B[m[?12l[?25h[23;1H[1;23r[23;1H
+[Astreaming line 122: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 123: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 124: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 125: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 126: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 127: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 128: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[33;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 97: lorem ipsum dolor sit amet consectetur[K
+streaming line 98: lorem ipsum dolor sit amet consectetur[K
+streaming line 99: lorem ipsum dolor sit amet consectetur[K
+streaming line 100: lorem ipsum dolor sit amet consectetur[K
+streaming line 101: lorem ipsum dolor sit amet consectetur[K
+streaming line 102: lorem ipsum dolor sit amet consectetur[K
+streaming line 103: lorem ipsum dolor sit amet consectetur[K
+streaming line 104: lorem ipsum dolor sit amet consectetur[K
+streaming line 105: lorem ipsum dolor sit amet consectetur[K
+streaming line 106: lorem ipsum dolor sit amet consectetur[K
+streaming line 107: lorem ipsum dolor sit amet consectetur[K
+streaming line 108: lorem ipsum dolor sit amet consectetur[K
+streaming line 109: lorem ipsum dolor sit amet consectetur[K
+streaming line 110: lorem ipsum dolor sit amet consectetur[K
+streaming line 111: lorem ipsum dolor sit amet consectetur[K
+streaming line 112: lorem ipsum dolor sit amet consectetur[K
+streaming line 113: lorem ipsum dolor sit amet consectetur[K
+streaming line 114: lorem ipsum dolor sit amet consectetur[K
+streaming line 115: lorem ipsum dolor sit amet consectetur[K
+streaming line 116: lorem ipsum dolor sit amet consectetur[K
+streaming line 117: lorem ipsum dolor sit amet consectetur[K
+streaming line 118: lorem ipsum dolor sit amet consectetur[K
+streaming line 119: lorem ipsum dolor sit amet consectetur[K
+streaming line 120: lorem ipsum dolor sit amet consectetur[K
+streaming line 121: lorem ipsum dolor sit amet consectetur[K
+streaming line 122: lorem ipsum dolor sit amet consectetur[K
+streaming line 123: lorem ipsum dolor sit amet consectetur[K
+streaming line 124: lorem ipsum dolor sit amet consectetur[K
+streaming line 125: lorem ipsum dolor sit amet consectetur[K
+streaming line 126: lorem ipsum dolor sit amet consectetur[K
+streaming line 127: lorem ipsum dolor sit amet consectetur[K
+streaming line 128: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                                                                        "fudgemachine" 06:06 31-Jul-26(B[m[?12l[?25h[33;1H[1;33r[33;1H
+[Astreaming line 129: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[1;33r[33;1H
+[Astreaming line 130: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 131: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 132: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 133: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 134: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 135: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 136: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[23;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 115: lorem ipsum dolor sit amet consectetur[K
+streaming line 116: lorem ipsum dolor sit amet consectetur[K
+streaming line 117: lorem ipsum dolor sit amet consectetur[K
+streaming line 118: lorem ipsum dolor sit amet consectetur[K
+streaming line 119: lorem ipsum dolor sit amet consectetur[K
+streaming line 120: lorem ipsum dolor sit amet consectetur[K
+streaming line 121: lorem ipsum dolor sit amet consectetur[K
+streaming line 122: lorem ipsum dolor sit amet consectetur[K
+streaming line 123: lorem ipsum dolor sit amet consectetur[K
+streaming line 124: lorem ipsum dolor sit amet consectetur[K
+streaming line 125: lorem ipsum dolor sit amet consectetur[K
+streaming line 126: lorem ipsum dolor sit amet consectetur[K
+streaming line 127: lorem ipsum dolor sit amet consectetur[K
+streaming line 128: lorem ipsum dolor sit amet consectetur[K
+streaming line 129: lorem ipsum dolor sit amet consectetur[K
+streaming line 130: lorem ipsum dolor sit amet consectetur[K
+streaming line 131: lorem ipsum dolor sit amet consectetur[K
+streaming line 132: lorem ipsum dolor sit amet consectetur[K
+streaming line 133: lorem ipsum dolor sit amet consectetur[K
+streaming line 134: lorem ipsum dolor sit amet consectetur[K
+streaming line 135: lorem ipsum dolor sit amet consectetur[K
+streaming line 136: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                      "fudgemachine" 06:06 31-Jul-26(B[m[?12l[?25h[23;1H[1;23r[23;1H
+[Astreaming line 137: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 138: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 139: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 140: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 141: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 142: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 143: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h[1;23r[23;1H
+[Astreaming line 144: lorem ipsum dolor sit amet consectetur
+[K[1;24r[23;1H[?25l[?12l[?25h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[33;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[Hstreaming line 113: lorem ipsum dolor sit amet consectetur[K
+streaming line 114: lorem ipsum dolor sit amet consectetur[K
+streaming line 115: lorem ipsum dolor sit amet consectetur[K
+streaming line 116: lorem ipsum dolor sit amet consectetur[K
+streaming line 117: lorem ipsum dolor sit amet consectetur[K
+streaming line 118: lorem ipsum dolor sit amet consectetur[K
+streaming line 119: lorem ipsum dolor sit amet consectetur[K
+streaming line 120: lorem ipsum dolor sit amet consectetur[K
+streaming line 121: lorem ipsum dolor sit amet consectetur[K
+streaming line 122: lorem ipsum dolor sit amet consectetur[K
+streaming line 123: lorem ipsum dolor sit amet consectetur[K
+streaming line 124: lorem ipsum dolor sit amet consectetur[K
+streaming line 125: lorem ipsum dolor sit amet consectetur[K
+streaming line 126: lorem ipsum dolor sit amet consectetur[K
+streaming line 127: lorem ipsum dolor sit amet consectetur[K
+streaming line 128: lorem ipsum dolor sit amet consectetur[K
+streaming line 129: lorem ipsum dolor sit amet consectetur[K
+streaming line 130: lorem ipsum dolor sit amet consectetur[K
+streaming line 131: lorem ipsum dolor sit amet consectetur[K
+streaming line 132: lorem ipsum dolor sit amet consectetur[K
+streaming line 133: lorem ipsum dolor sit amet consectetur[K
+streaming line 134: lorem ipsum dolor sit amet consectetur[K
+streaming line 135: lorem ipsum dolor sit amet consectetur[K
+streaming line 136: lorem ipsum dolor sit amet consectetur[K
+streaming line 137: lorem ipsum dolor sit amet consectetur[K
+streaming line 138: lorem ipsum dolor sit amet consectetur[K
+streaming line 139: lorem ipsum dolor sit amet consectetur[K
+streaming line 140: lorem ipsum dolor sit amet consectetur[K
+streaming line 141: lorem ipsum dolor sit amet consectetur[K
+streaming line 142: lorem ipsum dolor sit amet consectetur[K
+streaming line 143: lorem ipsum dolor sit amet consectetur[K
+streaming line 144: lorem ipsum dolor sit amet consectetur[K
+[K[30m[42m
+[capstorm]1:sleep*                                                                        "fudgemachine" 06:06 31-Jul-26(B[m[?12l[?25h[33;1H[1;33r[33;1H
+[Astreaming line 145: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 146: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 147: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 148: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 149: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 150: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 151: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 152: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 153: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 154: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 155: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 156: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 157: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 158: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 159: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 160: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 161: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 162: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[30m[42m
+[capstorm]1:zsh*                                                                          "fudgemachine" 06:06 31-Jul-26(B[m[?12l[?25h[33;1H[1;33r[33;1H
+[Astreaming line 163: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 164: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 165: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 166: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 167: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 168: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 169: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 170: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 171: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 172: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[30m[42m
+[capstorm]1:sleep*                                                                        "fudgemachine" 06:06 31-Jul-26(B[m[?12l[?25h[33;1H[1;33r[33;1H
+[Astreaming line 173: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 174: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 175: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 176: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 177: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 178: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 179: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 180: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 181: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 182: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 183: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 184: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 185: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 186: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 187: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 188: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 189: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 190: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 191: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 192: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 193: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 194: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 195: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 196: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 197: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 198: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 199: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 200: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 201: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 202: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 203: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 204: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 205: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 206: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 207: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 208: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 209: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 210: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 211: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 212: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 213: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 214: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 215: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 216: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 217: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 218: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 219: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 220: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 221: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 222: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 223: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 224: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 225: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 226: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 227: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 228: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 229: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 230: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 231: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 232: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 233: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 234: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 235: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 236: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 237: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 238: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 239: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 240: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 241: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 242: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 243: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 244: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 245: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 246: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 247: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 248: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 249: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 250: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 251: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 252: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 253: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 254: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 255: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 256: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 257: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 258: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 259: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 260: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 261: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 262: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 263: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 264: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 265: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 266: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 267: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 268: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 269: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 270: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 271: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 272: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 273: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 274: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 275: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 276: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 277: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 278: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 279: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 280: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 281: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 282: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 283: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 284: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 285: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 286: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 287: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 288: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 289: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 290: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 291: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 292: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 293: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 294: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 295: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 296: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 297: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 298: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 299: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 300: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 301: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 302: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 303: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 304: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 305: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 306: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 307: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 308: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 309: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 310: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 311: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 312: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 313: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 314: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 315: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 316: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 317: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 318: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 319: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 320: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 321: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 322: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 323: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 324: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 325: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 326: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 327: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 328: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 329: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 330: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 331: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 332: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 333: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 334: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 335: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 336: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 337: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 338: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 339: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 340: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 341: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 342: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 343: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[30m[42m
+[capstorm]1:zsh*                                                                          "fudgemachine" 06:06 31-Jul-26(B[m[?12l[?25h[33;1H[1;33r[33;1H
+[Astreaming line 344: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 345: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 346: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 347: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 348: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 349: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 350: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 351: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 352: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 353: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[30m[42m
+[capstorm]1:sleep*                                                                        "fudgemachine" 06:06 31-Jul-26(B[m[?12l[?25h[33;1H[1;33r[33;1H
+[Astreaming line 354: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 355: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 356: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 357: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 358: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 359: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 360: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 361: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 362: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 363: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 364: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 365: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 366: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 367: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 368: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 369: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 370: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 371: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 372: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 373: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 374: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 375: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 376: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 377: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 378: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 379: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 380: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 381: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 382: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 383: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 384: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 385: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 386: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 387: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 388: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 389: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 390: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 391: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 392: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 393: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 394: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 395: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 396: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 397: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 398: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 399: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h[1;33r[33;1H
+[Astreaming line 400: lorem ipsum dolor sit amet consectetur
+[K[1;34r[33;1H[?25l[?12l[?25h                                                                                                                        [33;1H[?25l[?12l[?25h[?25l[?12l[?25h[1;33r[33;1H[K[34m[1m┌─(B[m
+[32;3H[34m[1m[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:06[34m[1m](B[m
+[K[34m[1m└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K[1;34r[33;29H[?25l[?12l[?25h[?25l[30m[42m
+[capstorm]1:zsh*                                                                          "fudgemachine" 06:06 31-Jul-26(B[m[?12l[?25h[33;29H[1;34r(B[m[?1l>[H[2J[?12l[?25h[?1000l[?1002l[?1003l[?1006l[?1005l[?2004l[?7727l[?1004l

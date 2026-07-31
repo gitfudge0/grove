@@ -1,0 +1,8 @@
+{
+  "alt_screen": true,
+  "cols": 120,
+  "how": "recorder on 'tmux new-session -A -s capstorm' with GROVE_CAPTURE_RESIZE alternating 24x70/34x120 every 400ms (24 resizes) while send-keys drives a streaming seq loop",
+  "label": "resize-storm",
+  "recorded": "2026-07-31",
+  "rows": 34
+}

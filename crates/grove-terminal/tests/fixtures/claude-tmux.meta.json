@@ -1,0 +1,8 @@
+{
+  "alt_screen": true,
+  "cols": 120,
+  "how": "recorder on 'tmux new-session -A -s capclaude'; send-keys launched 'claude' then two prompts (a haiku about terminals, then 'count from 1 to 20 with one word each') and waited for streaming output",
+  "label": "claude-tmux",
+  "recorded": "2026-07-31",
+  "rows": 34
+}

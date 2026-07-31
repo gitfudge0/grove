@@ -1,0 +1,29 @@
+[2J[H✦ Cogitating… (12s · ↓ 1.2k tokens · esc to interrupt)
+
+[2J[H╭──────────────────────────────────────────╮
+│ > Try "how does this work?"              │
+╰──────────────────────────────────────────╯
+  ? for shortcuts
+[2J[HDo you want to make this edit to main.rs?
+❯ 1. Yes
+  2. Yes, and don't ask again
+  3. No, and tell Claude what to do differently (esc)
+[2J[HBash command
+  cargo test
+
+Do you want to proceed?
+❯ 1. Yes
+  2. No, and tell Claude what to do differently (esc)
+[2J[H• Working (esc to interrupt)
+  thinking about the terminal model
+[2J[H▌ send a message
+  ⏎ send   ⇧⏎ newline   ⌃C quit
+[2J[HAllow command?
+  rm -rf target
+> 1. Yes  2. Yes, don't ask again  3. No
+[2J[Huser@host ~/dev/grove (main) $ 
+[2J[HRunning 42 tests
+test term::tests::snapshot ... ok
+test term::tests::resize ... ok
+test result: ok. 42 passed; 0 failed
+

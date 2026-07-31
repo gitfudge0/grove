@@ -1,0 +1,8 @@
+{
+  "alt_screen": false,
+  "cols": 120,
+  "how": "bare shell (no tmux, primary screen) running a 500-line 'echo; sleep 0.04' loop while GROVE_CAPTURE_RESIZE alternates 24x70/34x120 every 400ms (24 resizes)",
+  "label": "resize-storm-primary",
+  "recorded": "2026-07-31",
+  "rows": 34
+}

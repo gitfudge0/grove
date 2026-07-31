@@ -1,0 +1,403 @@
+[?1049h[22;0;0t[?1h=[H[2J[?12l[?25h[?1000l[?1002l[?1003l[?1006l[?1005l[?2004h[?2031h[?996n(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[c[>c[>q]10;?\]11;?\[1;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[capvim] 1:tmux*                                                                          "fudgemachine" 06:04 31-Jul-26(B[m[?12l[?25h[1;1H[18t[14t(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[1;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[capvim] 1:tmux*                                                                          "fudgemachine" 06:04 31-Jul-26(B[m[?12l[?25h[1;1H                                                                                                                        [1;1H[?25l[?12l[?25h[?25l[?12l[?25h[1;33r[1;1H[2;33r[32S[1;1H[K[34m[1m┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:04[34m[1m]
+└─[[35m$[34m] <>(B[m [K[1;34r[2;10H[1;33r[1;1H[2;33r[32S[1;1H[K[34m[1m┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:04[34m[1m]
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K[1;34r[2;29H[?25l[30m[42m[34;1H[capvim] 1:zsh*                                                                           "fudgemachine" 06:04 31-Jul-26(B[m[?12l[?25h[2;29Hvvim Cargo.toml[14D[32mvim[39m [4mCargo.toml(B[m
+[?25l[H[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[?12l[?25h[3d[1;33r[1;1H[2;33r[32S[1;1H[K[33d"Cargo.toml"[1;34r[33;13H[?25l 126L, 5154B[2;1H▽  
+           [H[35m[106m[[49mworkspace[106m]
+[49m[36mmembers[39m = [[31m"crates/grove-core"[39m, [31m"crates/grove-terminal"[39m][K
+[K
+[35m[workspace[39m.[35mpackage]
+[36mversion[39m = [31m"0.45.0"
+[36medition[39m = [31m"2021"
+[36mrust-version[39m = [31m"1.94"
+[36mlicense[39m = [31m"MIT OR Apache-2.0"[10;1H[34m# Denied in production paths only. CI runs a second `--all-targets` pass with
+# these allowed, so test modules keep using unwrap() freely.
+[35m[workspace[39m.[35mlints[39m.[35mrust]
+[34m# objc 0.2's macros expand `cfg(feature = "cargo-clippy")`; register the
+# value so `unexpected_cfgs` stays quiet on macOS. The `#![allow]` in
+# src/gui/dock.rs doesn't reach lints raised inside external macro
+# expansions, so this workspace-level registration is the reliable fix.
+[36munexpected_cfgs[39m = { [36mlevel[39m = [31m"warn"[39m, [36mcheck-cfg[39m = [[31m'cfg(feature, values("cargo-clippy"))'[39m] }[19;1H[35m[workspace[39m.[35mlints[39m.[35mclippy]
+[36munwrap_used[39m = [31m"deny"
+[36mexpect_used[39m = [31m"deny"
+[36mpedantic[39m = { [36mlevel[39m = [31m"warn"[39m, [36mpriority[39m = [31m-1[39m }
+[34m# Pedantic opt-outs. Each is either pure style churn or would require broad,
+# behavior-adjacent refactors that this codebase deliberately doesn't want.
+[36mmust_use_candidate[39m = [31m"allow"[10C[34m# #[must_use] on every getter is noise
+[36mmissing_errors_doc[39m = [31m"allow"[10C[34m# internal binary, errors are self-evident
+[36mmissing_panics_doc[39m = [31m"allow"[10C[34m# ditto for panics
+[36mdoc_markdown[39m = [31m"allow"[16C[34m# prose comments aren't rustdoc-formatted
+[36mtoo_many_lines[39m = [31m"allow"[14C[34m# iced `view`/`update` fns are naturally long
+[36mmodule_name_repetitions[39m = [31m"allow"[39m     [34m# gui::session::SessionState reads fine
+[36mcast_possible_truncation[39m = [31m"allow"[39m    [34m# GUI layout math is f32<->int by nature
+[36mcast_precision_loss[39m = [31m"allow"[9C[34m# ditto[33;103H[39m1,1[11CTop[H[?12l[?25h[?25l[30m[42m[34d[capvim] 1:vim*                                                                           "fudgemachine" 06:04 31-Jul-26(B[m[?12l[?25h[1;1H[?7727h(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;34r[1;1H[?1006l[?1000l[?1002l[?1003l[?1006h[?1000h[?1002h[?25l[35m[106m[[49mworkspace[106m][39m[49m[K[36m
+members[39m = [[31m"crates/grove-core"[39m, [31m"crates/grove-terminal"[39m][K
+[K[35m
+[workspace[39m.[35mpackage][39m[K[36m
+version[39m = [31m"0.45.0"[39m[K[36m
+edition[39m = [31m"2021"[39m[K[36m
+rust-version[39m = [31m"1.94"[39m[K[36m
+license[39m = [31m"MIT OR Apache-2.0"[39m[K
+[K[34m
+# Denied in production paths only. CI runs a second `--all-targets` pass with[39m[K[34m
+# these allowed, so test modules keep using unwrap() freely.[39m[K[35m
+[workspace[39m.[35mlints[39m.[35mrust][39m[K[34m
+# objc 0.2's macros expand `cfg(feature = "cargo-clippy")`; register the[39m[K[34m
+# value so `unexpected_cfgs` stays quiet on macOS. The `#![allow]` in[39m[K[34m
+# src/gui/dock.rs doesn't reach lints raised inside external macro[39m[K[34m
+# expansions, so this workspace-level registration is the reliable fix.[39m[K[36m
+unexpected_cfgs[39m = { [36mlevel[39m = [31m"warn"[39m, [36mcheck-cfg[39m = [[31m'cfg(feature, values("cargo-clippy"))'[39m] }[K
+[K[35m
+[workspace[39m.[35mlints[39m.[35mclippy][39m[K[36m
+unwrap_used[39m = [31m"deny"[39m[K[36m
+expect_used[39m = [31m"deny"[39m[K[36m
+pedantic[39m = { [36mlevel[39m = [31m"warn"[39m, [36mpriority[39m = [31m-1[39m }[K[34m
+# Pedantic opt-outs. Each is either pure style churn or would require broad,[39m[K[34m
+# behavior-adjacent refactors that this codebase deliberately doesn't want.[39m[K[36m
+must_use_candidate[39m = [31m"allow"[39m[10X[34m[10C# #[must_use] on every getter is noise[39m[K[36m
+missing_errors_doc[39m = [31m"allow"[39m[10X[34m[10C# internal binary, errors are self-evident[39m[K[36m
+missing_panics_doc[39m = [31m"allow"[39m[10X[34m[10C# ditto for panics[39m[K[36m
+doc_markdown[39m = [31m"allow"[39m[16X[34m[16C# prose comments aren't rustdoc-formatted[39m[K[36m
+too_many_lines[39m = [31m"allow"[39m[14X[34m[14C# iced `view`/`update` fns are naturally long[39m[K[36m
+module_name_repetitions[39m = [31m"allow"[39m     [34m# gui::session::SessionState reads fine[39m[K[36m
+cast_possible_truncation[39m = [31m"allow"[39m    [34m# GUI layout math is f32<->int by nature[39m[K[36m
+cast_precision_loss[39m = [31m"allow"[39m[9X[34m[9C# ditto[39m[K
+"Cargo.toml" 126L, 5154B[78X[78C1,1[11X[11CTop[K[30m[42m
+[capvim] 1:vim*                                                                           "fudgemachine" 06:04 31-Jul-26(B[m[?12l[?25h[1;1H[33d:set number[K[?25l[H[38;5;130m  1 (B[m[35m[106m[[49mworkspace[106m]
+[49m[38;5;130m  2 (B[m[36mmembers[39m = [[31m"crates/grove-core"[39m, [31m"crates/grove-terminal"[39m]
+[38;5;130m  3 
+  4 (B[m[35m[workspace[39m.[35mpackage]
+[38;5;130m  5 (B[m[36mversion[39m = [31m"0.45.0"
+[38;5;130m  6 (B[m[36medition[39m = [31m"2021"
+[38;5;130m  7 (B[m[36mrust-version[39m = [31m"1.94"
+[38;5;130m  8 (B[m[36mlicense[39m = [31m"MIT OR Apache-2.0"
+[38;5;130m  9 
+ 10 (B[m[34m# Denied in production paths only. CI runs a second `--all-targets` pass with
+[38;5;130m 11 (B[m[34m# these allowed, so test modules keep using unwrap() freely.
+[38;5;130m 12 (B[m[35m[workspace[39m.[35mlint[C[39m.[35mrust]
+[38;5;130m 13 (B[m[34m# objc 0.2's macros expand `cfg(feature = "cargo-clippy")`; register the
+[38;5;130m 14 (B[m[34m# value so `unexpected_cfgs` stays quiet on macOS. The `#![allow]` in
+[38;5;130m 15 (B[m[34m# src/gui/dock.rs doesn't reach lints raised inside external macro
+[38;5;130m 16 (B[m[34m# expansions, so this workspace-level registration is the reliable fix.
+[38;5;130m 17 (B[m[36munexpected_cfgs[39m = { [C[36mevel[39m = [31m"warn"[39m, [36mcheck-cfg[39m = [[31m'cfg(feature, values("cargo-clippy"))'[39m] }
+[38;5;130m 18 
+ 19 (B[m[35m[workspace[39m.[35mlints[39m.[35mclippy]
+[38;5;130m 20 (B[m[36munwrap_used[39m = [31m"deny"
+[38;5;130m 21 (B[m[36mexpect_used[39m = [31m"deny"
+[38;5;130m 22 (B[m[36mpedantic[39m = { [C[36mevel[39m = [31m"warn"[39m, [36mpriority[39m = [31m-1[39m }
+[38;5;130m 23 (B[m[34m# Pedantic opt-outs. Each is either pure style churn or would require broad,
+[38;5;130m 24 (B[m[34m# behavior-adjacent refactors that this codebase deliberately doesn't want.
+[38;5;130m 25 (B[m[36mmust_use_candidate[39m = [31m"allow"[39m          [34m# #[must_use] on every getter is noise
+[38;5;130m 26 (B[m[36mmissing_errors_doc[39m = [31m"allow"[39m          [34m# internal binary, errors are self-evident
+[38;5;130m 27 (B[m[36mmissing_panics_doc[39m = [31m"allow"[39m          [34m# ditto for panics
+[38;5;130m 28 (B[m[36mdoc_markdown[39m = [31m"allow"[12C[39m    [34m# prose comments aren't rustdoc-formatted
+[38;5;130m 29 (B[m[36mtoo_many_lines[39m = [31m"allow"[10C[39m    [34m# iced `view`/`update` fns are naturally long
+[38;5;130m 30 (B[m[36mmodule_name_repetitions[39m = [31m"allow"[39m     [34m# gui::session::SessionState reads fine
+[38;5;130m 31 (B[m[36mcast_possible_truncation[39m = [31m"allow"[39m    [34m# GUI layout math is f32<->int by nature
+[38;5;130m 32 (B[m[36mcast_precision_loss[39m = [31m"allow"[39m         [34m# ditto[33;103H[39m1,1[11CTop[1;5H[?12l[?25h[33;93HG[1;5H[?25l[2G[38;5;130m95[C[39m    [31m"assets/icon/128x128@2x.png"[39m,[2;2H[38;5;130m96[C[39m    [31m"assets/icon/512x512.png"[39m,[K[3;2H[38;5;130m97[C[39m][4;2H[38;5;130m98[C(B[m[36mcategory[39m = [31m"Developer Tool"[5;2H[38;5;130m99[C(B[m[36mshort_description[39m = [31m"A worktree launchpad for AI coding agents"
+[38;5;130m100[C(B[m[36mcopyright[39m = [31m"Copyright (c) 2026 Grove"
+[38;5;130m101[39m[C[K
+[38;5;130m102[C(B[m[35m[dependencies][39m[K
+[38;5;130m103[C(B[m[36mgrove-core[39m = { [36mpath[39m = [31m"crates/grove-core"[39m }
+[38;5;130m104[C(B[m[36manyhow[39m.[36mworkspace[39m = [31mtrue[39m[K
+[38;5;130m105[C(B[m[36mdirs[39m.[36mworkspace[39m = [31mtrue[39m[K
+[38;5;130m106[C(B[m[36mserde_json[39m.[36mworkspace[39m = [31mtrue
+[38;5;130m107[C(B[m[36mvt100[39m.[36mworkspace[39m = [31mtrue[39m[K
+[38;5;130m108[C(B[m[36mfs-err[39m.[36mworkspace[39m = [31mtrue[39m[K
+[38;5;130m109[C(B[m[36marboard[39m = { [36mversion[39m = [31m"3"[39m, [36mfeatures[39m = [[31m"wayland-data-control"[39m] }[K
+[38;5;130m110[C(B[m[36mbase64[39m = [31m"0.22"[39m[K
+[38;5;130m111[C(B[m[36miced[39m = { [36mversion[39m = [31m"0.14.0"[39m, [36mfeatures[39m = [[31m"tokio"[39m, [31m"advanced"[39m, [31m"svg"[39m, [31m"canvas"[39m] }[K
+[38;5;130m112[C(B[m[36mureq[39m.[36mworkspace[39m = [31mtrue
+[38;5;130m113[C(B[m[36msemver[39m.[36mworkspace[39m = [31mtrue[39m[K
+[38;5;130m114[C(B[m[36mtokio[39m = { [36mversion[39m = [31m"1"[39m, [36mfeatures[39m = [[31m"time"[39m] }
+[38;5;130m115[C(B[m[36mrfd[39m = [31m"0.17"[39m[K
+[38;5;130m116[C(B[m[36mtracing[39m.[36mworkspac[C[39m = [31mtrue[39m[K
+[38;5;130m117[C(B[m[36mtracing-subscriber[39m = { [36mversion[39m = [31m"0.3"[39m, [36mfeatures[39m = [[31m"env-filter"[39m] }[K
+[38;5;130m118[39m[C[K
+[38;5;130m119[C(B[m[35m[lints][39m[K
+[38;5;130m120[C(B[m[36mworkspac[C[39m = [31mtrue[39m[K
+[38;5;130m121[39m[C[K
+[38;5;130m122[C(B[m[35m[target[39m.[35m'cfg(target_os = "macos")'[39m.[35mdependencies][39m[K
+[38;5;130m123[C(B[m[36mobjc[39m = [31m"0.2"[39m[K
+[38;5;130m124[39m[C[K
+[38;5;130m125[C(B[m[35m[dev-dependencies][39m[K
+[38;5;130m126[C(B[m[36msmol_str[39m = [31m"0.2"[39m[K[33;93H [10C26,1[9CBot[32;5H[?12l[?25h[33;93Hgg[32;5H[?25l[1;2H[38;5;130m 1[C(B[m[35m[106m[[49mworkspace[106m][39m[49m[K[2;2H[38;5;130m 2[C(B[m[36mmembers[39m = [[31m"crates/grove-core"[39m, [31m"crates/grove-terminal"[39m][3;2H[38;5;130m 3[39m[C[K[4;2H[38;5;130m 4[C(B[m[35m[workspace[39m.[35mpackage][39m[K[5;2H[38;5;130m 5[C(B[m[36mversion[39m = [31m"0.45.0"[39m[K
+[38;5;130m  6[C(B[m[36medition[39m = [31m"2021"[39m[K
+[38;5;130m  7[C(B[m[36mrust-version[39m = [31m"1.94"
+[38;5;130m  8[C(B[m[36mlicense[39m = [31m"MIT OR Apache-2.0"
+[38;5;130m  9[39m[C[K
+[38;5;130m 10[C(B[m[34m# Denied in production paths only. CI runs a second `--all-targets` pass with
+[38;5;130m 11[C(B[m[34m# these allowed, so test modules keep using unwrap() freely.
+[38;5;130m 12[C(B[m[35m[workspace[39m.[35mlints[39m.[35mrust][39m[C[K
+[38;5;130m 13[C(B[m[34m# objc 0.2's macros expand `cfg(feature = "cargo-clippy")`; register the
+[38;5;130m 14[C(B[m[34m# value so `unexpected_cfgs` stays quiet on macOS. The `#![allow]` in
+[38;5;130m 15[C(B[m[34m# src/gui/dock.rs doesn't reach lints raised inside external macro
+[38;5;130m 16[C(B[m[34m# expansions, so this workspace-level registration is the reliable fix.
+[38;5;130m 17[C(B[m[36munexpected_cfgs[39m = { [36mlevel[39m = [31m"warn"[39m, [36mcheck-cfg[39m = [[31m'cfg(feature, values("cargo-clippy"))'[39m] }
+[38;5;130m 18[39m[C[K
+[38;5;130m 19[C(B[m[35m[workspace[39m.[35mlints[39m.[35mclippy]
+[38;5;130m 20[C(B[m[36munwrap_used[39m = [31m"deny"[39m[K
+[38;5;130m 21[C(B[m[36mexpect_used[39m = [31m"deny"
+[38;5;130m 22[C(B[m[36mpedantic[39m = { [36mlevel[39m = [31m"warn"[39m, [36mpriority[39m = [31m-1[39m }
+[38;5;130m 23[C(B[m[34m# Pedantic opt-outs. Each is either pure style churn or would require broad,
+[38;5;130m 24[C(B[m[34m# behavior-adjacent refactors that this codebase deliberately doesn't want.
+[38;5;130m 25[C(B[m[36mmust_use_candidate[39m = [31m"allow"[10C[34m# #[must_use] on every getter is noise
+[38;5;130m 26[C(B[m[36mmissing_errors_doc[39m = [31m"allow"[10C[34m# internal binary, errors are self-evident
+[38;5;130m 27[C(B[m[36mmissing_panics_doc[39m = [31m"allow"[10C[34m# ditto for panics
+[38;5;130m 28[C(B[m[36mdoc_markdown[39m = [31m"allow"[39m                [34m# prose comments aren't rustdoc-formatted
+[38;5;130m 29[C(B[m[36mtoo_many_lines[39m = [31m"allow"[14C[34m# iced `view`/`update` fns are naturally long
+[38;5;130m 30[C(B[m[36mmodule_name_repetitions[39m = [31m"allow"[39m     [34m# gui::session::SessionState reads fine
+[38;5;130m 31[C(B[m[36mcast_possible_truncation[39m = [31m"allow"[39m    [34m# GUI layout math is f32<->int by nature
+[38;5;130m 32[C(B[m[36mcast_precision_loss[39m = [31m"allow"[9C[34m# ditto[33;93H[39m  [9C,1  [9CTop[1;5H[?12l[?25h[33;93H^D[1;5H[?25l[33;93H  [1;32r[1;1H[16M[17;1H[38;5;130m 33 (B[m[36mcast_possible_wrap[39m = [31m"allow"[10C[34m# ditto
+[38;5;130m 34 (B[m[36mcast_sign_loss[39m = [31m"allow"[14C[34m# ditto
+[38;5;130m 35 (B[m[36mcast_lossless[39m = [31m"allow"[15C[34m# `as f32` is clearer than `f32::from`
+[38;5;130m 36 (B[m[36mfloat_cmp[39m = [31m"allow"[19C[34m# exact compares are intentional in layout tests
+[38;5;130m 37 (B[m[36msimilar_names[39m = [31m"allow"[15C[34m# row/col, x0/x1 style names are deliberate
+[38;5;130m 38 (B[m[36mmany_single_char_names[39m = [31m"allow"[39m      [34m# geometry code uses x/y/w/h
+[38;5;130m 39 (B[m[36mstruct_excessive_bools[39m = [31m"allow"[39m      [34m# UI state genuinely has many flags
+[38;5;130m 40 (B[m[36mfn_params_excessive_bools[39m = [31m"allow"[39m   [34m# ditto
+[38;5;130m 41 (B[m[36munreadable_literal[39m = [31m"allow"[10C[34m# color/keycode literals read better raw
+[38;5;130m 42 (B[m[36mmatch_same_arms[39m = [31m"allow"[13C[34m# keeping arms separate documents intent
+[38;5;130m 43 (B[m[36munused_self[39m = [31m"allow"[17C[34m# method form kept for API symmetry
+[38;5;130m 44 (B[m[36mneedless_pass_by_value[39m = [31m"allow"[39m      [34m# iced messages are moved by design
+[38;5;130m 45 (B[m[36moption_option[39m = [31m"allow"[15C[34m# "unset vs cleared" is a real distinction here
+[38;5;130m 46 (B[m[36mref_option[39m = [31m"allow"[18C[34m# &Option<T> keeps call sites simple
+[38;5;130m 47 (B[m[36msingle_match_else[39m = [31m"allow"[11C[34m# match reads better than if-let here
+[38;5;130m 48 (B[m[36mif_not_else[39m = [31m"allow"[17C[34m# negated conditions often match the domain[39m[33;102H[1K[C22,1[10X[10C17%[K[1;34r[6;5H[?12l[?25h[33;93H^D[6;5H[?25l[33;93H  [1;32r[1;1H[16M[17;1H[38;5;130m 49 (B[m[36mwildcard_imports[39m = [31m"allow"[12C[34m# module preludes are used intentionally
+[38;5;130m 50 (B[m[36mtrivially_copy_pass_by_ref[39m = [31m"allow"[39m  [34m# consistency with sibling signatures
+[38;5;130m 51 (B[m[36munnecessary_wraps[39m = [31m"allow"[11C[34m# Result kept for forward compatibility
+[38;5;130m 52 (B[m[34m# `.lock`/`.dmg`/`.app` suffixes are exact by spec (git refs, release assets,
+[38;5;130m 53 (B[m[34m# macOS bundles) — case-insensitive matching would change behavior.
+[38;5;130m 54 (B[m[36mcase_sensitive_file_extension_comparisons[39m = [31m"allow"
+[38;5;130m 55 
+ 56 (B[m[35m[workspace[39m.[35mdependencies]
+[38;5;130m 57 (B[m[34m# Pinned by exact rev (gpui rewrite plan 02): never a branch or version range.
+[38;5;130m 58 (B[m[36malacritty_terminal[39m = { [36mgit[39m = [31m"https://github.com/zed-industries/alacritty"[39m, [36mrev[39m = [31m"4c129667ce56611becdc82de6e28218c8[38;5;130m    (B[m[31m0e2e88f"[39m }
+[38;5;130m 59 (B[m[36mportable-pty[39m = [31m"0.9"
+[38;5;130m 60 (B[m[36mserde_json[39m = [31m"1"
+[38;5;130m 61 (B[m[36manyhow[39m = [31m"1"
+[38;5;130m 62 (B[m[36mdirs[39m = [31m"5"
+[38;5;130m 63 (B[m[36mvt100[39m = [31m"0.15"[33;103H[39m38,1[10X[10C33%[K[1;34r[6;5H[?12l[?25h[33;93H^U[6;5H[?25l[33;93H  [1;32r[1;1H[16L[1;1H[38;5;130m 17 (B[m[36munexpected_cfgs[39m = { [36mlevel[39m = [31m"warn"[39m, [36mcheck-cfg[39m = [[31m'cfg(feature, values("cargo-clippy"))'[39m] }
+[38;5;130m 18 
+ 19 (B[m[35m[workspace[39m.[35mlints[39m.[35mclippy]
+[38;5;130m 20 (B[m[36munwrap_used[39m = [31m"deny"
+[38;5;130m 21 (B[m[36mexpect_used[39m = [31m"deny"
+[38;5;130m 22 (B[m[36mpedantic[39m = { [36mlevel[39m = [31m"warn"[39m, [36mpriority[39m = [31m-1[39m }
+[38;5;130m 23 (B[m[34m# Pedantic opt-outs. Each is either pure style churn or would require broad,
+[38;5;130m 24 (B[m[34m# behavior-adjacent refactors that this codebase deliberately doesn't want.
+[38;5;130m 25 (B[m[36mmust_use_candidate[39m = [31m"allow"[10C[34m# #[must_use] on every getter is noise
+[38;5;130m 26 (B[m[36mmissing_errors_doc[39m = [31m"allow"[10C[34m# internal binary, errors are self-evident
+[38;5;130m 27 (B[m[36mmissing_panics_doc[39m = [31m"allow"[10C[34m# ditto for panics
+[38;5;130m 28 (B[m[36mdoc_markdown[39m = [31m"allow"[16C[34m# prose comments aren't rustdoc-formatted
+[38;5;130m 29 (B[m[36mtoo_many_lines[39m = [31m"allow"[14C[34m# iced `view`/`update` fns are naturally long
+[38;5;130m 30 (B[m[36mmodule_name_repetitions[39m = [31m"allow"[39m     [34m# gui::session::SessionState reads fine
+[38;5;130m 31 (B[m[36mcast_possible_truncation[39m = [31m"allow"[39m    [34m# GUI layout math is f32<->int by nature
+[38;5;130m 32 (B[m[36mcast_precision_loss[39m = [31m"allow"[9C[34m# ditto[33;103H[39m22,1[10X[10C17%[K[1;34r[6;5H[?12l[?25h[33;1H/workspace[92C[K[?25l[1;32r[1;1H[13M[20;1H[38;5;130m 49 (B[m[36mwildcard_imports[39m = [31m"allow"[12C[34m# module preludes are used intentionally
+[38;5;130m 50 (B[m[36mtrivially_copy_pass_by_ref[39m = [31m"allow"[39m  [34m# consistency with sibling signatures
+[38;5;130m 51 (B[m[36munnecessary_wraps[39m = [31m"allow"[11C[34m# Result kept for forward compatibility
+[38;5;130m 52 (B[m[34m# `.lock`/`.dmg`/`.app` suffixes are exact by spec (git refs, release assets,
+[38;5;130m 53 (B[m[34m# macOS bundles) — case-insensitive matching would change behavior.
+[38;5;130m 54 (B[m[36mcase_sensitive_file_extension_comparisons[39m = [31m"allow"
+[38;5;130m 55 
+ 56 (B[m[35m[workspace[39m.[35mdependencies]
+[38;5;130m 57 (B[m[34m# Pinned by exact rev (gpui rewrite plan 02): never a branch or version range.
+[38;5;130m 58 (B[m[36malacritty_terminal[39m = { [36mgit[39m = [31m"https://github.com/zed-industries/alacritty"[39m, [36mrev[39m = [31m"4c129667ce56611becdc82de6e28218c8[38;5;130m    (B[m[31m0e2e88f"[39m }
+[38;5;130m 59 (B[m[36mportable-pty[39m = [31m"0.9"
+[38;5;130m 60 (B[m[36mserde_json[39m = [31m"1"[39m[33;102H[1K[C56,2[10X[10C30%[K[1;34r[27;6H[?12l[?25h[33;1H/workspace[82C[K[?25l[1;2H[38;5;130m63[C(B[m[36mvt100[39m = [31m"0.15"[39m[K[2;2H[38;5;130m64[C(B[m[36mureq[39m = { [36mversion[39m = [31m"2"[39m, [36mfeatures[39m = [[31m"tls"[39m], [36mdefault-features[39m = [31mfalse[39m }[K[3;2H[38;5;130m65[C(B[m[36msemver[39m = [31m"1"[39m[K[4;2H[38;5;130m66[C(B[m[36mtracing[39m = [31m"0.1"[39m[K[5;2H[38;5;130m67[C(B[m[36mfs-err[39m = [31m"3"[39m[K[6;2H[38;5;130m68[C(B[m[36mtempfile[39m = [31m"3"[39m[K[7;2H[38;5;130m69[C(B[m[36mthiserror[4C[31m2"[39m[K[8;2H[38;5;130m70[C(B[m[34m# Already in the tree via ureq's rustls stack — used only for `ring::digest`[39m[K[9;2H[38;5;130m71[C(B[m[34m# (SHA-256 of a downloaded release asset), so this adds no new supply chain.[10;2H[38;5;130m72[C(B[m[36mring[39m = [31m"0.17"[39m[K[11;2H[38;5;130m73[39m[C[K[12;2H[38;5;130m74[C(B[m[35m[package][39m[K[13;2H[38;5;130m75[C(B[m[36mname[39m = [31m"grove"[39m[K[14;2H[38;5;130m76[C(B[m[34m# Not on crates.io; also lets cargo-deny's allow-wildcard-paths accept the[15;2H[38;5;130m77[C(B[m[34m# version-less grove-core path dependency.[39m[K[16;2H[38;5;130m78[C(B[m[36mpublish[39m = [31mfalse[39m[C[K[17;2H[38;5;130m79[C(B[m[36mversion[39m.[36mworkspace[39m = [31mtrue[39m[14C[K[18;2H[38;5;130m80[C(B[m[36medition[39m.[36mworkspac[4C[31mtrue[39m[K[19;2H[38;5;130m81[C(B[m[36mrust-version[39m.[36mworkspace[39m = [31mtrue[39m[9C[K[20;2H[38;5;130m82[C(B[m[36mlicense[39m.[36mworkspace[39m = [31mtrue[39m[K[21;2H[38;5;130m83[C(B[m[36mdescription[39m = [31m"Grove — a worktree launchpad for AI coding agents"[39m[K[22;2H[38;5;130m84[39m[C[K[23;2H[38;5;130m85[C(B[m[35m[[bin]][39m[K[24;2H[38;5;130m86[C(B[m[36mname[39m = [31m"grove"[39m[K[25;2H[38;5;130m87[C(B[m[36mpath[39m = [31m"src/main.rs"[39m[K[26;2H[38;5;130m88
+ 89[2C(B[m[35mpackage[39m.[35mmetadata[39m.[35mbundle][28;2H[38;5;130m90[C(B[m[36mname[39m = [31m"Grove"[39m[K[29;2H[38;5;130m91[C(B[m[36midentifier[39m = [31m"dev.grove.Grove[39m[C[K[30;2H[38;5;130m92[C(B[m[36micon[39m = [[C[K[31;2H[38;5;130m93[C[39m    [31m"assets/icon/32x32.png"[39m,[32;2H[38;5;130m94[C[39m    [31m"assets/icon/128x128.png"[39m,[33;103H79,9[10C65%[17;13H[?12l[?25h[33;1H:set nonumber[K[?25l[H[36mvt100[39m = [31m"0.15"[39m[K
+[36mureq[39m = { [36mversion[39m = [31m"2"[39m, [36mfeatures[39m = [[31m"tls[C[39m], [36mdefault-features[39m = [31mfalse[39m }[K
+[36msemver[39m = [31m"1"[39m[C[K
+[36mtracing[39m = [31m"0.1[39m[C[K
+[36mfs-err[39m = [31m"3"[39m[C[K
+[36mtempfile[39m = [31m"3"[39m[C[K
+[36mthiserror[39m = [31m"2"[39m[C[K
+[34m# Already in the tree via ureq's rustls stack — used only for `ring::digest`[39m[K
+[34m# (SHA-256 of a downloaded release asset), so this adds no new supply chain.[39m[K
+[36mring[39m = [31m"0.17"[39m[K
+[K
+[35m[package][39m[K
+[36mname[39m = [31m"grove"[39m[K
+[34m# Not on crates.io; also lets cargo-deny's allow-wildcard-paths accept the[39m[K
+[34m# version-less grove-core path dependency.[39m[K
+[36mpublish[39m = [31mfalse[39m[K
+[36mversion[39m.[36mworkspace[39m = [31mtrue[39m[K
+[36medition[39m.[36mworkspace[39m = [31mtrue[39m[K
+[36mrust-version[39m.[36mworkspace[39m = [31mtrue[39m[K
+[36mlicense[39m.[36mworkspace[39m = [31mtrue[39m[K
+[36mdescription[39m = [31m"Grove — a worktree launchpad for AI coding agents"[39m[K
+[K
+[35m[[bin]][39m[K
+[36mname[39m = [31m"grove"[39m[K
+[36mpath[39m = [31m"src/main.rs"[39m[K
+[K
+[35m[package[39m.[35mmetada[2C[39m.[35mbundle][39m[K
+[36mname[39m = [31m"Grove"[39m[K
+[36midentifier[39m = [31m"dev.grove.Grove"[39m[K
+[36micon[39m = [[C[K
+    [31m"assets/icon/32x32.png"[39m,[K
+    [31m"assets/icon/128x128.png"[39m,[K[33;103H79,9[10C65%[17;9H[?12l[?25h[?25l[30m[42m[34;1H[capvim] 1:vim*                                                                           "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[17;9H[33;93HG[17;9H[?25l[H    [31m"assets/icon/128x128@2x.png"[39m,
+    [31m"assets/icon/512x512.png"[39m,[K
+][K
+[36mcategory[39m = [31m"Developer Tool"
+[36mshort_description[39m = [31m"A worktree launchpad for AI coding agents"
+[36mcopyright[39m = [31m"Copyright (c) 2026 Grove"[39m
+[K
+[35m[dependencies][39m[K
+[36mgrove-core[39m = { [36mpath[39m = [31m"crates/grove-core"[39m }[K
+[36manyhow[39m.[36mworkspace[39m = [31mtrue
+[36mdirs[39m.[36mworkspace[39m = [31mtrue
+[36mserde_json[39m.[36mworkspace[39m = [31mtrue
+[36mvt100[39m.[36mworkspace[39m = [31mtrue
+[36mfs-err[39m.[36mworkspace[39m = [31mtrue[39m[K
+[36marboard[39m = { [36mversion[39m = [31m"3"[39m, [36mfeatures[39m = [[31m"wayland-data-control"[39m] }
+[36mbase64[39m = [31m"0.22"
+[36miced[39m = { [36mversion[39m = [31m"0.14.0"[39m, [36mfeatures[39m = [[31m"tokio"[39m, [31m"advanced"[39m, [31m"svg"[39m, [31m"canvas"[39m] }
+[36mureq[39m.[36mworkspace[39m = [31mtrue[39m[K
+[36msemver[39m.[36mworkspace[39m = [31mtrue[39m[K
+[36mtokio[39m = { [36mversion[39m = [31m"1"[39m, [36mfeatures[39m = [[31m"time"[39m] }
+[36mrfd[39m = [31m"0.17"[39m[K
+[36mtracing[39m.[36mworkspace[39m = [31mtrue
+[36mtracing-subscriber[39m = { [36mversion[39m = [31m"0.3"[39m, [36mfeatures[39m = [[31m"env-filter"[39m] }
+[K
+[35m[lints][39m[K
+[36mworkspace[39m = [31mtrue[39m
+[K
+[35m[target[39m.[35m'cfg(target_os = "macos")'[39m.[35mdependencies]
+[36mobjc[39m = [31m"0.2"[39m[C[K
+[K
+[35m[dev-dependencies][39m[K
+[36msmol_str[39m = [31m"0.2"[39m[K[33;93H [9C126,1[9CBot[32;1H[?12l[?25h
+:q![K[?25l[K[3d[?12l[?25h[?25l[34m[1m[H┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:04[34m[1m](B[m[K[34m[1m
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [32mvim[39m [4mCargo.toml(B[m[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[?12l[?25h[3d                                                                                                                        [3;1H[?25l[?12l[?25h[?25l[?12l[?25h[1;33r[1;1H[4;33r[30S[3;1H[K[34m[1m┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m]
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K[1;34r[4;29H[?25l[30m[42m[34;1H[capvim] 1:zsh*                                                                           "fudgemachine" 06:05 31-Jul-26(B[m[?12l[?25h[4;29Heecho done[9D[32mecho[5C(B[m
+done
+                                                                                                                        [6;1H[?25l[?12l[?25h[?25l[?12l[?25h[1;33r[1;1H[7;33r[27S[6;1H[K[34m[1m┌─[[32mgitfudge[30m@(B[m[36mfudgemachine[34m[1m](B[m - [34m[1m[[37m~/dev/gitfudge0/grove[34m](B[m - [34m[1m[(B[m[33mFri Jul 31, 06:05[34m[1m]
+└─[[35m$[34m] <git:(gpui-rewrite*)>(B[m [K[1;34r[7;29H[1;34r(B[m[?1l>[H[2J[?12l[?25h[?1000l[?1002l[?1003l[?1006l[?1005l[?2004l[?7727l[?1004l

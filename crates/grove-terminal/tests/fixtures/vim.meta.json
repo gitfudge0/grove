@@ -1,0 +1,8 @@
+{
+  "alt_screen": true,
+  "cols": 120,
+  "how": "recorder on 'tmux new-session -A -s capvim'; send-keys: vim Cargo.toml, :set number, G, gg, /workspace, ctrl-d/ctrl-u scrolling, :q!",
+  "label": "vim",
+  "recorded": "2026-07-31",
+  "rows": 34
+}

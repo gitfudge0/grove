@@ -9,7 +9,7 @@
 | # | Plan | Exit gate | Status |
 |---|------|-----------|--------|
 | 01 | Spikes (terminal element, text inputs, zoom, Linux matrix) | Findings doc committed; go/no-go + rev pins decided | done — findings committed; awaiting user go/no-go |
-| 02 | `crates/grove-terminal` + dual-parser golden harness | Golden tests green against vt100 oracle | pending |
+| 02 | `crates/grove-terminal` + dual-parser golden harness | Golden tests green against vt100 oracle | done — 8/8 golden tests green on rustc 1.94.1 (default toolchain, no `rust-toolchain.toml` needed). Two asserted divergences amend spec §3: (a) the **primary screen reflows on resize** — `Term::resize` hardcodes `self.grid.resize(!is_alt, ..)`, no config knob, so "reflow-on-resize is suppressed" is unachievable without patching alacritty; the alt screen (tmux, Grove's actual regime) agrees with vt100. (b) alacritty retains an `ED 2`-cleared screen in scrollback where vt100 drops it. Both pinned by `crates/grove-terminal/tests/divergence.rs`. |
 | 03 | App shell (entities/globals, theme, fonts, zoom, keymap skeleton, AnimationClock, storage) | Shell opens, themed, metric assertion passes | pending |
 | 04 | TerminalElement + single-session workspace + full input path | Spec §Terminal checklist rows green; keyboard byte-table test green | pending |
 | 05 | Sidebar tree + WorkspaceState sync | Sidebar checklist rows green | pending |

@@ -1,0 +1,8 @@
+{
+  "alt_screen": true,
+  "cols": 120,
+  "how": "tmux kill-session -t capbare; recorder with GROVE_CAPTURE_CMD='tmux new-session -A -s capbare'; driven by tmux send-keys (ls, git status, seq loop, split-window, resize-pane, select-pane)",
+  "label": "tmux-bare",
+  "recorded": "2026-07-31",
+  "rows": 34
+}
