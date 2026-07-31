@@ -31,6 +31,9 @@ use crate::zoom::ZoomState;
 
 pub struct TerminalElement {
     session: gpui::Entity<TerminalSession>,
+    /// Project this PTY belongs to, for the pinned content-theme lookup.
+    /// `None` for home terminals, which belong to no project.
+    project: Option<String>,
     selection: Option<(AbsCell, AbsCell)>,
     cursor_visible: bool,
     zoom: f32,
@@ -42,6 +45,7 @@ pub struct TerminalElement {
 impl TerminalElement {
     pub fn new(
         session: gpui::Entity<TerminalSession>,
+        project: Option<String>,
         selection: Option<(AbsCell, AbsCell)>,
         cursor_visible: bool,
         zoom: f32,
@@ -49,6 +53,7 @@ impl TerminalElement {
     ) -> Self {
         Self {
             session,
+            project,
             selection,
             cursor_visible,
             zoom,
@@ -132,14 +137,31 @@ impl Element for TerminalElement {
         let bold_font = gpui::font(fonts::MONO_FAMILY).bold();
         let font_size = px(zoom.font_size());
 
-        // Plan 05: project theme override — a PTY belonging to a project with a
-        // pinned content theme resolves its *content* against that theme here.
-        // App chrome stays on the global theme regardless, which is why the
-        // override belongs at this call site and nowhere else.
-        // `with_current` is an atomic-load snapshot, not a lock, so reading it
-        // fresh every frame is how a theme swap takes effect on the next frame
-        // with no invalidation bookkeeping.
-        let (bg_quads, runs) = grove_core::theme::with_current(|theme: &Theme| {
+        // A PTY belonging to a project with a pinned content theme resolves
+        // its *content* against that theme here. App chrome stays on the global
+        // theme regardless, which is why the override lives at this call site
+        // and nowhere else.
+        //
+        // The iced build memoizes this per frame (`src/gui/view/terminal.rs:33-46`,
+        // reset at the top of `view()`) and invalidates it on picker
+        // cancel/submit. **That cache is deliberately not ported**: resolving is
+        // a `Store` field read plus a name lookup, done fresh in `prepaint`, so
+        // flipping `project_themes_enabled` re-colors on the next frame with no
+        // bookkeeping. A future reader looking for the cache will find this note
+        // instead.
+        //
+        // `with_current` is an atomic-load snapshot, not a lock, so the global
+        // fallback is equally free to read per frame.
+        let pinned = self.project.as_ref().and_then(|name| {
+            // Plan 08: launcher/picker live preview — `Some(None)` will mean
+            // "preview the global theme", `None` means "no preview".
+            project_theme_override(
+                &cx.global::<crate::settings::SettingsState>().store,
+                name,
+                None,
+            )
+        });
+        let render_grid = |theme: &Theme| {
             let rows = snapshot.rows as usize;
             let cols = snapshot.cols as usize;
             let mut bg_quads: Vec<PaintQuad> = Vec::new();
@@ -233,7 +255,11 @@ impl Element for TerminalElement {
                 }
             }
             (bg_quads, runs)
-        });
+        };
+        let (bg_quads, runs) = match pinned.as_ref() {
+            Some(theme) => render_grid(theme),
+            None => grove_core::theme::with_current(render_grid),
+        };
 
         // 4. Selection overlay, between the text and the cursor. The endpoints
         //    are absolute (scrollback-stable), so they are converted to the
@@ -406,9 +432,43 @@ fn forced_width(run_text: &str, cell_w: f32) -> Option<Pixels> {
     Some(px(cells as f32 * cell_w))
 }
 
+/// The theme a PTY belonging to `project_name` renders its **content** in, or
+/// `None` to fall back to the global active theme. Ported from
+/// `src/app/theme_picker.rs:65-128` and `src/gui/view/terminal.rs:48-73`.
+///
+/// **App chrome always stays on the global theme regardless**
+/// (`crates/grove-core/src/storage.rs:151-155`): every `c::*` call site in this
+/// crate is untouched by this function, which is exactly why the override lives
+/// at the single PTY-content call site and nowhere else.
+///
+/// `preview` is the project-scoped theme picker's live highlight, and its shape
+/// is load-bearing: `Some(None)` means "preview the global theme", which is
+/// **not** `None` ("no preview"). The preview check comes *before* the toggle
+/// check — `theme_picker.rs:111-118` orders it that way, so a preview renders
+/// even while Project themes is off. That ordering is the parity contract.
+pub fn project_theme_override(
+    store: &grove_core::storage::Store,
+    project_name: &str,
+    preview: Option<Option<Theme>>,
+) -> Option<Theme> {
+    if let Some(preview) = preview {
+        return preview;
+    }
+    if !store.project_themes_enabled {
+        return None;
+    }
+    store
+        .projects
+        .iter()
+        .find(|p| p.name == project_name)
+        .and_then(|p| p.theme.as_deref())
+        .and_then(grove_core::theme::by_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grove_core::storage::{Project, Store};
 
     const CELL_W: f32 = 7.5;
 
@@ -449,5 +509,70 @@ mod tests {
         assert!(is_blank(' '));
         assert!(is_blank('\0'));
         assert!(!is_blank('a'));
+    }
+
+    // ── per-project pinned content themes (Plan 05 Task 6 Step 3) ────────
+
+    fn store_with(project_themes_enabled: bool, pin: Option<&str>) -> Store {
+        Store {
+            project_themes_enabled,
+            projects: vec![Project {
+                name: "alpha".to_string(),
+                path: "/a".to_string(),
+                scripts: grove_core::storage::ProjectScripts::default(),
+                theme: pin.map(ToString::to_string),
+                archived: false,
+            }],
+            ..Store::default()
+        }
+    }
+
+    fn a_theme() -> Theme {
+        let Some(t) = grove_core::theme::by_name("tokyonight-day") else {
+            unreachable!("a builtin theme must resolve")
+        };
+        t
+    }
+
+    /// `src/app/theme_picker.rs:119-121` — the universal toggle.
+    #[test]
+    fn the_toggle_being_off_beats_a_pin() {
+        let store = store_with(false, Some("tokyonight-day"));
+        assert!(project_theme_override(&store, "alpha", None).is_none());
+    }
+
+    /// `theme_picker.rs:122-128`.
+    #[test]
+    fn a_pin_resolves_when_the_toggle_is_on() {
+        let store = store_with(true, Some("tokyonight-day"));
+        let Some(t) = project_theme_override(&store, "alpha", None) else {
+            unreachable!("a pinned project resolves its theme")
+        };
+        assert_eq!(t.name, a_theme().name);
+    }
+
+    #[test]
+    fn an_unresolvable_pin_falls_back_to_the_global_theme() {
+        let store = store_with(true, Some("no-such-theme"));
+        assert!(project_theme_override(&store, "alpha", None).is_none());
+        // An unknown project name is the same fallback.
+        assert!(project_theme_override(&store, "nobody", None).is_none());
+    }
+
+    /// `theme_picker.rs:111-118` — the preview check comes **before** the
+    /// toggle check, and that ordering is the parity contract.
+    #[test]
+    fn a_preview_of_none_means_the_global_theme_even_with_a_pin() {
+        let store = store_with(true, Some("tokyonight-day"));
+        assert!(project_theme_override(&store, "alpha", Some(None)).is_none());
+    }
+
+    #[test]
+    fn a_preview_bypasses_the_toggle_entirely() {
+        let store = store_with(false, None);
+        let Some(t) = project_theme_override(&store, "alpha", Some(Some(a_theme()))) else {
+            unreachable!("the preview wins outright")
+        };
+        assert_eq!(t.name, a_theme().name);
     }
 }

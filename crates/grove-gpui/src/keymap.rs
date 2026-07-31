@@ -493,6 +493,26 @@ actions!(
     ]
 );
 
+/// `mod+1..9` — the one **data-carrying** action (Plan 03 deviation 3). The
+/// `actions!` macro only generates unit structs, so this one is derived by hand.
+/// `no_json` keeps the derive off `serde`/`schemars`, which grove-gpui does not
+/// depend on; grove has no JSON keymap to load from.
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = grove, no_json)]
+pub struct SelectSession {
+    /// 1-based, as displayed. Out of range is a no-op, never a clamp.
+    pub index: usize,
+}
+
+/// The nine `mod+1..9` bindings, generated from the registry's display-only
+/// `1–9` row so the registry stays the single source of truth.
+fn select_session_bindings() -> Vec<KeyBinding> {
+    let prefix = platform_mod_prefix();
+    (1..=9)
+        .map(|index| KeyBinding::new(&format!("{prefix}{index}"), SelectSession { index }, None))
+        .collect()
+}
+
 /// One `KeyBinding` for a registry action, or `None` for the shortcuts whose
 /// chords are dynamic (`SelectSession`, `GridMove`, `GridSwap`) and therefore
 /// never reach a static binding.
@@ -535,6 +555,7 @@ pub fn bindings() -> Vec<KeyBinding> {
             }
         }
     }
+    out.extend(select_session_bindings());
     out
 }
 
@@ -551,9 +572,7 @@ mod tests {
             let Some(sc) = def.action else { continue };
             if matches!(
                 sc,
-                GlobalShortcut::SelectSession(_)
-                    | GlobalShortcut::GridMove(..)
-                    | GlobalShortcut::GridSwap(..)
+                GlobalShortcut::GridMove(..) | GlobalShortcut::GridSwap(..)
             ) {
                 continue;
             }
@@ -572,6 +591,26 @@ mod tests {
             }
         }
         assert!(!bindings().is_empty());
+    }
+
+    /// Plan 05 Task 6 Step 1: after this phase the only registry actions
+    /// without a `KeyBinding` are the grid ones (Plan 07).
+    #[test]
+    fn only_the_grid_actions_remain_unbound() {
+        for def in SHORTCUTS {
+            let Some(sc) = def.action else { continue };
+            if binding_for("ctrl-x", sc, None).is_none() {
+                assert!(
+                    matches!(
+                        sc,
+                        GlobalShortcut::GridMove(..) | GlobalShortcut::GridSwap(..)
+                    ),
+                    "{sc:?} has no binding and is not a grid action"
+                );
+            }
+        }
+        // `SelectSession` is now bound through its own payload action.
+        assert_eq!(select_session_bindings().len(), 9);
     }
 
     #[test]

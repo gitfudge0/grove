@@ -42,14 +42,18 @@ struct PtyDrag {
 
 pub struct TerminalView {
     session: Entity<TerminalSession>,
+    /// Project this session belongs to; `None` for home terminals. Passed
+    /// straight through to the element's pinned content-theme lookup.
+    project: Option<String>,
     focus: FocusHandle,
     clock: Entity<AnimationClock>,
     selection: Option<(AbsCell, AbsCell)>,
     drag: Option<PtyDrag>,
     /// `pty_press_focused` (`pty_input.rs:36-39,104-108`): the press that gave
     /// this element focus swallows its own release, so refocusing never moves
-    /// the caret (a second click does). With one session only the window-focus
-    /// transition can set it — Plan 05/07 make it load-bearing again.
+    /// the caret (a second click does). Load-bearing as of Plan 05: a click
+    /// that switches focus from the sidebar or another session must not move
+    /// the caret.
     press_focused: bool,
     scroll: ScrollAccum,
     /// The element's post-layout bounds, published by `prepaint` so pointer
@@ -65,8 +69,14 @@ impl Focusable for TerminalView {
 }
 
 impl TerminalView {
-    pub fn new(clock: Entity<AnimationClock>, cx: &mut Context<Self>) -> Self {
-        let session = cx.new(TerminalSession::spawn);
+    /// Takes its session by handle: the view no longer spawns anything, so
+    /// switching between sessions cannot respawn one (Plan 05 Task 2).
+    pub fn new(
+        session: Entity<TerminalSession>,
+        project: Option<String>,
+        clock: Entity<AnimationClock>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let observers = vec![
             // The terminal repaints when its model changes…
             cx.observe(&session, |_, _, cx| cx.notify()),
@@ -79,6 +89,7 @@ impl TerminalView {
         ];
         Self {
             session,
+            project,
             focus: cx.focus_handle(),
             clock,
             selection: None,
@@ -389,6 +400,7 @@ impl Render for TerminalView {
             )
             .child(TerminalElement::new(
                 self.session.clone(),
+                self.project.clone(),
                 self.selection,
                 cursor_visible,
                 zoom,

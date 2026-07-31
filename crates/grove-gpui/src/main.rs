@@ -2,10 +2,12 @@
 //! alone has no `Platform` constructor at this rev (spike findings §S1).
 #![forbid(unsafe_code)]
 
+mod activity;
 mod app;
 mod assets;
 mod entities;
 mod fonts;
+mod icons;
 mod keymap;
 mod settings;
 mod terminal;

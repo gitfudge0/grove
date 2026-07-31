@@ -10,7 +10,9 @@
 //! `session_meta::write`, `agent::Agent::program` — so the tmux command
 //! construction cannot drift between the two front ends.
 //!
-//! Plan 05 replaces the hardcoded single spawn here with a session registry.
+//! Plan 05 replaced the hardcoded single spawn here with an explicit
+//! [`SpawnTarget`]; ownership of the resulting sessions lives in
+//! [`crate::entities::session_registry::SessionRegistry`].
 
 // The full readout surface is ported in one go so Tasks 3-5 and Plan 05 are
 // mechanical; several accessors have no caller until their consumer lands.
@@ -22,11 +24,11 @@ use std::time::{Duration, Instant};
 use futures::channel::mpsc;
 use futures::StreamExt as _;
 use gpui::{Context, Task};
-use grove_core::agent::Agent;
 use grove_core::session_meta::{self, SessionMeta};
 use grove_core::tmux;
 use grove_terminal::{GroveTerm, MouseEncoding, MouseMode, PtyHandle, Snapshot};
 
+use crate::entities::session_registry::SpawnTarget;
 use crate::terminal::keys;
 use crate::terminal::mouse::{self, AbsCell};
 use portable_pty::CommandBuilder;
@@ -36,8 +38,8 @@ use portable_pty::CommandBuilder;
 const INIT_ROWS: u16 = 24;
 const INIT_COLS: u16 = 80;
 
-/// Where the hardcoded Plan 04 session opens. Overridable so the manual
-/// checklist can point the terminal at any tree.
+/// Where a session opens when the registry has no project to open in.
+/// Overridable so the manual checklist can point the terminal at any tree.
 const CWD_ENV: &str = "GROVE_GPUI_SESSION_CWD";
 
 /// Which kind of PTY is on the other end. Scroll and copy-mode behavior differ
@@ -70,12 +72,12 @@ pub struct TerminalSession {
 }
 
 impl TerminalSession {
-    /// Spawn the phase's single session: a tmux-backed login shell when tmux is
+    /// Spawn a session at an explicit target: a tmux-backed agent when tmux is
     /// available, otherwise a plain PTY so the element still renders on a box
     /// without tmux.
-    pub fn spawn(cx: &mut Context<Self>) -> Self {
-        let cwd = session_cwd();
-        let spawned = match spawn_tmux(&cwd) {
+    pub fn spawn(target: &SpawnTarget, cx: &mut Context<Self>) -> Self {
+        let cwd = target.cwd.clone();
+        let spawned = match spawn_tmux(&cwd, target) {
             Ok(v) => Some(v),
             Err(e) => {
                 tracing::warn!("grove-gpui: tmux unavailable ({e}); falling back to a native PTY");
@@ -398,8 +400,9 @@ impl TerminalSession {
     }
 }
 
-/// The tree the phase's single session opens in.
-fn session_cwd() -> String {
+/// The manual-checklist escape hatch (`GROVE_GPUI_SESSION_CWD`), now only the
+/// **default** target for when the registry has no projects to open in.
+pub fn default_cwd() -> String {
     if let Some(dir) = std::env::var(CWD_ENV).ok().filter(|d| !d.is_empty()) {
         return dir;
     }
@@ -408,11 +411,11 @@ fn session_cwd() -> String {
 
 /// Create the persistent tmux session and attach an embedded client to it,
 /// reproducing `session.rs:177-236` (create + sidecar) and `:349-384` (attach).
-fn spawn_tmux(cwd: &str) -> Result<(PtyHandle, Backend), String> {
+fn spawn_tmux(cwd: &str, target: &SpawnTarget) -> Result<(PtyHandle, Backend), String> {
     if !tmux::available() {
         return Err("tmux not on PATH".to_string());
     }
-    let agent = Agent::Terminal;
+    let agent = target.agent;
     let n = tmux::next_free_n(cwd, agent);
     let name = tmux::make_name(cwd, agent, n);
     tmux::new_session(&name, cwd, INIT_ROWS, INIT_COLS, &agent.program(), &[], &[])
@@ -423,8 +426,8 @@ fn spawn_tmux(cwd: &str) -> Result<(PtyHandle, Backend), String> {
         &name,
         &SessionMeta {
             wt_path: cwd.to_string(),
-            project: String::new(),
-            label: "gpui".to_string(),
+            project: target.project.clone(),
+            label: target.label.clone(),
             agent,
         },
     ) {
