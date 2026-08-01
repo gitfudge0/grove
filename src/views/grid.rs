@@ -22,6 +22,7 @@
 //! a normally-positioned (relative) element offsets where it is drawn and
 //! leaves every sibling's layout untouched.
 
+use crate::views::rpx;
 use std::rc::Rc;
 
 use gpui::{
@@ -70,6 +71,10 @@ pub enum GridAction {
     /// A press on a tile's header or scrim: focus + acknowledge + arm a drag
     /// (`layout.rs:308-321`).
     Press(usize),
+    /// A press on the tile's PTY body: focus + acknowledge only, no drag
+    /// armed (a body press must not start a tile drag; that is the header's
+    /// job).
+    Focus(usize),
     /// The pointer entered a tile; a no-op unless a drag is armed. The
     /// release edge is not a `GridAction`: it is listened for at the root
     /// (`Workspace::on_root_mouse_up`), because a pointer released outside
@@ -120,7 +125,7 @@ pub fn empty_state(title: &'static str, subtitle: &'static str) -> AnyElement {
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(6.0))
+        .gap(rpx(6.0))
         .size_full()
         .bg(c::BG())
         .child(crate::views::rows::ui_text(title, 14.0, c::FG_DIM()))
@@ -131,7 +136,7 @@ pub fn empty_state(title: &'static str, subtitle: &'static str) -> AnyElement {
 fn mono(content: impl Into<gpui::SharedString>, size: f32, color: Hsla) -> gpui::Div {
     div()
         .font(gpui::font(crate::fonts::MONO_FAMILY))
-        .text_size(px(size))
+        .text_size(rpx(size))
         .text_color(color)
         .child(content.into())
 }
@@ -213,11 +218,8 @@ fn tile(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
         .drag
         .is_some_and(|d| d.hover_idx == tile_idx && d.source_idx != tile_idx);
 
-    // Waiting wins over focused — attention beats focus (`terminal.rs:1082-1090`).
     let (border_color, border_w) = if data.waiting {
         (c::AMBER(), 1.5)
-    } else if data.focused {
-        (c::CYAN(), 1.5)
     } else {
         (gpui::transparent_black(), 0.0)
     };
@@ -237,8 +239,12 @@ fn tile(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
                 .flex_1()
                 .w_full()
                 .overflow_hidden()
-                .px(px(TILE_PTY_PAD_W / 2.0))
-                .py(px(TILE_PTY_PAD_H / 2.0))
+                .px(rpx(TILE_PTY_PAD_W / 2.0))
+                .py(rpx(TILE_PTY_PAD_H / 2.0))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    on_grid(&ctx.dispatch, GridAction::Focus(tile_idx)),
+                )
                 .child(data.view.clone()),
         );
 
@@ -278,7 +284,7 @@ fn tile(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
 
     // The slide: a relative inset moves the drawing, not the layout.
     if let Some((dx, dy)) = slide_offset(tile_idx, ctx) {
-        root = root.left(px(dx)).top(px(dy));
+        root = root.left(rpx(dx)).top(rpx(dy));
     }
     root.into_any_element()
 }
@@ -295,7 +301,7 @@ fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
     let mut identity = div()
         .flex()
         .items_center()
-        .gap(px(4.0))
+        .gap(rpx(4.0))
         .overflow_hidden()
         .child(icon(data.icon_name, 11.0, c::FG_DIM()))
         .child(
@@ -333,12 +339,12 @@ fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
 
     div()
         .id(gpui::SharedString::from(format!("tile-head-{tile_idx}")))
-        .h(px(TILE_HEAD_H))
+        .h(rpx(TILE_HEAD_H))
         .w_full()
         .flex()
         .items_center()
-        .gap(px(4.0))
-        .px(px(6.0))
+        .gap(rpx(4.0))
+        .px(rpx(6.0))
         .bg(if data.focused {
             c::BG_HL()
         } else {
@@ -380,11 +386,11 @@ fn tile_btn(
 ) -> AnyElement {
     div()
         .id(gpui::SharedString::from(id))
-        .size(px(18.0))
+        .size(rpx(18.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(3.0))
+        .rounded(rpx(3.0))
         .hover(|s| s.bg(c::BG_HOVER()))
         .child(icon(icon_name, 10.0, color))
         .on_mouse_down(MouseButton::Left, on_grid(dispatch, action))
@@ -417,9 +423,9 @@ fn num_hint(tile_idx: usize, focused: bool) -> AnyElement {
     div()
         .flex()
         .items_center()
-        .px(px(4.0))
+        .px(rpx(4.0))
         .py(px(1.0))
-        .rounded(px(3.0))
+        .rounded(rpx(3.0))
         .bg(c::BG())
         .border_1()
         .border_color(c::BORDER())
@@ -455,9 +461,9 @@ fn respond_chip(tile_idx: usize, pulse: f32) -> AnyElement {
         .flex()
         .items_center()
         .gap(px(1.0))
-        .px(px(4.0))
+        .px(rpx(4.0))
         .py(px(1.0))
-        .rounded(px(3.0))
+        .rounded(rpx(3.0))
         .bg(amber_bg)
         .border_1()
         .border_color(amber)
@@ -498,7 +504,7 @@ fn scrim(tile_idx: usize, ctx: &GridCtx) -> AnyElement {
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(8.0))
+        .gap(rpx(8.0))
         .bg(Hsla {
             a: 0.92,
             ..c::BG_STRIP()
@@ -510,10 +516,17 @@ fn scrim(tile_idx: usize, ctx: &GridCtx) -> AnyElement {
         .child(mono(scrim_sub_line(tile_idx), 10.0, c::FG_MUTE()))
         // Clicking the scrim focuses/acknowledges the tile, exactly like
         // clicking its header.
-        .on_mouse_down(
-            MouseButton::Left,
-            on_grid(&ctx.dispatch, GridAction::Press(tile_idx)),
-        )
+        .on_mouse_down(MouseButton::Left, {
+            let dispatch = Rc::clone(&ctx.dispatch);
+            move |_, window, cx| {
+                // The scrim sits over the tile's TerminalView and `Press` focuses
+                // that view; without this the release below would post a mouse
+                // click into the pty and answer the prompt the scrim is asking
+                // about.
+                cx.stop_propagation();
+                dispatch(GridAction::Press(tile_idx), window, cx);
+            }
+        })
         .into_any_element()
 }
 

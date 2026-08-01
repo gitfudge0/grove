@@ -337,6 +337,7 @@ impl ProjectTree {
                 is_git,
                 has_run,
                 worktrees,
+                sessions: registry.by_project(&p.name),
             });
         }
         TreeSnapshot {

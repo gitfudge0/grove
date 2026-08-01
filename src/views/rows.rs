@@ -19,6 +19,7 @@
 // The renderers that consume these land in Task 5.
 #![allow(dead_code)]
 
+use crate::views::rpx;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -259,11 +260,9 @@ pub fn flatten(
     for p in &snap.projects {
         any_active = true;
         let expanded = !ws.project_collapsed(p.idx);
-        let sessions: Vec<SessionId> = p
-            .worktrees
-            .iter()
-            .flat_map(|w| w.sessions.iter().copied())
-            .collect();
+        // Counted by project name, so non-active projects (whose worktree
+        // cache is empty until visited) still show their true session count.
+        let sessions = &p.sessions;
         rows.push(TreeRow::Project {
             idx: p.idx,
             name: p.name.clone(),
@@ -460,7 +459,8 @@ pub fn state_glyph(state: ActivityState, tick: u64, pulse: f32) -> AnyElement {
         ActivityState::Exited => icons::icon("ring", 11.0, c::FG_MUTE()),
     };
     div()
-        .w(px(14.0))
+        .w(rpx(14.0))
+        .flex_none()
         .flex()
         .items_center()
         .justify_center()
@@ -486,11 +486,12 @@ fn tool_button(
     };
     div()
         .id(SharedString::from(format!("{id}-{key}")))
-        .size(px(22.0))
+        .size(rpx(22.0))
+        .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(4.0))
+        .rounded(rpx(4.0))
         .border_1()
         .border_color(gpui::transparent_black())
         .text_color(c::FG_MUTE())
@@ -507,7 +508,7 @@ fn tool_button(
 pub fn ui_text(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
     div()
         .font(gpui::font(fonts::UI_FAMILY))
-        .text_size(px(size))
+        .text_size(rpx(size))
         .text_color(color)
         .child(content.into())
 }
@@ -578,8 +579,8 @@ fn project_row(
     let mut right = div()
         .flex()
         .items_center()
-        .gap(px(6.0))
-        .pr(px(8.0))
+        .gap(rpx(6.0))
+        .pr(rpx(8.0))
         .when_some(rollup, |d, st| {
             d.child(state_glyph(st, ctx.tick, ctx.pulse))
         });
@@ -609,7 +610,7 @@ fn project_row(
             div()
                 .flex()
                 .items_center()
-                .gap(px(5.0))
+                .gap(rpx(5.0))
                 .child(icons::icon("no-git", 11.0, c::FG_MUTE()))
                 .child(ui_text("no git", 10.0, c::FG_MUTE())),
         );
@@ -626,7 +627,7 @@ fn project_row(
 
     div()
         .id(SharedString::from(format!("proj-{idx}")))
-        .h(px(ROW_H))
+        .h(rpx(ROW_H))
         .w_full()
         .flex()
         .items_center()
@@ -634,27 +635,30 @@ fn project_row(
             div()
                 .flex()
                 .flex_1()
+                .min_w_0()
                 .items_center()
-                .gap(px(8.0))
-                .pl(px(12.0))
-                .pr(px(4.0))
+                .gap(rpx(8.0))
+                .pl(rpx(12.0))
+                .pr(rpx(4.0))
                 .overflow_hidden()
                 .on_mouse_down(MouseButton::Left, ctx.on(RowAction::SelectProject(idx)))
                 .child(
                     div()
-                        .w(px(14.0))
+                        .w(rpx(14.0))
+                        .flex_none()
                         .child(icons::icon(twist, 10.0, c::FG_MUTE())),
                 )
                 .child(
                     ui_text(name.to_uppercase(), 12.0, c::FG())
                         .font_weight(FontWeight::BOLD)
-                        .overflow_hidden(),
+                        .truncate(),
                 )
                 .child(
                     div()
                         .flex()
+                        .flex_none()
                         .items_center()
-                        .gap(px(4.0))
+                        .gap(rpx(4.0))
                         .child(dot(count_color))
                         .child(ui_text(format!("{count}"), 11.0, count_color)),
                 ),
@@ -664,7 +668,7 @@ fn project_row(
 }
 
 fn dot(color: Hsla) -> Div {
-    div().size(px(6.0)).rounded_full().bg(color)
+    div().size(rpx(6.0)).rounded_full().bg(color)
 }
 
 fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
@@ -698,26 +702,27 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
     let mut label = if no_git {
         div()
             .flex()
+            .min_w_0()
             .items_center()
-            .gap(px(5.0))
+            .gap(rpx(5.0))
             .overflow_hidden()
-            .child(ui_text(name.clone(), 13.0, c::FG_DIM()).overflow_hidden())
-            .child(icons::icon("no-git", 11.0, c::FG_MUTE()))
-            .child(ui_text("no git", 10.0, c::FG_MUTE()))
+            .child(ui_text(name.clone(), 13.0, c::FG_DIM()).truncate())
+            .child(icons::icon("no-git", 11.0, c::FG_MUTE()).flex_none())
+            .child(ui_text("no git", 10.0, c::FG_MUTE()).flex_none())
     } else {
-        div().flex().flex_col().overflow_hidden()
+        div().flex().flex_col().min_w_0().overflow_hidden()
     };
     if !no_git {
-        label = label.child(ui_text(name.clone(), 13.0, c::FG_DIM()).overflow_hidden());
+        label = label.child(ui_text(name.clone(), 13.0, c::FG_DIM()).truncate());
     }
     if show_branch {
         // Branch chip: a soft-bordered pill under the name.
         label = label.child(
-            div().pt(px(2.0)).child(
+            div().flex_none().pt(rpx(2.0)).child(
                 ui_text(branch.clone(), 10.0, c::FG_DIM())
-                    .px(px(6.0))
+                    .px(rpx(6.0))
                     .py(px(1.0))
-                    .rounded(px(3.0))
+                    .rounded(rpx(3.0))
                     .bg(c::BORDER_SOFT()),
             ),
         );
@@ -727,7 +732,7 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
     // slot, so they never render at once and never shift the layout
     // (`src/gui/rows.rs:253-265,396-420`).
     let actions: AnyElement = if hovered {
-        let mut strip = div().flex().items_center().gap(px(6.0)).pr(px(8.0));
+        let mut strip = div().flex().items_center().gap(rpx(6.0)).pr(rpx(8.0));
         for agent in &ctx.available {
             strip = strip.child(tool_button(
                 "wt-spawn",
@@ -772,14 +777,14 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         }
         strip.into_any_element()
     } else if *is_main && *is_git {
-        div().px(px(8.0)).child(main_tag()).into_any_element()
+        div().px(rpx(8.0)).child(main_tag()).into_any_element()
     } else {
         div().into_any_element()
     };
 
     div()
         .id(SharedString::from(format!("wt-{proj}-{wt}")))
-        .h(px(h))
+        .h(rpx(h))
         .w_full()
         .flex()
         .items_center()
@@ -795,10 +800,11 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
             div()
                 .flex()
                 .flex_1()
+                .min_w_0()
                 .items_center()
-                .gap(px(6.0))
-                .pl(px(26.0))
-                .pr(px(6.0))
+                .gap(rpx(6.0))
+                .pl(rpx(26.0))
+                .pr(rpx(6.0))
                 .overflow_hidden()
                 .on_mouse_down(
                     MouseButton::Left,
@@ -806,13 +812,14 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
                 )
                 .child(
                     div()
-                        .w(px(14.0))
+                        .w(rpx(14.0))
+                        .flex_none()
                         .child(icons::icon(twist, 10.0, c::FG_MUTE())),
                 )
                 .child(label),
         )
         .when_some(git_suffix.clone(), |d, s| {
-            d.child(ui_text(s, 11.0, c::FG_MUTE()))
+            d.child(ui_text(s, 11.0, c::FG_MUTE()).flex_none())
         })
         .when_some(*rollup, |d, st| {
             d.child(state_glyph(st, ctx.tick, ctx.pulse))
@@ -845,15 +852,16 @@ fn session_row(
     let mut meta = div()
         .flex()
         .flex_1()
+        .min_w_0()
         .items_center()
-        .gap(px(6.0))
+        .gap(rpx(6.0))
         .overflow_hidden()
-        .child(icons::icon(agent.icon_name(), 12.0, agent_color))
-        .child(ui_text(agent.label(), 12.0, agent_color));
+        .child(icons::icon(agent.icon_name(), 12.0, agent_color).flex_none())
+        .child(ui_text(agent.label(), 12.0, agent_color).flex_none());
     if let Some(ctx_text) = context {
         meta = meta
-            .child(ui_text("·", 11.0, c::FG_MUTE()))
-            .child(ui_text(truncate_ellipsis(&ctx_text, 28), 11.0, c::FG_MUTE()).overflow_hidden());
+            .child(ui_text("·", 11.0, c::FG_MUTE()).flex_none())
+            .child(ui_text(ctx_text, 11.0, c::FG_MUTE()).truncate());
     }
 
     // Two-step confirm: the first press arms (red tick), the second kills
@@ -882,14 +890,14 @@ fn session_row(
 
     div()
         .id(SharedString::from(format!("sess-{}", id.raw())))
-        .h(px(ROW_H))
+        .h(rpx(ROW_H))
         .w_full()
         .relative()
         .flex()
         .items_center()
-        .gap(px(8.0))
-        .pl(px(46.0))
-        .pr(px(8.0))
+        .gap(rpx(8.0))
+        .pl(rpx(46.0))
+        .pr(rpx(8.0))
         .when(active, |d| d.bg(c::BG_HL()))
         .when(state == ActivityState::WaitingForInput, |d| {
             d.bg(Hsla {
@@ -911,7 +919,7 @@ fn session_row(
                     .top(px(0.0))
                     .left(px(0.0))
                     .bottom(px(0.0))
-                    .w(px(3.0))
+                    .w(rpx(3.0))
                     .bg(c::AMBER()),
             )
         })
@@ -921,11 +929,11 @@ fn session_row(
 fn empty_row(title: &'static str, subtitle: &'static str) -> AnyElement {
     div()
         .w_full()
-        .py(px(24.0))
+        .py(rpx(24.0))
         .flex()
         .flex_col()
         .items_center()
-        .gap(px(6.0))
+        .gap(rpx(6.0))
         .child(ui_text(title, 14.0, c::FG_DIM()))
         .child(ui_text(subtitle, 12.0, c::FG_MUTE()))
         .into_any_element()
@@ -943,7 +951,7 @@ pub fn terminals_header(
     let twist = if expanded { "chev-down" } else { "chev-right" };
     div()
         .id("terminals-header")
-        .h(px(ROW_H))
+        .h(rpx(ROW_H))
         .w_full()
         .flex()
         .items_center()
@@ -952,17 +960,17 @@ pub fn terminals_header(
                 .flex()
                 .flex_1()
                 .items_center()
-                .gap(px(6.0))
-                .pl(px(12.0))
+                .gap(rpx(6.0))
+                .pl(rpx(12.0))
                 .on_mouse_down(MouseButton::Left, ctx.on(RowAction::ToggleTerminalsSection))
                 .child(icons::icon(twist, 10.0, c::FG_MUTE()))
                 .child(icons::icon("term", 11.0, c::FG_MUTE()))
                 .child(ui_text(tracked("TERMINALS"), 10.0, c::FG_MUTE()))
                 .child(
                     ui_text(format!("{count}"), 10.0, c::FG_MUTE())
-                        .px(px(6.0))
+                        .px(rpx(6.0))
                         .py(px(1.0))
-                        .rounded(px(3.0))
+                        .rounded(rpx(3.0))
                         .bg(c::BORDER_SOFT()),
                 )
                 .when(activity_dot, |d| d.child(dot(c::CYAN()))),
@@ -1024,13 +1032,13 @@ fn terminal_row(
     };
     div()
         .id(SharedString::from(format!("term-{idx}")))
-        .h(px(ROW_H))
+        .h(rpx(ROW_H))
         .w_full()
         .flex()
         .items_center()
-        .gap(px(8.0))
-        .pl(px(16.0))
-        .pr(px(8.0))
+        .gap(rpx(8.0))
+        .pl(rpx(16.0))
+        .pr(rpx(8.0))
         .when(active, |d| d.bg(c::BG_HL()))
         .hover(|s| s.bg(c::BG_HOVER()))
         .on_mouse_down(MouseButton::Left, ctx.on(RowAction::SelectTerminal(idx)))
@@ -1038,26 +1046,15 @@ fn terminal_row(
             div()
                 .flex()
                 .flex_1()
+                .min_w_0()
                 .items_center()
-                .gap(px(6.0))
+                .gap(rpx(6.0))
                 .overflow_hidden()
-                .child(icons::icon("term", 12.0, name_color))
-                .child(ui_text(truncate_ellipsis(&context, 28), 12.0, name_color)),
+                .child(icons::icon("term", 12.0, name_color).flex_none())
+                .child(ui_text(context, 12.0, name_color).truncate()),
         )
         .child(close)
         .into_any_element()
-}
-
-/// One line, `…` when too long (`src/gui/rows.rs:857-867`).
-#[must_use]
-pub fn truncate_ellipsis(s: &str, max_chars: usize) -> String {
-    let count = s.chars().count();
-    if count <= max_chars {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(max_chars.saturating_sub(1)).collect();
-    out.push('…');
-    out
 }
 
 #[cfg(test)]
@@ -1194,6 +1191,7 @@ mod tests {
                             sessions: vec![],
                         },
                     ],
+                    sessions: vec![sid(1), sid(2)],
                 },
                 SnapshotProject {
                     idx: 2,
@@ -1207,6 +1205,7 @@ mod tests {
                         is_main: true,
                         sessions: vec![sid(3)],
                     }],
+                    sessions: vec![sid(3)],
                 },
             ],
         }
@@ -1326,6 +1325,34 @@ mod tests {
             shape(&rows_of(&snap, &ws, 0)),
             vec!["P0:alpha", "P2:gamma", "W2.0:gamma", "S3"]
         );
+    }
+
+    /// The project row counts by project, not by worktree: a cold `wt_cache`
+    /// gives a non-active project zero worktrees, and its count must still be
+    /// its own session count (`sidebar.rs` `by_proj[s.project]`).
+    #[test]
+    fn a_worktree_cache_miss_still_counts_and_rolls_up_the_projects_sessions() {
+        let mut snap = fixture();
+        snap.projects[0].worktrees.clear();
+        let mut activity = ActivityStore::new();
+        activity.set_state_for_test(sid(2), ActivityState::Working);
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        // Selecting project 0 leaves it expanded; collapse it for the roll-up.
+        ws.select_project(0);
+        let rows = flatten(&snap, &ws, &activity, &HashMap::new(), &[]);
+        let Some(TreeRow::Project {
+            count,
+            expanded,
+            rollup,
+            ..
+        }) = rows.first()
+        else {
+            unreachable!("the first row is the project")
+        };
+        assert!(!expanded, "the project must be collapsed to roll up");
+        assert_eq!(*count, snap.projects[0].sessions.len());
+        assert_eq!(*rollup, Some(ActivityState::Working));
     }
 
     /// `sidebar.rs:338` — the comment there is the contract.

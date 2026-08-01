@@ -195,6 +195,13 @@ impl ActivityStore {
             .map_or(ActivityState::Idle, |t| t.state)
     }
 
+    /// Force a session's classified state. Test-only: the pure row-layout
+    /// tests need a non-`Idle` store without running a classification pass.
+    #[cfg(test)]
+    pub fn set_state_for_test(&mut self, id: SessionId, state: ActivityState) {
+        self.trackers.entry(id).or_default().state = state;
+    }
+
     /// Needs-attention pulse phase in `[0, 1]` (0 = fully opaque, 1 = maximum
     /// dim), so callers interpolate unconditionally.
     #[must_use]

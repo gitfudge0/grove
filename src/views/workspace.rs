@@ -5,6 +5,7 @@
 //! zen). Every dimension comes from a named constant carrying its
 //! `src/gui/metrics.rs` line.
 
+use crate::views::rpx;
 use std::collections::HashMap;
 
 use gpui::{div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, Window};
@@ -19,7 +20,7 @@ use crate::entities::toast::ToastState;
 use crate::entities::upgrade::Upgrade;
 use crate::entities::upgrade_state::upgrade_available;
 use crate::entities::workspace_state::{
-    term_portion_for_cursor, LiveTile, PtyPane, WorkspaceState,
+    clamp_sidebar_width, term_portion_for_cursor, LiveTile, PtyPane, WorkspaceState, RAIL_W,
 };
 use crate::keymap;
 use crate::settings::SettingsState;
@@ -67,7 +68,17 @@ pub struct Workspace {
     logical_win_w: f32,
     /// The terminal takes focus on the first frame so keystrokes land without
     /// a click; `window.focus` needs a `&mut Window`, which `new` has not got.
+    /// Cleared again whenever a modal closes: the layer's focus handle leaves
+    /// the element tree with it, and a `Window::focus` pointing at a handle
+    /// that is no longer painted dispatches to the *dispatch-tree root*,
+    /// which is above this view's div — so every binding and `on_key_down`
+    /// below it would go dead until the next click.
     focused_once: bool,
+    /// The body view that currently holds keyboard focus. Switching sessions
+    /// swaps the body entity without any focus call of its own, so `render`
+    /// compares this against the live body's id and refocuses when it changes
+    /// — never every frame, or the terminal would fight for focus.
+    last_body_focused: Option<gpui::EntityId>,
     /// `observe_window_activation` needs a `&mut Window`, which `new` has not
     /// got — registered on the first frame instead.
     activation_observed: bool,
@@ -75,8 +86,26 @@ pub struct Workspace {
     /// resized to these the moment it attaches, so tmux does not report a
     /// stale geometry on the first frame (`src/gui/update/mod.rs:135-139`).
     last_pty_dims: (u16, u16),
-    /// The startup tmux scan runs once, on the first frame.
+    /// `last_pty_dims` from the previous frame, so the startup discovery gate
+    /// can tell a settled viewport (two consecutive equal frames) from a
+    /// still-resizing window (Wayland configures geometry over several
+    /// frames, so frame 1's size is transient, not final).
+    prev_pty_dims: Option<(u16, u16)>,
+    /// Frames rendered while waiting for `last_pty_dims` to settle, so
+    /// discovery is forced after `TMUX_DISCOVERY_SETTLE_FRAMES` even if the
+    /// viewport never stops changing.
+    tmux_discovery_frames: u32,
+    /// The startup tmux scan runs once, after the viewport has settled.
     tmux_discovered: bool,
+    /// Frames rendered since discovery, so a reattached session that no tile
+    /// ever paints still gets its deferred tmux attach after
+    /// `TMUX_ATTACH_FALLBACK_FRAMES`. Stops counting once nothing is pending.
+    tmux_attach_frames: u32,
+    /// The sidebar width is seeded from the real, zoom-corrected window width
+    /// on the first frame rather than the 1280px placeholder `new` had to use
+    /// before any `Window` existed (`update/mod.rs:124-127`); every later
+    /// frame just re-clamps the live width.
+    sidebar_seeded: bool,
     /// `Window::on_window_should_close` is registered on the first frame for
     /// the same reason, and additionally needs *this* entity (it counts the
     /// running native sessions and runs [`Workspace::shutdown`]).
@@ -150,7 +179,10 @@ impl Workspace {
             cx.observe(&clock, |_, _, cx| cx.notify()),
             // Selection changes repaint the body (Task 6 Step 2).
             cx.observe(&state, |_, _, cx| cx.notify()),
-            cx.observe(&registry, |_, _, cx| cx.notify()),
+            cx.observe(&registry, |this, _, cx| {
+                this.sync_grid_tiles(cx);
+                cx.notify();
+            }),
             // The 480ms pass repaints the chrome that reads it.
             cx.observe(&activity, |_, _, cx| cx.notify()),
             // The toast's own TTL task clears it; the statusbar repaints with it.
@@ -181,10 +213,15 @@ impl Workspace {
             last_term_divider_press: None,
             logical_win_w: 1280.0,
             focused_once: false,
+            last_body_focused: None,
             activation_observed: false,
             close_hook_registered: false,
             last_pty_dims: (24, 80),
+            prev_pty_dims: None,
+            tmux_discovery_frames: 0,
             tmux_discovered: false,
+            tmux_attach_frames: 0,
+            sidebar_seeded: false,
             observers,
         }
     }
@@ -251,6 +288,31 @@ impl Workspace {
     /// The persisted arrangement (`Store::grid_order`).
     fn saved_grid_order(cx: &App) -> Vec<String> {
         cx.global::<SettingsState>().store.grid_order.clone()
+    }
+
+    /// Re-derive the grid's tile list from the live registry. Every registry
+    /// change funnels through here — spawn, kill, tmux discovery — because
+    /// `tile_order` was otherwise only built on grid entry and teardown, so a
+    /// session spawned while the grid was up never got a tile.
+    fn sync_grid_tiles(&mut self, cx: &mut Context<Self>) {
+        let (grid, before_zen, known) = {
+            let ws = self.state.read(cx);
+            (
+                ws.grid_view(),
+                ws.grid_view_before_zen(),
+                ws.tile_order().to_vec(),
+            )
+        };
+        if !grid && !before_zen {
+            return;
+        }
+        let live = self.live_tiles(cx);
+        if live.len() == known.len() && live.iter().all(|t| known.contains(&t.id)) {
+            return;
+        }
+        let saved = Self::saved_grid_order(cx);
+        self.state
+            .update(cx, |s, _| s.reconcile_after_teardown(&live, &saved));
     }
 
     /// Drains whatever the last transition staged and writes it to
@@ -382,9 +444,17 @@ impl Workspace {
             crate::reattach::plan(&discovered, &existing, &wt_order)
         };
         let dims = self.last_pty_dims;
+        // Re-arm the never-painted fallback: these sessions attach lazily, and
+        // this is the only place new pending ones appear.
+        self.tmux_attach_frames = 0;
         for entry in plan {
             let name = entry.session.name.clone();
-            let session = cx.new(|cx| TerminalSession::attach_existing(&name, cx));
+            // `dims` only seeds the emulator — the tmux client is spawned
+            // later, by `TerminalSession::attach_now`, at the dims of the tile
+            // that actually paints this session. One pair of dims cannot be
+            // right for every tile in grid view, and attaching at the wrong
+            // size costs the agent a spurious SIGWINCH one frame later.
+            let session = cx.new(|cx| TerminalSession::attach_existing(&name, dims.0, dims.1, cx));
             if let Some(err) = session.read(cx).spawn_error().map(str::to_string) {
                 tracing::warn!(session = %name, error = %err, "reattach failed; skipping");
                 continue;
@@ -392,10 +462,6 @@ impl Workspace {
             let id = self
                 .registry
                 .update(cx, |r, _| r.insert_reattached(entry.at, &entry.session));
-            // Resize immediately so tmux reports the right geometry on the
-            // first frame rather than after a resize
-            // (`src/gui/update/mod.rs:135-139`).
-            session.update(cx, |s, _| s.resize(dims.0, dims.1));
             self.registry.update(cx, |r, cx| {
                 r.attach(id, session, Some(name.clone()));
                 cx.notify();
@@ -404,24 +470,55 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Force the deferred tmux attach on every reattached session no tile has
+    /// painted yet, at the focused pane's dims. The painted path
+    /// (`TerminalElement::prepaint`) is the one that gets the dims right, so
+    /// this runs only as a backstop — see `TMUX_ATTACH_FALLBACK_FRAMES`.
+    fn attach_pending_tmux_sessions(&mut self, cx: &mut Context<Self>) {
+        let dims = self.last_pty_dims;
+        let pending: Vec<_> = {
+            let registry = self.registry.read(cx);
+            registry
+                .all()
+                .iter()
+                .filter_map(|meta| registry.session(meta.id))
+                .filter(|session| session.read(cx).is_pending_attach())
+                .cloned()
+                .collect()
+        };
+        for session in pending {
+            session.update(cx, |session, cx| {
+                session.resize(dims.0, dims.1);
+                session.attach_now(cx);
+            });
+        }
+    }
+
     /// `mod+g` (`layout.rs:199-216`).
-    fn toggle_grid(&mut self, cx: &mut Context<Self>) {
+    fn toggle_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (live, saved) = (self.live_tiles(cx), Self::saved_grid_order(cx));
         self.state.update(cx, |s, cx| {
             s.toggle_grid(&live, &saved);
             cx.notify();
         });
         self.persist_grid_order(cx);
+        // Entering the grid must move keyboard focus onto the focused tile —
+        // without this, nothing is focused until a click, and the grid
+        // move/swap chords (scoped to the Grid context) never fire.
+        self.focus_grid_tile(window, cx);
     }
 
     /// `mod+enter` (`layout.rs:63-103`).
-    fn toggle_zen(&mut self, cx: &mut Context<Self>) {
+    fn toggle_zen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (live, saved) = (self.live_tiles(cx), Self::saved_grid_order(cx));
         self.state.update(cx, |s, cx| {
             s.toggle_zen(&live, &saved);
             cx.notify();
         });
         self.persist_grid_order(cx);
+        // Zen exit can land back in the grid; same focus re-home as
+        // `toggle_grid` (a no-op on every other screen).
+        self.focus_grid_tile(window, cx);
     }
 
     /// `mod+t` (`update/mod.rs:472-500`). The transition reports the spawn; the
@@ -443,7 +540,14 @@ impl Workspace {
     }
 
     /// The directional grid chords (`update/mod.rs:1071-1116`).
-    fn grid_move(&mut self, dx: i32, dy: i32, swap: bool, cx: &mut Context<Self>) {
+    fn grid_move(
+        &mut self,
+        dx: i32,
+        dy: i32,
+        swap: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !swap {
             // `GlobalShortcut::GridMove` only — the swap chord is untracked in
             // iced too (`src/gui/update/mod.rs:1029`).
@@ -458,6 +562,14 @@ impl Workspace {
             cx.notify();
         });
         self.persist_grid_order(cx);
+        // Mirrors `GridAction::Press`: `grid_focused` and the focused handle
+        // must never disagree (carried amendment 7), or the chord that just
+        // moved focus silently leaves the keyboard on the old tile.
+        let id = self.state.read(cx).grid_focused();
+        if let Some(view) = id.and_then(|id| self.views.get(&id)).cloned() {
+            let handle = view.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+        }
     }
 
     /// `mod+N` selects the Nth **visible** session; out of range is a no-op,
@@ -476,6 +588,10 @@ impl Workspace {
                 s.select_tile_by_index(n);
                 cx.notify();
             });
+            // Keeps `grid_focused` and gpui's keyboard focus from
+            // disagreeing (carried amendment 7) — without this, mod+N
+            // updates the highlighted tile but leaves focus on the old one.
+            self.focus_grid_tile(window, cx);
             return;
         }
         let Some(&id) = self.visible_order(cx).get(n) else {
@@ -491,6 +607,15 @@ impl Workspace {
 
     /// `sessions.rs:365-405`.
     fn cycle(&mut self, next: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // In grid view, ctrl-shift-j/k are shadowed by the global
+        // NextSession/PrevSession bindings (gpui treats no-context bindings
+        // as deepest-context, so they fire ahead of the Grid-scoped
+        // `GridMove` bindings) and `cycle_session` has no grid concept.
+        // Redirect to the grid's own move so the chord still does something.
+        if self.state.read(cx).grid_view() {
+            self.grid_move(0, if next { 1 } else { -1 }, false, window, cx);
+            return;
+        }
         let order = self.visible_order(cx);
         let snap = self.snapshot(cx);
         self.state.update(cx, |s, cx| {
@@ -532,7 +657,7 @@ impl Workspace {
 
     /// The single place an appbar/statusbar click becomes a state change.
     /// Everything Plan 07/08 owns logs a stub naming its plan.
-    fn chrome(&mut self, action: ChromeAction, cx: &mut Context<Self>) {
+    fn chrome(&mut self, action: ChromeAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             ChromeAction::ToggleAttentionQueue => self.state.update(cx, |s, cx| {
                 s.toggle_attention_queue();
@@ -546,7 +671,7 @@ impl Workspace {
             // The zen pill is not a dropdown: it jumps straight to the first
             // waiting session (`appbar.rs:277`).
             ChromeAction::JumpToWaiting => self.jump_to_waiting(cx),
-            ChromeAction::ToggleGridView => self.toggle_grid(cx),
+            ChromeAction::ToggleGridView => self.toggle_grid(window, cx),
             ChromeAction::OpenSessionLauncher => self.open_launcher(cx),
             ChromeAction::OpenSettings => self.open_settings(cx),
             ChromeAction::OpenShortcutOverlay => {
@@ -572,6 +697,10 @@ impl Workspace {
                     window.focus(&handle, cx);
                 }
             }
+            GridAction::Focus(idx) => self.state.update(cx, |s, cx| {
+                s.grid_focus_tile(idx);
+                cx.notify();
+            }),
             GridAction::Hover(idx) => self.state.update(cx, |s, cx| {
                 s.grid_drag_hover(idx);
                 cx.notify();
@@ -587,14 +716,14 @@ impl Workspace {
                 s.arm_kill(id);
                 cx.notify();
             }),
-            GridAction::Kill(id) => self.kill_session(id, cx),
+            GridAction::Kill(id) => self.kill_session(id, window, cx),
         }
     }
 
     /// The kill half of the two-step confirm, shared by the tile header and
     /// the session bar. `on_session_removed` + a grid reconcile keep
     /// `tile_order` honest (`layout.rs:276-306`).
-    fn kill_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
+    fn kill_session(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
         self.registry.update(cx, |r, cx| {
             r.remove(id);
             cx.notify();
@@ -608,6 +737,25 @@ impl Workspace {
             cx.notify();
         });
         self.persist_grid_order(cx);
+        self.focus_grid_tile(window, cx);
+    }
+
+    /// Mirrors `GridAction::Press` / `grid_move`: `grid_focused` and the
+    /// focused handle must never disagree (carried amendment 7). Killing the
+    /// focused tile updates `grid_focused` via `reconcile_after_teardown`
+    /// but leaves gpui's keyboard focus stranded on the dead view unless we
+    /// re-home it here. A no-op outside the grid — the render-time re-home
+    /// (~workspace.rs:1690-1704) already covers zen/workspace screens.
+    fn focus_grid_tile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.state.read(cx).grid_view() {
+            return;
+        }
+        let id = self.state.read(cx).grid_focused();
+        let view = id.and_then(|id| self.agent_view(id, cx));
+        if let Some(view) = view {
+            let handle = view.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+        }
     }
 
     // ── the session bar's tool cluster (Task 5 Step 4) ──────────────────
@@ -618,7 +766,7 @@ impl Workspace {
             // script opens the terminal panel for the active worktree.
             ToolAction::RunScript => self.toggle_term_panel(window, cx),
             ToolAction::ToggleTermPanel => self.toggle_term_panel(window, cx),
-            ToolAction::ToggleZen => self.toggle_zen(cx),
+            ToolAction::ToggleZen => self.toggle_zen(window, cx),
             ToolAction::RequestKill => {
                 let Some(id) = self.state.read(cx).active_session() else {
                     return;
@@ -632,16 +780,21 @@ impl Workspace {
                 let Some(id) = self.state.read(cx).active_session() else {
                     return;
                 };
-                self.kill_session(id, cx);
+                self.kill_session(id, window, cx);
             }
         }
     }
 
     // ── the home-terminal tab (Task 5 Step 3) ───────────────────────────
 
-    fn tab_action(&mut self, action: TerminalTabAction, cx: &mut Context<Self>) {
+    fn tab_action(
+        &mut self,
+        action: TerminalTabAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match action {
-            TerminalTabAction::ToggleZen => self.toggle_zen(cx),
+            TerminalTabAction::ToggleZen => self.toggle_zen(window, cx),
             TerminalTabAction::Restart => self.restart_home_terminal(cx),
         }
     }
@@ -854,8 +1007,48 @@ impl Workspace {
             project: String::new(),
             label: label.clone(),
             args: Vec::new(),
+            use_tmux: false,
         };
         let session = cx.new(|cx| TerminalSession::spawn(&target, &[], None, cx));
+        if let Some(err) = session.read(cx).spawn_error().map(str::to_string) {
+            self.toast.update(cx, |t, cx| {
+                t.set_error(format!("terminal failed: {err}"), cx);
+            });
+            return;
+        }
+        let meta = crate::entities::session_registry::SessionMeta {
+            id,
+            project: String::new(),
+            wt_path: wt_path.to_string(),
+            agent: grove_core::agent::Agent::Terminal,
+            label,
+            spawned_at: std::time::Instant::now(),
+            attention: None,
+            // Home terminals and panel shells are always native.
+            tmux: false,
+            tmux_name: None,
+        };
+        self.registry.update(cx, |r, cx| {
+            r.push_wt_shell(wt_path, meta, Some(session));
+            cx.notify();
+        });
+        self.state.update(cx, |s, cx| {
+            s.focus_pane(PtyPane::Panel);
+            cx.notify();
+        });
+    }
+
+    /// Spawn a one-shot script as a panel shell rooted at the worktree, and
+    /// focus it. Identical to [`Self::spawn_wt_shell`] except the PTY runs
+    /// `script` instead of an interactive login shell — the palette strip's
+    /// lifecycle-script rows (`src/views/modals/launcher.rs`, `row_actions`)
+    /// route through here since gpui has no `spawn_script_session`
+    /// equivalent to the iced original.
+    fn spawn_wt_script(&mut self, wt_path: &str, script: &str, cx: &mut Context<Self>) {
+        let (id, label) = self
+            .registry
+            .update(cx, |r, _| (r.next_home_id(), r.next_wt_label()));
+        let session = cx.new(|cx| TerminalSession::spawn_script(script, wt_path, cx));
         if let Some(err) = session.read(cx).spawn_error().map(str::to_string) {
             self.toast.update(cx, |t, cx| {
                 t.set_error(format!("terminal failed: {err}"), cx);
@@ -896,7 +1089,8 @@ impl Workspace {
             return Some(view.clone());
         }
         let clock = self.clock.clone();
-        let view = cx.new(|cx| TerminalView::new(session, None, clock, cx));
+        let chrome = self.state.clone();
+        let view = cx.new(|cx| TerminalView::new(session, None, clock, cx).with_chrome(chrome));
         self.panel_views.insert(id, view.clone());
         Some(view)
     }
@@ -993,24 +1187,41 @@ impl Workspace {
         })
     }
 
-    /// Arms the two-step confirm on whatever is focused
-    /// (`sessions.rs:105-122`). The confirm itself is a second press on the
-    /// row's tick; Plan 08 owns the keyboard Escape carve-out.
-    fn close_focused(&mut self, cx: &mut Context<Self>) {
+    /// Arms the two-step confirm on whatever is focused, or confirms it on a
+    /// second press on the same target (`shortcuts.rs:501-527`'s
+    /// `close_focused_session_decision`). A different target re-arms; no
+    /// target is a no-op — this never quits the app.
+    fn close_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ws = self.state.read(cx);
-        let (terminal_focused, active_terminal, active_session) = (
-            ws.terminal_focused(),
-            ws.active_terminal(),
-            ws.active_session(),
-        );
-        self.state.update(cx, |s, cx| {
-            match (terminal_focused, active_terminal, active_session) {
-                (true, Some(i), _) => s.arm_kill_terminal(i),
-                (false, _, Some(id)) => s.arm_kill(id),
-                _ => return,
+        let (terminal_focused, active_terminal) = (ws.terminal_focused(), ws.active_terminal());
+        if terminal_focused {
+            let Some(i) = active_terminal else { return };
+            let kill = self.state.update(cx, |s, cx| {
+                let kill = s.close_focused_terminal(i);
+                cx.notify();
+                kill
+            });
+            if kill {
+                self.sidebar
+                    .clone()
+                    .update(cx, |sb, cx| sb.close_home_terminal(i, cx));
             }
+            return;
+        }
+        let target = if ws.grid_view() {
+            ws.grid_focused().or_else(|| ws.active_session())
+        } else {
+            ws.active_session()
+        };
+        let Some(id) = target else { return };
+        let kill = self.state.update(cx, |s, cx| {
+            let kill = s.close_focused_session(id);
             cx.notify();
+            kill
         });
+        if kill {
+            self.kill_session(id, window, cx);
+        }
     }
 
     fn scroll_half_page(&mut self, up: bool, cx: &mut Context<Self>) {
@@ -1048,10 +1259,94 @@ impl Workspace {
         self.modals.clone().update(cx, |l, cx| l.open(modal, cx));
     }
 
-    /// The palette's three entry points (`src/gui/update/palette.rs:15`).
+    /// `Msg::Open` — mod+p's plain palette (`src/gui/update/palette.rs:15-19`).
     fn open_launcher(&mut self, cx: &mut Context<Self>) {
         crate::telemetry::track("launcher_opened", vec![]);
         self.open_modal(crate::modal::Modal::SessionLauncher(Box::default()), cx);
+    }
+
+    /// mod+s (`GlobalShortcut::SwitchSession`, `update/mod.rs:909-922`): opens
+    /// the palette straight into its switch drill-in, cleared query and row 0
+    /// (`launcher_enter_switch`, `session_launcher/palette.rs:356-361`).
+    ///
+    /// Zen-only, and only with something to switch *to* — `switch_to_session_
+    /// active` (`palette.rs:687-689`): outside zen the workspace/grid already
+    /// shows every session, so the drill-in would be redundant. Otherwise a
+    /// runtime no-op.
+    fn open_switch_drill_in(&mut self, cx: &mut Context<Self>) {
+        let ws = self.state.read(cx);
+        let (zen, active) = (ws.zen(), ws.active_session());
+        let registry = self.registry.read(cx);
+        // `switch_to_session_row_visible` (`palette.rs:670-680`): any session
+        // other than the active one, or any home terminal at all.
+        let row_visible = registry.all().iter().any(|m| Some(m.id) != active)
+            || !registry.home_terminals().is_empty();
+        if !zen || !row_visible {
+            return;
+        }
+        crate::telemetry::track("launcher_opened", vec![]);
+        self.open_modal(
+            crate::modal::Modal::SessionLauncher(Box::new(crate::modal::LauncherSlotState {
+                view: crate::modal::LauncherView::Switch,
+                ..Default::default()
+            })),
+            cx,
+        );
+    }
+
+    /// alt-chord+n (`GlobalShortcut::NewSessionInWorktree`,
+    /// `update/mod.rs:923-943`). Not a palette entry point at all: it launches
+    /// straight into the focused session's own project/worktree via
+    /// `launch_or_pick` (`src/app/spawn.rs:18-48`) — the configured default
+    /// agent if it is still on PATH, otherwise the agent picker (with a toast
+    /// when a saved default has gone missing).
+    fn new_session_in_worktree(&mut self, cx: &mut Context<Self>) {
+        let ws = self.state.read(cx);
+        let (terminal_focused, active_terminal, active_session) = (
+            ws.terminal_focused(),
+            ws.active_terminal(),
+            ws.active_session(),
+        );
+        let registry = self.registry.read(cx);
+        let meta = if terminal_focused {
+            active_terminal.and_then(|i| registry.home_terminals().get(i))
+        } else {
+            active_session.and_then(|id| registry.meta(id))
+        };
+        let Some((project, wt_path)) = meta.map(|m| (m.project.clone(), m.wt_path.clone())) else {
+            return;
+        };
+        let available = crate::views::modals::confirm::available_agents();
+        let saved = cx.global::<SettingsState>().store.default_agent;
+        if let Some(agent) = saved.filter(|a| available.contains(a)) {
+            let snap = self.snapshot(cx);
+            let Some(p) = snap.projects.iter().find(|p| p.name == project) else {
+                return;
+            };
+            let Some(wt) = p.worktrees.iter().position(|w| w.path == wt_path) else {
+                return;
+            };
+            let proj = p.idx;
+            self.sidebar
+                .clone()
+                .update(cx, |s, cx| s.spawn_session(proj, wt, agent, cx));
+            return;
+        }
+        if let Some(saved) = saved {
+            let msg = format!("{} not found; pick an agent", saved.label());
+            self.toast.update(cx, |t, cx| t.set_error(msg, cx));
+        }
+        let sel = saved
+            .and_then(|a| available.iter().position(|&x| x == a))
+            .unwrap_or(0);
+        self.open_modal(
+            crate::modal::Modal::AgentPicker {
+                project,
+                wt_path,
+                sel,
+            },
+            cx,
+        );
     }
 
     /// `on_open_settings` (`src/gui/update/mod.rs:551-555`).
@@ -1074,7 +1369,14 @@ impl Workspace {
                 self.shutdown(cx);
                 cx.quit();
             }
-            ModalEvent::Closed => cx.notify(),
+            // The slot is empty and the layer is about to be unmounted, taking
+            // its focus handle out of the element tree. Hand the keyboard back
+            // to the body on the next frame (see `focused_once`).
+            ModalEvent::Closed => {
+                self.focused_once = false;
+                self.last_body_focused = None;
+                cx.notify();
+            }
             // The Settings tmux row (or the first-run choice) switched the
             // backend on: re-scan, exactly as `discover_tmux_sessions` does
             // in iced (`src/app/mod.rs:288-292,347-366`).
@@ -1085,22 +1387,36 @@ impl Workspace {
                 wt_path,
                 agent,
             } => {
-                let snap = self.snapshot(cx);
-                let Some(p) = snap.projects.iter().find(|p| &p.name == project) else {
-                    return;
+                // The palette can launch into a project whose worktree cache is
+                // cold, so resolving through the tree snapshot dropped the launch
+                // on the floor (`ProjectTree::snapshot` only carries the active
+                // project's worktrees). Take the emitted path at face value; warm
+                // the tree so the new session's row is visible, exactly as
+                // `RowAction::SelectProject` does.
+                let (project, wt_path, agent) = (project.clone(), wt_path.clone(), *agent);
+                let old = self.state.read(cx).proj_idx();
+                let target = {
+                    let store = &cx.global::<SettingsState>().store;
+                    store
+                        .projects
+                        .iter()
+                        .position(|p| p.name == project)
+                        .map(|i| (i, store.projects[i].path.clone()))
                 };
-                let Some(wt) = p.worktrees.iter().position(|w| &w.path == wt_path) else {
-                    return;
-                };
-                let (proj, agent) = (p.idx, *agent);
+                if let Some((proj, path)) = target {
+                    if proj != old {
+                        self.tree.update(cx, |t, cx| {
+                            t.switch_active_project(old, proj, &path);
+                            cx.notify();
+                        });
+                    }
+                }
                 self.sidebar
                     .clone()
-                    .update(cx, |s, cx| s.spawn_session(proj, wt, agent, cx));
+                    .update(cx, |s, cx| s.spawn_session_in(project, wt_path, agent, cx));
             }
             ModalEvent::NewHomeTerminal => {
-                self.sidebar
-                    .clone()
-                    .update(cx, Sidebar::spawn_home_terminal);
+                self.sidebar.clone().update(cx, Sidebar::new_home_terminal);
             }
             ModalEvent::SelectSession(id) => {
                 let snap = self.snapshot(cx);
@@ -1117,6 +1433,18 @@ impl Workspace {
                     s.select_home_terminal(i, count);
                     cx.notify();
                 });
+            }
+            // The palette strip's lifecycle-script rows (`launcher.rs`, the
+            // strip): open the worktree's terminal panel if it is closed,
+            // then run the script as a shell in it.
+            ModalEvent::RunScript { wt_path, script } => {
+                if !self.state.read(cx).term_panel_open() {
+                    self.state.update(cx, |s, cx| {
+                        s.toggle_term_panel(true);
+                        cx.notify();
+                    });
+                }
+                self.spawn_wt_script(wt_path, script, cx);
             }
             ModalEvent::WorktreeAdded | ModalEvent::TreeInvalidated => {
                 let active = {
@@ -1162,25 +1490,13 @@ impl Workspace {
             ws.grid_focused(),
             ws.pending_kill(),
         );
-        let clock = self.clock.clone();
         let mut out = Vec::with_capacity(order.len());
         for id in order {
             let Some(meta) = self.registry.read(cx).meta(id).cloned() else {
                 continue;
             };
-            let view = if let Some(view) = self.views.get(&id) {
-                view.clone()
-            } else {
-                let Some(session) = self.registry.read(cx).session(id).cloned() else {
-                    continue;
-                };
-                let project = Some(meta.project.clone());
-                let view = cx.new({
-                    let clock = clock.clone();
-                    |cx| TerminalView::new(session, project, clock, cx)
-                });
-                self.views.insert(id, view.clone());
-                view
+            let Some(view) = self.agent_view(id, cx) else {
+                continue;
             };
             let branch = snap
                 .projects
@@ -1259,7 +1575,10 @@ impl Workspace {
                     "click a worktree's start button to spawn an agent",
                 )
             } else {
-                grid::empty_state("No active projects", "Add or restore a project to get started.")
+                grid::empty_state(
+                    "No active projects",
+                    "Add or restore a project to get started.",
+                )
             };
             return div()
                 .flex()
@@ -1294,8 +1613,8 @@ impl Workspace {
                     // `compute_pty_dims` fudge constant so the cell grid
                     // matches (`views::grid::PTY_PAD_W` carries the full
                     // derivation and the `src/gui/metrics.rs:21-22` citation).
-                    .px(px(PTY_PAD_W / 2.0))
-                    .py(px(PTY_PAD_H / 2.0))
+                    .px(rpx(PTY_PAD_W / 2.0))
+                    .py(rpx(PTY_PAD_H / 2.0))
                     // A click on the agent PTY moves the input intent back to
                     // the agent (`focus_pane`, `pty_input.rs:146-158`); the
                     // keystrokes themselves follow gpui focus, which the
@@ -1390,6 +1709,7 @@ impl Workspace {
             ws.active_session(),
         );
         let clock = self.clock.clone();
+        let chrome = self.state.clone();
         if terminal_focused {
             let i = active_terminal?;
             let registry = self.registry.read(cx);
@@ -1398,18 +1718,31 @@ impl Workspace {
             if let Some(view) = self.home_views.get(&id) {
                 return Some(view.clone());
             }
-            let view = cx.new(|cx| TerminalView::new(session, None, clock, cx));
+            let view = cx.new(|cx| TerminalView::new(session, None, clock, cx).with_chrome(chrome));
             self.home_views.insert(id, view.clone());
             return Some(view);
         }
-        let id = active_session?;
-        let registry = self.registry.read(cx);
-        let session = registry.session(id)?.clone();
-        let project = registry.meta(id).map(|m| m.project.clone());
+        self.agent_view(active_session?, cx)
+    }
+
+    /// Get-or-create the cached `TerminalView` for an agent session. Shared by
+    /// the single-session body, the grid tiles, and `focus_grid_tile` — the
+    /// last one is why creation can't live only in render: entering the grid
+    /// from the terminal tab must be able to focus a tile whose view has not
+    /// rendered yet.
+    fn agent_view(
+        &mut self,
+        id: crate::entities::session_registry::SessionId,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<TerminalView>> {
         if let Some(view) = self.views.get(&id) {
             return Some(view.clone());
         }
-        let view = cx.new(|cx| TerminalView::new(session, project, clock, cx));
+        let registry = self.registry.read(cx);
+        let session = registry.session(id)?.clone();
+        let project = registry.meta(id).map(|m| m.project.clone());
+        let (clock, chrome) = (self.clock.clone(), self.state.clone());
+        let view = cx.new(|cx| TerminalView::new(session, project, clock, cx).with_chrome(chrome));
         self.views.insert(id, view.clone());
         Some(view)
     }
@@ -1424,6 +1757,24 @@ impl Render for Workspace {
         window.set_rem_size(px(zoom::REM_BASE * zoom_value));
         // The split divider maps a cursor x against the logical window width.
         self.logical_win_w = f32::from(window.viewport_size().width) / zoom_value.max(0.1);
+        // The first frame is the first point a real window width exists;
+        // before that `new` had to seed against a 1280px placeholder
+        // (`update/mod.rs:124-127`). Every later frame re-clamps the current
+        // width against a resize (`layout.rs:59`).
+        let seed_w = if self.sidebar_seeded {
+            self.state.read(cx).sidebar_width()
+        } else {
+            self.sidebar_seeded = true;
+            cx.global::<SettingsState>()
+                .store
+                .sidebar_width
+                .unwrap_or(RAIL_W)
+        };
+        let clamped = clamp_sidebar_width(seed_w, self.logical_win_w);
+        if (clamped - self.state.read(cx).sidebar_width()).abs() > f32::EPSILON {
+            self.state
+                .update(cx, |s, _| s.set_sidebar_width(clamped, self.logical_win_w));
+        }
 
         // Spec's "always >= 1 home terminal": the section lazily spawns its
         // first shell (`src/app/terminals.rs:21-30`).
@@ -1460,17 +1811,50 @@ impl Render for Workspace {
         // screen still needs a truthful size).
         {
             let size = window.viewport_size();
-            let body_w = f32::from(size.width) - self.state.read(cx).sidebar_width();
+            // Every chrome constant now renders through `rpx`, so it costs
+            // `const * zoom` real pixels; the subtraction has to scale too.
+            let body_w = f32::from(size.width) - self.state.read(cx).sidebar_width() * zoom_value;
             let body_h =
                 f32::from(size.height) - (appbar::APPBAR_H + statusbar::STATUS_H) * zoom_value;
             self.last_pty_dims = ZoomState::new(zoom_value).pty_dims(body_w, body_h);
+            cx.set_global(crate::zoom::CurrentPtyDims {
+                rows: self.last_pty_dims.0,
+                cols: self.last_pty_dims.1,
+            });
         }
 
-        // Startup discovery, once, after the first frame's geometry is known
-        // (`src/app/mod.rs:219-224`).
+        // Startup discovery, once, after the viewport has settled — not on
+        // the first frame, whose geometry is transient (Wayland configures
+        // the window over several frames, `src/app/mod.rs:219-224`). Wait
+        // for `last_pty_dims` to repeat across two consecutive frames so
+        // reattach uses the session's real dims instead of a bogus one, but
+        // never wait forever: force it after `TMUX_DISCOVERY_SETTLE_FRAMES`
+        // in case dims never stop changing.
+        const TMUX_DISCOVERY_SETTLE_FRAMES: u32 = 60;
         if !self.tmux_discovered {
-            self.tmux_discovered = true;
-            self.discover_tmux_sessions(cx);
+            self.tmux_discovery_frames += 1;
+            let settled = self.prev_pty_dims == Some(self.last_pty_dims);
+            let timed_out = self.tmux_discovery_frames > TMUX_DISCOVERY_SETTLE_FRAMES;
+            if settled || timed_out {
+                self.tmux_discovered = true;
+                self.discover_tmux_sessions(cx);
+            } else {
+                self.prev_pty_dims = Some(self.last_pty_dims);
+            }
+        }
+
+        /// A session that is attached but never painted (off the visible grid
+        /// page) gets no layout pass and so no true dims; attach it at the
+        /// focused pane's dims rather than leaving it dark forever.
+        const TMUX_ATTACH_FALLBACK_FRAMES: u32 = 90;
+        // Counts only after discovery, and stops the frame it fires — the
+        // painted path has had 90 frames by then, so anything still pending
+        // is off-screen and will not get dims of its own.
+        if self.tmux_discovered && self.tmux_attach_frames <= TMUX_ATTACH_FALLBACK_FRAMES {
+            self.tmux_attach_frames += 1;
+            if self.tmux_attach_frames > TMUX_ATTACH_FALLBACK_FRAMES {
+                self.attach_pending_tmux_sessions(cx);
+            }
         }
 
         if !self.activation_observed {
@@ -1501,11 +1885,67 @@ impl Render for Workspace {
         });
 
         let body = self.body_view(cx);
-        if !self.focused_once {
-            if let Some(view) = body.as_ref() {
+        let modal_open = self.modals.read(cx).is_open();
+        // Focus the body on the first frame, and again whenever the body
+        // *entity* changes — selecting, cycling or clicking a session swaps
+        // the view without touching focus, which otherwise stays stranded on
+        // the old handle. Gated on the id actually changing, so a steady-state
+        // frame never re-focuses.
+        // Fix 4: gpui dispatches actions along the *focus path*, so a focus
+        // handle stranded on a view that fell out of the current element tree
+        // (e.g. the grid exited, or a panel shell closed) leaves every root
+        // `.on_action` dead even though the id-change check above never
+        // fires. Re-home focus whenever the live focus isn't the body or the
+        // open panel's handle — gated off while the grid is showing, since
+        // per-tile grid focus is `GridAction::Press`'s job, not this one's.
+        if !modal_open && self.state.read(cx).grid_view() {
+            // `grid_focused` and the keyboard must never disagree (carried
+            // amendment 7), and plenty of paths move one without the other: a
+            // modal closing strands focus on the unmounted modal handle, and
+            // spawning a session moves `grid_focused` onto the new tile. Every
+            // other setter (`GridAction::Press`, `grid_move`) leaves them in
+            // agreement, so this check is a no-op in steady state.
+            let tile = self
+                .state
+                .read(cx)
+                .grid_focused()
+                .and_then(|id| self.agent_view(id, cx))
+                .map(|v| v.read(cx).focus_handle(cx));
+            if tile.is_some() {
+                if window.focused(cx) != tile {
+                    self.focus_grid_tile(window, cx);
+                }
+            } else if window.focused(cx) != Some(self.focus.clone()) {
+                // An empty grid has no tile to focus, so the re-home above
+                // can't run — and every stranding path (a modal closing, the
+                // sidebar and body unmounting when the grid takes the row)
+                // then leaves focus outside the element tree, which kills
+                // *every* binding including the one that exits the grid.
+                window.focus(&self.focus, cx);
+            }
+            self.focused_once = true;
+        } else if !modal_open && !self.state.read(cx).grid_view() {
+            let panel_handle = if self.state.read(cx).term_panel_open() {
+                self.panel_view(cx).map(|v| v.read(cx).focus_handle(cx))
+            } else {
+                None
+            };
+            let body_handle = body.as_ref().map(|v| v.read(cx).focus_handle(cx));
+            let focused_ok = window.focused(cx).is_some_and(|f| {
+                Some(&f) == body_handle.as_ref() || Some(&f) == panel_handle.as_ref()
+            });
+            self.last_body_focused = body.as_ref().map(|v| v.entity_id());
+            if !focused_ok {
                 self.focused_once = true;
-                let handle = view.read(cx).focus_handle(cx);
-                window.focus(&handle, cx);
+                if let Some(handle) = body_handle {
+                    window.focus(&handle, cx);
+                } else {
+                    // No sessions at all: keep the root on the dispatch path
+                    // rather than leaving focus stranded on nothing.
+                    window.focus(&self.focus, cx);
+                }
+            } else {
+                self.focused_once = true;
             }
         }
 
@@ -1520,7 +1960,6 @@ impl Render for Workspace {
         // The modal declares its own context instead (spec §4); that, plus the
         // layer claiming every key its verdict table names, is what replaces
         // iced's `MODAL_OPEN` static (carried decision 3).
-        let modal_open = self.modals.read(cx).is_open();
         let screen_context = self.state.read(cx).screen().key_context();
 
         let root = div()
@@ -1545,32 +1984,45 @@ impl Render for Workspace {
                     this.jump_to_waiting(cx);
                 }),
             )
-            .on_action(cx.listener(|this, _: &keymap::CloseFocusedSession, _, cx| {
-                this.close_focused(cx);
-            }))
+            .on_action(
+                cx.listener(|this, _: &keymap::CloseFocusedSession, window, cx| {
+                    this.close_focused(window, cx);
+                }),
+            )
             .on_action(cx.listener(|this, _: &keymap::ScrollHalfPageUp, _, cx| {
                 this.scroll_half_page(true, cx);
             }))
             .on_action(cx.listener(|this, _: &keymap::ScrollHalfPageDown, _, cx| {
                 this.scroll_half_page(false, cx);
             }))
-            .on_action(cx.listener(|this, _: &keymap::ToggleGrid, _, cx| this.toggle_grid(cx)))
-            .on_action(cx.listener(|this, _: &keymap::ToggleZen, _, cx| this.toggle_zen(cx)))
+            .on_action(cx.listener(|this, _: &keymap::ToggleGrid, window, cx| {
+                this.toggle_grid(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &keymap::ToggleZen, window, cx| {
+                this.toggle_zen(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &keymap::ToggleTerminal, _, cx| {
                 this.toggle_terminal_tab(cx);
             }))
             .on_action(cx.listener(|this, _: &keymap::NewHomeTerminal, _, cx| {
-                this.sidebar
-                    .clone()
-                    .update(cx, Sidebar::spawn_home_terminal);
+                this.sidebar.clone().update(cx, Sidebar::new_home_terminal);
             }))
-            .on_action(cx.listener(|this, a: &keymap::GridMove, _, cx| {
-                this.grid_move(a.dx, a.dy, false, cx);
+            .on_action(cx.listener(|this, a: &keymap::GridMove, window, cx| {
+                this.grid_move(a.dx, a.dy, false, window, cx);
             }))
-            .on_action(cx.listener(|this, a: &keymap::GridSwap, _, cx| {
-                this.grid_move(a.dx, a.dy, true, cx);
+            .on_action(cx.listener(|this, a: &keymap::GridSwap, window, cx| {
+                this.grid_move(a.dx, a.dy, true, window, cx);
             }))
             .on_action(cx.listener(|this, a: &keymap::AdjustTermPanel, _, cx| {
+                // `term_panel_open` is runtime state, not scope: with the panel
+                // closed, Ctrl+Shift+←/→ must fall through to the PTY rather
+                // than being swallowed (`update/mod.rs:860-865`). A gpui action
+                // handler consumes the key even when it does nothing, so the
+                // closed case has to `propagate` explicitly.
+                if !this.state.read(cx).term_panel_open() {
+                    cx.propagate();
+                    return;
+                }
                 this.state.update(cx, |s, cx| {
                     s.adjust_term_panel_portion(a.delta);
                     cx.notify();
@@ -1585,11 +2037,11 @@ impl Render for Workspace {
             }))
             .on_action(
                 cx.listener(|this, _: &keymap::NewSessionInWorktree, _, cx| {
-                    this.open_launcher(cx);
+                    this.new_session_in_worktree(cx);
                 }),
             )
             .on_action(cx.listener(|this, _: &keymap::SwitchSession, _, cx| {
-                this.open_launcher(cx);
+                this.open_switch_drill_in(cx);
             }))
             .on_action(cx.listener(|this, _: &keymap::Settings, _, cx| {
                 this.open_settings(cx);
@@ -1604,7 +2056,10 @@ impl Render for Workspace {
         let root = sidebar::root_drag_listeners(&self.sidebar, root);
         let root = root
             .on_mouse_move(cx.listener(|this, e: &gpui::MouseMoveEvent, _, cx| {
-                this.on_root_mouse_move(f32::from(e.position.x), cx);
+                // `logical_win_w` and the sidebar width are design-px, so the
+                // cursor is divided back out of zoom to match them.
+                let zoom = cx.global::<ZoomState>().zoom.max(0.1);
+                this.on_root_mouse_move(f32::from(e.position.x) / zoom, cx);
             }))
             .on_mouse_up(
                 gpui::MouseButton::Left,
@@ -1614,8 +2069,8 @@ impl Render for Workspace {
         // ── the chrome (Task 6 Step 3) ──────────────────────────────────
         let dispatch: appbar::Dispatch = {
             let weak = cx.entity().downgrade();
-            std::rc::Rc::new(move |action, _window, cx: &mut App| {
-                let _ = weak.update(cx, |this: &mut Self, cx| this.chrome(action, cx));
+            std::rc::Rc::new(move |action, window: &mut Window, cx: &mut App| {
+                let _ = weak.update(cx, |this: &mut Self, cx| this.chrome(action, window, cx));
             })
         };
         let snap = self.snapshot(cx);
@@ -1697,9 +2152,10 @@ impl Render for Workspace {
             dispatch: std::rc::Rc::clone(&grid_dispatch),
         };
         let body_el = if self.state.read(cx).terminal_focused() {
-            let tab_dispatch = self.dispatcher(cx, |this, action: TerminalTabAction, _, cx| {
-                this.tab_action(action, cx);
-            });
+            let tab_dispatch =
+                self.dispatcher(cx, |this, action: TerminalTabAction, window, cx| {
+                    this.tab_action(action, window, cx);
+                });
             let (running, context) = {
                 let ws = self.state.read(cx);
                 let registry = self.registry.read(cx);
@@ -1734,6 +2190,18 @@ impl Render for Workspace {
         let chrome_visible = self.state.read(cx).chrome_visible();
         let grid_view = self.state.read(cx).grid_view();
         let has_waiting = !appbar_ctx.waiting.is_empty();
+
+        // The tile slide samples `Instant::now()` at paint time, so it is only
+        // as smooth as the repaint rate — and the 60ms animation clock gives a
+        // 150ms slide about two frames. Drive it off the display's frame loop
+        // until it settles instead.
+        if grid_view && !cx.reduce_motion() {
+            if let Some(slide) = grid_ctx.slide {
+                if crate::grid::slide_progress(slide.start, std::time::Instant::now()) < 1.0 {
+                    window.request_animation_frame();
+                }
+            }
+        }
 
         // The grid replaces the whole row **including the sidebar**
         // (`view/mod.rs:66-79`); zen shows the body alone, full-bleed.
@@ -1906,18 +2374,21 @@ mod tests {
     ) -> (u16, u16) {
         use crate::views::grid::{PTY_PAD_H, PTY_PAD_W};
 
+        // The chrome is `rpx`-sized, so each constant costs `const * zoom` real
+        // pixels; the 1px hairlines stay 1 real pixel by design.
+        let z = zoom.max(0.1);
         let chrome_w = if chrome_visible {
-            sidebar_w + sidebar::SIDEBAR_DIVIDER_W
+            (sidebar_w + sidebar::SIDEBAR_DIVIDER_W) * z
         } else {
             0.0
         };
         let chrome_h = if chrome_visible {
-            (appbar::APPBAR_H + 1.0) + statusbar::STATUS_H
+            (appbar::APPBAR_H * z + 1.0) + statusbar::STATUS_H * z
         } else {
             0.0
         };
-        let body_w = win_w - chrome_w - PTY_PAD_W;
-        let body_h = win_h - chrome_h - (session_header::SESSBAR_H + 1.0) - PTY_PAD_H;
+        let body_w = win_w - chrome_w - PTY_PAD_W * z;
+        let body_h = win_h - chrome_h - (session_header::SESSBAR_H * z + 1.0) - PTY_PAD_H * z;
         ZoomState::new(zoom).pty_dims(body_w, body_h)
     }
 
@@ -1930,17 +2401,14 @@ mod tests {
         (1280.0, 800.0, 1.0, 320.0, false),
     ];
 
-    /// **Exact, delta 0** — the assertion Plan 07's two parity tests set the
-    /// shape for. Holds at zoom 1.0 for every chrome/sidebar combination in
-    /// the matrix; see
-    /// [`zoom_scales_cells_not_chrome_so_the_oracle_diverges`] for why the
-    /// zoom rows are asserted separately rather than with a tolerance.
+    /// **Exact, delta 0, at every zoom in the matrix.** The chrome is
+    /// authored in [`crate::views::rpx`], so `set_rem_size(REM_BASE * zoom)`
+    /// scales it exactly the way iced's application-scale-factor zoom scaled
+    /// its own — which is what closes the gap this test used to record as a
+    /// divergence (see [`zoom_scales_the_chrome_not_just_the_cells`]).
     #[test]
     fn the_single_session_body_matches_the_iced_oracle_exactly() {
         for (w, h, zoom, sidebar, chrome) in PARITY_MATRIX {
-            if (zoom - 1.0).abs() > f32::EPSILON {
-                continue;
-            }
             let got = gpui_session_body_dims(w, h, zoom, chrome, sidebar);
             let want = oracle_pty_dims(w, h, zoom, chrome, sidebar);
             assert_eq!(
@@ -1950,32 +2418,28 @@ mod tests {
         }
     }
 
-    /// **A recorded architectural divergence, not a bug** (findings amendment
-    /// 7). iced applies `ui_zoom` as the *application scale factor*, so the
-    /// whole viewport shrinks and `compute_pty_dims` divides every chrome
-    /// constant by the zoom. gpui applies zoom as `rem_size` + cell size only
-    /// — the appbar, statusbar, sidebar and session header are `px()`-sized
-    /// and do **not** scale — so a zoomed grove-gpui keeps its chrome and
-    /// gives the terminal proportionally more cells than iced does.
+    /// The former `zoom_scales_cells_not_chrome_so_the_oracle_diverges`,
+    /// inverted. Before the `rpx` sweep, gpui zoom scaled *only* the terminal
+    /// cell grid: the appbar, statusbar, sidebar and session header were
+    /// `px()`-sized and stayed put, so a zoomed window handed the terminal
+    /// proportionally more cells than iced did (19x61 vs 15x37 at zoom 2.0).
     ///
-    /// Pinned here with concrete numbers so a future layout change has to
-    /// come past this test. The user decides at the Phase B gate whether the
-    /// gpui behavior is the one to keep; padding the body cannot close it,
-    /// because the gap grows with zoom.
+    /// Pinned here with concrete numbers so a regression back to `px()`
+    /// chrome has to come past this test.
     #[test]
-    fn zoom_scales_cells_not_chrome_so_the_oracle_diverges() {
-        // zoom 2.0, sidebar 320, chrome visible.
+    fn zoom_scales_the_chrome_not_just_the_cells() {
+        // zoom 2.0, sidebar 320, chrome visible: doubling the zoom roughly
+        // halves the grid, because the chrome doubled along with the cells.
         assert_eq!(
             gpui_session_body_dims(1280.0, 800.0, 2.0, true, 320.0),
-            (19, 61)
+            (15, 37)
         );
-        assert_eq!(oracle_pty_dims(1280.0, 800.0, 2.0, true, 320.0), (15, 37));
-        // zoom 0.6, sidebar 320, chrome visible.
+        // zoom 0.6, sidebar 320, chrome visible: the chrome shrinks too, so
+        // the grid grows past what unscaled chrome would have allowed.
         assert_eq!(
             gpui_session_body_dims(1280.0, 800.0, 0.6, true, 320.0),
-            (65, 204)
+            (70, 236)
         );
-        assert_eq!(oracle_pty_dims(1280.0, 800.0, 0.6, true, 320.0), (70, 236));
     }
 
     /// The arithmetic tests above model the element tree; this one checks the
@@ -1990,8 +2454,8 @@ mod tests {
             ("terminal_tab.rs", include_str!("terminal_tab.rs")),
         ] {
             assert!(
-                src.contains(".px(px(PTY_PAD_W / 2.0))")
-                    && src.contains(".py(px(PTY_PAD_H / 2.0))"),
+                src.contains(".px(rpx(PTY_PAD_W / 2.0))")
+                    && src.contains(".py(rpx(PTY_PAD_H / 2.0))"),
                 "{name} does not pad its PTY body by PTY_PAD_W/PTY_PAD_H"
             );
         }

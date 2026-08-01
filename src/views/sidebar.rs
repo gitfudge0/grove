@@ -24,6 +24,7 @@
 //! column, [`TreeRow::height`](crate::views::rows::TreeRow::height) and
 //! [`crate::views::rows::agent_menu_top`] all go through it.
 
+use crate::views::rpx;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -241,7 +242,7 @@ impl Sidebar {
                 cx.notify();
             }),
             RowAction::KillTerminal(i) => self.close_home_terminal(i, cx),
-            RowAction::NewHomeTerminal => self.spawn_home_terminal(cx),
+            RowAction::NewHomeTerminal => self.new_home_terminal(cx),
             RowAction::ToggleTerminalsSection => self.state.update(cx, |s, cx| {
                 s.toggle_terminals_collapsed();
                 cx.notify();
@@ -332,10 +333,6 @@ impl Sidebar {
     // ── registry mutation ───────────────────────────────────────────────
 
     pub fn spawn_session(&mut self, proj: usize, wt: usize, agent: Agent, cx: &mut Context<Self>) {
-        self.state.update(cx, |s, cx| {
-            s.set_open_agent_menu(None);
-            cx.notify();
-        });
         let snap = self.snapshot(cx);
         let Some(project) = snap.projects.iter().find(|p| p.idx == proj) else {
             return;
@@ -344,6 +341,23 @@ impl Sidebar {
             return;
         };
         let (name, cwd) = (project.name.clone(), worktree.path.clone());
+        self.spawn_session_in(name, cwd, agent, cx);
+    }
+
+    /// Spawn by concrete project name + worktree path. The palette launches
+    /// through here: its target may live in a project whose worktree cache is
+    /// cold, so there is no snapshot position to resolve it against.
+    pub fn spawn_session_in(
+        &mut self,
+        name: String,
+        cwd: String,
+        agent: Agent,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.update(cx, |s, cx| {
+            s.set_open_agent_menu(None);
+            cx.notify();
+        });
         // Where iced builds them (`src/app/spawn.rs:26-32`): the agent's own
         // flags, from the persisted Permissions / Claude-in-Chrome settings.
         let args = {
@@ -369,6 +383,7 @@ impl Sidebar {
                     project: name,
                     label,
                     args,
+                    use_tmux: true,
                 },
             )
         });
@@ -428,6 +443,18 @@ impl Sidebar {
         });
     }
 
+    /// `mod+alt+t` from anywhere, including the grid: leaves the grid first
+    /// (a terminal spawned behind the tiles would be invisible) then spawns
+    /// exactly as [`Self::spawn_home_terminal`] does
+    /// (`update/mod.rs:1008-1022`).
+    pub fn new_home_terminal(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |s, cx| {
+            s.exit_grid_for_terminal();
+            cx.notify();
+        });
+        self.spawn_home_terminal(cx);
+    }
+
     /// Lazily spawn the pinned section's shell, and focus it.
     pub fn spawn_home_terminal(&mut self, cx: &mut Context<Self>) {
         let (label, target) = self.registry.update(cx, |r, _| {
@@ -470,7 +497,7 @@ impl Sidebar {
 
     /// Spec's "always ≥1 home terminal": closing the last one immediately
     /// respawns a fresh shell (`src/app/terminals.rs:21-30`).
-    fn close_home_terminal(&mut self, i: usize, cx: &mut Context<Self>) {
+    pub(crate) fn close_home_terminal(&mut self, i: usize, cx: &mut Context<Self>) {
         let remaining = self.registry.update(cx, |r, cx| {
             r.close_home(i);
             cx.notify();
@@ -624,8 +651,8 @@ impl Render for Sidebar {
             .flex()
             .flex_col()
             .size_full()
-            .pt(px(8.0))
-            .pb(px(12.0))
+            .pt(rpx(8.0))
+            .pb(rpx(12.0))
             .overflow_y_scroll()
             .track_scroll(&self.scroll);
         for row in &rows {
@@ -634,11 +661,15 @@ impl Render for Sidebar {
 
         let mut tree_area = div().relative().flex_1().w_full().child(list);
         if let Some((proj, wt, top, is_main)) = menu_top {
+            // The row offset is authored in design px (so it zooms), but the
+            // scroll offset is real window pixels — resolve the rem to pixels
+            // and add them in that one space.
+            let top = rpx(top).to_pixels(window.rem_size()) + self.scroll.offset().y;
             tree_area = tree_area.child(self.agent_menu(proj, wt, top, is_main, &ctx));
         }
 
         let mut rail = div()
-            .w(px(width))
+            .w(rpx(width))
             .h_full()
             .flex()
             .flex_col()
@@ -737,38 +768,38 @@ impl Sidebar {
         let toggle = {
             div()
                 .id("tree-cycle")
-                .size(px(22.0))
+                .size(rpx(22.0))
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(4.0))
+                .rounded(rpx(4.0))
                 .text_color(c::FG_MUTE())
                 .hover(|s| s.bg(c::BG_HOVER()).text_color(c::FG()))
                 .child(crate::icons::icon(next_glyph, 13.0, c::FG_MUTE()))
         };
         div()
-            .h(px(SESSBAR_H))
+            .h(rpx(SESSBAR_H))
             .w_full()
             .flex()
             .items_center()
-            .pl(px(14.0))
-            .pr(px(8.0))
+            .pl(rpx(14.0))
+            .pr(rpx(8.0))
             .child(
                 div()
                     .flex_1()
                     .font(gpui::font(crate::fonts::UI_FAMILY))
-                    .text_size(px(11.0))
+                    .text_size(rpx(11.0))
                     .text_color(c::FG_MUTE())
                     .child(SharedString::from(rows::tracked("PROJECTS"))),
             )
             .child(
                 div()
                     .id("proj-add")
-                    .size(px(22.0))
+                    .size(rpx(22.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(4.0))
+                    .rounded(rpx(4.0))
                     .text_color(c::FG_MUTE())
                     .hover(|s| s.bg(c::BG_HOVER()).text_color(c::FG()))
                     .child(crate::icons::icon("plus", 12.0, c::FG_MUTE()))
@@ -794,19 +825,21 @@ impl Sidebar {
         &self,
         proj: usize,
         wt: usize,
-        top: f32,
+        top: gpui::Pixels,
         is_main: bool,
         ctx: &RowCtx,
     ) -> impl IntoElement {
         // Click-away backdrop: a full-bleed transparent layer beneath the menu
         // that dismisses it (`src/gui/widgets/primitives.rs:74-110`).
-        let backdrop = div().absolute().top(px(0.0)).left(px(0.0)).size_full().on_mouse_down(
-            MouseButton::Left,
-            {
+        let backdrop = div()
+            .absolute()
+            .top(px(0.0))
+            .left(px(0.0))
+            .size_full()
+            .on_mouse_down(MouseButton::Left, {
                 let dispatch = Rc::clone(&ctx.dispatch);
                 move |_, window, cx| dispatch(RowAction::OpenAgentMenu(None), window, cx)
-            },
-        );
+            });
 
         let item = |label: &'static str,
                     icon_name: Option<&'static str>,
@@ -823,9 +856,9 @@ impl Sidebar {
                 .id(SharedString::from(format!("menu-{proj}-{wt}-{label}")))
                 .flex()
                 .items_center()
-                .gap(px(8.0))
-                .px(px(10.0))
-                .py(px(4.0))
+                .gap(rpx(8.0))
+                .px(rpx(10.0))
+                .py(rpx(4.0))
                 .text_color(fg)
                 .hover(move |s| s.bg(c::BG_HOVER()).text_color(hover_fg));
             if let Some(glyph) = icon_name {
@@ -834,7 +867,7 @@ impl Sidebar {
             row.child(
                 div()
                     .font(gpui::font(crate::fonts::UI_FAMILY))
-                    .text_size(px(12.0))
+                    .text_size(rpx(12.0))
                     .child(label),
             )
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -844,12 +877,12 @@ impl Sidebar {
 
         let mut menu = div()
             .absolute()
-            .top(px(top + f32::from(self.scroll.offset().y)))
-            .right(px(8.0))
+            .top(top)
+            .right(rpx(8.0))
             .flex()
             .flex_col()
-            .py(px(4.0))
-            .rounded(px(6.0))
+            .py(rpx(4.0))
+            .rounded(rpx(6.0))
             .bg(c::BG_STRIP())
             .border_1()
             .border_color(c::BORDER());
@@ -870,7 +903,7 @@ impl Sidebar {
         }
         if !is_main {
             menu = menu
-                .child(div().h(px(1.0)).mx(px(0.0)).my(px(3.0)).bg(c::BORDER()))
+                .child(div().h(px(1.0)).mx(px(0.0)).my(rpx(3.0)).bg(c::BORDER()))
                 .child(item(
                     "delete",
                     None,
@@ -895,7 +928,7 @@ impl Sidebar {
         let weak = cx.entity().downgrade();
         div()
             .id("sidebar-divider")
-            .w(px(SIDEBAR_DIVIDER_W))
+            .w(rpx(SIDEBAR_DIVIDER_W))
             .h_full()
             .flex()
             .items_center()
@@ -920,7 +953,11 @@ pub fn root_drag_listeners(sidebar: &Entity<Sidebar>, element: gpui::Div) -> gpu
     let up_target = sidebar.downgrade();
     element
         .on_mouse_move(move |e: &MouseMoveEvent, window: &mut Window, cx| {
-            let x = f32::from(e.position.x);
+            // The stored sidebar width is a *logical* (design-px) value that
+            // renders through `rpx`, so the cursor has to be divided back out
+            // of zoom before it can be compared against it.
+            let zoom = cx.global::<crate::zoom::ZoomState>().zoom.max(0.1);
+            let x = f32::from(e.position.x) / zoom;
             let _ = move_target.update(cx, |this: &mut Sidebar, cx| {
                 this.on_root_mouse_move(x, window, cx);
             });
