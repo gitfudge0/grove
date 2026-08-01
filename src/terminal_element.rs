@@ -13,6 +13,8 @@
 #![allow(dead_code)]
 
 use std::cell::Cell as StdCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use gpui::{
@@ -62,11 +64,74 @@ impl TerminalElement {
     }
 }
 
-pub struct PrepaintState {
-    bg_quads: Vec<PaintQuad>,
-    /// Origins are already anchored at `col * cell_w`; nothing here depends on
+/// One row's drawing: the merged background quads and the shaped text runs for
+/// a single grid line, plus the hash of the raw cells that produced them.
+///
+/// **Origins are relative to the ROW's top-left, not the element's**, and that
+/// is the whole trick: a row that scrolled to a different index is byte-identical
+/// drawing, so it can be reused as-is and `paint` supplies the `y` offset. Bake
+/// `r * cell_h` in here and scroll reuse silently stops working.
+pub struct RowScene {
+    /// Hash of the raw [`grove_terminal::Cell`]s, never of the resolved colors:
+    /// raw cells avoid hashing floats, and a theme change already invalidates
+    /// every row through [`GeomKey::theme`].
+    hash: u64,
+    /// `x` is anchored at `col * cell_w`, `y` is 0; nothing here depends on
     /// accumulated glyph advances.
+    bg_quads: Vec<PaintQuad>,
     runs: Vec<(Point<Pixels>, ShapedLine)>,
+}
+
+/// Everything in a terminal frame that only changes when the grid content
+/// changes, i.e. the entire cost of `prepaint` (a full `snapshot()` copy,
+/// `colors::resolve_pair` per cell, ~180 `shape_line` calls per tile).
+///
+/// Rows in top-to-bottom order, `Rc` per row so reusing one across frames is a
+/// refcount bump. Duplicate rows (blank lines are common) naturally share a
+/// single `Rc` — that is correct and desirable.
+///
+/// The scene itself carries no `bounds.origin`, and that is load-bearing: when
+/// two tiles swap, each session's `bounds.origin` moves but its `bounds.size`
+/// does not. Absolute origins would be wrong after a swap and would force
+/// invalidation on exactly the frames this cache exists to make cheap.
+pub struct TermScene {
+    pub rows: Vec<Rc<RowScene>>,
+}
+
+/// The part of the key whose change invalidates **every** row: geometry moved,
+/// or the palette every cell resolves against did.
+#[derive(Clone, PartialEq, Eq)]
+pub struct GeomKey {
+    /// f32 bits — `Pixels` is not `Eq`.
+    pub width_bits: u32,
+    pub height_bits: u32,
+    pub zoom_bits: u32,
+    /// Themes are only compared by name; ~40 named themes, all derived, and
+    /// `Theme` is `Clone` but not `PartialEq`
+    /// (`crates/grove-core/src/theme.rs:17-19`).
+    pub theme: SharedString,
+}
+
+/// Cheap fingerprint of every input [`TermScene`] depends on. Note the absence
+/// of `bounds.origin` — see the [`TermScene`] note.
+///
+/// Split deliberately: an equal `geom` with a differing tail means the rows are
+/// still individually valid, so `prepaint` can re-key them by content hash and
+/// reshape only what actually changed.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TermSceneKey {
+    pub geom: GeomKey,
+    /// `GroveTerm::damage_generation` (`crates/grove-terminal/src/term.rs:163`),
+    /// bumped only when alacritty reported real grid damage. It already gates
+    /// repaints (`src/entities/terminal_session.rs:328-338`), so gating render
+    /// work on it is consistent.
+    pub damage_gen: u64,
+    pub display_offset: usize,
+}
+
+pub struct PrepaintState {
+    /// Shared with the session's cache — `paint` must never drain it.
+    scene: Rc<TermScene>,
     selection_quads: Vec<PaintQuad>,
     cursor: Option<PaintQuad>,
     dims: (u16, u16),
@@ -125,13 +190,22 @@ impl Element for TerminalElement {
         // the snapshot, never the reverse, so the painted frame matches the
         // dims the PTY was just told about.
         let dims = zoom.pty_dims(f32::from(bounds.size.width), f32::from(bounds.size.height));
-        self.session.update(cx, |session, _| {
+        self.session.update(cx, |session, cx| {
             session.resize(dims.0, dims.1);
+            // A reattached tmux session deliberately defers its client spawn
+            // until here — this is the first moment its *own* tile's dims
+            // exist, and in grid view every tile has different ones. Attaching
+            // after the resize means the client is born at the final size and
+            // the agent never sees an attach-then-relayout SIGWINCH pair
+            // (`TerminalSession::attach_now`).
+            if session.is_pending_attach() {
+                session.attach_now(cx);
+            }
         });
 
-        let snapshot = self.session.read(cx).snapshot();
         let (cur_row, cur_col, cur_hidden) = self.session.read(cx).cursor();
         let scrollback = self.session.read(cx).display_offset();
+        let damage_gen = self.session.read(cx).damage_generation();
 
         let regular = gpui::font(fonts::MONO_FAMILY);
         let bold_font = gpui::font(fonts::MONO_FAMILY).bold();
@@ -165,104 +239,187 @@ impl Element for TerminalElement {
                 preview,
             )
         });
-        let render_grid = |theme: &Theme| {
-            let rows = snapshot.rows as usize;
-            let cols = snapshot.cols as usize;
-            let mut bg_quads: Vec<PaintQuad> = Vec::new();
-            let mut runs: Vec<(Point<Pixels>, ShapedLine)> = Vec::new();
-
-            // Resolved once per cell; every color in the grid goes through
-            // `colors::resolve_pair`, the pipeline's only inverse swap.
-            let mut row_cells: Vec<(char, Hsla, Option<Hsla>, bool)> = Vec::with_capacity(cols);
-
-            for r in 0..rows {
-                let y = bounds.origin.y + px(r as f32 * cell_h);
-                row_cells.clear();
-                for col in 0..cols {
-                    let cell = snapshot.cell(r as u16, col as u16);
-                    let (ch, fg, bg, bold) = match cell {
-                        Some(cell) => {
-                            let (fg, bg) =
-                                colors::resolve_pair(cell.fg, cell.bg, cell.inverse, theme);
-                            (cell.text.chars().next().unwrap_or(' '), fg, bg, cell.bold)
-                        }
-                        None => (' ', c::fg_of(theme).into(), None, false),
-                    };
-                    row_cells.push((ch, fg, bg, bold));
-                }
-
-                // 2. Merged background quads: coalesce adjacent equal
-                //    backgrounds. A `None` background emits no quad at all, so
-                //    a default-background screen costs nothing here.
-                let mut c0 = 0usize;
-                while c0 < cols {
-                    let bg = row_cells[c0].2;
-                    let mut c1 = c0 + 1;
-                    while c1 < cols && row_cells[c1].2 == bg {
-                        c1 += 1;
-                    }
-                    if let Some(bg) = bg {
-                        bg_quads.push(fill(
-                            Bounds::new(
-                                point(bounds.origin.x + px(c0 as f32 * cell_w), y),
-                                size(px((c1 - c0) as f32 * cell_w), px(cell_h)),
-                            ),
-                            bg,
-                        ));
-                    }
-                    c0 = c1;
-                }
-
-                // 3. Text runs: coalesce adjacent non-blank cells with an equal
-                //    `(fg, bold)`. Blanks are skipped entirely — a mostly-empty
-                //    screen shapes almost nothing. Each run is painted at its
-                //    own `col * cell_w` origin (carried amendment 3), so a
-                //    width mismatch inside one run cannot drift the next.
-                let mut c0 = 0usize;
-                while c0 < cols {
-                    if is_blank(row_cells[c0].0) {
-                        c0 += 1;
-                        continue;
-                    }
-                    let (fg, bold) = (row_cells[c0].1, row_cells[c0].3);
-                    let mut text = String::new();
-                    let mut c1 = c0;
-                    while c1 < cols
-                        && !is_blank(row_cells[c1].0)
-                        && row_cells[c1].1 == fg
-                        && row_cells[c1].3 == bold
-                    {
-                        text.push(row_cells[c1].0);
-                        c1 += 1;
-                    }
-                    let force_width = forced_width(&text, cell_w);
-                    let run = TextRun {
-                        len: text.len(),
-                        font: if bold {
-                            bold_font.clone()
-                        } else {
-                            regular.clone()
-                        },
-                        color: fg,
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    };
-                    let shaped = window.text_system().shape_line(
-                        SharedString::from(text),
-                        font_size,
-                        &[run],
-                        force_width,
-                    );
-                    runs.push((point(bounds.origin.x + px(c0 as f32 * cell_w), y), shaped));
-                    c0 = c1;
-                }
-            }
-            (bg_quads, runs)
+        // The scene cache is keyed by the theme *name* only, so the hit path
+        // never needs the resolved `Theme` (which is `Clone` but not `Eq`).
+        // `with_current` is an atomic-load snapshot, so reading the global
+        // name per frame is as free as resolving the theme was.
+        let theme_name: SharedString = match pinned.as_ref() {
+            Some(theme) => SharedString::from(theme.name.to_string()),
+            None => grove_core::theme::with_current(|t| SharedString::from(t.name.to_string())),
         };
-        let (bg_quads, runs) = match pinned.as_ref() {
-            Some(theme) => render_grid(theme),
-            None => grove_core::theme::with_current(render_grid),
+        let key = TermSceneKey {
+            geom: GeomKey {
+                width_bits: f32::from(bounds.size.width).to_bits(),
+                height_bits: f32::from(bounds.size.height).to_bits(),
+                zoom_bits: self.zoom.to_bits(),
+                theme: theme_name,
+            },
+            damage_gen,
+            display_offset: scrollback,
+        };
+        // Three paths, cheapest first: the full key matches and the whole scene
+        // is reused; only `geom` matches and the rows are still individually
+        // valid, so they are re-keyed by content hash below; or `geom` moved and
+        // every row is discarded.
+        let (cached, reusable_rows) = match self.session.read(cx).scene_cache() {
+            Some((k, scene)) if *k == key => (Some(scene.clone()), None),
+            Some((k, scene)) if k.geom == key.geom => (None, Some(scene.clone())),
+            _ => (None, None),
+        };
+
+        let scene = match cached {
+            // The whole point: no `snapshot()`, no per-cell color resolve, no
+            // re-shaping. A tile that produced no bytes costs nothing here.
+            Some(scene) => scene,
+            None => {
+                let snapshot = self.session.read(cx).snapshot();
+                // Content-addressed pool of the previous frame's rows. ~48
+                // entries, rebuilt per miss; a linear scan would do, the map is
+                // just clearer about intent.
+                let pool: std::collections::HashMap<u64, Rc<RowScene>> = reusable_rows
+                    .iter()
+                    .flat_map(|scene| scene.rows.iter())
+                    .map(|row| (row.hash, row.clone()))
+                    .collect();
+                let render_grid = |theme: &Theme| {
+                    let rows = snapshot.rows as usize;
+                    let cols = snapshot.cols as usize;
+                    let mut out: Vec<Rc<RowScene>> = Vec::with_capacity(rows);
+
+                    // Resolved once per cell; every color in the grid goes through
+                    // `colors::resolve_pair`, the pipeline's only inverse swap.
+                    let mut row_cells: Vec<(char, Hsla, Option<Hsla>, bool)> =
+                        Vec::with_capacity(cols);
+
+                    for r in 0..rows {
+                        // ponytail: SipHash over the row's raw cells (~4.5k cells
+                        // per grid) costs tens of µs — the ceiling. If it ever
+                        // shows up in a profile, swap in a faster hasher, or drop
+                        // hashing entirely for alacritty's per-line `TermDamage`
+                        // ranges, which say directly which rows changed.
+                        let mut hasher = DefaultHasher::new();
+                        for col in 0..cols {
+                            snapshot.cell(r as u16, col as u16).hash(&mut hasher);
+                        }
+                        let hash = hasher.finish();
+                        // The optimization: an unchanged row skips both
+                        // `resolve_pair` and `shape_line` outright. Row-local
+                        // origins are what make this legal for a row that
+                        // scrolled to a different index.
+                        if let Some(row) = pool.get(&hash) {
+                            out.push(row.clone());
+                            continue;
+                        }
+
+                        let mut bg_quads: Vec<PaintQuad> = Vec::new();
+                        let mut runs: Vec<(Point<Pixels>, ShapedLine)> = Vec::new();
+                        // Row-local: `y` is 0 within the row, `paint` adds both
+                        // `bounds.origin` and `r * line_height`.
+                        let y = px(0.0);
+                        row_cells.clear();
+                        for col in 0..cols {
+                            let cell = snapshot.cell(r as u16, col as u16);
+                            let (ch, fg, bg, bold) = match cell {
+                                Some(cell) => {
+                                    let (fg, bg) =
+                                        colors::resolve_pair(cell.fg, cell.bg, cell.inverse, theme);
+                                    (cell.c, fg, bg, cell.bold)
+                                }
+                                None => (' ', c::fg_of(theme).into(), None, false),
+                            };
+                            row_cells.push((ch, fg, bg, bold));
+                        }
+
+                        // 2. Merged background quads: coalesce adjacent equal
+                        //    backgrounds. A `None` background emits no quad at all, so
+                        //    a default-background screen costs nothing here.
+                        let mut c0 = 0usize;
+                        while c0 < cols {
+                            let bg = row_cells[c0].2;
+                            let mut c1 = c0 + 1;
+                            while c1 < cols && row_cells[c1].2 == bg {
+                                c1 += 1;
+                            }
+                            if let Some(bg) = bg {
+                                bg_quads.push(fill(
+                                    Bounds::new(
+                                        point(px(c0 as f32 * cell_w), y),
+                                        size(px((c1 - c0) as f32 * cell_w), px(cell_h)),
+                                    ),
+                                    bg,
+                                ));
+                            }
+                            c0 = c1;
+                        }
+
+                        // 3. Text runs: coalesce adjacent non-blank cells with an equal
+                        //    `(fg, bold)`. Blanks are skipped entirely — a mostly-empty
+                        //    screen shapes almost nothing. Each run is painted at its
+                        //    own `col * cell_w` origin (carried amendment 3), so a
+                        //    width mismatch inside one run cannot drift the next.
+                        let mut c0 = 0usize;
+                        while c0 < cols {
+                            if is_blank(row_cells[c0].0) {
+                                c0 += 1;
+                                continue;
+                            }
+                            let (fg, bold) = (row_cells[c0].1, row_cells[c0].3);
+                            let mut text = String::new();
+                            let mut c1 = c0;
+                            while c1 < cols
+                                && !is_blank(row_cells[c1].0)
+                                && row_cells[c1].1 == fg
+                                && row_cells[c1].3 == bold
+                            {
+                                text.push(row_cells[c1].0);
+                                c1 += 1;
+                            }
+                            let force_width = forced_width(&text, cell_w);
+                            let run = TextRun {
+                                len: text.len(),
+                                font: if bold {
+                                    bold_font.clone()
+                                } else {
+                                    regular.clone()
+                                },
+                                color: fg,
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            };
+                            let shaped = window.text_system().shape_line(
+                                SharedString::from(text),
+                                font_size,
+                                &[run],
+                                force_width,
+                            );
+                            runs.push((point(px(c0 as f32 * cell_w), y), shaped));
+                            c0 = c1;
+                        }
+                        out.push(Rc::new(RowScene {
+                            hash,
+                            bg_quads,
+                            runs,
+                        }));
+                    }
+                    out
+                };
+                let rows = match pinned.as_ref() {
+                    Some(theme) => render_grid(theme),
+                    None => grove_core::theme::with_current(render_grid),
+                };
+                let scene = Rc::new(TermScene { rows });
+                // The cache lives on the *session*, deliberately not in gpui
+                // element state: `with_element_state` is keyed by the full
+                // ancestor `GlobalElementId` path, and the terminal sits under
+                // `div().id(format!("grid-tile-{tile_idx}"))`
+                // (`src/views/grid.rs:253`). That path embeds the tile *slot*,
+                // so moving a tile would invalidate the cache on exactly the
+                // frames this exists to fix. Do not "fix" this back.
+                self.session
+                    .update(cx, |session, _| session.set_scene_cache(key, scene.clone()));
+                scene
+            }
         };
 
         // 4. Selection overlay, between the text and the cursor. The endpoints
@@ -272,6 +429,15 @@ impl Element for TerminalElement {
         //
         //    The wash is the hardcoded `rgba(0.40, 0.50, 0.78, 0.35)` that spec
         //    Appendix A pins — deliberately not a theme token.
+        //
+        //    Deliberately OUT of the scene cache and rebuilt every frame: it is
+        //    cheap, and the cursor below blinks ~2x/second, which would
+        //    otherwise bust the text cache on every blink. Their origins stay
+        //    ABSOLUTE — there is nothing to translate at paint time.
+        //
+        //    `dims` replaces the old `snapshot.rows/cols` reads, which are
+        //    unavailable on the cache hit path: the term was just resized to
+        //    exactly `dims`, so they are equal by construction.
         let (sr, sg, sb_c, sa) = mouse::SELECTION_RGBA;
         let wash = rgba(
             (u32::from((sr * 255.0) as u8) << 24)
@@ -282,8 +448,8 @@ impl Element for TerminalElement {
         let selection_quads: Vec<PaintQuad> = self
             .selection
             .map(|(a, head)| {
-                let rows = snapshot.rows as usize;
-                let cols = snapshot.cols as usize;
+                let rows = dims.0 as usize;
+                let cols = dims.1 as usize;
                 let to_view = |c: AbsCell| AbsCell {
                     // Inverse of `pixel_to_abs`: viewport_row = h - 1 - (a_row - sb).
                     a_row: rows
@@ -308,25 +474,23 @@ impl Element for TerminalElement {
 
         // 5. Block cursor. `GroveTerm::cursor` already folds the display offset
         //    in, so a scrolled-back view leaves the caret parked on its line.
-        let cursor =
-            if self.cursor_visible && !cur_hidden && (cur_row as usize) < snapshot.rows as usize {
-                Some(fill(
-                    Bounds::new(
-                        point(
-                            bounds.origin.x + px(f32::from(cur_col) * cell_w),
-                            bounds.origin.y + px(f32::from(cur_row) * cell_h),
-                        ),
-                        size(px(cell_w), px(cell_h)),
+        let cursor = if self.cursor_visible && !cur_hidden && (cur_row as usize) < dims.0 as usize {
+            Some(fill(
+                Bounds::new(
+                    point(
+                        bounds.origin.x + px(f32::from(cur_col) * cell_w),
+                        bounds.origin.y + px(f32::from(cur_row) * cell_h),
                     ),
-                    c::FG(),
-                ))
-            } else {
-                None
-            };
+                    size(px(cell_w), px(cell_h)),
+                ),
+                c::FG(),
+            ))
+        } else {
+            None
+        };
 
         PrepaintState {
-            bg_quads,
-            runs,
+            scene,
             selection_quads,
             cursor,
             dims,
@@ -347,13 +511,35 @@ impl Element for TerminalElement {
         // 1. One full-bounds fill, so short rows and the sub-cell remainder at
         //    the right/bottom edge carry the terminal background.
         window.paint_quad(fill(bounds, c::BG()));
-        for quad in pre.bg_quads.drain(..) {
-            window.paint_quad(quad);
+        // The scene is shared with the session's cache, so it is read by
+        // reference and translated here — draining it would empty the cache on
+        // the first paint. `PaintQuad` is POD-ish, so the clone is cheap.
+        //
+        // Row origins are row-local, so each row is offset by its index here.
+        // ALL backgrounds go down before ANY text: interleaving per row would
+        // let one row's background paint over the previous row's descenders.
+        for (r, row) in pre.scene.rows.iter().enumerate() {
+            let offset = bounds.origin + point(px(0.0), pre.line_height * r as f32);
+            for quad in &row.bg_quads {
+                let mut quad = quad.clone();
+                quad.bounds.origin += offset;
+                window.paint_quad(quad);
+            }
         }
-        for (origin, line) in &pre.runs {
-            // `paint` returning `Err` means the line could not be rendered;
-            // there is nothing useful to do per-run but skip it.
-            let _ = line.paint(*origin, pre.line_height, TextAlign::Left, None, window, cx);
+        for (r, row) in pre.scene.rows.iter().enumerate() {
+            let offset = bounds.origin + point(px(0.0), pre.line_height * r as f32);
+            for (origin, line) in &row.runs {
+                // `paint` returning `Err` means the line could not be rendered;
+                // there is nothing useful to do per-run but skip it.
+                let _ = line.paint(
+                    *origin + offset,
+                    pre.line_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+            }
         }
         for quad in pre.selection_quads.drain(..) {
             window.paint_quad(quad);

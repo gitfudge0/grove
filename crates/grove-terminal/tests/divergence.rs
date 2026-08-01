@@ -37,7 +37,7 @@ fn dump(t: &GroveTerm) -> ScreenDump {
         .map(|c| {
             let (fg, bg) = apply_inverse(c.fg, c.bg, c.inverse);
             CellDump {
-                text: normalize_cell_text(&c.text),
+                text: normalize_cell_text(&c.c.to_string()),
                 fg,
                 bg,
                 bold: c.bold,

@@ -84,6 +84,10 @@ struct ListenerState {
     /// it must never reset — see `session.rs:930-938`.
     bells: usize,
     title: Option<String>,
+    /// Bytes the emulator wants written back to the PTY in reply to a
+    /// terminal query (Device Attributes, cursor-position reports, …).
+    /// Drained by `GroveTerm::take_responses`.
+    responses: Vec<u8>,
 }
 
 /// Captures the two `Term` events Grove cares about. alacritty reports the
@@ -103,6 +107,18 @@ impl EventListener for GroveListener {
             Event::Bell => s.bells += 1,
             Event::Title(t) => s.title = Some(t),
             Event::ResetTitle => s.title = None,
+            Event::PtyWrite(text) => s.responses.extend_from_slice(text.as_bytes()),
+            // ponytail: `ColorRequest` (OSC 4/10/11) and `ClipboardLoad`
+            // (OSC 52 read) are still dropped, and a querier gets silence.
+            //
+            // `ColorRequest` needs a palette, which lives in the gpui theme
+            // layer, not here — answering it means plumbing theme colors down
+            // into this crate. Worth doing if something is seen stalling on a
+            // color query; until then the gap is recorded rather than guessed
+            // at with invented values.
+            //
+            // `ClipboardLoad` stays unanswered deliberately: replying would
+            // hand the user's clipboard to any program that asks.
             _ => {}
         }
     }
@@ -186,7 +202,7 @@ impl GroveTerm {
             for c in 0..cols {
                 let cell = &row[Column(c)];
                 cells.push(Cell {
-                    text: cell_text(cell),
+                    c: cell_char(cell),
                     fg: map_color(cell.fg),
                     bg: map_color(cell.bg),
                     bold: cell.flags.contains(Flags::BOLD),
@@ -230,6 +246,16 @@ impl GroveTerm {
     /// Total BEL count seen on this stream. Monotonic; callers diff it.
     pub fn bell_count(&self) -> usize {
         self.listener.state.lock().map_or(0, |s| s.bells)
+    }
+
+    /// Drain any replies the emulator produced while parsing (Device
+    /// Attributes, cursor-position reports, …). These are protocol replies,
+    /// NOT user input — the caller must write them straight to the PTY.
+    pub fn take_responses(&mut self) -> Vec<u8> {
+        self.listener
+            .state
+            .lock()
+            .map_or_else(|_| Vec::new(), |mut s| std::mem::take(&mut s.responses))
     }
 
     pub fn app_cursor(&self) -> bool {
@@ -430,24 +456,19 @@ impl GroveTerm {
 // Cell/text helpers
 // ---------------------------------------------------------------------------
 
-/// The visible text of a cell.
+/// The visible display char of a cell.
 ///
 /// Wide characters live in their lead cell; the trailing `WIDE_CHAR_SPACER`
 /// (and the `LEADING_WIDE_CHAR_SPACER` a wide char at the line edge pushes out)
 /// render blank so the grid stays rectangular — the same layout vt100 produces.
-fn cell_text(cell: &ACell) -> String {
+fn cell_char(cell: &ACell) -> char {
     if cell
         .flags
         .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
     {
-        return " ".to_string();
+        return ' ';
     }
-    let mut s = String::new();
-    s.push(cell.c);
-    for c in cell.zerowidth().into_iter().flatten() {
-        s.push(*c);
-    }
-    s
+    cell.c
 }
 
 /// `vte::ansi::Color` → token space.
