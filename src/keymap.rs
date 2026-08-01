@@ -421,6 +421,71 @@ fn gpui_key(trigger: &str) -> Option<String> {
     })
 }
 
+/// US-layout shifted twin of each punctuation/digit key.
+///
+/// gpui's Linux backend reports the *shifted glyph* as the keystroke key **and
+/// drops the shift modifier** for any key whose lowercase and uppercase forms
+/// are equal (`platform.rs`: `if key.to_lowercase() == key.to_uppercase() {
+/// modifiers.shift = false }`). So Ctrl+Shift+`,` arrives as the keystroke
+/// `ctrl-<` — not `ctrl-shift-<`, and never as `ctrl-shift-,`. Binding match is
+/// exact on the whole keystroke string, so on non-mac every punctuation/digit
+/// chord must also be bound as *platform prefix minus shift* + twin glyph, and
+/// that twin form is in practice the only one that can ever fire. Letters are
+/// unaffected: they keep their shift modifier and match the base form.
+///
+/// ponytail: this assumes a US layout. Per-layout correctness would need a
+/// runtime xkb lookup of what each keycode produces with Shift held; not worth
+/// it here.
+const SHIFTED_TWINS: &[(char, char)] = &[
+    (',', '<'),
+    ('.', '>'),
+    ('/', '?'),
+    ('=', '+'),
+    ('-', '_'),
+    (';', ':'),
+    ('\'', '"'),
+    ('[', '{'),
+    (']', '}'),
+    ('\\', '|'),
+    ('`', '~'),
+    ('0', ')'),
+    ('1', '!'),
+    ('2', '@'),
+    ('3', '#'),
+    ('4', '$'),
+    ('5', '%'),
+    ('6', '^'),
+    ('7', '&'),
+    ('8', '*'),
+    ('9', '('),
+];
+
+/// The shifted twin of a single-char key, if it has one.
+fn shifted_twin(key: &str) -> Option<String> {
+    let mut chars = key.chars();
+    let c = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    SHIFTED_TWINS
+        .iter()
+        .find(|(base, _)| *base == c)
+        .map(|(_, t)| t.to_string())
+}
+
+/// True when the platform modifier itself carries Shift (non-mac), and so the
+/// shifted-twin keys must be bound alongside the base keys.
+fn needs_shifted_twins() -> bool {
+    !cfg!(target_os = "macos")
+}
+
+/// The prefix a shifted-twin keystroke carries: the platform prefix with its
+/// `shift-` removed, because gpui strips the shift modifier for exactly these
+/// keys (see `SHIFTED_TWINS`). `ctrl-shift-` -> `ctrl-`.
+fn twin_prefix(prefix: &str) -> String {
+    prefix.replace("shift-", "")
+}
+
 /// Every distinct gpui keystroke this row binds, already carrying its
 /// platform modifier. Empty for display-only rows.
 pub fn keystrokes_for(def: &ShortcutDef) -> Vec<String> {
@@ -440,11 +505,19 @@ pub fn keystrokes_for(def: &ShortcutDef) -> Vec<String> {
         def.triggers.to_vec()
     };
     let mut out: Vec<String> = Vec::new();
+    let push = |ks: String, out: &mut Vec<String>| {
+        if !out.contains(&ks) {
+            out.push(ks);
+        }
+    };
     for t in raw {
         if let Some(k) = gpui_key(t) {
-            let ks = format!("{prefix}{k}");
-            if !out.contains(&ks) {
-                out.push(ks);
+            push(format!("{prefix}{k}"), &mut out);
+            // Only the platform prefix carries Shift; the alt chord does not.
+            if needs_shifted_twins() && !def.requires_alt {
+                if let Some(tw) = shifted_twin(&k) {
+                    push(format!("{}{tw}", twin_prefix(prefix)), &mut out);
+                }
             }
         }
     }
@@ -657,9 +730,28 @@ pub fn modal_input_bindings() -> Vec<KeyBinding> {
 /// `1–9` row so the registry stays the single source of truth.
 fn select_session_bindings() -> Vec<KeyBinding> {
     let prefix = platform_mod_prefix();
-    (1..=9)
-        .map(|index| KeyBinding::new(&format!("{prefix}{index}"), SelectSession { index }, None))
-        .collect()
+    let mut out = Vec::new();
+    for index in 1..=9usize {
+        let key = index.to_string();
+        out.push(KeyBinding::new(
+            &format!("{prefix}{key}"),
+            SelectSession { index },
+            None,
+        ));
+        // See `SHIFTED_TWINS`: on non-mac the chord carries Shift, so the
+        // digits arrive as `!@#$%^&*(` with the shift modifier stripped —
+        // `ctrl-!`, not `ctrl-shift-!`. This is the form that actually fires.
+        if needs_shifted_twins() {
+            if let Some(tw) = shifted_twin(&key) {
+                out.push(KeyBinding::new(
+                    &format!("{}{tw}", twin_prefix(prefix)),
+                    SelectSession { index },
+                    None,
+                ));
+            }
+        }
+    }
+    out
 }
 
 /// One `KeyBinding` for a registry action, or `None` for the shortcuts whose
@@ -753,7 +845,26 @@ mod tests {
                 "{sc:?} has no binding"
             );
         }
-        assert_eq!(select_session_bindings().len(), 9);
+        // Nine digits, plus their shifted twins wherever the platform chord
+        // already carries Shift — the twins bound *without* `shift-`, since
+        // gpui strips it for digit keys (`ctrl-!`, not `ctrl-shift-!`).
+        let sel = select_session_bindings();
+        assert_eq!(sel.len(), if needs_shifted_twins() { 18 } else { 9 });
+        if needs_shifted_twins() {
+            let strokes: Vec<String> = sel
+                .iter()
+                .map(|b| {
+                    b.keystrokes()
+                        .iter()
+                        .map(|k| k.unparse())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect();
+            assert!(strokes.contains(&"ctrl-!".to_string()), "{strokes:?}");
+            assert!(strokes.contains(&"ctrl-(".to_string()), "{strokes:?}");
+            assert!(!strokes.iter().any(|s| s.starts_with("ctrl-shift-!")));
+        }
         // 8 directions × (1 move + 1 swap chord per platform modifier set).
         let per_dir = 1 + grid_swap_prefixes().len();
         assert_eq!(grid_bindings().len(), GRID_DIRECTIONS.len() * per_dir);
@@ -872,10 +983,45 @@ mod tests {
         else {
             unreachable!("GlobalShortcut::ZoomIn must have a registry row");
         };
+        let p = platform_mod_prefix();
+        let expected = if needs_shifted_twins() {
+            // The twin drops `shift-`: gpui reports Ctrl+Shift+= as `ctrl-+`.
+            vec![format!("{p}="), format!("{}+", twin_prefix(p))]
+        } else {
+            vec![format!("{p}=")]
+        };
+        assert_eq!(keystrokes_for(zoom_in), expected);
+    }
+
+    /// On Linux/Windows the platform chord carries Shift, gpui reports the
+    /// *shifted glyph* as the keystroke key **and strips the shift modifier**
+    /// — so Ctrl+Shift+, arrives as `ctrl-<` and only that form can reach
+    /// `Settings`.
+    #[test]
+    fn shifted_twins_are_also_bound_on_non_mac() {
+        let Some(settings) = SHORTCUTS
+            .iter()
+            .find(|d| d.action == Some(GlobalShortcut::Settings))
+        else {
+            unreachable!("GlobalShortcut::Settings must have a registry row");
+        };
+        let p = platform_mod_prefix();
+        let ks = keystrokes_for(settings);
+        assert!(ks.contains(&format!("{p},")));
         assert_eq!(
-            keystrokes_for(zoom_in),
-            vec![format!("{}=", platform_mod_prefix())]
+            ks.contains(&format!("{}<", twin_prefix(p))),
+            needs_shifted_twins()
         );
+        // Never the shift-carrying form — gpui strips shift for `<`.
+        assert!(!ks.contains(&format!("{p}<")));
+        if needs_shifted_twins() {
+            assert_eq!(twin_prefix(p), "ctrl-");
+        }
+        // And the whole set must actually parse into bindings.
+        assert!(!bindings().is_empty());
+        assert_eq!(shifted_twin("1").as_deref(), Some("!"));
+        assert_eq!(shifted_twin("enter"), None);
+        assert_eq!(shifted_twin("a"), None);
     }
 
     #[test]

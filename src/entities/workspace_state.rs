@@ -230,6 +230,10 @@ pub struct SnapshotProject {
     /// The project's worktrees, or **empty on a cache miss** — never a panic
     /// (`sidebar.rs:272-278`).
     pub worktrees: Vec<SnapshotWorktree>,
+    /// Every session belonging to this project, keyed by project **name** —
+    /// independent of the worktree cache, which is empty until a project is
+    /// visited (`src/gui/view/sidebar.rs` `by_proj[s.project]`).
+    pub sessions: Vec<SessionId>,
 }
 
 /// Everything the selection transitions need to know about the world, so they
@@ -411,6 +415,26 @@ impl WorkspaceState {
     pub fn pending_kill_terminal(&self) -> Option<usize> {
         self.pending_kill_terminal
     }
+    /// Bare Escape's carve-out with **no** modal open (`update/mod.rs:789-804`):
+    /// dismisses the armed kill-confirm, the open agent menu and the attention
+    /// dropdown, and reports whether it dismissed anything. `false` means the
+    /// key must reach the PTY untouched — many TUI programs need a real Escape,
+    /// so it is never swallowed unconditionally.
+    pub fn escape_dismiss(&mut self) -> bool {
+        if !crate::modal::escape_should_dismiss(
+            self.pending_kill.is_some(),
+            self.pending_kill_terminal.is_some(),
+            self.open_agent_menu.is_some(),
+            self.attention_queue_open,
+        ) {
+            return false;
+        }
+        self.pending_kill = None;
+        self.pending_kill_terminal = None;
+        self.open_agent_menu = None;
+        self.attention_queue_open = false;
+        true
+    }
     pub fn sidebar_width(&self) -> f32 {
         self.sidebar_width
     }
@@ -539,6 +563,11 @@ impl WorkspaceState {
         self.attention_queue_open = false;
         self.active_session = Some(id);
         self.terminal_focused = false;
+        // In the grid the highlighted tile is what holds the keyboard, so a
+        // selection that leaves `grid_focused` behind (palette launch, palette
+        // switch-to-session) lands the keys on the *previous* tile — the same
+        // sync `select_tile_by_index` does.
+        self.sync_grid_focus();
         self.acknowledge(id);
         if let Some((pi, wi)) = snap.locate(id) {
             self.proj_idx = pi;
@@ -719,6 +748,26 @@ impl WorkspaceState {
     pub fn arm_kill_terminal(&mut self, i: usize) {
         self.pending_kill_terminal = Some(i);
         self.pending_kill = None;
+    }
+    /// Second press on the same target confirms; a different target re-arms.
+    /// Returns `true` when the caller should kill `target`
+    /// (`shortcuts.rs:501-527`'s `close_focused_session_decision`).
+    pub fn close_focused_session(&mut self, target: SessionId) -> bool {
+        if self.pending_kill == Some(target) {
+            true
+        } else {
+            self.arm_kill(target);
+            false
+        }
+    }
+    /// Terminal counterpart of [`Self::close_focused_session`].
+    pub fn close_focused_terminal(&mut self, target: usize) -> bool {
+        if self.pending_kill_terminal == Some(target) {
+            true
+        } else {
+            self.arm_kill_terminal(target);
+            false
+        }
     }
     pub fn disarm_kill(&mut self) {
         self.pending_kill = None;
@@ -933,6 +982,20 @@ impl WorkspaceState {
         });
     }
 
+    /// A press on a tile's PTY body: focus it, make it active, and
+    /// acknowledge it — but do not arm a drag. Body-click focus
+    /// (`GridAction::Focus`); keeps `grid_focused`, the active session and
+    /// acknowledgment in step with the gpui focus the terminal view just
+    /// took, without arming a drag.
+    pub fn grid_focus_tile(&mut self, tile_idx: usize) {
+        let Some(&id) = self.tile_order.get(tile_idx) else {
+            return;
+        };
+        self.set_grid_focus(Some(id));
+        self.active_session = Some(id);
+        self.acknowledge(id);
+    }
+
     /// The pointer entered a tile. A no-op when no drag is armed — the enter
     /// event fires regardless (`layout.rs:323-328`).
     pub fn grid_drag_hover(&mut self, tile_idx: usize) {
@@ -998,6 +1061,17 @@ impl WorkspaceState {
         self.leave_terminal_tab();
         self.sync_grid_focus();
         self.acknowledge(id);
+    }
+
+    /// Shared with [`Self::toggle_terminal_tab`]'s enter branch
+    /// (`update/mod.rs:1008-1013`): leaves the grid so a freshly spawned
+    /// terminal is actually visible instead of drawn behind the tiles.
+    pub fn exit_grid_for_terminal(&mut self) {
+        if self.grid_view {
+            self.grid_view_before_terminal = true;
+            self.grid_view = false;
+            self.exit_grid();
+        }
     }
 
     /// `mod+t`. Port of `terminal_toggle_decision` (`shortcuts.rs:528-557`) +
@@ -1169,6 +1243,7 @@ mod tests {
                             sessions: vec![],
                         },
                     ],
+                    sessions: vec![sid(1), sid(2)],
                 },
                 SnapshotProject {
                     idx: 2,
@@ -1182,6 +1257,7 @@ mod tests {
                         is_main: true,
                         sessions: vec![sid(3)],
                     }],
+                    sessions: vec![sid(3)],
                 },
             ],
         }
@@ -1208,6 +1284,30 @@ mod tests {
         assert_eq!(w.open_agent_menu(), None);
         // TRUE project index 2, worktree position 0.
         assert_eq!((w.proj_idx(), w.wt_idx()), (2, 0));
+    }
+
+    /// The reported bug: launching from the palette while the grid is up left
+    /// `grid_focused` on the previous tile, so the keyboard stayed there too.
+    #[test]
+    fn select_session_carries_the_grid_focus_with_it() {
+        let snap = fixture();
+        let mut w = WorkspaceState {
+            grid_view: true,
+            grid_focused: Some(sid(1)),
+            ..WorkspaceState::default()
+        };
+
+        w.select_session(sid(3), &snap);
+
+        assert_eq!(w.grid_focused(), Some(sid(3)));
+
+        // Outside the grid it stays untouched (`should_sync_grid_focus`).
+        let mut w = WorkspaceState {
+            grid_focused: Some(sid(1)),
+            ..WorkspaceState::default()
+        };
+        w.select_session(sid(3), &snap);
+        assert_eq!(w.grid_focused(), Some(sid(1)));
     }
 
     /// `sessions.rs:35-50` + `mod.rs:1164-1183`.
@@ -1274,6 +1374,35 @@ mod tests {
         assert!(w.terminal_focused());
         assert_eq!(w.pending_kill(), None);
         assert_eq!(w.pending_kill_terminal(), None);
+    }
+
+    /// Second mod+w on the same session confirms the kill; a different
+    /// session re-arms instead (`shortcuts.rs:501-527`).
+    #[test]
+    fn close_focused_session_confirms_only_on_a_second_press_of_the_same_target() {
+        let mut w = WorkspaceState::default();
+        assert!(!w.close_focused_session(sid(1)));
+        assert_eq!(w.pending_kill(), Some(sid(1)));
+
+        // A different target re-arms rather than killing.
+        assert!(!w.close_focused_session(sid(2)));
+        assert_eq!(w.pending_kill(), Some(sid(2)));
+
+        // Same target twice in a row confirms.
+        assert!(w.close_focused_session(sid(2)));
+    }
+
+    /// Terminal counterpart of the above.
+    #[test]
+    fn close_focused_terminal_confirms_only_on_a_second_press_of_the_same_target() {
+        let mut w = WorkspaceState::default();
+        assert!(!w.close_focused_terminal(0));
+        assert_eq!(w.pending_kill_terminal(), Some(0));
+
+        assert!(!w.close_focused_terminal(1));
+        assert_eq!(w.pending_kill_terminal(), Some(1));
+
+        assert!(w.close_focused_terminal(1));
     }
 
     /// `sessions.rs:109-113`.
@@ -1490,6 +1619,33 @@ mod tests {
         assert!((w.sidebar_width() - RAIL_W).abs() < f32::EPSILON);
     }
 
+    /// Bare Escape's carve-out (`update/mod.rs:789-804`): each of the four
+    /// armed states alone makes Escape a dismissal that clears **all** of
+    /// them, and with none armed the key is left for the PTY.
+    #[test]
+    fn escape_dismiss_clears_every_armed_state() {
+        let mut w = WorkspaceState::default();
+        assert!(!w.escape_dismiss(), "nothing armed: Escape reaches the PTY");
+
+        let arm: [fn(&mut WorkspaceState); 4] = [
+            |w| w.arm_kill(sid(1)),
+            |w| w.arm_kill_terminal(0),
+            |w| w.set_open_agent_menu(Some((0, 0))),
+            WorkspaceState::toggle_attention_queue,
+        ];
+        for (i, f) in arm.iter().enumerate() {
+            let mut w = WorkspaceState::default();
+            f(&mut w);
+            assert!(w.escape_dismiss(), "armed state {i} must be dismissed");
+            assert!(w.pending_kill().is_none());
+            assert!(w.pending_kill_terminal().is_none());
+            assert!(w.open_agent_menu().is_none());
+            assert!(!w.attention_queue_open());
+            // A second Escape has nothing left and falls through.
+            assert!(!w.escape_dismiss(), "state {i}: only one Escape is eaten");
+        }
+    }
+
     // ── Plan 07 Task 2: the four screens ────────────────────────────────
 
     use crate::keymap::Screen;
@@ -1675,6 +1831,22 @@ mod tests {
         w.reconcile_after_teardown(&live(&[1]), &[]);
         assert!(w.tile_order().is_empty());
         assert_eq!(w.grid_focused(), None);
+    }
+
+    /// A session spawned while the grid is up has no path that adds it to
+    /// `tile_order` other than re-running the reconcile the registry observer
+    /// now triggers (`Workspace::sync_grid_tiles`). Guard the mechanism: a
+    /// third, newly-live tile must appear, appended after the two the grid
+    /// already knows about.
+    #[test]
+    fn reconcile_after_teardown_adds_a_session_spawned_while_the_grid_is_up() {
+        let l = live(&[1, 2]);
+        let mut w = WorkspaceState::default();
+        w.toggle_grid(&l, &[]);
+
+        // Session 3 was spawned behind the grid's back.
+        w.reconcile_after_teardown(&live(&[1, 2, 3]), &[]);
+        assert_eq!(w.tile_order(), [sid(1), sid(2), sid(3)]);
     }
 
     /// `update/mod.rs:1071-1094` over `grid::grid_neighbor`. 3 tiles → cols=2:

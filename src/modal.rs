@@ -319,6 +319,8 @@ pub struct LauncherSlotState {
     /// edit or a recency re-sort must not activate a different row
     /// (`session_launcher/state.rs:28-48`).
     pub anchor: Option<crate::launcher::RowIdentity>,
+    /// Selected agent index in the RowActions strip.
+    pub agent_sel: usize,
 }
 
 /// The slot's discriminant — what the key table, the key contexts and the

@@ -60,6 +60,11 @@ pub struct TerminalView {
     /// The element's post-layout bounds, published by `prepaint` so pointer
     /// events (which arrive in window coordinates) can be made element-local.
     bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// The workspace state bare Escape consults before the key reaches the PTY
+    /// (`WorkspaceState::escape_dismiss`). `None` for terminals that live
+    /// outside the workspace (the onboarding teardown preview), which have
+    /// nothing to dismiss.
+    chrome: Option<Entity<crate::entities::workspace_state::WorkspaceState>>,
     _observers: Vec<gpui::Subscription>,
 }
 
@@ -98,8 +103,21 @@ impl TerminalView {
             press_focused: false,
             scroll: ScrollAccum::default(),
             bounds: Rc::new(Cell::new(Bounds::default())),
+            chrome: None,
             _observers: observers,
         }
+    }
+
+    /// Gives this terminal the workspace state bare Escape dismisses against
+    /// (see [`Self::chrome`]). Builder-style so the views outside the
+    /// workspace keep constructing with `new` alone.
+    #[must_use]
+    pub fn with_chrome(
+        mut self,
+        state: Entity<crate::entities::workspace_state::WorkspaceState>,
+    ) -> Self {
+        self.chrome = Some(state);
+        self
     }
 
     // ── helpers ──────────────────────────────────────────────────────────
@@ -150,6 +168,29 @@ impl TerminalView {
         let selected = self.selection.take();
         self.drag = None;
 
+        // 1b. Bare Escape's carve-out, ahead of everything else exactly as in
+        //     iced (`update/mod.rs:789-804`): with a kill-confirm armed, the
+        //     agent menu open or the attention dropdown showing, Escape
+        //     dismisses them and is consumed. With none of those active it
+        //     falls straight through to the PTY below — TUI programs need a
+        //     real Escape. Bare only: Alt+Escape is a readline chord and must
+        //     reach the PTY as ESC ESC even while something is armed.
+        if keystroke.key == "escape" && !keystroke.modifiers.modified() {
+            if let Some(chrome) = self.chrome.clone() {
+                let dismissed = chrome.update(cx, |s, cx| {
+                    let dismissed = s.escape_dismiss();
+                    if dismissed {
+                        cx.notify();
+                    }
+                    dismissed
+                });
+                if dismissed {
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+
         // 2. Copy.
         if keys::is_copy_shortcut(keystroke) {
             if let Some(text) = selected.and_then(|(a, head)| {
@@ -195,12 +236,8 @@ impl TerminalView {
             return;
         }
 
-        // 5. Straight to the PTY.
-        //
-        // Plan 08 owns Escape's carve-out (`escape_should_dismiss`) and the
-        // two-step confirm-kill arming; with no modal and nothing armed in this
-        // phase, Escape simply reaches the PTY — which is exactly that
-        // function's documented `false` branch, so this is already correct.
+        // 5. Straight to the PTY. Escape gets here whenever step 1b found
+        //    nothing to dismiss — that function's documented `false` branch.
         let app_cursor = self.session.read(cx).app_cursor();
         if let Some(bytes) = keys::key_to_bytes(keystroke, app_cursor) {
             self.session.update(cx, |session, cx| {

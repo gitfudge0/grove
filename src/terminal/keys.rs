@@ -40,6 +40,23 @@ pub fn key_to_bytes(keystroke: &Keystroke, _app_cursor: bool) -> Option<Vec<u8>>
     // Every other named key (Ctrl+Enter, Ctrl+Up …) falls through to the named
     // table, exactly as iced's `Key::Named` arm ignores Ctrl.
     if keystroke.modifiers.control {
+        // Ctrl+Shift is the app's global-shortcut modifier on non-mac
+        // (keymap.rs `platform_mod_prefix`), so ctrl-shift-letter chords
+        // never reach the PTY even when unbound in the current context —
+        // iced parity with `should_forward`. Without this, e.g. ctrl-shift-j
+        // (unbound outside the Grid context) would fall through to the
+        // arithmetic below and emit 0x0a into agent TUIs.
+        if cfg!(not(target_os = "macos"))
+            && keystroke.modifiers.shift
+            && keystroke.key.chars().count() == 1
+            && keystroke
+                .key
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
+        {
+            return None;
+        }
         let ctrl_char = if keystroke.key == "space" {
             Some(' ')
         } else if keystroke.key.chars().count() == 1 {
@@ -343,6 +360,31 @@ mod tests {
         };
         assert_eq!(bytes("a", sup), None);
         assert_eq!(bytes("enter", sup), None);
+    }
+
+    /// Ctrl+Shift is the app's global-shortcut modifier on non-mac
+    /// (`keymap.rs` `platform_mod_prefix`); an unbound ctrl-shift-letter
+    /// chord (e.g. grid nav pressed outside the Grid context) must never
+    /// fall through to the Ctrl arithmetic and emit a C0 byte into the PTY.
+    /// Named TUI chords (Enter, PageUp, …) are unaffected — only single
+    /// ASCII letters are swallowed.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn ctrl_shift_letters_are_swallowed_on_non_mac() {
+        let ctrl_shift = Modifiers {
+            control: true,
+            shift: true,
+            ..Modifiers::default()
+        };
+        for key in ["j", "h", "g"] {
+            assert_eq!(bytes(key, ctrl_shift), None, "ctrl-shift-{key}");
+        }
+        // The TUI-chord contract still holds for named keys.
+        assert_eq!(bytes("enter", ctrl_shift).as_deref(), Some(&b"\r"[..]));
+        assert_eq!(
+            bytes("pageup", ctrl_shift).as_deref(),
+            Some(&b"\x1b[5~"[..])
+        );
     }
 
     // ── the parity decision against the spike ────────────────────────────

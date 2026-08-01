@@ -138,6 +138,13 @@ fn dispatch_with_modal(kind: ModalKind, key: ModalKey, mods: ModalMods, ctx: Key
 /// context the current screen declares.
 fn dispatch_on_screen(def: &ShortcutDef, screen: Screen) -> Target {
     let Some(action) = def.action else {
+        // Grid-nav rows resolve to a ctrl-shift-letter chord on non-mac,
+        // which `key_to_bytes` now swallows outright (see
+        // `is_non_mac_platform_mod_letter_row`) — it never reaches the PTY,
+        // on this screen or any other.
+        if is_non_mac_platform_mod_letter_row(def) {
+            return Target::Swallowed;
+        }
         return Target::Pty;
     };
     let allowed = contexts_for(def).into_iter().any(|ctx| match ctx {
@@ -173,6 +180,20 @@ fn dispatch_on_screen(def: &ShortcutDef, screen: Screen) -> Target {
     }
 }
 
+/// The registry's display-only grid-nav rows resolve, at runtime, to
+/// `platform_mod_prefix()` (`ctrl-shift-` on non-mac) over a single letter
+/// (h/j/k/l, plus `alt-` for the swap variant). `key_to_bytes`
+/// (`terminal/keys.rs`) now swallows ctrl-shift-letter chords outright on
+/// non-mac — they're the app's global-shortcut modifier — so off their own
+/// screen these rows no longer reach the PTY; they're dropped before the
+/// terminal ever sees them. On macOS the platform prefix is `cmd-`, already
+/// filtered by the `platform` branch in `key_to_bytes`, so this is a non-mac
+/// only distinction.
+fn is_non_mac_platform_mod_letter_row(def: &ShortcutDef) -> bool {
+    cfg!(not(target_os = "macos"))
+        && matches!(def.description, "Move focus in grid" | "Move tile in grid")
+}
+
 const SCREENS: [Screen; 3] = [Screen::Workspace, Screen::Grid, Screen::Zen];
 
 const PLATFORM: ModalMods = ModalMods {
@@ -202,7 +223,9 @@ fn escape_despite_capture() {
         assert_ne!(t, Target::Pty, "{kind:?} must claim Escape");
         assert_ne!(t, Target::Swallowed, "{kind:?} must act on Escape");
     }
-    // No modal open: Escape reaches the PTY unless something is armed.
+    // No modal open: Escape reaches the PTY unless something is armed. The
+    // wiring lives in `TerminalView::on_key_down` step 1b, which consults
+    // `WorkspaceState::escape_dismiss` (tested in `workspace_state`).
     assert!(!escape_should_dismiss(false, false, false, false));
     assert!(escape_should_dismiss(true, false, false, false));
 }
@@ -368,10 +391,22 @@ fn screen_scoped_rows_fall_through_off_their_screen() {
         if def.action.is_none() {
             display_only += 1;
             for screen in SCREENS {
+                // The grid-nav rows are the one exception (see
+                // `is_non_mac_platform_mod_letter_row`): on non-mac their
+                // real chord is ctrl-shift-letter, which `key_to_bytes` now
+                // swallows before it ever reaches the PTY. Every other
+                // display-only row (Escape aside, "Resize terminal panel"'s
+                // ctrl-shift-arrow chord) is unaffected — arrows aren't
+                // letters, so the new guard never fires for them.
+                let expected = if is_non_mac_platform_mod_letter_row(def) {
+                    Target::Swallowed
+                } else {
+                    Target::Pty
+                };
                 assert_eq!(
                     dispatch_on_screen(def, screen),
-                    Target::Pty,
-                    "display-only {:?} must reach the PTY on {screen:?}",
+                    expected,
+                    "display-only {:?} must resolve to {expected:?} on {screen:?}",
                     def.description
                 );
             }
@@ -418,14 +453,25 @@ fn screen_scoped_rows_fall_through_off_their_screen() {
 
 // ── the full sweep ───────────────────────────────────────────────────────
 
-/// Every `SHORTCUTS` row × every screen: the row either fires its action or
-/// falls through to the PTY. Nothing is ever silently swallowed with no modal
-/// open.
+/// Every `SHORTCUTS` row × every screen: the row either fires its action,
+/// falls through to the PTY, or — for the one non-mac ctrl-shift-letter
+/// exception (`is_non_mac_platform_mod_letter_row`) — is deliberately
+/// swallowed by `key_to_bytes` before it ever reaches the PTY. Nothing else
+/// is ever silently swallowed with no modal open.
 #[test]
 fn every_registry_row_on_every_screen_resolves_to_an_action_or_the_pty() {
     for def in SHORTCUTS {
         for screen in SCREENS {
             let t = dispatch_on_screen(def, screen);
+            if is_non_mac_platform_mod_letter_row(def) {
+                assert_eq!(
+                    t,
+                    Target::Swallowed,
+                    "{:?} on {screen:?} resolved to {t:?}",
+                    def.description
+                );
+                continue;
+            }
             assert!(
                 matches!(t, Target::Action(_) | Target::Pty),
                 "{:?} on {screen:?} resolved to {t:?}",
