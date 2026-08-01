@@ -137,6 +137,7 @@ pub fn boot(cx: &mut gpui::App) {
     cx.set_global(SettingsState::new(store));
     cx.set_global(ThemeState::new(follow_system, dark_name, light_name));
     cx.set_global(ZoomState::new(zoom));
+    cx.set_global(crate::zoom::CurrentPtyDims::default());
 
     // 9. gpui-component's globals and its `"Input"`-context bindings, from the
     //    vendored copy (`vendor/gpui-component/README.md`). This MUST run

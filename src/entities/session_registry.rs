@@ -26,6 +26,7 @@ use std::time::Instant;
 use gpui::Entity;
 use grove_core::agent::Agent;
 use grove_core::attention::{self, AttentionFiles};
+use grove_core::session_meta;
 use grove_core::tmux;
 
 use crate::entities::terminal_session::TerminalSession;
@@ -103,6 +104,11 @@ pub struct SpawnTarget {
     /// (`crates/grove-core/src/session.rs:190,254-259`); without this field
     /// the Permissions and Claude-in-Chrome settings are inert.
     pub args: Vec<String>,
+    /// Whether this session should try tmux at all. Home terminals and panel
+    /// shells are convenience PTYs that must never be tmux-backed, or the
+    /// next launch's tmux discovery reimports them as agent sessions
+    /// (`crates/grove-core/src/session.rs:149-175`).
+    pub use_tmux: bool,
 }
 
 impl SpawnTarget {
@@ -118,6 +124,7 @@ impl SpawnTarget {
             // it either way, and saying so here keeps the home path honest.
             label,
             args: Vec::new(),
+            use_tmux: false,
         }
     }
 }
@@ -285,6 +292,15 @@ impl SessionRegistry {
         );
         if let Some(files) = meta.attention.as_ref() {
             attention::cleanup(files);
+        }
+        // A removal is the user's destructive confirm, not a detach: without this
+        // the tmux session outlives grove and `discover_tmux_sessions` reattaches
+        // it on the next launch. Port of `Session::kill`'s tmux arm
+        // (`crates/grove-core/src/session.rs:522-534`, pre-cutover).
+        // ponytail: tmux only — iced also killpg'd native children; revisit if orphaned jobs show up.
+        if let Some(name) = meta.tmux_name.as_deref() {
+            tmux::kill_session(name);
+            session_meta::delete(name);
         }
         Some(meta)
     }

@@ -10,6 +10,7 @@
 //! and again from `discover_tmux_sessions` (`:347-366`). That is only sound
 //! because of the first rule below.
 
+use grove_core::agent::Agent;
 use grove_core::tmux::DiscoveredSession;
 
 use crate::entities::session_registry::SessionMeta;
@@ -57,6 +58,13 @@ pub fn plan(
 
     let mut out = Vec::new();
     for d in discovered {
+        // Home terminals and panel shells are never tmux-backed
+        // (`SpawnTarget::use_tmux`); a discovery claiming to be one is a
+        // leaked home terminal from a run before that fix, not a real agent
+        // session — skip it rather than reimporting it as a grid tile.
+        if d.agent == Agent::Terminal {
+            continue;
+        }
         if live.contains(&d.name) || out.iter().any(|r: &Reattach| r.session.name == d.name) {
             continue;
         }

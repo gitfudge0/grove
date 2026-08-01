@@ -19,6 +19,7 @@
 #![allow(dead_code)]
 
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -32,6 +33,7 @@ use grove_terminal::{GroveTerm, MouseEncoding, MouseMode, PtyHandle, Snapshot};
 use crate::entities::session_registry::SpawnTarget;
 use crate::terminal::keys;
 use crate::terminal::mouse::{self, AbsCell};
+use crate::terminal_element::{TermScene, TermSceneKey};
 use portable_pty::CommandBuilder;
 
 /// Initial PTY size before the element's first `prepaint` reports real bounds
@@ -80,6 +82,23 @@ pub struct TerminalSession {
     /// Tmux pane pid, captured once at spawn — there is no cheap live handle
     /// to the pane's foreground process (`session.rs:511-522`).
     pane_pid: Option<u32>,
+    /// The tmux session name a reattach is still owed, for a session built by
+    /// [`Self::attach_existing`] whose client has deliberately **not** been
+    /// spawned yet. `Some` implies `pty.is_none()` and no reader; it is taken
+    /// by [`Self::attach_now`], which is the only place a reattach client is
+    /// ever created. See that method for why the spawn is deferred at all.
+    pending_attach: Option<String>,
+    /// Memoized terminal scene, keyed on everything it depends on.
+    ///
+    /// It lives here rather than in gpui element state on purpose:
+    /// `with_element_state` is keyed by the full ancestor `GlobalElementId`
+    /// path, and the terminal renders under
+    /// `div().id(format!("grid-tile-{tile_idx}"))` (`src/views/grid.rs:253`),
+    /// so that path embeds the tile *slot index*. Moving a tile would then
+    /// invalidate the cache on exactly the frames the memoization exists to
+    /// make cheap. Storing it on the session sidesteps element-path churn
+    /// entirely — do not "fix" this back to element state.
+    scene_cache: Option<(TermSceneKey, Rc<TermScene>)>,
     /// Dropping the `Task` stops the reader, so this field *is* the reader.
     _reader: Task<()>,
 }
@@ -99,21 +118,40 @@ impl TerminalSession {
         state_file: Option<&Path>,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Sessions are born at the live body dims — published each render by
+        // the workspace into `CurrentPtyDims` — so the agent TUI never
+        // renders a 24x80 frame; the first paint's resize then becomes a
+        // no-op instead of a shrink-then-regrow storm.
+        let dims = *cx.global::<crate::zoom::CurrentPtyDims>();
+        let (rows, cols) = (dims.rows, dims.cols);
         let cwd = target.cwd.clone();
         let mut spawn_error = None;
-        let spawned = match spawn_tmux(&cwd, target, extra_args, state_file) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                tracing::warn!("grove-gpui: tmux unavailable ({e}); falling back to a native PTY");
-                match spawn_native(&cwd, target, extra_args, state_file) {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        tracing::error!("grove-gpui: could not spawn a PTY: {e}");
-                        // Kept for the toast producers, which have no `Result`
-                        // to inspect (see `Self::spawn_error`).
-                        spawn_error = Some(e.clone());
-                        None
+        let spawned = if target.use_tmux {
+            match spawn_tmux(&cwd, target, extra_args, state_file, rows, cols) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(
+                        "grove-gpui: tmux unavailable ({e}); falling back to a native PTY"
+                    );
+                    match spawn_native(&cwd, target, extra_args, state_file, rows, cols) {
+                        Ok(v) => Some(v),
+                        Err(e) => {
+                            tracing::error!("grove-gpui: could not spawn a PTY: {e}");
+                            // Kept for the toast producers, which have no
+                            // `Result` to inspect (see `Self::spawn_error`).
+                            spawn_error = Some(e.clone());
+                            None
+                        }
                     }
+                }
+            }
+        } else {
+            match spawn_native(&cwd, target, extra_args, state_file, rows, cols) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::error!("grove-gpui: could not spawn a PTY: {e}");
+                    spawn_error = Some(e.clone());
+                    None
                 }
             }
         };
@@ -127,11 +165,11 @@ impl TerminalSession {
             Backend::Native => None,
         };
         Self {
-            term: GroveTerm::new(INIT_ROWS, INIT_COLS),
+            term: GroveTerm::new(rows, cols),
             pty,
             backend,
-            rows: INIT_ROWS,
-            cols: INIT_COLS,
+            rows,
+            cols,
             last_damage_gen: 0,
             tmux_copy_mode: false,
             last_input_at: None,
@@ -140,6 +178,8 @@ impl TerminalSession {
             exited: false,
             spawn_error,
             pane_pid,
+            pending_attach: None,
+            scene_cache: None,
             _reader: Self::spawn_reader(rx, cx),
         }
     }
@@ -159,38 +199,76 @@ impl TerminalSession {
     /// Mirrors [`Self::spawn`]'s shape: a failure yields a session carrying a
     /// [`Self::spawn_error`] rather than a `Result`, so the caller drops it and
     /// moves on.
-    pub fn attach_existing(name: &str, cx: &mut Context<Self>) -> Self {
-        let mut spawn_error = None;
-        let mut pty = None;
-        if tmux::has_session(name) {
-            tmux::configure_embedded_session(name);
-            match grove_terminal::pty::spawn(tmux_attach_cmd(name), INIT_ROWS, INIT_COLS) {
-                Ok(p) => pty = Some(p),
-                Err(e) => spawn_error = Some(e.to_string()),
-            }
-        } else {
-            spawn_error = Some(format!("tmux session {name} is gone"));
-        }
-        let rx = pty.as_mut().and_then(PtyHandle::take_receiver);
-        let pane_pid = tmux::pane_pid(name);
+    ///
+    /// **The attach itself is deferred** to [`Self::attach_now`]. `rows`/`cols`
+    /// here only seed the emulator: the caller (the startup scan) has a single
+    /// pair of dims — the focused pane's — while in grid view every tile is a
+    /// different size, so attaching here would create every client at a size
+    /// only one of them actually has and let the first layout pass correct it.
+    /// That correction is a second SIGWINCH to a live agent within one frame,
+    /// which leaves agent TUIs redrawing a stale frame. Deferring means the
+    /// client is created exactly once, at the size the tile really has.
+    pub fn attach_existing(name: &str, rows: u16, cols: u16, cx: &mut Context<Self>) -> Self {
+        let rows = rows.max(1);
+        let cols = cols.max(1);
         Self {
-            term: GroveTerm::new(INIT_ROWS, INIT_COLS),
-            pty,
+            term: GroveTerm::new(rows, cols),
+            // No PTY and no reader yet — the same shape a failed spawn leaves
+            // behind, which every readout path already tolerates.
+            pty: None,
             backend: Backend::Tmux {
                 name: name.to_string(),
             },
-            rows: INIT_ROWS,
-            cols: INIT_COLS,
+            rows,
+            cols,
             last_damage_gen: 0,
             tmux_copy_mode: false,
             last_input_at: None,
             last_scroll_at: None,
             last_output_at: Instant::now(),
             exited: false,
-            spawn_error,
-            pane_pid,
-            _reader: Self::spawn_reader(rx, cx),
+            spawn_error: None,
+            pane_pid: None,
+            pending_attach: Some(name.to_string()),
+            scene_cache: None,
+            _reader: Self::spawn_reader(None, cx),
         }
+    }
+
+    /// Perform the deferred tmux attach at the caller's real dims. The client
+    /// is created exactly once, at the size the tile actually has, so the agent
+    /// never receives the attach-then-relayout SIGWINCH pair that leaves agent
+    /// TUIs redrawing a stale frame.
+    ///
+    /// Idempotent: the name is taken out of `pending_attach`, so a second call
+    /// — the painted path and the workspace's never-painted fallback can both
+    /// reach a given session — is a no-op.
+    pub fn attach_now(&mut self, cx: &mut Context<Self>) {
+        let Some(name) = self.pending_attach.take() else {
+            return;
+        };
+        if !tmux::has_session(&name) {
+            self.spawn_error = Some(format!("tmux session {name} is gone"));
+            return;
+        }
+        tmux::configure_embedded_session(&name);
+        let mut pty = match grove_terminal::pty::spawn(tmux_attach_cmd(&name), self.rows, self.cols)
+        {
+            Ok(p) => p,
+            Err(e) => {
+                self.spawn_error = Some(e.to_string());
+                return;
+            }
+        };
+        let rx = pty.take_receiver();
+        self.pty = Some(pty);
+        self._reader = Self::spawn_reader(rx, cx);
+        self.pane_pid = tmux::pane_pid(&name);
+    }
+
+    /// Whether this session still owes a [`Self::attach_now`].
+    pub fn is_pending_attach(&self) -> bool {
+        self.pending_attach.is_some()
     }
 
     /// Spawn a one-shot **script** in a native PTY, for the teardown modal's
@@ -234,6 +312,8 @@ impl TerminalSession {
             exited: false,
             spawn_error,
             pane_pid: None,
+            pending_attach: None,
+            scene_cache: None,
             _reader: Self::spawn_reader(rx, cx),
         }
     }
@@ -305,6 +385,23 @@ impl TerminalSession {
         for chunk in chunks {
             self.term.process(chunk);
         }
+        // The emulator may have produced protocol replies while parsing
+        // (Device Attributes, cursor-position reports, …) — terminal-level
+        // conversation the inner app is blocking on, e.g. tmux probing its
+        // client's capabilities on attach. These must go straight to the PTY,
+        // never through `send`: `send` stamps `last_input_at`, snaps the view
+        // back to the live screen, and can cancel tmux copy-mode, all of
+        // which are correct for a keystroke but wrong for a reply the user
+        // never typed — it would yank a scrolled-back view to the bottom and
+        // tell the attention classifier the user just typed something.
+        let replies = self.term.take_responses();
+        if !replies.is_empty() {
+            if let Some(pty) = self.pty.as_mut() {
+                if let Err(e) = pty.write(&replies) {
+                    tracing::debug!("grove-gpui: PTY reply write failed: {e}");
+                }
+            }
+        }
         let generation = self.term.damage_generation();
         if generation != self.last_damage_gen {
             self.last_damage_gen = generation;
@@ -375,6 +472,13 @@ impl TerminalSession {
             self.scroll_view(up, mouse::SCROLL_STEP);
             return;
         }
+        let (rows, cols) = self.term.size();
+        // Wheel coords come from `mouse::cell_at`, which has no upper clamp —
+        // a pointer at the pane's bottom/right edge yields row == rows (or
+        // col == cols). Clamp like `click` does, so we never encode a
+        // coordinate past the live grid.
+        let col = col.min(cols.saturating_sub(1));
+        let row = row.min(rows.saturating_sub(1));
         self.send_wheel_notch(up, col, row);
     }
 
@@ -501,6 +605,20 @@ impl TerminalSession {
         self.term.display_offset()
     }
 
+    /// Monotonic grid-damage counter (`crates/grove-terminal/src/term.rs:163`),
+    /// the key the terminal element memoizes its scene on.
+    pub fn damage_generation(&self) -> u64 {
+        self.term.damage_generation()
+    }
+
+    pub fn scene_cache(&self) -> Option<&(TermSceneKey, Rc<TermScene>)> {
+        self.scene_cache.as_ref()
+    }
+
+    pub fn set_scene_cache(&mut self, key: TermSceneKey, scene: Rc<TermScene>) {
+        self.scene_cache = Some((key, scene));
+    }
+
     pub fn history_size(&self) -> usize {
         self.term.history_size()
     }
@@ -617,6 +735,8 @@ fn spawn_tmux(
     target: &SpawnTarget,
     extra_args: &[String],
     state_file: Option<&Path>,
+    rows: u16,
+    cols: u16,
 ) -> Result<(PtyHandle, Backend), String> {
     if !tmux::available() {
         return Err("tmux not on PATH".to_string());
@@ -635,8 +755,8 @@ fn spawn_tmux(
     tmux::new_session(
         &name,
         cwd,
-        INIT_ROWS,
-        INIT_COLS,
+        rows,
+        cols,
         &agent.program(),
         // The caller's launch flags first, the attention args after
         // (`crates/grove-core/src/session.rs:190`).
@@ -665,7 +785,7 @@ fn spawn_tmux(
     }
     tmux::configure_embedded_session(&name);
 
-    match grove_terminal::pty::spawn(tmux_attach_cmd(&name), INIT_ROWS, INIT_COLS) {
+    match grove_terminal::pty::spawn(tmux_attach_cmd(&name), rows, cols) {
         Ok(pty) => Ok((pty, Backend::Tmux { name })),
         Err(e) => {
             tmux::kill_session(&name);
@@ -705,6 +825,8 @@ fn spawn_native(
     target: &SpawnTarget,
     extra_args: &[String],
     state_file: Option<&Path>,
+    rows: u16,
+    cols: u16,
 ) -> Result<(PtyHandle, Backend), String> {
     let (program, prefix_args) = target.agent.invocation();
     let mut cmd = CommandBuilder::new(program);
@@ -726,7 +848,7 @@ fn spawn_native(
             path.display().to_string(),
         );
     }
-    grove_terminal::pty::spawn(cmd, INIT_ROWS, INIT_COLS)
+    grove_terminal::pty::spawn(cmd, rows, cols)
         .map(|pty| (pty, Backend::Native))
         .map_err(|e| e.to_string())
 }

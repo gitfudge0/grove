@@ -197,6 +197,36 @@ pub fn configure_embedded_session(name: &str) {
     let mut c = tmux();
     c.args(["set-window-option", "-t", name, "allow-rename", "on"]);
     let _ = run_silent(c);
+
+    // `tmux()` starts the grove server with no `-f`, so it loads the user's
+    // own ~/.tmux.conf — which on some machines sets `extended-keys on` /
+    // `xterm-keys on`. That makes tmux negotiate CSI-u/modifyOtherKeys with
+    // pane applications and query the outer terminal's capabilities to do
+    // so. Grove can't hold up either end of that: its input layer
+    // (src/terminal/keys.rs::key_to_bytes) only ever emits legacy key
+    // encodings, and its emulator never writes replies back to the PTY, so
+    // it can never answer tmux's capability queries. Force both off
+    // globally so the user's config can't leave tmux brokering a protocol
+    // neither side of grove speaks.
+    let mut c = tmux();
+    c.args(["set-option", "-g", "extended-keys", "off"]);
+    let _ = run_silent(c);
+    let mut c = tmux();
+    c.args(["set-window-option", "-g", "xterm-keys", "off"]);
+    let _ = run_silent(c);
+
+    // Server option (grove owns this socket): agent TUIs subscribe to focus
+    // reporting (mode 1004); with it off, Claude Code prints a "tmux
+    // focus-events off" notice into the pane a few seconds after each attach.
+    //
+    // NB: the claim that this notice's redraw is what leaves phantom blank
+    // rows in an agent's input box was DISPROVEN by direct experiment — 60
+    // rapid client resizes and a slow 35x99->22x95->48x95 replay against a
+    // live agent TUI both produced zero phantom rows. This option is kept
+    // only to suppress the notice itself; do not cite it as a phantom-row fix.
+    let mut c = tmux();
+    c.args(["set-option", "-s", "focus-events", "on"]);
+    let _ = run_silent(c);
 }
 
 /// Drive an embedded tmux client's scrollback via copy-mode. The attached

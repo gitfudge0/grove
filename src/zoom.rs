@@ -69,6 +69,23 @@ impl ZoomState {
     }
 }
 
+/// The live single-session body dims, published by the workspace each render
+/// so session spawns can size their PTY correctly from the first byte
+/// instead of flashing 24x80.
+#[derive(Clone, Copy)]
+pub struct CurrentPtyDims {
+    pub rows: u16,
+    pub cols: u16,
+}
+
+impl gpui::Global for CurrentPtyDims {}
+
+impl Default for CurrentPtyDims {
+    fn default() -> Self {
+        Self { rows: 24, cols: 80 }
+    }
+}
+
 /// How many whole `cell`-sized slots fit in `extent`, clamped to `1..=u16::MAX`.
 /// NaN and non-positive inputs collapse to 1.
 fn fit(extent: f32, cell: f32) -> u16 {
