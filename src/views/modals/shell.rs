@@ -8,6 +8,7 @@
 // once here and consumed by Tasks 4-6 of gpui rewrite plan 08.
 #![allow(dead_code)]
 
+use crate::views::rpx;
 use gpui::{div, prelude::*, px, AnyElement, Div, Hsla, MouseButton, SharedString};
 
 use crate::fonts::{MONO_FAMILY, UI_FAMILY};
@@ -26,7 +27,7 @@ const FOOTER_RADIUS: f32 = 11.0;
 fn ui(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
     div()
         .font(gpui::font(UI_FAMILY))
-        .text_size(px(size))
+        .text_size(rpx(size))
         .text_color(color)
         .child(content.into())
 }
@@ -34,7 +35,7 @@ fn ui(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
 fn mono(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
     div()
         .font(gpui::font(MONO_FAMILY))
-        .text_size(px(size))
+        .text_size(rpx(size))
         .text_color(color)
         .child(content.into())
 }
@@ -45,13 +46,13 @@ fn mono(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
 /// keeps the filled footer strip inside the border stroke.
 pub fn modal_panel(width: f32, content: impl IntoElement) -> Div {
     div()
-        .w(px(width))
+        .w(rpx(width))
         .p(px(1.0))
         .bg(c::BG_RAIL())
         .text_color(c::FG())
         .border_1()
         .border_color(c::BORDER())
-        .rounded(px(PANEL_RADIUS))
+        .rounded(rpx(PANEL_RADIUS))
         .shadow(vec![gpui::BoxShadow {
             color: gpui::hsla(0.0, 0.0, 0.0, 0.35),
             offset: gpui::point(px(0.0), px(12.0)),
@@ -66,9 +67,9 @@ pub fn modal_panel(width: f32, content: impl IntoElement) -> Div {
 /// (`modal.rs:44-58`). `inner` carries its own text color.
 pub fn keycap(inner: impl IntoElement) -> Div {
     div()
-        .px(px(6.0))
-        .py(px(2.0))
-        .rounded(px(4.0))
+        .px(rpx(6.0))
+        .py(rpx(2.0))
+        .rounded(rpx(4.0))
         .bg(c::BG_HL())
         .child(inner)
 }
@@ -84,9 +85,9 @@ pub fn keycap_text(label: impl Into<SharedString>, color: Hsla) -> Div {
 /// character joined with a U+2009 thin space (see [`tracked`]).
 pub fn section_header(label: &str, top: f32, bottom: f32) -> Div {
     div()
-        .pt(px(top))
-        .pb(px(bottom))
-        .pl(px(12.0))
+        .pt(rpx(top))
+        .pb(rpx(bottom))
+        .pl(rpx(12.0))
         .child(mono(tracked(label), 10.0, c::FG_MUTE()))
 }
 
@@ -96,7 +97,7 @@ pub fn footer_hint(key: &'static str, label: &'static str) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(6.0))
+        .gap(rpx(6.0))
         .child(keycap_text(key, c::FG_DIM()))
         .child(mono(label, 10.0, c::FG_MUTE()))
 }
@@ -106,18 +107,18 @@ pub fn footer_hint(key: &'static str, label: &'static str) -> Div {
 pub fn footer_container(content: impl IntoElement) -> Div {
     div()
         .w_full()
-        .px(px(16.0))
-        .py(px(8.0))
+        .px(rpx(16.0))
+        .py(rpx(8.0))
         .bg(c::BG_STRIP())
-        .rounded_bl(px(FOOTER_RADIUS))
-        .rounded_br(px(FOOTER_RADIUS))
+        .rounded_bl(rpx(FOOTER_RADIUS))
+        .rounded_br(rpx(FOOTER_RADIUS))
         .child(content)
 }
 
 /// A footer strip of plain hints with the palette's 14px inter-hint spacing
 /// (`modal.rs:135-146`).
 pub fn modal_footer_hints(hints: &[(&'static str, &'static str)]) -> Div {
-    let mut row = div().flex().items_center().gap(px(14.0));
+    let mut row = div().flex().items_center().gap(rpx(14.0));
     for (key, label) in hints {
         row = row.child(footer_hint(key, label));
     }
@@ -139,7 +140,7 @@ pub fn modal_header(title: impl Into<SharedString>, accent: Hsla) -> Div {
 /// [`modal_header`] for callers needing more than a bare title in the header
 /// zone, e.g. a title plus a right-aligned step counter (`modal.rs:162-171`).
 pub fn modal_header_row(content: impl IntoElement) -> Div {
-    div().w_full().px(px(16.0)).py(px(14.0)).child(content)
+    div().w_full().px(rpx(16.0)).py(rpx(14.0)).child(content)
 }
 
 /// A checkbox's toggle handler. `None` renders the checkbox disabled.
@@ -244,10 +245,10 @@ pub fn click_row(
         .id(id)
         .flex()
         .items_center()
-        .gap(px(8.0))
-        .px(px(8.0))
-        .py(px(5.0))
-        .rounded(px(4.0))
+        .gap(rpx(8.0))
+        .px(rpx(8.0))
+        .py(rpx(5.0))
+        .rounded(rpx(4.0))
         .when(selected, |d| d.bg(c::BG_HL()))
         .hover(|s| s.bg(c::BG_HOVER()))
         .cursor_pointer()
@@ -268,9 +269,9 @@ pub fn modal_action_sized(
 ) -> gpui::Stateful<Div> {
     div()
         .id(id)
-        .px(px(12.0))
-        .py(px(6.0))
-        .rounded(px(4.0))
+        .px(rpx(12.0))
+        .py(rpx(6.0))
+        .rounded(rpx(4.0))
         .border_1()
         .border_color(kind.border_color())
         .bg(kind.bg())
@@ -295,8 +296,8 @@ pub fn modal_checkbox(
     let disabled = on_toggle.is_none();
     let border_color = if checked { accent } else { c::BORDER() };
     let mut box_ = div()
-        .size(px(14.0))
-        .rounded(px(4.0))
+        .size(rpx(14.0))
+        .rounded(rpx(4.0))
         .border_1()
         .border_color(border_color)
         .bg(if checked { c::BG_HL() } else { c::BG() })
@@ -315,7 +316,7 @@ pub fn modal_checkbox(
         .id(id)
         .flex()
         .items_center()
-        .gap(px(8.0))
+        .gap(rpx(8.0))
         .child(box_)
         .child(ui(
             label,
@@ -361,7 +362,7 @@ pub fn scrim_top_drop(content: impl IntoElement) -> Div {
         .flex()
         .flex_col()
         .items_center()
-        .pt(px(80.0))
+        .pt(rpx(80.0))
         .child(content)
 }
 
@@ -370,11 +371,11 @@ pub fn scrim_top_drop(content: impl IntoElement) -> Div {
 pub fn modal_body(content: impl IntoElement) -> Div {
     div()
         .w_full()
-        .px(px(16.0))
-        .pb(px(14.0))
+        .px(rpx(16.0))
+        .pb(rpx(14.0))
         .flex()
         .flex_col()
-        .gap(px(10.0))
+        .gap(rpx(10.0))
         .child(content)
 }
 
@@ -399,13 +400,13 @@ pub fn divider_h() -> Div {
 /// A muted, indented one-liner shown under a section header or row to explain
 /// what a control does (`src/gui/view/modals/settings.rs:141-145`).
 pub fn caption(content: impl Into<SharedString>) -> Div {
-    div().px(px(10.0)).child(ui(content, 11.0, c::FG_MUTE()))
+    div().px(rpx(10.0)).child(ui(content, 11.0, c::FG_MUTE()))
 }
 
 /// One shade up from [`caption`] — reserved for safety-relevant captions,
 /// e.g. skip-permissions (`src/gui/view/modals/settings.rs:148-152`).
 pub fn caption_promoted(content: impl Into<SharedString>) -> Div {
-    div().px(px(10.0)).child(ui(content, 11.0, c::FG_DIM()))
+    div().px(rpx(10.0)).child(ui(content, 11.0, c::FG_DIM()))
 }
 
 /// A flat, borderless icon button in a fixed-width hoverable box — the zoom
@@ -420,12 +421,12 @@ pub fn flat_icon_btn(
 ) -> gpui::Stateful<Div> {
     div()
         .id(id)
-        .w(px(box_w))
-        .h(px(22.0))
+        .w(rpx(box_w))
+        .h(rpx(22.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(4.0))
+        .rounded(rpx(4.0))
         .hover(|s| s.bg(c::BG_HOVER()))
         .cursor_pointer()
         .child(crate::icons::icon(name, icon_size, c::FG_DIM()))
@@ -446,12 +447,12 @@ pub fn flat_text_btn(
 ) -> gpui::Stateful<Div> {
     div()
         .id(id)
-        .h(px(22.0))
-        .px(px(h_padding))
+        .h(rpx(22.0))
+        .px(rpx(h_padding))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(4.0))
+        .rounded(rpx(4.0))
         .hover(|s| s.bg(c::BG_HOVER()))
         .cursor_pointer()
         .child(mono(label, text_size, c::FG_DIM()))
@@ -492,14 +493,14 @@ pub fn seg_button(
     };
     let mut d = div()
         .id(id)
-        .px(px(12.0))
-        .py(px(4.0))
+        .px(rpx(12.0))
+        .py(rpx(4.0))
         .when(active, |d| {
             d.bg(if danger { c::RED_WASH() } else { c::BG_HL() })
         })
         .map(|d| match side {
-            SegSide::Left => d.rounded_tl(px(5.0)).rounded_bl(px(5.0)),
-            SegSide::Right => d.rounded_tr(px(5.0)).rounded_br(px(5.0)),
+            SegSide::Left => d.rounded_tl(rpx(5.0)).rounded_bl(rpx(5.0)),
+            SegSide::Right => d.rounded_tr(rpx(5.0)).rounded_br(rpx(5.0)),
         })
         .child(mono(label, 11.0, text_color));
     if let Some(f) = on_click {
@@ -520,7 +521,7 @@ pub fn seg_group(content: impl IntoElement) -> Div {
         .items_center()
         .border_1()
         .border_color(c::BORDER())
-        .rounded(px(6.0))
+        .rounded(rpx(6.0))
         .child(content)
 }
 
@@ -534,7 +535,7 @@ pub const PALETTE_ROW_H: f32 = 44.0;
 /// `icon_slot`).
 pub fn icon_slot(name: &str, size: f32, color: Hsla) -> Div {
     div()
-        .w(px(24.0))
+        .w(rpx(24.0))
         .flex()
         .items_center()
         .justify_center()
@@ -546,9 +547,9 @@ pub fn icon_slot(name: &str, size: f32, color: Hsla) -> Div {
 /// over a soft cyan tint (`src/gui/session_launcher/view/mod.rs:44-59`).
 pub fn cue_chip(label: impl Into<SharedString>) -> Div {
     div()
-        .px(px(6.0))
-        .py(px(2.0))
-        .rounded(px(4.0))
+        .px(rpx(6.0))
+        .py(rpx(2.0))
+        .rounded(rpx(4.0))
         .bg(c::SEL_TINT_SOFT())
         .child(mono(label, 10.0, c::CYAN()))
 }
@@ -569,9 +570,9 @@ pub fn palette_row(
     div()
         .id(id)
         .w_full()
-        .h(px(PALETTE_ROW_H))
-        .px(px(12.0))
-        .rounded(px(6.0))
+        .h(rpx(PALETTE_ROW_H))
+        .px(rpx(12.0))
+        .rounded(rpx(6.0))
         .flex()
         .items_center()
         .when(selected, |d| {

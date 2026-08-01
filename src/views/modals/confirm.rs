@@ -10,7 +10,8 @@
 // once here and consumed by Tasks 4-6 of gpui rewrite plan 08.
 #![allow(dead_code)]
 
-use gpui::{div, prelude::*, px, AnyElement, App, Context, Window};
+use crate::views::rpx;
+use gpui::{div, prelude::*, AnyElement, App, Context, Window};
 use grove_core::agent::Agent;
 use grove_core::{git, storage};
 
@@ -281,17 +282,17 @@ fn input_modal(
     note: Option<&str>,
     dispatch: &ModalDispatch,
 ) -> AnyElement {
-    let mut input_zone = div().flex().flex_col().gap(px(8.0));
+    let mut input_zone = div().flex().flex_col().gap(rpx(8.0));
     if let Some(field) = layer.fields.first() {
         input_zone = input_zone.child(
             div()
                 .w_full()
                 .flex()
                 .items_center()
-                .gap(px(8.0))
-                .px(px(10.0))
-                .py(px(6.0))
-                .rounded(px(6.0))
+                .gap(rpx(8.0))
+                .px(rpx(10.0))
+                .py(rpx(6.0))
+                .rounded(rpx(6.0))
                 .bg(c::BG())
                 .border_1()
                 .border_color(c::BORDER())
@@ -300,14 +301,14 @@ fn input_modal(
         );
     }
 
-    let mut buttons_zone = div().flex().flex_col().gap(px(8.0));
+    let mut buttons_zone = div().flex().flex_col().gap(rpx(8.0));
     if let Some(note) = note {
         buttons_zone = buttons_zone.child(note_text(note.to_string()));
     }
     buttons_zone = buttons_zone.child(
         div()
             .flex()
-            .gap(px(8.0))
+            .gap(rpx(8.0))
             .child(click_action(
                 "in-ok",
                 "Create",
@@ -359,12 +360,12 @@ fn confirm_modal(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(12.0))
+                    .gap(rpx(12.0))
                     .child(body_text(prompt.to_string()))
                     .child(
                         div()
                             .flex()
-                            .gap(px(8.0))
+                            .gap(rpx(8.0))
                             .child(click_action(
                                 "cf-yes",
                                 "Yes",
@@ -400,7 +401,7 @@ fn message_modal(text: &str, dispatch: &ModalDispatch) -> AnyElement {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(12.0))
+                    .gap(rpx(12.0))
                     .child(body_text(text.to_string()))
                     .child(click_action(
                         "msg-ok",
@@ -426,7 +427,7 @@ fn tmux_choice_modal(dispatch: &ModalDispatch) -> AnyElement {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(10.0))
+                    .gap(rpx(10.0))
                     .child(body_text(
                         "tmux-backed sessions survive Grove restarts and can be \
                          re-attached from a terminal. Native sessions end with \
@@ -435,7 +436,7 @@ fn tmux_choice_modal(dispatch: &ModalDispatch) -> AnyElement {
                     .child(
                         div()
                             .flex()
-                            .gap(px(8.0))
+                            .gap(rpx(8.0))
                             .child(click_action(
                                 "tmux-yes",
                                 "Use tmux",
@@ -466,7 +467,7 @@ fn tmux_choice_modal(dispatch: &ModalDispatch) -> AnyElement {
 fn agent_picker_modal(sel: usize, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     let agents = available_agents();
     let default = cx.global::<SettingsState>().store.default_agent;
-    let mut list = div().flex().flex_col().gap(px(2.0));
+    let mut list = div().flex().flex_col().gap(rpx(2.0));
     for (i, agent) in agents.iter().enumerate() {
         let selected = i == sel;
         let is_default = default == Some(*agent);
@@ -478,7 +479,7 @@ fn agent_picker_modal(sel: usize, dispatch: &ModalDispatch, cx: &App) -> AnyElem
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.0))
+                .gap(rpx(8.0))
                 .w_full()
                 .child(crate::icons::icon(
                     agent.icon_name(),
@@ -488,14 +489,14 @@ fn agent_picker_modal(sel: usize, dispatch: &ModalDispatch, cx: &App) -> AnyElem
                 .child(
                     div()
                         .flex_1()
-                        .text_size(px(12.0))
+                        .text_size(rpx(12.0))
                         .text_color(if selected { c::FG() } else { c::FG_DIM() })
                         .child(agent.label().to_string()),
                 )
                 .when(is_default, |d| {
                     d.child(
                         div()
-                            .text_size(px(10.0))
+                            .text_size(rpx(10.0))
                             .text_color(c::GREEN())
                             .child("default"),
                     )

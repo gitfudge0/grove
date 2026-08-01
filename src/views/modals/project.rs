@@ -12,7 +12,8 @@
 // once here and consumed by Tasks 4-6 of gpui rewrite plan 08.
 #![allow(dead_code)]
 
-use gpui::{div, prelude::*, px, AnyElement, App, Context};
+use crate::views::rpx;
+use gpui::{div, prelude::*, AnyElement, App, Context};
 use grove_core::{git, storage};
 
 use crate::settings::SettingsState;
@@ -530,21 +531,21 @@ fn remove_project_modal(
         let mut list = div()
             .flex()
             .flex_col()
-            .gap(px(6.0))
+            .gap(rpx(6.0))
             .child(body_text(format!(
                 "removing worktrees… {done}/{worktree_count}"
             )))
             .child(
                 div()
                     .font(gpui::font(crate::fonts::MONO_FAMILY))
-                    .text_size(px(11.0))
+                    .text_size(rpx(11.0))
                     .text_color(c::FG_MUTE())
                     .child(current.to_string()),
             );
         for e in errors {
             list = list.child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(rpx(11.0))
                     .text_color(c::RED())
                     .child(e.clone()),
             );
@@ -554,7 +555,7 @@ fn remove_project_modal(
         let mut d = div()
             .flex()
             .flex_col()
-            .gap(px(10.0))
+            .gap(rpx(10.0))
             .child(body_text(format!(
                 "Remove '{name}' from Grove? Its sessions will be ended."
             )));
@@ -572,7 +573,7 @@ fn remove_project_modal(
         d.child(
             div()
                 .flex()
-                .gap(px(8.0))
+                .gap(rpx(8.0))
                 .child(click_action(
                     "rm-proj-yes",
                     "Remove",
@@ -619,27 +620,27 @@ fn archive_project_modal(
     dispatch: &ModalDispatch,
 ) -> AnyElement {
     let blocked = !sessions.is_empty();
-    let mut list = div().flex().flex_col().gap(px(4.0));
+    let mut list = div().flex().flex_col().gap(rpx(4.0));
     for (wt, agent, running) in sessions {
         list = list.child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.0))
-                .px(px(8.0))
-                .py(px(4.0))
-                .rounded(px(4.0))
+                .gap(rpx(8.0))
+                .px(rpx(8.0))
+                .py(rpx(4.0))
+                .rounded(rpx(4.0))
                 .bg(c::BG_HL())
                 .child(
                     div()
                         .flex_1()
-                        .text_size(px(12.0))
+                        .text_size(rpx(12.0))
                         .text_color(c::FG_DIM())
                         .child(format!("{wt} · {agent}")),
                 )
                 .child(
                     div()
-                        .text_size(px(10.0))
+                        .text_size(rpx(10.0))
                         .text_color(if *running { c::GREEN() } else { c::FG_MUTE() })
                         .child(if *running { "running" } else { "exited" }),
                 ),
@@ -650,7 +651,7 @@ fn archive_project_modal(
         div()
             .flex()
             .flex_col()
-            .gap(px(10.0))
+            .gap(rpx(10.0))
             .child(body_text(format!(
                 "'{name}' still has {} session(s). Archiving would strand them \
                  under a project you can no longer see.",
@@ -660,7 +661,7 @@ fn archive_project_modal(
             .child(
                 div()
                     .flex()
-                    .gap(px(8.0))
+                    .gap(rpx(8.0))
                     .child(click_action(
                         "arch-kill",
                         "Kill all sessions",
@@ -680,14 +681,14 @@ fn archive_project_modal(
         div()
             .flex()
             .flex_col()
-            .gap(px(12.0))
+            .gap(rpx(12.0))
             .child(body_text(format!(
                 "Archive '{name}'? It disappears from the tree; nothing is deleted."
             )))
             .child(
                 div()
                     .flex()
-                    .gap(px(8.0))
+                    .gap(rpx(8.0))
                     .child(click_action(
                         "arch-yes",
                         "Archive",
@@ -733,11 +734,11 @@ fn archive_mini(
     let dispatch = dispatch.clone();
     div()
         .id(id)
-        .size(px(22.0))
+        .size(rpx(22.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(4.0))
+        .rounded(rpx(4.0))
         .hover(move |s| s.bg(hover_bg))
         .child(crate::icons::icon(icon_name, 12.0, glyph))
         .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
@@ -758,13 +759,13 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     let body: AnyElement = if rows.is_empty() {
         div()
             .w_full()
-            .py(px(30.0))
+            .py(rpx(30.0))
             .flex()
             .items_center()
             .justify_center()
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(rpx(12.0))
                     .text_color(c::FG_MUTE())
                     .child("No archived projects."),
             )
@@ -774,15 +775,15 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
             .id("archived-projects-list")
             .flex()
             .flex_col()
-            .gap(px(4.0))
-            .max_h(px(360.0))
+            .gap(rpx(4.0))
+            .max_h(rpx(360.0))
             .overflow_y_scroll();
         for (idx, name, path) in &rows {
             let slot = div()
-                .w(px(48.0))
+                .w(rpx(48.0))
                 .flex()
                 .items_center()
-                .gap(px(2.0))
+                .gap(rpx(2.0))
                 .child(archive_mini(
                     "arch-restore",
                     "restore",
@@ -804,17 +805,17 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.0))
+                    .gap(rpx(10.0))
                     .w_full()
-                    .px(px(10.0))
-                    .py(px(6.0))
-                    .rounded(px(6.0))
+                    .px(rpx(10.0))
+                    .py(rpx(6.0))
+                    .rounded(rpx(6.0))
                     .hover(|s| s.bg(c::BG_HL()))
                     .child(
                         div()
                             .flex_1()
                             .overflow_hidden()
-                            .text_size(px(13.0))
+                            .text_size(rpx(13.0))
                             .text_color(c::FG())
                             .child(name.clone()),
                     )
@@ -823,7 +824,7 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
                             .flex_1()
                             .overflow_hidden()
                             .font(gpui::font(crate::fonts::MONO_FAMILY))
-                            .text_size(px(11.0))
+                            .text_size(rpx(11.0))
                             .text_color(c::FG_MUTE())
                             .child(crate::views::session_header::truncate_middle(path, 44)),
                     )
@@ -834,7 +835,7 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     };
 
     let close_dispatch = dispatch.clone();
-    let header = div().w_full().px(px(16.0)).py(px(14.0)).child(
+    let header = div().w_full().px(rpx(16.0)).py(rpx(14.0)).child(
         div()
             .flex()
             .items_center()
@@ -842,18 +843,18 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
                 div()
                     .flex_1()
                     .font(gpui::font(crate::fonts::UI_FAMILY))
-                    .text_size(px(13.0))
+                    .text_size(rpx(13.0))
                     .text_color(c::CYAN())
                     .child("Archived projects"),
             )
             .child(
                 div()
                     .id("arch-list-close")
-                    .size(px(22.0))
+                    .size(rpx(22.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(4.0))
+                    .rounded(rpx(4.0))
                     .hover(|s| s.bg(c::BG_HOVER()))
                     .child(crate::icons::icon("close", 12.0, c::FG_MUTE()))
                     .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
@@ -898,15 +899,15 @@ fn teardown_modal(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(10.0))
+                    .gap(rpx(10.0))
                     .child(body_text(message.to_string()))
                     // The ONE terminal renderer, reused — there is no second
                     // one (Task 3 Step 4).
                     .children(layer.teardown_view.clone().map(|v| {
                         div()
-                            .h(px(240.0))
+                            .h(rpx(240.0))
                             .w_full()
-                            .rounded(px(6.0))
+                            .rounded(rpx(6.0))
                             .overflow_hidden()
                             .child(v)
                     }))

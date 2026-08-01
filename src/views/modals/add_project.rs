@@ -8,6 +8,7 @@
 //! `src/gui/update/onboarding.rs` (incl. the `Modal::TmuxChoice` handoff at
 //! :97).
 
+use crate::views::rpx;
 use gpui::{div, prelude::*, px, AnyElement, App, Context, Div, Hsla, Window};
 
 use crate::add_project::{self, ChooseOutcome, GitProbe, SubmitOutcome};
@@ -472,13 +473,13 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
 fn dir_list(path: &str, sel: usize, dispatch: &ModalDispatch) -> impl IntoElement {
     let entries = add_project::list_dirs(path);
     let offset = crate::launcher::scroll_offset_for(0, sel, DIR_ROWS, entries.len());
-    let mut list = div().flex().flex_col().gap(px(2.0));
+    let mut list = div().flex().flex_col().gap(rpx(2.0));
     if entries.is_empty() {
         return list.child(
             div()
-                .px(px(8.0))
-                .py(px(5.0))
-                .text_size(px(11.0))
+                .px(rpx(8.0))
+                .py(rpx(5.0))
+                .text_size(rpx(11.0))
                 .text_color(c::FG_MUTE())
                 .child("no matching directories"),
         );
@@ -493,7 +494,7 @@ fn dir_list(path: &str, sel: usize, dispatch: &ModalDispatch) -> impl IntoElemen
             div()
                 .flex_1()
                 .font(gpui::font(crate::fonts::MONO_FAMILY))
-                .text_size(px(11.0))
+                .text_size(rpx(11.0))
                 .text_color(if i == sel { c::FG() } else { c::FG_DIM() })
                 .child(name),
         ));
@@ -505,9 +506,9 @@ fn field(layer: &ModalLayer, idx: usize) -> Option<impl IntoElement> {
     layer.fields.get(idx).map(|f| {
         div()
             .w_full()
-            .px(px(10.0))
-            .py(px(6.0))
-            .rounded(px(6.0))
+            .px(rpx(10.0))
+            .py(rpx(6.0))
+            .rounded(rpx(6.0))
             .bg(c::BG())
             .border_1()
             .border_color(c::BORDER())
@@ -520,7 +521,7 @@ fn pick_source(
     st: &crate::modal::AddProjectState,
     dispatch: &ModalDispatch,
 ) -> AnyElement {
-    let mut body = div().flex().flex_col().gap(px(10.0));
+    let mut body = div().flex().flex_col().gap(rpx(10.0));
     if let Some(f) = field(layer, 0) {
         body = body.child(f);
     }
@@ -531,7 +532,7 @@ fn pick_source(
     body = body.child(
         div()
             .flex()
-            .gap(px(8.0))
+            .gap(rpx(8.0))
             .child(click_action(
                 "ap-browse",
                 "Browse…",
@@ -557,13 +558,13 @@ fn pick_source(
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(13.0))
+                            .text_size(rpx(13.0))
                             .text_color(c::CYAN())
                             .child("Add project"),
                     )
                     .child(
                         div()
-                            .text_size(px(10.0))
+                            .text_size(rpx(10.0))
                             .text_color(c::FG_MUTE())
                             .child("1 / 2"),
                     ),
@@ -584,16 +585,16 @@ fn details(
     st: &crate::modal::AddProjectState,
     dispatch: &ModalDispatch,
 ) -> AnyElement {
-    let mut body = div().flex().flex_col().gap(px(10.0)).child(
+    let mut body = div().flex().flex_col().gap(rpx(10.0)).child(
         div()
             .flex()
             .items_center()
-            .gap(px(8.0))
+            .gap(rpx(8.0))
             .child(
                 div()
                     .flex_1()
                     .font(gpui::font(crate::fonts::MONO_FAMILY))
-                    .text_size(px(11.0))
+                    .text_size(rpx(11.0))
                     .text_color(c::FG_DIM())
                     .child(st.path.clone()),
             )
@@ -626,7 +627,7 @@ fn details(
     if let Some(note) = &st.note {
         body = body.child(note_text(note.clone()));
     }
-    body = body.child(div().flex().gap(px(8.0)).child(click_action(
+    body = body.child(div().flex().gap(rpx(8.0)).child(click_action(
         "ap-add",
         "Add project",
         ModalBtn::Primary,
@@ -643,13 +644,13 @@ fn details(
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(13.0))
+                            .text_size(rpx(13.0))
                             .text_color(c::CYAN())
                             .child("Add project"),
                     )
                     .child(
                         div()
-                            .text_size(px(10.0))
+                            .text_size(rpx(10.0))
                             .text_color(c::FG_MUTE())
                             .child("2 / 2"),
                     ),
@@ -679,7 +680,7 @@ fn git_on_path() -> bool {
 /// A small filled status dot, the shared shape every wizard list row and the
 /// welcome bullets use.
 fn dot(color: Hsla) -> Div {
-    div().size(px(6.0)).rounded_full().bg(color)
+    div().size(rpx(6.0)).rounded_full().bg(color)
 }
 
 /// One bulleted value-prop line on the welcome step: a magenta mark, a bold
@@ -687,14 +688,14 @@ fn dot(color: Hsla) -> Div {
 fn onboard_point(lead: &'static str, body: &'static str) -> Div {
     div()
         .flex()
-        .gap(px(10.0))
-        .child(div().pt(px(6.0)).child(dot(c::MAGENTA())))
+        .gap(rpx(10.0))
+        .child(div().pt(rpx(6.0)).child(dot(c::MAGENTA())))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(2.0))
-                .child(div().text_size(px(14.0)).text_color(c::FG()).child(lead))
+                .gap(rpx(2.0))
+                .child(div().text_size(rpx(14.0)).text_color(c::FG()).child(lead))
                 .child(body_text(body)),
         )
 }
@@ -714,23 +715,23 @@ fn onboard_env_row(found: bool, optional: bool, name: &'static str, meta: &'stat
         .w_full()
         .flex()
         .items_center()
-        .gap(px(10.0))
-        .px(px(12.0))
-        .py(px(8.0))
-        .rounded(px(4.0))
+        .gap(rpx(10.0))
+        .px(rpx(12.0))
+        .py(rpx(8.0))
+        .rounded(rpx(4.0))
         .border_1()
         .border_color(c::BORDER())
         .bg(c::BG_STRIP())
         .child(dot(dotc))
-        .child(div().text_size(px(13.0)).text_color(c::FG()).child(name))
+        .child(div().text_size(rpx(13.0)).text_color(c::FG()).child(name))
         .child(
             div()
-                .text_size(px(12.0))
+                .text_size(rpx(12.0))
                 .text_color(c::FG_MUTE())
                 .child(meta),
         )
         .child(div().flex_1())
-        .child(div().text_size(px(11.0)).text_color(tagc).child(tag))
+        .child(div().text_size(rpx(11.0)).text_color(tagc).child(tag))
 }
 
 /// The first-run wizard. Full-viewport with no sidebar, statusbar or scrim —
@@ -754,7 +755,7 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
 
     // ── progress rail: per-step label, magenta done/current/pending tri-state
     // (iced onboarding.rs:60-81). ────────────────────────────────────────────
-    let mut rail = div().flex().items_center().gap(px(10.0));
+    let mut rail = div().flex().items_center().gap(rpx(10.0));
     for s in OnboardStep::flow() {
         let s = *s;
         let (dotc, txtc) = if s == *step {
@@ -768,9 +769,9 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
             div()
                 .flex()
                 .items_center()
-                .gap(px(5.0))
+                .gap(rpx(5.0))
                 .child(dot(dotc))
-                .child(div().text_size(px(10.0)).text_color(txtc).child(s.label())),
+                .child(div().text_size(rpx(10.0)).text_color(txtc).child(s.label())),
         );
     }
 
@@ -779,16 +780,16 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
         OnboardStep::Welcome => div()
             .flex()
             .flex_col()
-            .gap(px(10.0))
+            .gap(rpx(10.0))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.0))
+                    .gap(rpx(10.0))
                     .child(crate::icons::icon("grid", 32.0, c::CYAN()))
                     .child(
                         div()
-                            .text_size(px(32.0))
+                            .text_size(rpx(32.0))
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(c::FG())
                             .child("grove"),
@@ -796,11 +797,11 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
             )
             .child(
                 div()
-                    .text_size(px(15.0))
+                    .text_size(rpx(15.0))
                     .text_color(c::FG_DIM())
                     .child("a worktree launchpad for AI coding agents"),
             )
-            .child(div().h(px(20.0)))
+            .child(div().h(rpx(20.0)))
             .child(onboard_point(
                 "Sessions are the unit of work",
                 "Every agent you spawn lives in a managed session that survives navigation; switch between them in two keystrokes.",
@@ -843,20 +844,20 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
                     "Persists sessions across restarts",
                 ),
             ];
-            let mut list = div().flex().flex_col().gap(px(6.0));
+            let mut list = div().flex().flex_col().gap(rpx(6.0));
             for (found, optional, n, meta) in rows {
                 list = list.child(onboard_env_row(found, optional, n, meta));
             }
             div()
                 .flex()
                 .flex_col()
-                .gap(px(10.0))
-                .child(div().text_size(px(20.0)).text_color(c::FG()).child("Environment"))
+                .gap(rpx(10.0))
+                .child(div().text_size(rpx(20.0)).text_color(c::FG()).child("Environment"))
                 .child(body_text(
                     "Grove spawns agents from your PATH; it doesn't install or authenticate \
                      them. Only Git is required to get going.",
                 ))
-                .child(div().h(px(4.0)))
+                .child(div().h(rpx(4.0)))
                 .child(list)
                 .into_any_element()
         }
@@ -865,8 +866,8 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
             let mut d = div()
                 .flex()
                 .flex_col()
-                .gap(px(8.0))
-                .child(div().text_size(px(20.0)).text_color(c::FG()).child("Add your first project"))
+                .gap(rpx(8.0))
+                .child(div().text_size(rpx(20.0)).text_color(c::FG()).child("Add your first project"))
                 .child(body_text(
                     "Point Grove at a Git repository, or any plain folder for ad-hoc sessions.",
                 ))
@@ -874,11 +875,11 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
                 // anyway so this reads identically to the iced original.
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(rpx(11.0))
                         .text_color(c::FG_MUTE())
                         .child("R E P O S I T O R Y   O R   F O L D E R"),
                 );
-            let mut path_row = div().flex().items_center().gap(px(8.0));
+            let mut path_row = div().flex().items_center().gap(rpx(8.0));
             if let Some(f) = field(layer, 0) {
                 path_row = path_row.child(div().flex_1().child(f));
             }
@@ -893,12 +894,12 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
 
             if !path.trim().is_empty() {
                 d = d
-                    .child(div().text_size(px(11.0)).text_color(c::FG_MUTE()).child("M A T C H E S"))
+                    .child(div().text_size(rpx(11.0)).text_color(c::FG_MUTE()).child("M A T C H E S"))
                     .child(dir_list(path, *dir_sel, dispatch));
             }
 
             if name.is_some() {
-                d = d.child(div().text_size(px(11.0)).text_color(c::FG_MUTE()).child("N A M E"));
+                d = d.child(div().text_size(rpx(11.0)).text_color(c::FG_MUTE()).child("N A M E"));
                 if let Some(f) = field(layer, 1) {
                     d = d.child(f);
                 }
@@ -909,7 +910,7 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
             }
             d.child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(rpx(11.0))
                     .text_color(c::FG_MUTE())
                     .child("Tab to complete · ↑↓ to select · Enter to continue · Or skip setup"),
             )
@@ -922,8 +923,8 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
             let mut d = div()
                 .flex()
                 .flex_col()
-                .gap(px(8.0))
-                .child(div().text_size(px(20.0)).text_color(c::FG()).child("Start your first session"));
+                .gap(rpx(8.0))
+                .child(div().text_size(rpx(20.0)).text_color(c::FG()).child("Start your first session"));
 
             match &project {
                 Some(p) => {
@@ -938,7 +939,7 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
                             dispatch,
                             ModalClick::OnboardPickAgent(i),
                             div()
-                                .text_size(px(13.0))
+                                .text_size(rpx(13.0))
                                 .text_color(if active { c::FG() } else { c::FG_DIM() })
                                 .child(a.label().to_string()),
                         ));
@@ -946,7 +947,7 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
                     d = d.child(
                         div()
                             .w_full()
-                            .rounded(px(4.0))
+                            .rounded(rpx(4.0))
                             .border_1()
                             .border_color(c::BORDER())
                             .bg(c::BG_STRIP())
@@ -966,15 +967,15 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
             } else {
                 (c::FG_MUTE(), "Safe: agents ask before running commands")
             };
-            d.child(div().h(px(4.0)))
+            d.child(div().h(rpx(4.0)))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(20.0))
+                        .gap(rpx(20.0))
                         .child(
                             div()
-                                .text_size(px(11.0))
+                                .text_size(rpx(11.0))
                                 .text_color(c::FG_MUTE())
                                 .child("P E R M I S S I O N S"),
                         )
@@ -1013,7 +1014,7 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
                 )
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(rpx(11.0))
                         .text_color(perms_label_color)
                         .child(perms_line),
                 )
@@ -1031,10 +1032,10 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     let mut footer = div()
         .flex()
         .items_center()
-        .gap(px(8.0))
+        .gap(rpx(8.0))
         .child(
             div()
-                .text_size(px(12.0))
+                .text_size(rpx(12.0))
                 .text_color(c::FG_MUTE())
                 .child(count),
         )
@@ -1068,29 +1069,29 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     let brand = div()
         .flex()
         .items_center()
-        .gap(px(8.0))
+        .gap(rpx(8.0))
         .child(crate::icons::icon("grid", 15.0, c::CYAN()))
         .child(
             div()
                 .font_weight(gpui::FontWeight::BOLD)
-                .text_size(px(14.0))
+                .text_size(rpx(14.0))
                 .text_color(c::MAGENTA())
                 .child("grove"),
         );
 
     let content = div()
-        .w(px(560.0))
+        .w(rpx(560.0))
         .flex()
         .flex_col()
-        .gap(px(22.0))
+        .gap(rpx(22.0))
         .child(rail)
-        .child(div().w(px(560.0)).child(body));
+        .child(div().w(rpx(560.0)).child(body));
 
     div()
         .size_full()
         .flex()
         .flex_col()
-        .child(div().px(px(20.0)).py(px(16.0)).child(brand))
+        .child(div().px(rpx(20.0)).py(rpx(16.0)).child(brand))
         .child(
             div()
                 .flex_1()
@@ -1100,6 +1101,6 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
                 .justify_center()
                 .child(content),
         )
-        .child(div().w_full().px(px(20.0)).py(px(16.0)).child(footer))
+        .child(div().w_full().px(rpx(20.0)).py(rpx(16.0)).child(footer))
         .into_any_element()
 }

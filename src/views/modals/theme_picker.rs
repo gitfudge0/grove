@@ -8,6 +8,7 @@
 //! `crate::terminal_element::project_theme_override`'s `preview` argument
 //! (carried decision 7) — there is no second theme-override path.
 
+use crate::views::rpx;
 use gpui::{div, prelude::*, px, AnyElement, App, Context, Hsla, SharedString};
 use grove_core::theme::{Theme, ThemeKind};
 
@@ -38,11 +39,11 @@ fn action_mini(
     let color = if danger { c::RED() } else { c::FG_MUTE() };
     div()
         .id(id)
-        .size(px(22.0))
+        .size(rpx(22.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(4.0))
+        .rounded(rpx(4.0))
         .hover(|s| s.bg(c::BG_HOVER()))
         .cursor_pointer()
         .child(crate::icons::icon(icon_name, 13.0, color))
@@ -58,13 +59,13 @@ fn action_mini(
 /// (`theme_manager.rs:18-37`). Distinct from [`swatch`], which is the
 /// 4-color glance `ThemePicker` rows use.
 fn swatch_strip(t: &Theme) -> impl IntoElement {
-    let mut strip = div().flex().items_center().gap(px(2.0));
+    let mut strip = div().flex().items_center().gap(rpx(2.0));
     for i in 0..grove_core::theme::FIELD_NAMES.len() {
         let color = Hsla::from(c::ic(t.field(i)));
         strip = strip.child(
             div()
-                .size(px(10.0))
-                .rounded(px(2.0))
+                .size(rpx(10.0))
+                .rounded(rpx(2.0))
                 .border_1()
                 .border_color(c::BORDER())
                 .bg(color),
@@ -81,16 +82,16 @@ fn kind_badge(kind: ThemeKind) -> impl IntoElement {
         ThemeKind::Light => "LIGHT".into(),
     };
     div()
-        .px(px(5.0))
+        .px(rpx(5.0))
         .py(px(1.0))
-        .rounded(px(4.0))
+        .rounded(rpx(4.0))
         .border_1()
         .border_color(c::BORDER())
         .bg(c::BG_HL())
         .child(
             div()
                 .font(gpui::font(crate::fonts::UI_FAMILY))
-                .text_size(px(9.0))
+                .text_size(rpx(9.0))
                 .text_color(c::FG_MUTE())
                 .child(label),
         )
@@ -184,11 +185,30 @@ impl ModalLayer {
         self.preview_selected_theme(cx);
     }
 
+    /// A click on a theme row: select it and live-preview, but don't commit
+    /// (Enter/save still does that).
+    pub(super) fn theme_picker_click(&mut self, i: usize, cx: &mut Context<Self>) {
+        if let Some(Modal::ThemePicker {
+            sel_dark,
+            sel_light,
+            dark_tab,
+            ..
+        }) = self.slot.get_mut()
+        {
+            let sel = if *dark_tab { sel_dark } else { sel_light };
+            *sel = i;
+        }
+        // delta 0 reuses move's clamp + "clears follow-system / use-default" + preview
+        self.theme_picker_move(0, cx);
+    }
+
     pub(super) fn theme_picker_move(&mut self, delta: i32, cx: &mut Context<Self>) {
         if let Some(Modal::ThemePicker {
             sel_dark,
             sel_light,
             dark_tab,
+            follow_system,
+            scope,
             project_use_default,
             ..
         }) = self.slot.get_mut()
@@ -201,8 +221,16 @@ impl ModalLayer {
             let len = selectable(kind).len();
             let sel = if *dark_tab { sel_dark } else { sel_light };
             *sel = crate::launcher::cycle(*sel, delta, len);
-            // Picking a concrete theme clears "Default (follow app)".
-            *project_use_default = false;
+            match scope {
+                ThemePickerScope::App => {
+                    // Picking a concrete theme in app scope clears "follow system".
+                    *follow_system = false;
+                }
+                ThemePickerScope::Project(_) => {
+                    // Picking a concrete theme clears "Default (follow app)".
+                    *project_use_default = false;
+                }
+            }
         }
         self.preview_selected_theme(cx);
     }
@@ -221,6 +249,7 @@ impl ModalLayer {
             sel_dark,
             sel_light,
             dark_tab,
+            follow_system,
             scope,
             project_use_default,
             ..
@@ -237,7 +266,13 @@ impl ModalLayer {
         let theme = selectable(kind).get(sel).cloned();
         match scope {
             ThemePickerScope::App => {
-                if let Some(t) = &theme {
+                // While "follow system" is checked, keep the preview showing
+                // the resolved system theme rather than snapping to the
+                // tab's list selection (which would visually contradict the
+                // still-checked checkbox).
+                if *follow_system {
+                    crate::theme::ThemeState::apply_system_theme(cx);
+                } else if let Some(t) = &theme {
                     crate::theme::ThemeState::set_by_name(cx, &t.name);
                 }
                 ThemePreview::set(
@@ -289,14 +324,36 @@ impl ModalLayer {
         match scope {
             ThemePickerScope::App => {
                 let n = name.clone();
+                let kind = kind;
                 SettingsState::update(cx, move |store| {
                     store.theme_follow_system = follow_system;
-                    if follow_system {
-                        store.theme_dark = n;
-                    } else {
-                        store.theme = n;
+                    if !follow_system {
+                        store.theme = n.clone();
+                        match kind {
+                            ThemeKind::Dark => store.theme_dark = n,
+                            ThemeKind::Light => store.theme_light = n,
+                        }
                     }
                 });
+                let store = &cx.global::<SettingsState>().store;
+                let dark_name = store
+                    .theme_dark
+                    .clone()
+                    .unwrap_or_else(|| crate::theme::DEFAULT_DARK_THEME.to_string());
+                let light_name = store
+                    .theme_light
+                    .clone()
+                    .unwrap_or_else(|| crate::theme::DEFAULT_LIGHT_THEME.to_string());
+                cx.update_global::<crate::theme::ThemeState, _>(|state, _| {
+                    state.follow_system = follow_system;
+                    state.dark_name = dark_name;
+                    state.light_name = light_name;
+                });
+                if follow_system {
+                    crate::theme::ThemeState::apply_system_theme(cx);
+                } else if let Some(n) = &name {
+                    crate::theme::ThemeState::set_by_name(cx, n);
+                }
             }
             ThemePickerScope::Project(project) => {
                 let n = name.clone();
@@ -451,11 +508,11 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
 }
 
 fn swatch(t: &Theme) -> impl IntoElement {
-    div().flex().items_center().gap(px(3.0)).children(
+    div().flex().items_center().gap(rpx(3.0)).children(
         [c::bg_of(t), c::fg_of(t), c::blue_of(t), c::green_of(t)].map(|col| {
             div()
-                .size(px(9.0))
-                .rounded(px(2.0))
+                .size(rpx(9.0))
+                .rounded(rpx(2.0))
                 .bg(gpui::Hsla::from(col))
         }),
     )
@@ -516,7 +573,7 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
             )),
     );
 
-    let mut list = div().flex().flex_col().gap(px(2.0));
+    let mut list = div().flex().flex_col().gap(rpx(2.0));
     if matches!(scope, ThemePickerScope::Project(_)) {
         list = list.child(click_row(
             "tp-default",
@@ -535,12 +592,12 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.0))
+                .gap(rpx(8.0))
                 .w_full()
                 .child(
                     div()
                         .flex_1()
-                        .text_size(px(12.0))
+                        .text_size(rpx(12.0))
                         .text_color(c::FG_DIM())
                         .child(t.name.to_string()),
                 )
@@ -561,7 +618,7 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(10.0))
+                    .gap(rpx(10.0))
                     .child(tabs)
                     .child(list)
                     .child(click_checkbox(
@@ -601,9 +658,9 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
         let field = layer.fields.first().map(|f| {
             div()
                 .w_full()
-                .px(px(10.0))
-                .py(px(6.0))
-                .rounded(px(6.0))
+                .px(rpx(10.0))
+                .py(rpx(6.0))
+                .rounded(rpx(6.0))
                 .bg(c::BG())
                 .border_1()
                 .border_color(c::BORDER())
@@ -617,12 +674,12 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(8.0))
+                        .gap(rpx(8.0))
                         .child(body_text(
                             "Paste a theme JSON object, or edit the one below.",
                         ))
                         .children(field)
-                        .child(div().flex().gap(px(8.0)).child(click_action(
+                        .child(div().flex().gap(rpx(8.0)).child(click_action(
                             "tm-save",
                             "Save",
                             ModalBtn::Primary,
@@ -645,14 +702,14 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
         let body_zone = div()
             .flex()
             .flex_col()
-            .gap(px(8.0))
+            .gap(rpx(8.0))
             .child(body_text(format!("Delete theme \"{name}\"?")))
             .child(caption("This cannot be undone."))
             .child(
                 div()
                     .flex()
                     .justify_end()
-                    .gap(px(8.0))
+                    .gap(rpx(8.0))
                     .child(click_action(
                         "tm-del-cancel",
                         "Cancel",
@@ -682,7 +739,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
     let list_content: AnyElement = if themes.is_empty() {
         div()
             .w_full()
-            .py(px(30.0))
+            .py(rpx(30.0))
             .flex()
             .items_center()
             .justify_center()
@@ -691,7 +748,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
             ))
             .into_any_element()
     } else {
-        let mut list = div().flex().flex_col().gap(px(4.0));
+        let mut list = div().flex().flex_col().gap(rpx(4.0));
         for (i, t) in themes.iter().enumerate() {
             let is_renaming = rename.as_ref().is_some_and(|(from, _)| *from == t.name);
             let row_el: AnyElement = if is_renaming {
@@ -704,25 +761,25 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                 // editable-looking buffer row: the live rename buffer plus a
                 // blinking-caret glyph, in the same selected-tint container
                 // the iced original uses (`theme_manager.rs:106-141`).
-                let mut col = div().flex().flex_col().gap(px(4.0)).child(
+                let mut col = div().flex().flex_col().gap(rpx(4.0)).child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.0))
+                        .gap(rpx(6.0))
                         .w_full()
                         .child(
                             div()
                                 .flex_1()
-                                .px(px(8.0))
-                                .py(px(4.0))
-                                .rounded(px(4.0))
+                                .px(rpx(8.0))
+                                .py(rpx(4.0))
+                                .rounded(rpx(4.0))
                                 .bg(c::BG())
                                 .border_1()
                                 .border_color(c::BORDER())
                                 .flex()
                                 .items_center()
-                                .child(div().text_size(px(12.0)).text_color(c::FG()).child(buf))
-                                .child(div().w(px(1.0)).h(px(13.0)).ml(px(2.0)).bg(c::FG_DIM())),
+                                .child(div().text_size(rpx(12.0)).text_color(c::FG()).child(buf))
+                                .child(div().w(px(1.0)).h(rpx(13.0)).ml(rpx(2.0)).bg(c::FG_DIM())),
                         )
                         .child(click_action(
                             "tm-rename-save",
@@ -757,9 +814,9 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                 }
                 div()
                     .w_full()
-                    .px(px(10.0))
-                    .py(px(6.0))
-                    .rounded(px(6.0))
+                    .px(rpx(10.0))
+                    .py(rpx(6.0))
+                    .rounded(rpx(6.0))
                     .bg(c::SEL_TINT_STRONG())
                     .border_1()
                     .border_color(c::SEL_RING())
@@ -771,11 +828,11 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                     .flex_1()
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
+                    .gap(rpx(6.0))
                     .overflow_hidden()
                     .child(
                         div()
-                            .text_size(px(13.0))
+                            .text_size(rpx(13.0))
                             .text_color(if active { c::FG() } else { c::FG_DIM() })
                             .child(t.name.to_string()),
                     )
@@ -783,7 +840,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                 let icons = div()
                     .flex()
                     .items_center()
-                    .gap(px(2.0))
+                    .gap(rpx(2.0))
                     .child(action_mini(
                         "tm-edit",
                         "edit",
@@ -824,7 +881,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(10.0))
+                        .gap(rpx(10.0))
                         .w_full()
                         .child(name_zone)
                         .child(swatch_strip(t))
@@ -836,7 +893,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
         }
         div()
             .id("theme-manager-list")
-            .max_h(px(360.0))
+            .max_h(rpx(360.0))
             .overflow_y_scroll()
             .w_full()
             .child(list)
@@ -852,7 +909,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
     let body_zone = div()
         .flex()
         .flex_col()
-        .gap(px(10.0))
+        .gap(rpx(10.0))
         .child(div().flex().justify_end().child(click_action(
             "tm-new",
             "+ New theme",
@@ -878,7 +935,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
 /// (`theme_manager.rs:214-222`).
 fn modal_header_row_with_close(dispatch: &ModalDispatch) -> impl IntoElement {
     let dispatch2 = std::rc::Rc::clone(dispatch);
-    div().w_full().px(px(16.0)).py(px(14.0)).child(
+    div().w_full().px(rpx(16.0)).py(rpx(14.0)).child(
         div()
             .flex()
             .items_center()
@@ -887,18 +944,18 @@ fn modal_header_row_with_close(dispatch: &ModalDispatch) -> impl IntoElement {
                 div()
                     .flex_1()
                     .font(gpui::font(crate::fonts::UI_FAMILY))
-                    .text_size(px(13.0))
+                    .text_size(rpx(13.0))
                     .text_color(c::MAGENTA())
                     .child("Manage themes"),
             )
             .child(
                 div()
                     .id("tm-close")
-                    .size(px(22.0))
+                    .size(rpx(22.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(4.0))
+                    .rounded(rpx(4.0))
                     .hover(|s| s.bg(c::BG_HOVER()))
                     .cursor_pointer()
                     .child(crate::icons::icon("close", 12.0, c::FG_MUTE()))

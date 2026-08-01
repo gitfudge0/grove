@@ -32,9 +32,10 @@ pub mod settings;
 pub mod shell;
 pub mod theme_picker;
 
+use crate::views::rpx;
 use gpui::{
-    div, prelude::*, px, AnimationExt as _, App, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, KeyDownEvent, Window,
+    div, prelude::*, AnimationExt as _, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    KeyDownEvent, Window,
 };
 
 use crate::entities::activity_store::ActivityStore;
@@ -45,8 +46,8 @@ use crate::entities::toast::ToastState;
 use crate::entities::upgrade::Upgrade;
 use crate::entities::workspace_state::WorkspaceState;
 use crate::modal::{
-    key_verdict, CancelOutcome, KeyCtx, Modal, ModalAction, ModalKey, ModalKeyVerdict, ModalKind,
-    ModalMods, ModalSlot,
+    key_verdict, CancelOutcome, KeyCtx, LauncherView, Modal, ModalAction, ModalKey,
+    ModalKeyVerdict, ModalKind, ModalMods, ModalSlot,
 };
 use crate::settings::SettingsState;
 
@@ -163,6 +164,9 @@ pub enum ModalEvent {
     SelectSession(crate::entities::session_registry::SessionId),
     /// The switch drill-in picked a home terminal, by index.
     SelectTerminal(usize),
+    /// The palette strip's lifecycle-script rows: run `script` as a shell in
+    /// the worktree's terminal panel.
+    RunScript { wt_path: String, script: String },
 }
 
 /// The single modal slot, its focus, and whatever field the open modal owns.
@@ -179,6 +183,11 @@ pub struct ModalLayer {
     /// `[0]` setup, `[1]` run, `[2]` teardown; `ThemeManager` = `[0]` the
     /// editor buffer when the editor sub-view is open.
     pub(super) fields: Vec<ModalInput>,
+    /// Change-event subscriptions for `fields`, one per entry, kept alive so
+    /// backspace/delete — consumed by gpui-component's `InputState` bindings
+    /// before they ever bubble to this element's key handler — still syncs
+    /// the slot's buffers (fix for stale palette query on delete).
+    field_subs: Vec<gpui::Subscription>,
     /// One OS dialog at a time — a second click while the picker is up must
     /// not spawn another (`modals.rs:490-534`).
     pub(super) picker_open: bool,
@@ -234,6 +243,7 @@ impl ModalLayer {
             slot: ModalSlot::new(),
             focus: cx.focus_handle(),
             fields: Vec::new(),
+            field_subs: Vec::new(),
             picker_open: false,
             needs_focus: false,
             state,
@@ -283,6 +293,7 @@ impl ModalLayer {
         }
         self.slot.open(modal);
         self.fields.clear();
+        self.field_subs.clear();
         self.needs_focus = true;
         cx.notify();
     }
@@ -293,6 +304,7 @@ impl ModalLayer {
     pub fn open_quit_confirm(&mut self, native_running: usize, cx: &mut Context<Self>) {
         self.slot.open_quit_confirm(native_running);
         self.fields.clear();
+        self.field_subs.clear();
         self.needs_focus = true;
         cx.notify();
     }
@@ -309,10 +321,12 @@ impl ModalLayer {
             }
             CancelOutcome::Closed => {
                 self.fields.clear();
+                self.field_subs.clear();
                 cx.emit(ModalEvent::Closed);
             }
             CancelOutcome::ReturnedTo(_) => {
                 self.fields.clear();
+                self.field_subs.clear();
                 self.needs_focus = true;
             }
         }
@@ -324,6 +338,7 @@ impl ModalLayer {
     pub fn close(&mut self, cx: &mut Context<Self>) {
         self.slot.close();
         self.fields.clear();
+        self.field_subs.clear();
         cx.emit(ModalEvent::Closed);
         cx.notify();
     }
@@ -524,10 +539,37 @@ impl ModalLayer {
             ModalClick::RestoreArchived(idx) => self.restore_archived(idx, cx),
             ModalClick::DeleteArchived(idx) => self.delete_archived(idx, cx),
             ModalClick::SelectRow(i) => {
-                if let Some(Modal::AgentPicker { sel, .. }) = self.slot.get_mut() {
-                    *sel = i;
+                // Which follow-up to run once the mutation borrow above ends —
+                // click activates the launcher row (mirroring Enter) and
+                // previews the theme row (Enter/save still commits it).
+                enum SelectRowFollowUp {
+                    Launcher,
+                    Theme,
                 }
-                cx.notify();
+                let follow_up = match self.slot.get_mut() {
+                    Some(Modal::AgentPicker { sel, .. }) => {
+                        *sel = i;
+                        None
+                    }
+                    Some(Modal::SessionLauncher(st)) => {
+                        st.sel = i;
+                        if st.view != LauncherView::RowActions {
+                            // Identity resolution would otherwise activate
+                            // whatever row the stale anchor points at; in
+                            // RowActions the anchor is the strip's session,
+                            // not a row, and must survive the click.
+                            st.anchor = None;
+                        }
+                        Some(SelectRowFollowUp::Launcher)
+                    }
+                    Some(Modal::ThemePicker { .. }) => Some(SelectRowFollowUp::Theme),
+                    _ => None,
+                };
+                match follow_up {
+                    Some(SelectRowFollowUp::Launcher) => self.activate_palette_row(window, cx),
+                    Some(SelectRowFollowUp::Theme) => self.theme_picker_click(i, cx),
+                    None => cx.notify(),
+                }
             }
             ModalClick::Submit => self.submit(window, cx),
             ModalClick::ToggleDefaultAgent => self.toggle_default_agent(cx),
@@ -584,6 +626,7 @@ impl ModalLayer {
     fn build_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use input::InputPolicy;
         self.fields.clear();
+        self.field_subs.clear();
         let Some(modal) = self.slot.get() else {
             return;
         };
@@ -662,6 +705,23 @@ impl ModalLayer {
                 ));
             }
             _ => {}
+        }
+        // Backspace/delete never bubble to this element's key handler —
+        // gpui-component's `InputState` bindings consume them first — so the
+        // slot's buffers go stale on delete unless we sync on every change
+        // event directly from the field's `InputState`.
+        let states: Vec<_> = self.fields.iter().map(|f| f.state().clone()).collect();
+        for state in states {
+            let sub = cx.subscribe(
+                &state,
+                |this, _, ev: &gpui_component::input::InputEvent, cx| {
+                    if matches!(ev, gpui_component::input::InputEvent::Change) {
+                        this.sync_wizard_buffers(cx);
+                        cx.notify();
+                    }
+                },
+            );
+            self.field_subs.push(sub);
         }
         match self.fields.first() {
             // A field that is never focused silently eats nothing and looks
@@ -776,7 +836,7 @@ impl Render for ModalLayer {
                             "onboarding-enter",
                             gpui::Animation::new(std::time::Duration::from_millis(200))
                                 .with_easing(gpui::ease_out_quint()),
-                            |el, delta| el.opacity(delta).pt(px(8.0 * (1.0 - delta))),
+                            |el, delta| el.opacity(delta).pt(rpx(8.0 * (1.0 - delta))),
                         ),
                 )
         } else if kind.top_drops() {
@@ -789,6 +849,12 @@ impl Render for ModalLayer {
             .id("modal-layer")
             .key_context(kind.key_context())
             .track_focus(&self.focus)
+            // The scrim is a modal barrier, not just paint. Without this the
+            // layer is mouse-transparent: a press meant for the scrim reaches
+            // whatever is behind it, and `TerminalView::on_mouse_down` then
+            // calls `window.focus` on itself — taking the keyboard away from
+            // the open modal, so Escape lands in the PTY instead of closing.
+            .occlude()
             .on_key_down(cx.listener(Self::on_key_down))
             // The keys a focused `Input` would swallow, reclaimed as actions.
             .on_action(cx.listener(|this, _: &crate::keymap::ModalUp, window, cx| {
@@ -851,6 +917,243 @@ mod tests {
                 kind.top_drops(),
                 kind == ModalKind::SessionLauncher,
                 "{kind:?}"
+            );
+        }
+    }
+
+    // ── the focus regression harness ────────────────────────────────────
+    //
+    // A window whose root mimics `Workspace`: a focusable root div declaring
+    // the screen key context while no modal is open, a focusable "terminal"
+    // stand-in that records every key it receives, and the `ModalLayer`
+    // mounted last and only while a modal is open. The terminal takes focus
+    // on the first frame — exactly as `Workspace::render`'s `focused_once`
+    // does — and only then is a modal opened, which is the ordering the
+    // reported bug needs.
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use gpui::TestAppContext;
+    use grove_core::storage::Store;
+
+    struct KeyRecorder {
+        focus: FocusHandle,
+        keys: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl Focusable for KeyRecorder {
+        fn focus_handle(&self, _cx: &App) -> FocusHandle {
+            self.focus.clone()
+        }
+    }
+
+    impl Render for KeyRecorder {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("terminal-stand-in")
+                .track_focus(&self.focus)
+                .key_context("Terminal")
+                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, _| {
+                    this.keys.borrow_mut().push(ev.keystroke.key.clone());
+                }))
+                // `TerminalView::on_mouse_down` takes focus on every press.
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _: &gpui::MouseDownEvent, window, cx| {
+                        window.focus(&this.focus, cx);
+                    }),
+                )
+                .size_full()
+        }
+    }
+
+    struct TestRoot {
+        focus: FocusHandle,
+        terminal: Entity<KeyRecorder>,
+        modals: Entity<ModalLayer>,
+        focused_once: bool,
+        _closed_sub: gpui::Subscription,
+    }
+
+    impl Render for TestRoot {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            if !self.focused_once {
+                self.focused_once = true;
+                let handle = self.terminal.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            }
+            let modal_open = self.modals.read(cx).is_open();
+            let modals = self.modals.clone();
+            div()
+                .track_focus(&self.focus)
+                .when(!modal_open, |d| d.key_context("Workspace"))
+                .on_action(cx.listener(|this, _: &crate::keymap::Settings, _, cx| {
+                    this.modals
+                        .clone()
+                        .update(cx, |l, cx| l.open(Modal::Settings, cx));
+                }))
+                .size_full()
+                .child(self.terminal.clone())
+                .when(modal_open, |d| d.child(modals))
+        }
+    }
+
+    fn boot_globals(cx: &mut App) {
+        cx.set_global(SettingsState::new(Store::default()));
+        cx.set_global(crate::theme::ThemeState::new(
+            false,
+            crate::theme::DEFAULT_DARK_THEME.to_string(),
+            crate::theme::DEFAULT_LIGHT_THEME.to_string(),
+        ));
+        cx.set_global(crate::zoom::ZoomState::new(1.0));
+        gpui_component::init(cx);
+        cx.bind_keys(crate::keymap::bindings());
+    }
+
+    fn new_modal_layer(cx: &mut Context<TestRoot>) -> Entity<ModalLayer> {
+        let state = cx.new(|_| WorkspaceState::new(&Store::default(), 1280.0));
+        let registry = cx.new(|_| SessionRegistry::new());
+        let tree = cx.new(|_| ProjectTree::new());
+        let toast = cx.new(|_| ToastState::new());
+        let activity = cx.new(|_| ActivityStore::new());
+        let clock = cx.new(AnimationClock::new);
+        let upgrade = cx.new(Upgrade::new);
+        cx.new(|cx| ModalLayer::new(state, registry, tree, toast, activity, clock, upgrade, cx))
+    }
+
+    fn build_root(cx: &mut Context<TestRoot>, keys: Rc<RefCell<Vec<String>>>) -> TestRoot {
+        let modals = new_modal_layer(cx);
+        let terminal = cx.new(|cx| KeyRecorder {
+            focus: cx.focus_handle(),
+            keys,
+        });
+        // `Workspace::on_modal_event` does exactly this: a closed modal hands
+        // the keyboard back to the body on the next frame.
+        let sub = cx.subscribe(&modals, |this: &mut TestRoot, _, ev: &ModalEvent, cx| {
+            if matches!(ev, ModalEvent::Closed) {
+                this.focused_once = false;
+                cx.notify();
+            }
+        });
+        TestRoot {
+            focus: cx.focus_handle(),
+            terminal,
+            modals,
+            focused_once: false,
+            _closed_sub: sub,
+        }
+    }
+
+    /// The reported bug: with a modal open, Escape must close it and must
+    /// **not** reach the terminal behind the scrim.
+    #[gpui::test]
+    fn escape_closes_the_modal_and_never_reaches_the_terminal(cx: &mut TestAppContext) {
+        for modal in [
+            Modal::Settings,
+            Modal::Message("m".into()),
+            Modal::Input {
+                title: "t".into(),
+                buffer: String::new(),
+                note: None,
+            },
+            Modal::SessionLauncher(Box::default()),
+        ] {
+            let label = format!("{:?}", modal.kind());
+            cx.update(boot_globals);
+            let keys = Rc::new(RefCell::new(Vec::new()));
+            let (root, vcx) = cx.add_window_view(|_, cx| build_root(cx, keys.clone()));
+            vcx.run_until_parked();
+            let modals = root.read_with(vcx, |r, _| r.modals.clone());
+            keys.borrow_mut().clear();
+
+            modals.update(vcx, |l, cx| l.open(modal, cx));
+            vcx.run_until_parked();
+            assert!(modals.read_with(vcx, |l, _| l.is_open()), "{label} opened");
+
+            vcx.simulate_keystrokes("escape");
+            vcx.run_until_parked();
+            assert_eq!(
+                keys.borrow().as_slice(),
+                &[] as &[String],
+                "{label}: the terminal behind the scrim must not see the keystroke"
+            );
+            assert!(
+                !modals.read_with(vcx, |l, _| l.is_open()),
+                "{label}: escape must close the modal"
+            );
+        }
+    }
+
+    /// Root cause A: nothing under the scrim may take the mouse. A click that
+    /// lands on the terminal behind an open modal used to focus it
+    /// (`TerminalView::on_mouse_down`), after which every keystroke — Escape
+    /// included — went to the PTY instead of the modal.
+    #[gpui::test]
+    fn a_click_through_the_scrim_cannot_steal_focus_from_the_modal(cx: &mut TestAppContext) {
+        cx.update(boot_globals);
+        let keys = Rc::new(RefCell::new(Vec::new()));
+        let (root, vcx) = cx.add_window_view(|_, cx| build_root(cx, keys.clone()));
+        vcx.run_until_parked();
+        let modals = root.read_with(vcx, |r, _| r.modals.clone());
+
+        modals.update(vcx, |l, cx| l.open(Modal::Settings, cx));
+        vcx.run_until_parked();
+        keys.borrow_mut().clear();
+
+        // A press in the scrim's top-left corner, well clear of the panel.
+        vcx.simulate_click(
+            gpui::point(gpui::px(20.0), gpui::px(20.0)),
+            gpui::Modifiers::default(),
+        );
+        vcx.run_until_parked();
+
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert_eq!(
+            keys.borrow().as_slice(),
+            &[] as &[String],
+            "the terminal must not receive the keystroke after a click on the scrim"
+        );
+        assert!(
+            !modals.read_with(vcx, |l, _| l.is_open()),
+            "escape must still close the modal after a click on the scrim"
+        );
+    }
+
+    /// The realistic open path: the modal is opened by its **keybinding**,
+    /// dispatched while the terminal holds focus.
+    #[gpui::test]
+    fn escape_closes_a_modal_opened_by_its_keybinding(cx: &mut TestAppContext) {
+        cx.update(boot_globals);
+        let keys = Rc::new(RefCell::new(Vec::new()));
+        let (root, vcx) = cx.add_window_view(|_, cx| build_root(cx, keys.clone()));
+        vcx.run_until_parked();
+        let modals = root.read_with(vcx, |r, _| r.modals.clone());
+        keys.borrow_mut().clear();
+
+        // Three cycles: the second and third also cover the reopen path,
+        // where the layer already rendered once and the field/focus state has
+        // been torn down.
+        for cycle in 0..3 {
+            vcx.simulate_keystrokes(&format!("{},", crate::keymap::platform_mod_prefix()));
+            vcx.run_until_parked();
+            assert!(
+                modals.read_with(vcx, |l, _| l.is_open()),
+                "cycle {cycle}: the Settings keybinding opened the modal"
+            );
+            keys.borrow_mut().clear();
+
+            vcx.simulate_keystrokes("escape");
+            vcx.run_until_parked();
+            assert_eq!(
+                keys.borrow().as_slice(),
+                &[] as &[String],
+                "cycle {cycle}: the terminal behind the scrim must not see the keystroke"
+            );
+            assert!(
+                !modals.read_with(vcx, |l, _| l.is_open()),
+                "cycle {cycle}: escape must close the modal"
             );
         }
     }

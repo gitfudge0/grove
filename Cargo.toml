@@ -170,3 +170,6 @@ objc = "0.2"
 # Tests construct a `grove_core::upgrade::Release`, whose `version` field is a
 # `semver::Version`.
 semver.workspace = true
+# gpui's `TestAppContext`/`VisualTestContext` and the `#[gpui::test]` macro —
+# used by the modal-focus regression test (`views::modals`).
+gpui = { workspace = true, features = ["test-support"] }

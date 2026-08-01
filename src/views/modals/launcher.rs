@@ -12,7 +12,8 @@
 //! ←/→ mean agent cycling / zoom / the update strip, never caret movement, and
 //! a global-mods chord is an action, never text.
 
-use gpui::{div, prelude::*, px, AnyElement, App, Context, Window};
+use crate::views::rpx;
+use gpui::{div, prelude::*, AnyElement, App, Context, Window};
 use grove_core::agent::Agent;
 
 use crate::launcher::{self, PaletteRow, SwitchRow};
@@ -20,8 +21,8 @@ use crate::settings::SettingsState;
 use crate::theme as c;
 
 use super::shell::{
-    body_text, click_row, cue_chip, divider_h, icon_slot, keycap_text, modal_footer_hints,
-    modal_panel, palette_row, section_header,
+    body_text, cue_chip, divider_h, icon_slot, keycap_text, modal_footer_hints, modal_panel,
+    palette_row, section_header,
 };
 use super::{Modal, ModalClick, ModalDispatch, ModalEvent, ModalLayer};
 use crate::modal::{LauncherSlotState, LauncherView};
@@ -57,11 +58,17 @@ impl ModalLayer {
         store
             .active_projects()
             .map(|(i, p)| {
-                let wts = tree
+                let mut wts: Vec<String> = tree
                     .worktrees_for_project(i, active)
                     .iter()
                     .map(|w| w.path.clone())
                     .collect();
+                // Un-cached, non-active projects report zero worktrees until
+                // their cache warms; fall back to the project root so the
+                // project is still searchable and launchable in the palette.
+                if wts.is_empty() {
+                    wts.push(p.path.clone());
+                }
                 (i, p.name.clone(), wts)
             })
             .collect()
@@ -151,9 +158,85 @@ impl ModalLayer {
         match st.view {
             LauncherView::Switch => self.switch_rows(cx).len(),
             LauncherView::Settings => crate::launcher::SettingRow::ALL.len(),
-            LauncherView::RowActions => 2,
+            LauncherView::RowActions => self.row_action_len(cx),
             _ => self.palette_rows(cx).len(),
         }
+    }
+
+    /// The row-actions strip's lifecycle-script rows, in fixed order
+    /// setup/run/teardown, skipping unset/blank scripts. This backs
+    /// `row_action_len`, the view, and `activate_row_action` so all three
+    /// stay in sync — that sync was the whole point of the helper in the
+    /// iced original (`src/gui/session_launcher/palette.rs:883-905`,
+    /// `row_action_scripts`).
+    fn row_action_scripts(&self, proj: usize, cx: &App) -> Vec<(&'static str, String)> {
+        let store = &cx.global::<SettingsState>().store;
+        let Some(p) = store.projects.get(proj) else {
+            return Vec::new();
+        };
+        [
+            ("setup", &p.scripts.setup),
+            ("run", &p.scripts.run),
+            ("teardown", &p.scripts.teardown),
+        ]
+        .into_iter()
+        .filter_map(|(kind, script)| {
+            let s = script.as_deref()?.trim();
+            if s.is_empty() {
+                None
+            } else {
+                Some((kind, s.to_string()))
+            }
+        })
+        .collect()
+    }
+
+    /// Whether the anchored worktree is a project's default/base checkout —
+    /// it can't be deleted, so action 1 offers "Create worktree…" there
+    /// instead of "Delete worktree" (`src/gui/session_launcher/view/rows.rs`,
+    /// `palette_row_actions_strip`). A worktree that vanished from the tree
+    /// falls back to "not main", i.e. Delete — the pre-strip-rewrite behavior.
+    ///
+    /// `worktrees_for_project` only returns live data for the active
+    /// project; every other project reads `wt_cache`, which is empty until
+    /// the sidebar has expanded it. When the tree lookup finds nothing, fall
+    /// back to comparing `wt_path` against the project's own registered
+    /// root — the same substitution `tree_paths` already makes when handing
+    /// out worktree paths for a cold project, so a cold project's own root
+    /// must agree that it is main.
+    fn anchor_is_main(&self, proj: usize, wt_path: &str, cx: &App) -> bool {
+        let found = self
+            .tree
+            .read(cx)
+            .worktrees_for_project(proj, self.state.read(cx).proj_idx())
+            .iter()
+            .find(|w| w.path == wt_path)
+            .map(|w| w.is_main);
+        if let Some(is_main) = found {
+            return is_main;
+        }
+        let Some(p) = cx.global::<SettingsState>().store.projects.get(proj) else {
+            return false;
+        };
+        wt_path.trim_end_matches('/') == p.path.trim_end_matches('/')
+    }
+
+    /// The row-actions strip's row count: launch + (create-worktree or
+    /// delete-worktree) + an optional project-theme row + one row per
+    /// configured lifecycle script (`palette_row_actions_strip`).
+    fn row_action_len(&self, cx: &App) -> usize {
+        let Some(Modal::SessionLauncher(st)) = self.slot.get() else {
+            return 0;
+        };
+        let Some(crate::launcher::RowIdentity::Session { proj, .. }) = st.anchor.clone() else {
+            return 2;
+        };
+        let base = if cx.global::<SettingsState>().store.project_themes_enabled {
+            3
+        } else {
+            2
+        };
+        base + self.row_action_scripts(proj, cx).len()
     }
 
     /// The palette owns its whole keyboard (`handle_session_launcher_key`), so
@@ -168,6 +251,9 @@ impl ModalLayer {
         use crate::modal::ModalKey as K;
         self.sync_wizard_buffers(cx);
         let len = self.palette_len(cx);
+        if key == K::Tab {
+            return self.palette_tab(window, cx);
+        }
         let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() else {
             return false;
         };
@@ -186,31 +272,40 @@ impl ModalLayer {
             K::Down => {
                 st.sel = launcher::cycle(st.sel, 1, len);
                 st.offset = launcher::scroll_offset_for(st.offset, st.sel, VISIBLE_ROWS, len);
-                self.reanchor(cx);
+                // RowActions, Switch and Settings all draw their rows from
+                // something other than `palette_rows`, so re-anchoring in any
+                // of them would clobber the anchor with an unrelated root row.
+                if matches!(
+                    st.view,
+                    LauncherView::RowActions | LauncherView::Settings | LauncherView::Switch
+                ) {
+                    cx.notify();
+                } else {
+                    self.reanchor(cx);
+                }
                 true
             }
             K::Up => {
                 st.sel = launcher::cycle(st.sel, -1, len);
                 st.offset = launcher::scroll_offset_for(st.offset, st.sel, VISIBLE_ROWS, len);
-                self.reanchor(cx);
-                true
-            }
-            // Tab reveals the row-action strip under the highlighted row.
-            K::Tab => {
-                st.view = if st.view == LauncherView::RowActions {
-                    LauncherView::Root
+                if matches!(
+                    st.view,
+                    LauncherView::RowActions | LauncherView::Settings | LauncherView::Switch
+                ) {
+                    cx.notify();
                 } else {
-                    LauncherView::RowActions
-                };
-                st.sel = 0;
-                cx.notify();
+                    self.reanchor(cx);
+                }
                 true
             }
-            // ←/→ NEVER move the caret here — they cycle the strip's agent.
-            K::Left | K::Right if st.view == LauncherView::RowActions => {
+            // ←/→ NEVER move the caret here — they cycle the strip's agent,
+            // and only on row 0 (launch session), the one row that has
+            // horizontal options. Every other strip row falls through to the
+            // claimed no-op below.
+            K::Left | K::Right if st.view == LauncherView::RowActions && st.sel == 0 => {
                 let delta = if key == K::Left { -1 } else { 1 };
                 let agents = super::confirm::available_agents();
-                st.sel = launcher::cycle(st.sel, delta, agents.len().max(1));
+                st.agent_sel = launcher::cycle(st.agent_sel, delta, agents.len().max(1));
                 cx.notify();
                 true
             }
@@ -233,6 +328,78 @@ impl ModalLayer {
         }
     }
 
+    /// Tab reveals the row-action strip under the highlighted row — but it
+    /// must resolve that row FRESH from `palette_rows` at `st.sel` rather
+    /// than trust `st.anchor`, which is only ever populated by arrow-key
+    /// navigation (`reanchor`) and so is still `None` the first time Tab is
+    /// pressed after typing a query without ever pressing an arrow. The iced
+    /// original resolved the row the same way (`palette.rs:399`,
+    /// `launcher_enter_row_actions`): a `Recent`/`Combo` row reveals the
+    /// strip; `SwitchToSession`/`Settings`/`Setting` mirror Enter; every
+    /// other row is a no-op the palette still claims. Tab already inside the
+    /// strip pops back to Root; Tab inside Switch/Settings is a claimed
+    /// no-op — only Root/BrowseAll/the typing state resolve a row.
+    fn palette_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(Modal::SessionLauncher(st)) = self.slot.get() else {
+            return false;
+        };
+        let view = st.view;
+        let sel = st.sel;
+
+        if view == LauncherView::RowActions {
+            if let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() {
+                st.view = LauncherView::Root;
+                st.sel = 0;
+            }
+            cx.notify();
+            return true;
+        }
+        if view == LauncherView::Switch || view == LauncherView::Settings {
+            cx.notify();
+            return true;
+        }
+
+        let rows = self.palette_rows(cx);
+        let Some(row) = rows.get(sel).cloned() else {
+            cx.notify();
+            return true;
+        };
+        match row {
+            PaletteRow::Recent { agent, .. } | PaletteRow::Combo { agent, .. } => {
+                let identity = launcher::row_identity(&row);
+                let agent_sel = launcher::agent_sel_for(&super::confirm::available_agents(), agent);
+                if let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() {
+                    st.anchor = Some(identity);
+                    st.view = LauncherView::RowActions;
+                    st.sel = 0;
+                    st.agent_sel = agent_sel;
+                }
+            }
+            PaletteRow::SwitchToSession => {
+                if let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() {
+                    st.view = LauncherView::Switch;
+                    st.sel = 0;
+                    st.offset = 0;
+                }
+            }
+            PaletteRow::Settings => {
+                if let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() {
+                    st.view = LauncherView::Settings;
+                    st.sel = 0;
+                    st.offset = 0;
+                }
+            }
+            PaletteRow::Setting(s) => self.activate_setting(s, window, cx),
+            PaletteRow::NewSession
+            | PaletteRow::TerminalHome
+            | PaletteRow::TerminalWt
+            | PaletteRow::AddProject
+            | PaletteRow::ReloadThemes => {}
+        }
+        cx.notify();
+        true
+    }
+
     /// Re-capture the selected row's identity whenever the cursor moves, so
     /// activation resolves by content rather than by a possibly-stale index
     /// (`state.rs:28-48` — the load-bearing invariant).
@@ -250,12 +417,24 @@ impl ModalLayer {
             return;
         };
         let view = st.view;
+        let sel = st.sel;
+        if view == LauncherView::RowActions {
+            self.activate_row_action(cx);
+            return;
+        }
         if view == LauncherView::Switch {
             let switch = self.switch_rows(cx);
             let Some(row) = switch.get(st.sel).copied() else {
                 return;
             };
             self.activate_switch_row(row, cx);
+            return;
+        }
+        if view == LauncherView::Settings {
+            let Some(row) = crate::launcher::SettingRow::ALL.get(sel).copied() else {
+                return;
+            };
+            self.activate_setting(row, window, cx);
             return;
         }
         // Identity first; a vanished row activates nothing at all.
@@ -355,6 +534,102 @@ impl ModalLayer {
         }
     }
 
+    /// Dispatches the RowActions strip: row 0 launches the anchored session
+    /// with whichever agent the strip has selected; row 1 opens either the
+    /// new-worktree prompt (anchored worktree is the project's main
+    /// checkout) or the delete-worktree confirmation; row 2 opens the
+    /// project theme picker, when project themes are enabled; every row
+    /// after that runs a configured lifecycle script in the worktree's
+    /// terminal panel (`src/gui/session_launcher/palette.rs:908-937`,
+    /// `launcher_run_row_action`).
+    fn activate_row_action(&mut self, cx: &mut Context<Self>) {
+        let Some(Modal::SessionLauncher(st)) = self.slot.get() else {
+            return;
+        };
+        let Some(crate::launcher::RowIdentity::Session { proj, wt_path, .. }) = st.anchor.clone()
+        else {
+            return;
+        };
+        let sel = st.sel;
+        let agent_sel = st.agent_sel;
+        let project_themes_enabled = cx.global::<SettingsState>().store.project_themes_enabled;
+        let base = if project_themes_enabled { 3 } else { 2 };
+        if sel == 0 {
+            let agents = super::confirm::available_agents();
+            let Some(agent) = agents.get(agent_sel).copied() else {
+                return;
+            };
+            let project = cx
+                .global::<SettingsState>()
+                .store
+                .projects
+                .get(proj)
+                .map(|p| p.name.clone());
+            let Some(project) = project else { return };
+            self.push_recent_launch(&project, &wt_path, agent, cx);
+            self.close(cx);
+            cx.emit(ModalEvent::SpawnAgent {
+                project,
+                wt_path,
+                agent,
+            });
+        } else if sel == 1 {
+            let is_main = self.anchor_is_main(proj, &wt_path, cx);
+            // Select the anchored project first — `ConfirmKind::RemoveWorktree`
+            // resolves the project to tear down via `selected_project`, which
+            // reads the sidebar's active project index (`confirm.rs:100-107`);
+            // the new-worktree prompt reads the same active index
+            // (`sidebar.rs:256-269`).
+            self.state.update(cx, |s, cx| {
+                s.select_project(proj);
+                cx.notify();
+            });
+            if is_main {
+                self.open(
+                    Modal::Input {
+                        title: "New worktree".into(),
+                        buffer: String::new(),
+                        note: None,
+                    },
+                    cx,
+                );
+            } else {
+                self.open(
+                    Modal::Confirm {
+                        title: "Delete worktree?".into(),
+                        prompt: format!("'{wt_path}' will be removed from disk."),
+                        destructive: true,
+                        kind: crate::modal::ConfirmKind::RemoveWorktree(wt_path),
+                    },
+                    cx,
+                );
+            }
+        } else if sel == 2 && project_themes_enabled {
+            let project_name = cx
+                .global::<SettingsState>()
+                .store
+                .projects
+                .get(proj)
+                .map(|p| p.name.clone());
+            let Some(project_name) = project_name else {
+                return;
+            };
+            self.open_theme_picker(
+                crate::modal::ThemePickerScope::Project(project_name),
+                crate::modal::ThemePickerReturn::Close,
+                cx,
+            );
+        } else if sel >= base {
+            let scripts = self.row_action_scripts(proj, cx);
+            let Some((_, script)) = scripts.get(sel - base) else {
+                return;
+            };
+            let script = script.clone();
+            self.close(cx);
+            cx.emit(ModalEvent::RunScript { wt_path, script });
+        }
+    }
+
     /// Recents are deduped by `(project, wt_path, agent)` and moved to the
     /// front (`push_recent_launch`).
     fn push_recent_launch(
@@ -403,35 +678,40 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     let search = layer.fields.first().map(|f| {
         div()
             .w_full()
-            .px(px(16.0))
-            .py(px(14.0))
+            .px(rpx(16.0))
+            .py(rpx(14.0))
             .flex()
             .items_center()
-            .gap(px(8.0))
+            .gap(rpx(8.0))
             .child(leading_glyph(st.view))
-            .child(gpui_component::input::Input::new(f.state()).flex_1())
+            .child(
+                gpui_component::input::Input::new(f.state())
+                    .appearance(false)
+                    .flex_1(),
+            )
     });
 
     let list: AnyElement = match st.view {
         LauncherView::Switch => switch_list(layer, st, dispatch, cx),
         LauncherView::Settings => settings_list(st, dispatch, cx),
-        LauncherView::RowActions => row_actions(st, dispatch),
+        LauncherView::RowActions => row_actions(layer, st, dispatch, cx),
         _ => row_list(layer, st, dispatch, cx),
     };
     let list_zone = div()
         .id("palette-list")
-        .max_h(px(380.0))
+        .max_h(rpx(380.0))
         .overflow_y_scroll()
-        .p(px(8.0))
+        .p(rpx(8.0))
         .child(list);
 
     let hints: &[(&'static str, &'static str)] = match st.view {
-        LauncherView::RowActions => &[
+        LauncherView::RowActions if st.sel == 0 => &[
             ("←→", "agent"),
-            ("⏎", "launch"),
+            ("↑↓", "navigate"),
+            ("⏎", "select"),
             ("tab", "back"),
-            ("esc", "back"),
         ],
+        LauncherView::RowActions => &[("↑↓", "navigate"), ("⏎", "select"), ("tab", "back")],
         LauncherView::Root => &[
             ("↑↓", "navigate"),
             ("tab", "actions"),
@@ -485,9 +765,12 @@ fn row_label(row: &PaletteRow, cx: &App) -> (String, String, &'static str) {
         PaletteRow::AddProject => ("Add project…".into(), String::new(), "plus"),
         PaletteRow::SwitchToSession => ("Switch to session…".into(), String::new(), "restart"),
         PaletteRow::Settings => ("Settings…".into(), String::new(), "cog"),
+        // The value, not the section: activating a toggle row leaves the
+        // palette open, so the subtitle is the only thing that can report the
+        // flip — the same value the Settings drill-in shows.
         PaletteRow::Setting(s) => (
             s.label().to_string(),
-            s.section().to_string(),
+            super::settings::setting_value(*s, cx),
             s.icon_name(),
         ),
         PaletteRow::ReloadThemes => ("Reload themes".into(), String::new(), "restart"),
@@ -510,7 +793,7 @@ fn palette_row_content(
     let mut row = div()
         .flex()
         .items_center()
-        .gap(px(8.0))
+        .gap(rpx(8.0))
         .w_full()
         .child(icon_slot(icon, 16.0, icon_color))
         .child(
@@ -518,17 +801,17 @@ fn palette_row_content(
                 .flex_1()
                 .flex()
                 .flex_col()
-                .gap(px(2.0))
+                .gap(rpx(2.0))
                 .child(
                     div()
-                        .text_size(px(13.0))
+                        .text_size(rpx(13.0))
                         .text_color(title_color)
                         .child(title),
                 )
                 .child(
                     div()
                         .font(gpui::font(crate::fonts::MONO_FAMILY))
-                        .text_size(px(10.5))
+                        .text_size(rpx(10.5))
                         .text_color(c::FG_MUTE())
                         .child(subtitle),
                 ),
@@ -550,7 +833,7 @@ fn row_list(
         return body_text("no matches").into_any_element();
     }
     let offset = launcher::scroll_offset_for(st.offset, st.sel, VISIBLE_ROWS, rows.len());
-    let mut list = div().flex().flex_col().gap(px(2.0));
+    let mut list = div().flex().flex_col().gap(rpx(2.0));
     let mut last_section: Option<&'static str> = None;
     for (i, row) in rows.iter().enumerate().skip(offset).take(VISIBLE_ROWS) {
         let section = match row {
@@ -587,11 +870,11 @@ fn row_list(
         {
             list = list.child(
                 div()
-                    .pt(px(4.0))
-                    .pb(px(2.0))
-                    .pl(px(44.0))
-                    .pr(px(12.0))
-                    .text_size(px(11.0))
+                    .pt(rpx(4.0))
+                    .pb(rpx(2.0))
+                    .pl(rpx(44.0))
+                    .pr(rpx(12.0))
+                    .text_size(rpx(11.0))
                     .text_color(c::FG_DIM())
                     .child("Skip lets agents run any command without asking."),
             );
@@ -614,7 +897,7 @@ fn switch_list(
         return body_text("no sessions").into_any_element();
     }
     let registry = layer.registry.read(cx);
-    let mut list = div().flex().flex_col().gap(px(2.0));
+    let mut list = div().flex().flex_col().gap(rpx(2.0));
     let mut printed_sessions = false;
     let mut printed_terminals = false;
     for (i, row) in rows.iter().enumerate() {
@@ -675,7 +958,7 @@ fn switch_list(
         if waiting {
             let mut tint = c::AMBER();
             tint.a = 0.12;
-            list = list.child(div().rounded(px(6.0)).bg(tint).child(row_el));
+            list = list.child(div().rounded(rpx(6.0)).bg(tint).child(row_el));
         } else {
             list = list.child(row_el);
         }
@@ -684,7 +967,7 @@ fn switch_list(
 }
 
 fn settings_list(st: &LauncherSlotState, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
-    let mut list = div().flex().flex_col().gap(px(2.0));
+    let mut list = div().flex().flex_col().gap(rpx(2.0));
     let mut last_section: Option<&'static str> = None;
     for (i, s) in crate::launcher::SettingRow::ALL.into_iter().enumerate() {
         if last_section != Some(s.section()) {
@@ -710,11 +993,11 @@ fn settings_list(st: &LauncherSlotState, dispatch: &ModalDispatch, cx: &App) -> 
         if selected && matches!(s, crate::launcher::SettingRow::Permissions) {
             list = list.child(
                 div()
-                    .pt(px(4.0))
-                    .pb(px(2.0))
-                    .pl(px(44.0))
-                    .pr(px(12.0))
-                    .text_size(px(11.0))
+                    .pt(rpx(4.0))
+                    .pb(rpx(2.0))
+                    .pl(rpx(44.0))
+                    .pr(rpx(12.0))
+                    .text_size(rpx(11.0))
                     .text_color(c::FG_DIM())
                     .child("Skip lets agents run any command without asking."),
             );
@@ -728,23 +1011,50 @@ fn settings_list(st: &LauncherSlotState, dispatch: &ModalDispatch, cx: &App) -> 
 /// (`src/gui/session_launcher/view/rows.rs:17-18`, `AGENT_BTN`).
 const AGENT_BTN: f32 = 26.0;
 
-/// The Tab-revealed action strip, with its agent icon bar. ←/→ walk the bar,
-/// which is exactly the carve-out the caret would otherwise eat
-/// (`src/gui/session_launcher/view/rows.rs`, the strip's `Launch session…`
-/// row).
-fn row_actions(st: &LauncherSlotState, dispatch: &ModalDispatch) -> AnyElement {
+/// One strip row's icon + colored label — the shape every RowActions row
+/// but the launch row shares (`palette_row_actions_strip`'s `action_row`).
+fn strip_row_content(icon: &str, label: &'static str, color: gpui::Hsla) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(rpx(8.0))
+        .child(icon_slot(icon, 13.0, color))
+        .child(div().text_size(rpx(12.0)).text_color(color).child(label))
+}
+
+/// The Tab-revealed action strip: launch (with its agent icon bar), then
+/// create/delete-worktree, an optional project-theme row, then one row per
+/// configured lifecycle script. ←/→ walk the agent bar, which is exactly the
+/// carve-out the caret would otherwise eat (`src/gui/session_launcher/view/
+/// rows.rs`, `strip_launch_row` and `palette_row_actions_strip`).
+///
+/// The agent bar's icon buttons are deliberately non-clickable here: their
+/// `ModalClick::SelectRow(i)` index space collides with the strip's own row
+/// selection (both use `SelectRow`, and the bar was already wired to the
+/// agent index before this strip grew past two rows), so making them
+/// clickable would silently reinterpret a click on action row `i >= 1` as an
+/// agent pick. ←/→ is the supported gesture for `agent_sel`; the bar renders
+/// as static icons.
+fn row_actions(
+    layer: &ModalLayer,
+    st: &LauncherSlotState,
+    dispatch: &ModalDispatch,
+    cx: &App,
+) -> AnyElement {
+    let Some(crate::launcher::RowIdentity::Session { proj, wt_path, .. }) = st.anchor.clone()
+    else {
+        return div().into_any_element();
+    };
+
     let agents = super::confirm::available_agents();
-    let mut bar = div().flex().items_center().gap(px(6.0));
+    let sel_label = agents.get(st.agent_sel).map_or("", |a| a.label());
+    let mut bar = div().flex().items_center().gap(rpx(6.0));
     for (i, a) in agents.iter().enumerate() {
-        let selected = i == st.sel;
-        bar = bar.child(click_row(
-            gpui::SharedString::from(format!("strip-agent-{i}")),
-            false,
-            dispatch,
-            ModalClick::SelectRow(i),
+        let selected = i == st.agent_sel;
+        bar = bar.child(
             div()
-                .size(px(AGENT_BTN))
-                .rounded(px(6.0))
+                .size(rpx(AGENT_BTN))
+                .rounded(rpx(6.0))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -754,19 +1064,302 @@ fn row_actions(st: &LauncherSlotState, dispatch: &ModalDispatch) -> AnyElement {
                     14.0,
                     if selected { c::YELLOW() } else { c::FG_MUTE() },
                 )),
-        ));
+        );
     }
-    div()
+
+    let launch_content = div()
         .flex()
-        .flex_col()
-        .gap(px(8.0))
-        .child(body_text("Launch session…"))
-        .child(bar)
+        .items_center()
+        .gap(rpx(8.0))
+        .w_full()
+        .child(icon_slot("play", 13.0, c::MAGENTA()))
         .child(
             div()
-                .text_size(px(11.0))
-                .text_color(c::RED())
-                .child("Delete worktree"),
+                .text_size(rpx(12.0))
+                .text_color(c::MAGENTA())
+                .child("Launch session…"),
         )
-        .into_any_element()
+        .child(div().flex_1())
+        .child(
+            div()
+                .font(gpui::font(crate::fonts::MONO_FAMILY))
+                .text_size(rpx(12.0))
+                .text_color(c::FG_DIM())
+                .child(sel_label.to_string()),
+        )
+        .child(bar);
+
+    let mut list = div().flex().flex_col().gap(rpx(1.0)).child(palette_row(
+        gpui::SharedString::from("strip-0"),
+        st.sel == 0,
+        dispatch,
+        ModalClick::SelectRow(0),
+        launch_content,
+    ));
+
+    let is_main = layer.anchor_is_main(proj, &wt_path, cx);
+    list = list.child(if is_main {
+        palette_row(
+            gpui::SharedString::from("strip-1"),
+            st.sel == 1,
+            dispatch,
+            ModalClick::SelectRow(1),
+            strip_row_content("plus", "Create worktree…", c::MAGENTA()),
+        )
+    } else {
+        palette_row(
+            gpui::SharedString::from("strip-1"),
+            st.sel == 1,
+            dispatch,
+            ModalClick::SelectRow(1),
+            strip_row_content("trash", "Delete worktree", c::RED()),
+        )
+    });
+
+    let project_themes_enabled = cx.global::<SettingsState>().store.project_themes_enabled;
+    if project_themes_enabled {
+        list = list.child(palette_row(
+            gpui::SharedString::from("strip-2"),
+            st.sel == 2,
+            dispatch,
+            ModalClick::SelectRow(2),
+            strip_row_content("contrast", "Project theme…", c::CYAN()),
+        ));
+    }
+
+    let base = if project_themes_enabled { 3 } else { 2 };
+    for (i, (kind, _)) in layer.row_action_scripts(proj, cx).into_iter().enumerate() {
+        let (label, color) = match kind {
+            "setup" => ("Setup script", c::GREEN()),
+            "run" => ("Run script", c::CYAN()),
+            "teardown" => ("Teardown script", c::AMBER()),
+            _ => continue,
+        };
+        let idx = base + i;
+        list = list.child(palette_row(
+            gpui::SharedString::from(format!("strip-{idx}")),
+            st.sel == idx,
+            dispatch,
+            ModalClick::SelectRow(idx),
+            strip_row_content("play", label, color),
+        ));
+    }
+
+    list.into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use gpui::{Entity, FocusHandle, Focusable, Render, TestAppContext};
+    use grove_core::storage::{Project, Store};
+
+    use crate::entities::activity_store::ActivityStore;
+    use crate::entities::animation_clock::AnimationClock;
+    use crate::entities::project_tree::ProjectTree;
+    use crate::entities::session_registry::SessionRegistry;
+    use crate::entities::toast::ToastState;
+    use crate::entities::upgrade::Upgrade;
+    use crate::entities::workspace_state::WorkspaceState;
+    use crate::modal::LauncherView;
+
+    // A trimmed copy of the focus-regression harness in
+    // `views::modals::mod::tests` — this module needs its own root because
+    // that harness's helpers are private to `mod.rs`.
+
+    fn boot_globals(cx: &mut App) {
+        cx.set_global(SettingsState::new(Store::default()));
+        cx.set_global(crate::theme::ThemeState::new(
+            false,
+            crate::theme::DEFAULT_DARK_THEME.to_string(),
+            crate::theme::DEFAULT_LIGHT_THEME.to_string(),
+        ));
+        cx.set_global(crate::zoom::ZoomState::new(1.0));
+        gpui_component::init(cx);
+        cx.bind_keys(crate::keymap::bindings());
+    }
+
+    struct TestRoot {
+        focus: FocusHandle,
+        modals: Entity<ModalLayer>,
+    }
+
+    impl Focusable for TestRoot {
+        fn focus_handle(&self, _cx: &App) -> FocusHandle {
+            self.focus.clone()
+        }
+    }
+
+    impl Render for TestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .track_focus(&self.focus)
+                .size_full()
+                .child(self.modals.clone())
+        }
+    }
+
+    fn new_modal_layer(cx: &mut Context<TestRoot>, store: Store) -> Entity<ModalLayer> {
+        let state = cx.new(|_| WorkspaceState::new(&store, 1280.0));
+        cx.set_global(SettingsState::new(store));
+        let registry = cx.new(|_| SessionRegistry::new());
+        let tree = cx.new(|_| ProjectTree::new());
+        let toast = cx.new(|_| ToastState::new());
+        let activity = cx.new(|_| ActivityStore::new());
+        let clock = cx.new(AnimationClock::new);
+        let upgrade = cx.new(Upgrade::new);
+        cx.new(|cx| ModalLayer::new(state, registry, tree, toast, activity, clock, upgrade, cx))
+    }
+
+    fn build_root(cx: &mut Context<TestRoot>, store: Store) -> TestRoot {
+        let modals = new_modal_layer(cx, store);
+        TestRoot {
+            focus: cx.focus_handle(),
+            modals,
+        }
+    }
+
+    fn store_with_one_project() -> Store {
+        Store {
+            projects: vec![Project {
+                name: "alpha".to_string(),
+                path: "/tmp/alpha".to_string(),
+                scripts: grove_core::storage::ProjectScripts::default(),
+                theme: None,
+                archived: false,
+            }],
+            ..Store::default()
+        }
+    }
+
+    /// Tab on the highlighted `Recent`/`Combo` row must populate `anchor`
+    /// from that row — freshly resolved from `palette_rows`, not from a
+    /// stale (possibly never-set) value — and reveal the strip. This is the
+    /// exact bug: open the palette, never touch an arrow key, press Tab.
+    #[gpui::test]
+    fn tab_on_a_session_row_populates_anchor_and_enters_row_actions(cx: &mut TestAppContext) {
+        cx.update(boot_globals);
+        let (root, vcx) = cx.add_window_view(|_, cx| build_root(cx, store_with_one_project()));
+        vcx.run_until_parked();
+        let modals = root.read_with(vcx, |r, _| r.modals.clone());
+
+        modals.update(vcx, |l, cx| {
+            l.open(Modal::SessionLauncher(Box::default()), cx)
+        });
+        vcx.run_until_parked();
+
+        // Root, empty query, no recents: row 0 is the fallback `Combo` for
+        // the one project — a session row, never touched by an arrow key.
+        modals.update(vcx, |l, cx| {
+            let rows = l.palette_rows(cx);
+            assert!(
+                matches!(rows.first(), Some(PaletteRow::Combo { .. })),
+                "expected row 0 to be a session row, got {:?}",
+                rows.first()
+            );
+        });
+
+        vcx.simulate_keystrokes("tab");
+        vcx.run_until_parked();
+
+        modals.read_with(vcx, |l, _| {
+            let Some(Modal::SessionLauncher(st)) = l.slot.get() else {
+                panic!("launcher modal closed unexpectedly");
+            };
+            assert_eq!(st.view, LauncherView::RowActions);
+            assert!(
+                matches!(
+                    st.anchor,
+                    Some(crate::launcher::RowIdentity::Session { .. })
+                ),
+                "anchor was not populated by Tab: {:?}",
+                st.anchor
+            );
+        });
+    }
+
+    /// Tab on a non-session row (here, `NewSession`, with zero projects so
+    /// it is the highlighted root row) is a claimed no-op: the view stays at
+    /// `Root` and no anchor is set.
+    #[gpui::test]
+    fn tab_on_a_non_session_row_leaves_view_at_root(cx: &mut TestAppContext) {
+        cx.update(boot_globals);
+        let (root, vcx) = cx.add_window_view(|_, cx| build_root(cx, Store::default()));
+        vcx.run_until_parked();
+        let modals = root.read_with(vcx, |r, _| r.modals.clone());
+
+        modals.update(vcx, |l, cx| {
+            l.open(Modal::SessionLauncher(Box::default()), cx)
+        });
+        vcx.run_until_parked();
+
+        modals.update(vcx, |l, cx| {
+            let rows = l.palette_rows(cx);
+            assert!(
+                matches!(rows.first(), Some(PaletteRow::NewSession)),
+                "expected row 0 to be NewSession with zero projects, got {:?}",
+                rows.first()
+            );
+        });
+
+        vcx.simulate_keystrokes("tab");
+        vcx.run_until_parked();
+
+        modals.read_with(vcx, |l, _| {
+            let Some(Modal::SessionLauncher(st)) = l.slot.get() else {
+                panic!("launcher modal closed unexpectedly");
+            };
+            assert_eq!(st.view, LauncherView::Root);
+            assert_eq!(st.anchor, None);
+        });
+    }
+
+    /// `anchor_is_main` must agree with `tree_paths`'s cold-cache
+    /// substitution: a non-active project whose worktrees were never warmed
+    /// into `wt_cache` reports its own registered root as main, not "not
+    /// main" (which would wrongly offer "Delete worktree" on a checkout that
+    /// can't be deleted). Project index 1 is used specifically because
+    /// `proj_idx()` defaults to 0, so project 1 is guaranteed non-active and
+    /// its tree cache is guaranteed cold (never queried, let alone warmed).
+    #[gpui::test]
+    fn anchor_is_main_falls_back_to_project_root_for_a_cold_non_active_project(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(boot_globals);
+        let store = Store {
+            projects: vec![
+                Project {
+                    name: "alpha".to_string(),
+                    path: "/tmp/alpha".to_string(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    theme: None,
+                    archived: false,
+                },
+                Project {
+                    name: "beta".to_string(),
+                    path: "/tmp/beta".to_string(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    theme: None,
+                    archived: false,
+                },
+            ],
+            ..Store::default()
+        };
+        let (root, vcx) = cx.add_window_view(|_, cx| build_root(cx, store));
+        vcx.run_until_parked();
+        let modals = root.read_with(vcx, |r, _| r.modals.clone());
+
+        modals.read_with(vcx, |l, cx| {
+            assert_eq!(
+                l.state.read(cx).proj_idx(),
+                0,
+                "project 1 must be non-active"
+            );
+            assert!(
+                l.anchor_is_main(1, "/tmp/beta", cx),
+                "cold, non-active project should still report its own root as main"
+            );
+        });
+    }
 }

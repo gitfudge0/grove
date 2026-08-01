@@ -7,7 +7,8 @@
 //! (the overlay), `src/gui/scripts_editor.rs:63-335` and
 //! `src/gui/view/modals/upgrade.rs:16-97,98-182`.
 
-use gpui::{div, prelude::*, px, AnyElement, App, Context, Window};
+use crate::views::rpx;
+use gpui::{div, prelude::*, AnyElement, App, Context, Window};
 
 use grove_core::agent::Agent;
 
@@ -464,18 +465,18 @@ fn settings_row(
     let mut row = div()
         .flex()
         .items_center()
-        .gap(px(8.0))
+        .gap(rpx(8.0))
         .w_full()
         .child(
             div()
                 .flex_1()
-                .text_size(px(12.0))
+                .text_size(rpx(12.0))
                 .text_color(c::FG())
                 .child(label),
         )
         .child(
             div()
-                .text_size(px(12.0))
+                .text_size(rpx(12.0))
                 .text_color(c::FG_DIM())
                 .child(value),
         );
@@ -517,17 +518,17 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
             .child(
                 div()
                     .flex_1()
-                    .text_size(px(13.0))
+                    .text_size(rpx(13.0))
                     .text_color(c::CYAN())
                     .child("Settings"),
             )
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(rpx(11.0))
                     .text_color(c::FG_MUTE())
                     .child("Changes save automatically."),
             )
-            .child(div().w(px(10.0)))
+            .child(div().w(rpx(10.0)))
             .child(flat_icon_btn("set-close", "close", 28.0, 15.0, {
                 let dispatch = std::rc::Rc::clone(dispatch);
                 move |window, cx| dispatch(ModalClick::Cancel, window, cx)
@@ -539,12 +540,12 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let app_size_row = div()
         .flex()
         .items_center()
-        .h(px(28.0))
-        .px(px(10.0))
+        .h(rpx(28.0))
+        .px(rpx(10.0))
         .child(
             div()
                 .flex_1()
-                .text_size(px(12.0))
+                .text_size(rpx(12.0))
                 .text_color(c::FG())
                 .child("App size"),
         )
@@ -578,7 +579,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let appearance = div()
         .flex()
         .flex_col()
-        .gap(px(4.0))
+        .gap(rpx(4.0))
         .child(section_header("APPEARANCE", 4.0, 4.0))
         .child(settings_row(
             "set-theme",
@@ -600,7 +601,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
             ModalClick::OpenThemeManager,
         ))
         .child(app_size_row)
-        .child(div().px(px(10.0)).child(raw_checkbox(
+        .child(div().px(rpx(10.0)).child(raw_checkbox(
             "set-project-themes",
             "Project themes",
             store.project_themes_enabled,
@@ -614,7 +615,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
             },
         )))
         .child(caption("Let each project pin its PTYs to a specific theme"))
-        .child(div().px(px(10.0)).child(click_checkbox(
+        .child(div().px(rpx(10.0)).child(click_checkbox(
             "set-follow-system",
             "Follow system appearance",
             store.theme_follow_system,
@@ -632,7 +633,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let projects = div()
         .flex()
         .flex_col()
-        .gap(px(4.0))
+        .gap(rpx(4.0))
         .child(section_header("PROJECTS", 10.0, 4.0))
         .child(settings_row(
             "set-archived",
@@ -647,12 +648,12 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let backend_row = div()
         .flex()
         .items_center()
-        .h(px(28.0))
-        .px(px(10.0))
+        .h(rpx(28.0))
+        .px(rpx(10.0))
         .child(
             div()
                 .flex_1()
-                .text_size(px(12.0))
+                .text_size(rpx(12.0))
                 .text_color(c::FG())
                 .child("Backend"),
         )
@@ -691,12 +692,12 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let perms_row = div()
         .flex()
         .items_center()
-        .h(px(28.0))
-        .px(px(10.0))
+        .h(rpx(28.0))
+        .px(rpx(10.0))
         .child(
             div()
                 .flex_1()
-                .text_size(px(12.0))
+                .text_size(rpx(12.0))
                 .text_color(c::FG())
                 .child("Permissions"),
         )
@@ -743,14 +744,14 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let agents_terminal = div()
         .flex()
         .flex_col()
-        .gap(px(4.0))
+        .gap(rpx(4.0))
         .child(section_header("AGENTS / TERMINAL", 10.0, 4.0))
         .child(backend_row)
         .child(perms_row)
         .child(caption_promoted(
             "Skip lets agents run any command without asking.",
         ))
-        .child(div().px(px(10.0)).child(click_checkbox(
+        .child(div().px(rpx(10.0)).child(click_checkbox(
             "set-chrome",
             "Claude in Chrome",
             store.chrome_enabled.unwrap_or(false),
@@ -762,7 +763,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         .child(caption_promoted(
             "Lets Claude read and control your Chrome tabs.",
         ))
-        .child(div().px(px(10.0)).child(raw_checkbox(
+        .child(div().px(rpx(10.0)).child(raw_checkbox(
             "set-telemetry",
             "Share anonymous usage data",
             SettingsState::telemetry_enabled(store),
@@ -783,7 +784,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let tools_header = div()
         .flex()
         .items_center()
-        .pr(px(10.0))
+        .pr(rpx(10.0))
         .child(div().flex_1().child(section_header("TOOLS", 10.0, 4.0)))
         .child(flat_icon_btn("set-tools-refresh", "restart", 28.0, 15.0, {
             let dispatch = std::rc::Rc::clone(dispatch);
@@ -792,7 +793,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let tools_section = div()
         .flex()
         .flex_col()
-        .gap(px(4.0))
+        .gap(rpx(4.0))
         .child(tools_header)
         .children(layer.tools.iter().map(|st| tool_row(st, dispatch, cx)));
 
@@ -800,7 +801,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let sections = div()
         .flex()
         .flex_col()
-        .gap(px(8.0))
+        .gap(rpx(8.0))
         .child(appearance)
         .child(divider_h())
         .child(projects)
@@ -811,11 +812,11 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
 
     let scroll_body = div()
         .id("settings-scroll")
-        .max_h(px(420.0))
+        .max_h(rpx(420.0))
         .overflow_y_scroll()
         .child(sections);
 
-    let mut body_zone = div().flex().flex_col().gap(px(10.0)).child(scroll_body);
+    let mut body_zone = div().flex().flex_col().gap(rpx(10.0)).child(scroll_body);
     body_zone = body_zone.children(update_actions(layer, dispatch, cx));
 
     // ── footer: the version/status strip merges into the shared chrome,
@@ -826,10 +827,10 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         div()
             .flex()
             .items_center()
-            .gap(px(10.0))
+            .gap(rpx(10.0))
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(rpx(11.0))
                     .text_color(c::FG_DIM())
                     .child(format!("v{current_ver}")),
             )
@@ -852,7 +853,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                 dispatch,
                 ModalClick::OpenChangelog,
             ))
-            .child(div().w(px(10.0)))
+            .child(div().w(rpx(10.0)))
             .child(super::shell::footer_hint("esc", "close")),
     );
 
@@ -877,7 +878,7 @@ fn tool_row(st: &ToolStatus, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     let label_color = if st.installed { c::FG() } else { c::FG_DIM() };
     let status_color = if is_value { c::FG_DIM() } else { c::FG_MUTE() };
     let is_default = cx.global::<SettingsState>().store.default_agent == Some(st.agent);
-    let dot = div().w(px(7.0)).h(px(7.0)).rounded(px(3.5)).map(|d| {
+    let dot = div().w(rpx(7.0)).h(rpx(7.0)).rounded(rpx(3.5)).map(|d| {
         if st.installed {
             d.bg(c::GREEN())
         } else {
@@ -887,28 +888,28 @@ fn tool_row(st: &ToolStatus, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     let mut row = div()
         .flex()
         .items_center()
-        .gap(px(8.0))
+        .gap(rpx(8.0))
         .w_full()
-        .px(px(8.0))
-        .py(px(5.0))
+        .px(rpx(8.0))
+        .py(rpx(5.0))
         .child(dot)
         .child(
             div()
                 .flex_1()
-                .text_size(px(12.0))
+                .text_size(rpx(12.0))
                 .text_color(label_color)
                 .child(cap(st.agent.label())),
         )
         .child(
             div()
-                .text_size(px(12.0))
+                .text_size(rpx(12.0))
                 .text_color(status_color)
                 .child(status),
         );
     if is_default {
         row = row.child(
             div()
-                .text_size(px(10.0))
+                .text_size(rpx(10.0))
                 .text_color(c::CYAN())
                 .child("Default"),
         );
@@ -945,9 +946,9 @@ fn update_status_line(layer: &ModalLayer, cx: &App) -> AnyElement {
         _ => ("Updating…".to_string(), c::FG_DIM()),
     };
     div()
-        .px(px(8.0))
-        .py(px(4.0))
-        .text_size(px(11.0))
+        .px(rpx(8.0))
+        .py(rpx(4.0))
+        .text_size(rpx(11.0))
         .text_color(color)
         .child(text)
         .into_any_element()
@@ -962,7 +963,7 @@ fn update_actions(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Vec
     let Some(release) = upgrade.available() else {
         return Vec::new();
     };
-    let mut row = div().flex().items_center().gap(px(8.0)).px(px(8.0));
+    let mut row = div().flex().items_center().gap(rpx(8.0)).px(rpx(8.0));
     if upgrade.method() != grove_core::upgrade::InstallMethod::Unknown {
         row = row.child(click_action(
             "up-now",
@@ -1000,9 +1001,9 @@ fn update_actions(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Vec
             .collect();
         out.push(
             div()
-                .px(px(8.0))
-                .pt(px(4.0))
-                .text_size(px(11.0))
+                .px(rpx(8.0))
+                .pt(rpx(4.0))
+                .text_size(rpx(11.0))
                 .text_color(c::FG_MUTE())
                 .child(preview)
                 .into_any_element(),
@@ -1030,17 +1031,17 @@ fn shortcut_overlay(screen: keymap::Screen) -> AnyElement {
         div()
             .flex()
             .items_center()
-            .gap(px(10.0))
-            .py(px(3.0))
+            .gap(rpx(10.0))
+            .py(rpx(3.0))
             .child(
                 div()
-                    .w(px(150.0))
+                    .w(rpx(150.0))
                     .child(super::shell::keycap_text(chord_label(d), c::FG_DIM())),
             )
             .child(
                 div()
                     .flex_1()
-                    .text_size(px(12.0))
+                    .text_size(rpx(12.0))
                     .text_color(c::FG_DIM())
                     .child(d.description),
             )
@@ -1094,17 +1095,17 @@ fn static_row(keys: &str, label: &'static str) -> impl IntoElement {
     div()
         .flex()
         .items_center()
-        .gap(px(10.0))
-        .py(px(3.0))
+        .gap(rpx(10.0))
+        .py(rpx(3.0))
         .child(
             div()
-                .w(px(150.0))
+                .w(rpx(150.0))
                 .child(super::shell::keycap_text(keys.to_string(), c::FG_DIM())),
         )
         .child(
             div()
                 .flex_1()
-                .text_size(px(12.0))
+                .text_size(rpx(12.0))
                 .text_color(c::FG_DIM())
                 .child(label),
         )
@@ -1160,12 +1161,12 @@ fn scripts_editor(
     let theme_row_content = div()
         .flex()
         .items_center()
-        .gap(px(8.0))
+        .gap(rpx(8.0))
         .w_full()
         .child(
             div()
                 .flex_1()
-                .text_size(px(12.0))
+                .text_size(rpx(12.0))
                 .text_color(if themes_enabled {
                     c::FG()
                 } else {
@@ -1175,7 +1176,7 @@ fn scripts_editor(
         )
         .child(
             div()
-                .text_size(px(12.0))
+                .text_size(rpx(12.0))
                 .text_color(value_color)
                 .child(value_text),
         )
@@ -1194,8 +1195,8 @@ fn scripts_editor(
         div()
             .flex()
             .items_center()
-            .px(px(8.0))
-            .py(px(5.0))
+            .px(rpx(8.0))
+            .py(rpx(5.0))
             .child(theme_row_content)
             .into_any_element()
     };
@@ -1209,7 +1210,7 @@ fn scripts_editor(
     let project_theme_section = div()
         .flex()
         .flex_col()
-        .gap(px(4.0))
+        .gap(rpx(4.0))
         .child(section_header("PROJECT THEME", 0.0, 0.0))
         .child(theme_row)
         .child(caption(theme_caption));
@@ -1218,12 +1219,12 @@ fn scripts_editor(
         let mut d = div()
             .flex()
             .flex_col()
-            .gap(px(5.0))
+            .gap(rpx(5.0))
             .w_full()
-            .child(div().text_size(px(12.0)).text_color(c::FG()).child(label))
+            .child(div().text_size(rpx(12.0)).text_color(c::FG()).child(label))
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(rpx(11.0))
                     .text_color(c::FG_MUTE())
                     .child(desc),
             );
@@ -1236,7 +1237,7 @@ fn scripts_editor(
     let fields = div()
         .flex()
         .flex_col()
-        .gap(px(16.0))
+        .gap(rpx(16.0))
         .child(field(
             0,
             "Setup",
@@ -1261,14 +1262,14 @@ fn scripts_editor(
 
     let scroll_area = div()
         .id("scripts-editor-scroll")
-        .max_h(px(480.0))
+        .max_h(rpx(480.0))
         .overflow_y_scroll()
         .child(fields);
 
     let lifecycle_section = div()
         .flex()
         .flex_col()
-        .gap(px(4.0))
+        .gap(rpx(4.0))
         .child(section_header("LIFECYCLE SCRIPTS", 0.0, 0.0))
         .child(caption(
             "Shell snippets shared by every worktree of this project, run via $SHELL -lc. \
@@ -1279,7 +1280,7 @@ fn scripts_editor(
     let footer_row = div()
         .flex()
         .items_center()
-        .gap(px(8.0))
+        .gap(rpx(8.0))
         .child(click_action(
             "se-archive",
             "Archive project",
@@ -1314,7 +1315,7 @@ fn scripts_editor(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(12.0))
+                    .gap(rpx(12.0))
                     .child(project_theme_section)
                     .child(lifecycle_section)
                     .child(footer_row),
@@ -1350,7 +1351,7 @@ fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.0))
+                .gap(rpx(10.0))
                 .child(crate::icons::spinner(16.0, c::FG_DIM(), tick))
                 .child(body_text(label))
                 .into_any_element()
@@ -1358,12 +1359,12 @@ fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         UpgradeState::Updated => div()
             .flex()
             .flex_col()
-            .gap(px(8.0))
+            .gap(rpx(8.0))
             .child(body_text("Update installed. Restart Grove to apply"))
             .child(
                 div()
                     .flex()
-                    .gap(px(8.0))
+                    .gap(rpx(8.0))
                     .child(click_action(
                         "up-restart",
                         "Restart",
@@ -1383,13 +1384,13 @@ fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         UpgradeState::UpdateFailed(e) => div()
             .flex()
             .flex_col()
-            .gap(px(6.0))
+            .gap(rpx(6.0))
             .child(body_text("Update failed"))
             // `UpgradeError`'s own `Display`, deliberately unchanged
             // (recorded ambiguity 7).
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(rpx(11.0))
                     .text_color(c::FG_MUTE())
                     .child(e.clone()),
             )
@@ -1427,7 +1428,7 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.0))
+                .gap(rpx(10.0))
                 .child(crate::icons::spinner(16.0, c::FG_DIM(), tick))
                 .child(body_text("Loading…"))
                 .into_any_element()
@@ -1439,11 +1440,11 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
             .child(body_text("No releases yet."))
             .into_any_element(),
         ChangelogState::Loaded(notes) => {
-            let mut list = div().flex().flex_col().gap(px(18.0));
+            let mut list = div().flex().flex_col().gap(rpx(18.0));
             for n in notes {
-                let mut head = div().flex().items_center().gap(px(8.0)).child(
+                let mut head = div().flex().items_center().gap(rpx(8.0)).child(
                     div()
-                        .text_size(px(13.0))
+                        .text_size(rpx(13.0))
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(c::FG())
                         .child(n.tag.clone()),
@@ -1451,7 +1452,7 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
                 if !n.name.is_empty() && n.name != n.tag {
                     head = head.child(
                         div()
-                            .text_size(px(13.0))
+                            .text_size(rpx(13.0))
                             .text_color(c::FG_DIM())
                             .child(n.name.clone()),
                     );
@@ -1460,15 +1461,15 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
                 if !n.date.is_empty() {
                     head = head.child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(rpx(11.0))
                             .text_color(c::FG_MUTE())
                             .child(n.date.clone()),
                     );
                 }
                 list = list.child(
-                    div().flex().flex_col().gap(px(4.0)).child(head).child(
+                    div().flex().flex_col().gap(rpx(4.0)).child(head).child(
                         div()
-                            .text_size(px(12.0))
+                            .text_size(rpx(12.0))
                             .text_color(c::FG_MUTE())
                             .child(grove_core::upgrade::clean_markdown(&n.body)),
                     ),
@@ -1476,7 +1477,7 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
             }
             div()
                 .id("changelog-scroll")
-                .max_h(px(420.0))
+                .max_h(rpx(420.0))
                 .overflow_y_scroll()
                 .child(list)
                 .into_any_element()
@@ -1491,7 +1492,7 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(8.0))
+                    .gap(rpx(8.0))
                     .child(body)
                     .child(click_action(
                         "cl-close",
