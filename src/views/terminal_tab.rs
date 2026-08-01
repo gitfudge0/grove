@@ -6,6 +6,7 @@
 //! permanent. Only a restart, which relaunches the shell at `~` in place, and
 //! the zen toggle.
 
+use crate::views::rpx;
 use std::rc::Rc;
 
 use gpui::{div, prelude::*, px, AnyElement, App, Entity, Window};
@@ -50,7 +51,7 @@ fn empty_terminals_state() -> AnyElement {
             .child(
                 div()
                     .font(gpui::font(crate::fonts::MONO_FAMILY))
-                    .text_size(px(11.0))
+                    .text_size(rpx(11.0))
                     .text_color(c::FG_DIM())
                     .child("t"),
             )
@@ -58,7 +59,7 @@ fn empty_terminals_state() -> AnyElement {
     } else {
         div()
             .font(gpui::font(crate::fonts::MONO_FAMILY))
-            .text_size(px(11.0))
+            .text_size(rpx(11.0))
             .text_color(c::FG_DIM())
             .child(format!("{}+t", crate::keymap::platform_mod_label()))
             .into_any_element()
@@ -67,12 +68,12 @@ fn empty_terminals_state() -> AnyElement {
     let hint = div()
         .flex()
         .items_center()
-        .gap(px(6.0))
+        .gap(rpx(6.0))
         .child(crate::views::modals::shell::keycap(keycap_content))
         .child(
             div()
                 .font(gpui::font(crate::fonts::MONO_FAMILY))
-                .text_size(px(10.0))
+                .text_size(rpx(10.0))
                 .text_color(c::FG_MUTE())
                 .child("open a terminal"),
         );
@@ -82,10 +83,14 @@ fn empty_terminals_state() -> AnyElement {
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(6.0))
+        .gap(rpx(6.0))
         .size_full()
         .bg(c::BG())
-        .child(crate::views::rows::ui_text("no terminals open", 14.0, c::FG_DIM()))
+        .child(crate::views::rows::ui_text(
+            "no terminals open",
+            14.0,
+            c::FG_DIM(),
+        ))
         .child(hint)
         .into_any_element()
 }
@@ -111,8 +116,8 @@ pub fn terminal_tab(ctx: &TerminalTabCtx) -> AnyElement {
                 .flex_1()
                 .w_full()
                 .overflow_hidden()
-                .px(px(PTY_PAD_W / 2.0))
-                .py(px(PTY_PAD_H / 2.0))
+                .px(rpx(PTY_PAD_W / 2.0))
+                .py(rpx(PTY_PAD_H / 2.0))
                 .child(view),
         )
         .into_any_element()
@@ -133,20 +138,20 @@ fn home_terminal_bar(ctx: &TerminalTabCtx) -> AnyElement {
     let zen_dispatch = Rc::clone(&ctx.dispatch);
 
     let bar = div()
-        .h(px(SESSBAR_H))
+        .h(rpx(SESSBAR_H))
         .w_full()
         .flex()
         .items_center()
-        .gap(px(12.0))
-        .px(px(16.0))
+        .gap(rpx(12.0))
+        .px(rpx(16.0))
         .bg(c::BG_STRIP())
         .overflow_hidden()
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.0))
-                .child(div().size(px(6.0)).rounded_full().bg(dot_color))
+                .gap(rpx(6.0))
+                .child(div().size(rpx(6.0)).rounded_full().bg(dot_color))
                 .child(crate::views::rows::ui_text(status_label, 12.0, dot_color)),
         )
         .child(vline())
@@ -191,7 +196,7 @@ fn home_terminal_bar(ctx: &TerminalTabCtx) -> AnyElement {
 
 /// The bar's vertical rule (`primitives.rs`'s `vline`).
 pub fn vline() -> gpui::Div {
-    div().w(px(1.0)).h(px(16.0)).bg(c::BORDER())
+    div().w(px(1.0)).h(rpx(16.0)).bg(c::BORDER())
 }
 
 #[cfg(test)]

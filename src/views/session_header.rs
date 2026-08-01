@@ -10,6 +10,7 @@
 //! **parameterized by session**, not by "the active session", so Plan 07 can
 //! reuse the same renderer for grid tile headers.
 
+use crate::views::rpx;
 use gpui::{div, prelude::*, px, AnyElement, Div, Hsla};
 
 use crate::entities::animation_clock::dots;
@@ -67,12 +68,12 @@ pub fn tool_btn(
     let hover_color = if danger { c::RED() } else { c::FG() };
     div()
         .id(id)
-        .h(px(22.0))
+        .h(rpx(22.0))
         .flex()
         .items_center()
-        .gap(px(6.0))
-        .px(px(8.0))
-        .rounded(px(4.0))
+        .gap(rpx(6.0))
+        .px(rpx(8.0))
+        .rounded(rpx(4.0))
         .hover(move |s| s.bg(c::BG_HOVER()).text_color(hover_color))
         .child(crate::icons::icon(icon_name, 12.0, base))
         .child(label_text(label.to_string(), 12.0, base, false))
@@ -87,7 +88,7 @@ pub fn tool_btn(
 
 /// The cluster itself: run script (Plan 08 stub) │ term toggle │ zen │ kill.
 fn tools(cluster: &ToolCluster) -> AnyElement {
-    let mut row = div().flex().items_center().gap(px(12.0));
+    let mut row = div().flex().items_center().gap(rpx(12.0));
     if cluster.has_run_script {
         let d = std::rc::Rc::clone(&cluster.dispatch);
         row = row.child(tool_btn(
@@ -193,7 +194,7 @@ pub fn in_progress_phase(tick: u64) -> u64 {
 fn label_text(content: impl Into<gpui::SharedString>, size: f32, color: Hsla, bold: bool) -> Div {
     let d = div()
         .font(gpui::font(crate::fonts::UI_FAMILY))
-        .text_size(px(size))
+        .text_size(rpx(size))
         .text_color(color)
         .child(content.into());
     if bold {
@@ -213,7 +214,7 @@ pub fn session_header(
     let mut identity = div()
         .flex()
         .items_center()
-        .gap(px(6.0))
+        .gap(rpx(6.0))
         .overflow_hidden()
         .child(crate::icons::icon(data.icon_name, 13.0, c::FG()))
         .child(label_text(data.label.clone(), 13.0, c::FG(), true));
@@ -229,7 +230,7 @@ pub fn session_header(
         let context: AnyElement = if show_progress {
             let phase = in_progress_phase(tick);
             let step = |i: u64| {
-                div().size(px(6.0)).rounded_full().bg(if i == phase {
+                div().size(rpx(6.0)).rounded_full().bg(if i == phase {
                     c::GREEN()
                 } else {
                     c::FG_MUTE()
@@ -238,7 +239,7 @@ pub fn session_header(
             div()
                 .flex()
                 .items_center()
-                .gap(px(4.0))
+                .gap(rpx(4.0))
                 .child(step(0))
                 .child(step(1))
                 .child(step(2))
@@ -264,11 +265,11 @@ pub fn session_header(
         .w_full()
         .child(
             div()
-                .h(px(SESSBAR_H))
+                .h(rpx(SESSBAR_H))
                 .w_full()
                 .flex()
                 .items_center()
-                .px(px(16.0))
+                .px(rpx(16.0))
                 .bg(c::BG_STRIP())
                 .overflow_hidden()
                 .child(div().flex_1().overflow_hidden().child(identity))

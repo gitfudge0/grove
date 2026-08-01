@@ -12,6 +12,7 @@
 //! store in it. Clicks travel back out through [`ChromeAction`], the same
 //! `Rc<dyn Fn>` dispatch idiom `rows::RowCtx` uses.
 
+use crate::views::rpx;
 use std::rc::Rc;
 
 use gpui::{div, prelude::*, px, AnyElement, App, Hsla, MouseButton, MouseDownEvent, Window};
@@ -107,15 +108,15 @@ pub fn pill_dot_alpha(pulse: f32) -> f32 {
 /// `APPBAR_H`-tall strip with a `BORDER()` hairline beneath it.
 pub fn appbar(ctx: &AppbarCtx) -> AnyElement {
     let brand = div()
-        .w(px(ctx.sidebar_width))
+        .w(rpx(ctx.sidebar_width))
         .flex()
         .items_center()
-        .px(px(16.0))
+        .px(rpx(16.0))
         .child(
             div()
                 .font(gpui::font(crate::fonts::UI_FAMILY))
                 .font_weight(gpui::FontWeight::BOLD)
-                .text_size(px(14.0))
+                .text_size(rpx(14.0))
                 .text_color(c::MAGENTA())
                 .child("grove"),
         );
@@ -123,8 +124,8 @@ pub fn appbar(ctx: &AppbarCtx) -> AnyElement {
     let mut right = div()
         .flex()
         .items_center()
-        .gap(px(4.0))
-        .px(px(16.0))
+        .gap(rpx(4.0))
+        .px(rpx(16.0))
         .child(view_control(ctx));
     if !ctx.waiting.is_empty() {
         right = right.child(attention_pill(ctx));
@@ -137,7 +138,7 @@ pub fn appbar(ctx: &AppbarCtx) -> AnyElement {
         .w_full()
         .child(
             div()
-                .h(px(APPBAR_H))
+                .h(rpx(APPBAR_H))
                 .w_full()
                 .bg(c::BG_STRIP())
                 .flex()
@@ -157,11 +158,11 @@ fn view_control(ctx: &AppbarCtx) -> AnyElement {
     if !ctx.grid_view {
         return div()
             .id("appbar-grid")
-            .size(px(22.0))
+            .size(rpx(22.0))
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(4.0))
+            .rounded(rpx(4.0))
             .hover(|s| s.bg(c::BG_HOVER()))
             .child(icon("grid", 13.0, c::FG_MUTE()))
             .on_mouse_down(
@@ -172,12 +173,12 @@ fn view_control(ctx: &AppbarCtx) -> AnyElement {
     }
     let plus = div()
         .id("appbar-plus")
-        .w(px(26.0))
-        .h(px(22.0))
+        .w(rpx(26.0))
+        .h(rpx(22.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded_l(px(4.0))
+        .rounded_l(rpx(4.0))
         .hover(|s| s.bg(c::BG_HOVER()))
         .child(icon("plus", 13.0, c::MAGENTA()))
         .on_mouse_down(
@@ -186,15 +187,15 @@ fn view_control(ctx: &AppbarCtx) -> AnyElement {
         );
     // A short, fixed-height hairline: a full-height one would stretch the combo
     // taller than the lone toggle (`appbar.rs:103-111`).
-    let seg_divider = div().w(px(1.0)).h(px(14.0)).bg(c::BORDER());
+    let seg_divider = div().w(px(1.0)).h(rpx(14.0)).bg(c::BORDER());
     let grid_seg = div()
         .id("appbar-grid-seg")
-        .w(px(26.0))
-        .h(px(22.0))
+        .w(rpx(26.0))
+        .h(rpx(22.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded_r(px(4.0))
+        .rounded_r(rpx(4.0))
         .bg(c::BG_HL())
         .hover(|s| s.bg(c::BG_HOVER()))
         .child(icon("grid", 13.0, c::CYAN()))
@@ -205,7 +206,7 @@ fn view_control(ctx: &AppbarCtx) -> AnyElement {
     div()
         .flex()
         .items_center()
-        .rounded(px(5.0))
+        .rounded(rpx(5.0))
         .border_1()
         .border_color(c::BORDER())
         .child(plus)
@@ -220,11 +221,11 @@ fn cog(ctx: &AppbarCtx) -> AnyElement {
     div()
         .id("appbar-cog")
         .relative()
-        .size(px(28.0))
+        .size(rpx(28.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(4.0))
+        .rounded(rpx(4.0))
         .hover(|s| s.bg(c::BG_HOVER()))
         .child(icon("cog", 15.0, c::FG_DIM()))
         .when(ctx.upgrade_available, |d| {
@@ -233,7 +234,7 @@ fn cog(ctx: &AppbarCtx) -> AnyElement {
                     .absolute()
                     .top(px(0.0))
                     .right(px(0.0))
-                    .size(px(6.0))
+                    .size(rpx(6.0))
                     .rounded_full()
                     .bg(c::GREEN()),
             )
@@ -263,15 +264,15 @@ fn attention_pill(ctx: &AppbarCtx) -> AnyElement {
         .id("appbar-attention-pill")
         .flex()
         .items_center()
-        .gap(px(6.0))
-        .px(px(10.0))
-        .py(px(4.0))
-        .rounded(px(999.0))
+        .gap(rpx(6.0))
+        .px(rpx(10.0))
+        .py(rpx(4.0))
+        .rounded(rpx(999.0))
         .border_1()
         .border_color(c::AMBER())
         .bg(bg)
         .hover(move |s| s.bg(bg_hover))
-        .child(div().size(px(7.0)).rounded_full().bg(dot_color))
+        .child(div().size(rpx(7.0)).rounded_full().bg(dot_color))
         .child(ui_text(pill_label(ctx.waiting.len()), 11.0, c::AMBER()))
         .on_mouse_down(
             MouseButton::Left,
@@ -301,15 +302,15 @@ pub fn zen_attention_pill(ctx: &AppbarCtx) -> AnyElement {
         .id("zen-attention-pill")
         .flex()
         .items_center()
-        .gap(px(6.0))
-        .px(px(8.0))
-        .py(px(2.0))
-        .rounded(px(999.0))
+        .gap(rpx(6.0))
+        .px(rpx(8.0))
+        .py(rpx(2.0))
+        .rounded(rpx(999.0))
         .border_1()
         .border_color(c::AMBER())
         .bg(bg)
         .hover(move |s| s.bg(bg_hover))
-        .child(div().size(px(6.0)).rounded_full().bg(dot_color))
+        .child(div().size(rpx(6.0)).rounded_full().bg(dot_color))
         // The bare count, not the appbar pill's "{n} need you" copy.
         .child(ui_text(ctx.waiting.len().to_string(), 11.0, c::AMBER()))
         .on_mouse_down(
@@ -319,8 +320,8 @@ pub fn zen_attention_pill(ctx: &AppbarCtx) -> AnyElement {
 
     div()
         .absolute()
-        .top(px(12.0))
-        .right(px(12.0))
+        .top(rpx(12.0))
+        .right(rpx(12.0))
         .child(pill)
         .into_any_element()
 }
@@ -337,11 +338,11 @@ pub fn attention_dropdown(ctx: &AppbarCtx) -> AnyElement {
     }
 
     let panel = div()
-        .w(px(280.0))
+        .w(rpx(280.0))
         .flex()
         .flex_col()
         .bg(c::BG_STRIP())
-        .rounded(px(6.0))
+        .rounded(rpx(6.0))
         .border_1()
         .border_color(c::BORDER())
         .overflow_hidden()
@@ -350,9 +351,9 @@ pub fn attention_dropdown(ctx: &AppbarCtx) -> AnyElement {
         .child(
             div()
                 .w_full()
-                .pl(px(12.0))
-                .pr(px(10.0))
-                .py(px(6.0))
+                .pl(rpx(12.0))
+                .pr(rpx(10.0))
+                .py(rpx(6.0))
                 .child(footer_hint()),
         );
 
@@ -362,15 +363,21 @@ pub fn attention_dropdown(ctx: &AppbarCtx) -> AnyElement {
         .top(px(0.0))
         .left(px(0.0))
         .size_full()
-        .on_mouse_down(
-            MouseButton::Left,
-            on_chrome(&ctx.dispatch, ChromeAction::CloseAttentionQueue),
-        )
+        .on_mouse_down(MouseButton::Left, {
+            let dispatch = Rc::clone(&ctx.dispatch);
+            move |_, window, cx| {
+                // This layer covers the whole terminal body; without stopping
+                // here every click on it (rows included, they bubble through)
+                // would also land in the pty underneath.
+                cx.stop_propagation();
+                dispatch(ChromeAction::CloseAttentionQueue, window, cx);
+            }
+        })
         .child(
             div()
                 .absolute()
-                .top(px(APPBAR_H + 1.0))
-                .right(px(16.0))
+                .top(rpx(APPBAR_H + 1.0))
+                .right(rpx(16.0))
                 .child(panel),
         )
         .into_any_element()
@@ -387,10 +394,10 @@ fn dropdown_row(row: &WaitingRow, ctx: &AppbarCtx) -> AnyElement {
         .w_full()
         .flex()
         .items_center()
-        .gap(px(8.0))
-        .pl(px(12.0))
-        .pr(px(10.0))
-        .py(px(6.0))
+        .gap(rpx(8.0))
+        .pl(rpx(12.0))
+        .pr(rpx(10.0))
+        .py(rpx(6.0))
         .hover(|s| s.bg(c::BG_HOVER()))
         .child(state_glyph(row.state, ctx.tick, ctx.pulse))
         .child(
@@ -402,7 +409,7 @@ fn dropdown_row(row: &WaitingRow, ctx: &AppbarCtx) -> AnyElement {
                 .child(
                     div()
                         .font(gpui::font(crate::fonts::MONO_FAMILY))
-                        .text_size(px(10.0))
+                        .text_size(rpx(10.0))
                         .text_color(c::FG_MUTE())
                         .child(subtitle),
                 ),
@@ -414,7 +421,7 @@ fn dropdown_row(row: &WaitingRow, ctx: &AppbarCtx) -> AnyElement {
                 .absolute()
                 .top(px(0.0))
                 .left(px(0.0))
-                .w(px(3.0))
+                .w(rpx(3.0))
                 .h_full()
                 .bg(c::AMBER()),
         )
@@ -438,7 +445,7 @@ fn footer_hint() -> AnyElement {
             .child(
                 div()
                     .font(gpui::font(crate::fonts::MONO_FAMILY))
-                    .text_size(px(10.0))
+                    .text_size(rpx(10.0))
                     .text_color(c::FG_MUTE())
                     .child(key.to_string()),
             )

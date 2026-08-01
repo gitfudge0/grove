@@ -8,6 +8,7 @@
 //! is no single "active worktree" in a grid. Confirmed against the oracle in
 //! the Plan 07 Task 6 Step 4 report.
 
+use crate::views::rpx;
 use std::rc::Rc;
 
 use gpui::{div, prelude::*, px, AnyElement, App, Entity, MouseButton, MouseDownEvent, Window};
@@ -49,11 +50,7 @@ pub struct PanelCtx {
 /// A small floating hint label matching iced's `Self::hint` chrome
 /// (`common.rs:199-220`): `BG_STRIP` fill, `BORDER` border, `[4, 8]` padding,
 /// 11px `FG_DIM` text.
-fn hint_tooltip(
-    label: &'static str,
-    _window: &mut Window,
-    cx: &mut App,
-) -> gpui::AnyView {
+fn hint_tooltip(label: &'static str, _window: &mut Window, cx: &mut App) -> gpui::AnyView {
     cx.new(|_| HintTooltip { label }).into()
 }
 
@@ -64,13 +61,13 @@ struct HintTooltip {
 impl gpui::Render for HintTooltip {
     fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
         div()
-            .px(px(8.0))
-            .py(px(4.0))
-            .rounded(px(4.0))
+            .px(rpx(8.0))
+            .py(rpx(4.0))
+            .rounded(rpx(4.0))
             .bg(c::BG_STRIP())
             .border_1()
             .border_color(c::BORDER())
-            .text_size(px(11.0))
+            .text_size(rpx(11.0))
             .text_color(c::FG_DIM())
             .child(self.label)
     }
@@ -94,7 +91,7 @@ pub fn term_panel(ctx: &PanelCtx) -> AnyElement {
         .id("panel-tab-strip")
         .flex()
         .items_center()
-        .gap(px(6.0))
+        .gap(rpx(6.0))
         .overflow_x_scroll();
     for (i, tab) in ctx.tabs.iter().enumerate() {
         tabs = tabs.child(shell_tab(i, tab, ctx));
@@ -102,11 +99,11 @@ pub fn term_panel(ctx: &PanelCtx) -> AnyElement {
     tabs = tabs.child(
         div()
             .id("panel-add-shell")
-            .size(px(22.0))
+            .size(rpx(22.0))
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(4.0))
+            .rounded(rpx(4.0))
             .hover(|s| s.bg(c::BG_HOVER()))
             .child(crate::icons::icon("plus", 13.0, c::FG_DIM()))
             .on_mouse_down(
@@ -116,22 +113,22 @@ pub fn term_panel(ctx: &PanelCtx) -> AnyElement {
     );
 
     let strip = div()
-        .h(px(SESSBAR_H))
+        .h(rpx(SESSBAR_H))
         .w_full()
         .flex()
         .items_center()
-        .px(px(10.0))
+        .px(rpx(10.0))
         .bg(c::BG_STRIP())
         .overflow_hidden()
         .child(div().flex_1().overflow_hidden().child(tabs))
         .child(
             div()
                 .id("panel-collapse")
-                .size(px(22.0))
+                .size(rpx(22.0))
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(4.0))
+                .rounded(rpx(4.0))
                 .hover(|s| s.bg(c::BG_HOVER()))
                 .child(crate::icons::icon("collapse-right", 13.0, c::FG_MUTE()))
                 .tooltip(|window, cx| hint_tooltip("collapse panel", window, cx))
@@ -151,8 +148,8 @@ pub fn term_panel(ctx: &PanelCtx) -> AnyElement {
                 .overflow_hidden()
                 // The same padding iced's `pty()` applies (`metrics.rs:53-56`),
                 // so the panel's cell grid matches the iced build's.
-                .px(px(16.0))
-                .py(px(12.0))
+                .px(rpx(16.0))
+                .py(rpx(12.0))
                 .child(view)
                 .into_any_element()
         },
@@ -181,20 +178,20 @@ fn shell_tab(idx: usize, tab: &ShellTab, ctx: &PanelCtx) -> AnyElement {
     let glyph_color = if tab.active { c::CYAN() } else { c::FG_DIM() };
     let mut el = div()
         .id(gpui::SharedString::from(format!("panel-tab-{idx}")))
-        .h(px(24.0))
+        .h(rpx(24.0))
         .flex()
         .items_center()
-        .gap(px(6.0))
-        .px(px(8.0))
-        .rounded(px(4.0))
+        .gap(rpx(6.0))
+        .px(rpx(8.0))
+        .rounded(rpx(4.0))
         .hover(|s| s.bg(c::BG_HOVER()))
-        .child(div().size(px(6.0)).rounded_full().bg(dot_color))
+        .child(div().size(rpx(6.0)).rounded_full().bg(dot_color))
         .child(crate::icons::icon("term", 13.0, glyph_color))
         .child(
             div()
                 .id(gpui::SharedString::from(format!("panel-tab-close-{idx}")))
-                .w(px(16.0))
-                .h(px(18.0))
+                .w(rpx(16.0))
+                .h(rpx(18.0))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -222,7 +219,7 @@ fn shell_tab(idx: usize, tab: &ShellTab, ctx: &PanelCtx) -> AnyElement {
 pub fn divider(dispatch: &PanelDispatch) -> AnyElement {
     div()
         .id("term-panel-divider")
-        .w(px(SIDEBAR_DIVIDER_W))
+        .w(rpx(SIDEBAR_DIVIDER_W))
         .h_full()
         .flex()
         .items_center()

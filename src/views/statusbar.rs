@@ -7,6 +7,7 @@
 //! Free render function rather than a `Render` entity, for the same reason as
 //! [`crate::views::appbar`] — see its module docs.
 
+use crate::views::rpx;
 use gpui::{div, prelude::*, px, AnyElement, Div, Hsla, MouseButton};
 
 use crate::entities::toast::{Toast, ToastKind};
@@ -30,7 +31,7 @@ pub struct StatusbarCtx {
 fn mono(content: impl Into<gpui::SharedString>, size: f32, color: Hsla) -> Div {
     div()
         .font(gpui::font(crate::fonts::MONO_FAMILY))
-        .text_size(px(size))
+        .text_size(rpx(size))
         .text_color(color)
         .child(content.into())
 }
@@ -39,9 +40,9 @@ fn mono(content: impl Into<gpui::SharedString>, size: f32, color: Hsla) -> Div {
 /// padding, radius 4, filled `BG_HL`.
 fn keycap(inner: impl IntoElement) -> Div {
     div()
-        .px(px(6.0))
-        .py(px(2.0))
-        .rounded(px(4.0))
+        .px(rpx(6.0))
+        .py(rpx(2.0))
+        .rounded(rpx(4.0))
         .bg(c::BG_HL())
         .child(inner)
 }
@@ -50,8 +51,8 @@ pub fn statusbar(ctx: &StatusbarCtx) -> AnyElement {
     let running_group = div()
         .flex()
         .items_center()
-        .gap(px(6.0))
-        .child(div().size(px(7.0)).rounded_full().bg(if ctx.running > 0 {
+        .gap(rpx(6.0))
+        .child(div().size(rpx(7.0)).rounded_full().bg(if ctx.running > 0 {
             c::GREEN()
         } else {
             c::FG_MUTE()
@@ -63,7 +64,7 @@ pub fn statusbar(ctx: &StatusbarCtx) -> AnyElement {
         div()
             .flex()
             .items_center()
-            .gap(px(6.0))
+            .gap(rpx(6.0))
             .child(mono(label, 10.0, c::FG_MUTE()))
             .child(mono(value, 10.0, c::FG_DIM()))
     };
@@ -71,7 +72,7 @@ pub fn statusbar(ctx: &StatusbarCtx) -> AnyElement {
     let mut left = div()
         .flex()
         .items_center()
-        .gap(px(14.0))
+        .gap(rpx(14.0))
         .child(running_group)
         .child(labelled("BACKEND", ctx.backend.to_string()))
         .child(labelled("THEME", ctx.theme_name.clone()));
@@ -103,7 +104,7 @@ pub fn statusbar(ctx: &StatusbarCtx) -> AnyElement {
             ChromeAction::OpenSessionLauncher,
             &ctx.dispatch,
         ))
-        .child(div().w(px(14.0)))
+        .child(div().w(rpx(14.0)))
         .child(hint_chip(
             "statusbar-shortcuts",
             shortcut_key(GlobalShortcut::ShortcutOverlay, "/"),
@@ -111,7 +112,7 @@ pub fn statusbar(ctx: &StatusbarCtx) -> AnyElement {
             ChromeAction::OpenShortcutOverlay,
             &ctx.dispatch,
         ))
-        .child(div().w(px(14.0)))
+        .child(div().w(rpx(14.0)))
         .child(mono(
             format!("v{}", env!("CARGO_PKG_VERSION")),
             10.0,
@@ -122,7 +123,7 @@ pub fn statusbar(ctx: &StatusbarCtx) -> AnyElement {
         .flex()
         .flex_col()
         .w_full()
-        .h(px(STATUS_H))
+        .h(rpx(STATUS_H))
         .child(div().h(px(1.0)).w_full().bg(c::BORDER_SOFT()))
         .child(
             div()
@@ -130,10 +131,10 @@ pub fn statusbar(ctx: &StatusbarCtx) -> AnyElement {
                 .flex_1()
                 .items_center()
                 .w_full()
-                .px(px(16.0))
+                .px(rpx(16.0))
                 .bg(c::BG_STRIP())
                 .child(left)
-                .child(div().w(px(24.0)))
+                .child(div().w(rpx(24.0)))
                 .child(toast)
                 .child(div().flex_1())
                 .child(right),
@@ -166,14 +167,14 @@ fn hint_chip(
         .id(id)
         .flex()
         .items_center()
-        .gap(px(6.0))
+        .gap(rpx(6.0))
         .text_color(c::FG_MUTE())
         .hover(|s| s.text_color(c::FG()))
         .child(keycap(cap))
         .child(
             div()
                 .font(gpui::font(crate::fonts::MONO_FAMILY))
-                .text_size(px(10.0))
+                .text_size(rpx(10.0))
                 .child(label),
         )
         .on_mouse_down(MouseButton::Left, on_chrome(dispatch, action))

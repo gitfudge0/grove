@@ -19,7 +19,8 @@
 // `icon`/`spinner` are consumed by Task 5's row renderers.
 #![allow(dead_code)]
 
-use gpui::{px, svg, Hsla, SharedString, Styled as _, Svg};
+use crate::views::rpx;
+use gpui::{svg, Hsla, SharedString, Styled as _, Svg};
 
 use crate::entities::animation_clock::{spinner_frame, SPINNER_FRAMES};
 
@@ -27,7 +28,7 @@ use crate::entities::animation_clock::{spinner_frame, SPINNER_FRAMES};
 pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
     svg()
         .path(SharedString::from(format!("icons/{name}.svg")))
-        .size(px(size))
+        .size(rpx(size))
         .text_color(color)
 }
 
@@ -38,7 +39,7 @@ pub fn spinner(size: f32, color: Hsla, tick: u64) -> Svg {
     let frame = spinner_frame(tick);
     svg()
         .path(SharedString::from(format!("icons/spinner-{frame}.svg")))
-        .size(px(size))
+        .size(rpx(size))
         .text_color(color)
 }
 
