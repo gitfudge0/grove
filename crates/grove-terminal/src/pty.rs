@@ -19,8 +19,8 @@ fn io_err(e: impl std::fmt::Display) -> std::io::Error {
 
 /// A spawned child on its own PTY.
 ///
-/// Dropping the handle drops the master, which closes the PTY and ends the
-/// reader thread; the child is not killed for you — call [`PtyHandle::kill`].
+/// Dropping the handle kills and reaps the child (see the `Drop` impl below),
+/// then drops the master, which closes the PTY and ends the reader thread.
 pub struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -163,6 +163,27 @@ impl PtyHandle {
     }
 }
 
+/// Kill and reap the child before the handle's other fields (master, writer)
+/// drop.
+///
+/// `portable_pty` 0.9.0's `UnixMasterWriter::drop` writes `b"\n\x04"` into the
+/// PTY — a canonical-mode EOF for a shell reading line-buffered input. Our
+/// tmux `attach` client runs the pane raw, so if it is still alive when the
+/// writer drops, those two bytes are forwarded verbatim to the tmux server as
+/// keystrokes and land in the agent's pane: Ctrl-J is a newline, dropped
+/// straight into Claude Code's input box (the "phantom row" regression).
+/// Killing and reaping the child first means the farewell bytes land in a PTY
+/// nobody is reading. This mirrors `main`'s `Session::Drop`
+/// (`grove-core/src/session.rs`): the tmux attach client dies, the backing
+/// tmux session survives server-side; native agents and teardown-modal
+/// scripts are meant to die with grove anyway.
+impl Drop for PtyHandle {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 /// Convenience wrapper mirroring the spec's `spawn(cmd, rows, cols)`.
 pub fn spawn(cmd: CommandBuilder, rows: u16, cols: u16) -> std::io::Result<PtyHandle> {
     PtyHandle::spawn(cmd, rows, cols)
@@ -185,6 +206,31 @@ mod tests {
         assert!(pid > 0);
         assert_eq!(handle.child_pid(), Some(pid), "the id is stable");
         handle.kill().expect("kill");
+    }
+
+    /// Dropping the handle kills the child, rather than leaving it to receive
+    /// portable-pty's farewell bytes on a PTY nobody reads.
+    #[test]
+    fn dropping_the_handle_kills_the_child() {
+        let mut cmd = CommandBuilder::new("sleep");
+        cmd.arg("30");
+        let handle = spawn(cmd, 24, 80).expect("spawn");
+        let pid = handle.child_pid().expect("a live child has a pid");
+
+        drop(handle);
+
+        let is_alive = || {
+            std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .status()
+                .expect("run kill -0")
+                .success()
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && is_alive() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!is_alive(), "child {pid} survived dropping its PtyHandle");
     }
 
     /// End-to-end smoke test: a real child on a real PTY, its output arriving
