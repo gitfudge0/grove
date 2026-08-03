@@ -548,7 +548,7 @@ fn field(layer: &ModalLayer, idx: usize, window: &Window, cx: &App) -> Option<im
             .border_1()
             .border_color(if focused { c::MAGENTA() } else { c::BORDER() })
             .text_size(rpx(13.0))
-            .child(gpui_component::input::Input::new(f.state()).w_full())
+            .child(gpui_component::input::Input::new(f.state()).appearance(false).w_full())
     })
 }
 
