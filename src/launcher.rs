@@ -613,6 +613,9 @@ pub fn typed_rows(
             rows.push(PaletteRow::Setting(s));
         }
     }
+    if !query.trim().is_empty() && fuzzy_match(query, "add project", "", "") {
+        rows.push(PaletteRow::AddProject);
+    }
     if !query.trim().is_empty() && fuzzy_match(query, "reload themes", "", "") {
         rows.push(PaletteRow::ReloadThemes);
     }
@@ -933,6 +936,19 @@ mod tests {
         let rows = typed_rows("", &[], &[]);
         assert!(!rows.iter().any(|r| matches!(r, PaletteRow::Setting(_))));
         assert!(!rows.contains(&PaletteRow::ReloadThemes));
+        assert!(!rows.contains(&PaletteRow::AddProject));
+    }
+
+    #[test]
+    fn typing_add_project_surfaces_the_add_project_row() {
+        let rows = typed_rows("add project", &[], &[]);
+        assert!(rows.contains(&PaletteRow::AddProject));
+    }
+
+    #[test]
+    fn typing_a_prefix_of_add_project_still_surfaces_it() {
+        let rows = typed_rows("add", &[], &[]);
+        assert!(rows.contains(&PaletteRow::AddProject));
     }
 
     // ── the drill-ins ────────────────────────────────────────────────────
