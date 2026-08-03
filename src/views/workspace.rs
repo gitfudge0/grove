@@ -1790,9 +1790,10 @@ impl Render for Workspace {
             let store = &cx.global::<SettingsState>().store;
             self.tree.read(cx).visible_worktree_paths(store, ws)
         };
+        let window_focused = window.is_window_active();
         self.tree
             .clone()
-            .update(cx, |t, cx| t.maybe_poll_git_state(paths, cx));
+            .update(cx, |t, cx| t.maybe_poll_git_state(paths, window_focused, cx));
 
         // Window activation: `window_focused` gates the "focused session is
         // never waiting" rule, and regaining focus acknowledges the visible

@@ -41,6 +41,9 @@ const IS_REPO_TTL: Duration = Duration::from_secs(5);
 
 /// Throttle window for the git-state poll (`update/mod.rs:1254`).
 const GIT_POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// Degraded cadence while the window is unfocused — still catches up
+/// eventually rather than stopping outright.
+const GIT_POLL_INTERVAL_UNFOCUSED: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 pub struct ProjectTree {
@@ -215,11 +218,19 @@ impl ProjectTree {
     }
 
     /// Whether the throttle window has elapsed (`update/mod.rs:1252-1259`).
-    /// Stamps `last_git_poll` when it returns true, like the original.
-    pub fn git_poll_due(&mut self, now: Instant) -> bool {
+    /// Stamps `last_git_poll` when it returns true, like the original. When
+    /// `focused` is false the interval degrades to
+    /// [`GIT_POLL_INTERVAL_UNFOCUSED`] rather than stopping outright, so an
+    /// unfocused window still catches up occasionally.
+    pub fn git_poll_due(&mut self, now: Instant, focused: bool) -> bool {
+        let interval = if focused {
+            GIT_POLL_INTERVAL
+        } else {
+            GIT_POLL_INTERVAL_UNFOCUSED
+        };
         let due = self
             .last_git_poll
-            .is_none_or(|t| now.duration_since(t) >= GIT_POLL_INTERVAL);
+            .is_none_or(|t| now.duration_since(t) >= interval);
         if due {
             self.last_git_poll = Some(now);
         }
@@ -250,8 +261,8 @@ impl ProjectTree {
     /// (spec §4). Three behaviors, all load-bearing: the 5s throttle, the
     /// in-flight guard that **skips** rather than overlaps, and dropping —
     /// never staling — an entry whose `git` call failed.
-    pub fn maybe_poll_git_state(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
-        if !self.git_poll_due(Instant::now()) || paths.is_empty() {
+    pub fn maybe_poll_git_state(&mut self, paths: Vec<String>, focused: bool, cx: &mut Context<Self>) {
+        if !self.git_poll_due(Instant::now(), focused) || paths.is_empty() {
             return;
         }
         if self
@@ -441,9 +452,20 @@ mod tests {
     fn the_git_poll_is_throttled_to_one_run_per_five_seconds() {
         let mut tree = ProjectTree::new();
         let t0 = Instant::now();
-        assert!(tree.git_poll_due(t0));
-        assert!(!tree.git_poll_due(t0 + Duration::from_secs(4)));
-        assert!(tree.git_poll_due(t0 + Duration::from_secs(5)));
+        assert!(tree.git_poll_due(t0, true));
+        assert!(!tree.git_poll_due(t0 + Duration::from_secs(4), true));
+        assert!(tree.git_poll_due(t0 + Duration::from_secs(5), true));
+    }
+
+    /// Unfocused windows still catch up, just on a slower cadence.
+    #[test]
+    fn the_git_poll_degrades_to_sixty_seconds_when_unfocused() {
+        let mut tree = ProjectTree::new();
+        let t0 = Instant::now();
+        assert!(tree.git_poll_due(t0, false));
+        assert!(!tree.git_poll_due(t0 + Duration::from_secs(5), false));
+        assert!(!tree.git_poll_due(t0 + Duration::from_secs(59), false));
+        assert!(tree.git_poll_due(t0 + Duration::from_secs(60), false));
     }
 
     /// `update/mod.rs:1288-1299` — failure drops, it does not stale.

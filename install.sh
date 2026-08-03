@@ -88,6 +88,17 @@ case "$OS" in
     cp -R "$APP" "$DEST/"
     # Strip the quarantine flag so it opens without a Gatekeeper prompt.
     xattr -dr com.apple.quarantine "$DEST/$(basename "$APP")" 2>/dev/null || true
+    # Sign with a stable identity when one exists so macOS TCC permission
+    # grants survive rebuilds (ad-hoc signatures change every build, which
+    # makes macOS re-prompt for folder/data access after each install).
+    SIGN_ID="${GROVE_SIGN_IDENTITY:-Grove Dev}"
+    if security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
+      echo "Signing with identity '$SIGN_ID'..."
+      codesign --force --deep --sign "$SIGN_ID" "$DEST/$(basename "$APP")"
+    else
+      echo "No '$SIGN_ID' codesigning identity found; leaving ad-hoc signature." >&2
+      echo "(TCC permission prompts will repeat after each rebuild until one exists.)" >&2
+    fi
     echo
     echo "Installed $(basename "$APP") to $DEST"
     echo "Launch it from Spotlight or Launchpad."
