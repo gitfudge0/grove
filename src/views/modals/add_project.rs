@@ -9,7 +9,7 @@
 //! :97).
 
 use crate::views::rpx;
-use gpui::{div, prelude::*, px, AnyElement, App, Context, Div, Hsla, Window};
+use gpui::{div, prelude::*, px, AnyElement, App, Context, Div, Focusable as _, Hsla, Window};
 
 use crate::add_project::{self, ChooseOutcome, GitProbe, SubmitOutcome};
 use crate::settings::SettingsState;
@@ -458,34 +458,53 @@ impl ModalLayer {
 
 // ── the views ────────────────────────────────────────────────────────────
 
-pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
+pub fn render(
+    layer: &ModalLayer,
+    dispatch: &ModalDispatch,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
     match layer.slot().get() {
         Some(Modal::AddProject(st)) => match st.step {
-            AddProjectStep::PickSource => pick_source(layer, st, dispatch),
-            AddProjectStep::Details => details(layer, st, dispatch),
+            AddProjectStep::PickSource => pick_source(layer, st, dispatch, window, cx),
+            AddProjectStep::Details => details(layer, st, dispatch, window, cx),
         },
-        Some(Modal::Onboarding { .. }) => onboarding(layer, dispatch, cx),
+        Some(Modal::Onboarding { .. }) => onboarding(layer, dispatch, window, cx),
         _ => div().into_any_element(),
     }
 }
 
-/// The step-1 directory match list, driven by the typed path.
+/// The step-1 directory match list, driven by the typed path. Rows are
+/// windowed to `DIR_ROWS` around the selection, with "↑N more" / "↓N more"
+/// overflow indicators when the list runs past the window
+/// (`src/gui/add_project.rs`'s `dir_matches`).
 fn dir_list(path: &str, sel: usize, dispatch: &ModalDispatch) -> impl IntoElement {
     let entries = add_project::list_dirs(path);
-    let offset = crate::launcher::scroll_offset_for(0, sel, DIR_ROWS, entries.len());
     let mut list = div().flex().flex_col().gap(rpx(2.0));
     if entries.is_empty() {
         return list.child(
             div()
                 .px(rpx(8.0))
                 .py(rpx(5.0))
+                .text_size(rpx(12.0))
+                .text_color(c::FG_MUTE())
+                .child("No matches"),
+        );
+    }
+    let offset = crate::launcher::scroll_offset_for(0, sel, DIR_ROWS, entries.len());
+    let above = offset;
+    let below = entries.len().saturating_sub(offset + DIR_ROWS);
+    if above > 0 {
+        list = list.child(
+            div()
+                .px(rpx(8.0))
                 .text_size(rpx(11.0))
                 .text_color(c::FG_MUTE())
-                .child("no matching directories"),
+                .child(format!("↑{above} more")),
         );
     }
     for (i, entry) in entries.iter().enumerate().skip(offset).take(DIR_ROWS) {
-        let name = add_project::path_basename(entry);
+        let name = format!("{}/", add_project::path_basename(entry));
         list = list.child(click_row(
             gpui::SharedString::from(format!("dir-{i}")),
             i == sel,
@@ -493,88 +512,176 @@ fn dir_list(path: &str, sel: usize, dispatch: &ModalDispatch) -> impl IntoElemen
             ModalClick::WizardPickDir(i),
             div()
                 .flex_1()
-                .font(gpui::font(crate::fonts::MONO_FAMILY))
-                .text_size(rpx(11.0))
+                .h(rpx(28.0))
+                .flex()
+                .items_center()
+                .text_size(rpx(12.0))
                 .text_color(if i == sel { c::FG() } else { c::FG_DIM() })
                 .child(name),
         ));
     }
+    if below > 0 {
+        list = list.child(
+            div()
+                .px(rpx(8.0))
+                .text_size(rpx(11.0))
+                .text_color(c::FG_MUTE())
+                .child(format!("↓{below} more")),
+        );
+    }
     list
 }
 
-fn field(layer: &ModalLayer, idx: usize) -> Option<impl IntoElement> {
+/// A restyled text-input container matching the main-branch wizard's field
+/// chrome: blends with the modal panel (`BG_RAIL`), radius 4, `[8, 12]`
+/// padding, 13px text, and a focus-reactive border — `c::MAGENTA()` while the
+/// field is focused, `c::BORDER()` otherwise.
+fn field(layer: &ModalLayer, idx: usize, window: &Window, cx: &App) -> Option<impl IntoElement> {
     layer.fields.get(idx).map(|f| {
+        let focused = f.state().read(cx).focus_handle(cx).is_focused(window);
         div()
             .w_full()
-            .px(rpx(10.0))
-            .py(rpx(6.0))
-            .rounded(rpx(6.0))
-            .bg(c::BG())
+            .px(rpx(12.0))
+            .py(rpx(8.0))
+            .rounded(rpx(4.0))
+            .bg(c::BG_RAIL())
             .border_1()
-            .border_color(c::BORDER())
+            .border_color(if focused { c::MAGENTA() } else { c::BORDER() })
+            .text_size(rpx(13.0))
             .child(gpui_component::input::Input::new(f.state()).w_full())
     })
+}
+
+/// The wizard's shared header: a title in `c::MAGENTA()` plus a right-aligned
+/// "Step {n} of 2" (`src/gui/add_project.rs`'s `view` header row).
+fn wizard_header(step_no: u8) -> Div {
+    modal_header_row(
+        div()
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(rpx(13.0))
+                    .text_color(c::MAGENTA())
+                    .child("Add project"),
+            )
+            .child(
+                div()
+                    .text_size(rpx(11.0))
+                    .text_color(c::FG_MUTE())
+                    .child(format!("Step {step_no} of 2")),
+            ),
+    )
 }
 
 fn pick_source(
     layer: &ModalLayer,
     st: &crate::modal::AddProjectState,
     dispatch: &ModalDispatch,
+    window: &Window,
+    cx: &App,
 ) -> AnyElement {
-    let mut body = div().flex().flex_col().gap(rpx(10.0));
-    if let Some(f) = field(layer, 0) {
+    let accent = c::MAGENTA();
+    let accent_soft = Hsla {
+        a: 0.45,
+        ..accent
+    };
+    let browse_label = if layer.picker_open {
+        "Waiting for the folder picker…"
+    } else {
+        "Browse for folder…"
+    };
+    let dispatch_browse = std::rc::Rc::clone(dispatch);
+    let browse = div()
+        .id("ap-browse-hero")
+        .w_full()
+        .px(rpx(12.0))
+        .py(rpx(10.0))
+        .rounded(rpx(5.0))
+        .bg(c::BG_HL())
+        .border_1()
+        .border_color(accent_soft)
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .text_size(rpx(13.0))
+                .text_color(c::FG())
+                .child(browse_label),
+        )
+        .hover(|s| s.bg(c::BG_HOVER()).border_color(accent))
+        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+            dispatch_browse(ModalClick::WizardBrowse, window, cx);
+        });
+
+    let drop_hint = div()
+        .w_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(rpx(11.0))
+        .text_color(c::FG_MUTE())
+        .child("Or drop a folder anywhere in this window");
+
+    let or_divider = div()
+        .flex()
+        .items_center()
+        .gap(rpx(10.0))
+        .child(div().flex_1().h(px(1.0)).bg(c::BORDER_SOFT()))
+        .child(
+            div()
+                .text_size(rpx(11.0))
+                .text_color(c::FG_MUTE())
+                .child("Or type a path"),
+        )
+        .child(div().flex_1().h(px(1.0)).bg(c::BORDER_SOFT()));
+
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap(rpx(12.0))
+        .child(browse)
+        .child(drop_hint)
+        .child(or_divider);
+    if let Some(f) = field(layer, 0, window, cx) {
         body = body.child(f);
     }
     body = body.child(dir_list(&st.path, st.dir_sel, dispatch));
     if let Some(note) = &st.note {
-        body = body.child(note_text(note.clone()));
+        body = body.child(
+            div()
+                .text_size(rpx(12.0))
+                .text_color(c::RED())
+                .child(note.clone()),
+        );
     }
     body = body.child(
         div()
             .flex()
+            .items_center()
             .gap(rpx(8.0))
+            .child(div().flex_1())
             .child(click_action(
-                "ap-browse",
-                "Browse…",
+                "ap-cancel",
+                "Cancel",
                 ModalBtn::Plain,
                 dispatch,
-                ModalClick::WizardBrowse,
-            ))
-            .child(click_action(
-                "ap-next",
-                "Next",
-                ModalBtn::Primary,
-                dispatch,
-                ModalClick::WizardNext,
+                ModalClick::Cancel,
             )),
     );
     modal_panel(
-        520.0,
+        640.0,
         div()
-            .child(modal_header_row(
-                div()
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(rpx(13.0))
-                            .text_color(c::CYAN())
-                            .child("Add project"),
-                    )
-                    .child(
-                        div()
-                            .text_size(rpx(10.0))
-                            .text_color(c::FG_MUTE())
-                            .child("1 / 2"),
-                    ),
-            ))
+            .child(wizard_header(1))
             .child(modal_body(body))
             .child(modal_footer_hints(&[
-                ("↑↓", "walk"),
-                ("tab", "pick"),
-                ("⏎", "next"),
-                ("esc / ctrl+c", "cancel"),
+                ("tab", "complete"),
+                ("↑↓", "select"),
+                ("⏎", "continue"),
+                ("esc", "cancel"),
             ])),
     )
     .into_any_element()
@@ -584,83 +691,151 @@ fn details(
     layer: &ModalLayer,
     st: &crate::modal::AddProjectState,
     dispatch: &ModalDispatch,
+    window: &Window,
+    cx: &App,
 ) -> AnyElement {
-    let mut body = div().flex().flex_col().gap(rpx(10.0)).child(
-        div()
+    let chip = div()
+        .w_full()
+        .flex()
+        .items_center()
+        .gap(rpx(8.0))
+        .px(rpx(10.0))
+        .py(rpx(6.0))
+        .rounded(rpx(4.0))
+        .bg(c::BG_STRIP())
+        .border_1()
+        .border_color(c::BORDER())
+        .child(crate::icons::icon("folder", 14.0, c::FG_DIM()))
+        .child(
+            div()
+                .flex_1()
+                .overflow_hidden()
+                .text_size(rpx(12.0))
+                .text_color(c::FG())
+                .child(st.path.clone()),
+        )
+        .child(click_action(
+            "ap-change",
+            "Change",
+            ModalBtn::Plain,
+            dispatch,
+            ModalClick::WizardBack,
+        ));
+
+    let badge = match &st.git_branch {
+        Some(branch) => div()
             .flex()
             .items_center()
-            .gap(rpx(8.0))
+            .gap(rpx(7.0))
+            .child(crate::icons::icon("git", 14.0, c::GREEN()))
             .child(
                 div()
-                    .flex_1()
-                    .font(gpui::font(crate::fonts::MONO_FAMILY))
-                    .text_size(rpx(11.0))
-                    .text_color(c::FG_DIM())
-                    .child(st.path.clone()),
-            )
-            .child(click_action(
-                "ap-change",
-                "change",
-                ModalBtn::Plain,
-                dispatch,
-                ModalClick::WizardBack,
-            )),
-    );
-    if let Some(f) = field(layer, 0) {
+                    .text_size(rpx(12.0))
+                    .text_color(c::GREEN())
+                    .child(format!("Git repository · branch {branch}")),
+            ),
+        None => div()
+            .flex()
+            .items_center()
+            .gap(rpx(7.0))
+            .child(crate::icons::icon("no-git", 14.0, c::AMBER()))
+            .child(
+                div()
+                    .text_size(rpx(12.0))
+                    .text_color(c::AMBER())
+                    .child("Not a git repository"),
+            ),
+    };
+
+    let default_name = add_project::path_basename(&st.path);
+
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap(rpx(12.0))
+        .child(
+            div()
+                .text_size(rpx(11.0))
+                .text_color(c::FG_MUTE())
+                .child("Folder"),
+        )
+        .child(chip)
+        .child(badge)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .text_size(rpx(11.0))
+                        .text_color(c::FG_MUTE())
+                        .child("Name"),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .text_size(rpx(11.0))
+                        .text_color(c::FG_MUTE())
+                        .child(format!("Empty uses '{default_name}'")),
+                ),
+        );
+    if let Some(f) = field(layer, 0, window, cx) {
         body = body.child(f);
     }
-    body = body.child(match &st.git_branch {
-        Some(branch) => body_text(format!("git repository on '{branch}'")),
-        None => body_text("not a git repository"),
-    });
     if st.git_branch.is_none() {
         body = body.child(click_checkbox(
             "ap-init-git",
-            "Initialize git repository",
+            "Initialize Git repository",
             st.init_git,
-            c::GREEN(),
+            c::MAGENTA(),
             true,
             dispatch,
             ModalClick::WizardToggleInitGit,
         ));
+        if !st.init_git {
+            body = body.child(
+                div()
+                    .text_size(rpx(11.0))
+                    .text_color(c::FG_MUTE())
+                    .child("Sessions will run directly in the project folder, no worktrees"),
+            );
+        }
     }
     if let Some(note) = &st.note {
-        body = body.child(note_text(note.clone()));
+        body = body.child(
+            div()
+                .text_size(rpx(12.0))
+                .text_color(c::RED())
+                .child(note.clone()),
+        );
     }
-    body = body.child(div().flex().gap(rpx(8.0)).child(click_action(
-        "ap-add",
-        "Add project",
-        ModalBtn::Primary,
-        dispatch,
-        ModalClick::WizardNext,
-    )));
-    modal_panel(
-        520.0,
+    body = body.child(
         div()
-            .child(modal_header_row(
-                div()
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(rpx(13.0))
-                            .text_color(c::CYAN())
-                            .child("Add project"),
-                    )
-                    .child(
-                        div()
-                            .text_size(rpx(10.0))
-                            .text_color(c::FG_MUTE())
-                            .child("2 / 2"),
-                    ),
+            .flex()
+            .items_center()
+            .gap(rpx(8.0))
+            .child(div().flex_1())
+            .child(click_action(
+                "ap-cancel",
+                "Cancel",
+                ModalBtn::Plain,
+                dispatch,
+                ModalClick::Cancel,
             ))
+            .child(click_action(
+                "ap-add",
+                "Add project",
+                ModalBtn::Primary,
+                dispatch,
+                ModalClick::WizardNext,
+            )),
+    );
+    modal_panel(
+        640.0,
+        div()
+            .child(wizard_header(2))
             .child(modal_body(body))
-            .child(modal_footer_hints(&[
-                ("⏎", "add"),
-                ("esc", "back"),
-                ("ctrl+c", "cancel"),
-            ])),
+            .child(modal_footer_hints(&[("⏎", "add"), ("esc", "back")])),
     )
     .into_any_element()
 }
@@ -737,7 +912,7 @@ fn onboard_env_row(found: bool, optional: bool, name: &'static str, meta: &'stat
 /// The first-run wizard. Full-viewport with no sidebar, statusbar or scrim —
 /// the layer already renders it as a screen replacement (recorded ambiguity 1)
 /// and the entrance animation is applied there.
-fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
+fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx: &App) -> AnyElement {
     let Some(Modal::Onboarding {
         step,
         path,
@@ -880,7 +1055,7 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
                         .child("R E P O S I T O R Y   O R   F O L D E R"),
                 );
             let mut path_row = div().flex().items_center().gap(rpx(8.0));
-            if let Some(f) = field(layer, 0) {
+            if let Some(f) = field(layer, 0, window, cx) {
                 path_row = path_row.child(div().flex_1().child(f));
             }
             path_row = path_row.child(click_action(
@@ -900,7 +1075,7 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
 
             if name.is_some() {
                 d = d.child(div().text_size(rpx(11.0)).text_color(c::FG_MUTE()).child("N A M E"));
-                if let Some(f) = field(layer, 1) {
+                if let Some(f) = field(layer, 1, window, cx) {
                     d = d.child(f);
                 }
             }

@@ -496,9 +496,12 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
             archive_project_modal(name, sessions, dispatch)
         }
         Some(Modal::ArchivedProjects) => archived_projects_modal(dispatch, cx),
-        Some(Modal::Teardown { stage, message, .. }) => {
-            teardown_modal(layer, *stage, message, dispatch)
-        }
+        Some(Modal::Teardown {
+            wt_path,
+            stage,
+            message,
+            ..
+        }) => teardown_modal(layer, wt_path, *stage, message, dispatch),
         _ => div().into_any_element(),
     }
 }
@@ -528,26 +531,28 @@ fn remove_project_modal(
         errors,
     } = *progress;
     let body = if in_progress {
-        let mut list = div()
-            .flex()
-            .flex_col()
-            .gap(rpx(6.0))
-            .child(body_text(format!(
-                "removing worktrees… {done}/{worktree_count}"
-            )))
-            .child(
-                div()
-                    .font(gpui::font(crate::fonts::MONO_FAMILY))
-                    .text_size(rpx(11.0))
-                    .text_color(c::FG_MUTE())
-                    .child(current.to_string()),
-            );
-        for e in errors {
+        let status = if done >= worktree_count {
+            "Finishing…".to_string()
+        } else {
+            format!("Removing {} of {}: {current}", done + 1, worktree_count)
+        };
+        let mut list = div().flex().flex_col().gap(rpx(6.0)).child(
+            div()
+                .text_size(rpx(11.0))
+                .text_color(c::FG_MUTE())
+                .child(status),
+        );
+        list = list.child(progress_bar(if worktree_count == 0 {
+            1.0
+        } else {
+            (done as f32 / worktree_count as f32).clamp(0.0, 1.0)
+        }));
+        if !errors.is_empty() {
             list = list.child(
                 div()
                     .text_size(rpx(11.0))
                     .text_color(c::RED())
-                    .child(e.clone()),
+                    .child(format!("{} worktree(s) failed to remove", errors.len())),
             );
         }
         list
@@ -556,13 +561,29 @@ fn remove_project_modal(
             .flex()
             .flex_col()
             .gap(rpx(10.0))
-            .child(body_text(format!(
-                "Remove '{name}' from Grove? Its sessions will be ended."
-            )));
+            .child(
+                div()
+                    .text_size(rpx(13.0))
+                    .text_color(c::FG_DIM())
+                    .child(format!(
+                        "'{name}' will be unregistered from Grove. Its sessions will be ended."
+                    )),
+            )
+            .child(
+                div()
+                    .text_size(rpx(12.0))
+                    .text_color(c::FG_MUTE())
+                    .child("Running sessions for this project will be stopped."),
+            );
         if worktree_count > 0 {
+            let label = if worktree_count == 1 {
+                "Delete 1 non-main worktree from disk".to_string()
+            } else {
+                format!("Delete {worktree_count} non-main worktrees from disk")
+            };
             d = d.child(click_checkbox(
                 "rm-proj-wts",
-                format!("Also delete {worktree_count} worktrees on disk"),
+                label,
                 also_remove_worktrees,
                 c::RED(),
                 true,
@@ -570,46 +591,81 @@ fn remove_project_modal(
                 ModalClick::ToggleRemoveWorktrees,
             ));
         }
+        if !errors.is_empty() {
+            d = d.child(
+                div()
+                    .text_size(rpx(11.0))
+                    .text_color(c::RED())
+                    .child(format!("{} worktree(s) failed to remove", errors.len())),
+            );
+        }
         d.child(
             div()
                 .flex()
+                .items_center()
                 .gap(rpx(8.0))
-                .child(click_action(
-                    "rm-proj-yes",
-                    "Remove",
-                    ModalBtn::Danger,
-                    dispatch,
-                    ModalClick::RemoveProjectConfirm,
-                ))
+                .child(div().flex_1())
                 .child(click_action(
                     "rm-proj-no",
                     "Cancel",
                     ModalBtn::Plain,
                     dispatch,
                     ModalClick::Cancel,
+                ))
+                .child(click_action(
+                    "rm-proj-yes",
+                    "Remove",
+                    ModalBtn::Danger,
+                    dispatch,
+                    ModalClick::RemoveProjectConfirm,
                 )),
         )
     };
 
-    let footer = if in_progress {
-        // Cancel is refused while busy — do not offer it.
-        modal_footer_hints(&[("", "removing… cannot be cancelled")])
-    } else {
-        modal_footer_hints(&[
+    let mut panel = div()
+        .child(modal_header("Remove project", c::RED()))
+        .child(modal_body(body));
+    if !in_progress {
+        // Cancel is refused while busy — no footer, no key, is offered then.
+        panel = panel.child(modal_footer_hints(&[
             ("y", "remove"),
-            ("esc / n", "cancel"),
-            ("space", "toggle worktrees"),
-        ])
-    };
+            ("space", "toggle delete"),
+            ("esc", "cancel"),
+        ]));
+    }
 
-    modal_panel(
-        460.0,
-        div()
-            .child(modal_header("Remove project", c::RED()))
-            .child(modal_body(body))
-            .child(footer),
-    )
-    .into_any_element()
+    modal_panel(520.0, panel).into_any_element()
+}
+
+/// The removal progress bar: 6px girth, `BG_STRIP` track, `RED` fill,
+/// `BORDER` border, radius 4 (`confirm.rs:409-419`). gpui has no
+/// `progress_bar` primitive, so the fill is a plain scaled child div.
+fn progress_bar(frac: f32) -> AnyElement {
+    div()
+        .w_full()
+        .h(rpx(6.0))
+        .rounded(rpx(4.0))
+        .border_1()
+        .border_color(c::BORDER())
+        .bg(c::BG_STRIP())
+        .child(
+            div()
+                .h_full()
+                .rounded(rpx(4.0))
+                .bg(c::RED())
+                .w(gpui::relative(frac.clamp(0.0, 1.0))),
+        )
+        .into_any_element()
+}
+
+/// A small liveness dot: filled `GREEN` while running, hollow `FG_MUTE`
+/// outline once exited (`confirm.rs`'s `dot`).
+fn dot(color: gpui::Hsla) -> AnyElement {
+    div()
+        .size(rpx(6.0))
+        .rounded(rpx(3.0))
+        .bg(color)
+        .into_any_element()
 }
 
 /// `archive_project_modal` (`view/modals/confirm.rs:134-314`): one row per
@@ -620,102 +676,153 @@ fn archive_project_modal(
     dispatch: &ModalDispatch,
 ) -> AnyElement {
     let blocked = !sessions.is_empty();
-    let mut list = div().flex().flex_col().gap(rpx(4.0));
-    for (wt, agent, running) in sessions {
-        list = list.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(rpx(8.0))
-                .px(rpx(8.0))
-                .py(rpx(4.0))
-                .rounded(rpx(4.0))
-                .bg(c::BG_HL())
-                .child(
-                    div()
-                        .flex_1()
-                        .text_size(rpx(12.0))
-                        .text_color(c::FG_DIM())
-                        .child(format!("{wt} · {agent}")),
-                )
-                .child(
-                    div()
-                        .text_size(rpx(10.0))
-                        .text_color(if *running { c::GREEN() } else { c::FG_MUTE() })
-                        .child(if *running { "running" } else { "exited" }),
-                ),
-        );
-    }
 
     let body = if blocked {
+        let mut strip = div().flex().flex_col().gap(rpx(4.0));
+        for (wt, agent, running) in sessions {
+            strip = strip.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(8.0))
+                    .child(dot(if *running { c::GREEN() } else { c::FG_MUTE() }))
+                    .child(
+                        div()
+                            .font(gpui::font(crate::fonts::MONO_FAMILY))
+                            .text_size(rpx(11.0))
+                            .text_color(c::FG())
+                            .child(wt.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(rpx(11.0))
+                            .text_color(c::FG_DIM())
+                            .child(agent.clone()),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_size(rpx(11.0))
+                            .text_color(c::FG_MUTE())
+                            .child(if *running { "running" } else { "exited" }),
+                    ),
+            );
+        }
+        strip = strip.child(
+            div().w_full().flex().items_center().justify_center().pt(rpx(4.0)).child(
+                div()
+                    .id("arch-kill")
+                    .px(rpx(12.0))
+                    .py(rpx(6.0))
+                    .rounded(rpx(4.0))
+                    .border_1()
+                    .border_color(c::RED())
+                    .bg(c::BG_HL())
+                    .hover(|s| s.bg(c::BG_HOVER()))
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .text_size(rpx(12.0))
+                            .text_color(c::RED())
+                            .child(format!("Kill all sessions ({})", sessions.len())),
+                    )
+                    .on_mouse_down(gpui::MouseButton::Left, {
+                        let dispatch = std::rc::Rc::clone(dispatch);
+                        move |_, window, cx| {
+                            dispatch(ModalClick::ArchiveKillSessions, window, cx);
+                        }
+                    }),
+            ),
+        );
+        let strip = div()
+            .w_full()
+            .px(rpx(10.0))
+            .py(rpx(6.0))
+            .rounded(rpx(6.0))
+            .bg(c::BG())
+            .border_1()
+            .border_color(c::BORDER_SOFT())
+            .child(strip);
+
         div()
             .flex()
             .flex_col()
             .gap(rpx(10.0))
             .child(body_text(format!(
-                "'{name}' still has {} session(s). Archiving would strand them \
-                 under a project you can no longer see.",
-                sessions.len()
+                "'{name}' still has open sessions. Kill them before archiving."
             )))
-            .child(list)
+            .child(strip)
             .child(
                 div()
-                    .flex()
-                    .gap(rpx(8.0))
-                    .child(click_action(
-                        "arch-kill",
-                        "Kill all sessions",
-                        ModalBtn::Danger,
-                        dispatch,
-                        ModalClick::ArchiveKillSessions,
-                    ))
-                    .child(click_action(
-                        "arch-cancel",
-                        "Cancel",
-                        ModalBtn::Plain,
-                        dispatch,
-                        ModalClick::Cancel,
-                    )),
+                    .text_size(rpx(11.0))
+                    .text_color(c::FG_MUTE())
+                    .child("Nothing on disk is deleted. Worktrees stay exactly as they are."),
             )
     } else {
-        div()
-            .flex()
-            .flex_col()
-            .gap(rpx(12.0))
-            .child(body_text(format!(
-                "Archive '{name}'? It disappears from the tree; nothing is deleted."
-            )))
-            .child(
-                div()
-                    .flex()
-                    .gap(rpx(8.0))
-                    .child(click_action(
-                        "arch-yes",
-                        "Archive",
-                        ModalBtn::Primary,
-                        dispatch,
-                        ModalClick::ArchiveConfirm,
-                    ))
-                    .child(click_action(
-                        "arch-no",
-                        "Cancel",
-                        ModalBtn::Plain,
-                        dispatch,
-                        ModalClick::Cancel,
-                    )),
-            )
+        div().flex().flex_col().gap(rpx(12.0)).child(body_text(format!(
+            "'{name}' will be hidden from the sidebar. Nothing is deleted — its scripts, \
+             theme, and worktrees all stay exactly as they are."
+        )))
     };
 
-    modal_panel(
-        460.0,
+    let archive_btn: AnyElement = if blocked {
         div()
-            .child(modal_header("Archive project", c::AMBER()))
+            .px(rpx(12.0))
+            .py(rpx(6.0))
+            .rounded(rpx(4.0))
+            .border_1()
+            .border_color(c::BORDER_SOFT())
+            .child(
+                div()
+                    .text_size(rpx(12.0))
+                    .text_color(c::FG_MUTE())
+                    .child("Archive"),
+            )
+            .into_any_element()
+    } else {
+        click_action(
+            "arch-yes",
+            "Archive",
+            ModalBtn::Primary,
+            dispatch,
+            ModalClick::ArchiveConfirm,
+        )
+        .into_any_element()
+    };
+
+    let mut footer_row = div()
+        .flex()
+        .items_center()
+        .gap(rpx(14.0))
+        .child(super::shell::footer_hint("y", "archive"))
+        .child(super::shell::footer_hint("n", "cancel"))
+        .child(div().flex_1());
+    if blocked {
+        footer_row = footer_row.child(
+            div()
+                .text_size(rpx(11.0))
+                .text_color(c::FG_MUTE())
+                .child("Archive is unavailable while sessions are running."),
+        );
+    }
+    let footer = super::shell::modal_footer_row(
+        footer_row
+            .child(click_action(
+                "arch-no",
+                "Cancel",
+                ModalBtn::Plain,
+                dispatch,
+                ModalClick::Cancel,
+            ))
+            .child(archive_btn),
+    );
+
+    modal_panel(
+        420.0,
+        div()
+            .child(modal_header(format!("Archive '{name}'?"), c::AMBER()))
             .child(modal_body(body))
-            .child(if blocked {
-                modal_footer_hints(&[("esc / n", "cancel")])
-            } else {
-                modal_footer_hints(&[("y", "archive"), ("esc / n", "cancel")])
-            }),
+            .child(footer),
     )
     .into_any_element()
 }
@@ -844,7 +951,7 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
                     .flex_1()
                     .font(gpui::font(crate::fonts::UI_FAMILY))
                     .text_size(rpx(13.0))
-                    .text_color(c::CYAN())
+                    .text_color(c::MAGENTA())
                     .child("Archived projects"),
             )
             .child(
@@ -877,60 +984,70 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
 /// is Task 4's remaining half; the stage machine is complete.
 fn teardown_modal(
     layer: &ModalLayer,
+    wt_path: &str,
     stage: TeardownStage,
     message: &str,
     dispatch: &ModalDispatch,
 ) -> AnyElement {
-    let (accent, footer): (_, &[(&'static str, &'static str)]) = match stage {
-        TeardownStage::RunningScript => (c::CYAN(), &[("esc", "skip the teardown script")]),
-        // An in-flight `git worktree remove` cannot be safely interrupted, so
-        // there is no key and no button for this stage.
-        TeardownStage::Removing => (c::AMBER(), &[("", "removing… cannot be cancelled")]),
-        TeardownStage::Done { failed } => (
-            if failed { c::RED() } else { c::GREEN() },
-            &[("esc / ⏎", "close")],
-        ),
-    };
-    modal_panel(
-        520.0,
-        div()
-            .child(modal_header("Remove worktree", accent))
-            .child(modal_body(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(rpx(10.0))
-                    .child(body_text(message.to_string()))
-                    // The ONE terminal renderer, reused — there is no second
-                    // one (Task 3 Step 4).
-                    .children(layer.teardown_view.clone().map(|v| {
-                        div()
-                            .h(rpx(240.0))
-                            .w_full()
-                            .rounded(rpx(6.0))
-                            .overflow_hidden()
-                            .child(v)
-                    }))
-                    .when(matches!(stage, TeardownStage::Done { .. }), |d| {
-                        d.child(click_action(
-                            "td-close",
-                            "Close",
-                            ModalBtn::Primary,
-                            dispatch,
-                            ModalClick::Cancel,
-                        ))
-                    })
-                    .when(matches!(stage, TeardownStage::RunningScript), |d| {
-                        d.child(click_action(
-                            "td-skip",
-                            "Skip script",
-                            ModalBtn::Plain,
-                            dispatch,
-                            ModalClick::Cancel,
-                        ))
-                    }),
+    let done = matches!(stage, TeardownStage::Done { .. });
+    let wt_name = std::path::Path::new(wt_path)
+        .file_name()
+        .map_or_else(|| wt_path.to_string(), |f| f.to_string_lossy().into_owned());
+
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap(rpx(10.0))
+        // The ONE terminal renderer, reused — there is no second one (Task 3
+        // Step 4).
+        .children(layer.teardown_view.clone().map(|v| {
+            div()
+                .h(rpx(240.0))
+                .w_full()
+                .rounded(rpx(6.0))
+                .overflow_hidden()
+                .child(v)
+        }))
+        .child(
+            div()
+                .text_size(rpx(13.0))
+                .text_color(if done { c::FG_DIM() } else { c::FG_MUTE() })
+                .child(message.to_string()),
+        );
+    body = body
+        .when(done, |d| {
+            d.child(click_action(
+                "td-close",
+                "Close",
+                ModalBtn::Primary,
+                dispatch,
+                ModalClick::Cancel,
             ))
-            .child(modal_footer_hints(footer)),
-    )
-    .into_any_element()
+        })
+        .when(matches!(stage, TeardownStage::RunningScript), |d| {
+            d.child(click_action(
+                "td-skip",
+                "Skip & remove",
+                ModalBtn::Plain,
+                dispatch,
+                ModalClick::Cancel,
+            ))
+        });
+    // Mid-removal (`Removing`): an in-flight `git worktree remove` cannot be
+    // safely interrupted, so there is genuinely no button and no footer for
+    // this stage — not even a disabled hint.
+    let footer = match stage {
+        TeardownStage::Done { .. } => Some(modal_footer_hints(&[("esc", "close")])),
+        TeardownStage::RunningScript => Some(modal_footer_hints(&[("esc", "skip & remove")])),
+        TeardownStage::Removing => None,
+    };
+
+    let mut panel = div()
+        .child(modal_header(format!("Delete worktree / {wt_name}"), c::RED()))
+        .child(modal_body(body));
+    if let Some(footer) = footer {
+        panel = panel.child(footer);
+    }
+
+    modal_panel(560.0, panel).into_any_element()
 }

@@ -19,8 +19,8 @@ use crate::settings::SettingsState;
 use crate::theme as c;
 
 use super::shell::{
-    body_text, click_action, click_row, divider_h, modal_body, modal_footer_hints, modal_header,
-    modal_panel, note_text, ModalBtn,
+    click_action, click_row, divider_h, modal_body, modal_footer_hints, modal_header, modal_panel,
+    ModalBtn,
 };
 use super::{Modal, ModalClick, ModalDispatch, ModalEvent, ModalLayer};
 use crate::modal::ConfirmKind;
@@ -262,11 +262,15 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
             title,
             prompt,
             destructive,
-            ..
-        }) => confirm_modal(title, prompt, *destructive, dispatch),
+            kind,
+        }) => confirm_modal(title, prompt, *destructive, kind, dispatch),
         Some(Modal::Message(text)) => message_modal(text, dispatch),
         Some(Modal::TmuxChoice) => tmux_choice_modal(dispatch),
-        Some(Modal::AgentPicker { sel, .. }) => agent_picker_modal(*sel, dispatch, cx),
+        Some(Modal::AgentPicker {
+            project,
+            wt_path,
+            sel,
+        }) => agent_picker_modal(project, wt_path, *sel, dispatch, cx),
         _ => div().into_any_element(),
     }
 }
@@ -282,63 +286,69 @@ fn input_modal(
     note: Option<&str>,
     dispatch: &ModalDispatch,
 ) -> AnyElement {
-    let mut input_zone = div().flex().flex_col().gap(rpx(8.0));
+    let mut input_zone = div()
+        .w_full()
+        .flex()
+        .items_center()
+        .gap(rpx(8.0))
+        .px(rpx(16.0))
+        .py(rpx(14.0));
     if let Some(field) = layer.fields.first() {
-        input_zone = input_zone.child(
-            div()
-                .w_full()
-                .flex()
-                .items_center()
-                .gap(rpx(8.0))
-                .px(rpx(10.0))
-                .py(rpx(6.0))
-                .rounded(rpx(6.0))
-                .bg(c::BG())
-                .border_1()
-                .border_color(c::BORDER())
-                .child(crate::icons::icon("git-branch", 16.0, c::FG_MUTE()))
-                .child(gpui_component::input::Input::new(field.state()).flex_1()),
-        );
+        input_zone = input_zone
+            .child(crate::icons::icon("git-branch", 16.0, c::FG_MUTE()))
+            .child(
+                gpui_component::input::Input::new(field.state())
+                    .flex_1()
+                    .text_size(rpx(14.0)),
+            );
     }
 
-    let mut buttons_zone = div().flex().flex_col().gap(rpx(8.0));
+    let mut buttons_zone = div()
+        .flex()
+        .flex_col()
+        .gap(rpx(8.0))
+        .px(rpx(16.0))
+        .py(rpx(12.0));
     if let Some(note) = note {
-        buttons_zone = buttons_zone.child(note_text(note.to_string()));
+        buttons_zone = buttons_zone.child(
+            div()
+                .text_size(rpx(12.0))
+                .text_color(c::RED())
+                .child(note.to_string()),
+        );
     }
     buttons_zone = buttons_zone.child(
         div()
             .flex()
+            .items_center()
             .gap(rpx(8.0))
-            .child(click_action(
-                "in-ok",
-                "Create",
-                ModalBtn::Primary,
-                dispatch,
-                ModalClick::Submit,
-            ))
+            .child(div().flex_1())
             .child(click_action(
                 "in-cancel",
                 "Cancel",
                 ModalBtn::Plain,
                 dispatch,
                 ModalClick::Cancel,
+            ))
+            .child(click_action(
+                "in-ok",
+                "Submit",
+                ModalBtn::Primary,
+                dispatch,
+                ModalClick::Submit,
             )),
     );
 
     modal_panel(
-        420.0,
+        480.0,
         div()
-            .child(modal_header(title.to_string(), c::CYAN()))
+            .child(modal_header(title.to_string(), c::MAGENTA()))
             .child(divider_h())
-            .child(modal_body(input_zone))
+            .child(input_zone)
             .child(divider_h())
-            .child(modal_body(buttons_zone))
+            .child(buttons_zone)
             .child(divider_h())
-            .child(modal_footer_hints(&[
-                ("⏎", "confirm"),
-                ("esc", "cancel"),
-                ("ctrl+c", "cancel"),
-            ])),
+            .child(modal_footer_hints(&[("⏎", "confirm"), ("esc", "cancel")])),
     )
     .into_any_element()
 }
@@ -349,11 +359,22 @@ fn confirm_modal(
     title: &str,
     prompt: &str,
     destructive: bool,
+    kind: &ConfirmKind,
     dispatch: &ModalDispatch,
 ) -> AnyElement {
-    let accent = if destructive { c::RED() } else { c::CYAN() };
+    let accent = if destructive { c::RED() } else { c::MAGENTA() };
+    let (label, label_lower) = match kind {
+        ConfirmKind::Quit => ("Quit", "quit"),
+        _ if destructive => ("Remove", "remove"),
+        _ => ("Confirm", "confirm"),
+    };
+    let footer = if destructive {
+        modal_footer_hints(&[("y", label_lower), ("esc", "cancel")])
+    } else {
+        modal_footer_hints(&[("⏎", "confirm"), ("esc", "cancel")])
+    };
     modal_panel(
-        420.0,
+        480.0,
         div()
             .child(modal_header(title.to_string(), accent))
             .child(modal_body(
@@ -361,14 +382,28 @@ fn confirm_modal(
                     .flex()
                     .flex_col()
                     .gap(rpx(12.0))
-                    .child(body_text(prompt.to_string()))
+                    .child(
+                        div()
+                            .text_size(rpx(13.0))
+                            .text_color(c::FG_DIM())
+                            .child(prompt.to_string()),
+                    )
                     .child(
                         div()
                             .flex()
+                            .items_center()
                             .gap(rpx(8.0))
+                            .child(div().flex_1())
+                            .child(click_action(
+                                "cf-no",
+                                "Cancel",
+                                ModalBtn::Plain,
+                                dispatch,
+                                ModalClick::Confirm(false),
+                            ))
                             .child(click_action(
                                 "cf-yes",
-                                "Yes",
+                                label,
                                 if destructive {
                                     ModalBtn::Danger
                                 } else {
@@ -376,17 +411,10 @@ fn confirm_modal(
                                 },
                                 dispatch,
                                 ModalClick::Confirm(true),
-                            ))
-                            .child(click_action(
-                                "cf-no",
-                                "No",
-                                ModalBtn::Plain,
-                                dispatch,
-                                ModalClick::Confirm(false),
                             )),
                     ),
             ))
-            .child(modal_footer_hints(&[("⏎ / y", "yes"), ("esc / n", "no")])),
+            .child(footer),
     )
     .into_any_element()
 }
@@ -394,24 +422,35 @@ fn confirm_modal(
 /// `message_modal` (`view/modals/confirm.rs:446-472`): text and one dismiss.
 fn message_modal(text: &str, dispatch: &ModalDispatch) -> AnyElement {
     modal_panel(
-        420.0,
+        480.0,
         div()
-            .child(modal_header("Notice", c::AMBER()))
+            .child(modal_header("Notice", c::CYAN()))
             .child(modal_body(
                 div()
                     .flex()
                     .flex_col()
                     .gap(rpx(12.0))
-                    .child(body_text(text.to_string()))
-                    .child(click_action(
-                        "msg-ok",
-                        "OK",
-                        ModalBtn::Primary,
-                        dispatch,
-                        ModalClick::Cancel,
-                    )),
+                    .child(
+                        div()
+                            .text_size(rpx(13.0))
+                            .text_color(c::FG_DIM())
+                            .child(text.to_string()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .child(div().flex_1())
+                            .child(click_action(
+                                "msg-ok",
+                                "Close",
+                                ModalBtn::Primary,
+                                dispatch,
+                                ModalClick::Cancel,
+                            )),
+                    ),
             ))
-            .child(modal_footer_hints(&[("esc / ⏎ / q", "dismiss")])),
+            .child(modal_footer_hints(&[("esc", "close")])),
     )
     .into_any_element()
 }
@@ -420,43 +459,46 @@ fn message_modal(text: &str, dispatch: &ModalDispatch) -> AnyElement {
 /// persists nothing, so the footer does not offer it as a choice.
 fn tmux_choice_modal(dispatch: &ModalDispatch) -> AnyElement {
     modal_panel(
-        440.0,
+        480.0,
         div()
-            .child(modal_header("Use tmux for sessions?", c::CYAN()))
+            .child(modal_header("Session backend", c::CYAN()))
             .child(modal_body(
                 div()
                     .flex()
                     .flex_col()
                     .gap(rpx(10.0))
-                    .child(body_text(
-                        "tmux-backed sessions survive Grove restarts and can be \
-                         re-attached from a terminal. Native sessions end with \
-                         the window.",
-                    ))
+                    .child(
+                        div().text_size(rpx(13.0)).text_color(c::FG_DIM()).child(
+                            "Use tmux for new sessions? Existing sessions keep their \
+                             current backend.",
+                        ),
+                    )
                     .child(
                         div()
                             .flex()
+                            .items_center()
                             .gap(rpx(8.0))
-                            .child(click_action(
-                                "tmux-yes",
-                                "Use tmux",
-                                ModalBtn::Primary,
-                                dispatch,
-                                ModalClick::ChooseTmux(true),
-                            ))
+                            .child(div().flex_1())
                             .child(click_action(
                                 "tmux-no",
                                 "Native",
                                 ModalBtn::Plain,
                                 dispatch,
                                 ModalClick::ChooseTmux(false),
+                            ))
+                            .child(click_action(
+                                "tmux-yes",
+                                "Tmux",
+                                ModalBtn::Primary,
+                                dispatch,
+                                ModalClick::ChooseTmux(true),
                             )),
                     ),
             ))
             .child(modal_footer_hints(&[
-                ("⏎ / t / y", "tmux"),
+                ("⏎", "tmux"),
                 ("n", "native"),
-                ("esc", "ask again next launch"),
+                ("esc", "close"),
             ])),
     )
     .into_any_element()
@@ -464,10 +506,23 @@ fn tmux_choice_modal(dispatch: &ModalDispatch) -> AnyElement {
 
 /// `agent_picker_modal` (`view/modals/settings.rs:58-129`): the available
 /// agents with a selection cursor, Space toggling the default.
-fn agent_picker_modal(sel: usize, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
+fn agent_picker_modal(
+    project: &str,
+    wt_path: &str,
+    sel: usize,
+    dispatch: &ModalDispatch,
+    cx: &App,
+) -> AnyElement {
     let agents = available_agents();
     let default = cx.global::<SettingsState>().store.default_agent;
-    let mut list = div().flex().flex_col().gap(rpx(2.0));
+    let wt_name = crate::views::rows::path_basename(wt_path);
+    let title = if project.is_empty() {
+        format!("Start session / {wt_name}")
+    } else {
+        format!("Start session / {project} / {wt_name}")
+    };
+
+    let mut list = div().flex().flex_col().gap(rpx(2.0)).p(rpx(8.0)).w_full();
     for (i, agent) in agents.iter().enumerate() {
         let selected = i == sel;
         let is_default = default == Some(*agent);
@@ -481,11 +536,19 @@ fn agent_picker_modal(sel: usize, dispatch: &ModalDispatch, cx: &App) -> AnyElem
                 .items_center()
                 .gap(rpx(8.0))
                 .w_full()
-                .child(crate::icons::icon(
-                    agent.icon_name(),
-                    13.0,
-                    if selected { c::FG() } else { c::FG_DIM() },
-                ))
+                .h(rpx(32.0))
+                .child(
+                    div()
+                        .w(rpx(24.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(crate::icons::icon(
+                            agent.icon_name(),
+                            16.0,
+                            if selected { c::YELLOW() } else { c::FG_MUTE() },
+                        )),
+                )
                 .child(
                     div()
                         .flex_1()
@@ -496,22 +559,49 @@ fn agent_picker_modal(sel: usize, dispatch: &ModalDispatch, cx: &App) -> AnyElem
                 .when(is_default, |d| {
                     d.child(
                         div()
-                            .text_size(rpx(10.0))
-                            .text_color(c::GREEN())
-                            .child("default"),
+                            .text_size(rpx(11.0))
+                            .text_color(c::FG_MUTE())
+                            .child("Default"),
                     )
                 }),
         ));
     }
+
+    let actions = div()
+        .flex()
+        .items_center()
+        .gap(rpx(8.0))
+        .child(click_action(
+            "ap-default",
+            "Default",
+            ModalBtn::Plain,
+            dispatch,
+            ModalClick::ToggleDefaultAgent,
+        ))
+        .child(div().flex_1())
+        .child(click_action(
+            "ap-cancel",
+            "Cancel",
+            ModalBtn::Plain,
+            dispatch,
+            ModalClick::Cancel,
+        ))
+        .child(click_action(
+            "ap-launch",
+            "Launch",
+            ModalBtn::Primary,
+            dispatch,
+            ModalClick::Submit,
+        ));
+
     modal_panel(
-        380.0,
+        500.0,
         div()
-            .child(modal_header("New session", c::CYAN()))
-            .child(modal_body(list))
+            .child(modal_header(title, c::MAGENTA()))
+            .child(modal_body(div().flex().flex_col().gap(rpx(12.0)).child(list).child(actions)))
             .child(modal_footer_hints(&[
-                ("↑↓ / jk", "move"),
-                ("space", "default agent"),
-                ("⏎", "start"),
+                ("↑↓", "choose"),
+                ("⏎", "launch"),
                 ("esc", "cancel"),
             ])),
     )

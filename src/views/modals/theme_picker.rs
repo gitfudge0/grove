@@ -16,7 +16,7 @@ use crate::settings::SettingsState;
 use crate::theme as c;
 
 use super::shell::{
-    body_text, caption, click_action, click_checkbox, click_row, divider_h, modal_body,
+    body_text, caption, click_action, click_checkbox, divider_h, modal_body,
     modal_footer_hints, modal_header, modal_panel, note_text, seg_button, seg_group, ModalBtn,
     OnToggle, SegSide,
 };
@@ -573,72 +573,155 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
             )),
     );
 
-    let mut list = div().flex().flex_col().gap(rpx(2.0));
+    // 28px rows, 12px text (FG active / FG_DIM inactive), sitting in a
+    // `BG_STRIP`/`BORDER`/radius-4 list container — the picker's own row
+    // shape, distinct from the generic `click_row` (`theme_picker.rs:60-83`).
+    let mut list = div().flex().flex_col();
     if matches!(scope, ThemePickerScope::Project(_)) {
-        list = list.child(click_row(
+        list = list.child(theme_row(
             "tp-default",
             *project_use_default,
             dispatch,
             ModalClick::ThemePickerUseDefault,
-            body_text("Default (follow app)"),
+            "Default (follow app)".to_string(),
         ));
     }
     for (i, t) in themes.iter().enumerate().skip(offset).take(8) {
-        list = list.child(click_row(
-            gpui::SharedString::from(format!("tp-{i}")),
-            i == sel && !*project_use_default,
-            dispatch,
-            ModalClick::SelectRow(i),
+        let active = i == sel && !*project_use_default;
+        list = list.child(
             div()
                 .flex()
                 .items_center()
-                .gap(rpx(8.0))
+                .justify_between()
                 .w_full()
-                .child(
-                    div()
-                        .flex_1()
-                        .text_size(rpx(12.0))
-                        .text_color(c::FG_DIM())
-                        .child(t.name.to_string()),
-                )
+                .child(theme_row(
+                    gpui::SharedString::from(format!("tp-{i}")),
+                    active,
+                    dispatch,
+                    ModalClick::SelectRow(i),
+                    t.name.to_string(),
+                ))
                 .child(swatch(t)),
-        ));
+        );
     }
+    let list = div()
+        .w_full()
+        .rounded(rpx(4.0))
+        .border_1()
+        .border_color(c::BORDER())
+        .bg(c::BG_STRIP())
+        .child(list);
 
     let title = match scope {
-        ThemePickerScope::App => "App theme".to_string(),
+        ThemePickerScope::App => "Theme".to_string(),
         ThemePickerScope::Project(p) => format!("Project theme — {p}"),
     };
 
+    let mut body = div().flex().flex_col().gap(rpx(10.0));
+    if matches!(scope, ThemePickerScope::App) {
+        body = body.child(click_checkbox(
+            "tp-follow",
+            "Follow system appearance",
+            *follow_system,
+            c::MAGENTA(),
+            true,
+            dispatch,
+            ModalClick::ThemePickerToggleFollowSystem,
+        ));
+    }
+    body = body.child(tabs).child(list);
+
+    // Body-level `[flex-1, Cancel(Plain), Apply(Primary)]` action row — the
+    // picker stage has no footer-hints strip, unlike the manager and
+    // delete-confirm stages below.
+    body = body.child(
+        div()
+            .flex()
+            .items_center()
+            .gap(rpx(8.0))
+            .child(div().flex_1())
+            .child(click_action(
+                "tp-cancel",
+                "Cancel",
+                ModalBtn::Plain,
+                dispatch,
+                ModalClick::Cancel,
+            ))
+            .child(click_action(
+                "tp-apply",
+                "Apply",
+                ModalBtn::Primary,
+                dispatch,
+                ModalClick::ThemePickerApply,
+            )),
+    );
+
     modal_panel(
-        480.0,
+        460.0,
         div()
             .child(modal_header(title, c::MAGENTA()))
-            .child(modal_body(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(rpx(10.0))
-                    .child(tabs)
-                    .child(list)
-                    .child(click_checkbox(
-                        "tp-follow",
-                        "Follow system appearance",
-                        *follow_system,
-                        c::CYAN(),
-                        matches!(scope, ThemePickerScope::App),
-                        dispatch,
-                        ModalClick::ThemePickerToggleFollowSystem,
-                    )),
-            ))
-            .child(modal_footer_hints(&[
-                ("↑↓ / jk", "browse"),
-                ("tab / hl", "dark/light"),
-                ("⏎", "apply"),
-                ("esc", "restore"),
-            ])),
+            .child(modal_body(body)),
     )
     .into_any_element()
+}
+
+/// A 28px picker-list row: 12px text, `FG` when active / `FG_DIM` otherwise,
+/// `BG_HL` fill on the active row (`theme_picker.rs:65-77`).
+fn theme_row(
+    id: impl Into<gpui::ElementId>,
+    active: bool,
+    dispatch: &ModalDispatch,
+    click: ModalClick,
+    label: String,
+) -> gpui::Stateful<gpui::Div> {
+    let dispatch = std::rc::Rc::clone(dispatch);
+    div()
+        .id(id)
+        .flex_1()
+        .h(rpx(28.0))
+        .px(rpx(8.0))
+        .flex()
+        .items_center()
+        .when(active, |d| d.bg(c::BG_HL()))
+        .hover(|s| s.bg(c::BG_HOVER()))
+        .cursor_pointer()
+        .child(
+            div()
+                .text_size(rpx(12.0))
+                .text_color(if active { c::FG() } else { c::FG_DIM() })
+                .child(label),
+        )
+        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+            dispatch(click.clone(), window, cx);
+        })
+}
+
+/// A `ThemeManager` list row: `[6, 10]` padding, radius 6, `BG_HL` fill when
+/// active — distinct from the shared `click_row` (px8/py5, radius 4) used
+/// elsewhere (`theme_manager.rs`'s row shape).
+fn manager_row(
+    id: impl Into<gpui::ElementId>,
+    active: bool,
+    dispatch: &ModalDispatch,
+    click: ModalClick,
+    content: impl IntoElement,
+) -> gpui::Stateful<gpui::Div> {
+    let dispatch = std::rc::Rc::clone(dispatch);
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(rpx(8.0))
+        .px(rpx(10.0))
+        .py(rpx(6.0))
+        .rounded(rpx(6.0))
+        .when(active, |d| d.bg(c::BG_HL()))
+        .hover(|s| s.bg(c::BG_HOVER()))
+        .cursor_pointer()
+        .child(content)
+        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+            dispatch(click.clone(), window, cx);
+        })
 }
 
 fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
@@ -739,13 +822,17 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
     let list_content: AnyElement = if themes.is_empty() {
         div()
             .w_full()
+            .px(rpx(16.0))
             .py(rpx(30.0))
             .flex()
             .items_center()
             .justify_center()
-            .child(body_text(
-                "No custom themes yet — create one or paste a palette.",
-            ))
+            .child(
+                div()
+                    .text_size(rpx(12.0))
+                    .text_color(c::FG_MUTE())
+                    .child("No custom themes yet — create one or paste a palette."),
+            )
             .into_any_element()
     } else {
         let mut list = div().flex().flex_col().gap(rpx(4.0));
@@ -873,7 +960,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                         dispatch,
                         ModalClick::ThemeDeleteRequest(i),
                     ));
-                click_row(
+                manager_row(
                     gpui::SharedString::from(format!("tm-{i}")),
                     active,
                     dispatch,
@@ -884,7 +971,12 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                         .gap(rpx(10.0))
                         .w_full()
                         .child(name_zone)
-                        .child(swatch_strip(t))
+                        .child(
+                            div()
+                                .w(rpx(90.0))
+                                .overflow_hidden()
+                                .child(swatch_strip(t)),
+                        )
                         .child(icons),
                 )
                 .into_any_element()

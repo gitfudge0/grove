@@ -80,6 +80,9 @@ pub enum ModalClick {
     ThemePickerTab(bool),
     ThemePickerToggleFollowSystem,
     ThemePickerUseDefault,
+    /// The picker's own body-level "Apply" — the same commit path
+    /// `ModalAction::ThemePickerSubmit` reaches from the keyboard.
+    ThemePickerApply,
     /// ScriptsEditor / ThemeManager / Settings buttons.
     Save,
     OpenProjectTheme,
@@ -572,6 +575,9 @@ impl ModalLayer {
                 }
             }
             ModalClick::Submit => self.submit(window, cx),
+            // Same commit path `ModalAction::ThemePickerSubmit` reaches from
+            // the keyboard's Enter/Submit verdict.
+            ModalClick::ThemePickerApply => self.theme_picker_submit(cx),
             ModalClick::ToggleDefaultAgent => self.toggle_default_agent(cx),
             ModalClick::CheckUpdates => {
                 self.upgrade.update(cx, |u, cx| u.check(true, cx));
@@ -647,15 +653,17 @@ impl ModalLayer {
                 ));
             }
             Modal::AddProject(st) => {
-                let (placeholder, initial) = match st.step {
-                    crate::modal::AddProjectStep::PickSource => ("~/path/to/project", &st.path),
+                let (placeholder, initial): (String, &String) = match st.step {
+                    crate::modal::AddProjectStep::PickSource => {
+                        ("~/code/my-repo".to_string(), &st.path)
+                    }
                     crate::modal::AddProjectStep::Details => {
-                        ("project name (defaults to the folder)", &st.name)
+                        (crate::add_project::path_basename(&st.path), &st.name)
                     }
                 };
                 self.fields.push(ModalInput::single_line(
                     policy,
-                    placeholder,
+                    &placeholder,
                     initial,
                     window,
                     cx,
@@ -799,7 +807,7 @@ impl Render for ModalLayer {
             | ModalKind::ArchivedProjects
             | ModalKind::Teardown => project::render(self, &dispatch, cx),
             ModalKind::AddProject | ModalKind::Onboarding => {
-                add_project::render(self, &dispatch, cx)
+                add_project::render(self, &dispatch, window, cx)
             }
             ModalKind::SessionLauncher => launcher::render(self, &dispatch, cx),
             ModalKind::ThemePicker | ModalKind::ThemeManager => {

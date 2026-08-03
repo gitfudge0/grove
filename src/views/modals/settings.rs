@@ -519,7 +519,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                 div()
                     .flex_1()
                     .text_size(rpx(13.0))
-                    .text_color(c::CYAN())
+                    .text_color(c::MAGENTA())
                     .child("Settings"),
             )
             .child(
@@ -906,22 +906,33 @@ fn tool_row(st: &ToolStatus, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
                 .text_color(status_color)
                 .child(status),
         );
-    if is_default {
-        row = row.child(
+    let slot = div().w(rpx(84.0)).flex().items_center();
+    let slot = if is_default {
+        slot.child(
             div()
-                .text_size(rpx(10.0))
-                .text_color(c::CYAN())
-                .child("Default"),
-        );
+                .px(rpx(6.0))
+                .py(rpx(2.0))
+                .rounded(rpx(4.0))
+                .bg(c::BG_HL())
+                .child(
+                    div()
+                        .text_size(rpx(10.0))
+                        .text_color(c::FG_DIM())
+                        .child("Default"),
+                ),
+        )
     } else if st.installed {
-        row = row.child(click_action(
+        slot.child(click_action(
             "set-default-agent",
             "Set default",
             ModalBtn::Plain,
             dispatch,
             ModalClick::SetDefaultAgent(st.agent),
-        ));
-    }
+        ))
+    } else {
+        slot
+    };
+    row = row.child(slot);
     row.into_any_element()
 }
 
@@ -1079,9 +1090,9 @@ fn shortcut_overlay(screen: keymap::Screen) -> AnyElement {
         .child(static_row("esc", "Close modals"));
 
     modal_panel(
-        620.0,
+        640.0,
         div()
-            .child(modal_header("Keyboard shortcuts", c::CYAN()))
+            .child(modal_header("Keyboard shortcuts", c::MAGENTA()))
             .child(modal_body(body))
             .child(modal_footer_hints(&[(
                 "esc",
@@ -1099,7 +1110,7 @@ fn static_row(keys: &str, label: &'static str) -> impl IntoElement {
         .py(rpx(3.0))
         .child(
             div()
-                .w(rpx(150.0))
+                .w(rpx(170.0))
                 .child(super::shell::keycap_text(keys.to_string(), c::FG_DIM())),
         )
         .child(
