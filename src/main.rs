@@ -15,6 +15,7 @@ mod icons;
 mod keyboard_matrix;
 mod keymap;
 mod launcher;
+mod logging;
 mod modal;
 mod platform;
 mod reattach;
@@ -41,6 +42,7 @@ const WINDOW_W: f32 = 1280.0;
 const WINDOW_H: f32 = 800.0;
 
 fn main() {
+    logging::init();
     // Before `app::boot`, so a panic inside boot is still reported. The panic
     // *message* stays on this machine; only the scrubbed location is sent
     // (`src/main.rs:11-30`).

@@ -154,6 +154,7 @@ rust-embed = { workspace = true, features = ["include-exclude"] }
 futures.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # The add-project wizard's directory autocomplete: `fs-err` for error messages
 # that name the path, `dirs` for `~` expansion (both already in the graph).
 fs-err.workspace = true
