@@ -75,7 +75,15 @@ alacritty_terminal = { git = "https://github.com/zed-industries/alacritty", rev 
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba" }
 # gpui_platform's own default features are EMPTY — without wayland/x11 the Linux
 # platform has no backend. Bootstrap lives here, not in gpui.
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba", features = ["font-kit", "wayland", "x11"] }
+#
+# runtime_shaders (macOS only; a no-op elsewhere): without it, gpui_macos's
+# build.rs compiles shaders.metal offline via `xcrun metal`, a tool that ships
+# only with full Xcode — so the build fails on any machine with just the
+# Command Line Tools installed. With it, the shader source is stitched into the
+# binary and compiled by Metal's in-OS runtime compiler at window creation.
+# That keeps `cargo build` working identically on every machine and in CI, at
+# the cost of one shader compile per launch.
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba", features = ["font-kit", "wayland", "x11", "runtime_shaders"] }
 # Vendored at GPUI_COMPONENT_REV 88f102d13654fe25aa2fede076274b6b751a3704 and
 # consumed by path so the pin is durable and offline. Provenance, the crate
 # subset and every manifest edit: vendor/gpui-component/README.md.
