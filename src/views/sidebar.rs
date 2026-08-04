@@ -618,6 +618,12 @@ impl Render for Sidebar {
                 .collect()
         };
         let home_count = home_running.len();
+        // Every frame until the user touches the tree manually, so
+        // late-arriving sessions (restored asynchronously) still land the
+        // default expansion/highlight rather than freezing on the first,
+        // possibly-empty snapshot. Deliberately no `cx.notify()` — this runs
+        // inside a render pass that is already under way.
+        self.state.update(cx, |s, _| s.sync_default_tree(&snap));
         let (rows, tick, pulse, width, terminals_collapsed, open_menu, hovered_wt, next_glyph) = {
             let ws = self.state.read(cx);
             let activity = self.activity.read(cx);

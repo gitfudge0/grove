@@ -96,9 +96,11 @@ pub enum TreeExpand {
     /// Every project row collapsed — only the project list is visible.
     Collapsed,
     /// Projects/worktrees with no sessions collapsed; the rest expanded.
+    /// Default — a fresh sidebar only expands what has something to show
+    /// (see [`WorkspaceState::sync_default_tree`]).
+    #[default]
     SessionsOnly,
     /// Everything expanded.
-    #[default]
     All,
 }
 
@@ -288,6 +290,11 @@ pub struct WorkspaceState {
     collapsed: HashSet<usize>,
     collapsed_wt: HashSet<(usize, usize)>,
     tree_expand: TreeExpand,
+    /// Set once the user manually changes tree expansion — the cycle button,
+    /// or a project/worktree row's own collapse toggle. Gates
+    /// [`Self::sync_default_tree`], which otherwise re-derives the default
+    /// every frame until then.
+    tree_touched: bool,
     terminals_collapsed: bool,
     // transient row affordances
     hovered_wt: Option<(usize, usize)>,
@@ -341,6 +348,7 @@ impl Default for WorkspaceState {
             collapsed: HashSet::new(),
             collapsed_wt: HashSet::new(),
             tree_expand: TreeExpand::default(),
+            tree_touched: false,
             terminals_collapsed: false,
             hovered_wt: None,
             open_agent_menu: None,
@@ -584,6 +592,7 @@ impl WorkspaceState {
         self.pending_kill_terminal = None;
         self.proj_idx = proj;
         self.wt_idx = wt;
+        self.tree_touched = true;
         if !self.collapsed_wt.remove(&(proj, wt)) {
             self.collapsed_wt.insert((proj, wt));
         }
@@ -608,6 +617,7 @@ impl WorkspaceState {
         self.open_agent_menu = None;
         self.pending_kill = None;
         self.pending_kill_terminal = None;
+        self.tree_touched = true;
         if !self.collapsed.remove(&proj) {
             self.collapsed.insert(proj);
         }
@@ -718,8 +728,34 @@ impl WorkspaceState {
         self.open_agent_menu = None;
         self.pending_kill = None;
         self.pending_kill_terminal = None;
+        self.tree_touched = true;
         self.tree_expand = self.tree_expand.next();
         self.apply_tree_expand(snap);
+    }
+
+    /// Re-derive the default tree presentation every frame until the user
+    /// touches it manually: expand only what has sessions, and — the first
+    /// time there is a session anywhere — point the highlight at the first
+    /// (project, worktree) that has one. Sessions restore asynchronously
+    /// (see the module's `TreeSnapshot` doc), so the first snapshot may
+    /// legitimately be empty; a one-shot apply at construction would miss
+    /// the sessions that show up a frame later. Never touches
+    /// `active_session`.
+    pub fn sync_default_tree(&mut self, snap: &TreeSnapshot) {
+        if self.tree_touched {
+            return;
+        }
+        self.apply_tree_expand(snap);
+        let first_with_sessions = snap.projects.iter().find_map(|p| {
+            p.worktrees
+                .iter()
+                .position(|w| !w.sessions.is_empty())
+                .map(|wi| (p.idx, wi))
+        });
+        if let Some((proj, wt)) = first_with_sessions {
+            self.proj_idx = proj;
+            self.wt_idx = wt;
+        }
     }
 
     /// `sessions.rs:270-280` without the index dance: a stable [`SessionId`]
@@ -1548,19 +1584,46 @@ mod tests {
             pending_kill_terminal: Some(0),
             ..WorkspaceState::default()
         };
-        assert_eq!(w.tree_expand(), TreeExpand::All);
+        assert_eq!(w.tree_expand(), TreeExpand::SessionsOnly);
 
         w.toggle_collapse_all(&snap);
-        assert_eq!(w.tree_expand(), TreeExpand::Collapsed);
-        assert!(w.project_collapsed(0));
+        assert_eq!(w.tree_expand(), TreeExpand::All);
+        assert!(!w.project_collapsed(0));
         assert_eq!(w.open_agent_menu(), None);
         assert_eq!(w.pending_kill(), None);
         assert_eq!(w.pending_kill_terminal(), None);
 
         w.toggle_collapse_all(&snap);
-        assert_eq!(w.tree_expand(), TreeExpand::SessionsOnly);
+        assert_eq!(w.tree_expand(), TreeExpand::Collapsed);
+        assert!(w.project_collapsed(0));
         w.toggle_collapse_all(&snap);
-        assert_eq!(w.tree_expand(), TreeExpand::All);
+        assert_eq!(w.tree_expand(), TreeExpand::SessionsOnly);
+    }
+
+    /// The startup fix: a fresh sidebar only expands what has sessions, and
+    /// highlights the first (project, worktree) that has one — once the user
+    /// touches the tree manually, later snapshots stop moving it.
+    #[test]
+    fn sync_default_tree_expands_only_sessionful_projects_and_picks_the_first() {
+        let mut snap = fixture();
+        // Project 0 (alpha) has no sessions; project 2 (gamma) does.
+        snap.projects[0].worktrees[0].sessions.clear();
+        snap.projects[0].sessions.clear();
+        let mut w = WorkspaceState::default();
+
+        w.sync_default_tree(&snap);
+        assert!(w.project_collapsed(0));
+        assert!(!w.project_collapsed(2));
+        assert_eq!((w.proj_idx(), w.wt_idx()), (2, 0));
+
+        // Once touched, a later call is a no-op — even one that would
+        // otherwise re-expand/re-point everything.
+        w.tree_touched = true;
+        w.proj_idx = 0;
+        w.wt_idx = 0;
+        w.sync_default_tree(&snap);
+        assert!(w.project_collapsed(0));
+        assert_eq!((w.proj_idx(), w.wt_idx()), (0, 0));
     }
 
     /// `sessions.rs:270-280` — the index dance this design removes.
