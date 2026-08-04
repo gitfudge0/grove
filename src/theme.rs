@@ -63,8 +63,20 @@ fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     }
 }
 
-fn alpha(c: Rgba, a: f32) -> Rgba {
+fn alpha_rgba(c: Rgba, a: f32) -> Rgba {
     Rgba { a, ..c }
+}
+
+/// Overrides a token's alpha and nothing else — hue, saturation and lightness
+/// are untouched, so the result still tracks a theme swap.
+///
+/// This is the **sanctioned** way to tint a tier-2 token at a call site. Prefer
+/// it to writing `Hsla { a: .., ..c::TOKEN() }` inline: the struct-update form
+/// is the same operation spelled ad-hoc, and it hides tint sites from a grep.
+/// If two or more call sites want the *same* alpha on the same token, promote
+/// it to a named token here instead (§14.3).
+pub fn alpha(c: Hsla, a: f32) -> Hsla {
+    Hsla { a, ..c }
 }
 
 fn base_bg() -> Rgba {
@@ -83,11 +95,7 @@ pub fn BG() -> Hsla {
 /// Rail / sidebar — slightly darker than BG on dark themes, slightly
 /// off-white on light themes.
 pub fn BG_RAIL() -> Hsla {
-    theme::with_current(|t| {
-        let d = if is_dark_of(t) { 0.18 } else { 0.04 };
-        mix(ic(t.bg), BLACK, d)
-    })
-    .into()
+    theme::with_current(bg_rail_of).into()
 }
 
 /// Outer strip / chrome edge — darker than rail.
@@ -120,7 +128,7 @@ pub fn BORDER_SOFT() -> Hsla {
 pub fn SCRIM() -> Hsla {
     theme::with_current(|t| {
         let toward = if is_dark_of(t) { BLACK } else { ic(t.fg) };
-        alpha(mix(ic(t.bg), toward, 0.9), 0.16)
+        alpha_rgba(mix(ic(t.bg), toward, 0.9), 0.16)
     })
     .into()
 }
@@ -159,6 +167,16 @@ pub fn AMBER() -> Hsla {
 fn amber_rgba() -> Rgba {
     theme::with_current(|t| mix(ic(t.yellow), ic(t.red), 0.25))
 }
+/// AMBER at α 0.12 — the fill behind a row whose session is waiting on you.
+/// Faint enough that the row's text keeps its contrast, strong enough to pick
+/// the row out of a list at a glance; the *glyph* is what names the state
+/// (§2.3), this only locates it. Shared by the sidebar's waiting row
+/// (`src/views/rows.rs`) and the launcher's waiting row
+/// (`src/views/modals/launcher.rs`), which is why it is a token and not a
+/// module constant (§14.3).
+pub fn AMBER_ROW_TINT() -> Hsla {
+    alpha(AMBER(), 0.12)
+}
 pub fn YELLOW() -> Hsla {
     theme::with_current(|t| ic(t.yellow)).into()
 }
@@ -174,25 +192,24 @@ pub fn RED_WASH() -> Hsla {
 }
 
 // ── selection (focused Miller column) ──────────────────────────────────────
-// The launcher's active column marks its selected row with a cyan-tinted
-// gradient fill, a cyan ring, and a left accent bar. Derived from the theme's
-// cyan so the treatment tracks theme swaps.
+// A selected row is marked with a flat cyan tint plus a cyan ring, in two
+// weights. Derived from the theme's cyan so the treatment tracks theme swaps.
 
 fn cyan_rgba() -> Rgba {
     theme::with_current(|t| ic(t.cyan))
 }
 
-/// Stronger end of the selected-row gradient (left edge).
+/// Fill for a row in edit/rename mode — one weight up from plain selection.
 pub fn SEL_TINT_STRONG() -> Hsla {
-    alpha(cyan_rgba(), 0.22).into()
+    alpha_rgba(cyan_rgba(), 0.22).into()
 }
-/// Softer end of the selected-row gradient (right edge).
+/// Fill for an ordinary selected row (palette rows, modal lists).
 pub fn SEL_TINT_SOFT() -> Hsla {
-    alpha(cyan_rgba(), 0.10).into()
+    alpha_rgba(cyan_rgba(), 0.10).into()
 }
-/// Ring outlining the selected row in the focused column.
+/// Ring outlining a selected row at either weight.
 pub fn SEL_RING() -> Hsla {
-    alpha(cyan_rgba(), 0.5).into()
+    alpha_rgba(cyan_rgba(), 0.5).into()
 }
 
 // ── theme-parameterized variants ────────────────────────────────────────────
@@ -236,6 +253,12 @@ pub fn red_of(t: &theme::Theme) -> Rgba {
     ic(t.red)
 }
 
+/// Themed variant of `BG_RAIL`. Same ratios as `BG_RAIL`, which delegates here.
+pub fn bg_rail_of(t: &theme::Theme) -> Rgba {
+    let d = if is_dark_of(t) { 0.18 } else { 0.04 };
+    mix(ic(t.bg), BLACK, d)
+}
+
 /// Themed variant of `BG_STRIP` — used for ANSI color 0 inside PTY content
 /// rendered under a per-project override theme.
 pub fn bg_strip_of(t: &theme::Theme) -> Rgba {
@@ -248,6 +271,12 @@ pub fn bg_strip_of(t: &theme::Theme) -> Rgba {
 }
 
 /// Themed variant of `BG_HL`.
+///
+/// **Reserved, no consumer yet.** Part of the PTY-content contract (§4.4): it
+/// exists so a per-project theme can tint selected/highlighted PTY regions
+/// without reaching for the global accessor. Nothing paints with it today —
+/// it is a contract ahead of its consumer (§15.4), not dead code to delete.
+/// `bg_hover_of` below does read it.
 pub fn bg_hl_of(t: &theme::Theme) -> Rgba {
     ic(t.bg_highlight)
 }
@@ -260,8 +289,12 @@ pub fn border_of(t: &theme::Theme) -> Rgba {
     mix(bg_of(t), fg_of(t), 0.16)
 }
 /// Themed variant of `SEL_RING`.
+///
+/// **Reserved, no consumer yet.** Same status as `bg_hl_of`: it is here so a
+/// future PTY selection outline can be drawn in the project's pinned theme
+/// rather than the global one (§4.4). Chrome selection uses `SEL_RING()`.
 pub fn sel_ring_of(t: &theme::Theme) -> Rgba {
-    alpha(cyan_of(t), 0.5)
+    alpha_rgba(cyan_of(t), 0.5)
 }
 
 // ── the Global ───────────────────────────────────────────────────────────
@@ -417,9 +450,12 @@ pub fn save_custom_theme_json(buffer: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn lum(c: Hsla) -> f32 {
-        let c: Rgba = c.into();
+    fn lum_rgba(c: Rgba) -> f32 {
         0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+    }
+
+    fn lum(c: Hsla) -> f32 {
+        lum_rgba(c.into())
     }
 
     #[test]
@@ -477,24 +513,72 @@ mod tests {
         assert_eq!((bg.b * 255.0).round() as u8, 0x26);
     }
 
+    /// AMBER is `mix(yellow, red, 0.25)` — inside the yellow→red interval on
+    /// every channel, and nearer yellow on every channel. Checked against every
+    /// bundled theme, since the ratio must hold whatever yellow and red are.
     #[test]
     fn amber_sits_between_yellow_and_red() {
-        let (y, r, a) = theme::with_current(|t| (ic(t.yellow), ic(t.red), amber_rgba()));
-        for (yc, rc, ac) in [(y.r, r.r, a.r), (y.g, r.g, a.g), (y.b, r.b, a.b)] {
-            let (lo, hi) = if yc <= rc { (yc, rc) } else { (rc, yc) };
-            assert!(
-                ac >= lo - 1e-6 && ac <= hi + 1e-6,
-                "{ac} not in [{lo},{hi}]"
-            );
+        // Guard against a vacuous pass if BUILTINS ever ships empty.
+        assert!(theme::BUILTINS.len() > 30, "expected the full bundled set");
+        for t in theme::BUILTINS {
+            let (y, r) = (yellow_of(t), red_of(t));
+            let a = mix(y, r, 0.25);
+            for (ch, yc, rc, ac) in [
+                ('r', y.r, r.r, a.r),
+                ('g', y.g, r.g, a.g),
+                ('b', y.b, r.b, a.b),
+            ] {
+                let (lo, hi) = if yc <= rc { (yc, rc) } else { (rc, yc) };
+                assert!(
+                    ac >= lo - 1e-6 && ac <= hi + 1e-6,
+                    "theme '{}': amber {ch} {ac} not in [{lo},{hi}]",
+                    t.name
+                );
+                // 25% toward red, so it stays nearer yellow than red.
+                assert!(
+                    (ac - yc).abs() <= (ac - rc).abs() + 1e-6,
+                    "theme '{}': amber {ch} {ac} is nearer red {rc} than yellow {yc}",
+                    t.name
+                );
+                // The derivation itself, component-wise.
+                let expected = yc + (rc - yc) * 0.25;
+                assert!(
+                    (ac - expected).abs() < 1e-6,
+                    "theme '{}': amber {ch} {ac} != mix(yellow,red,0.25) = {expected}",
+                    t.name
+                );
+            }
         }
-        // 25% toward red, so it stays nearer yellow than red.
-        assert!((a.r - y.r).abs() <= (a.r - r.r).abs() + 1e-6);
+        // The live accessor agrees with the parameterized derivation.
+        let (y, r, a) = theme::with_current(|t| (ic(t.yellow), ic(t.red), amber_rgba()));
+        let want = mix(y, r, 0.25);
+        assert!((a.r - want.r).abs() < 1e-6 && (a.g - want.g).abs() < 1e-6);
     }
 
     /// The chrome stack depends on this ordering: strip is the darkest
-    /// surface, then the rail, then the body.
+    /// surface, then the rail, then the body. DESIGN.md §4.2 claims it holds
+    /// on light themes too, so every bundled theme is checked.
     #[test]
     fn chrome_surfaces_get_progressively_darker() {
+        assert!(theme::BUILTINS.len() > 30, "expected the full bundled set");
+        for t in theme::BUILTINS {
+            let (strip, rail, bg) = (
+                lum_rgba(bg_strip_of(t)),
+                lum_rgba(bg_rail_of(t)),
+                lum_rgba(bg_of(t)),
+            );
+            assert!(
+                strip < rail,
+                "theme '{}': BG_STRIP luminance {strip} is not darker than BG_RAIL {rail}",
+                t.name
+            );
+            assert!(
+                rail < bg,
+                "theme '{}': BG_RAIL luminance {rail} is not darker than BG {bg}",
+                t.name
+            );
+        }
+        // The live accessors agree with the parameterized variants.
         assert!(lum(BG_STRIP()) < lum(BG_RAIL()));
         assert!(lum(BG_RAIL()) < lum(BG()));
     }

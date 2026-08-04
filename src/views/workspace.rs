@@ -1146,15 +1146,18 @@ impl Workspace {
             ws.active_session(),
         );
         let registry = self.registry.read(cx);
-        let (meta, entity) = if terminal_focused {
+        let (meta, entity, header_label) = if terminal_focused {
             let i = active_terminal?;
-            (
-                registry.home_terminals().get(i)?.clone(),
-                registry.home_terminal(i)?.clone(),
-            )
+            let meta = registry.home_terminals().get(i)?.clone();
+            let entity = registry.home_terminal(i)?.clone();
+            let label = meta.label.clone();
+            (meta, entity, label)
         } else {
             let id = active_session?;
-            (registry.meta(id)?.clone(), registry.session(id)?.clone())
+            let meta = registry.meta(id)?.clone();
+            let entity = registry.session(id)?.clone();
+            let label = meta.agent.label().to_string();
+            (meta, entity, label)
         };
         let title = entity.read(cx).title();
         let context = title.as_deref().and_then(|raw| {
@@ -1179,7 +1182,7 @@ impl Workspace {
             .map_or_else(String::new, |w| w.branch.clone());
         let state = self.activity.read(cx).state_of(meta.id);
         Some(SessionHeaderData {
-            label: meta.label.clone(),
+            label: header_label,
             branch,
             context,
             icon_name: meta.agent.icon_name(),
@@ -1791,9 +1794,9 @@ impl Render for Workspace {
             self.tree.read(cx).visible_worktree_paths(store, ws)
         };
         let window_focused = window.is_window_active();
-        self.tree
-            .clone()
-            .update(cx, |t, cx| t.maybe_poll_git_state(paths, window_focused, cx));
+        self.tree.clone().update(cx, |t, cx| {
+            t.maybe_poll_git_state(paths, window_focused, cx)
+        });
 
         // Window activation: `window_focused` gates the "focused session is
         // never waiting" rule, and regaining focus acknowledges the visible

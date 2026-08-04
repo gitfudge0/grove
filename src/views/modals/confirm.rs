@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 
 use crate::views::rpx;
+use crate::views::tokens::*;
 use gpui::{div, prelude::*, AnyElement, App, Context, Window};
 use grove_core::agent::Agent;
 use grove_core::{git, storage};
@@ -18,12 +19,12 @@ use grove_core::{git, storage};
 use crate::settings::SettingsState;
 use crate::theme as c;
 
-use super::shell::{
-    click_action, click_row, divider_h, modal_body, modal_footer_hints, modal_header, modal_panel,
-    ModalBtn,
-};
 use super::{Modal, ModalClick, ModalDispatch, ModalEvent, ModalLayer};
 use crate::modal::ConfirmKind;
+use crate::views::components::{
+    click_action, divider_h, icon_slot, modal_body, modal_footer_hints, modal_header, modal_panel,
+    palette_row, ui, ModalBtn,
+};
 
 /// The agent order the picker lists (`src/app/mod.rs:168`); availability is
 /// resolved at render time, `Terminal` is always present.
@@ -290,38 +291,37 @@ fn input_modal(
         .w_full()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
-        .px(rpx(16.0))
-        .py(rpx(14.0));
+        .gap(rpx(SPACE_LG))
+        .px(rpx(SPACE_3XL))
+        .py(rpx(SPACE_3XL))
+        // The field holds a branch name — a token, so mono (§5.2). Pinned on
+        // the container because the inner `Input` renders its own text and
+        // inherits the container's text style; kept as the chain's last call
+        // so it stays inside R3's window from the `.text_size(` below.
+        .font(gpui::font(crate::fonts::MONO_FAMILY));
     if let Some(field) = layer.fields.first() {
-        input_zone = input_zone
-            .child(crate::icons::icon("git-branch", 16.0, c::FG_MUTE()))
-            .child(
-                gpui_component::input::Input::new(field.state())
-                    .flex_1()
-                    .text_size(rpx(14.0)),
-            );
+        input_zone = input_zone.child(crate::icons::icon("git-branch", ICON_LG, c::FG_MUTE()));
+        input_zone = input_zone.child(
+            gpui_component::input::Input::new(field.state())
+                .flex_1()
+                .text_size(rpx(TEXT_TITLE)),
+        );
     }
 
     let mut buttons_zone = div()
         .flex()
         .flex_col()
-        .gap(rpx(8.0))
-        .px(rpx(16.0))
-        .py(rpx(12.0));
+        .gap(rpx(SPACE_LG))
+        .px(rpx(SPACE_3XL))
+        .py(rpx(SPACE_2XL));
     if let Some(note) = note {
-        buttons_zone = buttons_zone.child(
-            div()
-                .text_size(rpx(12.0))
-                .text_color(c::RED())
-                .child(note.to_string()),
-        );
+        buttons_zone = buttons_zone.child(ui(note.to_string(), TEXT_BODY, c::RED()));
     }
     buttons_zone = buttons_zone.child(
         div()
             .flex()
             .items_center()
-            .gap(rpx(8.0))
+            .gap(rpx(SPACE_LG))
             .child(div().flex_1())
             .child(click_action(
                 "in-cancel",
@@ -340,7 +340,7 @@ fn input_modal(
     );
 
     modal_panel(
-        480.0,
+        MODAL_W_MD,
         div()
             .child(modal_header(title.to_string(), c::MAGENTA()))
             .child(divider_h())
@@ -374,25 +374,20 @@ fn confirm_modal(
         modal_footer_hints(&[("⏎", "confirm"), ("esc", "cancel")])
     };
     modal_panel(
-        480.0,
+        MODAL_W_MD,
         div()
             .child(modal_header(title.to_string(), accent))
             .child(modal_body(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(rpx(12.0))
-                    .child(
-                        div()
-                            .text_size(rpx(13.0))
-                            .text_color(c::FG_DIM())
-                            .child(prompt.to_string()),
-                    )
+                    .gap(rpx(SPACE_2XL))
+                    .child(ui(prompt.to_string(), TEXT_TITLE, c::FG_DIM()))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(rpx(8.0))
+                            .gap(rpx(SPACE_LG))
                             .child(div().flex_1())
                             .child(click_action(
                                 "cf-no",
@@ -422,20 +417,15 @@ fn confirm_modal(
 /// `message_modal` (`view/modals/confirm.rs:446-472`): text and one dismiss.
 fn message_modal(text: &str, dispatch: &ModalDispatch) -> AnyElement {
     modal_panel(
-        480.0,
+        MODAL_W_MD,
         div()
             .child(modal_header("Notice", c::CYAN()))
             .child(modal_body(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(rpx(12.0))
-                    .child(
-                        div()
-                            .text_size(rpx(13.0))
-                            .text_color(c::FG_DIM())
-                            .child(text.to_string()),
-                    )
+                    .gap(rpx(SPACE_2XL))
+                    .child(ui(text.to_string(), TEXT_TITLE, c::FG_DIM()))
                     .child(
                         div()
                             .flex()
@@ -459,25 +449,25 @@ fn message_modal(text: &str, dispatch: &ModalDispatch) -> AnyElement {
 /// persists nothing, so the footer does not offer it as a choice.
 fn tmux_choice_modal(dispatch: &ModalDispatch) -> AnyElement {
     modal_panel(
-        480.0,
+        MODAL_W_MD,
         div()
             .child(modal_header("Session backend", c::CYAN()))
             .child(modal_body(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(rpx(10.0))
-                    .child(
-                        div().text_size(rpx(13.0)).text_color(c::FG_DIM()).child(
-                            "Use tmux for new sessions? Existing sessions keep their \
-                             current backend.",
-                        ),
-                    )
+                    .gap(rpx(SPACE_XL))
+                    .child(ui(
+                        "Use tmux for new sessions? Existing sessions keep their \
+                         current backend.",
+                        TEXT_TITLE,
+                        c::FG_DIM(),
+                    ))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(rpx(8.0))
+                            .gap(rpx(SPACE_LG))
                             .child(div().flex_1())
                             .child(click_action(
                                 "tmux-no",
@@ -522,11 +512,16 @@ fn agent_picker_modal(
         format!("Start session / {project} / {wt_name}")
     };
 
-    let mut list = div().flex().flex_col().gap(rpx(2.0)).p(rpx(8.0)).w_full();
+    let mut list = div()
+        .flex()
+        .flex_col()
+        .gap(rpx(SPACE_XS))
+        .p(rpx(SPACE_LG))
+        .w_full();
     for (i, agent) in agents.iter().enumerate() {
         let selected = i == sel;
         let is_default = default == Some(*agent);
-        list = list.child(click_row(
+        list = list.child(palette_row(
             gpui::SharedString::from(format!("agent-{i}")),
             selected,
             dispatch,
@@ -534,35 +529,23 @@ fn agent_picker_modal(
             div()
                 .flex()
                 .items_center()
-                .gap(rpx(8.0))
+                .gap(rpx(SPACE_LG))
                 .w_full()
-                .h(rpx(32.0))
+                .child(icon_slot(
+                    agent.icon_name(),
+                    ICON_LG,
+                    if selected { c::YELLOW() } else { c::FG_MUTE() },
+                ))
                 .child(
-                    div()
-                        .w(rpx(24.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(crate::icons::icon(
-                            agent.icon_name(),
-                            16.0,
-                            if selected { c::YELLOW() } else { c::FG_MUTE() },
-                        )),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .text_size(rpx(12.0))
-                        .text_color(if selected { c::FG() } else { c::FG_DIM() })
-                        .child(agent.label().to_string()),
+                    ui(
+                        agent.label().to_string(),
+                        TEXT_BODY,
+                        if selected { c::FG() } else { c::FG_DIM() },
+                    )
+                    .flex_1(),
                 )
                 .when(is_default, |d| {
-                    d.child(
-                        div()
-                            .text_size(rpx(11.0))
-                            .text_color(c::FG_MUTE())
-                            .child("Default"),
-                    )
+                    d.child(ui("Default", TEXT_SMALL, c::FG_MUTE()))
                 }),
         ));
     }
@@ -570,7 +553,7 @@ fn agent_picker_modal(
     let actions = div()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
+        .gap(rpx(SPACE_LG))
         .child(click_action(
             "ap-default",
             "Default",
@@ -595,10 +578,17 @@ fn agent_picker_modal(
         ));
 
     modal_panel(
-        500.0,
+        MODAL_W_LG,
         div()
             .child(modal_header(title, c::MAGENTA()))
-            .child(modal_body(div().flex().flex_col().gap(rpx(12.0)).child(list).child(actions)))
+            .child(modal_body(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_2XL))
+                    .child(list)
+                    .child(actions),
+            ))
             .child(modal_footer_hints(&[
                 ("↑↓", "choose"),
                 ("⏎", "launch"),

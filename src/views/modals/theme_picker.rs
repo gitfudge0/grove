@@ -9,19 +9,52 @@
 //! (carried decision 7) — there is no second theme-override path.
 
 use crate::views::rpx;
+use crate::views::tokens::*;
 use gpui::{div, prelude::*, px, AnyElement, App, Context, Hsla, SharedString};
 use grove_core::theme::{Theme, ThemeKind};
 
 use crate::settings::SettingsState;
 use crate::theme as c;
 
-use super::shell::{
-    body_text, caption, click_action, click_checkbox, divider_h, modal_body,
-    modal_footer_hints, modal_header, modal_panel, note_text, seg_button, seg_group, ModalBtn,
-    OnToggle, SegSide,
-};
 use super::{Modal, ModalClick, ModalDispatch, ModalLayer};
 use crate::modal::{ThemePickerReturn, ThemePickerScope};
+use crate::views::components::{
+    body_text, caption, click_action, click_checkbox, click_row, divider_h, icon_btn, modal_body,
+    modal_footer_hints, modal_header, modal_header_with_close, modal_panel, mono, note_text,
+    seg_button, seg_group, ui, ModalBtn, OnToggle, SegSide,
+};
+
+// ── local layout geometry (§8.4: geometry lives in the owning module) ─────
+
+/// One palette swatch's box. Both preview strips — the picker row's 4-colour
+/// glance and the manager row's 11-colour strip — share it, so a theme reads
+/// the same size wherever it is previewed.
+const SWATCH_SIZE: f32 = ICON_XS;
+
+/// The swatch's corner. §14 case 3 (optical correction): `RADIUS_CONTROL` (4)
+/// is tuned for a 22px control, and on a [`SWATCH_SIZE`] (10px) square it eats
+/// nearly half the edge — the mark stops reading as a colour chip and starts
+/// reading as a dot. 2 keeps the corner softened without rounding the swatch
+/// away. Not a token: it has exactly two consumers, both in this file.
+const SWATCH_RADIUS: f32 = 2.0;
+
+/// The manager row's swatch column. Deliberately narrower than the full
+/// 11-swatch strip: the strip clips rather than pushing the row's action
+/// icons out of alignment.
+const SWATCH_COL_W: f32 = 90.0;
+
+/// The fake rename caret's height. Derived from [`TEXT_BODY`] with a touch of
+/// overshoot so the bar spans the glyph box rather than the x-height (§14
+/// case 2 — derived geometry, not a scale value).
+const CARET_H: f32 = TEXT_BODY * 1.1;
+
+/// Vertical breathing room for an inline "nothing here" block inside a modal
+/// body — one modal zone padding step above and below.
+const EMPTY_STATE_PY: f32 = SPACE_3XL * 2.0;
+
+/// The scrolling theme list's ceiling, past which the panel would outgrow a
+/// short window.
+const LIST_MAX_H: f32 = 360.0;
 
 /// A tooltip-carrying icon mini button for a `ThemeManager` row action
 /// (edit/rename/duplicate/delete) — `src/gui/widgets/buttons.rs`'
@@ -37,37 +70,42 @@ fn action_mini(
 ) -> AnyElement {
     let dispatch = std::rc::Rc::clone(dispatch);
     let color = if danger { c::RED() } else { c::FG_MUTE() };
-    div()
-        .id(id)
-        .size(rpx(22.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(rpx(4.0))
-        .hover(|s| s.bg(c::BG_HOVER()))
-        .cursor_pointer()
-        .child(crate::icons::icon(icon_name, 13.0, color))
-        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-            dispatch(click.clone(), window, cx);
-        })
-        .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(hint).build(window, cx))
-        .into_any_element()
+    icon_btn(
+        id,
+        icon_name,
+        CONTROL_H,
+        CONTROL_H,
+        ICON_SM,
+        color,
+        c::BG_HOVER(),
+        None,
+        false,
+        move |window, cx| dispatch(click.clone(), window, cx),
+    )
+    .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(hint).build(window, cx))
+    .into_any_element()
 }
 
 /// The 11-swatch palette strip previewing a whole theme, in
 /// `grove_core::theme::FIELD_NAMES` order — `ThemeManager`'s row preview
 /// (`theme_manager.rs:18-37`). Distinct from [`swatch`], which is the
 /// 4-color glance `ThemePicker` rows use.
+///
+/// Every colour in this element belongs to the *previewed* theme, border
+/// included (§4.4: never mix bare accessors with `_of` variants in one
+/// element). The swatch fills are the theme's raw tier-1 fields by
+/// construction — showing all eleven is the point of the strip.
 fn swatch_strip(t: &Theme) -> impl IntoElement {
-    let mut strip = div().flex().items_center().gap(rpx(2.0));
+    let border = Hsla::from(c::border_of(t));
+    let mut strip = div().flex().items_center().gap(rpx(SPACE_XS));
     for i in 0..grove_core::theme::FIELD_NAMES.len() {
         let color = Hsla::from(c::ic(t.field(i)));
         strip = strip.child(
             div()
-                .size(rpx(10.0))
-                .rounded(rpx(2.0))
+                .size(rpx(SWATCH_SIZE))
+                .rounded(rpx(SWATCH_RADIUS))
                 .border_1()
-                .border_color(c::BORDER())
+                .border_color(border)
                 .bg(color),
         );
     }
@@ -82,19 +120,14 @@ fn kind_badge(kind: ThemeKind) -> impl IntoElement {
         ThemeKind::Light => "LIGHT".into(),
     };
     div()
-        .px(rpx(5.0))
-        .py(px(1.0))
-        .rounded(rpx(4.0))
+        .px(rpx(SPACE_SM))
+        .py(rpx(SPACE_XS))
+        .rounded(rpx(RADIUS_CONTROL))
         .border_1()
         .border_color(c::BORDER())
         .bg(c::BG_HL())
-        .child(
-            div()
-                .font(gpui::font(crate::fonts::UI_FAMILY))
-                .text_size(rpx(9.0))
-                .text_color(c::FG_MUTE())
-                .child(label),
-        )
+        // DARK/LIGHT reads as a token, not language (§5.2).
+        .child(mono(label, TEXT_MICRO, c::FG_MUTE()))
 }
 
 /// The live project-theme preview an open picker is driving, if any.
@@ -324,11 +357,10 @@ impl ModalLayer {
         match scope {
             ThemePickerScope::App => {
                 let n = name.clone();
-                let kind = kind;
                 SettingsState::update(cx, move |store| {
                     store.theme_follow_system = follow_system;
                     if !follow_system {
-                        store.theme = n.clone();
+                        store.theme.clone_from(&n);
                         match kind {
                             ThemeKind::Dark => store.theme_dark = n,
                             ThemeKind::Light => store.theme_light = n,
@@ -507,12 +539,15 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     }
 }
 
+/// The picker row's 4-colour glance. Like [`swatch_strip`], every colour here
+/// is the *previewed* theme's — `_of(theme)` throughout, never a bare
+/// accessor (§4.4).
 fn swatch(t: &Theme) -> impl IntoElement {
-    div().flex().items_center().gap(rpx(3.0)).children(
+    div().flex().items_center().gap(rpx(SPACE_SM)).children(
         [c::bg_of(t), c::fg_of(t), c::blue_of(t), c::green_of(t)].map(|col| {
             div()
-                .size(rpx(9.0))
-                .rounded(rpx(2.0))
+                .size(rpx(SWATCH_SIZE))
+                .rounded(rpx(SWATCH_RADIUS))
                 .bg(gpui::Hsla::from(col))
         }),
     )
@@ -573,9 +608,8 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
             )),
     );
 
-    // 28px rows, 12px text (FG active / FG_DIM inactive), sitting in a
-    // `BG_STRIP`/`BORDER`/radius-4 list container — the picker's own row
-    // shape, distinct from the generic `click_row` (`theme_picker.rs:60-83`).
+    // Shared `click_row`s sitting in a `BG_STRIP`/`BORDER`/radius-4 list
+    // container (`theme_picker.rs:60-83`).
     let mut list = div().flex().flex_col();
     if matches!(scope, ThemePickerScope::Project(_)) {
         list = list.child(theme_row(
@@ -606,7 +640,7 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
     }
     let list = div()
         .w_full()
-        .rounded(rpx(4.0))
+        .rounded(rpx(RADIUS_CONTROL))
         .border_1()
         .border_color(c::BORDER())
         .bg(c::BG_STRIP())
@@ -617,7 +651,7 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
         ThemePickerScope::Project(p) => format!("Project theme — {p}"),
     };
 
-    let mut body = div().flex().flex_col().gap(rpx(10.0));
+    let mut body = div().flex().flex_col().gap(rpx(SPACE_XL));
     if matches!(scope, ThemePickerScope::App) {
         body = body.child(click_checkbox(
             "tp-follow",
@@ -638,7 +672,7 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
         div()
             .flex()
             .items_center()
-            .gap(rpx(8.0))
+            .gap(rpx(SPACE_LG))
             .child(div().flex_1())
             .child(click_action(
                 "tp-cancel",
@@ -657,7 +691,7 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
     );
 
     modal_panel(
-        460.0,
+        MODAL_W_MD,
         div()
             .child(modal_header(title, c::MAGENTA()))
             .child(modal_body(body)),
@@ -665,8 +699,9 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
     .into_any_element()
 }
 
-/// A 28px picker-list row: 12px text, `FG` when active / `FG_DIM` otherwise,
-/// `BG_HL` fill on the active row (`theme_picker.rs:65-77`).
+/// A picker-list row: the shared [`click_row`] carrying the theme's name.
+/// A theme name is a token, so it is set in mono (§5.2); `FG` when active,
+/// `FG_DIM` otherwise.
 fn theme_row(
     id: impl Into<gpui::ElementId>,
     active: bool,
@@ -674,31 +709,21 @@ fn theme_row(
     click: ModalClick,
     label: String,
 ) -> gpui::Stateful<gpui::Div> {
-    let dispatch = std::rc::Rc::clone(dispatch);
-    div()
-        .id(id)
-        .flex_1()
-        .h(rpx(28.0))
-        .px(rpx(8.0))
-        .flex()
-        .items_center()
-        .when(active, |d| d.bg(c::BG_HL()))
-        .hover(|s| s.bg(c::BG_HOVER()))
-        .cursor_pointer()
-        .child(
-            div()
-                .text_size(rpx(12.0))
-                .text_color(if active { c::FG() } else { c::FG_DIM() })
-                .child(label),
-        )
-        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-            dispatch(click.clone(), window, cx);
-        })
+    click_row(
+        id,
+        active,
+        dispatch,
+        click,
+        mono(label, TEXT_BODY, if active { c::FG() } else { c::FG_DIM() }),
+    )
+    .flex_1()
 }
 
 /// A `ThemeManager` list row: `[6, 10]` padding, radius 6, `BG_HL` fill when
-/// active — distinct from the shared `click_row` (px8/py5, radius 4) used
-/// elsewhere (`theme_manager.rs`'s row shape).
+/// active — distinct from the shared `click_row` (px8/py4, radius 4) used
+/// elsewhere (`theme_manager.rs`'s row shape). `click_row` fixes its padding
+/// and radius as internal tokens and exposes no density axis, so this row's
+/// looser shape cannot be expressed through it.
 fn manager_row(
     id: impl Into<gpui::ElementId>,
     active: bool,
@@ -711,10 +736,10 @@ fn manager_row(
         .id(id)
         .flex()
         .items_center()
-        .gap(rpx(8.0))
-        .px(rpx(10.0))
-        .py(rpx(6.0))
-        .rounded(rpx(6.0))
+        .gap(rpx(SPACE_LG))
+        .px(rpx(SPACE_XL))
+        .py(rpx(SPACE_MD))
+        .rounded(rpx(RADIUS_GROUP))
         .when(active, |d| d.bg(c::BG_HL()))
         .hover(|s| s.bg(c::BG_HOVER()))
         .cursor_pointer()
@@ -741,28 +766,28 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
         let field = layer.fields.first().map(|f| {
             div()
                 .w_full()
-                .px(rpx(10.0))
-                .py(rpx(6.0))
-                .rounded(rpx(6.0))
+                .px(rpx(SPACE_XL))
+                .py(rpx(SPACE_MD))
+                .rounded(rpx(RADIUS_GROUP))
                 .bg(c::BG())
                 .border_1()
                 .border_color(c::BORDER())
                 .child(gpui_component::input::Input::new(f.state()).w_full())
         });
         return modal_panel(
-            620.0,
+            MODAL_W_XL,
             div()
                 .child(modal_header("Theme editor", c::MAGENTA()))
                 .child(modal_body(
                     div()
                         .flex()
                         .flex_col()
-                        .gap(rpx(8.0))
+                        .gap(rpx(SPACE_LG))
                         .child(body_text(
                             "Paste a theme JSON object, or edit the one below.",
                         ))
                         .children(field)
-                        .child(div().flex().gap(rpx(8.0)).child(click_action(
+                        .child(div().flex().gap(rpx(SPACE_LG)).child(click_action(
                             "tm-save",
                             "Save",
                             ModalBtn::Primary,
@@ -785,14 +810,14 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
         let body_zone = div()
             .flex()
             .flex_col()
-            .gap(rpx(8.0))
+            .gap(rpx(SPACE_LG))
             .child(body_text(format!("Delete theme \"{name}\"?")))
             .child(caption("This cannot be undone."))
             .child(
                 div()
                     .flex()
                     .justify_end()
-                    .gap(rpx(8.0))
+                    .gap(rpx(SPACE_LG))
                     .child(click_action(
                         "tm-del-cancel",
                         "Cancel",
@@ -809,7 +834,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                     )),
             );
         return modal_panel(
-            420.0,
+            MODAL_W_SM,
             div()
                 .child(modal_header("Delete theme", c::RED()))
                 .child(modal_body(body_zone))
@@ -822,20 +847,19 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
     let list_content: AnyElement = if themes.is_empty() {
         div()
             .w_full()
-            .px(rpx(16.0))
-            .py(rpx(30.0))
+            .px(rpx(SPACE_3XL))
+            .py(rpx(EMPTY_STATE_PY))
             .flex()
             .items_center()
             .justify_center()
-            .child(
-                div()
-                    .text_size(rpx(12.0))
-                    .text_color(c::FG_MUTE())
-                    .child("No custom themes yet — create one or paste a palette."),
-            )
+            .child(ui(
+                "No custom themes yet — create one or paste a palette.",
+                TEXT_BODY,
+                c::FG_MUTE(),
+            ))
             .into_any_element()
     } else {
-        let mut list = div().flex().flex_col().gap(rpx(4.0));
+        let mut list = div().flex().flex_col().gap(rpx(SPACE_SM));
         for (i, t) in themes.iter().enumerate() {
             let is_renaming = rename.as_ref().is_some_and(|(from, _)| *from == t.name);
             let row_el: AnyElement = if is_renaming {
@@ -848,25 +872,33 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                 // editable-looking buffer row: the live rename buffer plus a
                 // blinking-caret glyph, in the same selected-tint container
                 // the iced original uses (`theme_manager.rs:106-141`).
-                let mut col = div().flex().flex_col().gap(rpx(4.0)).child(
+                let mut col = div().flex().flex_col().gap(rpx(SPACE_SM)).child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(rpx(6.0))
+                        .gap(rpx(SPACE_MD))
                         .w_full()
                         .child(
                             div()
                                 .flex_1()
-                                .px(rpx(8.0))
-                                .py(rpx(4.0))
-                                .rounded(rpx(4.0))
+                                .px(rpx(SPACE_LG))
+                                .py(rpx(SPACE_SM))
+                                .rounded(rpx(RADIUS_CONTROL))
                                 .bg(c::BG())
                                 .border_1()
                                 .border_color(c::BORDER())
                                 .flex()
                                 .items_center()
-                                .child(div().text_size(rpx(12.0)).text_color(c::FG()).child(buf))
-                                .child(div().w(px(1.0)).h(rpx(13.0)).ml(rpx(2.0)).bg(c::FG_DIM())),
+                                // The rename buffer holds a theme name — a
+                                // token, so mono (§5.2).
+                                .child(mono(buf, TEXT_BODY, c::FG()))
+                                .child(
+                                    div()
+                                        .w(px(1.0))
+                                        .h(rpx(CARET_H))
+                                        .ml(rpx(SPACE_XS))
+                                        .bg(c::FG_DIM()),
+                                ),
                         )
                         .child(click_action(
                             "tm-rename-save",
@@ -901,9 +933,9 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                 }
                 div()
                     .w_full()
-                    .px(rpx(10.0))
-                    .py(rpx(6.0))
-                    .rounded(rpx(6.0))
+                    .px(rpx(SPACE_XL))
+                    .py(rpx(SPACE_MD))
+                    .rounded(rpx(RADIUS_GROUP))
                     .bg(c::SEL_TINT_STRONG())
                     .border_1()
                     .border_color(c::SEL_RING())
@@ -915,19 +947,19 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                     .flex_1()
                     .flex()
                     .items_center()
-                    .gap(rpx(6.0))
+                    .gap(rpx(SPACE_MD))
                     .overflow_hidden()
-                    .child(
-                        div()
-                            .text_size(rpx(13.0))
-                            .text_color(if active { c::FG() } else { c::FG_DIM() })
-                            .child(t.name.to_string()),
-                    )
+                    // A theme name is a token, not language (§5.2).
+                    .child(mono(
+                        t.name.to_string(),
+                        TEXT_TITLE,
+                        if active { c::FG() } else { c::FG_DIM() },
+                    ))
                     .child(kind_badge(t.kind));
                 let icons = div()
                     .flex()
                     .items_center()
-                    .gap(rpx(2.0))
+                    .gap(rpx(SPACE_XS))
                     .child(action_mini(
                         "tm-edit",
                         "edit",
@@ -968,12 +1000,12 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                     div()
                         .flex()
                         .items_center()
-                        .gap(rpx(10.0))
+                        .gap(rpx(SPACE_XL))
                         .w_full()
                         .child(name_zone)
                         .child(
                             div()
-                                .w(rpx(90.0))
+                                .w(rpx(SWATCH_COL_W))
                                 .overflow_hidden()
                                 .child(swatch_strip(t)),
                         )
@@ -985,7 +1017,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
         }
         div()
             .id("theme-manager-list")
-            .max_h(rpx(360.0))
+            .max_h(rpx(LIST_MAX_H))
             .overflow_y_scroll()
             .w_full()
             .child(list)
@@ -996,12 +1028,12 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
     // since like Settings every row action here persists immediately, there
     // is no unsaved state a Cancel/Save footer would guard
     // (`theme_manager.rs:214-222`).
-    let header = modal_header_row_with_close(dispatch);
+    let header = modal_header_with_close("tm-close", "Manage themes", c::MAGENTA(), dispatch);
 
     let body_zone = div()
         .flex()
         .flex_col()
-        .gap(rpx(10.0))
+        .gap(rpx(SPACE_XL))
         .child(div().flex().justify_end().child(click_action(
             "tm-new",
             "+ New theme",
@@ -1012,7 +1044,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
         .child(list_content);
 
     modal_panel(
-        560.0,
+        MODAL_W_LG,
         div()
             .child(header)
             .child(divider_h())
@@ -1021,39 +1053,4 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
             .child(modal_footer_hints(&[("↑↓", "select"), ("esc", "close")])),
     )
     .into_any_element()
-}
-
-/// `modal_header`'s bare-title shape plus a trailing close icon button
-/// (`theme_manager.rs:214-222`).
-fn modal_header_row_with_close(dispatch: &ModalDispatch) -> impl IntoElement {
-    let dispatch2 = std::rc::Rc::clone(dispatch);
-    div().w_full().px(rpx(16.0)).py(rpx(14.0)).child(
-        div()
-            .flex()
-            .items_center()
-            .w_full()
-            .child(
-                div()
-                    .flex_1()
-                    .font(gpui::font(crate::fonts::UI_FAMILY))
-                    .text_size(rpx(13.0))
-                    .text_color(c::MAGENTA())
-                    .child("Manage themes"),
-            )
-            .child(
-                div()
-                    .id("tm-close")
-                    .size(rpx(22.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(rpx(4.0))
-                    .hover(|s| s.bg(c::BG_HOVER()))
-                    .cursor_pointer()
-                    .child(crate::icons::icon("close", 12.0, c::FG_MUTE()))
-                    .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-                        dispatch2(ModalClick::Cancel, window, cx);
-                    }),
-            ),
-    )
 }

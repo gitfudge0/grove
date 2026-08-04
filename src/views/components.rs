@@ -1,4 +1,6 @@
-//! The shared modal chrome, ported from `src/gui/widgets/modal.rs`.
+//! The app-wide shared component library: keycaps, text helpers, icon
+//! buttons, status dots, dividers and the modal chrome. Every view builds
+//! from it, not just the modals. Ported from `src/gui/widgets/modal.rs`.
 //!
 //! Pure presentation: every helper takes plain data and returns an element, so
 //! nothing here needs an entity or a `Context`. Line references in each doc
@@ -9,22 +11,43 @@
 #![allow(dead_code)]
 
 use crate::views::rpx;
+use crate::views::tokens::*;
 use gpui::{div, prelude::*, px, AnyElement, Div, Hsla, MouseButton, SharedString};
 
 use crate::fonts::{MONO_FAMILY, UI_FAMILY};
 use crate::theme as c;
-use crate::views::rows::tracked;
 
-use super::{ModalClick, ModalDispatch};
+use super::dispatch::{ModalClick, ModalDispatch};
 
-/// Panel corner radius (`modal.rs:29`).
-const PANEL_RADIUS: f32 = 12.0;
-/// The footer strip's bottom radius: the panel's 12px minus its 1px content
-/// inset, so the strip hugs the inner corner without covering the border
-/// (`modal.rs:117-120`).
-const FOOTER_RADIUS: f32 = 11.0;
+/// The footer strip's bottom radius: [`RADIUS_PANEL`] minus the panel's 1px
+/// content inset, so the strip hugs the inner corner without covering the
+/// border (`modal.rs:117-120`).
+const FOOTER_RADIUS: f32 = RADIUS_PANEL - 1.0;
 
-fn ui(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
+/// The checkbox's box side. Single-consumer geometry, so per DESIGN.md §14 it
+/// is a module constant here rather than a `tokens.rs` scale entry: it is
+/// *the checkbox's* box, not a notch on a shared scale.
+const CHECKBOX_BOX: f32 = 14.0;
+
+/// [`vline`]'s height: tall enough to separate two [`CONTROL_H`] clusters
+/// without drawing a full-height bar edge.
+const VLINE_H: f32 = 16.0;
+
+/// [`icon_slot`]'s fixed width — see that function's doc comment.
+const ICON_SLOT_W: f32 = 24.0;
+
+/// [`scrim_top_drop`]'s top inset. An optical correction, not a spacing notch:
+/// the palette is read top-down, so it is dropped to roughly the upper third
+/// of a typical window rather than centred — a centred palette makes the eye
+/// travel down to the input and then back up to the first result. 80 is
+/// carried over verbatim from the iced original
+/// (`src/gui/view/modals/mod.rs:114-121`); that code recorded no derivation
+/// for the exact figure, so it is preserved rather than re-derived.
+const PALETTE_TOP_DROP: f32 = 80.0;
+
+/// A UI-font text run. The single sans text primitive for the whole app —
+/// every view that used to keep its own `ui`/`ui_text` copy calls this.
+pub fn ui(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
     div()
         .font(gpui::font(UI_FAMILY))
         .text_size(rpx(size))
@@ -32,7 +55,9 @@ fn ui(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
         .child(content.into())
 }
 
-fn mono(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
+/// A mono-font text run. The single monospace text primitive for the whole
+/// app — every view that used to keep its own `mono` copy calls this.
+pub fn mono(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
     div()
         .font(gpui::font(MONO_FAMILY))
         .text_size(rpx(size))
@@ -52,7 +77,7 @@ pub fn modal_panel(width: f32, content: impl IntoElement) -> Div {
         .text_color(c::FG())
         .border_1()
         .border_color(c::BORDER())
-        .rounded(rpx(PANEL_RADIUS))
+        .rounded(rpx(RADIUS_PANEL))
         .shadow(vec![gpui::BoxShadow {
             color: gpui::hsla(0.0, 0.0, 0.0, 0.35),
             offset: gpui::point(px(0.0), px(12.0)),
@@ -66,18 +91,39 @@ pub fn modal_panel(width: f32, content: impl IntoElement) -> Div {
 /// Keycap chip shell: mono, 2px/6px padding, radius 4, filled `BG_HL`
 /// (`modal.rs:44-58`). `inner` carries its own text color.
 pub fn keycap(inner: impl IntoElement) -> Div {
+    keycap_filled(c::BG_HL(), inner)
+}
+
+/// [`keycap`] with the fill as an axis. The chip shell is the same shape
+/// wherever it appears, but the fill carries meaning: `BG_HL` for a literal
+/// keycap, `BORDER_SOFT` for a neutral metadata chip (the rows' branch and
+/// count chips) and an accent alpha for a live cue (the grid's number hint and
+/// respond chip). Those forked the shell before this parameter existed.
+pub fn keycap_filled(fill: Hsla, inner: impl IntoElement) -> Div {
     div()
-        .px(rpx(6.0))
-        .py(rpx(2.0))
-        .rounded(rpx(4.0))
-        .bg(c::BG_HL())
+        .px(rpx(SPACE_MD))
+        .py(rpx(SPACE_XS))
+        .rounded(rpx(RADIUS_CONTROL))
+        .bg(fill)
         .child(inner)
 }
 
 /// A plain-label keycap ("⏎", "↑↓", "esc", "←→") in the given text color
 /// (`modal.rs:60-72`).
 pub fn keycap_text(label: impl Into<SharedString>, color: Hsla) -> Div {
-    keycap(mono(label, 11.0, color))
+    keycap(mono(label, TEXT_SMALL, color))
+}
+
+/// Letter-spaced section label. Neither iced nor gpui at this rev has
+/// letter-spacing, so the characters are joined with U+2009 THIN SPACE exactly
+/// as `src/gui/rows.rs:650-655` does.
+#[must_use]
+pub fn tracked(label: &str) -> String {
+    label
+        .chars()
+        .map(String::from)
+        .collect::<Vec<_>>()
+        .join("\u{2009}")
 }
 
 /// A mono, uppercase, letter-tracked section label (`modal.rs:77-90`). gpui
@@ -87,8 +133,8 @@ pub fn section_header(label: &str, top: f32, bottom: f32) -> Div {
     div()
         .pt(rpx(top))
         .pb(rpx(bottom))
-        .pl(rpx(12.0))
-        .child(mono(tracked(label), 10.0, c::FG_MUTE()))
+        .pl(rpx(SPACE_2XL))
+        .child(mono(tracked(label), TEXT_MICRO, c::FG_MUTE()))
 }
 
 /// One keycap + muted label pair in a footer hint strip, e.g. "[↑↓] navigate"
@@ -97,9 +143,9 @@ pub fn footer_hint(key: &'static str, label: &'static str) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(rpx(6.0))
+        .gap(rpx(SPACE_MD))
         .child(keycap_text(key, c::FG_DIM()))
-        .child(mono(label, 10.0, c::FG_MUTE()))
+        .child(mono(label, TEXT_MICRO, c::FG_MUTE()))
 }
 
 /// The full-bleed footer strip: `BG_STRIP` fill, `[8, 16]` padding, bottom
@@ -107,8 +153,8 @@ pub fn footer_hint(key: &'static str, label: &'static str) -> Div {
 pub fn footer_container(content: impl IntoElement) -> Div {
     div()
         .w_full()
-        .px(rpx(16.0))
-        .py(rpx(8.0))
+        .px(rpx(SPACE_3XL))
+        .py(rpx(SPACE_LG))
         .bg(c::BG_STRIP())
         .rounded_bl(rpx(FOOTER_RADIUS))
         .rounded_br(rpx(FOOTER_RADIUS))
@@ -118,7 +164,7 @@ pub fn footer_container(content: impl IntoElement) -> Div {
 /// A footer strip of plain hints with the palette's 14px inter-hint spacing
 /// (`modal.rs:135-146`).
 pub fn modal_footer_hints(hints: &[(&'static str, &'static str)]) -> Div {
-    let mut row = div().flex().items_center().gap(rpx(14.0));
+    let mut row = div().flex().items_center().gap(rpx(SPACE_3XL));
     for (key, label) in hints {
         row = row.child(footer_hint(key, label));
     }
@@ -134,19 +180,73 @@ pub fn modal_footer_row(content: impl IntoElement) -> Div {
 /// A modal header zone: `[14, 16]` padding around a size-13 title in `accent`
 /// (`modal.rs:156-160`).
 pub fn modal_header(title: impl Into<SharedString>, accent: Hsla) -> Div {
-    modal_header_row(ui(title, 13.0, accent))
+    modal_header_row(ui(title, TEXT_TITLE, accent))
+}
+
+/// [`modal_header`] plus a trailing close icon button dispatching
+/// [`ModalClick::Cancel`] — the shape the theme manager and the archived-project
+/// list each used to fork. Same token contract as [`modal_header`]: `px/py
+/// SPACE_3XL` around a [`TEXT_TITLE`] title in `accent`.
+///
+/// `id` must be unique within the modal (gpui bleeds hover state between
+/// duplicate ids).
+pub fn modal_header_with_close(
+    id: &'static str,
+    title: impl Into<SharedString>,
+    accent: Hsla,
+    dispatch: &ModalDispatch,
+) -> Div {
+    let dispatch = std::rc::Rc::clone(dispatch);
+    modal_header_row(
+        div()
+            .flex()
+            .items_center()
+            .w_full()
+            .child(div().flex_1().child(ui(title, TEXT_TITLE, accent)))
+            .child(icon_btn(
+                id,
+                "close",
+                CONTROL_H,
+                CONTROL_H,
+                ICON_SM,
+                c::FG_MUTE(),
+                c::BG_HOVER(),
+                None,
+                false,
+                move |window, cx| dispatch(ModalClick::Cancel, window, cx),
+            )),
+    )
 }
 
 /// [`modal_header`] for callers needing more than a bare title in the header
 /// zone, e.g. a title plus a right-aligned step counter (`modal.rs:162-171`).
 pub fn modal_header_row(content: impl IntoElement) -> Div {
-    div().w_full().px(rpx(16.0)).py(rpx(14.0)).child(content)
+    div()
+        .w_full()
+        .px(rpx(SPACE_3XL))
+        .py(rpx(SPACE_3XL))
+        .child(content)
 }
 
 /// A checkbox's toggle handler. `None` renders the checkbox disabled.
 pub type OnToggle = Box<dyn Fn(&mut gpui::Window, &mut gpui::App)>;
 
+/// [`ModalBtn::Accent`]'s rest-border alpha: the accent is present but held
+/// back at rest so the full-strength hover border reads as a change. Carried
+/// over from the Add-project hero button, which hand-rolled this tint before
+/// the weight existed.
+const ACCENT_BORDER_REST_ALPHA: f32 = 0.45;
+
 /// Visual weight of a modal footer button (`modal.rs:193-200`).
+///
+/// | Weight | Text | Border | Hover border | Fill |
+/// |---|---|---|---|---|
+/// | `Plain` | `FG_DIM` | `BORDER` | unchanged | `BG` (unfilled) |
+/// | `Primary` | `FG` | `BORDER` | unchanged | `BG_HL` |
+/// | `Danger` | `RED` | `RED` | unchanged | `BG_HL` |
+/// | `Accent` | `FG` | `MAGENTA` α0.45 | `MAGENTA` | `BG_HL` |
+///
+/// Every weight also takes the shared `BG_HOVER` fill on hover.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModalBtn {
     /// Dismiss / secondary action.
@@ -155,26 +255,43 @@ pub enum ModalBtn {
     Primary,
     /// Default affirmative action with destructive consequences.
     Danger,
+    /// Affirmative action with emphasis — the accent-bordered hero button that
+    /// starts something new (the Add-project wizard's folder browser), sharing
+    /// the appbar `+`'s accent role.
+    Accent,
 }
 
 impl ModalBtn {
     fn text_color(self) -> Hsla {
         match self {
             ModalBtn::Plain => c::FG_DIM(),
-            ModalBtn::Primary => c::FG(),
+            ModalBtn::Primary | ModalBtn::Accent => c::FG(),
             ModalBtn::Danger => c::RED(),
         }
     }
 
     fn border_color(self) -> Hsla {
-        if self == ModalBtn::Danger {
-            c::RED()
-        } else {
-            c::BORDER()
+        match self {
+            ModalBtn::Danger => c::RED(),
+            ModalBtn::Accent => Hsla {
+                a: ACCENT_BORDER_REST_ALPHA,
+                ..c::MAGENTA()
+            },
+            ModalBtn::Plain | ModalBtn::Primary => c::BORDER(),
         }
     }
 
-    /// `Plain` is unfilled; the two affirmative weights sit on `BG_HL`
+    /// The border on hover. `Accent` is the only weight that moves on this
+    /// axis; it must be applied inside the component because gpui's `hover`
+    /// refuses a second call on the same element (see [`icon_btn`]).
+    fn hover_border_color(self) -> Option<Hsla> {
+        match self {
+            ModalBtn::Accent => Some(c::MAGENTA()),
+            _ => None,
+        }
+    }
+
+    /// `Plain` is unfilled; the affirmative weights sit on `BG_HL`
     /// (`modal.rs:222-229`).
     fn bg(self) -> Hsla {
         if self == ModalBtn::Plain {
@@ -193,7 +310,7 @@ pub fn modal_action(
     kind: ModalBtn,
     on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
 ) -> gpui::Stateful<Div> {
-    modal_action_sized(id, label, kind, 12.0, on_click)
+    modal_action_sized(id, label, kind, TEXT_BODY, on_click)
 }
 
 /// [`modal_action`] wired straight to a [`ModalClick`], which is how every
@@ -245,10 +362,10 @@ pub fn click_row(
         .id(id)
         .flex()
         .items_center()
-        .gap(rpx(8.0))
-        .px(rpx(8.0))
-        .py(rpx(5.0))
-        .rounded(rpx(4.0))
+        .gap(rpx(SPACE_LG))
+        .px(rpx(SPACE_LG))
+        .py(rpx(SPACE_SM))
+        .rounded(rpx(RADIUS_CONTROL))
         .when(selected, |d| d.bg(c::BG_HL()))
         .hover(|s| s.bg(c::BG_HOVER()))
         .cursor_pointer()
@@ -269,13 +386,19 @@ pub fn modal_action_sized(
 ) -> gpui::Stateful<Div> {
     div()
         .id(id)
-        .px(rpx(12.0))
-        .py(rpx(6.0))
-        .rounded(rpx(4.0))
+        .px(rpx(SPACE_2XL))
+        .py(rpx(SPACE_MD))
+        .rounded(rpx(RADIUS_CONTROL))
         .border_1()
         .border_color(kind.border_color())
         .bg(kind.bg())
-        .hover(|s| s.bg(c::BG_HOVER()))
+        .hover(move |s| {
+            let s = s.bg(c::BG_HOVER());
+            match kind.hover_border_color() {
+                Some(border) => s.border_color(border),
+                None => s,
+            }
+        })
         .cursor_pointer()
         .child(ui(label, size, kind.text_color()))
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -296,8 +419,8 @@ pub fn modal_checkbox(
     let disabled = on_toggle.is_none();
     let border_color = if checked { accent } else { c::BORDER() };
     let mut box_ = div()
-        .size(rpx(14.0))
-        .rounded(rpx(4.0))
+        .size(rpx(CHECKBOX_BOX))
+        .rounded(rpx(RADIUS_CONTROL))
         .border_1()
         .border_color(border_color)
         .bg(if checked { c::BG_HL() } else { c::BG() })
@@ -307,7 +430,7 @@ pub fn modal_checkbox(
     if checked {
         box_ = box_.child(mono(
             "✓",
-            10.0,
+            TEXT_MICRO,
             if disabled { c::FG_MUTE() } else { accent },
         ));
     }
@@ -316,11 +439,11 @@ pub fn modal_checkbox(
         .id(id)
         .flex()
         .items_center()
-        .gap(rpx(8.0))
+        .gap(rpx(SPACE_LG))
         .child(box_)
         .child(ui(
             label,
-            12.0,
+            TEXT_BODY,
             if disabled { c::FG_MUTE() } else { c::FG_DIM() },
         ));
 
@@ -362,7 +485,7 @@ pub fn scrim_top_drop(content: impl IntoElement) -> Div {
         .flex()
         .flex_col()
         .items_center()
-        .pt(rpx(80.0))
+        .pt(rpx(PALETTE_TOP_DROP))
         .child(content)
 }
 
@@ -371,42 +494,64 @@ pub fn scrim_top_drop(content: impl IntoElement) -> Div {
 pub fn modal_body(content: impl IntoElement) -> Div {
     div()
         .w_full()
-        .px(rpx(16.0))
-        .pb(rpx(14.0))
+        .px(rpx(SPACE_3XL))
+        .pb(rpx(SPACE_3XL))
         .flex()
         .flex_col()
-        .gap(rpx(10.0))
+        .gap(rpx(SPACE_XL))
         .child(content)
 }
 
 /// Body prose at the modals' shared 12px/`FG_DIM` weight.
 pub fn body_text(content: impl Into<SharedString>) -> Div {
-    ui(content, 12.0, c::FG_DIM())
+    ui(content, TEXT_BODY, c::FG_DIM())
 }
 
 /// An inline validation note, shown in red under a field and cleared on the
 /// next edit (`src/app/modal.rs:10-12`).
 pub fn note_text(content: impl Into<SharedString>) -> Div {
-    ui(content, 11.0, c::RED())
+    ui(content, TEXT_SMALL, c::RED())
 }
 
 /// A full-bleed 1px horizontal rule in the soft border tone, used between
 /// Settings' sections and around its header/footer zones
 /// (`src/gui/widgets/primitives.rs:54-62`, `divider_h`).
 pub fn divider_h() -> Div {
-    div().w_full().h(px(1.0)).bg(c::BORDER_SOFT())
+    divider_h_toned(c::BORDER_SOFT())
+}
+
+/// [`divider_h`] at full `BORDER` strength, for rules that separate *structural*
+/// zones rather than sections inside one panel — the appbar's bottom edge and
+/// the rules bounding the chrome bars (§7.2's two tones).
+///
+/// This is a second function rather than a tone parameter on [`divider_h`]
+/// because §7.2 admits exactly two tones: a two-inhabitant enum would earn
+/// nothing over a name, and the soft case — 13 of the call sites — stays a
+/// zero-argument call.
+pub fn divider_h_strong() -> Div {
+    divider_h_toned(c::BORDER())
+}
+
+/// The shared hairline shell behind [`divider_h`] and [`divider_h_strong`],
+/// for the rare rule that needs a tone neither name covers.
+pub fn divider_h_toned(tone: Hsla) -> Div {
+    div().w_full().h(px(1.0)).bg(tone)
 }
 
 /// A muted, indented one-liner shown under a section header or row to explain
 /// what a control does (`src/gui/view/modals/settings.rs:141-145`).
 pub fn caption(content: impl Into<SharedString>) -> Div {
-    div().px(rpx(10.0)).child(ui(content, 11.0, c::FG_MUTE()))
+    div()
+        .px(rpx(SPACE_XL))
+        .child(ui(content, TEXT_SMALL, c::FG_MUTE()))
 }
 
 /// One shade up from [`caption`] — reserved for safety-relevant captions,
 /// e.g. skip-permissions (`src/gui/view/modals/settings.rs:148-152`).
 pub fn caption_promoted(content: impl Into<SharedString>) -> Div {
-    div().px(rpx(10.0)).child(ui(content, 11.0, c::FG_DIM()))
+    div()
+        .px(rpx(SPACE_XL))
+        .child(ui(content, TEXT_SMALL, c::FG_DIM()))
 }
 
 /// A flat, borderless icon button in a fixed-width hoverable box — the zoom
@@ -419,20 +564,87 @@ pub fn flat_icon_btn(
     icon_size: f32,
     on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
 ) -> gpui::Stateful<Div> {
+    icon_btn(
+        id,
+        name,
+        box_w,
+        CONTROL_H,
+        icon_size,
+        c::FG_DIM(),
+        c::BG_HOVER(),
+        None,
+        false,
+        on_click,
+    )
+}
+
+/// [`flat_icon_btn`] with every visual axis the app's icon buttons actually
+/// vary on exposed. The chrome's icon buttons differ only in box size, glyph
+/// size, rest tint and hover treatment, so they all land here rather than each
+/// keeping a private copy of the same `div()` chain.
+///
+/// `hover_fg` recolors the *container's* text on hover (the sidebar/rows
+/// buttons set it; the glyph itself is tinted by `color`, since `Svg` paints
+/// with its own `text_color`). `hover_ring` adds the transparent-at-rest,
+/// `BORDER_SOFT`-on-hover outline the sidebar row tools use.
+///
+/// gpui's `hover` refuses to be called twice on one element
+/// (`div.rs:805` `debug_assert!`), which is why these are parameters rather
+/// than something a call site could chain on afterwards.
+#[allow(clippy::too_many_arguments)]
+pub fn icon_btn(
+    id: impl Into<gpui::ElementId>,
+    name: &'static str,
+    box_w: f32,
+    box_h: f32,
+    icon_size: f32,
+    color: Hsla,
+    hover_bg: Hsla,
+    hover_fg: Option<Hsla>,
+    hover_ring: bool,
+    on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<Div> {
     div()
         .id(id)
         .w(rpx(box_w))
-        .h(rpx(22.0))
+        .h(rpx(box_h))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(rpx(4.0))
-        .hover(|s| s.bg(c::BG_HOVER()))
+        .rounded(rpx(RADIUS_CONTROL))
+        .text_color(color)
+        .when(hover_ring, |d| {
+            d.border_1().border_color(gpui::transparent_black())
+        })
+        .hover(move |s| {
+            let s = s.bg(hover_bg);
+            let s = match hover_fg {
+                Some(fg) => s.text_color(fg),
+                None => s,
+            };
+            if hover_ring {
+                s.border_color(c::BORDER_SOFT())
+            } else {
+                s
+            }
+        })
         .cursor_pointer()
-        .child(crate::icons::icon(name, icon_size, c::FG_DIM()))
+        .child(crate::icons::icon(name, icon_size, color))
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             on_click(window, cx);
         })
+}
+
+/// A small filled dot — the running/activity indicator the status bar, the
+/// terminal tab bar, the sidebar rollups and the attention pills all draw.
+pub fn status_dot(size: f32, color: Hsla) -> Div {
+    div().size(rpx(size)).rounded_full().bg(color)
+}
+
+/// A 1px vertical hairline separating clusters inside a bar
+/// (`src/gui/widgets/primitives.rs`'s `vline`).
+pub fn vline() -> Div {
+    div().w(px(1.0)).h(rpx(VLINE_H)).bg(c::BORDER())
 }
 
 /// A flat, borderless text button in the same 22px-tall shape as
@@ -447,12 +659,12 @@ pub fn flat_text_btn(
 ) -> gpui::Stateful<Div> {
     div()
         .id(id)
-        .h(rpx(22.0))
+        .h(rpx(CONTROL_H))
         .px(rpx(h_padding))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(rpx(4.0))
+        .rounded(rpx(RADIUS_CONTROL))
         .hover(|s| s.bg(c::BG_HOVER()))
         .cursor_pointer()
         .child(mono(label, text_size, c::FG_DIM()))
@@ -482,7 +694,23 @@ pub fn seg_button(
     danger: bool,
     on_click: Option<OnToggle>,
 ) -> AnyElement {
-    let text_color = if active {
+    seg_button_content(
+        id,
+        div().px(rpx(SPACE_2XL)).py(rpx(SPACE_SM)).child(mono(
+            label,
+            TEXT_SMALL,
+            seg_text_color(active, danger),
+        )),
+        active,
+        side,
+        danger,
+        on_click,
+    )
+}
+
+/// The text tint of a [`seg_button`]'s label.
+pub fn seg_text_color(active: bool, danger: bool) -> Hsla {
+    if active {
         if danger {
             c::RED()
         } else {
@@ -490,19 +718,34 @@ pub fn seg_button(
         }
     } else {
         c::FG_DIM()
-    };
+    }
+}
+
+/// [`seg_button`]'s shell — fill, outer-corner rounding, hover and click —
+/// around an arbitrary child, for segments carrying a glyph rather than a
+/// label (the appbar's `+` │ `grid` combo). `content` owns its own padding.
+pub fn seg_button_content(
+    id: impl Into<gpui::ElementId>,
+    content: impl IntoElement,
+    active: bool,
+    side: SegSide,
+    danger: bool,
+    on_click: Option<OnToggle>,
+) -> AnyElement {
     let mut d = div()
         .id(id)
-        .px(rpx(12.0))
-        .py(rpx(4.0))
         .when(active, |d| {
             d.bg(if danger { c::RED_WASH() } else { c::BG_HL() })
         })
         .map(|d| match side {
-            SegSide::Left => d.rounded_tl(rpx(5.0)).rounded_bl(rpx(5.0)),
-            SegSide::Right => d.rounded_tr(rpx(5.0)).rounded_br(rpx(5.0)),
+            SegSide::Left => d
+                .rounded_tl(rpx(RADIUS_CONTROL))
+                .rounded_bl(rpx(RADIUS_CONTROL)),
+            SegSide::Right => d
+                .rounded_tr(rpx(RADIUS_CONTROL))
+                .rounded_br(rpx(RADIUS_CONTROL)),
         })
-        .child(mono(label, 11.0, text_color));
+        .child(content);
     if let Some(f) = on_click {
         d = d
             .cursor_pointer()
@@ -521,7 +764,7 @@ pub fn seg_group(content: impl IntoElement) -> Div {
         .items_center()
         .border_1()
         .border_color(c::BORDER())
-        .rounded(rpx(6.0))
+        .rounded(rpx(RADIUS_GROUP))
         .child(content)
 }
 
@@ -535,7 +778,7 @@ pub const PALETTE_ROW_H: f32 = 44.0;
 /// `icon_slot`).
 pub fn icon_slot(name: &str, size: f32, color: Hsla) -> Div {
     div()
-        .w(rpx(24.0))
+        .w(rpx(ICON_SLOT_W))
         .flex()
         .items_center()
         .justify_center()
@@ -547,11 +790,11 @@ pub fn icon_slot(name: &str, size: f32, color: Hsla) -> Div {
 /// over a soft cyan tint (`src/gui/session_launcher/view/mod.rs:44-59`).
 pub fn cue_chip(label: impl Into<SharedString>) -> Div {
     div()
-        .px(rpx(6.0))
-        .py(rpx(2.0))
-        .rounded(rpx(4.0))
+        .px(rpx(SPACE_MD))
+        .py(rpx(SPACE_XS))
+        .rounded(rpx(RADIUS_CONTROL))
         .bg(c::SEL_TINT_SOFT())
-        .child(mono(label, 10.0, c::CYAN()))
+        .child(mono(label, TEXT_MICRO, c::CYAN()))
 }
 
 /// A palette results row: [`PALETTE_ROW_H`]-tall, radius 6, 12px horizontal
@@ -571,8 +814,8 @@ pub fn palette_row(
         .id(id)
         .w_full()
         .h(rpx(PALETTE_ROW_H))
-        .px(rpx(12.0))
-        .rounded(rpx(6.0))
+        .px(rpx(SPACE_2XL))
+        .rounded(rpx(RADIUS_GROUP))
         .flex()
         .items_center()
         .when(selected, |d| {

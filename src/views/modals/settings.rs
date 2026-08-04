@@ -8,6 +8,7 @@
 //! `src/gui/view/modals/upgrade.rs:16-97,98-182`.
 
 use crate::views::rpx;
+use crate::views::tokens::*;
 use gpui::{div, prelude::*, AnyElement, App, Context, Window};
 
 use grove_core::agent::Agent;
@@ -19,16 +20,49 @@ use crate::launcher::SettingRow;
 use crate::settings::SettingsState;
 use crate::theme as c;
 
-use super::shell::{
-    body_text, caption, caption_promoted, click_action, click_checkbox, click_row, divider_h,
-    flat_icon_btn, flat_text_btn, modal_body, modal_checkbox, modal_footer_hints, modal_footer_row,
-    modal_header, modal_header_row, modal_panel, section_header, seg_button, seg_group, ModalBtn,
-    OnToggle, SegSide,
-};
 use super::{Modal, ModalClick, ModalDispatch, ModalLayer, SettingToggle};
 use crate::modal::{ScriptsEditorState, ThemePickerReturn, ThemePickerScope};
+use crate::views::components::{
+    body_text, caption, caption_promoted, click_action, click_checkbox, click_row, divider_h,
+    flat_icon_btn, flat_text_btn, keycap, modal_body, modal_checkbox, modal_footer_hints,
+    modal_footer_row, modal_header, modal_header_row, modal_panel, mono, section_header,
+    seg_button, seg_group, status_dot, ui, ModalBtn, OnToggle, SegSide,
+};
 use crate::views::workspace::Workspace;
 use crate::zoom::{ZoomState, ZOOM_DEFAULT, ZOOM_STEP};
+
+// ── local layout geometry (§8.4: layout constants live in the owning module) ──
+
+/// A settings row that carries a trailing control (segmented group, stepper)
+/// rather than plain text. Independently the same height as a worktree row,
+/// but the two are not linked: this one is sized by its control, that one by
+/// its dot-and-label density.
+const FIELD_H: f32 = 28.0;
+
+/// The Settings sections scroll before the modal outgrows a laptop viewport.
+const SETTINGS_SCROLL_MAX_H: f32 = 420.0;
+/// The three script buffers scroll; taller than Settings because a single
+/// field plus its description is already most of a screen.
+const SCRIPTS_SCROLL_MAX_H: f32 = 480.0;
+/// The changelog release list.
+const CHANGELOG_SCROLL_MAX_H: f32 = 420.0;
+
+/// The trailing "Set default" / "Default" column in a Tools row. Fixed so the
+/// rows do not reflow when the pill swaps for the button (§13).
+const TOOL_ACTION_W: f32 = 84.0;
+
+/// The chord column in the shortcut overlay.
+const CHORD_COL_W: f32 = 150.0;
+/// The static rows' chord column: the same grid, one gutter wider, because
+/// their literal chords (`cmd+c / cmd+v`) are longer than any registry chord.
+const STATIC_CHORD_COL_W: f32 = CHORD_COL_W + SPACE_XL * 2.0;
+
+/// The square box of a header/footer icon button.
+const ICON_BTN_W: f32 = 28.0;
+/// The narrower icon button used in the footer strip.
+const ICON_BTN_W_SM: f32 = 24.0;
+/// The stepper buttons inside the App-size segmented group.
+const STEPPER_BTN_W: f32 = 20.0;
 
 /// The current value shown on a settings row.
 pub fn setting_value(row: SettingRow, cx: &App) -> String {
@@ -465,23 +499,12 @@ fn settings_row(
     let mut row = div()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
+        .gap(rpx(SPACE_LG))
         .w_full()
-        .child(
-            div()
-                .flex_1()
-                .text_size(rpx(12.0))
-                .text_color(c::FG())
-                .child(label),
-        )
-        .child(
-            div()
-                .text_size(rpx(12.0))
-                .text_color(c::FG_DIM())
-                .child(value),
-        );
+        .child(ui(label, TEXT_BODY, c::FG()).flex_1())
+        .child(mono(value, TEXT_BODY, c::FG_DIM()));
     if chevron {
-        row = row.child(crate::icons::icon("chev-right", 12.0, c::FG_MUTE()));
+        row = row.child(crate::icons::icon("chev-right", ICON_SM, c::FG_MUTE()));
     }
     click_row(id, false, dispatch, click, row)
 }
@@ -515,21 +538,10 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         div()
             .flex()
             .items_center()
-            .child(
-                div()
-                    .flex_1()
-                    .text_size(rpx(13.0))
-                    .text_color(c::MAGENTA())
-                    .child("Settings"),
-            )
-            .child(
-                div()
-                    .text_size(rpx(11.0))
-                    .text_color(c::FG_MUTE())
-                    .child("Changes save automatically."),
-            )
-            .child(div().w(rpx(10.0)))
-            .child(flat_icon_btn("set-close", "close", 28.0, 15.0, {
+            .gap(rpx(SPACE_XL))
+            .child(ui("Settings", TEXT_TITLE, c::MAGENTA()).flex_1())
+            .child(ui("Changes save automatically.", TEXT_SMALL, c::FG_MUTE()))
+            .child(flat_icon_btn("set-close", "close", ICON_BTN_W, ICON_MD, {
                 let dispatch = std::rc::Rc::clone(dispatch);
                 move |window, cx| dispatch(ModalClick::Cancel, window, cx)
             })),
@@ -540,15 +552,9 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let app_size_row = div()
         .flex()
         .items_center()
-        .h(rpx(28.0))
-        .px(rpx(10.0))
-        .child(
-            div()
-                .flex_1()
-                .text_size(rpx(12.0))
-                .text_color(c::FG())
-                .child("App size"),
-        )
+        .h(rpx(FIELD_H))
+        .px(rpx(SPACE_XL))
+        .child(ui("App size", TEXT_BODY, c::FG()).flex_1())
         .child(seg_group(
             div()
                 .flex()
@@ -556,8 +562,8 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                 .child(flat_icon_btn(
                     "set-zoom-out",
                     "minus",
-                    20.0,
-                    13.0,
+                    STEPPER_BTN_W,
+                    ICON_MD,
                     |_, cx| {
                         Workspace::set_zoom(cx.global::<ZoomState>().zoom - ZOOM_STEP, cx);
                     },
@@ -565,22 +571,28 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                 .child(flat_text_btn(
                     "set-zoom-reset",
                     zoom_pct,
-                    12.0,
-                    2.0,
+                    TEXT_BODY,
+                    SPACE_XS,
                     |_, cx| {
                         Workspace::set_zoom(ZOOM_DEFAULT, cx);
                     },
                 ))
-                .child(flat_icon_btn("set-zoom-in", "plus", 20.0, 13.0, |_, cx| {
-                    Workspace::set_zoom(cx.global::<ZoomState>().zoom + ZOOM_STEP, cx);
-                })),
+                .child(flat_icon_btn(
+                    "set-zoom-in",
+                    "plus",
+                    STEPPER_BTN_W,
+                    ICON_MD,
+                    |_, cx| {
+                        Workspace::set_zoom(cx.global::<ZoomState>().zoom + ZOOM_STEP, cx);
+                    },
+                )),
         ));
 
     let appearance = div()
         .flex()
         .flex_col()
-        .gap(rpx(4.0))
-        .child(section_header("APPEARANCE", 4.0, 4.0))
+        .gap(rpx(SPACE_SM))
+        .child(section_header("APPEARANCE", SPACE_SM, SPACE_SM))
         .child(settings_row(
             "set-theme",
             "App theme",
@@ -601,7 +613,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
             ModalClick::OpenThemeManager,
         ))
         .child(app_size_row)
-        .child(div().px(rpx(10.0)).child(raw_checkbox(
+        .child(div().px(rpx(SPACE_XL)).child(raw_checkbox(
             "set-project-themes",
             "Project themes",
             store.project_themes_enabled,
@@ -615,7 +627,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
             },
         )))
         .child(caption("Let each project pin its PTYs to a specific theme"))
-        .child(div().px(rpx(10.0)).child(click_checkbox(
+        .child(div().px(rpx(SPACE_XL)).child(click_checkbox(
             "set-follow-system",
             "Follow system appearance",
             store.theme_follow_system,
@@ -633,8 +645,8 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let projects = div()
         .flex()
         .flex_col()
-        .gap(rpx(4.0))
-        .child(section_header("PROJECTS", 10.0, 4.0))
+        .gap(rpx(SPACE_SM))
+        .child(section_header("PROJECTS", SPACE_XL, SPACE_SM))
         .child(settings_row(
             "set-archived",
             "Archived projects",
@@ -648,15 +660,9 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let backend_row = div()
         .flex()
         .items_center()
-        .h(rpx(28.0))
-        .px(rpx(10.0))
-        .child(
-            div()
-                .flex_1()
-                .text_size(rpx(12.0))
-                .text_color(c::FG())
-                .child("Backend"),
-        )
+        .h(rpx(FIELD_H))
+        .px(rpx(SPACE_XL))
+        .child(ui("Backend", TEXT_BODY, c::FG()).flex_1())
         .child(seg_group(
             div()
                 .flex()
@@ -692,15 +698,9 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let perms_row = div()
         .flex()
         .items_center()
-        .h(rpx(28.0))
-        .px(rpx(10.0))
-        .child(
-            div()
-                .flex_1()
-                .text_size(rpx(12.0))
-                .text_color(c::FG())
-                .child("Permissions"),
-        )
+        .h(rpx(FIELD_H))
+        .px(rpx(SPACE_XL))
+        .child(ui("Permissions", TEXT_BODY, c::FG()).flex_1())
         .child(seg_group(
             div()
                 .flex()
@@ -744,14 +744,14 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let agents_terminal = div()
         .flex()
         .flex_col()
-        .gap(rpx(4.0))
-        .child(section_header("AGENTS / TERMINAL", 10.0, 4.0))
+        .gap(rpx(SPACE_SM))
+        .child(section_header("AGENTS / TERMINAL", SPACE_XL, SPACE_SM))
         .child(backend_row)
         .child(perms_row)
         .child(caption_promoted(
             "Skip lets agents run any command without asking.",
         ))
-        .child(div().px(rpx(10.0)).child(click_checkbox(
+        .child(div().px(rpx(SPACE_XL)).child(click_checkbox(
             "set-chrome",
             "Claude in Chrome",
             store.chrome_enabled.unwrap_or(false),
@@ -763,7 +763,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         .child(caption_promoted(
             "Lets Claude read and control your Chrome tabs.",
         ))
-        .child(div().px(rpx(10.0)).child(raw_checkbox(
+        .child(div().px(rpx(SPACE_XL)).child(raw_checkbox(
             "set-telemetry",
             "Share anonymous usage data",
             SettingsState::telemetry_enabled(store),
@@ -784,16 +784,26 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let tools_header = div()
         .flex()
         .items_center()
-        .pr(rpx(10.0))
-        .child(div().flex_1().child(section_header("TOOLS", 10.0, 4.0)))
-        .child(flat_icon_btn("set-tools-refresh", "restart", 28.0, 15.0, {
-            let dispatch = std::rc::Rc::clone(dispatch);
-            move |window, cx| dispatch(ModalClick::RefreshTools, window, cx)
-        }));
+        .pr(rpx(SPACE_XL))
+        .child(
+            div()
+                .flex_1()
+                .child(section_header("TOOLS", SPACE_XL, SPACE_SM)),
+        )
+        .child(flat_icon_btn(
+            "set-tools-refresh",
+            "restart",
+            ICON_BTN_W,
+            ICON_MD,
+            {
+                let dispatch = std::rc::Rc::clone(dispatch);
+                move |window, cx| dispatch(ModalClick::RefreshTools, window, cx)
+            },
+        ));
     let tools_section = div()
         .flex()
         .flex_col()
-        .gap(rpx(4.0))
+        .gap(rpx(SPACE_SM))
         .child(tools_header)
         .children(layer.tools.iter().map(|st| tool_row(st, dispatch, cx)));
 
@@ -801,7 +811,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let sections = div()
         .flex()
         .flex_col()
-        .gap(rpx(8.0))
+        .gap(rpx(SPACE_LG))
         .child(appearance)
         .child(divider_h())
         .child(projects)
@@ -812,11 +822,15 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
 
     let scroll_body = div()
         .id("settings-scroll")
-        .max_h(rpx(420.0))
+        .max_h(rpx(SETTINGS_SCROLL_MAX_H))
         .overflow_y_scroll()
         .child(sections);
 
-    let mut body_zone = div().flex().flex_col().gap(rpx(10.0)).child(scroll_body);
+    let mut body_zone = div()
+        .flex()
+        .flex_col()
+        .gap(rpx(SPACE_XL))
+        .child(scroll_body);
     body_zone = body_zone.children(update_actions(layer, dispatch, cx));
 
     // ── footer: the version/status strip merges into the shared chrome,
@@ -827,19 +841,14 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         div()
             .flex()
             .items_center()
-            .gap(rpx(10.0))
-            .child(
-                div()
-                    .text_size(rpx(11.0))
-                    .text_color(c::FG_DIM())
-                    .child(format!("v{current_ver}")),
-            )
+            .gap(rpx(SPACE_XL))
+            .child(mono(format!("v{current_ver}"), TEXT_SMALL, c::FG_DIM()))
             .child(update_status_line(layer, cx))
             .child(flat_icon_btn(
                 "set-updates-refresh",
                 "restart",
-                24.0,
-                12.0,
+                ICON_BTN_W_SM,
+                ICON_SM,
                 {
                     let dispatch = std::rc::Rc::clone(dispatch);
                     move |window, cx| dispatch(ModalClick::CheckUpdates, window, cx)
@@ -853,12 +862,11 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                 dispatch,
                 ModalClick::OpenChangelog,
             ))
-            .child(div().w(rpx(10.0)))
-            .child(super::shell::footer_hint("esc", "close")),
+            .child(crate::views::components::footer_hint("esc", "close")),
     );
 
     modal_panel(
-        580.0,
+        MODAL_W_XL,
         div()
             .child(header)
             .child(divider_h())
@@ -878,49 +886,28 @@ fn tool_row(st: &ToolStatus, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     let label_color = if st.installed { c::FG() } else { c::FG_DIM() };
     let status_color = if is_value { c::FG_DIM() } else { c::FG_MUTE() };
     let is_default = cx.global::<SettingsState>().store.default_agent == Some(st.agent);
-    let dot = div().w(rpx(7.0)).h(rpx(7.0)).rounded(rpx(3.5)).map(|d| {
-        if st.installed {
-            d.bg(c::GREEN())
-        } else {
-            d.border_1().border_color(c::FG_MUTE())
-        }
-    });
+    // Installed reads as a filled dot, missing as a hollow ring — the shape
+    // difference is what survives grayscale (§2.3).
+    let dot = if st.installed {
+        status_dot(DOT_MD, c::GREEN())
+    } else {
+        status_dot(DOT_MD, gpui::transparent_black())
+            .border_1()
+            .border_color(c::FG_MUTE())
+    };
     let mut row = div()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
+        .gap(rpx(SPACE_LG))
         .w_full()
-        .px(rpx(8.0))
-        .py(rpx(5.0))
+        .px(rpx(SPACE_LG))
+        .py(rpx(SPACE_SM))
         .child(dot)
-        .child(
-            div()
-                .flex_1()
-                .text_size(rpx(12.0))
-                .text_color(label_color)
-                .child(cap(st.agent.label())),
-        )
-        .child(
-            div()
-                .text_size(rpx(12.0))
-                .text_color(status_color)
-                .child(status),
-        );
-    let slot = div().w(rpx(84.0)).flex().items_center();
+        .child(ui(cap(st.agent.label()), TEXT_BODY, label_color).flex_1())
+        .child(mono(status, TEXT_BODY, status_color));
+    let slot = div().w(rpx(TOOL_ACTION_W)).flex().items_center();
     let slot = if is_default {
-        slot.child(
-            div()
-                .px(rpx(6.0))
-                .py(rpx(2.0))
-                .rounded(rpx(4.0))
-                .bg(c::BG_HL())
-                .child(
-                    div()
-                        .text_size(rpx(10.0))
-                        .text_color(c::FG_DIM())
-                        .child("Default"),
-                ),
-        )
+        slot.child(keycap(mono("Default", TEXT_MICRO, c::FG_DIM())))
     } else if st.installed {
         slot.child(click_action(
             "set-default-agent",
@@ -956,12 +943,9 @@ fn update_status_line(layer: &ModalLayer, cx: &App) -> AnyElement {
         // Updating/Updated/UpdateFailed live in the progress modal.
         _ => ("Updating…".to_string(), c::FG_DIM()),
     };
-    div()
-        .px(rpx(8.0))
-        .py(rpx(4.0))
-        .text_size(rpx(11.0))
-        .text_color(color)
-        .child(text)
+    ui(text, TEXT_SMALL, color)
+        .px(rpx(SPACE_LG))
+        .py(rpx(SPACE_SM))
         .into_any_element()
 }
 
@@ -974,7 +958,11 @@ fn update_actions(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Vec
     let Some(release) = upgrade.available() else {
         return Vec::new();
     };
-    let mut row = div().flex().items_center().gap(rpx(8.0)).px(rpx(8.0));
+    let mut row = div()
+        .flex()
+        .items_center()
+        .gap(rpx(SPACE_LG))
+        .px(rpx(SPACE_LG));
     if upgrade.method() != grove_core::upgrade::InstallMethod::Unknown {
         row = row.child(click_action(
             "up-now",
@@ -1011,12 +999,11 @@ fn update_actions(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Vec
             .take(300)
             .collect();
         out.push(
-            div()
-                .px(rpx(8.0))
-                .pt(rpx(4.0))
-                .text_size(rpx(11.0))
-                .text_color(c::FG_MUTE())
-                .child(preview)
+            // Release-note prose, so sans (§5.2) — matching the full changelog
+            // list, which renders the same field with `ui`.
+            ui(preview, TEXT_SMALL, c::FG_MUTE())
+                .px(rpx(SPACE_LG))
+                .pt(rpx(SPACE_SM))
                 .into_any_element(),
         );
     }
@@ -1042,29 +1029,26 @@ fn shortcut_overlay(screen: keymap::Screen) -> AnyElement {
         div()
             .flex()
             .items_center()
-            .gap(rpx(10.0))
-            .py(rpx(3.0))
+            .gap(rpx(SPACE_XL))
+            .py(rpx(SPACE_SM))
             .child(
                 div()
-                    .w(rpx(150.0))
-                    .child(super::shell::keycap_text(chord_label(d), c::FG_DIM())),
+                    .w(rpx(CHORD_COL_W))
+                    .child(crate::views::components::keycap_text(
+                        chord_label(d),
+                        c::FG_DIM(),
+                    )),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .text_size(rpx(12.0))
-                    .text_color(c::FG_DIM())
-                    .child(d.description),
-            )
+            .child(ui(d.description, TEXT_BODY, c::FG_DIM()).flex_1())
     };
 
     let mut body = div().flex().flex_col();
     if grouped {
-        body = body.child(section_header("GLOBAL", 4.0, 4.0));
+        body = body.child(section_header("GLOBAL", SPACE_SM, SPACE_SM));
         for d in visible.iter().filter(|d| d.scopes.contains(&Scope::Global)) {
             body = body.child(row(d));
         }
-        body = body.child(section_header(screen.label(), 10.0, 4.0));
+        body = body.child(section_header(screen.label(), SPACE_XL, SPACE_SM));
         for d in visible
             .iter()
             .filter(|d| d.scopes.iter().any(|s| matches!(s, Scope::Screen(_))))
@@ -1078,7 +1062,7 @@ fn shortcut_overlay(screen: keymap::Screen) -> AnyElement {
     }
     // The two static rows (`settings.rs:665-669`).
     body = body
-        .child(section_header("EDITING", 10.0, 4.0))
+        .child(section_header("EDITING", SPACE_XL, SPACE_SM))
         .child(static_row(
             &format!(
                 "{}+c / {}+v",
@@ -1090,7 +1074,7 @@ fn shortcut_overlay(screen: keymap::Screen) -> AnyElement {
         .child(static_row("esc", "Close modals"));
 
     modal_panel(
-        640.0,
+        MODAL_W_XL,
         div()
             .child(modal_header("Keyboard shortcuts", c::MAGENTA()))
             .child(modal_body(body))
@@ -1106,20 +1090,17 @@ fn static_row(keys: &str, label: &'static str) -> impl IntoElement {
     div()
         .flex()
         .items_center()
-        .gap(rpx(10.0))
-        .py(rpx(3.0))
+        .gap(rpx(SPACE_XL))
+        .py(rpx(SPACE_SM))
         .child(
             div()
-                .w(rpx(170.0))
-                .child(super::shell::keycap_text(keys.to_string(), c::FG_DIM())),
+                .w(rpx(STATIC_CHORD_COL_W))
+                .child(crate::views::components::keycap_text(
+                    keys.to_string(),
+                    c::FG_DIM(),
+                )),
         )
-        .child(
-            div()
-                .flex_1()
-                .text_size(rpx(12.0))
-                .text_color(c::FG_DIM())
-                .child(label),
-        )
+        .child(ui(label, TEXT_BODY, c::FG_DIM()).flex_1())
 }
 
 /// Whether a registry row is visible on `screen`.
@@ -1172,26 +1153,22 @@ fn scripts_editor(
     let theme_row_content = div()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
+        .gap(rpx(SPACE_LG))
         .w_full()
         .child(
-            div()
-                .flex_1()
-                .text_size(rpx(12.0))
-                .text_color(if themes_enabled {
+            ui(
+                "Project theme",
+                TEXT_BODY,
+                if themes_enabled {
                     c::FG()
                 } else {
                     c::FG_MUTE()
-                })
-                .child("Project theme"),
+                },
+            )
+            .flex_1(),
         )
-        .child(
-            div()
-                .text_size(rpx(12.0))
-                .text_color(value_color)
-                .child(value_text),
-        )
-        .child(crate::icons::icon("chev-right", 12.0, c::FG_MUTE()));
+        .child(mono(value_text, TEXT_BODY, value_color))
+        .child(crate::icons::icon("chev-right", ICON_SM, c::FG_MUTE()));
 
     let theme_row: AnyElement = if themes_enabled {
         click_row(
@@ -1206,8 +1183,8 @@ fn scripts_editor(
         div()
             .flex()
             .items_center()
-            .px(rpx(8.0))
-            .py(rpx(5.0))
+            .px(rpx(SPACE_LG))
+            .py(rpx(SPACE_SM))
             .child(theme_row_content)
             .into_any_element()
     };
@@ -1221,7 +1198,7 @@ fn scripts_editor(
     let project_theme_section = div()
         .flex()
         .flex_col()
-        .gap(rpx(4.0))
+        .gap(rpx(SPACE_SM))
         .child(section_header("PROJECT THEME", 0.0, 0.0))
         .child(theme_row)
         .child(caption(theme_caption));
@@ -1230,15 +1207,10 @@ fn scripts_editor(
         let mut d = div()
             .flex()
             .flex_col()
-            .gap(rpx(5.0))
+            .gap(rpx(SPACE_SM))
             .w_full()
-            .child(div().text_size(rpx(12.0)).text_color(c::FG()).child(label))
-            .child(
-                div()
-                    .text_size(rpx(11.0))
-                    .text_color(c::FG_MUTE())
-                    .child(desc),
-            );
+            .child(ui(label, TEXT_BODY, c::FG()))
+            .child(ui(desc, TEXT_SMALL, c::FG_MUTE()));
         if let Some(f) = layer.fields.get(i) {
             d = d.child(gpui_component::input::Input::new(f.state()).w_full());
         }
@@ -1248,7 +1220,7 @@ fn scripts_editor(
     let fields = div()
         .flex()
         .flex_col()
-        .gap(rpx(16.0))
+        .gap(rpx(SPACE_3XL))
         .child(field(
             0,
             "Setup",
@@ -1273,14 +1245,14 @@ fn scripts_editor(
 
     let scroll_area = div()
         .id("scripts-editor-scroll")
-        .max_h(rpx(480.0))
+        .max_h(rpx(SCRIPTS_SCROLL_MAX_H))
         .overflow_y_scroll()
         .child(fields);
 
     let lifecycle_section = div()
         .flex()
         .flex_col()
-        .gap(rpx(4.0))
+        .gap(rpx(SPACE_SM))
         .child(section_header("LIFECYCLE SCRIPTS", 0.0, 0.0))
         .child(caption(
             "Shell snippets shared by every worktree of this project, run via $SHELL -lc. \
@@ -1291,7 +1263,7 @@ fn scripts_editor(
     let footer_row = div()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
+        .gap(rpx(SPACE_LG))
         .child(click_action(
             "se-archive",
             "Archive project",
@@ -1316,7 +1288,7 @@ fn scripts_editor(
         ));
 
     modal_panel(
-        560.0,
+        MODAL_W_LG,
         div()
             .child(modal_header(
                 format!("Project Settings — {project_name}"),
@@ -1326,7 +1298,7 @@ fn scripts_editor(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(rpx(12.0))
+                    .gap(rpx(SPACE_2XL))
                     .child(project_theme_section)
                     .child(lifecycle_section)
                     .child(footer_row),
@@ -1362,20 +1334,20 @@ fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
             div()
                 .flex()
                 .items_center()
-                .gap(rpx(10.0))
-                .child(crate::icons::spinner(16.0, c::FG_DIM(), tick))
+                .gap(rpx(SPACE_XL))
+                .child(crate::icons::spinner(ICON_LG, c::FG_DIM(), tick))
                 .child(body_text(label))
                 .into_any_element()
         }
         UpgradeState::Updated => div()
             .flex()
             .flex_col()
-            .gap(rpx(8.0))
+            .gap(rpx(SPACE_LG))
             .child(body_text("Update installed. Restart Grove to apply"))
             .child(
                 div()
                     .flex()
-                    .gap(rpx(8.0))
+                    .gap(rpx(SPACE_LG))
                     .child(click_action(
                         "up-restart",
                         "Restart",
@@ -1395,16 +1367,11 @@ fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         UpgradeState::UpdateFailed(e) => div()
             .flex()
             .flex_col()
-            .gap(rpx(6.0))
+            .gap(rpx(SPACE_MD))
             .child(body_text("Update failed"))
             // `UpgradeError`'s own `Display`, deliberately unchanged
             // (recorded ambiguity 7).
-            .child(
-                div()
-                    .text_size(rpx(11.0))
-                    .text_color(c::FG_MUTE())
-                    .child(e.clone()),
-            )
+            .child(ui(e.clone(), TEXT_SMALL, c::FG_MUTE()))
             .child(click_action(
                 "up-close",
                 "Close",
@@ -1426,7 +1393,7 @@ fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         UpgradeState::Updated => panel.child(modal_footer_hints(&[("esc", "later")])),
         _ => panel.child(modal_footer_hints(&[("esc", "close")])),
     };
-    modal_panel(420.0, panel).into_any_element()
+    modal_panel(MODAL_W_SM, panel).into_any_element()
 }
 
 /// Overlays Settings and returns to it on dismiss (carried decision 4). The
@@ -1439,8 +1406,8 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
             div()
                 .flex()
                 .items_center()
-                .gap(rpx(10.0))
-                .child(crate::icons::spinner(16.0, c::FG_DIM(), tick))
+                .gap(rpx(SPACE_XL))
+                .child(crate::icons::spinner(ICON_LG, c::FG_DIM(), tick))
                 .child(body_text("Loading…"))
                 .into_any_element()
         }
@@ -1451,44 +1418,34 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
             .child(body_text("No releases yet."))
             .into_any_element(),
         ChangelogState::Loaded(notes) => {
-            let mut list = div().flex().flex_col().gap(rpx(18.0));
+            let mut list = div().flex().flex_col().gap(rpx(SPACE_3XL));
             for n in notes {
-                let mut head = div().flex().items_center().gap(rpx(8.0)).child(
-                    div()
-                        .text_size(rpx(13.0))
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(c::FG())
-                        .child(n.tag.clone()),
+                let mut head = div().flex().items_center().gap(rpx(SPACE_LG)).child(
+                    mono(n.tag.clone(), TEXT_TITLE, c::FG()).font_weight(gpui::FontWeight::BOLD),
                 );
                 if !n.name.is_empty() && n.name != n.tag {
-                    head = head.child(
-                        div()
-                            .text_size(rpx(13.0))
-                            .text_color(c::FG_DIM())
-                            .child(n.name.clone()),
-                    );
+                    head = head.child(ui(n.name.clone(), TEXT_TITLE, c::FG_DIM()));
                 }
                 head = head.child(div().flex_1());
                 if !n.date.is_empty() {
-                    head = head.child(
-                        div()
-                            .text_size(rpx(11.0))
-                            .text_color(c::FG_MUTE())
-                            .child(n.date.clone()),
-                    );
+                    head = head.child(mono(n.date.clone(), TEXT_SMALL, c::FG_MUTE()));
                 }
                 list = list.child(
-                    div().flex().flex_col().gap(rpx(4.0)).child(head).child(
-                        div()
-                            .text_size(rpx(12.0))
-                            .text_color(c::FG_MUTE())
-                            .child(grove_core::upgrade::clean_markdown(&n.body)),
-                    ),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(rpx(SPACE_SM))
+                        .child(head)
+                        .child(ui(
+                            grove_core::upgrade::clean_markdown(&n.body),
+                            TEXT_BODY,
+                            c::FG_MUTE(),
+                        )),
                 );
             }
             div()
                 .id("changelog-scroll")
-                .max_h(rpx(420.0))
+                .max_h(rpx(CHANGELOG_SCROLL_MAX_H))
                 .overflow_y_scroll()
                 .child(list)
                 .into_any_element()
@@ -1496,14 +1453,14 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
     };
 
     modal_panel(
-        520.0,
+        MODAL_W_LG,
         div()
             .child(modal_header("Changelog", c::MAGENTA()))
             .child(modal_body(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(rpx(8.0))
+                    .gap(rpx(SPACE_LG))
                     .child(body)
                     .child(click_action(
                         "cl-close",

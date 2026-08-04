@@ -13,19 +13,48 @@
 //! `Rc<dyn Fn>` dispatch idiom `rows::RowCtx` uses.
 
 use crate::views::rpx;
+use crate::views::tokens::*;
 use std::rc::Rc;
 
-use gpui::{div, prelude::*, px, AnyElement, App, Hsla, MouseButton, MouseDownEvent, Window};
+use gpui::{div, prelude::*, px, AnyElement, App, MouseButton, MouseDownEvent, Window};
 
 use crate::activity::ActivityState;
 use crate::entities::session_registry::SessionId;
 use crate::icons::icon;
 use crate::keymap::{platform_mod_label, GlobalShortcut, SHORTCUTS};
 use crate::theme as c;
-use crate::views::rows::{path_basename, state_glyph, ui_text};
+use crate::views::components::{
+    divider_h_strong, icon_btn, mono, seg_button_content, seg_group, status_dot, ui, SegSide,
+};
+use crate::views::rows::{path_basename, state_glyph};
 
 /// App bar height (`src/gui/metrics.rs:15`).
 pub const APPBAR_H: f32 = 44.0;
+
+/// The attention dropdown panel's width. Per DESIGN.md §8.4 this is positional,
+/// singular geometry — *the dropdown's* width — so it is a named const here
+/// rather than a notch on a shared scale.
+pub const ATTENTION_PANEL_W: f32 = 280.0;
+
+/// The cog's box. One notch above [`CONTROL_H`] because the cog is the bar's
+/// only always-present control and sits hard against the window's right edge:
+/// at [`CONTROL_H`] its hover target clips against that edge, and the upgrade
+/// dot it carries top-right would overhang the box. An optical/target
+/// correction (§14 case 3), not a second control height.
+const COG_BOX: f32 = 28.0;
+
+/// The cog's glyph, sized to keep the same glyph-to-box ratio inside
+/// [`COG_BOX`] that [`ICON_MD`] has inside [`CONTROL_H`]. Between [`ICON_MD`]
+/// and [`ICON_LG`], for the same reason [`COG_BOX`] is off the control scale.
+const COG_ICON: f32 = 15.0;
+
+/// The waiting row's left accent bar. `rows.rs` draws the same 3px bar on its
+/// own waiting rows; the two are independent local constants because §8.4 keeps
+/// positional geometry in the module that owns the surface.
+const ACCENT_BAR_W: f32 = 3.0;
+
+/// One glyph segment's box in the `+` │ `grid` combo — see its use site.
+const GLYPH_SEG_W: f32 = 26.0;
 
 /// What a click on the window chrome asks the workspace to do. The chrome
 /// never reaches into state itself (same contract as `rows::RowAction`).
@@ -111,21 +140,14 @@ pub fn appbar(ctx: &AppbarCtx) -> AnyElement {
         .w(rpx(ctx.sidebar_width))
         .flex()
         .items_center()
-        .px(rpx(16.0))
-        .child(
-            div()
-                .font(gpui::font(crate::fonts::UI_FAMILY))
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_size(rpx(14.0))
-                .text_color(c::MAGENTA())
-                .child("grove"),
-        );
+        .px(rpx(SPACE_3XL))
+        .child(ui("grove", TEXT_TITLE, c::MAGENTA()).font_weight(gpui::FontWeight::BOLD));
 
     let mut right = div()
         .flex()
         .items_center()
-        .gap(rpx(4.0))
-        .px(rpx(16.0))
+        .gap(rpx(SPACE_SM))
+        .px(rpx(SPACE_3XL))
         .child(view_control(ctx));
     if !ctx.waiting.is_empty() {
         right = right.child(attention_pill(ctx));
@@ -147,7 +169,7 @@ pub fn appbar(ctx: &AppbarCtx) -> AnyElement {
                 .child(div().flex_1())
                 .child(right),
         )
-        .child(div().h(px(1.0)).w_full().bg(c::BORDER()))
+        .child(divider_h_strong())
         .into_any_element()
 }
 
@@ -156,124 +178,119 @@ pub fn appbar(ctx: &AppbarCtx) -> AnyElement {
 /// to logged stubs (carried amendment 7).
 fn view_control(ctx: &AppbarCtx) -> AnyElement {
     if !ctx.grid_view {
-        return div()
-            .id("appbar-grid")
-            .size(rpx(22.0))
+        let dispatch = Rc::clone(&ctx.dispatch);
+        return icon_btn(
+            "appbar-grid",
+            "grid",
+            CONTROL_H,
+            CONTROL_H,
+            ICON_SM,
+            c::FG_MUTE(),
+            c::BG_HOVER(),
+            None,
+            false,
+            move |window, cx| dispatch(ChromeAction::ToggleGridView, window, cx),
+        )
+        .into_any_element();
+    }
+    // A fixed-size glyph box per segment: the shared `seg_button` padding is
+    // sized for a text label, and this combo must stay exactly as tall as the
+    // lone toggle it replaces (`appbar.rs:103-111`).
+    let glyph = |name: &'static str, color| {
+        div()
+            // 26, not CONTROL_H: a square box would make the two-segment combo
+            // narrower than the lone toggle it replaces (§14 case 3).
+            .w(rpx(GLYPH_SEG_W))
+            .h(rpx(CONTROL_H))
             .flex()
             .items_center()
             .justify_center()
-            .rounded(rpx(4.0))
-            .hover(|s| s.bg(c::BG_HOVER()))
-            .child(icon("grid", 13.0, c::FG_MUTE()))
-            .on_mouse_down(
-                MouseButton::Left,
-                on_chrome(&ctx.dispatch, ChromeAction::ToggleGridView),
-            )
-            .into_any_element();
-    }
-    let plus = div()
-        .id("appbar-plus")
-        .w(rpx(26.0))
-        .h(rpx(22.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_l(rpx(4.0))
-        .hover(|s| s.bg(c::BG_HOVER()))
-        .child(icon("plus", 13.0, c::MAGENTA()))
-        .on_mouse_down(
-            MouseButton::Left,
-            on_chrome(&ctx.dispatch, ChromeAction::OpenSessionLauncher),
-        );
+            .child(icon(name, ICON_SM, color))
+    };
+    let d_plus = Rc::clone(&ctx.dispatch);
+    let plus = seg_button_content(
+        "appbar-plus",
+        glyph("plus", c::MAGENTA()),
+        false,
+        SegSide::Left,
+        false,
+        Some(Box::new(move |window, cx| {
+            d_plus(ChromeAction::OpenSessionLauncher, window, cx);
+        })),
+    );
     // A short, fixed-height hairline: a full-height one would stretch the combo
     // taller than the lone toggle (`appbar.rs:103-111`).
     let seg_divider = div().w(px(1.0)).h(rpx(14.0)).bg(c::BORDER());
-    let grid_seg = div()
-        .id("appbar-grid-seg")
-        .w(rpx(26.0))
-        .h(rpx(22.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_r(rpx(4.0))
-        .bg(c::BG_HL())
-        .hover(|s| s.bg(c::BG_HOVER()))
-        .child(icon("grid", 13.0, c::CYAN()))
-        .on_mouse_down(
-            MouseButton::Left,
-            on_chrome(&ctx.dispatch, ChromeAction::ToggleGridView),
-        );
-    div()
-        .flex()
-        .items_center()
-        .rounded(rpx(5.0))
-        .border_1()
-        .border_color(c::BORDER())
-        .child(plus)
-        .child(seg_divider)
-        .child(grid_seg)
-        .into_any_element()
+    let d_grid = Rc::clone(&ctx.dispatch);
+    let grid_seg = seg_button_content(
+        "appbar-grid-seg",
+        glyph("grid", c::CYAN()),
+        true,
+        SegSide::Right,
+        false,
+        Some(Box::new(move |window, cx| {
+            d_grid(ChromeAction::ToggleGridView, window, cx);
+        })),
+    );
+    seg_group(
+        div()
+            .flex()
+            .items_center()
+            .child(plus)
+            .child(seg_divider)
+            .child(grid_seg),
+    )
+    .into_any_element()
 }
 
 /// Cog → Settings, with the `GREEN()` upgrade dot overlaid top-right only
 /// while an upgrade is available (`src/gui/view/appbar.rs:29`).
 fn cog(ctx: &AppbarCtx) -> AnyElement {
-    div()
-        .id("appbar-cog")
-        .relative()
-        .size(rpx(28.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(rpx(4.0))
-        .hover(|s| s.bg(c::BG_HOVER()))
-        .child(icon("cog", 15.0, c::FG_DIM()))
-        .when(ctx.upgrade_available, |d| {
-            d.child(
-                div()
-                    .absolute()
-                    .top(px(0.0))
-                    .right(px(0.0))
-                    .size(rpx(6.0))
-                    .rounded_full()
-                    .bg(c::GREEN()),
-            )
-        })
-        .on_mouse_down(
-            MouseButton::Left,
-            on_chrome(&ctx.dispatch, ChromeAction::OpenSettings),
+    let dispatch = Rc::clone(&ctx.dispatch);
+    icon_btn(
+        "appbar-cog",
+        "cog",
+        COG_BOX,
+        COG_BOX,
+        COG_ICON,
+        c::FG_DIM(),
+        c::BG_HOVER(),
+        None,
+        false,
+        move |window, cx| dispatch(ChromeAction::OpenSettings, window, cx),
+    )
+    .relative()
+    .when(ctx.upgrade_available, |d| {
+        d.child(
+            status_dot(DOT_SM, c::GREEN())
+                .absolute()
+                .top(px(0.0))
+                .right(px(0.0)),
         )
-        .into_any_element()
+    })
+    .into_any_element()
 }
 
 /// Rendered **only** while something waits (`appbar.rs:151-208`).
 fn attention_pill(ctx: &AppbarCtx) -> AnyElement {
-    let dot_color = Hsla {
-        a: pill_dot_alpha(ctx.pulse),
-        ..c::AMBER()
-    };
-    let bg = Hsla {
-        a: 0.08,
-        ..c::AMBER()
-    };
-    let bg_hover = Hsla {
-        a: 0.14,
-        ..c::AMBER()
-    };
+    let dot_color = c::alpha(c::AMBER(), pill_dot_alpha(ctx.pulse));
+    let bg = c::alpha(c::AMBER(), 0.08);
+    let bg_hover = c::alpha(c::AMBER(), 0.14);
     div()
         .id("appbar-attention-pill")
         .flex()
         .items_center()
-        .gap(rpx(6.0))
-        .px(rpx(10.0))
-        .py(rpx(4.0))
-        .rounded(rpx(999.0))
+        .gap(rpx(SPACE_MD))
+        .px(rpx(SPACE_XL))
+        .py(rpx(SPACE_SM))
+        .rounded(rpx(RADIUS_FULL))
         .border_1()
         .border_color(c::AMBER())
         .bg(bg)
         .hover(move |s| s.bg(bg_hover))
-        .child(div().size(rpx(7.0)).rounded_full().bg(dot_color))
-        .child(ui_text(pill_label(ctx.waiting.len()), 11.0, c::AMBER()))
+        .cursor_pointer()
+        .child(status_dot(DOT_MD, dot_color))
+        .child(ui(pill_label(ctx.waiting.len()), TEXT_SMALL, c::AMBER()))
         .on_mouse_down(
             MouseButton::Left,
             on_chrome(&ctx.dispatch, ChromeAction::ToggleAttentionQueue),
@@ -286,33 +303,25 @@ fn attention_pill(ctx: &AppbarCtx) -> AnyElement {
 /// dropdown, so there is no backdrop and nothing to dismiss: clicking jumps
 /// straight to the first waiting session.
 pub fn zen_attention_pill(ctx: &AppbarCtx) -> AnyElement {
-    let dot_color = Hsla {
-        a: pill_dot_alpha(ctx.pulse),
-        ..c::AMBER()
-    };
-    let bg = Hsla {
-        a: 0.08,
-        ..c::AMBER()
-    };
-    let bg_hover = Hsla {
-        a: 0.14,
-        ..c::AMBER()
-    };
+    let dot_color = c::alpha(c::AMBER(), pill_dot_alpha(ctx.pulse));
+    let bg = c::alpha(c::AMBER(), 0.08);
+    let bg_hover = c::alpha(c::AMBER(), 0.14);
     let pill = div()
         .id("zen-attention-pill")
         .flex()
         .items_center()
-        .gap(rpx(6.0))
-        .px(rpx(8.0))
-        .py(rpx(2.0))
-        .rounded(rpx(999.0))
+        .gap(rpx(SPACE_MD))
+        .px(rpx(SPACE_LG))
+        .py(rpx(SPACE_XS))
+        .rounded(rpx(RADIUS_FULL))
         .border_1()
         .border_color(c::AMBER())
         .bg(bg)
         .hover(move |s| s.bg(bg_hover))
-        .child(div().size(rpx(6.0)).rounded_full().bg(dot_color))
+        .cursor_pointer()
+        .child(status_dot(DOT_SM, dot_color))
         // The bare count, not the appbar pill's "{n} need you" copy.
-        .child(ui_text(ctx.waiting.len().to_string(), 11.0, c::AMBER()))
+        .child(ui(ctx.waiting.len().to_string(), TEXT_SMALL, c::AMBER()))
         .on_mouse_down(
             MouseButton::Left,
             on_chrome(&ctx.dispatch, ChromeAction::JumpToWaiting),
@@ -320,8 +329,8 @@ pub fn zen_attention_pill(ctx: &AppbarCtx) -> AnyElement {
 
     div()
         .absolute()
-        .top(rpx(12.0))
-        .right(rpx(12.0))
+        .top(rpx(SPACE_2XL))
+        .right(rpx(SPACE_2XL))
         .child(pill)
         .into_any_element()
 }
@@ -338,22 +347,22 @@ pub fn attention_dropdown(ctx: &AppbarCtx) -> AnyElement {
     }
 
     let panel = div()
-        .w(rpx(280.0))
+        .w(rpx(ATTENTION_PANEL_W))
         .flex()
         .flex_col()
         .bg(c::BG_STRIP())
-        .rounded(rpx(6.0))
+        .rounded(rpx(RADIUS_GROUP))
         .border_1()
         .border_color(c::BORDER())
         .overflow_hidden()
         .child(rows)
-        .child(div().h(px(1.0)).w_full().bg(c::BORDER()))
+        .child(divider_h_strong())
         .child(
             div()
                 .w_full()
-                .pl(rpx(12.0))
-                .pr(rpx(10.0))
-                .py(rpx(6.0))
+                .pl(rpx(SPACE_2XL))
+                .pr(rpx(SPACE_XL))
+                .py(rpx(SPACE_MD))
                 .child(footer_hint()),
         );
 
@@ -376,8 +385,12 @@ pub fn attention_dropdown(ctx: &AppbarCtx) -> AnyElement {
         .child(
             div()
                 .absolute()
-                .top(rpx(APPBAR_H + 1.0))
-                .right(rpx(16.0))
+                // The bar's height zooms; the hairline under it does not
+                // (§6.3), so the two are applied in their own units rather
+                // than folded into one rems value.
+                .top(rpx(APPBAR_H))
+                .mt(px(1.0))
+                .right(rpx(SPACE_3XL))
                 .child(panel),
         )
         .into_any_element()
@@ -394,25 +407,20 @@ fn dropdown_row(row: &WaitingRow, ctx: &AppbarCtx) -> AnyElement {
         .w_full()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
-        .pl(rpx(12.0))
-        .pr(rpx(10.0))
-        .py(rpx(6.0))
+        .gap(rpx(SPACE_LG))
+        .pl(rpx(SPACE_2XL))
+        .pr(rpx(SPACE_XL))
+        .py(rpx(SPACE_MD))
         .hover(|s| s.bg(c::BG_HOVER()))
+        .cursor_pointer()
         .child(state_glyph(row.state, ctx.tick, ctx.pulse))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(1.0))
-                .child(ui_text(row.agent_label, 11.0, c::FG()))
-                .child(
-                    div()
-                        .font(gpui::font(crate::fonts::MONO_FAMILY))
-                        .text_size(rpx(10.0))
-                        .text_color(c::FG_MUTE())
-                        .child(subtitle),
-                ),
+                .gap(rpx(SPACE_XS))
+                .child(ui(row.agent_label, TEXT_SMALL, c::FG()))
+                .child(mono(subtitle, TEXT_MICRO, c::FG_MUTE())),
         )
         // 3px amber left accent bar, stacked over the row — same idiom as the
         // waiting sidebar row.
@@ -421,7 +429,7 @@ fn dropdown_row(row: &WaitingRow, ctx: &AppbarCtx) -> AnyElement {
                 .absolute()
                 .top(px(0.0))
                 .left(px(0.0))
-                .w(rpx(3.0))
+                .w(rpx(ACCENT_BAR_W))
                 .h_full()
                 .bg(c::AMBER()),
         )
@@ -440,21 +448,15 @@ fn footer_hint() -> AnyElement {
         return div()
             .flex()
             .items_center()
-            .gap(px(1.0))
-            .child(icon("command", 10.0, c::FG_MUTE()))
-            .child(
-                div()
-                    .font(gpui::font(crate::fonts::MONO_FAMILY))
-                    .text_size(rpx(10.0))
-                    .text_color(c::FG_MUTE())
-                    .child(key.to_string()),
-            )
-            .child(ui_text(" jump to next", 10.0, c::FG_MUTE()))
+            .gap(rpx(SPACE_XS))
+            .child(icon("command", ICON_XS, c::FG_MUTE()))
+            .child(mono(key.to_string(), TEXT_MICRO, c::FG_MUTE()))
+            .child(ui(" jump to next", TEXT_MICRO, c::FG_MUTE()))
             .into_any_element();
     }
-    ui_text(
+    ui(
         format!("{}+{key} jump to next", platform_mod_label()),
-        10.0,
+        TEXT_MICRO,
         c::FG_MUTE(),
     )
     .into_any_element()

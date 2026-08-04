@@ -9,11 +9,13 @@
 //! the Plan 07 Task 6 Step 4 report.
 
 use crate::views::rpx;
+use crate::views::tokens::*;
 use std::rc::Rc;
 
 use gpui::{div, prelude::*, px, AnyElement, App, Entity, MouseButton, MouseDownEvent, Window};
 
 use crate::theme as c;
+use crate::views::components::{divider_h, flat_icon_btn, icon_btn, status_dot, ui};
 use crate::views::grid::empty_state;
 use crate::views::session_header::SESSBAR_H;
 use crate::views::sidebar::SIDEBAR_DIVIDER_W;
@@ -33,6 +35,15 @@ pub enum PanelAction {
 }
 
 pub type PanelDispatch = Rc<dyn Fn(PanelAction, &mut Window, &mut App)>;
+
+/// One shell tab's height. Two pixels above [`CONTROL_H`] so a tab carrying a
+/// dot, a glyph and a close button still centres inside the `SESSBAR_H` strip
+/// (`terminal.rs:319-393`).
+const TAB_H: f32 = 24.0;
+
+/// The tab's close-button hit box — square, and the tallest box that still
+/// leaves a pixel of breathing room inside [`TAB_H`].
+const TAB_CLOSE_BOX: f32 = 18.0;
 
 /// One panel shell as a tab draws it.
 pub struct ShellTab {
@@ -61,15 +72,13 @@ struct HintTooltip {
 impl gpui::Render for HintTooltip {
     fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
         div()
-            .px(rpx(8.0))
-            .py(rpx(4.0))
-            .rounded(rpx(4.0))
+            .px(rpx(SPACE_LG))
+            .py(rpx(SPACE_SM))
+            .rounded(rpx(RADIUS_CONTROL))
             .bg(c::BG_STRIP())
             .border_1()
             .border_color(c::BORDER())
-            .text_size(rpx(11.0))
-            .text_color(c::FG_DIM())
-            .child(self.label)
+            .child(ui(self.label, TEXT_SMALL, c::FG_DIM()))
     }
 }
 
@@ -91,52 +100,47 @@ pub fn term_panel(ctx: &PanelCtx) -> AnyElement {
         .id("panel-tab-strip")
         .flex()
         .items_center()
-        .gap(rpx(6.0))
+        .gap(rpx(SPACE_MD))
         .overflow_x_scroll();
     for (i, tab) in ctx.tabs.iter().enumerate() {
         tabs = tabs.child(shell_tab(i, tab, ctx));
     }
-    tabs = tabs.child(
-        div()
-            .id("panel-add-shell")
-            .size(rpx(22.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(rpx(4.0))
-            .hover(|s| s.bg(c::BG_HOVER()))
-            .child(crate::icons::icon("plus", 13.0, c::FG_DIM()))
-            .on_mouse_down(
-                MouseButton::Left,
-                on_panel(&ctx.dispatch, PanelAction::NewShell),
-            ),
-    );
+    tabs = tabs.child({
+        let d = std::rc::Rc::clone(&ctx.dispatch);
+        flat_icon_btn(
+            "panel-add-shell",
+            "plus",
+            CONTROL_H,
+            ICON_MD,
+            move |window, cx| d(PanelAction::NewShell, window, cx),
+        )
+    });
 
     let strip = div()
         .h(rpx(SESSBAR_H))
         .w_full()
         .flex()
         .items_center()
-        .px(rpx(10.0))
+        .px(rpx(SPACE_XL))
         .bg(c::BG_STRIP())
         .overflow_hidden()
         .child(div().flex_1().overflow_hidden().child(tabs))
-        .child(
-            div()
-                .id("panel-collapse")
-                .size(rpx(22.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(rpx(4.0))
-                .hover(|s| s.bg(c::BG_HOVER()))
-                .child(crate::icons::icon("collapse-right", 13.0, c::FG_MUTE()))
-                .tooltip(|window, cx| hint_tooltip("collapse panel", window, cx))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    on_panel(&ctx.dispatch, PanelAction::Collapse),
-                ),
-        );
+        .child({
+            let d = std::rc::Rc::clone(&ctx.dispatch);
+            icon_btn(
+                "panel-collapse",
+                "collapse-right",
+                CONTROL_H,
+                CONTROL_H,
+                ICON_MD,
+                c::FG_MUTE(),
+                c::BG_HOVER(),
+                None,
+                false,
+                move |window, cx| d(PanelAction::Collapse, window, cx),
+            )
+            .tooltip(|window, cx| hint_tooltip("collapse panel", window, cx))
+        });
 
     let surface: AnyElement = ctx.view.clone().map_or_else(
         || empty_state("no shell here", "press ＋ to open one in this worktree"),
@@ -148,8 +152,8 @@ pub fn term_panel(ctx: &PanelCtx) -> AnyElement {
                 .overflow_hidden()
                 // The same padding iced's `pty()` applies (`metrics.rs:53-56`),
                 // so the panel's cell grid matches the iced build's.
-                .px(rpx(16.0))
-                .py(rpx(12.0))
+                .px(rpx(SPACE_3XL))
+                .py(rpx(SPACE_2XL))
                 .child(view)
                 .into_any_element()
         },
@@ -161,7 +165,7 @@ pub fn term_panel(ctx: &PanelCtx) -> AnyElement {
         .size_full()
         .bg(c::BG())
         .child(strip)
-        .child(div().h(px(1.0)).w_full().bg(c::BORDER_SOFT()))
+        .child(divider_h())
         .child(surface)
         .into_any_element()
 }
@@ -176,34 +180,35 @@ fn shell_tab(idx: usize, tab: &ShellTab, ctx: &PanelCtx) -> AnyElement {
         c::FG_MUTE()
     };
     let glyph_color = if tab.active { c::CYAN() } else { c::FG_DIM() };
+    let close = {
+        let d = Rc::clone(&ctx.dispatch);
+        icon_btn(
+            gpui::SharedString::from(format!("panel-tab-close-{idx}")),
+            "close",
+            TAB_CLOSE_BOX,
+            TAB_CLOSE_BOX,
+            ICON_XS,
+            c::FG_MUTE(),
+            gpui::transparent_black(),
+            Some(c::RED()),
+            false,
+            move |window, cx| d(PanelAction::CloseShell(idx), window, cx),
+        )
+        .tooltip(|window, cx| hint_tooltip("close shell", window, cx))
+    };
     let mut el = div()
         .id(gpui::SharedString::from(format!("panel-tab-{idx}")))
-        .h(rpx(24.0))
+        .h(rpx(TAB_H))
         .flex()
         .items_center()
-        .gap(rpx(6.0))
-        .px(rpx(8.0))
-        .rounded(rpx(4.0))
+        .gap(rpx(SPACE_MD))
+        .px(rpx(SPACE_LG))
+        .rounded(rpx(RADIUS_CONTROL))
+        .cursor_pointer()
         .hover(|s| s.bg(c::BG_HOVER()))
-        .child(div().size(rpx(6.0)).rounded_full().bg(dot_color))
-        .child(crate::icons::icon("term", 13.0, glyph_color))
-        .child(
-            div()
-                .id(gpui::SharedString::from(format!("panel-tab-close-{idx}")))
-                .w(rpx(16.0))
-                .h(rpx(18.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(c::FG_MUTE())
-                .hover(|s| s.text_color(c::RED()))
-                .child(crate::icons::icon("close", 11.0, c::FG_MUTE()))
-                .tooltip(|window, cx| hint_tooltip("close shell", window, cx))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    on_panel(&ctx.dispatch, PanelAction::CloseShell(idx)),
-                ),
-        )
+        .child(status_dot(DOT_SM, dot_color))
+        .child(crate::icons::icon("term", ICON_SM, glyph_color))
+        .child(close)
         .on_mouse_down(
             MouseButton::Left,
             on_panel(&ctx.dispatch, PanelAction::SelectShell(idx)),

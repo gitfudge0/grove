@@ -20,13 +20,13 @@
 #![allow(dead_code)]
 
 use crate::views::rpx;
+use crate::views::tokens::*;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnyElement, App, Div, FontWeight, Hsla, MouseButton, MouseDownEvent, SharedString,
-    Window,
+    div, px, AnyElement, App, FontWeight, MouseButton, MouseDownEvent, SharedString, Window,
 };
 use grove_core::agent::Agent;
 
@@ -34,11 +34,46 @@ use crate::activity::{most_urgent, ActivityState};
 use crate::entities::activity_store::ActivityStore;
 use crate::entities::session_registry::SessionId;
 use crate::entities::workspace_state::{TreeSnapshot, WorkspaceState};
+use crate::icons;
 use crate::theme as c;
-use crate::{fonts, icons};
+use crate::views::components::{icon_btn, keycap_filled, mono, status_dot, tracked, ui};
 
 /// Sidebar row height (`src/gui/metrics.rs:7`).
 pub const ROW_H: f32 = 28.0;
+
+/// The extra height a worktree row gains when it shows a branch chip: the
+/// chip's own line. [`row_height`] and the renderer must both use this — the
+/// agent-menu overlay is positioned from [`row_height`], so a renderer that
+/// disagreed would misplace the menu (§8.1).
+const BRANCH_LINE_H: f32 = 14.0;
+
+/// The fixed-width slot every row's leading glyph (twisty, state glyph) sits
+/// in. It is a *reserved* width: the glyph inside changes with state, and §2.4
+/// forbids the row reflowing when it does. All three call sites share this one
+/// constant so the columns line up down the tree.
+const GLYPH_SLOT_W: f32 = 14.0;
+
+/// Worktree-row indent: one glyph slot in from the project row's own
+/// [`SPACE_2XL`] gutter, so a worktree's twisty sits under the project's
+/// label rather than under its twisty. `12 + 14 = 26`.
+const INDENT_WORKTREE: f32 = SPACE_2XL + GLYPH_SLOT_W;
+/// Session-row indent: the same step again, taken from the worktree row's
+/// geometry — its glyph slot plus the `SPACE_MD` gap that follows it — so a
+/// session's state glyph starts exactly where its worktree's *name* does.
+/// `26 + 14 + 6 = 46`. The two rungs are derived from one another; neither is
+/// an independent number.
+const INDENT_SESSION: f32 = INDENT_WORKTREE + GLYPH_SLOT_W + SPACE_MD;
+
+/// Vertical breathing room around the sidebar's inline empty rows. Taller than
+/// any spacing notch on purpose — this is a block of prose standing in for a
+/// list, not a row in one (§9.2's sanctioned local exception).
+const EMPTY_ROW_PAD_Y: f32 = 24.0;
+
+/// Width of the amber accent bar overlaid on a row that needs input. Overlaid
+/// rather than a `border_l` so it never shifts the row's content.
+/// (`src/views/appbar.rs` draws the same 3px bar; the two are independent
+/// call sites of the same visual idea.)
+const ATTENTION_BAR_W: f32 = 3.0;
 
 // ── pure row helpers ───────────────────────────────────────────────────────
 
@@ -54,7 +89,7 @@ pub fn worktree_shows_branch(is_main: bool, branch: &str, name: &str) -> bool {
 #[must_use]
 pub fn row_height(show_branch: bool) -> f32 {
     if show_branch {
-        ROW_H + 14.0
+        ROW_H + BRANCH_LINE_H
     } else {
         ROW_H
     }
@@ -445,21 +480,18 @@ impl RowCtx {
 /// layout never moves.
 pub fn state_glyph(state: ActivityState, tick: u64, pulse: f32) -> AnyElement {
     let inner = match state {
-        ActivityState::Working => icons::spinner(11.0, c::GREEN(), tick),
+        ActivityState::Working => icons::spinner(ICON_SM, c::GREEN(), tick),
         ActivityState::WaitingForInput => icons::icon(
             "question",
-            11.0,
-            Hsla {
-                a: 1.0 - 0.45 * pulse,
-                ..c::AMBER()
-            },
+            ICON_SM,
+            c::alpha(c::AMBER(), 1.0 - 0.45 * pulse),
         ),
-        ActivityState::Done => icons::icon("check", 11.0, c::FG_MUTE()),
-        ActivityState::Idle => icons::icon("dot", 11.0, c::FG_MUTE()),
-        ActivityState::Exited => icons::icon("ring", 11.0, c::FG_MUTE()),
+        ActivityState::Done => icons::icon("check", ICON_SM, c::FG_MUTE()),
+        ActivityState::Idle => icons::icon("dot", ICON_SM, c::FG_MUTE()),
+        ActivityState::Exited => icons::icon("ring", ICON_SM, c::FG_MUTE()),
     };
     div()
-        .w(rpx(14.0))
+        .w(rpx(GLYPH_SLOT_W))
         .flex_none()
         .flex()
         .items_center()
@@ -484,51 +516,27 @@ fn tool_button(
     } else {
         (c::BG_HOVER(), c::FG())
     };
-    div()
-        .id(SharedString::from(format!("{id}-{key}")))
-        .size(rpx(22.0))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(rpx(4.0))
-        .border_1()
-        .border_color(gpui::transparent_black())
-        .text_color(c::FG_MUTE())
-        .hover(move |s| {
-            s.bg(hover_bg)
-                .text_color(hover_fg)
-                .border_color(c::BORDER_SOFT())
-        })
-        .child(icons::icon(glyph, size, c::FG_MUTE()))
-        .on_mouse_down(MouseButton::Left, ctx.on(action))
-        .into_any_element()
-}
-
-pub fn ui_text(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
-    div()
-        .font(gpui::font(fonts::UI_FAMILY))
-        .text_size(rpx(size))
-        .text_color(color)
-        .child(content.into())
+    let dispatch = Rc::clone(&ctx.dispatch);
+    icon_btn(
+        SharedString::from(format!("{id}-{key}")),
+        glyph,
+        CONTROL_H,
+        CONTROL_H,
+        size,
+        c::FG_MUTE(),
+        hover_bg,
+        Some(hover_fg),
+        true,
+        move |window, cx| dispatch(action, window, cx),
+    )
+    .flex_none()
+    .into_any_element()
 }
 
 /// The `main` tag (`src/gui/rows.rs:253-265`). Shares its slot with the hover
 /// icons so the two never compete for width.
 fn main_tag() -> AnyElement {
-    ui_text("main", 10.0, c::GREEN()).into_any_element()
-}
-
-/// Letter-spaced section label. Neither iced nor gpui at this rev has
-/// letter-spacing, so the characters are joined with U+2009 THIN SPACE exactly
-/// as `src/gui/rows.rs:650-655` does.
-#[must_use]
-pub fn tracked(label: &str) -> String {
-    label
-        .chars()
-        .map(String::from)
-        .collect::<Vec<_>>()
-        .join("\u{2009}")
+    ui("main", TEXT_MICRO, c::GREEN()).into_any_element()
 }
 
 /// One row, fully resolved. Reads only from `row` and `ctx` — never back into
@@ -579,47 +587,46 @@ fn project_row(
     let mut right = div()
         .flex()
         .items_center()
-        .gap(rpx(6.0))
-        .pr(rpx(8.0))
+        .gap(rpx(SPACE_MD))
+        .pr(rpx(SPACE_LG))
         .when_some(rollup, |d, st| {
             d.child(state_glyph(st, ctx.tick, ctx.pulse))
         });
     if is_git {
-        // Worktrees and worktree-lifecycle scripts are git-only.
-        right = right
-            .child(tool_button(
-                "wt-add",
-                idx,
-                "plus",
-                12.0,
-                false,
-                ctx,
-                RowAction::AddWorktree(idx),
-            ))
-            .child(tool_button(
-                "proj-scripts",
-                idx,
-                "cog",
-                12.0,
-                false,
-                ctx,
-                RowAction::ProjectScripts(idx),
-            ));
+        // Worktrees are git-only.
+        right = right.child(tool_button(
+            "wt-add",
+            idx,
+            "plus",
+            ICON_SM,
+            false,
+            ctx,
+            RowAction::AddWorktree(idx),
+        ));
     } else {
         right = right.child(
             div()
                 .flex()
                 .items_center()
-                .gap(rpx(5.0))
-                .child(icons::icon("no-git", 11.0, c::FG_MUTE()))
-                .child(ui_text("no git", 10.0, c::FG_MUTE())),
+                .gap(rpx(SPACE_SM))
+                .child(icons::icon("no-git", ICON_SM, c::FG_MUTE()))
+                .child(ui("no git", TEXT_MICRO, c::FG_MUTE())),
         );
     }
+    right = right.child(tool_button(
+        "proj-scripts",
+        idx,
+        "cog",
+        ICON_SM,
+        false,
+        ctx,
+        RowAction::ProjectScripts(idx),
+    ));
     right = right.child(tool_button(
         "proj-remove",
         idx,
         "trash",
-        12.0,
+        ICON_SM,
         true,
         ctx,
         RowAction::RemoveProject(idx),
@@ -637,19 +644,19 @@ fn project_row(
                 .flex_1()
                 .min_w_0()
                 .items_center()
-                .gap(rpx(8.0))
-                .pl(rpx(12.0))
-                .pr(rpx(4.0))
+                .gap(rpx(SPACE_LG))
+                .pl(rpx(SPACE_2XL))
+                .pr(rpx(SPACE_SM))
                 .overflow_hidden()
+                .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, ctx.on(RowAction::SelectProject(idx)))
+                .child(div().w(rpx(GLYPH_SLOT_W)).flex_none().child(icons::icon(
+                    twist,
+                    ICON_XS,
+                    c::FG_MUTE(),
+                )))
                 .child(
-                    div()
-                        .w(rpx(14.0))
-                        .flex_none()
-                        .child(icons::icon(twist, 10.0, c::FG_MUTE())),
-                )
-                .child(
-                    ui_text(name.to_uppercase(), 12.0, c::FG())
+                    ui(name.to_uppercase(), TEXT_BODY, c::FG())
                         .font_weight(FontWeight::BOLD)
                         .truncate(),
                 )
@@ -658,17 +665,13 @@ fn project_row(
                         .flex()
                         .flex_none()
                         .items_center()
-                        .gap(rpx(4.0))
-                        .child(dot(count_color))
-                        .child(ui_text(format!("{count}"), 11.0, count_color)),
+                        .gap(rpx(SPACE_SM))
+                        .child(status_dot(DOT_SM, count_color))
+                        .child(mono(format!("{count}"), TEXT_SMALL, count_color)),
                 ),
         )
         .child(right)
         .into_any_element()
-}
-
-fn dot(color: Hsla) -> Div {
-    div().size(rpx(6.0)).rounded_full().bg(color)
 }
 
 fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
@@ -695,8 +698,7 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
     let hovered = ctx.hovered_wt == Some((proj, wt));
 
     // Non-git project root: flag it so the user knows sessions run directly in
-    // the project path with no branch isolation / worktrees
-    // (`src/gui/rows.rs:326-349`).
+    // the project path with no branch isolation / worktrees.
     let no_git = *is_main && !*is_git;
 
     let mut label = if no_git {
@@ -704,41 +706,42 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
             .flex()
             .min_w_0()
             .items_center()
-            .gap(rpx(5.0))
+            .gap(rpx(SPACE_SM))
             .overflow_hidden()
-            .child(ui_text(name.clone(), 13.0, c::FG_DIM()).truncate())
-            .child(icons::icon("no-git", 11.0, c::FG_MUTE()).flex_none())
-            .child(ui_text("no git", 10.0, c::FG_MUTE()).flex_none())
+            .child(ui(name.clone(), TEXT_TITLE, c::FG_DIM()).truncate())
+            .child(icons::icon("no-git", ICON_SM, c::FG_MUTE()).flex_none())
+            .child(ui("no git", TEXT_MICRO, c::FG_MUTE()).flex_none())
     } else {
-        div().flex().flex_col().min_w_0().overflow_hidden()
+        div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .overflow_hidden()
+            .child(ui(name.clone(), TEXT_TITLE, c::FG_DIM()).truncate())
     };
-    if !no_git {
-        label = label.child(ui_text(name.clone(), 13.0, c::FG_DIM()).truncate());
-    }
     if show_branch {
         // Branch chip: a soft-bordered pill under the name.
-        label = label.child(
-            div().flex_none().pt(rpx(2.0)).child(
-                ui_text(branch.clone(), 10.0, c::FG_DIM())
-                    .px(rpx(6.0))
-                    .py(px(1.0))
-                    .rounded(rpx(3.0))
-                    .bg(c::BORDER_SOFT()),
-            ),
-        );
+        label = label.child(div().flex_none().pt(rpx(SPACE_XS)).child(keycap_filled(
+            c::BORDER_SOFT(),
+            ui(branch.clone(), TEXT_MICRO, c::FG_DIM()),
+        )));
     }
 
     // The `main` tag and the hover action strip share one fixed right-hand
     // slot, so they never render at once and never shift the layout
     // (`src/gui/rows.rs:253-265,396-420`).
     let actions: AnyElement = if hovered {
-        let mut strip = div().flex().items_center().gap(rpx(6.0)).pr(rpx(8.0));
+        let mut strip = div()
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_MD))
+            .pr(rpx(SPACE_LG));
         for agent in &ctx.available {
             strip = strip.child(tool_button(
                 "wt-spawn",
                 format!("{proj}-{wt}-{}", agent.label()),
                 agent.icon_name(),
-                12.0,
+                ICON_SM,
                 false,
                 ctx,
                 RowAction::SpawnAgent(proj, wt, *agent),
@@ -749,7 +752,7 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
                 "wt-run",
                 format!("{proj}-{wt}"),
                 "play",
-                12.0,
+                ICON_SM,
                 false,
                 ctx,
                 RowAction::RunScript(proj, wt),
@@ -759,7 +762,7 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
             "wt-more",
             format!("{proj}-{wt}"),
             "more",
-            12.0,
+            ICON_SM,
             false,
             ctx,
             RowAction::OpenAgentMenu(Some((proj, wt))),
@@ -769,7 +772,7 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
                 "wt-del",
                 format!("{proj}-{wt}"),
                 "trash",
-                12.0,
+                ICON_SM,
                 true,
                 ctx,
                 RowAction::DeleteWorktree(proj, wt),
@@ -777,7 +780,7 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         }
         strip.into_any_element()
     } else if *is_main && *is_git {
-        div().px(rpx(8.0)).child(main_tag()).into_any_element()
+        div().px(rpx(SPACE_LG)).child(main_tag()).into_any_element()
     } else {
         div().into_any_element()
     };
@@ -802,24 +805,24 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
                 .flex_1()
                 .min_w_0()
                 .items_center()
-                .gap(rpx(6.0))
-                .pl(rpx(26.0))
-                .pr(rpx(6.0))
+                .gap(rpx(SPACE_MD))
+                .pl(rpx(INDENT_WORKTREE))
+                .pr(rpx(SPACE_MD))
                 .overflow_hidden()
+                .cursor_pointer()
                 .on_mouse_down(
                     MouseButton::Left,
                     ctx.on(RowAction::SelectWorktree(proj, wt)),
                 )
-                .child(
-                    div()
-                        .w(rpx(14.0))
-                        .flex_none()
-                        .child(icons::icon(twist, 10.0, c::FG_MUTE())),
-                )
+                .child(div().w(rpx(GLYPH_SLOT_W)).flex_none().child(icons::icon(
+                    twist,
+                    ICON_XS,
+                    c::FG_MUTE(),
+                )))
                 .child(label),
         )
         .when_some(git_suffix.clone(), |d, s| {
-            d.child(ui_text(s, 11.0, c::FG_MUTE()).flex_none())
+            d.child(ui(s, TEXT_SMALL, c::FG_MUTE()).flex_none())
         })
         .when_some(*rollup, |d, st| {
             d.child(state_glyph(st, ctx.tick, ctx.pulse))
@@ -854,14 +857,14 @@ fn session_row(
         .flex_1()
         .min_w_0()
         .items_center()
-        .gap(rpx(6.0))
+        .gap(rpx(SPACE_MD))
         .overflow_hidden()
-        .child(icons::icon(agent.icon_name(), 12.0, agent_color).flex_none())
-        .child(ui_text(agent.label(), 12.0, agent_color).flex_none());
+        .child(icons::icon(agent.icon_name(), ICON_SM, agent_color).flex_none())
+        .child(ui(agent.label(), TEXT_BODY, agent_color).flex_none());
     if let Some(ctx_text) = context {
         meta = meta
-            .child(ui_text("·", 11.0, c::FG_MUTE()).flex_none())
-            .child(ui_text(ctx_text, 11.0, c::FG_MUTE()).truncate());
+            .child(ui("·", TEXT_SMALL, c::FG_MUTE()).flex_none())
+            .child(ui(ctx_text, TEXT_SMALL, c::FG_MUTE()).truncate());
     }
 
     // Two-step confirm: the first press arms (red tick), the second kills
@@ -871,7 +874,7 @@ fn session_row(
             "sess-kill",
             id.raw(),
             "check",
-            11.0,
+            ICON_SM,
             true,
             ctx,
             RowAction::KillSession(id),
@@ -881,7 +884,7 @@ fn session_row(
             "sess-arm",
             id.raw(),
             "close",
-            11.0,
+            ICON_SM,
             false,
             ctx,
             RowAction::ArmKillSession(id),
@@ -895,17 +898,15 @@ fn session_row(
         .relative()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
-        .pl(rpx(46.0))
-        .pr(rpx(8.0))
+        .gap(rpx(SPACE_LG))
+        .pl(rpx(INDENT_SESSION))
+        .pr(rpx(SPACE_LG))
         .when(active, |d| d.bg(c::BG_HL()))
         .when(state == ActivityState::WaitingForInput, |d| {
-            d.bg(Hsla {
-                a: 0.12,
-                ..c::AMBER()
-            })
+            d.bg(c::AMBER_ROW_TINT())
         })
         .hover(|s| s.bg(c::BG_HOVER()))
+        .cursor_pointer()
         .on_mouse_down(MouseButton::Left, ctx.on(RowAction::SelectSession(id)))
         .child(state_glyph(state, ctx.tick, ctx.pulse))
         .child(meta)
@@ -919,7 +920,7 @@ fn session_row(
                     .top(px(0.0))
                     .left(px(0.0))
                     .bottom(px(0.0))
-                    .w(rpx(3.0))
+                    .w(rpx(ATTENTION_BAR_W))
                     .bg(c::AMBER()),
             )
         })
@@ -929,13 +930,13 @@ fn session_row(
 fn empty_row(title: &'static str, subtitle: &'static str) -> AnyElement {
     div()
         .w_full()
-        .py(rpx(24.0))
+        .py(rpx(EMPTY_ROW_PAD_Y))
         .flex()
         .flex_col()
         .items_center()
-        .gap(rpx(6.0))
-        .child(ui_text(title, 14.0, c::FG_DIM()))
-        .child(ui_text(subtitle, 12.0, c::FG_MUTE()))
+        .gap(rpx(SPACE_MD))
+        .child(ui(title, TEXT_TITLE, c::FG_DIM()))
+        .child(ui(subtitle, TEXT_BODY, c::FG_MUTE()))
         .into_any_element()
 }
 
@@ -960,26 +961,24 @@ pub fn terminals_header(
                 .flex()
                 .flex_1()
                 .items_center()
-                .gap(rpx(6.0))
-                .pl(rpx(12.0))
+                .gap(rpx(SPACE_MD))
+                .pl(rpx(SPACE_2XL))
+                .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, ctx.on(RowAction::ToggleTerminalsSection))
-                .child(icons::icon(twist, 10.0, c::FG_MUTE()))
-                .child(icons::icon("term", 11.0, c::FG_MUTE()))
-                .child(ui_text(tracked("TERMINALS"), 10.0, c::FG_MUTE()))
-                .child(
-                    ui_text(format!("{count}"), 10.0, c::FG_MUTE())
-                        .px(rpx(6.0))
-                        .py(px(1.0))
-                        .rounded(rpx(3.0))
-                        .bg(c::BORDER_SOFT()),
-                )
-                .when(activity_dot, |d| d.child(dot(c::CYAN()))),
+                .child(icons::icon(twist, ICON_XS, c::FG_MUTE()))
+                .child(icons::icon("term", ICON_SM, c::FG_MUTE()))
+                .child(mono(tracked("TERMINALS"), TEXT_MICRO, c::FG_MUTE()))
+                .child(keycap_filled(
+                    c::BORDER_SOFT(),
+                    mono(format!("{count}"), TEXT_MICRO, c::FG_MUTE()),
+                ))
+                .when(activity_dot, |d| d.child(status_dot(DOT_SM, c::CYAN()))),
         )
         .child(tool_button(
             "term-new",
             "home",
             "plus",
-            12.0,
+            ICON_SM,
             false,
             ctx,
             RowAction::NewHomeTerminal,
@@ -1014,7 +1013,7 @@ fn terminal_row(
             "term-kill",
             idx,
             "check",
-            11.0,
+            ICON_SM,
             true,
             ctx,
             RowAction::KillTerminal(idx),
@@ -1024,7 +1023,7 @@ fn terminal_row(
             "term-arm",
             idx,
             "close",
-            11.0,
+            ICON_SM,
             false,
             ctx,
             RowAction::ArmKillTerminal(idx),
@@ -1036,11 +1035,12 @@ fn terminal_row(
         .w_full()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
-        .pl(rpx(16.0))
-        .pr(rpx(8.0))
+        .gap(rpx(SPACE_LG))
+        .pl(rpx(SPACE_3XL))
+        .pr(rpx(SPACE_LG))
         .when(active, |d| d.bg(c::BG_HL()))
         .hover(|s| s.bg(c::BG_HOVER()))
+        .cursor_pointer()
         .on_mouse_down(MouseButton::Left, ctx.on(RowAction::SelectTerminal(idx)))
         .child(
             div()
@@ -1048,10 +1048,10 @@ fn terminal_row(
                 .flex_1()
                 .min_w_0()
                 .items_center()
-                .gap(rpx(6.0))
+                .gap(rpx(SPACE_MD))
                 .overflow_hidden()
-                .child(icons::icon("term", 12.0, name_color).flex_none())
-                .child(ui_text(context, 12.0, name_color).truncate()),
+                .child(icons::icon("term", ICON_SM, name_color).flex_none())
+                .child(ui(context, TEXT_BODY, name_color).truncate()),
         )
         .child(close)
         .into_any_element()

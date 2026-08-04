@@ -11,7 +11,8 @@
 //! reuse the same renderer for grid tile headers.
 
 use crate::views::rpx;
-use gpui::{div, prelude::*, px, AnyElement, Div, Hsla};
+use crate::views::tokens::*;
+use gpui::{div, prelude::*, AnyElement, Div, Hsla};
 
 use crate::entities::animation_clock::dots;
 use crate::theme as c;
@@ -68,15 +69,16 @@ pub fn tool_btn(
     let hover_color = if danger { c::RED() } else { c::FG() };
     div()
         .id(id)
-        .h(rpx(22.0))
+        .h(rpx(CONTROL_H))
         .flex()
         .items_center()
-        .gap(rpx(6.0))
-        .px(rpx(8.0))
-        .rounded(rpx(4.0))
+        .gap(rpx(SPACE_MD))
+        .px(rpx(SPACE_LG))
+        .rounded(rpx(RADIUS_CONTROL))
         .hover(move |s| s.bg(c::BG_HOVER()).text_color(hover_color))
-        .child(crate::icons::icon(icon_name, 12.0, base))
-        .child(label_text(label.to_string(), 12.0, base, false))
+        .cursor_pointer()
+        .child(crate::icons::icon(icon_name, ICON_SM, base))
+        .child(label_text(label.to_string(), TEXT_BODY, base, false))
         .on_mouse_down(
             gpui::MouseButton::Left,
             move |_: &gpui::MouseDownEvent, window: &mut gpui::Window, cx: &mut gpui::App| {
@@ -88,7 +90,7 @@ pub fn tool_btn(
 
 /// The cluster itself: run script (Plan 08 stub) │ term toggle │ zen │ kill.
 fn tools(cluster: &ToolCluster) -> AnyElement {
-    let mut row = div().flex().items_center().gap(rpx(12.0));
+    let mut row = div().flex().items_center().gap(rpx(SPACE_2XL));
     if cluster.has_run_script {
         let d = std::rc::Rc::clone(&cluster.dispatch);
         row = row.child(tool_btn(
@@ -191,12 +193,10 @@ pub fn in_progress_phase(tick: u64) -> u64 {
     dots(tick)
 }
 
+/// [`crate::views::components::ui`] plus the bar's optional semibold
+/// weight, which the shared helper has no parameter for.
 fn label_text(content: impl Into<gpui::SharedString>, size: f32, color: Hsla, bold: bool) -> Div {
-    let d = div()
-        .font(gpui::font(crate::fonts::UI_FAMILY))
-        .text_size(rpx(size))
-        .text_color(color)
-        .child(content.into());
+    let d = crate::views::components::ui(content, size, color);
     if bold {
         d.font_weight(gpui::FontWeight::SEMIBOLD)
     } else {
@@ -214,15 +214,20 @@ pub fn session_header(
     let mut identity = div()
         .flex()
         .items_center()
-        .gap(rpx(6.0))
+        .gap(rpx(SPACE_MD))
         .overflow_hidden()
-        .child(crate::icons::icon(data.icon_name, 13.0, c::FG()))
-        .child(label_text(data.label.clone(), 13.0, c::FG(), true));
+        .child(crate::icons::icon(data.icon_name, ICON_MD, c::FG()))
+        .child(label_text(data.label.clone(), TEXT_TITLE, c::FG(), true));
 
     if !data.branch.trim().is_empty() {
         identity = identity
-            .child(label_text("·", 13.0, c::FG_MUTE(), false))
-            .child(label_text(data.branch.clone(), 12.0, c::FG_DIM(), false));
+            .child(label_text("·", TEXT_TITLE, c::FG_MUTE(), false))
+            .child(label_text(
+                data.branch.clone(),
+                TEXT_BODY,
+                c::FG_DIM(),
+                false,
+            ));
     }
 
     if let Some(title) = data.context.as_deref() {
@@ -230,32 +235,31 @@ pub fn session_header(
         let context: AnyElement = if show_progress {
             let phase = in_progress_phase(tick);
             let step = |i: u64| {
-                div().size(rpx(6.0)).rounded_full().bg(if i == phase {
-                    c::GREEN()
-                } else {
-                    c::FG_MUTE()
-                })
+                crate::views::components::status_dot(
+                    DOT_SM,
+                    if i == phase { c::GREEN() } else { c::FG_MUTE() },
+                )
             };
             div()
                 .flex()
                 .items_center()
-                .gap(rpx(4.0))
+                .gap(rpx(SPACE_SM))
                 .child(step(0))
                 .child(step(1))
                 .child(step(2))
-                .child(label_text("in progress", 12.0, c::GREEN(), false))
+                .child(label_text("in progress", TEXT_BODY, c::GREEN(), false))
                 .into_any_element()
         } else {
             label_text(
                 truncate_middle(title, CONTEXT_MAX_CHARS),
-                12.0,
+                TEXT_BODY,
                 c::FG_DIM(),
                 false,
             )
             .into_any_element()
         };
         identity = identity
-            .child(label_text("·", 12.0, c::FG_MUTE(), false))
+            .child(label_text("·", TEXT_BODY, c::FG_MUTE(), false))
             .child(context);
     }
 
@@ -269,16 +273,16 @@ pub fn session_header(
                 .w_full()
                 .flex()
                 .items_center()
-                .px(rpx(16.0))
+                .px(rpx(SPACE_3XL))
                 .bg(c::BG_STRIP())
                 .overflow_hidden()
                 .child(div().flex_1().overflow_hidden().child(identity))
                 .when_some(cluster, |d, cluster| {
-                    d.child(crate::views::terminal_tab::vline())
+                    d.child(crate::views::components::vline())
                         .child(tools(cluster))
                 }),
         )
-        .child(div().h(px(1.0)).w_full().bg(c::BORDER_SOFT()))
+        .child(crate::views::components::divider_h())
         .into_any_element()
 }
 

@@ -13,6 +13,7 @@
 //! a global-mods chord is an action, never text.
 
 use crate::views::rpx;
+use crate::views::tokens::*;
 use gpui::{div, prelude::*, AnyElement, App, Context, Window};
 use grove_core::agent::Agent;
 
@@ -20,15 +21,27 @@ use crate::launcher::{self, PaletteRow, SwitchRow};
 use crate::settings::SettingsState;
 use crate::theme as c;
 
-use super::shell::{
-    body_text, cue_chip, divider_h, icon_slot, keycap_text, modal_footer_hints, modal_panel,
-    palette_row, section_header,
-};
 use super::{Modal, ModalClick, ModalDispatch, ModalEvent, ModalLayer};
 use crate::modal::{LauncherSlotState, LauncherView};
+use crate::views::components::{
+    body_text, cue_chip, divider_h, icon_slot, keycap_text, modal_footer_hints, modal_panel, mono,
+    palette_row, section_header, ui,
+};
 
 /// Rows visible in the palette at once.
 pub const VISIBLE_ROWS: usize = 9;
+
+/// Left indent that lines an inline note up with a palette row's *title*
+/// rather than its icon: `palette_row`'s own `SPACE_2XL` h-padding, plus the
+/// 24px `icon_slot` and the `SPACE_LG` gap `palette_row_content` puts between
+/// the slot and the title. (`components::ICON_SLOT_W` is private, so its 24 is
+/// restated here — §14's "derived geometry as a named constant".)
+const ROW_TEXT_INDENT: f32 = SPACE_2XL + 24.0 + SPACE_LG;
+
+/// How tall the palette's scrolling results zone may grow before it scrolls —
+/// `VISIBLE_ROWS` rows plus their gaps and the zone's own padding, rounded to
+/// the value the iced build used (`src/gui/session_launcher/view/mod.rs`).
+const PALETTE_LIST_MAX_H: f32 = 380.0;
 
 /// Every `(proj, project_name, wt_path, agent)` combo the palette can list.
 fn combos(
@@ -666,7 +679,7 @@ fn leading_glyph(view: LauncherView) -> AnyElement {
     match view {
         LauncherView::Switch => cue_chip("SWITCH TO SESSION").into_any_element(),
         LauncherView::Settings => cue_chip("SETTINGS").into_any_element(),
-        _ => crate::icons::icon("search", 16.0, c::FG_MUTE()).into_any_element(),
+        _ => crate::icons::icon("search", ICON_LG, c::FG_MUTE()).into_any_element(),
     }
 }
 
@@ -678,11 +691,11 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     let search = layer.fields.first().map(|f| {
         div()
             .w_full()
-            .px(rpx(16.0))
-            .py(rpx(14.0))
+            .px(rpx(SPACE_3XL))
+            .py(rpx(SPACE_3XL))
             .flex()
             .items_center()
-            .gap(rpx(8.0))
+            .gap(rpx(SPACE_LG))
             .child(leading_glyph(st.view))
             .child(
                 gpui_component::input::Input::new(f.state())
@@ -699,9 +712,9 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     };
     let list_zone = div()
         .id("palette-list")
-        .max_h(rpx(380.0))
+        .max_h(rpx(PALETTE_LIST_MAX_H))
         .overflow_y_scroll()
-        .p(rpx(8.0))
+        .p(rpx(SPACE_LG))
         .child(list);
 
     let hints: &[(&'static str, &'static str)] = match st.view {
@@ -722,7 +735,7 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     };
 
     modal_panel(
-        640.0,
+        MODAL_W_XL,
         div()
             .children(search)
             .child(divider_h())
@@ -790,32 +803,22 @@ fn palette_row_content(
 ) -> impl IntoElement {
     let icon_color = if selected { c::YELLOW() } else { c::FG_MUTE() };
     let title_color = if selected { c::FG() } else { c::FG_DIM() };
+    let mut title_col = div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .gap(rpx(SPACE_XS))
+        .child(ui(title, TEXT_TITLE, title_color));
+    if !subtitle.is_empty() {
+        title_col = title_col.child(mono(subtitle, TEXT_SMALL, c::FG_MUTE()));
+    }
     let mut row = div()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
+        .gap(rpx(SPACE_LG))
         .w_full()
-        .child(icon_slot(icon, 16.0, icon_color))
-        .child(
-            div()
-                .flex_1()
-                .flex()
-                .flex_col()
-                .gap(rpx(2.0))
-                .child(
-                    div()
-                        .text_size(rpx(13.0))
-                        .text_color(title_color)
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .font(gpui::font(crate::fonts::MONO_FAMILY))
-                        .text_size(rpx(10.5))
-                        .text_color(c::FG_MUTE())
-                        .child(subtitle),
-                ),
-        );
+        .child(icon_slot(icon, ICON_LG, icon_color))
+        .child(title_col);
     if selected && show_hint {
         row = row.child(keycap_text("⏎", c::FG_DIM()));
     }
@@ -833,7 +836,7 @@ fn row_list(
         return body_text("no matches").into_any_element();
     }
     let offset = launcher::scroll_offset_for(st.offset, st.sel, VISIBLE_ROWS, rows.len());
-    let mut list = div().flex().flex_col().gap(rpx(2.0));
+    let mut list = div().flex().flex_col().gap(rpx(SPACE_XS));
     let mut last_section: Option<&'static str> = None;
     for (i, row) in rows.iter().enumerate().skip(offset).take(VISIBLE_ROWS) {
         let section = match row {
@@ -843,7 +846,7 @@ fn row_list(
         };
         if let Some(s) = section {
             if last_section != Some(s) {
-                list = list.child(section_header(s, 8.0, 4.0));
+                list = list.child(section_header(s, SPACE_LG, SPACE_SM));
                 last_section = Some(s);
             }
         }
@@ -870,13 +873,15 @@ fn row_list(
         {
             list = list.child(
                 div()
-                    .pt(rpx(4.0))
-                    .pb(rpx(2.0))
-                    .pl(rpx(44.0))
-                    .pr(rpx(12.0))
-                    .text_size(rpx(11.0))
-                    .text_color(c::FG_DIM())
-                    .child("Skip lets agents run any command without asking."),
+                    .pt(rpx(SPACE_SM))
+                    .pb(rpx(SPACE_XS))
+                    .pl(rpx(ROW_TEXT_INDENT))
+                    .pr(rpx(SPACE_2XL))
+                    .child(ui(
+                        "Skip lets agents run any command without asking.",
+                        TEXT_SMALL,
+                        c::FG_DIM(),
+                    )),
             );
         }
     }
@@ -897,7 +902,7 @@ fn switch_list(
         return body_text("no sessions").into_any_element();
     }
     let registry = layer.registry.read(cx);
-    let mut list = div().flex().flex_col().gap(rpx(2.0));
+    let mut list = div().flex().flex_col().gap(rpx(SPACE_XS));
     let mut printed_sessions = false;
     let mut printed_terminals = false;
     for (i, row) in rows.iter().enumerate() {
@@ -905,7 +910,7 @@ fn switch_list(
         let (icon, label, sub, waiting) = match row {
             SwitchRow::Session(j) => {
                 if !printed_sessions {
-                    list = list.child(section_header("SESSIONS", 0.0, 6.0));
+                    list = list.child(section_header("SESSIONS", 0.0, SPACE_MD));
                     printed_sessions = true;
                 }
                 registry.all().get(*j).map_or_else(
@@ -936,7 +941,7 @@ fn switch_list(
             SwitchRow::Terminal(j) => {
                 if !printed_terminals {
                     let top = if i == 0 { 0.0 } else { 12.0 };
-                    list = list.child(section_header("TERMINALS", top, 6.0));
+                    list = list.child(section_header("TERMINALS", top, SPACE_MD));
                     printed_terminals = true;
                 }
                 registry.home_terminals().get(*j).map_or_else(
@@ -956,9 +961,12 @@ fn switch_list(
         // Waiting sessions keep the sidebar's amber tint, same idiom as
         // `views::rows`'s waiting row.
         if waiting {
-            let mut tint = c::AMBER();
-            tint.a = 0.12;
-            list = list.child(div().rounded(rpx(6.0)).bg(tint).child(row_el));
+            list = list.child(
+                div()
+                    .rounded(rpx(RADIUS_GROUP))
+                    .bg(c::AMBER_ROW_TINT())
+                    .child(row_el),
+            );
         } else {
             list = list.child(row_el);
         }
@@ -967,11 +975,11 @@ fn switch_list(
 }
 
 fn settings_list(st: &LauncherSlotState, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
-    let mut list = div().flex().flex_col().gap(rpx(2.0));
+    let mut list = div().flex().flex_col().gap(rpx(SPACE_XS));
     let mut last_section: Option<&'static str> = None;
     for (i, s) in crate::launcher::SettingRow::ALL.into_iter().enumerate() {
         if last_section != Some(s.section()) {
-            list = list.child(section_header(s.section(), 8.0, 4.0));
+            list = list.child(section_header(s.section(), SPACE_LG, SPACE_SM));
             last_section = Some(s.section());
         }
         let selected = i == st.sel;
@@ -993,13 +1001,15 @@ fn settings_list(st: &LauncherSlotState, dispatch: &ModalDispatch, cx: &App) -> 
         if selected && matches!(s, crate::launcher::SettingRow::Permissions) {
             list = list.child(
                 div()
-                    .pt(rpx(4.0))
-                    .pb(rpx(2.0))
-                    .pl(rpx(44.0))
-                    .pr(rpx(12.0))
-                    .text_size(rpx(11.0))
-                    .text_color(c::FG_DIM())
-                    .child("Skip lets agents run any command without asking."),
+                    .pt(rpx(SPACE_SM))
+                    .pb(rpx(SPACE_XS))
+                    .pl(rpx(ROW_TEXT_INDENT))
+                    .pr(rpx(SPACE_2XL))
+                    .child(ui(
+                        "Skip lets agents run any command without asking.",
+                        TEXT_SMALL,
+                        c::FG_DIM(),
+                    )),
             );
         }
     }
@@ -1017,9 +1027,9 @@ fn strip_row_content(icon: &str, label: &'static str, color: gpui::Hsla) -> impl
     div()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
-        .child(icon_slot(icon, 13.0, color))
-        .child(div().text_size(rpx(12.0)).text_color(color).child(label))
+        .gap(rpx(SPACE_LG))
+        .child(icon_slot(icon, ICON_SM, color))
+        .child(ui(label, TEXT_BODY, color))
 }
 
 /// The Tab-revealed action strip: launch (with its agent icon bar), then
@@ -1048,20 +1058,20 @@ fn row_actions(
 
     let agents = super::confirm::available_agents();
     let sel_label = agents.get(st.agent_sel).map_or("", |a| a.label());
-    let mut bar = div().flex().items_center().gap(rpx(6.0));
+    let mut bar = div().flex().items_center().gap(rpx(SPACE_MD));
     for (i, a) in agents.iter().enumerate() {
         let selected = i == st.agent_sel;
         bar = bar.child(
             div()
                 .size(rpx(AGENT_BTN))
-                .rounded(rpx(6.0))
+                .rounded(rpx(RADIUS_GROUP))
                 .flex()
                 .items_center()
                 .justify_center()
                 .when(selected, |d| d.border_1().border_color(c::YELLOW()))
                 .child(crate::icons::icon(
                     a.icon_name(),
-                    14.0,
+                    ICON_MD,
                     if selected { c::YELLOW() } else { c::FG_MUTE() },
                 )),
         );
@@ -1070,32 +1080,25 @@ fn row_actions(
     let launch_content = div()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
+        .gap(rpx(SPACE_LG))
         .w_full()
-        .child(icon_slot("play", 13.0, c::MAGENTA()))
-        .child(
-            div()
-                .text_size(rpx(12.0))
-                .text_color(c::MAGENTA())
-                .child("Launch session…"),
-        )
+        .child(icon_slot("play", ICON_SM, c::MAGENTA()))
+        .child(ui("Launch session…", TEXT_BODY, c::MAGENTA()))
         .child(div().flex_1())
-        .child(
-            div()
-                .font(gpui::font(crate::fonts::MONO_FAMILY))
-                .text_size(rpx(12.0))
-                .text_color(c::FG_DIM())
-                .child(sel_label.to_string()),
-        )
+        .child(mono(sel_label.to_string(), TEXT_BODY, c::FG_DIM()))
         .child(bar);
 
-    let mut list = div().flex().flex_col().gap(rpx(1.0)).child(palette_row(
-        gpui::SharedString::from("strip-0"),
-        st.sel == 0,
-        dispatch,
-        ModalClick::SelectRow(0),
-        launch_content,
-    ));
+    let mut list = div()
+        .flex()
+        .flex_col()
+        .gap(rpx(SPACE_XS))
+        .child(palette_row(
+            gpui::SharedString::from("strip-0"),
+            st.sel == 0,
+            dispatch,
+            ModalClick::SelectRow(0),
+            launch_content,
+        ));
 
     let is_main = layer.anchor_is_main(proj, &wt_path, cx);
     list = list.child(if is_main {
@@ -1245,7 +1248,7 @@ mod tests {
         let modals = root.read_with(vcx, |r, _| r.modals.clone());
 
         modals.update(vcx, |l, cx| {
-            l.open(Modal::SessionLauncher(Box::default()), cx)
+            l.open(Modal::SessionLauncher(Box::default()), cx);
         });
         vcx.run_until_parked();
 
@@ -1290,7 +1293,7 @@ mod tests {
         let modals = root.read_with(vcx, |r, _| r.modals.clone());
 
         modals.update(vcx, |l, cx| {
-            l.open(Modal::SessionLauncher(Box::default()), cx)
+            l.open(Modal::SessionLauncher(Box::default()), cx);
         });
         vcx.run_until_parked();
 

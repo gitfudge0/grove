@@ -13,18 +13,42 @@
 #![allow(dead_code)]
 
 use crate::views::rpx;
+use crate::views::tokens::*;
 use gpui::{div, prelude::*, AnyElement, App, Context};
 use grove_core::{git, storage};
 
 use crate::settings::SettingsState;
 use crate::theme as c;
 
-use super::shell::{
-    body_text, click_action, click_checkbox, modal_body, modal_footer_hints, modal_header,
-    modal_panel, ModalBtn,
-};
 use super::{Modal, ModalClick, ModalDispatch, ModalEvent, ModalLayer};
 use crate::modal::TeardownStage;
+use crate::views::components::{
+    body_text, click_action, click_checkbox, icon_btn, modal_body, modal_footer_hints,
+    modal_header, modal_header_with_close, modal_panel, mono, status_dot, ui, ModalBtn,
+};
+
+// ── local layout geometry (§8.4: geometry lives in the owning module) ─────
+
+/// The removal progress bar's girth. The `SPACE_MD` step is the smallest that
+/// still reads as a bar rather than a rule.
+const PROGRESS_BAR_H: f32 = SPACE_MD;
+
+/// The archived-row action slot: exactly two [`CONTROL_H`] mini buttons plus
+/// the `SPACE_XS` gap between them, so every row's name column ends on the
+/// same x regardless of which actions are present.
+const ROW_ACTION_SLOT_W: f32 = CONTROL_H * 2.0 + SPACE_XS;
+
+/// Vertical breathing room for an inline "nothing here" block inside a modal
+/// body — one modal zone padding step above and below.
+const EMPTY_STATE_PY: f32 = SPACE_3XL * 2.0;
+
+/// The scrolling archived-project list's ceiling, past which the panel would
+/// outgrow a short window.
+const LIST_MAX_H: f32 = 360.0;
+
+/// The teardown modal's embedded PTY viewport: tall enough for a script's
+/// last ~15 lines without pushing the stage message off a laptop screen.
+const TEARDOWN_PTY_H: f32 = 240.0;
 
 impl ModalLayer {
     pub(super) fn slot_mut(&mut self) -> &mut crate::modal::ModalSlot {
@@ -536,45 +560,40 @@ fn remove_project_modal(
         } else {
             format!("Removing {} of {}: {current}", done + 1, worktree_count)
         };
-        let mut list = div().flex().flex_col().gap(rpx(6.0)).child(
+        let mut list =
             div()
-                .text_size(rpx(11.0))
-                .text_color(c::FG_MUTE())
-                .child(status),
-        );
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_MD))
+                .child(ui(status, TEXT_SMALL, c::FG_MUTE()));
         list = list.child(progress_bar(if worktree_count == 0 {
             1.0
         } else {
             (done as f32 / worktree_count as f32).clamp(0.0, 1.0)
         }));
         if !errors.is_empty() {
-            list = list.child(
-                div()
-                    .text_size(rpx(11.0))
-                    .text_color(c::RED())
-                    .child(format!("{} worktree(s) failed to remove", errors.len())),
-            );
+            list = list.child(ui(
+                format!("{} worktree(s) failed to remove", errors.len()),
+                TEXT_SMALL,
+                c::RED(),
+            ));
         }
         list
     } else {
         let mut d = div()
             .flex()
             .flex_col()
-            .gap(rpx(10.0))
-            .child(
-                div()
-                    .text_size(rpx(13.0))
-                    .text_color(c::FG_DIM())
-                    .child(format!(
-                        "'{name}' will be unregistered from Grove. Its sessions will be ended."
-                    )),
-            )
-            .child(
-                div()
-                    .text_size(rpx(12.0))
-                    .text_color(c::FG_MUTE())
-                    .child("Running sessions for this project will be stopped."),
-            );
+            .gap(rpx(SPACE_XL))
+            .child(ui(
+                format!("'{name}' will be unregistered from Grove. Its sessions will be ended."),
+                TEXT_TITLE,
+                c::FG_DIM(),
+            ))
+            .child(ui(
+                "Running sessions for this project will be stopped.",
+                TEXT_BODY,
+                c::FG_MUTE(),
+            ));
         if worktree_count > 0 {
             let label = if worktree_count == 1 {
                 "Delete 1 non-main worktree from disk".to_string()
@@ -592,18 +611,17 @@ fn remove_project_modal(
             ));
         }
         if !errors.is_empty() {
-            d = d.child(
-                div()
-                    .text_size(rpx(11.0))
-                    .text_color(c::RED())
-                    .child(format!("{} worktree(s) failed to remove", errors.len())),
-            );
+            d = d.child(ui(
+                format!("{} worktree(s) failed to remove", errors.len()),
+                TEXT_SMALL,
+                c::RED(),
+            ));
         }
         d.child(
             div()
                 .flex()
                 .items_center()
-                .gap(rpx(8.0))
+                .gap(rpx(SPACE_LG))
                 .child(div().flex_1())
                 .child(click_action(
                     "rm-proj-no",
@@ -634,37 +652,30 @@ fn remove_project_modal(
         ]));
     }
 
-    modal_panel(520.0, panel).into_any_element()
+    // MODAL_W_LG, not the default MODAL_W_MD: the removal-progress body prints
+    // an untruncated worktree name above the progress bar, and at 480 a long
+    // name wraps and changes the dialog's height mid-removal (§2.4).
+    modal_panel(MODAL_W_LG, panel).into_any_element()
 }
 
-/// The removal progress bar: 6px girth, `BG_STRIP` track, `RED` fill,
-/// `BORDER` border, radius 4 (`confirm.rs:409-419`). gpui has no
+/// The removal progress bar: [`PROGRESS_BAR_H`] girth, `BG_STRIP` track, `RED`
+/// fill, `BORDER` border, radius 4 (`confirm.rs:409-419`). gpui has no
 /// `progress_bar` primitive, so the fill is a plain scaled child div.
 fn progress_bar(frac: f32) -> AnyElement {
     div()
         .w_full()
-        .h(rpx(6.0))
-        .rounded(rpx(4.0))
+        .h(rpx(PROGRESS_BAR_H))
+        .rounded(rpx(RADIUS_CONTROL))
         .border_1()
         .border_color(c::BORDER())
         .bg(c::BG_STRIP())
         .child(
             div()
                 .h_full()
-                .rounded(rpx(4.0))
+                .rounded(rpx(RADIUS_CONTROL))
                 .bg(c::RED())
                 .w(gpui::relative(frac.clamp(0.0, 1.0))),
         )
-        .into_any_element()
-}
-
-/// A small liveness dot: filled `GREEN` while running, hollow `FG_MUTE`
-/// outline once exited (`confirm.rs`'s `dot`).
-fn dot(color: gpui::Hsla) -> AnyElement {
-    div()
-        .size(rpx(6.0))
-        .rounded(rpx(3.0))
-        .bg(color)
         .into_any_element()
 }
 
@@ -678,67 +689,47 @@ fn archive_project_modal(
     let blocked = !sessions.is_empty();
 
     let body = if blocked {
-        let mut strip = div().flex().flex_col().gap(rpx(4.0));
+        let mut strip = div().flex().flex_col().gap(rpx(SPACE_SM));
         for (wt, agent, running) in sessions {
             strip = strip.child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(rpx(8.0))
-                    .child(dot(if *running { c::GREEN() } else { c::FG_MUTE() }))
-                    .child(
-                        div()
-                            .font(gpui::font(crate::fonts::MONO_FAMILY))
-                            .text_size(rpx(11.0))
-                            .text_color(c::FG())
-                            .child(wt.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(rpx(11.0))
-                            .text_color(c::FG_DIM())
-                            .child(agent.clone()),
-                    )
+                    .gap(rpx(SPACE_LG))
+                    .child(status_dot(
+                        DOT_SM,
+                        if *running { c::GREEN() } else { c::FG_MUTE() },
+                    ))
+                    .child(mono(wt.clone(), TEXT_SMALL, c::FG()))
+                    .child(ui(agent.clone(), TEXT_SMALL, c::FG_DIM()))
                     .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_size(rpx(11.0))
-                            .text_color(c::FG_MUTE())
-                            .child(if *running { "running" } else { "exited" }),
-                    ),
+                    .child(ui(
+                        if *running { "running" } else { "exited" },
+                        TEXT_SMALL,
+                        c::FG_MUTE(),
+                    )),
             );
         }
         strip = strip.child(
-            div().w_full().flex().items_center().justify_center().pt(rpx(4.0)).child(
-                div()
-                    .id("arch-kill")
-                    .px(rpx(12.0))
-                    .py(rpx(6.0))
-                    .rounded(rpx(4.0))
-                    .border_1()
-                    .border_color(c::RED())
-                    .bg(c::BG_HL())
-                    .hover(|s| s.bg(c::BG_HOVER()))
-                    .cursor_pointer()
-                    .child(
-                        div()
-                            .text_size(rpx(12.0))
-                            .text_color(c::RED())
-                            .child(format!("Kill all sessions ({})", sessions.len())),
-                    )
-                    .on_mouse_down(gpui::MouseButton::Left, {
-                        let dispatch = std::rc::Rc::clone(dispatch);
-                        move |_, window, cx| {
-                            dispatch(ModalClick::ArchiveKillSessions, window, cx);
-                        }
-                    }),
-            ),
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .pt(rpx(SPACE_SM))
+                .child(click_action(
+                    "arch-kill",
+                    format!("Kill all sessions ({})", sessions.len()),
+                    ModalBtn::Danger,
+                    dispatch,
+                    ModalClick::ArchiveKillSessions,
+                )),
         );
         let strip = div()
             .w_full()
-            .px(rpx(10.0))
-            .py(rpx(6.0))
-            .rounded(rpx(6.0))
+            .px(rpx(SPACE_XL))
+            .py(rpx(SPACE_MD))
+            .rounded(rpx(RADIUS_GROUP))
             .bg(c::BG())
             .border_1()
             .border_color(c::BORDER_SOFT())
@@ -747,37 +738,35 @@ fn archive_project_modal(
         div()
             .flex()
             .flex_col()
-            .gap(rpx(10.0))
+            .gap(rpx(SPACE_XL))
             .child(body_text(format!(
                 "'{name}' still has open sessions. Kill them before archiving."
             )))
             .child(strip)
-            .child(
-                div()
-                    .text_size(rpx(11.0))
-                    .text_color(c::FG_MUTE())
-                    .child("Nothing on disk is deleted. Worktrees stay exactly as they are."),
-            )
+            .child(ui(
+                "Nothing on disk is deleted. Worktrees stay exactly as they are.",
+                TEXT_SMALL,
+                c::FG_MUTE(),
+            ))
     } else {
-        div().flex().flex_col().gap(rpx(12.0)).child(body_text(format!(
-            "'{name}' will be hidden from the sidebar. Nothing is deleted — its scripts, \
+        div()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_2XL))
+            .child(body_text(format!(
+                "'{name}' will be hidden from the sidebar. Nothing is deleted — its scripts, \
              theme, and worktrees all stay exactly as they are."
-        )))
+            )))
     };
 
     let archive_btn: AnyElement = if blocked {
         div()
-            .px(rpx(12.0))
-            .py(rpx(6.0))
-            .rounded(rpx(4.0))
+            .px(rpx(SPACE_2XL))
+            .py(rpx(SPACE_MD))
+            .rounded(rpx(RADIUS_CONTROL))
             .border_1()
             .border_color(c::BORDER_SOFT())
-            .child(
-                div()
-                    .text_size(rpx(12.0))
-                    .text_color(c::FG_MUTE())
-                    .child("Archive"),
-            )
+            .child(ui("Archive", TEXT_BODY, c::FG_MUTE()))
             .into_any_element()
     } else {
         click_action(
@@ -793,19 +782,18 @@ fn archive_project_modal(
     let mut footer_row = div()
         .flex()
         .items_center()
-        .gap(rpx(14.0))
-        .child(super::shell::footer_hint("y", "archive"))
-        .child(super::shell::footer_hint("n", "cancel"))
+        .gap(rpx(SPACE_3XL))
+        .child(crate::views::components::footer_hint("y", "archive"))
+        .child(crate::views::components::footer_hint("n", "cancel"))
         .child(div().flex_1());
     if blocked {
-        footer_row = footer_row.child(
-            div()
-                .text_size(rpx(11.0))
-                .text_color(c::FG_MUTE())
-                .child("Archive is unavailable while sessions are running."),
-        );
+        footer_row = footer_row.child(ui(
+            "Archive is unavailable while sessions are running.",
+            TEXT_SMALL,
+            c::FG_MUTE(),
+        ));
     }
-    let footer = super::shell::modal_footer_row(
+    let footer = crate::views::components::modal_footer_row(
         footer_row
             .child(click_action(
                 "arch-no",
@@ -818,7 +806,7 @@ fn archive_project_modal(
     );
 
     modal_panel(
-        420.0,
+        MODAL_W_SM,
         div()
             .child(modal_header(format!("Archive '{name}'?"), c::AMBER()))
             .child(modal_body(body))
@@ -839,19 +827,19 @@ fn archive_mini(
     click: ModalClick,
 ) -> AnyElement {
     let dispatch = dispatch.clone();
-    div()
-        .id(id)
-        .size(rpx(22.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(rpx(4.0))
-        .hover(move |s| s.bg(hover_bg))
-        .child(crate::icons::icon(icon_name, 12.0, glyph))
-        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-            dispatch(click.clone(), window, cx);
-        })
-        .into_any_element()
+    icon_btn(
+        id,
+        icon_name,
+        CONTROL_H,
+        CONTROL_H,
+        ICON_SM,
+        glyph,
+        hover_bg,
+        None,
+        false,
+        move |window, cx| dispatch(click.clone(), window, cx),
+    )
+    .into_any_element()
 }
 
 /// `archived_projects_modal` (`view/modals/archived_projects.rs:23-158`): a
@@ -866,31 +854,26 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     let body: AnyElement = if rows.is_empty() {
         div()
             .w_full()
-            .py(rpx(30.0))
+            .py(rpx(EMPTY_STATE_PY))
             .flex()
             .items_center()
             .justify_center()
-            .child(
-                div()
-                    .text_size(rpx(12.0))
-                    .text_color(c::FG_MUTE())
-                    .child("No archived projects."),
-            )
+            .child(ui("No archived projects.", TEXT_BODY, c::FG_MUTE()))
             .into_any_element()
     } else {
         let mut list = div()
             .id("archived-projects-list")
             .flex()
             .flex_col()
-            .gap(rpx(4.0))
-            .max_h(rpx(360.0))
+            .gap(rpx(SPACE_SM))
+            .max_h(rpx(LIST_MAX_H))
             .overflow_y_scroll();
         for (idx, name, path) in &rows {
             let slot = div()
-                .w(rpx(48.0))
+                .w(rpx(ROW_ACTION_SLOT_W))
                 .flex()
                 .items_center()
-                .gap(rpx(2.0))
+                .gap(rpx(SPACE_XS))
                 .child(archive_mini(
                     "arch-restore",
                     "restore",
@@ -912,28 +895,25 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
                 div()
                     .flex()
                     .items_center()
-                    .gap(rpx(10.0))
+                    .gap(rpx(SPACE_XL))
                     .w_full()
-                    .px(rpx(10.0))
-                    .py(rpx(6.0))
-                    .rounded(rpx(6.0))
+                    .px(rpx(SPACE_XL))
+                    .py(rpx(SPACE_MD))
+                    .rounded(rpx(RADIUS_GROUP))
                     .hover(|s| s.bg(c::BG_HL()))
                     .child(
-                        div()
+                        ui(name.clone(), TEXT_TITLE, c::FG())
                             .flex_1()
-                            .overflow_hidden()
-                            .text_size(rpx(13.0))
-                            .text_color(c::FG())
-                            .child(name.clone()),
+                            .overflow_hidden(),
                     )
                     .child(
-                        div()
-                            .flex_1()
-                            .overflow_hidden()
-                            .font(gpui::font(crate::fonts::MONO_FAMILY))
-                            .text_size(rpx(11.0))
-                            .text_color(c::FG_MUTE())
-                            .child(crate::views::session_header::truncate_middle(path, 44)),
+                        mono(
+                            crate::views::session_header::truncate_middle(path, 44),
+                            TEXT_SMALL,
+                            c::FG_MUTE(),
+                        )
+                        .flex_1()
+                        .overflow_hidden(),
                     )
                     .child(slot),
             );
@@ -941,37 +921,15 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
         list.into_any_element()
     };
 
-    let close_dispatch = dispatch.clone();
-    let header = div().w_full().px(rpx(16.0)).py(rpx(14.0)).child(
-        div()
-            .flex()
-            .items_center()
-            .child(
-                div()
-                    .flex_1()
-                    .font(gpui::font(crate::fonts::UI_FAMILY))
-                    .text_size(rpx(13.0))
-                    .text_color(c::MAGENTA())
-                    .child("Archived projects"),
-            )
-            .child(
-                div()
-                    .id("arch-list-close")
-                    .size(rpx(22.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(rpx(4.0))
-                    .hover(|s| s.bg(c::BG_HOVER()))
-                    .child(crate::icons::icon("close", 12.0, c::FG_MUTE()))
-                    .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-                        close_dispatch(ModalClick::Cancel, window, cx);
-                    }),
-            ),
+    let header = modal_header_with_close(
+        "arch-list-close",
+        "Archived projects",
+        c::MAGENTA(),
+        dispatch,
     );
 
     modal_panel(
-        520.0,
+        MODAL_W_LG,
         div()
             .child(header)
             .child(modal_body(body))
@@ -997,23 +955,22 @@ fn teardown_modal(
     let mut body = div()
         .flex()
         .flex_col()
-        .gap(rpx(10.0))
+        .gap(rpx(SPACE_XL))
         // The ONE terminal renderer, reused — there is no second one (Task 3
         // Step 4).
         .children(layer.teardown_view.clone().map(|v| {
             div()
-                .h(rpx(240.0))
+                .h(rpx(TEARDOWN_PTY_H))
                 .w_full()
-                .rounded(rpx(6.0))
+                .rounded(rpx(RADIUS_GROUP))
                 .overflow_hidden()
                 .child(v)
         }))
-        .child(
-            div()
-                .text_size(rpx(13.0))
-                .text_color(if done { c::FG_DIM() } else { c::FG_MUTE() })
-                .child(message.to_string()),
-        );
+        .child(ui(
+            message.to_string(),
+            TEXT_TITLE,
+            if done { c::FG_DIM() } else { c::FG_MUTE() },
+        ));
     body = body
         .when(done, |d| {
             d.child(click_action(
@@ -1043,11 +1000,14 @@ fn teardown_modal(
     };
 
     let mut panel = div()
-        .child(modal_header(format!("Delete worktree / {wt_name}"), c::RED()))
+        .child(modal_header(
+            format!("Delete worktree / {wt_name}"),
+            c::RED(),
+        ))
         .child(modal_body(body));
     if let Some(footer) = footer {
         panel = panel.child(footer);
     }
 
-    modal_panel(560.0, panel).into_any_element()
+    modal_panel(MODAL_W_LG, panel).into_any_element()
 }

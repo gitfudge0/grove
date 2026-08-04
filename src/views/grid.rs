@@ -23,6 +23,7 @@
 //! leaves every sibling's layout untouched.
 
 use crate::views::rpx;
+use crate::views::tokens::*;
 use std::rc::Rc;
 
 use gpui::{
@@ -35,10 +36,15 @@ use crate::grid::{grid_layout, slide_progress};
 use crate::icons::icon;
 use crate::keymap::platform_mod_label;
 use crate::theme as c;
+use crate::views::components::{divider_h, icon_btn, keycap_filled, mono, tracked, ui};
 use crate::views::terminal_view::TerminalView;
 
 /// Height of the tile header bar (`src/gui/metrics.rs:51`).
 pub const TILE_HEAD_H: f32 = 22.0;
+/// The square hit box of a tile-header icon button. Deliberately below
+/// [`CONTROL_H`] (22): the button has to sit *inside* a
+/// [`TILE_HEAD_H`]-tall bar, so it cannot be the chrome control height.
+const TILE_BTN_BOX: f32 = 18.0;
 /// Horizontal padding inside each tile's PTY container — `pty()`'s own 16×2
 /// (`src/gui/metrics.rs:53-54`).
 pub const TILE_PTY_PAD_W: f32 = 32.0;
@@ -125,20 +131,12 @@ pub fn empty_state(title: &'static str, subtitle: &'static str) -> AnyElement {
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(rpx(6.0))
+        .gap(rpx(SPACE_MD))
         .size_full()
         .bg(c::BG())
-        .child(crate::views::rows::ui_text(title, 14.0, c::FG_DIM()))
-        .child(crate::views::rows::ui_text(subtitle, 12.0, c::FG_MUTE()))
+        .child(ui(title, TEXT_TITLE, c::FG_DIM()))
+        .child(ui(subtitle, TEXT_BODY, c::FG_MUTE()))
         .into_any_element()
-}
-
-fn mono(content: impl Into<gpui::SharedString>, size: f32, color: Hsla) -> gpui::Div {
-    div()
-        .font(gpui::font(crate::fonts::MONO_FAMILY))
-        .text_size(rpx(size))
-        .text_color(color)
-        .child(content.into())
 }
 
 fn on_grid(
@@ -219,7 +217,9 @@ fn tile(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
         .is_some_and(|d| d.hover_idx == tile_idx && d.source_idx != tile_idx);
 
     let (border_color, border_w) = if data.waiting {
-        (c::AMBER(), 1.5)
+        // §7.2: exactly one border weight — the hairline. A waiting tile is
+        // called out by the amber *tone*, never by a heavier stroke.
+        (c::AMBER(), 1.0)
     } else {
         (gpui::transparent_black(), 0.0)
     };
@@ -229,7 +229,7 @@ fn tile(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
         .flex_col()
         .size_full()
         .child(tile_header(tile_idx, data, ctx))
-        .child(div().h(px(1.0)).w_full().bg(c::BORDER_SOFT()))
+        .child(divider_h())
         .child(
             // The tile's PTY, padded exactly as iced's `pty()` is
             // (`metrics.rs:53-56`) so a tile's cell grid matches the iced
@@ -270,13 +270,15 @@ fn tile(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
         .child(body);
 
     if is_drop_zone {
-        root = root.child(overlay().border(px(1.5)).border_color(c::CYAN()).bg(Hsla {
-            a: 0.06,
-            ..c::CYAN()
-        }));
+        root = root.child(
+            overlay()
+                .border_1()
+                .border_color(c::CYAN())
+                .bg(c::alpha(c::CYAN(), 0.06)),
+        );
     }
     if is_drag_src {
-        root = root.child(overlay().bg(Hsla { a: 0.72, ..c::BG() }));
+        root = root.child(overlay().bg(c::alpha(c::BG(), 0.72)));
     }
     if data.waiting {
         root = root.child(scrim(tile_idx, ctx));
@@ -301,35 +303,33 @@ fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
     let mut identity = div()
         .flex()
         .items_center()
-        .gap(rpx(4.0))
+        .gap(rpx(SPACE_SM))
         .overflow_hidden()
-        .child(icon(data.icon_name, 11.0, c::FG_DIM()))
+        .child(icon(data.icon_name, ICON_SM, c::FG_DIM()))
         .child(
-            crate::views::rows::ui_text(data.agent_label, 10.0, c::FG_DIM())
-                .font_weight(gpui::FontWeight::SEMIBOLD),
+            ui(data.agent_label, TEXT_MICRO, c::FG_DIM()).font_weight(gpui::FontWeight::SEMIBOLD),
         )
-        .child(crate::views::rows::ui_text("·", 10.0, c::FG_MUTE()))
-        .child(crate::views::rows::ui_text(
-            data.project.clone(),
-            10.0,
-            c::FG_MUTE(),
-        ));
+        .child(ui("·", TEXT_MICRO, c::FG_MUTE()))
+        .child(ui(data.project.clone(), TEXT_MICRO, c::FG_MUTE()));
     // Branchless sessions skip the segment entirely — otherwise the header
     // shows a trailing dot with nothing after it.
     if !data.branch.trim().is_empty() {
-        identity = identity
-            .child(crate::views::rows::ui_text("·", 10.0, c::FG_MUTE()))
-            .child(crate::views::rows::ui_text(
-                data.branch.clone(),
-                10.0,
-                c::FG_MUTE(),
-            ));
+        identity = identity.child(ui("·", TEXT_MICRO, c::FG_MUTE())).child(ui(
+            data.branch.clone(),
+            TEXT_MICRO,
+            c::FG_MUTE(),
+        ));
     }
 
-    let kill_color = if data.confirming_kill {
-        c::RED()
+    // Arming the kill changes the *glyph* as well as the colour (§2.3, §12):
+    // red-vs-muted on an identical trash can is a colour-only signal. `question`
+    // is the "are you sure?" shape already used for needs-you, and it renders in
+    // the same ICON_XS box inside the same TILE_BTN_BOX, so nothing reflows
+    // (§2.4).
+    let (kill_icon, kill_color) = if data.confirming_kill {
+        ("question", c::RED())
     } else {
-        c::FG_MUTE()
+        ("trash", c::FG_MUTE())
     };
     let kill_action = if data.confirming_kill {
         GridAction::Kill(data.id)
@@ -339,12 +339,13 @@ fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
 
     div()
         .id(gpui::SharedString::from(format!("tile-head-{tile_idx}")))
+        .cursor_pointer()
         .h(rpx(TILE_HEAD_H))
         .w_full()
         .flex()
         .items_center()
-        .gap(rpx(4.0))
-        .px(rpx(6.0))
+        .gap(rpx(SPACE_SM))
+        .px(rpx(SPACE_MD))
         .bg(if data.focused {
             c::BG_HL()
         } else {
@@ -364,7 +365,7 @@ fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
         ))
         .child(tile_btn(
             format!("tile-kill-{tile_idx}"),
-            "trash",
+            kill_icon,
             kill_color,
             &ctx.dispatch,
             kill_action,
@@ -384,17 +385,20 @@ fn tile_btn(
     dispatch: &GridDispatch,
     action: GridAction,
 ) -> AnyElement {
-    div()
-        .id(gpui::SharedString::from(id))
-        .size(rpx(18.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(rpx(3.0))
-        .hover(|s| s.bg(c::BG_HOVER()))
-        .child(icon(icon_name, 10.0, color))
-        .on_mouse_down(MouseButton::Left, on_grid(dispatch, action))
-        .into_any_element()
+    let d = std::rc::Rc::clone(dispatch);
+    icon_btn(
+        gpui::SharedString::from(id),
+        icon_name,
+        TILE_BTN_BOX,
+        TILE_BTN_BOX,
+        ICON_XS,
+        color,
+        c::BG_HOVER(),
+        None,
+        false,
+        move |window, cx| d(action, window, cx),
+    )
+    .into_any_element()
 }
 
 /// `"{mod}+{n}"` for the first nine tiles, as the **registry** spells the
@@ -420,16 +424,11 @@ fn chord(tile_idx: usize, size: f32, color: Hsla) -> AnyElement {
 
 fn num_hint(tile_idx: usize, focused: bool) -> AnyElement {
     let color = if focused { c::FG_DIM() } else { c::FG_MUTE() };
-    div()
+    keycap_filled(c::BG(), chord(tile_idx, TEXT_MICRO, color))
         .flex()
         .items_center()
-        .px(rpx(4.0))
-        .py(px(1.0))
-        .rounded(rpx(3.0))
-        .bg(c::BG())
         .border_1()
         .border_color(c::BORDER())
-        .child(chord(tile_idx, 9.0, color))
         .into_any_element()
 }
 
@@ -452,23 +451,21 @@ pub fn respond_label(tile_idx: usize) -> &'static str {
 
 fn respond_chip(tile_idx: usize, pulse: f32) -> AnyElement {
     let a = respond_alpha(pulse);
-    let amber = Hsla { a, ..c::AMBER() };
-    let amber_bg = Hsla {
-        a: a * 0.08,
-        ..c::AMBER()
-    };
-    div()
+    let amber = c::alpha(c::AMBER(), a);
+    let amber_bg = c::alpha(c::AMBER(), a * 0.08);
+    let inner = div()
         .flex()
         .items_center()
         .gap(px(1.0))
-        .px(rpx(4.0))
-        .py(px(1.0))
-        .rounded(rpx(3.0))
-        .bg(amber_bg)
+        .child(mono(respond_label(tile_idx), TEXT_MICRO, amber))
+        .when(tile_idx < 9, |d| {
+            d.child(chord(tile_idx, TEXT_MICRO, amber))
+        });
+    keycap_filled(amber_bg, inner)
+        .flex()
+        .items_center()
         .border_1()
         .border_color(amber)
-        .child(mono(respond_label(tile_idx), 9.0, amber))
-        .when(tile_idx < 9, |d| d.child(chord(tile_idx, 9.0, amber)))
         .into_any_element()
 }
 
@@ -490,30 +487,29 @@ pub fn scrim_sub_line(tile_idx: usize) -> String {
 }
 
 /// The full-tile "needs attention" overlay (`terminal.rs:1092-1155`). The
-/// letters are spaced **by the literal** — gpui, like iced, has no
-/// letter-spacing — and the wash is the theme's deepest surface at 0.92 rather
-/// than a blur, which neither toolkit has.
+/// wash is the theme's deepest surface at 0.92 rather than a blur, which
+/// neither toolkit has.
+///
+/// The headline is a **mono, letter-tracked** label at [`TEXT_TITLE`]: an
+/// overlay on a tile is chrome, and §5.3's display tiers are never chrome.
+/// Tracking comes from [`crate::views::rows::tracked`] (U+2009 thin spaces),
+/// not from typing spaces into the literal (§5.4).
 fn scrim(tile_idx: usize, ctx: &GridCtx) -> AnyElement {
-    let amber = Hsla {
-        a: scrim_alpha(ctx.scrim_pulse),
-        ..c::AMBER()
-    };
+    let amber = c::alpha(c::AMBER(), scrim_alpha(ctx.scrim_pulse));
     overlay()
         .id(gpui::SharedString::from(format!("tile-scrim-{tile_idx}")))
+        .cursor_pointer()
         .flex()
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(rpx(8.0))
-        .bg(Hsla {
-            a: 0.92,
-            ..c::BG_STRIP()
-        })
+        .gap(rpx(SPACE_LG))
+        .bg(c::alpha(c::BG_STRIP(), 0.92))
         .child(
-            crate::views::rows::ui_text("N E E D S   A T T E N T I O N", 20.0, amber)
+            mono(tracked("NEEDS ATTENTION"), TEXT_TITLE, amber)
                 .font_weight(gpui::FontWeight::SEMIBOLD),
         )
-        .child(mono(scrim_sub_line(tile_idx), 10.0, c::FG_MUTE()))
+        .child(mono(scrim_sub_line(tile_idx), TEXT_MICRO, c::FG_MUTE()))
         // Clicking the scrim focuses/acknowledges the tile, exactly like
         // clicking its header.
         .on_mouse_down(MouseButton::Left, {

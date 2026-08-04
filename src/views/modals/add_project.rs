@@ -9,21 +9,28 @@
 //! :97).
 
 use crate::views::rpx;
-use gpui::{div, prelude::*, px, AnyElement, App, Context, Div, Focusable as _, Hsla, Window};
+use crate::views::tokens::*;
+use gpui::{div, prelude::*, AnyElement, App, Context, Div, Focusable as _, Window};
 
 use crate::add_project::{self, ChooseOutcome, GitProbe, SubmitOutcome};
 use crate::settings::SettingsState;
 use crate::theme as c;
 
-use super::shell::{
-    body_text, click_action, click_checkbox, click_row, modal_body, modal_footer_hints,
-    modal_header_row, modal_panel, note_text, ModalBtn,
-};
 use super::{Modal, ModalClick, ModalDispatch, ModalEvent, ModalLayer};
 use crate::modal::{AddProjectStep, OnboardStep};
+use crate::views::components::{
+    body_text, click_action, click_checkbox, click_row, divider_h, modal_action_sized, modal_body,
+    modal_footer_hints, modal_header_row, modal_panel, mono, note_text, section_header, status_dot,
+    ui, ModalBtn,
+};
 
 /// Rows of the directory match list kept on screen at once.
 const DIR_ROWS: usize = 6;
+
+/// Height of one directory-match row and of the wizard's field rows. Layout
+/// geometry local to this wizard (§8.4), sitting between [`CONTROL_H`] (22) and
+/// the palette row (44).
+const FIELD_H: f32 = 28.0;
 
 impl ModalLayer {
     /// The wizard's clicks, plus every click Tasks 5-6's modals raise that is
@@ -480,28 +487,23 @@ pub fn render(
 /// (`src/gui/add_project.rs`'s `dir_matches`).
 fn dir_list(path: &str, sel: usize, dispatch: &ModalDispatch) -> impl IntoElement {
     let entries = add_project::list_dirs(path);
-    let mut list = div().flex().flex_col().gap(rpx(2.0));
+    let mut list = div().flex().flex_col().gap(rpx(SPACE_XS));
     if entries.is_empty() {
-        return list.child(
-            div()
-                .px(rpx(8.0))
-                .py(rpx(5.0))
-                .text_size(rpx(12.0))
-                .text_color(c::FG_MUTE())
-                .child("No matches"),
-        );
+        return list.child(div().px(rpx(SPACE_LG)).py(rpx(SPACE_SM)).child(ui(
+            "No matches",
+            TEXT_BODY,
+            c::FG_MUTE(),
+        )));
     }
     let offset = crate::launcher::scroll_offset_for(0, sel, DIR_ROWS, entries.len());
     let above = offset;
     let below = entries.len().saturating_sub(offset + DIR_ROWS);
     if above > 0 {
-        list = list.child(
-            div()
-                .px(rpx(8.0))
-                .text_size(rpx(11.0))
-                .text_color(c::FG_MUTE())
-                .child(format!("↑{above} more")),
-        );
+        list = list.child(div().px(rpx(SPACE_LG)).child(mono(
+            format!("↑{above} more"),
+            TEXT_SMALL,
+            c::FG_MUTE(),
+        )));
     }
     for (i, entry) in entries.iter().enumerate().skip(offset).take(DIR_ROWS) {
         let name = format!("{}/", add_project::path_basename(entry));
@@ -512,22 +514,23 @@ fn dir_list(path: &str, sel: usize, dispatch: &ModalDispatch) -> impl IntoElemen
             ModalClick::WizardPickDir(i),
             div()
                 .flex_1()
-                .h(rpx(28.0))
+                .h(rpx(FIELD_H))
                 .flex()
                 .items_center()
-                .text_size(rpx(12.0))
-                .text_color(if i == sel { c::FG() } else { c::FG_DIM() })
-                .child(name),
+                // A directory name is a token, not language (§5.2).
+                .child(mono(
+                    name,
+                    TEXT_BODY,
+                    if i == sel { c::FG() } else { c::FG_DIM() },
+                )),
         ));
     }
     if below > 0 {
-        list = list.child(
-            div()
-                .px(rpx(8.0))
-                .text_size(rpx(11.0))
-                .text_color(c::FG_MUTE())
-                .child(format!("↓{below} more")),
-        );
+        list = list.child(div().px(rpx(SPACE_LG)).child(mono(
+            format!("↓{below} more"),
+            TEXT_SMALL,
+            c::FG_MUTE(),
+        )));
     }
     list
 }
@@ -541,14 +544,23 @@ fn field(layer: &ModalLayer, idx: usize, window: &Window, cx: &App) -> Option<im
         let focused = f.state().read(cx).focus_handle(cx).is_focused(window);
         div()
             .w_full()
-            .px(rpx(12.0))
-            .py(rpx(8.0))
-            .rounded(rpx(4.0))
+            .px(rpx(SPACE_2XL))
+            .py(rpx(SPACE_LG))
+            .rounded(rpx(RADIUS_CONTROL))
             .bg(c::BG_RAIL())
             .border_1()
             .border_color(if focused { c::MAGENTA() } else { c::BORDER() })
-            .text_size(rpx(13.0))
-            .child(gpui_component::input::Input::new(f.state()).appearance(false).w_full())
+            // Both wizard fields hold tokens — a filesystem path and a project
+            // name that becomes a directory — so the run is mono (§5.2). The
+            // family and size are pinned here because the inner `Input` renders
+            // its own text and inherits the container's text style.
+            .font(gpui::font(crate::fonts::MONO_FAMILY))
+            .text_size(rpx(TEXT_TITLE))
+            .child(
+                gpui_component::input::Input::new(f.state())
+                    .appearance(false)
+                    .w_full(),
+            )
     })
 }
 
@@ -559,19 +571,13 @@ fn wizard_header(step_no: u8) -> Div {
         div()
             .flex()
             .items_center()
-            .child(
-                div()
-                    .flex_1()
-                    .text_size(rpx(13.0))
-                    .text_color(c::MAGENTA())
-                    .child("Add project"),
-            )
-            .child(
-                div()
-                    .text_size(rpx(11.0))
-                    .text_color(c::FG_MUTE())
-                    .child(format!("Step {step_no} of 2")),
-            ),
+            .child(ui("Add project", TEXT_TITLE, c::MAGENTA()).flex_1())
+            // A step counter is a count, so mono (§5.2).
+            .child(mono(
+                format!("Step {step_no} of 2"),
+                TEXT_SMALL,
+                c::FG_MUTE(),
+            )),
     )
 }
 
@@ -582,67 +588,53 @@ fn pick_source(
     window: &Window,
     cx: &App,
 ) -> AnyElement {
-    let accent = c::MAGENTA();
-    let accent_soft = Hsla {
-        a: 0.45,
-        ..accent
-    };
     let browse_label = if layer.picker_open {
         "Waiting for the folder picker…"
     } else {
         "Browse for folder…"
     };
     let dispatch_browse = std::rc::Rc::clone(dispatch);
-    let browse = div()
-        .id("ap-browse-hero")
-        .w_full()
-        .px(rpx(12.0))
-        .py(rpx(10.0))
-        .rounded(rpx(5.0))
-        .bg(c::BG_HL())
-        .border_1()
-        .border_color(accent_soft)
-        .cursor_pointer()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(
-            div()
-                .text_size(rpx(13.0))
-                .text_color(c::FG())
-                .child(browse_label),
-        )
-        .hover(|s| s.bg(c::BG_HOVER()).border_color(accent))
-        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-            dispatch_browse(ModalClick::WizardBrowse, window, cx);
-        });
+    // The shared action button (§13: no re-implemented button shells).
+    // `ModalBtn::Accent` carries the whole colour axis — BG_HL fill, accent
+    // border at rest brightening to full accent on hover — so nothing colour-
+    // related is chained here. Only the hero's shape is, which the shared
+    // component genuinely cannot express.
+    let browse = modal_action_sized(
+        "ap-browse-hero",
+        browse_label,
+        ModalBtn::Accent,
+        TEXT_TITLE,
+        move |window, cx| dispatch_browse(ModalClick::WizardBrowse, window, cx),
+    )
+    .w_full()
+    .py(rpx(SPACE_XL))
+    .flex()
+    .items_center()
+    .justify_center();
 
     let drop_hint = div()
         .w_full()
         .flex()
         .items_center()
         .justify_center()
-        .text_size(rpx(11.0))
-        .text_color(c::FG_MUTE())
-        .child("Or drop a folder anywhere in this window");
+        .child(ui(
+            "Or drop a folder anywhere in this window",
+            TEXT_SMALL,
+            c::FG_MUTE(),
+        ));
 
     let or_divider = div()
         .flex()
         .items_center()
-        .gap(rpx(10.0))
-        .child(div().flex_1().h(px(1.0)).bg(c::BORDER_SOFT()))
-        .child(
-            div()
-                .text_size(rpx(11.0))
-                .text_color(c::FG_MUTE())
-                .child("Or type a path"),
-        )
-        .child(div().flex_1().h(px(1.0)).bg(c::BORDER_SOFT()));
+        .gap(rpx(SPACE_XL))
+        .child(divider_h().flex_1())
+        .child(ui("Or type a path", TEXT_SMALL, c::FG_MUTE()))
+        .child(divider_h().flex_1());
 
     let mut body = div()
         .flex()
         .flex_col()
-        .gap(rpx(12.0))
+        .gap(rpx(SPACE_2XL))
         .child(browse)
         .child(drop_hint)
         .child(or_divider);
@@ -651,21 +643,18 @@ fn pick_source(
     }
     body = body.child(dir_list(&st.path, st.dir_sel, dispatch));
     if let Some(note) = &st.note {
-        body = body.child(
-            div()
-                .text_size(rpx(12.0))
-                .text_color(c::RED())
-                .child(note.clone()),
-        );
+        body = body.child(ui(note.clone(), TEXT_BODY, c::RED()));
     }
     body = body.child(
         div()
             .flex()
             .items_center()
-            .gap(rpx(8.0))
+            .gap(rpx(SPACE_LG))
             .child(div().flex_1())
             .child(click_action(
-                "ap-cancel",
+                // Distinct from the details step's Cancel: gpui bleeds hover
+                // state between duplicate ids (§9.1).
+                "ap-cancel-src",
                 "Cancel",
                 ModalBtn::Plain,
                 dispatch,
@@ -673,7 +662,7 @@ fn pick_source(
             )),
     );
     modal_panel(
-        640.0,
+        MODAL_W_XL,
         div()
             .child(wizard_header(1))
             .child(modal_body(body))
@@ -698,21 +687,19 @@ fn details(
         .w_full()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
-        .px(rpx(10.0))
-        .py(rpx(6.0))
-        .rounded(rpx(4.0))
+        .gap(rpx(SPACE_LG))
+        .px(rpx(SPACE_XL))
+        .py(rpx(SPACE_MD))
+        .rounded(rpx(RADIUS_CONTROL))
         .bg(c::BG_STRIP())
         .border_1()
         .border_color(c::BORDER())
-        .child(crate::icons::icon("folder", 14.0, c::FG_DIM()))
+        .child(crate::icons::icon("folder", ICON_MD, c::FG_DIM()))
+        // A filesystem path is a token (§5.2).
         .child(
-            div()
+            mono(st.path.clone(), TEXT_BODY, c::FG())
                 .flex_1()
-                .overflow_hidden()
-                .text_size(rpx(12.0))
-                .text_color(c::FG())
-                .child(st.path.clone()),
+                .overflow_hidden(),
         )
         .child(click_action(
             "ap-change",
@@ -726,25 +713,22 @@ fn details(
         Some(branch) => div()
             .flex()
             .items_center()
-            .gap(rpx(7.0))
-            .child(crate::icons::icon("git", 14.0, c::GREEN()))
-            .child(
-                div()
-                    .text_size(rpx(12.0))
-                    .text_color(c::GREEN())
-                    .child(format!("Git repository · branch {branch}")),
-            ),
+            .gap(rpx(SPACE_MD))
+            .child(crate::icons::icon("git", ICON_MD, c::GREEN()))
+            // A sentence about the folder, not a token — sans (§5.2), and the
+            // same family as the "Not a git repository" arm below, which fills
+            // this exact slot.
+            .child(ui(
+                format!("Git repository · branch {branch}"),
+                TEXT_BODY,
+                c::GREEN(),
+            )),
         None => div()
             .flex()
             .items_center()
-            .gap(rpx(7.0))
-            .child(crate::icons::icon("no-git", 14.0, c::AMBER()))
-            .child(
-                div()
-                    .text_size(rpx(12.0))
-                    .text_color(c::AMBER())
-                    .child("Not a git repository"),
-            ),
+            .gap(rpx(SPACE_MD))
+            .child(crate::icons::icon("no-git", ICON_MD, c::AMBER()))
+            .child(ui("Not a git repository", TEXT_BODY, c::AMBER())),
     };
 
     let default_name = add_project::path_basename(&st.path);
@@ -752,32 +736,23 @@ fn details(
     let mut body = div()
         .flex()
         .flex_col()
-        .gap(rpx(12.0))
-        .child(
-            div()
-                .text_size(rpx(11.0))
-                .text_color(c::FG_MUTE())
-                .child("Folder"),
-        )
+        .gap(rpx(SPACE_2XL))
+        // Section labels are mono (§5.2).
+        .child(mono("Folder", TEXT_SMALL, c::FG_MUTE()))
         .child(chip)
         .child(badge)
         .child(
             div()
                 .flex()
                 .items_center()
-                .child(
-                    div()
-                        .text_size(rpx(11.0))
-                        .text_color(c::FG_MUTE())
-                        .child("Name"),
-                )
+                .child(mono("Name", TEXT_SMALL, c::FG_MUTE()))
                 .child(div().flex_1())
-                .child(
-                    div()
-                        .text_size(rpx(11.0))
-                        .text_color(c::FG_MUTE())
-                        .child(format!("Empty uses '{default_name}'")),
-                ),
+                // Quotes a directory name, so mono (§5.2).
+                .child(mono(
+                    format!("Empty uses '{default_name}'"),
+                    TEXT_SMALL,
+                    c::FG_MUTE(),
+                )),
         );
     if let Some(f) = field(layer, 0, window, cx) {
         body = body.child(f);
@@ -793,30 +768,26 @@ fn details(
             ModalClick::WizardToggleInitGit,
         ));
         if !st.init_git {
-            body = body.child(
-                div()
-                    .text_size(rpx(11.0))
-                    .text_color(c::FG_MUTE())
-                    .child("Sessions will run directly in the project folder, no worktrees"),
-            );
+            body = body.child(ui(
+                "Sessions will run directly in the project folder, no worktrees",
+                TEXT_SMALL,
+                c::FG_MUTE(),
+            ));
         }
     }
     if let Some(note) = &st.note {
-        body = body.child(
-            div()
-                .text_size(rpx(12.0))
-                .text_color(c::RED())
-                .child(note.clone()),
-        );
+        body = body.child(ui(note.clone(), TEXT_BODY, c::RED()));
     }
     body = body.child(
         div()
             .flex()
             .items_center()
-            .gap(rpx(8.0))
+            .gap(rpx(SPACE_LG))
             .child(div().flex_1())
             .child(click_action(
-                "ap-cancel",
+                // See the pick-source step's Cancel — ids must be unique per
+                // view (§9.1).
+                "ap-cancel-name",
                 "Cancel",
                 ModalBtn::Plain,
                 dispatch,
@@ -831,7 +802,7 @@ fn details(
             )),
     );
     modal_panel(
-        640.0,
+        MODAL_W_XL,
         div()
             .child(wizard_header(2))
             .child(modal_body(body))
@@ -852,25 +823,23 @@ fn git_on_path() -> bool {
     })
 }
 
-/// A small filled status dot, the shared shape every wizard list row and the
-/// welcome bullets use.
-fn dot(color: Hsla) -> Div {
-    div().size(rpx(6.0)).rounded_full().bg(color)
-}
-
 /// One bulleted value-prop line on the welcome step: a magenta mark, a bold
 /// lead, and a muted explanation (iced `onboard_point`, onboarding.rs:387-409).
 fn onboard_point(lead: &'static str, body: &'static str) -> Div {
     div()
         .flex()
-        .gap(rpx(10.0))
-        .child(div().pt(rpx(6.0)).child(dot(c::MAGENTA())))
+        .gap(rpx(SPACE_XL))
+        .child(
+            div()
+                .pt(rpx(SPACE_MD))
+                .child(status_dot(DOT_SM, c::MAGENTA())),
+        )
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(rpx(2.0))
-                .child(div().text_size(rpx(14.0)).text_color(c::FG()).child(lead))
+                .gap(rpx(SPACE_XS))
+                .child(ui(lead, TEXT_TITLE, c::FG()))
                 .child(body_text(body)),
         )
 }
@@ -890,29 +859,31 @@ fn onboard_env_row(found: bool, optional: bool, name: &'static str, meta: &'stat
         .w_full()
         .flex()
         .items_center()
-        .gap(rpx(10.0))
-        .px(rpx(12.0))
-        .py(rpx(8.0))
-        .rounded(rpx(4.0))
+        .gap(rpx(SPACE_XL))
+        .px(rpx(SPACE_2XL))
+        .py(rpx(SPACE_LG))
+        .rounded(rpx(RADIUS_CONTROL))
         .border_1()
         .border_color(c::BORDER())
         .bg(c::BG_STRIP())
-        .child(dot(dotc))
-        .child(div().text_size(rpx(13.0)).text_color(c::FG()).child(name))
-        .child(
-            div()
-                .text_size(rpx(12.0))
-                .text_color(c::FG_MUTE())
-                .child(meta),
-        )
+        .child(status_dot(DOT_SM, dotc))
+        // The tool name is an executable on PATH and the tag is a status label,
+        // so both are tokens; the description between them is language (§5.2).
+        .child(mono(name, TEXT_TITLE, c::FG()))
+        .child(ui(meta, TEXT_BODY, c::FG_MUTE()))
         .child(div().flex_1())
-        .child(div().text_size(rpx(11.0)).text_color(tagc).child(tag))
+        .child(mono(tag, TEXT_SMALL, tagc))
 }
 
 /// The first-run wizard. Full-viewport with no sidebar, statusbar or scrim —
 /// the layer already renders it as a screen replacement (recorded ambiguity 1)
 /// and the entrance animation is applied there.
-fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx: &App) -> AnyElement {
+fn onboarding(
+    layer: &ModalLayer,
+    dispatch: &ModalDispatch,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
     let Some(Modal::Onboarding {
         step,
         path,
@@ -930,7 +901,7 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx:
 
     // ── progress rail: per-step label, magenta done/current/pending tri-state
     // (iced onboarding.rs:60-81). ────────────────────────────────────────────
-    let mut rail = div().flex().items_center().gap(rpx(10.0));
+    let mut rail = div().flex().items_center().gap(rpx(SPACE_XL));
     for s in OnboardStep::flow() {
         let s = *s;
         let (dotc, txtc) = if s == *step {
@@ -944,9 +915,10 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx:
             div()
                 .flex()
                 .items_center()
-                .gap(rpx(5.0))
-                .child(dot(dotc))
-                .child(div().text_size(rpx(10.0)).text_color(txtc).child(s.label())),
+                .gap(rpx(SPACE_SM))
+                .child(status_dot(DOT_SM, dotc))
+                // Progress-rail step labels read as section labels (§5.2).
+                .child(mono(s.label(), TEXT_MICRO, txtc)),
         );
     }
 
@@ -955,28 +927,25 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx:
         OnboardStep::Welcome => div()
             .flex()
             .flex_col()
-            .gap(rpx(10.0))
+            // Carries the rhythm the deleted 20px spacer used to add (§6.1).
+            .gap(rpx(SPACE_2XL))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(rpx(10.0))
-                    .child(crate::icons::icon("grid", 32.0, c::CYAN()))
+                    .gap(rpx(SPACE_XL))
+                    // ICON_DISPLAY is onboarding-only; never chrome.
+                    .child(crate::icons::icon("grid", ICON_DISPLAY, c::CYAN()))
                     .child(
-                        div()
-                            .text_size(rpx(32.0))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(c::FG())
-                            .child("grove"),
+                        ui("grove", TEXT_DISPLAY_LG, c::FG())
+                            .font_weight(gpui::FontWeight::BOLD),
                     ),
             )
-            .child(
-                div()
-                    .text_size(rpx(15.0))
-                    .text_color(c::FG_DIM())
-                    .child("a worktree launchpad for AI coding agents"),
-            )
-            .child(div().h(rpx(20.0)))
+            .child(ui(
+                "a worktree launchpad for AI coding agents",
+                TEXT_TITLE,
+                c::FG_DIM(),
+            ))
             .child(onboard_point(
                 "Sessions are the unit of work",
                 "Every agent you spawn lives in a managed session that survives navigation; switch between them in two keystrokes.",
@@ -1019,20 +988,19 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx:
                     "Persists sessions across restarts",
                 ),
             ];
-            let mut list = div().flex().flex_col().gap(rpx(6.0));
+            let mut list = div().flex().flex_col().gap(rpx(SPACE_MD));
             for (found, optional, n, meta) in rows {
                 list = list.child(onboard_env_row(found, optional, n, meta));
             }
             div()
                 .flex()
                 .flex_col()
-                .gap(rpx(10.0))
-                .child(div().text_size(rpx(20.0)).text_color(c::FG()).child("Environment"))
+                .gap(rpx(SPACE_XL))
+                .child(ui("Environment", TEXT_DISPLAY, c::FG()))
                 .child(body_text(
                     "Grove spawns agents from your PATH; it doesn't install or authenticate \
                      them. Only Git is required to get going.",
                 ))
-                .child(div().h(rpx(4.0)))
                 .child(list)
                 .into_any_element()
         }
@@ -1041,20 +1009,15 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx:
             let mut d = div()
                 .flex()
                 .flex_col()
-                .gap(rpx(8.0))
-                .child(div().text_size(rpx(20.0)).text_color(c::FG()).child("Add your first project"))
+                .gap(rpx(SPACE_LG))
+                .child(ui("Add your first project", TEXT_DISPLAY, c::FG()))
                 .child(body_text(
                     "Point Grove at a Git repository, or any plain folder for ad-hoc sessions.",
                 ))
-                // gpui has letter-spacing; the literal spaced strings are kept
-                // anyway so this reads identically to the iced original.
-                .child(
-                    div()
-                        .text_size(rpx(11.0))
-                        .text_color(c::FG_MUTE())
-                        .child("R E P O S I T O R Y   O R   F O L D E R"),
-                );
-            let mut path_row = div().flex().items_center().gap(rpx(8.0));
+                // Tracking is faked with U+2009 inside `section_header`, never
+                // hand-spaced with literal U+0020 (§5.4).
+                .child(section_header("REPOSITORY OR FOLDER", SPACE_SM, 0.0));
+            let mut path_row = div().flex().items_center().gap(rpx(SPACE_LG));
             if let Some(f) = field(layer, 0, window, cx) {
                 path_row = path_row.child(div().flex_1().child(f));
             }
@@ -1069,12 +1032,12 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx:
 
             if !path.trim().is_empty() {
                 d = d
-                    .child(div().text_size(rpx(11.0)).text_color(c::FG_MUTE()).child("M A T C H E S"))
+                    .child(section_header("MATCHES", SPACE_SM, 0.0))
                     .child(dir_list(path, *dir_sel, dispatch));
             }
 
             if name.is_some() {
-                d = d.child(div().text_size(rpx(11.0)).text_color(c::FG_MUTE()).child("N A M E"));
+                d = d.child(section_header("NAME", SPACE_SM, 0.0));
                 if let Some(f) = field(layer, 1, window, cx) {
                     d = d.child(f);
                 }
@@ -1083,12 +1046,12 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx:
             if let Some(note) = note {
                 d = d.child(note_text(note.clone()));
             }
-            d.child(
-                div()
-                    .text_size(rpx(11.0))
-                    .text_color(c::FG_MUTE())
-                    .child("Tab to complete · ↑↓ to select · Enter to continue · Or skip setup"),
-            )
+            // A sentence of instructions, not a keycap run — sans (§5.2).
+            d.child(ui(
+                "Tab to complete · ↑↓ to select · Enter to continue · Or skip setup",
+                TEXT_SMALL,
+                c::FG_MUTE(),
+            ))
             .into_any_element()
         }
 
@@ -1098,14 +1061,14 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx:
             let mut d = div()
                 .flex()
                 .flex_col()
-                .gap(rpx(8.0))
-                .child(div().text_size(rpx(20.0)).text_color(c::FG()).child("Start your first session"));
+                .gap(rpx(SPACE_LG))
+                .child(ui("Start your first session", TEXT_DISPLAY, c::FG()));
 
             match &project {
                 Some(p) => {
                     d = d.child(body_text(format!("Launch an agent inside {}.", p.name)));
                     let agents = super::confirm::available_agents();
-                    let mut list = div().flex().flex_col().gap(px(0.0));
+                    let mut list = div().flex().flex_col();
                     for (i, a) in agents.iter().enumerate() {
                         let active = i == *agent_sel;
                         list = list.child(click_row(
@@ -1113,16 +1076,17 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx:
                             active,
                             dispatch,
                             ModalClick::OnboardPickAgent(i),
-                            div()
-                                .text_size(rpx(13.0))
-                                .text_color(if active { c::FG() } else { c::FG_DIM() })
-                                .child(a.label().to_string()),
+                            ui(
+                                a.label().to_string(),
+                                TEXT_TITLE,
+                                if active { c::FG() } else { c::FG_DIM() },
+                            ),
                         ));
                     }
                     d = d.child(
                         div()
                             .w_full()
-                            .rounded(rpx(4.0))
+                            .rounded(rpx(RADIUS_CONTROL))
                             .border_1()
                             .border_color(c::BORDER())
                             .bg(c::BG_STRIP())
@@ -1142,42 +1106,36 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx:
             } else {
                 (c::FG_MUTE(), "Safe: agents ask before running commands")
             };
-            d.child(div().h(rpx(4.0)))
-                .child(
+            d.child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(rpx(20.0))
-                        .child(
-                            div()
-                                .text_size(rpx(11.0))
-                                .text_color(c::FG_MUTE())
-                                .child("P E R M I S S I O N S"),
-                        )
-                        .child(super::shell::seg_group(
+                        .gap(rpx(SPACE_3XL))
+                        .child(section_header("PERMISSIONS", 0.0, 0.0))
+                        .child(crate::views::components::seg_group(
                             div()
                                 .flex()
                                 .items_center()
-                                .child(super::shell::seg_button(
+                                .child(crate::views::components::seg_button(
                                     "ob-perms-skip",
                                     "Skip",
                                     *perms_skip,
-                                    super::shell::SegSide::Left,
+                                    crate::views::components::SegSide::Left,
                                     true,
-                                    (!*perms_skip).then(|| -> super::shell::OnToggle {
+                                    (!*perms_skip).then(|| -> crate::views::components::OnToggle {
                                         let dispatch = std::rc::Rc::clone(dispatch);
                                         Box::new(move |window, cx| {
                                             dispatch(ModalClick::OnboardPerms(true), window, cx);
                                         })
                                     }),
                                 ))
-                                .child(super::shell::seg_button(
+                                .child(crate::views::components::seg_button(
                                     "ob-perms-safe",
                                     "Safe",
                                     !*perms_skip,
-                                    super::shell::SegSide::Right,
+                                    crate::views::components::SegSide::Right,
                                     false,
-                                    (*perms_skip).then(|| -> super::shell::OnToggle {
+                                    (*perms_skip).then(|| -> crate::views::components::OnToggle {
                                         let dispatch = std::rc::Rc::clone(dispatch);
                                         Box::new(move |window, cx| {
                                             dispatch(ModalClick::OnboardPerms(false), window, cx);
@@ -1187,12 +1145,7 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx:
                         ),
                     ),
                 )
-                .child(
-                    div()
-                        .text_size(rpx(11.0))
-                        .text_color(perms_label_color)
-                        .child(perms_line),
-                )
+                .child(ui(perms_line, TEXT_SMALL, perms_label_color))
                 .into_any_element()
         }
     };
@@ -1207,13 +1160,9 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx:
     let mut footer = div()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
-        .child(
-            div()
-                .text_size(rpx(12.0))
-                .text_color(c::FG_MUTE())
-                .child(count),
-        )
+        .gap(rpx(SPACE_LG))
+        // A step count, so mono (§5.2).
+        .child(mono(count, TEXT_BODY, c::FG_MUTE()))
         .child(div().flex_1())
         .child(click_action(
             "ob-skip",
@@ -1244,29 +1193,23 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx:
     let brand = div()
         .flex()
         .items_center()
-        .gap(rpx(8.0))
-        .child(crate::icons::icon("grid", 15.0, c::CYAN()))
-        .child(
-            div()
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_size(rpx(14.0))
-                .text_color(c::MAGENTA())
-                .child("grove"),
-        );
+        .gap(rpx(SPACE_LG))
+        .child(crate::icons::icon("grid", ICON_MD, c::CYAN()))
+        .child(ui("grove", TEXT_TITLE, c::MAGENTA()).font_weight(gpui::FontWeight::BOLD));
 
     let content = div()
-        .w(rpx(560.0))
+        .w(rpx(MODAL_W_LG))
         .flex()
         .flex_col()
-        .gap(rpx(22.0))
+        .gap(rpx(SPACE_3XL))
         .child(rail)
-        .child(div().w(rpx(560.0)).child(body));
+        .child(body);
 
     div()
         .size_full()
         .flex()
         .flex_col()
-        .child(div().px(rpx(20.0)).py(rpx(16.0)).child(brand))
+        .child(div().px(rpx(SPACE_3XL)).py(rpx(SPACE_3XL)).child(brand))
         .child(
             div()
                 .flex_1()
@@ -1276,6 +1219,12 @@ fn onboarding(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx:
                 .justify_center()
                 .child(content),
         )
-        .child(div().w_full().px(rpx(20.0)).py(rpx(16.0)).child(footer))
+        .child(
+            div()
+                .w_full()
+                .px(rpx(SPACE_3XL))
+                .py(rpx(SPACE_3XL))
+                .child(footer),
+        )
         .into_any_element()
 }

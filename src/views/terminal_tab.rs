@@ -7,11 +7,13 @@
 //! the zen toggle.
 
 use crate::views::rpx;
+use crate::views::tokens::*;
 use std::rc::Rc;
 
-use gpui::{div, prelude::*, px, AnyElement, App, Entity, Window};
+use gpui::{div, prelude::*, AnyElement, App, Entity, Window};
 
 use crate::theme as c;
+use crate::views::components::{divider_h, keycap, mono, status_dot, ui, vline};
 use crate::views::grid::{PTY_PAD_H, PTY_PAD_W};
 use crate::views::session_header::{tool_btn, truncate_middle, SESSBAR_H};
 use crate::views::terminal_view::TerminalView;
@@ -46,51 +48,35 @@ fn empty_terminals_state() -> AnyElement {
         div()
             .flex()
             .items_center()
-            .gap(px(1.0))
-            .child(crate::icons::icon("command", 10.0, c::FG_DIM()))
-            .child(
-                div()
-                    .font(gpui::font(crate::fonts::MONO_FAMILY))
-                    .text_size(rpx(11.0))
-                    .text_color(c::FG_DIM())
-                    .child("t"),
-            )
+            .gap(rpx(SPACE_XS))
+            .child(crate::icons::icon("command", ICON_XS, c::FG_DIM()))
+            .child(mono("t", TEXT_SMALL, c::FG_DIM()))
             .into_any_element()
     } else {
-        div()
-            .font(gpui::font(crate::fonts::MONO_FAMILY))
-            .text_size(rpx(11.0))
-            .text_color(c::FG_DIM())
-            .child(format!("{}+t", crate::keymap::platform_mod_label()))
-            .into_any_element()
+        mono(
+            format!("{}+t", crate::keymap::platform_mod_label()),
+            TEXT_SMALL,
+            c::FG_DIM(),
+        )
+        .into_any_element()
     };
 
     let hint = div()
         .flex()
         .items_center()
-        .gap(rpx(6.0))
-        .child(crate::views::modals::shell::keycap(keycap_content))
-        .child(
-            div()
-                .font(gpui::font(crate::fonts::MONO_FAMILY))
-                .text_size(rpx(10.0))
-                .text_color(c::FG_MUTE())
-                .child("open a terminal"),
-        );
+        .gap(rpx(SPACE_MD))
+        .child(keycap(keycap_content))
+        .child(mono("open a terminal", TEXT_MICRO, c::FG_MUTE()));
 
     div()
         .flex()
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(rpx(6.0))
+        .gap(rpx(SPACE_MD))
         .size_full()
         .bg(c::BG())
-        .child(crate::views::rows::ui_text(
-            "no terminals open",
-            14.0,
-            c::FG_DIM(),
-        ))
+        .child(ui("no terminals open", TEXT_TITLE, c::FG_DIM()))
         .child(hint)
         .into_any_element()
 }
@@ -142,26 +128,26 @@ fn home_terminal_bar(ctx: &TerminalTabCtx) -> AnyElement {
         .w_full()
         .flex()
         .items_center()
-        .gap(rpx(12.0))
-        .px(rpx(16.0))
+        .gap(rpx(SPACE_2XL))
+        .px(rpx(SPACE_3XL))
         .bg(c::BG_STRIP())
         .overflow_hidden()
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(rpx(6.0))
-                .child(div().size(rpx(6.0)).rounded_full().bg(dot_color))
-                .child(crate::views::rows::ui_text(status_label, 12.0, dot_color)),
+                .gap(rpx(SPACE_MD))
+                .child(status_dot(DOT_SM, dot_color))
+                .child(ui(status_label, TEXT_BODY, dot_color)),
         )
         .child(vline())
         .child(
             div()
                 .flex_1()
                 .overflow_hidden()
-                .child(crate::views::rows::ui_text(context, 12.0, c::FG())),
+                .child(ui(context, TEXT_BODY, c::FG())),
         )
-        .child(crate::views::rows::ui_text("~", 12.0, c::FG_MUTE()))
+        .child(ui("~", TEXT_BODY, c::FG_MUTE()))
         .child(vline())
         .child(tool_btn(
             "home-term-restart",
@@ -190,13 +176,8 @@ fn home_terminal_bar(ctx: &TerminalTabCtx) -> AnyElement {
         .flex_col()
         .w_full()
         .child(bar)
-        .child(div().h(px(1.0)).w_full().bg(c::BORDER_SOFT()))
+        .child(divider_h())
         .into_any_element()
-}
-
-/// The bar's vertical rule (`primitives.rs`'s `vline`).
-pub fn vline() -> gpui::Div {
-    div().w(px(1.0)).h(rpx(16.0)).bg(c::BORDER())
 }
 
 #[cfg(test)]

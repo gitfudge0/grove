@@ -8,12 +8,14 @@
 //! [`crate::views::appbar`] — see its module docs.
 
 use crate::views::rpx;
-use gpui::{div, prelude::*, px, AnyElement, Div, Hsla, MouseButton};
+use crate::views::tokens::*;
+use gpui::{div, prelude::*, AnyElement, MouseButton};
 
 use crate::entities::toast::{Toast, ToastKind};
 use crate::keymap::{platform_mod_label, GlobalShortcut};
 use crate::theme as c;
 use crate::views::appbar::{on_chrome, shortcut_key, ChromeAction, Dispatch};
+use crate::views::components::{divider_h, keycap, mono, status_dot};
 
 /// Status bar height (`src/gui/metrics.rs:16`).
 pub const STATUS_H: f32 = 26.0;
@@ -28,75 +30,70 @@ pub struct StatusbarCtx {
     pub dispatch: Dispatch,
 }
 
-fn mono(content: impl Into<gpui::SharedString>, size: f32, color: Hsla) -> Div {
-    div()
-        .font(gpui::font(crate::fonts::MONO_FAMILY))
-        .text_size(rpx(size))
-        .text_color(color)
-        .child(content.into())
-}
-
-/// Keycap chip shell (`src/gui/widgets/modal.rs:44-58`): mono, 2px/6px
-/// padding, radius 4, filled `BG_HL`.
-fn keycap(inner: impl IntoElement) -> Div {
-    div()
-        .px(rpx(6.0))
-        .py(rpx(2.0))
-        .rounded(rpx(4.0))
-        .bg(c::BG_HL())
-        .child(inner)
-}
-
 pub fn statusbar(ctx: &StatusbarCtx) -> AnyElement {
     let running_group = div()
         .flex()
         .items_center()
-        .gap(rpx(6.0))
-        .child(div().size(rpx(7.0)).rounded_full().bg(if ctx.running > 0 {
-            c::GREEN()
-        } else {
-            c::FG_MUTE()
-        }))
-        .child(mono(format!("{}", ctx.running), 10.0, c::FG_DIM()))
-        .child(mono("RUNNING", 10.0, c::FG_MUTE()));
+        .gap(rpx(SPACE_MD))
+        .child(status_dot(
+            DOT_MD,
+            if ctx.running > 0 {
+                c::GREEN()
+            } else {
+                c::FG_MUTE()
+            },
+        ))
+        .child(mono(format!("{}", ctx.running), TEXT_MICRO, c::FG_DIM()))
+        .child(mono("RUNNING", TEXT_MICRO, c::FG_MUTE()));
 
     let labelled = |label: &'static str, value: String| {
         div()
             .flex()
             .items_center()
-            .gap(rpx(6.0))
-            .child(mono(label, 10.0, c::FG_MUTE()))
-            .child(mono(value, 10.0, c::FG_DIM()))
+            .gap(rpx(SPACE_MD))
+            .child(mono(label, TEXT_MICRO, c::FG_MUTE()))
+            .child(mono(value, TEXT_MICRO, c::FG_DIM()))
     };
 
     let mut left = div()
         .flex()
         .items_center()
-        .gap(rpx(14.0))
+        .gap(rpx(SPACE_3XL))
         .child(running_group)
         .child(labelled("BACKEND", ctx.backend.to_string()))
         .child(labelled("THEME", ctx.theme_name.clone()));
     if ctx.skip_permissions {
-        left = left.child(keycap(mono("bypass", 10.0, c::YELLOW())));
+        left = left.child(keycap(mono("bypass", TEXT_MICRO, c::YELLOW())));
     }
 
     // The third slot. No pulse, no overlay — recorded ambiguity 3.
+    //
+    // Kind is carried by a glyph as well as a colour (§2.3, §12): red-vs-green
+    // mono text in the same slot is otherwise indistinguishable to a viewer who
+    // cannot separate the two hues. The sprite table has no warning triangle, so
+    // Error takes `close` — the X mark, the nearest "this did not work" shape —
+    // and Info takes `check`, matching the Done glyph in §12's table.
     let toast: AnyElement = match ctx.toast.as_ref() {
-        Some(t) => mono(
-            t.message.clone(),
-            10.0,
-            match t.kind {
-                ToastKind::Error => c::RED(),
-                ToastKind::Info => c::GREEN(),
-            },
-        )
-        .into_any_element(),
+        Some(t) => {
+            let (glyph, tint) = match t.kind {
+                ToastKind::Error => ("close", c::RED()),
+                ToastKind::Info => ("check", c::GREEN()),
+            };
+            div()
+                .flex()
+                .items_center()
+                .gap(rpx(SPACE_SM))
+                .child(crate::icons::icon(glyph, ICON_XS, tint))
+                .child(mono(t.message.clone(), TEXT_MICRO, tint))
+                .into_any_element()
+        }
         None => div().into_any_element(),
     };
 
     let right = div()
         .flex()
         .items_center()
+        .gap(rpx(SPACE_3XL))
         .child(hint_chip(
             "statusbar-palette",
             shortcut_key(GlobalShortcut::NewSession, "p"),
@@ -104,7 +101,6 @@ pub fn statusbar(ctx: &StatusbarCtx) -> AnyElement {
             ChromeAction::OpenSessionLauncher,
             &ctx.dispatch,
         ))
-        .child(div().w(rpx(14.0)))
         .child(hint_chip(
             "statusbar-shortcuts",
             shortcut_key(GlobalShortcut::ShortcutOverlay, "/"),
@@ -112,10 +108,9 @@ pub fn statusbar(ctx: &StatusbarCtx) -> AnyElement {
             ChromeAction::OpenShortcutOverlay,
             &ctx.dispatch,
         ))
-        .child(div().w(rpx(14.0)))
         .child(mono(
             format!("v{}", env!("CARGO_PKG_VERSION")),
-            10.0,
+            TEXT_MICRO,
             c::FG_MUTE(),
         ));
 
@@ -124,18 +119,23 @@ pub fn statusbar(ctx: &StatusbarCtx) -> AnyElement {
         .flex_col()
         .w_full()
         .h(rpx(STATUS_H))
-        .child(div().h(px(1.0)).w_full().bg(c::BORDER_SOFT()))
+        .child(divider_h())
         .child(
             div()
                 .flex()
                 .flex_1()
                 .items_center()
                 .w_full()
-                .px(rpx(16.0))
+                .px(rpx(SPACE_3XL))
                 .bg(c::BG_STRIP())
-                .child(left)
-                .child(div().w(rpx(24.0)))
-                .child(toast)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_3XL))
+                        .child(left)
+                        .child(toast),
+                )
                 .child(div().flex_1())
                 .child(right),
         )
@@ -156,25 +156,33 @@ fn hint_chip(
         div()
             .flex()
             .items_center()
-            .gap(px(1.0))
-            .child(crate::icons::icon("command", 9.0, c::FG_DIM()))
-            .child(mono(key, 10.0, c::FG_DIM()))
+            .gap(rpx(SPACE_XS))
+            .child(crate::icons::icon("command", ICON_XS, c::FG_DIM()))
+            .child(mono(key, TEXT_MICRO, c::FG_DIM()))
             .into_any_element()
     } else {
-        mono(format!("{}+{key}", platform_mod_label()), 10.0, c::FG_DIM()).into_any_element()
+        mono(
+            format!("{}+{key}", platform_mod_label()),
+            TEXT_MICRO,
+            c::FG_DIM(),
+        )
+        .into_any_element()
     };
     div()
         .id(id)
         .flex()
         .items_center()
-        .gap(rpx(6.0))
+        .gap(rpx(SPACE_MD))
         .text_color(c::FG_MUTE())
         .hover(|s| s.text_color(c::FG()))
+        .cursor_pointer()
         .child(keycap(cap))
         .child(
+            // Deliberately *not* `mono`: the chip's hover recolor lives on the
+            // row, so this label must inherit its color rather than pin one.
             div()
                 .font(gpui::font(crate::fonts::MONO_FAMILY))
-                .text_size(rpx(10.0))
+                .text_size(rpx(TEXT_MICRO))
                 .child(label),
         )
         .on_mouse_down(MouseButton::Left, on_chrome(dispatch, action))

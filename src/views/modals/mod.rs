@@ -29,10 +29,10 @@ pub mod input;
 pub mod launcher;
 pub mod project;
 pub mod settings;
-pub mod shell;
 pub mod theme_picker;
 
 use crate::views::rpx;
+use crate::views::tokens::SPACE_LG;
 use gpui::{
     div, prelude::*, AnimationExt as _, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
     KeyDownEvent, Window,
@@ -53,91 +53,11 @@ use crate::settings::SettingsState;
 
 use self::input::ModalInput;
 
-/// Every mouse-driven intent a modal's chrome can raise. Buttons and
-/// checkboxes only own a `&mut Window, &mut App`, so they cannot touch the
-/// layer entity directly; they raise one of these through [`ModalDispatch`],
-/// a weak-entity closure built by [`ModalLayer::dispatcher`]. This is the
-/// mouse half of the keyboard verdict table — iced's modals are fully
-/// clickable and so are these.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ModalClick {
-    /// Route through `ModalSlot::cancel` — the same path Escape takes.
-    Cancel,
-    /// Resolve a `Confirm` (`modal_action`'s two footer buttons).
-    Confirm(bool),
-    ChooseTmux(bool),
-    ToggleRemoveWorktrees,
-    RemoveProjectConfirm,
-    ArchiveConfirm,
-    ArchiveKillSessions,
-    RestoreArchived(usize),
-    DeleteArchived(usize),
-    /// AgentPicker: click a row, then Enter or click again to start.
-    SelectRow(usize),
-    Submit,
-    ToggleDefaultAgent,
-    /// ThemePicker.
-    ThemePickerTab(bool),
-    ThemePickerToggleFollowSystem,
-    ThemePickerUseDefault,
-    /// The picker's own body-level "Apply" — the same commit path
-    /// `ModalAction::ThemePickerSubmit` reaches from the keyboard.
-    ThemePickerApply,
-    /// ScriptsEditor / ThemeManager / Settings buttons.
-    Save,
-    OpenProjectTheme,
-    OpenArchiveGate,
-    OpenArchivedProjects,
-    OpenThemePicker,
-    OpenThemeManager,
-    OpenChangelog,
-    /// Updates: a manual check, the apply, skip, copy-url and the restart.
-    CheckUpdates,
-    StartUpdate,
-    SkipVersion,
-    CopyReleaseUrl,
-    RestartApp,
-    /// Settings → Tools: re-run detection, or adopt a tool as the default.
-    RefreshTools,
-    SetDefaultAgent(grove_core::agent::Agent),
-    /// Settings toggles, by the store key they flip.
-    ToggleSetting(SettingToggle),
-    /// ThemeManager row actions.
-    ThemeSelect(usize),
-    ThemeRenameStart(usize),
-    ThemeRenameCommit,
-    ThemeDuplicate(usize),
-    ThemeDeleteRequest(usize),
-    ThemeDeleteConfirm,
-    ThemeDeleteCancel,
-    ThemeNew,
-    ThemeEditOpen(usize),
-    ThemeEditSave,
-    /// AddProject / Onboarding wizard.
-    WizardBrowse,
-    WizardPickDir(usize),
-    WizardNext,
-    WizardBack,
-    WizardToggleInitGit,
-    OnboardSkip,
-    OnboardAdvance,
-    OnboardBack,
-    OnboardPickAgent(usize),
-    OnboardPerms(bool),
-}
-
-/// The boolean settings the Settings modal flips, each persisted immediately
-/// (`src/gui/view/modals/settings.rs:130-625`; recorded ambiguity 5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SettingToggle {
-    Tmux,
-    SkipPermissions,
-    Chrome,
-    ThemeFollowSystem,
-}
-
-/// A weak-entity click dispatcher handed to the pure view functions.
-pub type ModalDispatch = std::rc::Rc<dyn Fn(ModalClick, &mut Window, &mut App)>;
+// The click vocabulary itself lives one layer down in
+// [`crate::views::dispatch`] so the app-wide component library can build
+// clickable chrome without depending on this module; re-exported here
+// because the modal layer is what interprets it.
+pub use crate::views::dispatch::{ModalClick, ModalDispatch, SettingToggle};
 
 /// What the layer cannot do for itself and hands back to `Workspace`.
 #[derive(Clone, Debug)]
@@ -844,13 +764,13 @@ impl Render for ModalLayer {
                             "onboarding-enter",
                             gpui::Animation::new(std::time::Duration::from_millis(200))
                                 .with_easing(gpui::ease_out_quint()),
-                            |el, delta| el.opacity(delta).pt(rpx(8.0 * (1.0 - delta))),
+                            |el, delta| el.opacity(delta).pt(rpx(SPACE_LG * (1.0 - delta))),
                         ),
                 )
         } else if kind.top_drops() {
-            shell::scrim_top_drop(panel)
+            crate::views::components::scrim_top_drop(panel)
         } else {
-            shell::scrim(panel)
+            crate::views::components::scrim(panel)
         };
 
         div()

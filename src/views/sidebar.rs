@@ -25,13 +25,14 @@
 //! [`crate::views::rows::agent_menu_top`] all go through it.
 
 use crate::views::rpx;
+use crate::views::tokens::*;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, App, Context, CursorStyle, Entity, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ScrollHandle, SharedString, Window,
+    div, px, App, Context, CursorStyle, Entity, MouseButton, MouseMoveEvent, MouseUpEvent,
+    ScrollHandle, SharedString, Window,
 };
 use grove_core::agent::Agent;
 
@@ -42,10 +43,10 @@ use crate::entities::session_registry::SessionRegistry;
 use crate::entities::workspace_state::{TreeExpand, WorkspaceState, RAIL_W};
 use crate::settings::SettingsState;
 use crate::theme as c;
+use crate::views::components::{divider_h, divider_h_strong, icon_btn, mono, tracked};
 use crate::views::rows::{self, RowAction, RowCtx, TreeRow};
+use crate::views::session_header::SESSBAR_H;
 
-/// Session bar / header height (`src/gui/metrics.rs:17`).
-const SESSBAR_H: f32 = 36.0;
 /// Divider hit zone between sidebar and workspace (`src/gui/metrics.rs:20`).
 pub const SIDEBAR_DIVIDER_W: f32 = 6.0;
 /// Two presses inside this window are a double-click and reset the width
@@ -77,6 +78,7 @@ pub struct Sidebar {
     pub activity: Entity<ActivityStore>,
     clock: Entity<AnimationClock>,
     scroll: ScrollHandle,
+    term_scroll: ScrollHandle,
     drag: Option<DividerDrag>,
     last_divider_press: Option<Instant>,
     /// Rebuilt every frame by `render`; read by the divider handlers and by
@@ -111,6 +113,7 @@ impl Sidebar {
             activity,
             clock,
             scroll: ScrollHandle::new(),
+            term_scroll: ScrollHandle::new(),
             drag: None,
             last_divider_press: None,
             rows: Vec::new(),
@@ -646,16 +649,26 @@ impl Render for Sidebar {
         let ctx = self.row_ctx(&rows, tick, pulse, hovered_wt, cx);
         let menu_top = open_menu.and_then(|open| rows::agent_menu_top(&rows, open));
 
+        // The expanded TERMINALS section (header + terminal rows) is emitted
+        // by `rows::flatten` at the tail of the row list, but it belongs
+        // docked at the bottom of the rail rather than inside the scrolling
+        // tree — split it off here instead of touching `flatten`.
+        let split = rows
+            .iter()
+            .position(|r| matches!(r, TreeRow::TerminalsHeader { .. }))
+            .unwrap_or(rows.len());
+        let (tree_rows, term_rows) = rows.split_at(split);
+
         let mut list = div()
             .id("sidebar-tree")
             .flex()
             .flex_col()
             .size_full()
-            .pt(rpx(8.0))
-            .pb(rpx(12.0))
+            .pt(rpx(SPACE_LG))
+            .pb(rpx(SPACE_2XL))
             .overflow_y_scroll()
             .track_scroll(&self.scroll);
-        for row in &rows {
+        for row in tree_rows {
             list = list.child(rows::render_row(row, &ctx));
         }
 
@@ -675,19 +688,35 @@ impl Render for Sidebar {
             .flex_col()
             .bg(c::BG_RAIL())
             .child(self.header(next_glyph, &ctx))
-            .child(div().h(px(1.0)).w_full().bg(c::BORDER_SOFT()))
+            .child(divider_h())
             .child(tree_area);
+        if !term_rows.is_empty() {
+            // Docked at the bottom of the rail, separated by a divider and
+            // capped at 20% of the rail height so a long terminal list
+            // scrolls internally rather than pushing the tree off-screen.
+            let mut term_list = div()
+                .id("sidebar-terminals")
+                .flex()
+                .flex_col()
+                .w_full()
+                .flex_none()
+                .max_h(gpui::relative(0.2))
+                .overflow_y_scroll()
+                .track_scroll(&self.term_scroll);
+            for row in term_rows {
+                term_list = term_list.child(rows::render_row(row, &ctx));
+            }
+            rail = rail.child(divider_h()).child(term_list);
+        }
         if terminals_collapsed {
             // Docked outside the scroll area so it is always reachable; the dot
             // is on iff a shell is running (`sidebar.rs:114-129`, `:61-70`).
-            rail = rail
-                .child(div().h(px(1.0)).w_full().bg(c::BORDER_SOFT()))
-                .child(rows::terminals_header(
-                    false,
-                    home_count,
-                    home_running.iter().any(|&r| r),
-                    &ctx,
-                ));
+            rail = rail.child(divider_h()).child(rows::terminals_header(
+                false,
+                home_count,
+                home_running.iter().any(|&r| r),
+                &ctx,
+            ));
         }
 
         let _ = window;
@@ -766,55 +795,51 @@ impl Sidebar {
     fn header(&self, next_glyph: &'static str, ctx: &RowCtx) -> impl IntoElement {
         let dispatch = Rc::clone(&ctx.dispatch);
         let toggle = {
-            div()
-                .id("tree-cycle")
-                .size(rpx(22.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(rpx(4.0))
-                .text_color(c::FG_MUTE())
-                .hover(|s| s.bg(c::BG_HOVER()).text_color(c::FG()))
-                .child(crate::icons::icon(next_glyph, 13.0, c::FG_MUTE()))
+            let dispatch = Rc::clone(&dispatch);
+            icon_btn(
+                "tree-cycle",
+                next_glyph,
+                CONTROL_H,
+                CONTROL_H,
+                ICON_SM,
+                c::FG_MUTE(),
+                c::BG_HOVER(),
+                Some(c::FG()),
+                false,
+                move |window, cx| dispatch(RowAction::ToggleCollapseAll, window, cx),
+            )
         };
         div()
             .h(rpx(SESSBAR_H))
             .w_full()
             .flex()
             .items_center()
-            .pl(rpx(14.0))
-            .pr(rpx(8.0))
+            .pl(rpx(SPACE_3XL))
+            .pr(rpx(SPACE_LG))
             .child(
-                div()
-                    .flex_1()
-                    .font(gpui::font(crate::fonts::UI_FAMILY))
-                    .text_size(rpx(11.0))
-                    .text_color(c::FG_MUTE())
-                    .child(SharedString::from(rows::tracked("PROJECTS"))),
+                mono(
+                    SharedString::from(tracked("PROJECTS")),
+                    TEXT_MICRO,
+                    c::FG_MUTE(),
+                )
+                .flex_1(),
             )
-            .child(
-                div()
-                    .id("proj-add")
-                    .size(rpx(22.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(rpx(4.0))
-                    .text_color(c::FG_MUTE())
-                    .hover(|s| s.bg(c::BG_HOVER()).text_color(c::FG()))
-                    .child(crate::icons::icon("plus", 12.0, c::FG_MUTE()))
-                    .on_mouse_down(MouseButton::Left, {
-                        let dispatch = std::rc::Rc::clone(&dispatch);
-                        move |_: &MouseDownEvent, window: &mut Window, cx: &mut App| {
-                            dispatch(RowAction::AddProject, window, cx);
-                        }
-                    }),
-            )
-            .child(toggle.on_mouse_down(MouseButton::Left, {
-                move |_: &MouseDownEvent, window: &mut Window, cx: &mut App| {
-                    dispatch(RowAction::ToggleCollapseAll, window, cx);
-                }
-            }))
+            .child({
+                let dispatch = std::rc::Rc::clone(&dispatch);
+                icon_btn(
+                    "proj-add",
+                    "plus",
+                    CONTROL_H,
+                    CONTROL_H,
+                    ICON_SM,
+                    c::FG_MUTE(),
+                    c::BG_HOVER(),
+                    Some(c::FG()),
+                    false,
+                    move |window, cx| dispatch(RowAction::AddProject, window, cx),
+                )
+            })
+            .child(toggle)
     }
 
     /// The absolutely-positioned agent menu over the list
@@ -856,18 +881,21 @@ impl Sidebar {
                 .id(SharedString::from(format!("menu-{proj}-{wt}-{label}")))
                 .flex()
                 .items_center()
-                .gap(rpx(8.0))
-                .px(rpx(10.0))
-                .py(rpx(4.0))
+                .gap(rpx(SPACE_LG))
+                .px(rpx(SPACE_XL))
+                .py(rpx(SPACE_SM))
                 .text_color(fg)
-                .hover(move |s| s.bg(c::BG_HOVER()).text_color(hover_fg));
+                .hover(move |s| s.bg(c::BG_HOVER()).text_color(hover_fg))
+                .cursor_pointer();
             if let Some(glyph) = icon_name {
-                row = row.child(crate::icons::icon(glyph, 12.0, fg));
+                row = row.child(crate::icons::icon(glyph, ICON_SM, fg));
             }
             row.child(
+                // Deliberately *not* `components::ui`: the item's hover recolor
+                // lives on the row, so this label must inherit its color.
                 div()
                     .font(gpui::font(crate::fonts::UI_FAMILY))
-                    .text_size(rpx(12.0))
+                    .text_size(rpx(TEXT_BODY))
                     .child(label),
             )
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -878,11 +906,11 @@ impl Sidebar {
         let mut menu = div()
             .absolute()
             .top(top)
-            .right(rpx(8.0))
+            .right(rpx(SPACE_LG))
             .flex()
             .flex_col()
-            .py(rpx(4.0))
-            .rounded(rpx(6.0))
+            .py(rpx(SPACE_SM))
+            .rounded(rpx(RADIUS_GROUP))
             .bg(c::BG_STRIP())
             .border_1()
             .border_color(c::BORDER());
@@ -902,15 +930,13 @@ impl Sidebar {
             ));
         }
         if !is_main {
-            menu = menu
-                .child(div().h(px(1.0)).mx(px(0.0)).my(rpx(3.0)).bg(c::BORDER()))
-                .child(item(
-                    "delete",
-                    None,
-                    true,
-                    RowAction::DeleteWorktree(proj, wt),
-                    ctx,
-                ));
+            menu = menu.child(divider_h_strong().my(rpx(SPACE_SM))).child(item(
+                "delete",
+                None,
+                true,
+                RowAction::DeleteWorktree(proj, wt),
+                ctx,
+            ));
         }
 
         div()

@@ -660,7 +660,7 @@ mod tests {
     use super::*;
     use grove_core::storage::{Project, Store};
 
-    const CELL_W: f32 = 7.5;
+    use crate::fonts::CELL_W;
 
     #[test]
     fn ascii_runs_are_never_forced() {

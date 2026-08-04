@@ -20,6 +20,9 @@ pub fn rpx(v: f32) -> Rems {
 }
 
 pub mod appbar;
+pub mod components;
+mod conformance;
+pub mod dispatch;
 pub mod grid;
 pub mod modals;
 pub mod rows;
@@ -29,4 +32,5 @@ pub mod statusbar;
 pub mod term_panel;
 pub mod terminal_tab;
 pub mod terminal_view;
+pub mod tokens;
 pub mod workspace;

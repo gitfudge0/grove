@@ -254,8 +254,7 @@ pub fn scroll_page_lines(rows: u16) -> usize {
 mod tests {
     use super::*;
 
-    const CELL_H: f32 = 17.0;
-    const CELL_W: f32 = 7.5;
+    use crate::fonts::{CELL_H, CELL_W};
 
     // ── the scroll accumulator ───────────────────────────────────────────
 
