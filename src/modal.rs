@@ -313,8 +313,6 @@ pub struct LauncherSlotState {
     pub query: String,
     pub sel: usize,
     pub view: LauncherView,
-    /// Scroll offset of the visible window, in rows.
-    pub offset: usize,
     /// The row the drill-ins act on, by identity rather than index — a query
     /// edit or a recency re-sort must not activate a different row
     /// (`session_launcher/state.rs:28-48`).

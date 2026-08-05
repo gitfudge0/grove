@@ -126,15 +126,15 @@ pub fn tracked(label: &str) -> String {
         .join("\u{2009}")
 }
 
-/// A mono, uppercase, letter-tracked section label (`modal.rs:77-90`). gpui
-/// has no letter-spacing either, so tracking is faked the same way — every
-/// character joined with a U+2009 thin space (see [`tracked`]).
+/// A mono, uppercase section label (`modal.rs:77-90`). Previously faked
+/// letter-spacing via [`tracked`]'s thin-space joins; that read as "split-out"
+/// text rather than tracking, so the label now renders plain.
 pub fn section_header(label: &str, top: f32, bottom: f32) -> Div {
     div()
         .pt(rpx(top))
         .pb(rpx(bottom))
         .pl(rpx(SPACE_2XL))
-        .child(mono(tracked(label), TEXT_MICRO, c::FG_MUTE()))
+        .child(mono(label, TEXT_MICRO, c::FG_MUTE()))
 }
 
 /// One keycap + muted label pair in a footer hint strip, e.g. "[↑↓] navigate"
@@ -771,7 +771,7 @@ pub fn seg_group(content: impl IntoElement) -> Div {
 /// Command palette row height — taller than the shared 28px [`ROW_H`]-style
 /// modal row, per the palette redesign (`src/gui/widgets/rows.rs:73`,
 /// `PALETTE_ROW_H`).
-pub const PALETTE_ROW_H: f32 = 44.0;
+pub const PALETTE_ROW_H: f32 = 54.0;
 
 /// A fixed 24px icon slot so titles line up across rows regardless of glyph
 /// width (`src/gui/widgets/rows.rs:27-51`, `palette_agent_content`'s

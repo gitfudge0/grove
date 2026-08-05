@@ -544,6 +544,10 @@ pub fn cycle(cur: usize, delta: i32, len: usize) -> usize {
     (cur as i32 + delta).rem_euclid(len as i32) as usize
 }
 
+/// The root list shows at most this many recents so the action rows stay in
+/// view.
+pub const MAX_ROOT_RECENTS: usize = 3;
+
 /// The root list: recents first, then the actions block
 /// (`session_launcher/palette.rs`'s `palette_rows` root arm).
 ///
@@ -570,7 +574,7 @@ pub fn root_rows(
             }
         }
     } else {
-        for (proj, wt, agent) in recents {
+        for (proj, wt, agent) in recents.iter().take(MAX_ROOT_RECENTS) {
             rows.push(PaletteRow::Recent {
                 proj: *proj,
                 wt_path: wt.clone(),
@@ -590,8 +594,8 @@ pub fn root_rows(
 }
 
 /// The typing / browse-all list: every project x worktree combo, fuzzy-scored
-/// and ranked, plus any directly-matching settings rows and the keyword-only
-/// action rows.
+/// and ranked, plus any directly-matching settings rows, the Settings
+/// drill-in opener, and the keyword-only action rows.
 pub fn typed_rows(
     query: &str,
     combos: &[(usize, String, String, Agent)],
@@ -621,6 +625,9 @@ pub fn typed_rows(
         ));
     }
     let mut rows = rank_and_group_combos(scored);
+    if !query.trim().is_empty() && fuzzy_match(query, "settings", "", "") {
+        rows.push(PaletteRow::Settings);
+    }
     for s in SettingRow::ALL {
         if fuzzy_score(query, s.label(), "", s.section()).is_some() && !query.trim().is_empty() {
             rows.push(PaletteRow::Setting(s));
@@ -898,6 +905,49 @@ mod tests {
     }
 
     #[test]
+    fn the_root_list_caps_recents_at_max_root_recents() {
+        let recents = vec![
+            (0, "/w0".to_string(), Agent::Claude),
+            (1, "/w1".to_string(), Agent::Claude),
+            (2, "/w2".to_string(), Agent::Claude),
+            (3, "/w3".to_string(), Agent::Claude),
+            (4, "/w4".to_string(), Agent::Claude),
+        ];
+        let rows = root_rows(&recents, &[], 5, 0);
+        let recent_count = rows
+            .iter()
+            .filter(|r| matches!(r, PaletteRow::Recent { .. }))
+            .count();
+        assert_eq!(recent_count, MAX_ROOT_RECENTS);
+        assert_eq!(
+            rows,
+            vec![
+                PaletteRow::Recent {
+                    proj: 0,
+                    wt_path: "/w0".to_string(),
+                    agent: Agent::Claude,
+                },
+                PaletteRow::Recent {
+                    proj: 1,
+                    wt_path: "/w1".to_string(),
+                    agent: Agent::Claude,
+                },
+                PaletteRow::Recent {
+                    proj: 2,
+                    wt_path: "/w2".to_string(),
+                    agent: Agent::Claude,
+                },
+                PaletteRow::NewSession,
+                PaletteRow::TerminalHome,
+                PaletteRow::TerminalWt,
+                PaletteRow::SwitchToSession,
+                PaletteRow::AddProject,
+                PaletteRow::Settings,
+            ]
+        );
+    }
+
+    #[test]
     fn the_root_list_falls_back_to_one_worktree_per_project_with_no_recents() {
         let fallback = vec![
             (0, "/p0".to_string(), Agent::Claude),
@@ -962,6 +1012,18 @@ mod tests {
     fn typing_a_prefix_of_add_project_still_surfaces_it() {
         let rows = typed_rows("add", &[], &[]);
         assert!(rows.contains(&PaletteRow::AddProject));
+    }
+
+    #[test]
+    fn typing_settings_surfaces_the_settings_drill_in_opener() {
+        let rows = typed_rows("settings", &[], &[]);
+        assert!(rows.contains(&PaletteRow::Settings));
+    }
+
+    #[test]
+    fn an_unrelated_query_does_not_surface_the_settings_drill_in_opener() {
+        let rows = typed_rows("zzz", &[], &[]);
+        assert!(!rows.contains(&PaletteRow::Settings));
     }
 
     // ── the drill-ins ────────────────────────────────────────────────────

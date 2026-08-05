@@ -1,9 +1,9 @@
 //! The recents-first command palette: the three list states, the drill-ins,
 //! and the live project-theme preview.
 //!
-//! The pure half — row building, fuzzy ranking, identity resolution, the
-//! scroll window, recents ordering — lives in [`crate::launcher`] and is
-//! tested there. This module is the view plus the keyboard/click glue.
+//! The pure half — row building, fuzzy ranking, identity resolution, recents
+//! ordering — lives in [`crate::launcher`] and is tested there. This module
+//! is the view plus the keyboard/click glue.
 //!
 //! Ported from `src/gui/session_launcher/{palette.rs,view/*}` and
 //! `keys.rs:26+` (`handle_session_launcher_key`).
@@ -28,9 +28,6 @@ use crate::views::components::{
     palette_row, section_header, ui,
 };
 
-/// Rows visible in the palette at once.
-pub const VISIBLE_ROWS: usize = 9;
-
 /// Left indent that lines an inline note up with a palette row's *title*
 /// rather than its icon: `palette_row`'s own `SPACE_2XL` h-padding, plus the
 /// 24px `icon_slot` and the `SPACE_LG` gap `palette_row_content` puts between
@@ -38,10 +35,17 @@ pub const VISIBLE_ROWS: usize = 9;
 /// restated here — §14's "derived geometry as a named constant".)
 const ROW_TEXT_INDENT: f32 = SPACE_2XL + 24.0 + SPACE_LG;
 
-/// How tall the palette's scrolling results zone may grow before it scrolls —
-/// `VISIBLE_ROWS` rows plus their gaps and the zone's own padding, rounded to
-/// the value the iced build used (`src/gui/session_launcher/view/mod.rs`).
-const PALETTE_LIST_MAX_H: f32 = 380.0;
+/// The palette's own panel width — wider than [`MODAL_W_XL`] (shared by
+/// every other modal) because its rows carry a title *and* a subtitle and
+/// need the extra horizontal room to avoid truncating both.
+const PALETTE_W: f32 = 760.0;
+
+/// The results zone's scroll viewport height. Every list now renders all of
+/// its rows and the zone scrolls the selection into view, so this is one free
+/// choice of how much palette the user sees — deliberately decoupled from any
+/// row count, which is what let the old row-window and this height drift apart
+/// and clip the selected row.
+const PALETTE_LIST_MAX_H: f32 = 452.0;
 
 /// Every `(proj, project_name, wt_path, agent)` combo the palette can list.
 fn combos(
@@ -257,6 +261,27 @@ impl ModalLayer {
         base + self.row_action_scripts(proj, cx).len()
     }
 
+    /// Ask the results zone to bring the selected row into view, but only when
+    /// the selection actually moved: `scroll_to_item` is resolved in prepaint,
+    /// so re-issuing it on every frame would fight the mouse wheel.
+    fn scroll_palette_to(&self, view: LauncherView, sel: usize, child_ix: usize) {
+        if self.palette_scrolled_to.get() == Some((view, sel)) {
+            return;
+        }
+        self.palette_scrolled_to.set(Some((view, sel)));
+        // The variant that scrolls the minimum distance to make the child
+        // fully visible; `scroll_to_top_of_item` is the align-to-top one.
+        self.palette_scroll.scroll_to_item(child_ix);
+    }
+
+    /// Drop the retained scroll position, for the transitions that replace the
+    /// row set wholesale (a drill-in or -out, a query edit): the offset only
+    /// means anything against the list it was measured on.
+    pub(super) fn reset_palette_scroll(&self) {
+        self.palette_scroll.set_offset(gpui::Point::default());
+        self.palette_scrolled_to.set(None);
+    }
+
     /// The palette owns its whole keyboard (`handle_session_launcher_key`), so
     /// [`crate::modal::key_verdict`] falls through to here.
     pub(super) fn palette_key(
@@ -283,13 +308,13 @@ impl ModalLayer {
                 } else {
                     st.view = LauncherView::Root;
                     st.sel = 0;
+                    self.reset_palette_scroll();
                     cx.notify();
                 }
                 true
             }
             K::Down => {
                 st.sel = launcher::cycle(st.sel, 1, len);
-                st.offset = launcher::scroll_offset_for(st.offset, st.sel, VISIBLE_ROWS, len);
                 // RowActions, Switch and Settings all draw their rows from
                 // something other than `palette_rows`, so re-anchoring in any
                 // of them would clobber the anchor with an unrelated root row.
@@ -305,7 +330,6 @@ impl ModalLayer {
             }
             K::Up => {
                 st.sel = launcher::cycle(st.sel, -1, len);
-                st.offset = launcher::scroll_offset_for(st.offset, st.sel, VISIBLE_ROWS, len);
                 if matches!(
                     st.view,
                     LauncherView::RowActions | LauncherView::Settings | LauncherView::Switch
@@ -369,6 +393,7 @@ impl ModalLayer {
                 st.view = LauncherView::Root;
                 st.sel = 0;
             }
+            self.reset_palette_scroll();
             cx.notify();
             return true;
         }
@@ -392,20 +417,21 @@ impl ModalLayer {
                     st.sel = 0;
                     st.agent_sel = agent_sel;
                 }
+                self.reset_palette_scroll();
             }
             PaletteRow::SwitchToSession => {
                 if let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() {
                     st.view = LauncherView::Switch;
                     st.sel = 0;
-                    st.offset = 0;
                 }
+                self.reset_palette_scroll();
             }
             PaletteRow::Settings => {
                 if let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() {
                     st.view = LauncherView::Settings;
                     st.sel = 0;
-                    st.offset = 0;
                 }
+                self.reset_palette_scroll();
             }
             PaletteRow::Setting(s) => self.activate_setting(s, window, cx),
             PaletteRow::NewSession
@@ -492,24 +518,24 @@ impl ModalLayer {
                 if let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() {
                     st.view = LauncherView::BrowseAll;
                     st.sel = 0;
-                    st.offset = 0;
                 }
+                self.reset_palette_scroll();
                 cx.notify();
             }
             PaletteRow::SwitchToSession => {
                 if let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() {
                     st.view = LauncherView::Switch;
                     st.sel = 0;
-                    st.offset = 0;
                 }
+                self.reset_palette_scroll();
                 cx.notify();
             }
             PaletteRow::Settings => {
                 if let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() {
                     st.view = LauncherView::Settings;
                     st.sel = 0;
-                    st.offset = 0;
                 }
+                self.reset_palette_scroll();
                 cx.notify();
             }
             PaletteRow::AddProject => {
@@ -709,18 +735,31 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
             )
     });
 
-    let list: AnyElement = match st.view {
+    let (children, selected_child) = match st.view {
         LauncherView::Switch => switch_list(layer, st, dispatch, cx),
         LauncherView::Settings => settings_list(st, dispatch, cx),
         LauncherView::RowActions => row_actions(layer, st, dispatch, cx),
         _ => row_list(layer, st, dispatch, cx),
     };
+    // `scroll_to_item` indexes the tracked element's direct children, and the
+    // section headers interleaved among the rows push the selected row off
+    // `st.sel` — so the builders report where it actually landed.
+    if let Some(ix) = selected_child {
+        layer.scroll_palette_to(st.view, st.sel, ix);
+    }
+    // The rows are the scroll container's own children rather than a nested
+    // column, because that is the only way their indices mean anything to
+    // `scroll_to_item`.
     let list_zone = div()
         .id("palette-list")
         .max_h(rpx(PALETTE_LIST_MAX_H))
         .overflow_y_scroll()
-        .p(rpx(SPACE_LG))
-        .child(list);
+        .track_scroll(&layer.palette_scroll)
+        .p(rpx(SPACE_2XL))
+        .flex()
+        .flex_col()
+        .gap(rpx(SPACE_MD))
+        .children(children);
 
     let hints: &[(&'static str, &'static str)] = match st.view {
         LauncherView::RowActions if st.sel == 0 => &[
@@ -740,7 +779,7 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     };
 
     modal_panel(
-        MODAL_W_XL,
+        PALETTE_W,
         div()
             .children(search)
             .child(divider_h())
@@ -812,7 +851,7 @@ fn palette_row_content(
         .flex_1()
         .flex()
         .flex_col()
-        .gap(rpx(SPACE_XS))
+        .gap(rpx(SPACE_SM))
         .child(ui(title, TEXT_TITLE, title_color));
     if !subtitle.is_empty() {
         title_col = title_col.child(mono(subtitle, TEXT_SMALL, c::FG_MUTE()));
@@ -830,20 +869,25 @@ fn palette_row_content(
     row
 }
 
+/// A built list: the scroll container's children, plus the child index the
+/// selected row landed at (`None` when the list has no selectable row). The
+/// index is what `scroll_to_item` needs — see [`render`].
+type PaletteList = (Vec<AnyElement>, Option<usize>);
+
 fn row_list(
     layer: &ModalLayer,
     st: &LauncherSlotState,
     dispatch: &ModalDispatch,
     cx: &App,
-) -> AnyElement {
+) -> PaletteList {
     let rows = layer.palette_rows(cx);
     if rows.is_empty() {
-        return body_text("no matches").into_any_element();
+        return (vec![body_text("no matches").into_any_element()], None);
     }
-    let offset = launcher::scroll_offset_for(st.offset, st.sel, VISIBLE_ROWS, rows.len());
-    let mut list = div().flex().flex_col().gap(rpx(SPACE_XS));
+    let mut list: Vec<AnyElement> = Vec::new();
+    let mut selected_child = None;
     let mut last_section: Option<&'static str> = None;
-    for (i, row) in rows.iter().enumerate().skip(offset).take(VISIBLE_ROWS) {
+    for (i, row) in rows.iter().enumerate() {
         let section = match row {
             PaletteRow::Recent { .. } => Some("RECENT"),
             PaletteRow::NewSession => Some("ACTIONS"),
@@ -851,7 +895,7 @@ fn row_list(
         };
         if let Some(s) = section {
             if last_section != Some(s) {
-                list = list.child(section_header(s, SPACE_LG, SPACE_SM));
+                list.push(section_header(s, SPACE_LG, SPACE_SM).into_any_element());
                 last_section = Some(s);
             }
         }
@@ -861,13 +905,19 @@ fn row_list(
             row,
             PaletteRow::Recent { .. } | PaletteRow::Combo { .. } | PaletteRow::Setting(_)
         );
-        list = list.child(palette_row(
-            gpui::SharedString::from(format!("palette-{i}")),
-            selected,
-            dispatch,
-            ModalClick::SelectRow(i),
-            palette_row_content(icon, title, sub, selected, show_hint),
-        ));
+        if selected {
+            selected_child = Some(list.len());
+        }
+        list.push(
+            palette_row(
+                gpui::SharedString::from(format!("palette-{i}")),
+                selected,
+                dispatch,
+                ModalClick::SelectRow(i),
+                palette_row_content(icon, title, sub, selected, show_hint),
+            )
+            .into_any_element(),
+        );
         // The inline safety warning under a selected Permissions row — the
         // same string the Settings pane promotes (`panes.rs:24-42`).
         if selected
@@ -876,7 +926,7 @@ fn row_list(
                 PaletteRow::Setting(crate::launcher::SettingRow::Permissions)
             )
         {
-            list = list.child(
+            list.push(
                 div()
                     .pt(rpx(SPACE_SM))
                     .pb(rpx(SPACE_XS))
@@ -886,11 +936,12 @@ fn row_list(
                         "Skip lets agents run any command without asking.",
                         TEXT_SMALL,
                         c::FG_DIM(),
-                    )),
+                    ))
+                    .into_any_element(),
             );
         }
     }
-    list.into_any_element()
+    (list, selected_child)
 }
 
 /// Session/terminal rows in the Switch drill-in: same icon+title/subtitle
@@ -901,13 +952,14 @@ fn switch_list(
     st: &LauncherSlotState,
     dispatch: &ModalDispatch,
     cx: &App,
-) -> AnyElement {
+) -> PaletteList {
     let rows = layer.switch_rows(cx);
     if rows.is_empty() {
-        return body_text("no sessions").into_any_element();
+        return (vec![body_text("no sessions").into_any_element()], None);
     }
     let registry = layer.registry.read(cx);
-    let mut list = div().flex().flex_col().gap(rpx(SPACE_XS));
+    let mut list: Vec<AnyElement> = Vec::new();
+    let mut selected_child = None;
     let mut printed_sessions = false;
     let mut printed_terminals = false;
     for (i, row) in rows.iter().enumerate() {
@@ -915,7 +967,7 @@ fn switch_list(
         let (icon, label, sub, waiting) = match row {
             SwitchRow::Session(j) => {
                 if !printed_sessions {
-                    list = list.child(section_header("SESSIONS", 0.0, SPACE_MD));
+                    list.push(section_header("SESSIONS", 0.0, SPACE_MD).into_any_element());
                     printed_sessions = true;
                 }
                 registry.all().get(*j).map_or_else(
@@ -946,7 +998,7 @@ fn switch_list(
             SwitchRow::Terminal(j) => {
                 if !printed_terminals {
                     let top = if i == 0 { 0.0 } else { 12.0 };
-                    list = list.child(section_header("TERMINALS", top, SPACE_MD));
+                    list.push(section_header("TERMINALS", top, SPACE_MD).into_any_element());
                     printed_terminals = true;
                 }
                 registry.home_terminals().get(*j).map_or_else(
@@ -963,48 +1015,59 @@ fn switch_list(
             ModalClick::SelectRow(i),
             content,
         );
+        if selected {
+            selected_child = Some(list.len());
+        }
         // Waiting sessions keep the sidebar's amber tint, same idiom as
         // `views::rows`'s waiting row.
         if waiting {
-            list = list.child(
+            list.push(
                 div()
                     .rounded(rpx(RADIUS_GROUP))
                     .bg(c::AMBER_ROW_TINT())
-                    .child(row_el),
+                    .child(row_el)
+                    .into_any_element(),
             );
         } else {
-            list = list.child(row_el);
+            list.push(row_el.into_any_element());
         }
     }
-    list.into_any_element()
+    (list, selected_child)
 }
 
-fn settings_list(st: &LauncherSlotState, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
-    let mut list = div().flex().flex_col().gap(rpx(SPACE_XS));
+fn settings_list(st: &LauncherSlotState, dispatch: &ModalDispatch, cx: &App) -> PaletteList {
+    let mut list: Vec<AnyElement> = Vec::new();
+    let mut selected_child = None;
     let mut last_section: Option<&'static str> = None;
     for (i, s) in crate::launcher::SettingRow::ALL.into_iter().enumerate() {
         if last_section != Some(s.section()) {
-            list = list.child(section_header(s.section(), SPACE_LG, SPACE_SM));
+            list.push(section_header(s.section(), SPACE_LG, SPACE_SM).into_any_element());
             last_section = Some(s.section());
         }
         let selected = i == st.sel;
-        list = list.child(palette_row(
-            gpui::SharedString::from(format!("lset-{i}")),
-            selected,
-            dispatch,
-            ModalClick::SelectRow(i),
-            palette_row_content(
-                s.icon_name(),
-                s.label().to_string(),
-                super::settings::setting_value(s, cx),
+        if selected {
+            selected_child = Some(list.len());
+        }
+        list.push(
+            palette_row(
+                gpui::SharedString::from(format!("lset-{i}")),
                 selected,
-                true,
-            ),
-        ));
+                dispatch,
+                ModalClick::SelectRow(i),
+                palette_row_content(
+                    s.icon_name(),
+                    s.label().to_string(),
+                    super::settings::setting_value(s, cx),
+                    selected,
+                    true,
+                ),
+            )
+            .into_any_element(),
+        );
         // The inline safety warning under a selected Permissions row (B3 in
         // the palette redesign) — `panes.rs:24-42`.
         if selected && matches!(s, crate::launcher::SettingRow::Permissions) {
-            list = list.child(
+            list.push(
                 div()
                     .pt(rpx(SPACE_SM))
                     .pb(rpx(SPACE_XS))
@@ -1014,11 +1077,12 @@ fn settings_list(st: &LauncherSlotState, dispatch: &ModalDispatch, cx: &App) -> 
                         "Skip lets agents run any command without asking.",
                         TEXT_SMALL,
                         c::FG_DIM(),
-                    )),
+                    ))
+                    .into_any_element(),
             );
         }
     }
-    list.into_any_element()
+    (list, selected_child)
 }
 
 /// One agent icon button in the row-actions strip's agent bar: a 26px
@@ -1055,10 +1119,10 @@ fn row_actions(
     st: &LauncherSlotState,
     dispatch: &ModalDispatch,
     cx: &App,
-) -> AnyElement {
+) -> PaletteList {
     let Some(crate::launcher::RowIdentity::Session { proj, wt_path, .. }) = st.anchor.clone()
     else {
-        return div().into_any_element();
+        return (Vec::new(), None);
     };
 
     let agents = super::confirm::available_agents();
@@ -1093,20 +1157,19 @@ fn row_actions(
         .child(mono(sel_label.to_string(), TEXT_BODY, c::FG_DIM()))
         .child(bar);
 
-    let mut list = div()
-        .flex()
-        .flex_col()
-        .gap(rpx(SPACE_XS))
-        .child(palette_row(
-            gpui::SharedString::from("strip-0"),
-            st.sel == 0,
-            dispatch,
-            ModalClick::SelectRow(0),
-            launch_content,
-        ));
+    // The strip has no section headers, so a row's child index is its own
+    // selection index.
+    let mut list: Vec<AnyElement> = vec![palette_row(
+        gpui::SharedString::from("strip-0"),
+        st.sel == 0,
+        dispatch,
+        ModalClick::SelectRow(0),
+        launch_content,
+    )
+    .into_any_element()];
 
     let is_main = layer.anchor_is_main(proj, &wt_path, cx);
-    list = list.child(if is_main {
+    list.push(if is_main {
         palette_row(
             gpui::SharedString::from("strip-1"),
             st.sel == 1,
@@ -1114,6 +1177,7 @@ fn row_actions(
             ModalClick::SelectRow(1),
             strip_row_content("plus", "Create worktree…", c::MAGENTA()),
         )
+        .into_any_element()
     } else {
         palette_row(
             gpui::SharedString::from("strip-1"),
@@ -1122,17 +1186,21 @@ fn row_actions(
             ModalClick::SelectRow(1),
             strip_row_content("trash", "Delete worktree", c::RED()),
         )
+        .into_any_element()
     });
 
     let project_themes_enabled = cx.global::<SettingsState>().store.project_themes_enabled;
     if project_themes_enabled {
-        list = list.child(palette_row(
-            gpui::SharedString::from("strip-2"),
-            st.sel == 2,
-            dispatch,
-            ModalClick::SelectRow(2),
-            strip_row_content("contrast", "Project theme…", c::CYAN()),
-        ));
+        list.push(
+            palette_row(
+                gpui::SharedString::from("strip-2"),
+                st.sel == 2,
+                dispatch,
+                ModalClick::SelectRow(2),
+                strip_row_content("contrast", "Project theme…", c::CYAN()),
+            )
+            .into_any_element(),
+        );
     }
 
     let base = if project_themes_enabled { 3 } else { 2 };
@@ -1144,16 +1212,20 @@ fn row_actions(
             _ => continue,
         };
         let idx = base + i;
-        list = list.child(palette_row(
-            gpui::SharedString::from(format!("strip-{idx}")),
-            st.sel == idx,
-            dispatch,
-            ModalClick::SelectRow(idx),
-            strip_row_content("play", label, color),
-        ));
+        list.push(
+            palette_row(
+                gpui::SharedString::from(format!("strip-{idx}")),
+                st.sel == idx,
+                dispatch,
+                ModalClick::SelectRow(idx),
+                strip_row_content("play", label, color),
+            )
+            .into_any_element(),
+        );
     }
 
-    list.into_any_element()
+    let selected_child = (st.sel < list.len()).then_some(st.sel);
+    (list, selected_child)
 }
 
 #[cfg(test)]

@@ -137,6 +137,15 @@ pub struct ModalLayer {
     pub(super) teardown_session: Option<Entity<crate::entities::terminal_session::TerminalSession>>,
     /// Polls the teardown script for exit; dropped when the stage advances.
     teardown_poll: Option<gpui::Task<()>>,
+    /// The palette result list's scroll position. It has to live on the view:
+    /// a handle built per-render would hand the list a fresh, zeroed offset on
+    /// every frame.
+    pub(super) palette_scroll: gpui::ScrollHandle,
+    /// The `(view, row)` the palette was last scrolled to. Only a *changed*
+    /// selection may move the scroll — re-issuing it every frame would snap the
+    /// wheel straight back to the selected row. `render` is handed a
+    /// `&ModalLayer`, hence the `Cell`.
+    palette_scrolled_to: std::cell::Cell<Option<(crate::modal::LauncherView, usize)>>,
 }
 
 impl EventEmitter<ModalEvent> for ModalLayer {}
@@ -181,6 +190,8 @@ impl ModalLayer {
             teardown_view: None,
             teardown_session: None,
             teardown_poll: None,
+            palette_scroll: gpui::ScrollHandle::new(),
+            palette_scrolled_to: std::cell::Cell::new(None),
         }
     }
 
@@ -645,6 +656,9 @@ impl ModalLayer {
                 |this, _, ev: &gpui_component::input::InputEvent, cx| {
                     if matches!(ev, gpui_component::input::InputEvent::Change) {
                         this.sync_wizard_buffers(cx);
+                        // A query edit rebuilds the row set from scratch, so
+                        // the retained offset belongs to a list that is gone.
+                        this.reset_palette_scroll();
                         cx.notify();
                     }
                 },
