@@ -137,13 +137,17 @@ impl ModalLayer {
         }
     }
 
-    /// The switch drill-in's display order: sessions, then home terminals.
+    /// The switch drill-in's display order: sessions most-recently-used first
+    /// with the active one last ([`launcher::order_switch_sessions`]), then
+    /// home terminals.
     fn switch_rows(&self, cx: &App) -> Vec<SwitchRow> {
         let Some(Modal::SessionLauncher(st)) = self.slot.get() else {
             return Vec::new();
         };
         let registry = self.registry.read(cx);
-        let sessions: Vec<usize> = registry
+        let state = self.state.read(cx);
+        let active = state.active_session();
+        let matched: Vec<(usize, u64, bool)> = registry
             .all()
             .iter()
             .enumerate()
@@ -153,8 +157,9 @@ impl ModalLayer {
                     .map_or_else(String::new, |f| f.to_string_lossy().into_owned());
                 launcher::fuzzy_match(&st.query, &m.project, &wt, m.agent.label())
             })
-            .map(|(i, _)| i)
+            .map(|(i, m)| (i, state.used(m.id), active == Some(m.id)))
             .collect();
+        let sessions = launcher::order_switch_sessions(&matched);
         let labels: Vec<String> = registry
             .home_terminals()
             .iter()

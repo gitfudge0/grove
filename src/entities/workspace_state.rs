@@ -57,7 +57,7 @@
 // lands (Tasks 5-7, Plan 07).
 #![allow(dead_code)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use gpui::Context;
 use grove_core::storage::Store;
@@ -282,6 +282,15 @@ fn cycle(cur: usize, delta: i32, len: usize) -> usize {
 pub struct WorkspaceState {
     // selection — spec §4's single-owner set
     active_session: Option<SessionId>,
+    /// Monotonic "last focused" stamp per session, missing until the session is
+    /// first focused. In memory only — recency is a property of this run, not
+    /// something to persist. Lives here rather than on the registry because
+    /// `active_session` is owned here: every focus change already routes
+    /// through [`Self::set_active_session`], so nothing can move focus without
+    /// stamping.
+    used: HashMap<SessionId, u64>,
+    /// Monotonic counter behind [`Self::used`].
+    used_seq: u64,
     proj_idx: usize,
     wt_idx: usize,
     terminal_focused: bool,
@@ -341,6 +350,8 @@ impl Default for WorkspaceState {
     fn default() -> Self {
         Self {
             active_session: None,
+            used: HashMap::new(),
+            used_seq: 0,
             proj_idx: 0,
             wt_idx: 0,
             terminal_focused: false,
@@ -392,6 +403,23 @@ impl WorkspaceState {
 
     pub fn active_session(&self) -> Option<SessionId> {
         self.active_session
+    }
+    /// `id`'s last-focused stamp, `0` if it has never been focused — the order
+    /// key the palette's switch drill-in sorts on
+    /// ([`crate::launcher::order_switch_sessions`]).
+    pub fn used(&self, id: SessionId) -> u64 {
+        self.used.get(&id).copied().unwrap_or(0)
+    }
+
+    /// The **only** writer of `active_session`: every focus change stamps the
+    /// session it lands on, so recency can never drift from selection. Clearing
+    /// focus (`None`) stamps nothing and does not burn a sequence number.
+    fn set_active_session(&mut self, id: Option<SessionId>) {
+        self.active_session = id;
+        if let Some(id) = id {
+            self.used_seq += 1;
+            self.used.insert(id, self.used_seq);
+        }
     }
     pub fn proj_idx(&self) -> usize {
         self.proj_idx
@@ -569,7 +597,7 @@ impl WorkspaceState {
         self.pending_kill_terminal = None;
         // Selecting a session closes the attention dropdown (`sessions.rs:229`).
         self.attention_queue_open = false;
-        self.active_session = Some(id);
+        self.set_active_session(Some(id));
         self.terminal_focused = false;
         // In the grid the highlighted tile is what holds the keyboard, so a
         // selection that leaves `grid_focused` behind (palette launch, palette
@@ -607,7 +635,7 @@ impl WorkspaceState {
         if already_here {
             return;
         }
-        self.active_session = worktree.sessions.first().copied();
+        self.set_active_session(worktree.sessions.first().copied());
     }
 
     /// `sessions.rs:22-33` + `switch_active_project` (`mod.rs:1121-1130`).
@@ -765,7 +793,7 @@ impl WorkspaceState {
             self.pending_kill = None;
         }
         if self.active_session == Some(id) {
-            self.active_session = None;
+            self.set_active_session(None);
         }
     }
 
@@ -848,7 +876,7 @@ impl WorkspaceState {
             .or_else(|| self.tile_order.first().copied());
         self.grid_focused = focus;
         if let Some(id) = focus {
-            self.active_session = Some(id);
+            self.set_active_session(Some(id));
             self.acknowledge(id);
         }
         self.grid_drag = None;
@@ -859,7 +887,7 @@ impl WorkspaceState {
     /// leaves `grid_view` to the caller. Port of `layout.rs:257-269`.
     pub fn exit_grid(&mut self) {
         if let Some(id) = self.grid_focused {
-            self.active_session = Some(id);
+            self.set_active_session(Some(id));
             self.leave_terminal_tab();
             // The panel re-anchors to this session's worktree, so a stale
             // `Panel` focus would type into a different worktree's shell.
@@ -929,7 +957,7 @@ impl WorkspaceState {
     /// A tile's own zen button. Port of `on_grid_tile_zen`
     /// (`layout.rs:344-356`).
     pub fn tile_zen(&mut self, id: SessionId) {
-        self.active_session = Some(id);
+        self.set_active_session(Some(id));
         self.leave_terminal_tab();
         self.grid_focused = Some(id);
         self.acknowledge(id);
@@ -967,7 +995,7 @@ impl WorkspaceState {
             .and_then(|id| self.tile_order.iter().position(|&x| x == id));
         let Some(pos) = cur else {
             let id = self.tile_order[0];
-            self.active_session = Some(id);
+            self.set_active_session(Some(id));
             self.sync_grid_focus();
             self.acknowledge(id);
             return;
@@ -976,7 +1004,7 @@ impl WorkspaceState {
             return;
         };
         let id = self.tile_order[target];
-        self.active_session = Some(id);
+        self.set_active_session(Some(id));
         self.sync_grid_focus();
         self.acknowledge(id);
     }
@@ -1010,7 +1038,7 @@ impl WorkspaceState {
             return;
         };
         self.set_grid_focus(Some(id));
-        self.active_session = Some(id);
+        self.set_active_session(Some(id));
         self.acknowledge(id);
         self.grid_drag = Some(GridDrag {
             source_idx: tile_idx,
@@ -1028,7 +1056,7 @@ impl WorkspaceState {
             return;
         };
         self.set_grid_focus(Some(id));
-        self.active_session = Some(id);
+        self.set_active_session(Some(id));
         self.acknowledge(id);
     }
 
@@ -1079,7 +1107,7 @@ impl WorkspaceState {
             self.set_grid_focus(self.tile_order.first().copied());
         }
         if self.active_session.is_none() {
-            self.active_session = self.grid_focused;
+            self.set_active_session(self.grid_focused);
         }
         if self.grid_view && self.tile_order.is_empty() {
             // Nothing left to tile — fall back to the normal workspace.
@@ -1093,7 +1121,7 @@ impl WorkspaceState {
         let Some(&id) = self.tile_order.get(n) else {
             return;
         };
-        self.active_session = Some(id);
+        self.set_active_session(Some(id));
         self.leave_terminal_tab();
         self.sync_grid_focus();
         self.acknowledge(id);

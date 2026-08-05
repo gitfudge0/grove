@@ -485,6 +485,19 @@ pub fn switch_terminal_rows(labels: &[String], input: &str) -> Vec<usize> {
         .collect()
 }
 
+/// The switch drill-in's session order: most-recently-used first, except the
+/// currently focused session, which goes last — alt-tab semantics, so the
+/// first row is always "the session I was in before this one". Ties (never
+/// focused, `used == 0`) keep insertion order via the stable sort.
+///
+/// Takes `(index, used, is_active)` so the rule stays testable without a
+/// registry or a gpui `App` — the pure-helper idiom this module is built on.
+pub fn order_switch_sessions(sessions: &[(usize, u64, bool)]) -> Vec<usize> {
+    let mut sessions = sessions.to_vec();
+    sessions.sort_by(|a, b| a.2.cmp(&b.2).then(b.1.cmp(&a.1)));
+    sessions.into_iter().map(|(i, _, _)| i).collect()
+}
+
 /// Splice the drill-in's two filtered groups into its single display order
 /// (`helpers.rs:730-737`).
 pub fn merge_switch_rows(sessions: &[usize], terminals: &[usize]) -> Vec<SwitchRow> {
@@ -963,6 +976,18 @@ mod tests {
                 SwitchRow::Terminal(0),
                 SwitchRow::Terminal(2),
             ]
+        );
+    }
+
+    #[test]
+    fn switch_sessions_are_recent_first_with_the_active_one_last() {
+        // 0 never focused, 1 focused twice ago, 2 is active, 3 focused last.
+        let sessions = [(0, 0, false), (1, 4, false), (2, 9, true), (3, 7, false)];
+        assert_eq!(order_switch_sessions(&sessions), vec![3, 1, 0, 2]);
+        // Never-focused sessions keep insertion order among themselves.
+        assert_eq!(
+            order_switch_sessions(&[(5, 0, false), (2, 0, false)]),
+            vec![5, 2]
         );
     }
 
