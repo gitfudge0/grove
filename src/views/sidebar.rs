@@ -215,10 +215,20 @@ impl Sidebar {
                 s.set_open_agent_menu(open);
                 cx.notify();
             }),
-            RowAction::SelectSession(id) => self.state.update(cx, |s, cx| {
-                s.select_session(id, &snap);
-                cx.notify();
-            }),
+            // `select_session` moves `proj_idx` to the clicked session's
+            // project, so the project hand-off `SelectWorktree` does has to
+            // happen here too. Without it `ProjectTree::worktrees` still holds
+            // the OLD project's worktrees while `snapshot` hands them to the
+            // new `active_proj` — the tree then renders one project's worktrees
+            // under another's header and selection lands on the wrong session.
+            RowAction::SelectSession(id) => {
+                let old = self.state.read(cx).proj_idx();
+                ProjectTree::adopt_session_project(&self.tree.clone(), &snap, id, old, cx);
+                self.state.update(cx, |s, cx| {
+                    s.select_session(id, &snap);
+                    cx.notify();
+                });
+            }
             RowAction::ArmKillSession(id) => self.state.update(cx, |s, cx| {
                 s.arm_kill(id);
                 cx.notify();
@@ -440,6 +450,8 @@ impl Sidebar {
             );
         }
         let snap = self.snapshot(cx);
+        let old = self.state.read(cx).proj_idx();
+        ProjectTree::adopt_session_project(&self.tree.clone(), &snap, id, old, cx);
         self.state.update(cx, |s, cx| {
             s.select_session(id, &snap);
             cx.notify();

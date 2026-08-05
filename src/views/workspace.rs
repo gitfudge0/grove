@@ -751,6 +751,10 @@ impl Workspace {
             return;
         };
         let snap = self.snapshot(cx);
+        // The sidebar's flattened order spans every project, so `mod+N` can
+        // cross a project boundary just like a click can.
+        let old = self.state.read(cx).proj_idx();
+        ProjectTree::adopt_session_project(&self.tree.clone(), &snap, id, old, cx);
         self.state.update(cx, |s, cx| {
             s.select_session(id, &snap);
             cx.notify();

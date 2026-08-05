@@ -28,7 +28,7 @@ use gpui::{Context, Task};
 use grove_core::git::{self, Worktree, WorktreeGitState};
 use grove_core::storage::Store;
 
-use crate::entities::session_registry::SessionRegistry;
+use crate::entities::session_registry::{SessionId, SessionRegistry};
 use crate::entities::workspace_state::{
     SnapshotProject, SnapshotWorktree, TreeSnapshot, WorkspaceState,
 };
@@ -109,6 +109,44 @@ impl ProjectTree {
         self.wt_cache.insert(old, outgoing);
         self.wt_cache.remove(&new);
         self.worktrees = git::list_worktrees(new_path);
+    }
+
+    /// [`Self::switch_active_project`] for a *session* rather than a row:
+    /// `WorkspaceState::select_session` moves `proj_idx` to the project owning
+    /// `id`, and [`Self::snapshot`] keys the live worktree list off that index,
+    /// so every selection that can cross a project boundary owes the tree this
+    /// hand-off. Skipping it renders one project's worktrees under another's
+    /// header and lands the selection on the wrong session. A no-op when `id`
+    /// is already in the active project, or when its project has no cached
+    /// worktrees to locate it in.
+    pub fn adopt_session_project(
+        tree: &gpui::Entity<Self>,
+        snap: &TreeSnapshot,
+        id: SessionId,
+        old: usize,
+        cx: &mut gpui::App,
+    ) {
+        let Some(proj) = snap
+            .projects
+            .iter()
+            .find(|p| p.worktrees.iter().any(|w| w.sessions.contains(&id)))
+            .map(|p| p.idx)
+            .filter(|&p| p != old)
+        else {
+            return;
+        };
+        let path = cx
+            .global::<crate::settings::SettingsState>()
+            .store
+            .projects
+            .get(proj)
+            .map(|p| p.path.clone());
+        if let Some(path) = path {
+            tree.update(cx, |t, cx| {
+                t.switch_active_project(old, proj, &path);
+                cx.notify();
+            });
+        }
     }
 
     /// `update/mod.rs:1326-1334`.
