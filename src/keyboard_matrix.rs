@@ -11,6 +11,10 @@
 //! bindings scoped by key context. Nothing here re-implements either.
 
 #![cfg(test)]
+// A test-only module: an unwrap here fails the test it belongs to, which is
+// the point. Same allow the `grove-terminal` test modules carry, and what the
+// workspace lint table (`Cargo.toml:25-26`) already assumes for test targets.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::keymap::{
     self, contexts_for, keystrokes_for, GlobalShortcut, Scope, Screen, ShortcutDef, SHORTCUTS,
