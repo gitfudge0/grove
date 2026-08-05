@@ -721,10 +721,18 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
     };
     if show_branch {
         // Branch chip: a soft-bordered pill under the name.
-        label = label.child(div().flex_none().pt(rpx(SPACE_XS)).child(keycap_filled(
-            c::BORDER_SOFT(),
-            ui(branch.clone(), TEXT_MICRO, c::FG_DIM()),
-        )));
+        // The chip must shrink with the sidebar, not wrap: the row's height is
+        // fixed at `row_height`, so a wrapped chip spills over its neighbours.
+        label = label.child(
+            div()
+                .min_w_0()
+                .pt(rpx(SPACE_XS))
+                .child(keycap_filled(
+                    c::BORDER_SOFT(),
+                    ui(branch.clone(), TEXT_MICRO, c::FG_DIM()).truncate(),
+                ))
+                .overflow_hidden(),
+        );
     }
 
     // The `main` tag and the hover action strip share one fixed right-hand
@@ -791,6 +799,7 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         .w_full()
         .flex()
         .items_center()
+        .overflow_hidden()
         .when(*active, |d| d.bg(c::BG_HL()))
         .on_hover({
             let dispatch = Rc::clone(&ctx.dispatch);
