@@ -119,3 +119,24 @@ Applied to `ui/src` (source, not manifests):
    The panicking `Root::read`/`Root::update` are unchanged, as are the
    `Root`-only paths (dialogs, sheets, notifications, the window text-selection
    controller) that can only run once a `Root` is actually mounted.
+9. **`grove-test-support`, an opt-in no-op for the native content-type sync.**
+   Rendering an `Input` calls `sync_native_content_type`
+   (`ui/src/input/content_type.rs`), which on macOS reaches
+   `native::set_text_content_type` → `native::macos::ns_view`
+   (`ui/src/input/native.rs`). `ns_view` is already defensive — it does
+   `HasWindowHandle::window_handle(window).ok()?` — but gpui's test platform
+   window answers that call with `unimplemented!("Test Windows are not backed
+   by a real platform window")` (`gpui/src/platform/test/window.rs:47`), so it
+   panics instead of yielding the `Err` the `.ok()?` exists to absorb. Every
+   `#[gpui::test]` that renders a modal with a text field therefore aborted,
+   and gpui exposes no public "am I on the test platform?" predicate to branch
+   on at runtime. Added a pure marker feature `grove-test-support` to
+   `ui/Cargo.toml` (it enables no dependencies) and gated the body of
+   `sync_native_content_type` on it: with the feature on, the macOS branch is
+   `cfg`-ed out and the existing `let _ = (window, content_type);` idiom
+   absorbs the arguments so neither `cfg` combination warns. The `disabled`
+   early return and the macOS/non-macOS split are otherwise untouched. Grove
+   turns the feature on only through a `[dev-dependencies]` entry in the root
+   `Cargo.toml`; edition 2021 selects feature resolver v2, which does not
+   unify dev-dependency features into a normal `cargo build`, so the release
+   binary still compiles and runs the real AppKit path.

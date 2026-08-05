@@ -158,10 +158,17 @@ pub(super) fn sync_native_content_type(
         return;
     }
 
-    #[cfg(target_os = "macos")]
+    // Grove's test builds enable `grove-test-support` (see `ui/Cargo.toml`) to
+    // skip the native sync entirely. gpui's test platform window
+    // (`platform/test/window.rs`) answers `HasWindowHandle::window_handle`
+    // with `unimplemented!()`, so `native::ns_view`'s defensive `.ok()?` never
+    // gets the `Err` it is written to absorb and every `#[gpui::test]` that
+    // renders an `Input` panics. The feature is a pure marker enabled only via
+    // Grove's `[dev-dependencies]`, so release builds keep the AppKit path.
+    #[cfg(all(target_os = "macos", not(feature = "grove-test-support")))]
     super::native::set_text_content_type(window, content_type);
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(any(not(target_os = "macos"), feature = "grove-test-support"))]
     let _ = (window, content_type);
 }
 

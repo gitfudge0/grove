@@ -15,6 +15,14 @@ doctest = false
 
 [features]
 decimal = ["dep:rust_decimal"]
+# Grove-only marker feature (not upstream). Turns `sync_native_content_type`
+# (`ui/src/input/content_type.rs`) into a no-op so rendering an `Input` never
+# touches AppKit. gpui's `TestWindow::window_handle`
+# (`platform/test/window.rs`) is `unimplemented!()`, so the defensive
+# `HasWindowHandle::window_handle(window).ok()?` in `ui/src/input/native.rs`
+# panics instead of returning `Err` under `#[gpui::test]`. Enabled only through
+# Grove's `[dev-dependencies]`, never in the shipped binary.
+grove-test-support = []
 inspector = ["gpui_macros/inspector", "gpui/inspector"]
 tree-sitter = ["dep:tree-sitter", "dep:tree-sitter-json"]
 

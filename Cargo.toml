@@ -182,3 +182,14 @@ semver.workspace = true
 # gpui's `TestAppContext`/`VisualTestContext` and the `#[gpui::test]` macro —
 # used by the modal-focus regression test (`views::modals`).
 gpui = { workspace = true, features = ["test-support"] }
+# Same vendored path dependency as `[dependencies]`, but with the Grove-only
+# `grove-test-support` marker feature turned on. It makes
+# `sync_native_content_type` (`vendor/gpui-component/ui/src/input/content_type.rs`)
+# a no-op, because gpui's `TestWindow::window_handle` is `unimplemented!()` and
+# panics rather than returning `Err`, so any `#[gpui::test]` that renders an
+# `Input` dies inside AppKit's `ns_view`. Edition 2021 means resolver v2, which
+# does *not* unify dev-dependency features into `cargo build`/`cargo build
+# --release` — so the shipped binary still gets the real native code path.
+gpui-component = { path = "vendor/gpui-component/ui", features = [
+    "grove-test-support",
+] }
