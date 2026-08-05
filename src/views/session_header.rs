@@ -20,9 +20,6 @@ use crate::theme as c;
 /// Session bar height (`src/gui/metrics.rs:17`).
 pub const SESSBAR_H: f32 = 36.0;
 
-/// The longest a context title may be before the middle is collapsed
-/// (`terminal.rs:538`).
-pub const CONTEXT_MAX_CHARS: usize = 80;
 
 /// What the session bar's right-hand tool cluster asks the workspace to do
 /// (Plan 07 Task 5 Step 4, recorded ambiguity 2 — `terminal.rs:592-620`).
@@ -214,20 +211,32 @@ pub fn session_header(
     let mut identity = div()
         .flex()
         .items_center()
+        .flex_1()
+        .min_w_0()
         .gap(rpx(SPACE_MD))
         .overflow_hidden()
-        .child(crate::icons::icon(data.icon_name, ICON_MD, c::FG()))
-        .child(label_text(data.label.clone(), TEXT_TITLE, c::FG(), true));
+        .child(
+            crate::icons::icon(data.icon_name, ICON_MD, c::FG())
+                .into_any_element(),
+        )
+        .child(
+            label_text(data.label.clone(), TEXT_TITLE, c::FG(), true)
+                .flex_shrink_0()
+                .into_any_element(),
+        );
 
     if !data.branch.trim().is_empty() {
         identity = identity
-            .child(label_text("·", TEXT_TITLE, c::FG_MUTE(), false))
-            .child(label_text(
-                data.branch.clone(),
-                TEXT_BODY,
-                c::FG_DIM(),
-                false,
-            ));
+            .child(
+                label_text("·", TEXT_TITLE, c::FG_MUTE(), false)
+                    .flex_shrink_0()
+                    .into_any_element(),
+            )
+            .child(
+                label_text(data.branch.clone(), TEXT_BODY, c::FG_DIM(), false)
+                    .flex_shrink_0()
+                    .into_any_element(),
+            );
     }
 
     if let Some(title) = data.context.as_deref() {
@@ -250,16 +259,24 @@ pub fn session_header(
                 .child(label_text("in progress", TEXT_BODY, c::GREEN(), false))
                 .into_any_element()
         } else {
-            label_text(
-                truncate_middle(title, CONTEXT_MAX_CHARS),
-                TEXT_BODY,
-                c::FG_DIM(),
-                false,
-            )
-            .into_any_element()
+            let full_title = title.to_string();
+            label_text(full_title.clone(), TEXT_BODY, c::FG_DIM(), false)
+                .id("sess-context-title")
+                .truncate()
+                .min_w_0()
+                .flex_1()
+                .tooltip(move |window, cx| {
+                    gpui_component::tooltip::Tooltip::new(full_title.clone())
+                        .build(window, cx)
+                })
+                .into_any_element()
         };
         identity = identity
-            .child(label_text("·", TEXT_BODY, c::FG_MUTE(), false))
+            .child(
+                label_text("·", TEXT_BODY, c::FG_MUTE(), false)
+                    .flex_shrink_0()
+                    .into_any_element(),
+            )
             .child(context);
     }
 
@@ -324,6 +341,7 @@ mod tests {
         assert_eq!(truncate_middle("ααααββββ", 5).chars().count(), 5);
         assert_eq!(truncate_middle("abc", 1), "abc");
     }
+
 
     /// A branchless session (a home terminal) must not render an orphan `·`.
     #[test]

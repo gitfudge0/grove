@@ -15,7 +15,7 @@ use gpui::{div, prelude::*, AnyElement, App, Entity, Window};
 use crate::theme as c;
 use crate::views::components::{divider_h, keycap, mono, status_dot, ui, vline};
 use crate::views::grid::{PTY_PAD_H, PTY_PAD_W};
-use crate::views::session_header::{tool_btn, truncate_middle, SESSBAR_H};
+use crate::views::session_header::{tool_btn, SESSBAR_H};
 use crate::views::terminal_view::TerminalView;
 
 /// What the terminal tab's chrome asks the workspace to do.
@@ -116,10 +116,7 @@ fn home_terminal_bar(ctx: &TerminalTabCtx) -> AnyElement {
     } else {
         (c::FG_MUTE(), "exited")
     };
-    let context = truncate_middle(
-        ctx.context.as_deref().unwrap_or("~"),
-        crate::views::session_header::CONTEXT_MAX_CHARS,
-    );
+    let context = ctx.context.as_deref().unwrap_or("~").to_string();
     let dispatch = Rc::clone(&ctx.dispatch);
     let zen_dispatch = Rc::clone(&ctx.dispatch);
 
@@ -137,39 +134,51 @@ fn home_terminal_bar(ctx: &TerminalTabCtx) -> AnyElement {
                 .flex()
                 .items_center()
                 .gap(rpx(SPACE_MD))
+                .flex_shrink_0()
                 .child(status_dot(DOT_SM, dot_color))
                 .child(ui(status_label, TEXT_BODY, dot_color)),
         )
-        .child(vline())
+        .child(vline().flex_shrink_0())
         .child(
-            div()
-                .flex_1()
-                .overflow_hidden()
-                .child(ui(context, TEXT_BODY, c::FG())),
+            div().flex_1().min_w_0().overflow_hidden().child(
+                ui(context.clone(), TEXT_BODY, c::FG())
+                    .id("home-term-context")
+                    .truncate()
+                    .min_w_0()
+                    .flex_1()
+                    .tooltip(move |window, cx| {
+                        gpui_component::tooltip::Tooltip::new(context.clone())
+                            .build(window, cx)
+                    }),
+            ),
         )
-        .child(ui("~", TEXT_BODY, c::FG_MUTE()))
-        .child(vline())
-        .child(tool_btn(
-            "home-term-restart",
-            "restart",
-            "restart",
-            false,
-            false,
-            move |window, cx| dispatch(TerminalTabAction::Restart, window, cx),
-        ))
-        .child(tool_btn(
-            "home-term-zen",
-            "zen",
-            // In zen the bar is the only way back out by mouse.
-            if ctx.chrome_visible {
-                "zen"
-            } else {
-                "exit zen"
-            },
-            false,
-            false,
-            move |window, cx| zen_dispatch(TerminalTabAction::ToggleZen, window, cx),
-        ));
+        .child(ui("~", TEXT_BODY, c::FG_MUTE()).flex_shrink_0())
+        .child(vline().flex_shrink_0())
+        .child(
+            div().flex_shrink_0().child(tool_btn(
+                "home-term-restart",
+                "restart",
+                "restart",
+                false,
+                false,
+                move |window, cx| dispatch(TerminalTabAction::Restart, window, cx),
+            )),
+        )
+        .child(
+            div().flex_shrink_0().child(tool_btn(
+                "home-term-zen",
+                "zen",
+                // In zen the bar is the only way back out by mouse.
+                if ctx.chrome_visible {
+                    "zen"
+                } else {
+                    "exit zen"
+                },
+                false,
+                false,
+                move |window, cx| zen_dispatch(TerminalTabAction::ToggleZen, window, cx),
+            )),
+        );
 
     div()
         .flex()
@@ -182,15 +191,12 @@ fn home_terminal_bar(ctx: &TerminalTabCtx) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
-    /// `terminal.rs:447-449` — the context defaults to `~` and is
-    /// middle-truncated at 80 chars.
+    /// `terminal.rs:447-449` — the context defaults to `~`; no char cap is
+    /// applied (the title element truncates visually via `.truncate()` and
+    /// reveals the full string in a tooltip, mirroring `session_header.rs`).
     #[test]
-    fn the_context_defaults_to_tilde_and_truncates_at_eighty() {
-        let long = "x".repeat(200);
-        let out = truncate_middle(&long, crate::views::session_header::CONTEXT_MAX_CHARS);
-        assert_eq!(out.chars().count(), 80);
+    fn the_context_defaults_to_tilde_and_is_not_char_capped() {
         let none: Option<String> = None;
         assert_eq!(none.as_deref().unwrap_or("~"), "~");
     }
