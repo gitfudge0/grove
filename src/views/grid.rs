@@ -37,6 +37,7 @@ use crate::icons::icon;
 use crate::keymap::platform_mod_label;
 use crate::theme as c;
 use crate::views::components::{divider_h, icon_btn, keycap_filled, mono, tracked, ui};
+use crate::views::session_header;
 use crate::views::terminal_view::TerminalView;
 
 /// Height of the tile header bar (`src/gui/metrics.rs:51`).
@@ -44,7 +45,7 @@ pub const TILE_HEAD_H: f32 = 22.0;
 /// The square hit box of a tile-header icon button. Deliberately below
 /// [`CONTROL_H`] (22): the button has to sit *inside* a
 /// [`TILE_HEAD_H`]-tall bar, so it cannot be the chrome control height.
-const TILE_BTN_BOX: f32 = 18.0;
+pub const TILE_BTN_BOX: f32 = 18.0;
 /// Horizontal padding inside each tile's PTY container — `pty()`'s own 16×2
 /// (`src/gui/metrics.rs:53-54`).
 pub const TILE_PTY_PAD_W: f32 = 32.0;
@@ -106,6 +107,19 @@ pub struct TileData {
     pub waiting: bool,
     pub focused: bool,
     pub confirming_kill: bool,
+    /// The OSC context title, already sanitized — the **same** string
+    /// [`crate::views::workspace::Workspace::header_data`] derives for the
+    /// session bar via `rows::session_context`, so a tile and the bar never
+    /// disagree about what a session is doing.
+    pub context: Option<String>,
+    /// Whether the session's process is alive, gating the in-progress dots
+    /// (a dead session's stale "in progress" title must not animate).
+    pub running: bool,
+    /// Which optional header segments survive, decided by [`fit_segments`]
+    /// from widths this session's *own* strings actually measure to
+    /// (`Workspace::segment_widths`) — not from a width threshold, because
+    /// `grove` and `GLOBUS-PORTAL` do not cost the same.
+    pub fit: HeaderFit,
     /// The **same** entity the single-session body would use.
     pub view: Entity<TerminalView>,
 }
@@ -117,11 +131,94 @@ pub struct GridCtx {
     /// The 40-tick triangle wave the scrim breathes on —
     /// [`crate::entities::animation_clock::toast_pulse`]'s first consumer.
     pub scrim_pulse: f32,
+    /// The clock's raw tick, for the title zone's in-progress dot walk
+    /// (`session_header::in_progress_phase`). `pulse`/`scrim_pulse` are both
+    /// already-derived waves and cannot recover it.
+    pub tick: u64,
     pub drag: Option<GridDrag>,
     pub slide: Option<GridSlide>,
-    /// Nominal tile size in logical px, for the slide's draw offset.
+    /// Nominal tile size in logical px, for the slide's draw offset. Comes
+    /// from `grid_tile_size`, which ignores the sidebar — kept unchanged
+    /// because the slide's draw offset must match that geometry exactly.
     pub tile_size: (f32, f32),
     pub dispatch: GridDispatch,
+}
+
+/// Which identity segments survive in one tile's header. Each surviving
+/// segment stays whole — a truncated `"GLOB…"` project name is noise, so
+/// segments are dropped whole rather than shrunk. Only the title ever
+/// truncates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeaderFit {
+    pub project: bool,
+    pub branch: bool,
+    pub title: bool,
+}
+
+/// Measured widths of each optional segment, in **device pixels**, including
+/// the leading `·` separator and the two flex gaps each one carries.
+///
+/// A segment whose text is blank — a branchless session, `context: None` —
+/// records `0.0` and is never kept at any budget, which is what keeps the
+/// header from showing a trailing `·` with nothing after it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SegmentWidths {
+    pub project: f32,
+    pub branch: f32,
+    /// Only ever consulted for blankness: the title zone is `flex_1` and
+    /// truncates, so what it *would* measure does not decide its fate.
+    pub title: f32,
+}
+
+/// Below this much leftover budget the title is dropped rather than shown.
+/// Device px at the default 16px rem; roughly four glyphs of [`TEXT_MICRO`]
+/// plus the ellipsis — a 12px sliver reading `"m…"` costs the header a `·`
+/// and a truncation mark to say nothing at all, so none is better.
+const MIN_TITLE_PX: f32 = 48.0;
+
+/// The re-add margin that makes the drop and re-add thresholds differ, in
+/// device px. A segment drops the moment it overflows but is only brought
+/// back once it fits with this much to spare, so a tile width jittering
+/// around one segment's exact cost cannot oscillate it in and out.
+const HYSTERESIS_PX: f32 = 10.0;
+
+/// Greedily fit optional segments into `budget` device px by priority:
+/// project, then branch — branch is the first thing sacrificed because two
+/// tiles of one project are told apart by their branch far less often than
+/// two projects are told apart by their name. `prev` is last frame's
+/// decision for this session and supplies the hysteresis (see
+/// [`HYSTERESIS_PX`]); `None` on a session's first frame, which starts
+/// pessimistic and adds segments in.
+#[must_use]
+pub fn fit_segments(budget: f32, seg: &SegmentWidths, prev: Option<HeaderFit>) -> HeaderFit {
+    let prev = prev.unwrap_or_default();
+    // A shown segment's drop threshold is its bare width; a hidden one's
+    // re-add threshold is that plus the margin.
+    let keep = |w: f32, shown: bool, remaining: f32| {
+        w > 0.0 && remaining >= if shown { w } else { w + HYSTERESIS_PX }
+    };
+
+    let mut remaining = budget;
+    let project = keep(seg.project, prev.project, remaining);
+    if project {
+        remaining -= seg.project;
+    }
+    let branch = keep(seg.branch, prev.branch, remaining);
+    if branch {
+        remaining -= seg.branch;
+    }
+    // The title's threshold is a floor on the space left for it rather than
+    // its own width, since it truncates instead of dropping whole.
+    let title_floor = if prev.title {
+        MIN_TITLE_PX
+    } else {
+        MIN_TITLE_PX + HYSTERESIS_PX
+    };
+    HeaderFit {
+        project,
+        branch,
+        title: seg.title > 0.0 && remaining >= title_floor,
+    }
 }
 
 /// The shared "nothing here" panel (`src/gui/widgets/primitives.rs:232-251`).
@@ -300,26 +397,85 @@ fn overlay() -> gpui::Div {
 /// see [`crate::views::session_header`], which Plan 06 built parameterized by
 /// session for exactly this.
 fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
+    let fit = data.fit;
+
+    // Identity zone: icon + agent label always survive; project/branch are
+    // dropped whole (never truncated) as the tile narrows. `.flex_shrink_0()`
+    // — identity never truncates, the title zone below absorbs the squeeze.
     let mut identity = div()
         .flex()
+        .flex_shrink_0()
         .items_center()
         .gap(rpx(SPACE_SM))
         .overflow_hidden()
         .child(icon(data.icon_name, ICON_SM, c::FG_DIM()))
         .child(
             ui(data.agent_label, TEXT_MICRO, c::FG_DIM()).font_weight(gpui::FontWeight::SEMIBOLD),
-        )
-        .child(ui("·", TEXT_MICRO, c::FG_MUTE()))
-        .child(ui(data.project.clone(), TEXT_MICRO, c::FG_MUTE()));
+        );
+    if fit.project {
+        identity = identity
+            .child(ui("·", TEXT_MICRO, c::FG_MUTE()))
+            .child(ui(data.project.clone(), TEXT_MICRO, c::FG_MUTE()));
+    }
     // Branchless sessions skip the segment entirely — otherwise the header
     // shows a trailing dot with nothing after it.
-    if !data.branch.trim().is_empty() {
+    if fit.branch && !data.branch.trim().is_empty() {
         identity = identity.child(ui("·", TEXT_MICRO, c::FG_MUTE())).child(ui(
             data.branch.clone(),
             TEXT_MICRO,
             c::FG_MUTE(),
         ));
     }
+
+    // Title zone: `flex_1()` + `min_w_0()` replaces the old bare spacer — the
+    // context title takes the space a spacer used to waste. Only this
+    // element ever truncates.
+    let title_zone = if fit.title && data.context.is_some() {
+        let title = data.context.as_deref().unwrap_or_default();
+        let show_progress = data.running && session_header::is_in_progress_title(title);
+        let content: AnyElement = if show_progress {
+            let phase = session_header::in_progress_phase(ctx.tick);
+            let step = |i: u64| {
+                crate::views::components::status_dot(
+                    DOT_SM,
+                    if i == phase { c::GREEN() } else { c::FG_MUTE() },
+                )
+            };
+            // A partially drawn 3-dot cluster is meaningless — it never
+            // shrinks or truncates.
+            div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(rpx(SPACE_SM))
+                .child(step(0))
+                .child(step(1))
+                .child(step(2))
+                .into_any_element()
+        } else {
+            ui(title, TEXT_MICRO, c::FG_DIM())
+                .id(gpui::SharedString::from(format!("tile-ctx-{tile_idx}")))
+                .truncate()
+                .tooltip({
+                    let hint = gpui::SharedString::from(title.to_string());
+                    move |window, cx| {
+                        gpui_component::tooltip::Tooltip::new(hint.clone()).build(window, cx)
+                    }
+                })
+                .into_any_element()
+        };
+        div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap(rpx(SPACE_SM))
+            .child(ui("·", TEXT_MICRO, c::FG_MUTE()))
+            .child(content)
+            .into_any_element()
+    } else {
+        div().flex_1().into_any_element()
+    };
 
     // Arming the kill changes the *glyph* as well as the colour (§2.3, §12):
     // red-vs-muted on an identical trash can is a colour-only signal. `question`
@@ -351,25 +507,36 @@ fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
         } else {
             c::BG_STRIP()
         })
+        // `overflow_hidden` is now a backstop, not the mechanism: the
+        // controls cluster below is `flex_shrink_0` so a long title can
+        // never push it out of the tile — the title zone's `min_w_0()` is
+        // what actually absorbs the squeeze.
         .overflow_hidden()
         .child(identity)
-        .child(div().flex_1())
-        .when(data.waiting, |d| d.child(respond_chip(tile_idx, ctx.pulse)))
-        .when(tile_idx < 9, |d| d.child(num_hint(tile_idx, data.focused)))
-        .child(tile_btn(
-            format!("tile-zen-{tile_idx}"),
-            "zen",
-            c::FG_MUTE(),
-            &ctx.dispatch,
-            GridAction::TileZen(data.id),
-        ))
-        .child(tile_btn(
-            format!("tile-kill-{tile_idx}"),
-            kill_icon,
-            kill_color,
-            &ctx.dispatch,
-            kill_action,
-        ))
+        .child(title_zone)
+        .child(
+            div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(rpx(SPACE_SM))
+                .when(data.waiting, |d| d.child(respond_chip(tile_idx, ctx.pulse)))
+                .when(tile_idx < 9, |d| d.child(num_hint(tile_idx, data.focused)))
+                .child(tile_btn(
+                    format!("tile-zen-{tile_idx}"),
+                    "zen",
+                    c::FG_MUTE(),
+                    &ctx.dispatch,
+                    GridAction::TileZen(data.id),
+                ))
+                .child(tile_btn(
+                    format!("tile-kill-{tile_idx}"),
+                    kill_icon,
+                    kill_color,
+                    &ctx.dispatch,
+                    kill_action,
+                )),
+        )
         // A press anywhere on the header focuses the tile and arms the drag.
         .on_mouse_down(
             MouseButton::Left,
@@ -568,6 +735,126 @@ mod tests {
         // The modifier comes from the registry, never a literal.
         assert!(first.starts_with(platform_mod_label()));
         assert_eq!(scrim_sub_line(0), format!("click to respond · {first}"));
+    }
+
+    /// A cold-start fit (no previous frame) for a session whose three
+    /// segments cost the given device px.
+    fn cold(budget: f32, project: f32, branch: f32, title: f32) -> HeaderFit {
+        fit_segments(
+            budget,
+            &SegmentWidths {
+                project,
+                branch,
+                title,
+            },
+            None,
+        )
+    }
+
+    /// Branch is the first sacrifice: a budget that fits exactly one of the
+    /// two spends it on the project name.
+    #[test]
+    fn fit_segments_drops_branch_before_project() {
+        let fit = cold(60.0 + MIN_TITLE_PX, 50.0, 50.0, 80.0);
+        assert!(fit.project);
+        assert!(!fit.branch);
+    }
+
+    #[test]
+    fn a_wide_budget_keeps_everything_and_a_tiny_one_keeps_nothing() {
+        assert_eq!(
+            cold(1000.0, 50.0, 40.0, 80.0),
+            HeaderFit {
+                project: true,
+                branch: true,
+                title: true
+            }
+        );
+        assert_eq!(cold(8.0, 50.0, 40.0, 80.0), HeaderFit::default());
+        assert_eq!(cold(0.0, 50.0, 40.0, 80.0), HeaderFit::default());
+    }
+
+    /// The whole point of measuring instead of thresholding: at one fixed
+    /// tile width a short project name survives where a long one cannot.
+    #[test]
+    fn a_short_project_name_survives_a_budget_a_long_one_does_not() {
+        // `grove` vs `GLOBUS-PORTAL` at TEXT_MICRO, roughly, in one tile.
+        let budget = 100.0;
+        assert!(cold(budget, 30.0, 0.0, 80.0).project);
+        assert!(!cold(budget, 95.0, 0.0, 80.0).project);
+    }
+
+    /// Asymmetric thresholds: `B` is the re-add threshold, so a segment
+    /// already shown survives below it while a hidden one waits for it.
+    #[test]
+    fn hysteresis_separates_the_drop_and_re_add_thresholds() {
+        let seg = SegmentWidths {
+            project: 50.0,
+            branch: 0.0,
+            title: 0.0,
+        };
+        let shown = Some(HeaderFit {
+            project: true,
+            ..HeaderFit::default()
+        });
+        let hidden = Some(HeaderFit::default());
+        let b = seg.project + HYSTERESIS_PX;
+        assert!(fit_segments(b - 0.1, &seg, shown).project);
+        assert!(!fit_segments(b - 0.1, &seg, hidden).project);
+        assert!(fit_segments(b, &seg, hidden).project);
+        // Below its bare width it goes even when shown.
+        assert!(!fit_segments(seg.project - 0.1, &seg, shown).project);
+    }
+
+    /// A branchless tile must not render an orphan `·` at any budget, and
+    /// `context: None` must not reserve title space.
+    #[test]
+    fn a_branchless_tile_renders_no_orphan_dot_at_any_fit_level() {
+        let shown = Some(HeaderFit {
+            project: true,
+            branch: true,
+            title: true,
+        });
+        for budget in [0.0, 100.0, 400.0, 10_000.0] {
+            let seg = SegmentWidths {
+                project: 50.0,
+                branch: 0.0,
+                title: 0.0,
+            };
+            for prev in [None, shown] {
+                let fit = fit_segments(budget, &seg, prev);
+                assert!(!fit.branch, "budget={budget}");
+                assert!(!fit.title, "budget={budget}");
+            }
+        }
+    }
+
+    /// A sliver of title is worse than no title.
+    #[test]
+    fn the_title_is_dropped_rather_than_shown_below_its_floor() {
+        let seg = SegmentWidths {
+            project: 0.0,
+            branch: 0.0,
+            title: 200.0,
+        };
+        let shown = Some(HeaderFit {
+            title: true,
+            ..HeaderFit::default()
+        });
+        assert!(fit_segments(MIN_TITLE_PX, &seg, shown).title);
+        assert!(!fit_segments(MIN_TITLE_PX - 0.1, &seg, shown).title);
+    }
+
+    /// Mirrors `session_header`'s
+    /// `a_dead_session_does_not_animate_its_stale_in_progress_title`: a dead
+    /// tile with a frozen "in progress" title must show the text, not dots.
+    #[test]
+    fn a_dead_tile_does_not_animate_its_stale_in_progress_title() {
+        let title = "migration in progress";
+        assert!(session_header::is_in_progress_title(title));
+        let running = false;
+        let show_progress = running && session_header::is_in_progress_title(title);
+        assert!(!show_progress);
     }
 
     // ── carried amendment 2: the grid parity assertion ───────────────────

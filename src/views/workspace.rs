@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use gpui::{div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, Window};
 
 use crate::activity::ActivityState;
+use crate::fonts::{MONO_FAMILY, UI_FAMILY};
 use crate::entities::activity_store::ActivityStore;
 use crate::entities::animation_clock::AnimationClock;
 use crate::entities::project_tree::ProjectTree;
@@ -33,6 +34,7 @@ use crate::views::session_header::{self, SessionHeaderData, ToolAction, ToolClus
 use crate::views::sidebar::{self, Sidebar};
 use crate::views::statusbar::{self, StatusbarCtx};
 use crate::views::term_panel::{self, PanelAction, PanelCtx, ShellTab};
+use crate::views::tokens::{ICON_SM, SPACE_MD, SPACE_SM, TEXT_MICRO};
 use crate::views::terminal_tab::{self, TerminalTabAction, TerminalTabCtx};
 use crate::views::terminal_view::TerminalView;
 use crate::zoom::{self, ZoomState};
@@ -110,6 +112,12 @@ pub struct Workspace {
     /// the same reason, and additionally needs *this* entity (it counts the
     /// running native sessions and runs [`Workspace::shutdown`]).
     close_hook_registered: bool,
+    /// Last frame's header-segment decision per session, so
+    /// [`grid::fit_segments`] has a `prev` to apply hysteresis against. A
+    /// render-time memo, not app state: it is deliberately *not* on
+    /// `WorkspaceState` and is never persisted. Evicted down to `tile_order`
+    /// each frame so it cannot outgrow the live sessions.
+    header_fits: HashMap<SessionId, grid::HeaderFit>,
     observers: Vec<gpui::Subscription>,
 }
 
@@ -117,6 +125,150 @@ impl Focusable for Workspace {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()
     }
+}
+
+// ── tile-header measurement ──────────────────────────────────────────────
+//
+// `grid::tile_header` decides which identity segments it can afford from
+// widths measured here, because this is where a `&Window` — and therefore a
+// text system — exists. Everything below returns **device pixels**; the
+// decision itself is `grid::fit_segments`, which is pure.
+
+/// Token space → **device pixels**. Every `SPACE_*`/`TEXT_*`/`ICON_*` token is
+/// authored against [`zoom::REM_BASE`] through [`rpx`], and `render` sets
+/// `rem_size = px(REM_BASE * zoom)` (`:1780`), so a token of `v` paints at
+/// `rem_size * (v / REM_BASE)` — i.e. `v * zoom`. Logical px (viewport over
+/// zoom, `sidebar_width`) convert by the same factor. Mixing the two spaces
+/// would leave the budget correct at 100% zoom only.
+fn token_px(v: f32, window: &Window) -> f32 {
+    f32::from(window.rem_size()) * (v / zoom::REM_BASE)
+}
+
+/// The advance width of `text` as `components::ui`/`mono` would paint it.
+/// `WindowTextSystem::layout_line` is cached per frame, so one call per
+/// segment per tile per frame costs a hash lookup after the first.
+fn text_px(
+    window: &Window,
+    text: &str,
+    family: &'static str,
+    size: f32,
+    weight: gpui::FontWeight,
+) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    let mut font = gpui::font(family);
+    font.weight = weight;
+    let run = gpui::TextRun {
+        len: text.len(),
+        font,
+        color: gpui::transparent_black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let layout = window
+        .text_system()
+        .layout_line(text, px(token_px(size, window)), &[run], None);
+    f32::from(layout.width)
+}
+
+/// What one optional identity segment costs the row: `grid::tile_header`
+/// renders the `·` and the name as two children of a `gap(rpx(SPACE_SM))`
+/// flex row, so the two gaps are part of the segment, not of the frame.
+/// Blank text costs nothing and is reported as absent, which is what stops a
+/// branchless tile from painting an orphan dot.
+fn segment_px(window: &Window, text: &str) -> f32 {
+    if text.trim().is_empty() {
+        return 0.0;
+    }
+    let normal = gpui::FontWeight::default();
+    2.0f32.mul_add(
+        token_px(SPACE_SM, window),
+        text_px(window, "·", UI_FAMILY, TEXT_MICRO, normal)
+            + text_px(window, text, UI_FAMILY, TEXT_MICRO, normal),
+    )
+}
+
+/// `keycap_filled`'s shell (`components.rs:102-109`): `SPACE_MD` of padding
+/// each side, plus the 1px stroke both the number hint and the respond chip
+/// add themselves with `.border_1()`.
+fn keycap_shell_px(window: &Window) -> f32 {
+    2.0f32.mul_add(token_px(SPACE_MD, window), 2.0)
+}
+
+/// `grid::chord`'s inner width: on macOS a square `TEXT_MICRO` command glyph,
+/// a 1px gap and the mono digit; elsewhere the mono `"{mod}+{n}"` the
+/// registry spells.
+fn chord_px(window: &Window, tile_idx: usize) -> f32 {
+    let n = tile_idx + 1;
+    let normal = gpui::FontWeight::default();
+    if cfg!(target_os = "macos") {
+        token_px(TEXT_MICRO, window)
+            + 1.0
+            + text_px(window, &n.to_string(), MONO_FAMILY, TEXT_MICRO, normal)
+    } else {
+        let label = format!("{}+{n}", keymap::platform_mod_label());
+        text_px(window, &label, MONO_FAMILY, TEXT_MICRO, normal)
+    }
+}
+
+/// The controls cluster's width. It is `flex_shrink_0`, so this is space the
+/// header can never reclaim however long the title gets.
+fn controls_px(window: &Window, tile_idx: usize, waiting: bool) -> f32 {
+    // zen + kill: `icon_btn` is exactly a `TILE_BTN_BOX` square, and
+    // `grid::tile_btn` passes `hover_ring: false`, so it carries no stroke
+    // (`components.rs:607-617`).
+    let mut w = 2.0 * token_px(grid::TILE_BTN_BOX, window);
+    let mut children = 2u16;
+    if tile_idx < 9 {
+        w += keycap_shell_px(window) + chord_px(window, tile_idx);
+        children += 1;
+    }
+    if waiting {
+        w += keycap_shell_px(window)
+            + text_px(
+                window,
+                grid::respond_label(tile_idx),
+                MONO_FAMILY,
+                TEXT_MICRO,
+                gpui::FontWeight::default(),
+            );
+        if tile_idx < 9 {
+            // `respond_chip`'s own 1px gap before the chord.
+            w += 1.0 + chord_px(window, tile_idx);
+        }
+        children += 1;
+    }
+    token_px(SPACE_SM, window).mul_add(f32::from(children - 1), w)
+}
+
+/// How much of `tile_w_px` is left for the optional segments and the title.
+fn header_budget_px(
+    window: &Window,
+    tile_w_px: f32,
+    tile_idx: usize,
+    waiting: bool,
+    agent_label: &str,
+) -> f32 {
+    // A waiting tile spends 1px per side on its amber hairline (`grid::tile`).
+    let border = if waiting { 2.0 } else { 0.0 };
+    // `tile_header`'s own `.px(rpx(SPACE_MD))`, and the two `SPACE_SM` gaps
+    // between its three always-present zones.
+    let frame = 2.0f32.mul_add(token_px(SPACE_MD, window), 2.0 * token_px(SPACE_SM, window));
+    // Always rendered, so never negotiable: the agent icon box, its gap, and
+    // the agent label — measured SEMIBOLD because that is how it paints, and
+    // measuring it at normal weight under-counts every tile.
+    let identity_base = token_px(ICON_SM, window)
+        + token_px(SPACE_SM, window)
+        + text_px(
+            window,
+            agent_label,
+            UI_FAMILY,
+            TEXT_MICRO,
+            gpui::FontWeight::SEMIBOLD,
+        );
+    (tile_w_px - border - frame - controls_px(window, tile_idx, waiting) - identity_base).max(0.0)
 }
 
 impl Workspace {
@@ -222,6 +374,7 @@ impl Workspace {
             tmux_discovered: false,
             tmux_attach_frames: 0,
             sidebar_seeded: false,
+            header_fits: HashMap::new(),
             observers,
         }
     }
@@ -1485,16 +1638,34 @@ impl Workspace {
     fn tile_data(
         &mut self,
         snap: &crate::entities::workspace_state::TreeSnapshot,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<TileData> {
-        let ws = self.state.read(cx);
-        let (order, focused, pending_kill) = (
-            ws.tile_order().to_vec(),
-            ws.grid_focused(),
-            ws.pending_kill(),
-        );
+        let (order, focused, pending_kill, sidebar_w) = {
+            let ws = self.state.read(cx);
+            (
+                ws.tile_order().to_vec(),
+                ws.grid_focused(),
+                ws.pending_kill(),
+                ws.sidebar_width(),
+            )
+        };
+        // The grid's *real* width per tile, in **device px**. Unlike
+        // `GridCtx::tile_size` (which feeds the slide's draw offset and must
+        // keep `grid_tile_size`'s sidebar-blind geometry), the header budget
+        // has to reflect the width a tile is actually given: sidebar
+        // subtracted, and `grid`'s inter-column `gap(px(1.0))` — a true device
+        // pixel, not a token — taken off before the divide.
+        let tile_w_px = {
+            let (cols, _) = crate::grid::grid_layout(order.len());
+            let cols_f = f32::from(u16::try_from(cols).unwrap_or(u16::MAX));
+            let body_w = f32::from(window.viewport_size().width) - token_px(sidebar_w, window);
+            ((body_w - (cols_f - 1.0)) / cols_f).max(0.0)
+        };
+        // A render-time memo, so it must not accumulate dead sessions.
+        self.header_fits.retain(|id, _| order.contains(id));
         let mut out = Vec::with_capacity(order.len());
-        for id in order {
+        for (tile_idx, id) in order.into_iter().enumerate() {
             let Some(meta) = self.registry.read(cx).meta(id).cloned() else {
                 continue;
             };
@@ -1507,16 +1678,42 @@ impl Workspace {
                 .flat_map(|p| p.worktrees.iter())
                 .find(|w| w.path == meta.wt_path)
                 .map_or_else(String::new, |w| w.branch.clone());
+            // Same derivation as `header_data` — a tile and the session bar
+            // must never disagree about what a session is doing.
+            let context = self.registry.read(cx).session(id).and_then(|entity| {
+                let title = entity.read(cx).title();
+                title.as_deref().and_then(|raw| {
+                    rows::session_context(
+                        raw,
+                        &rows::path_basename(&meta.wt_path),
+                        &meta.label,
+                        meta.agent.label(),
+                    )
+                })
+            });
+            let waiting = self.activity.read(cx).state_of(id) == ActivityState::WaitingForInput;
+            let agent_label = meta.agent.label();
+            let seg = grid::SegmentWidths {
+                project: segment_px(window, &meta.project),
+                branch: segment_px(window, &branch),
+                title: segment_px(window, context.as_deref().unwrap_or_default()),
+            };
+            let budget = header_budget_px(window, tile_w_px, tile_idx, waiting, agent_label);
+            let fit = grid::fit_segments(budget, &seg, self.header_fits.get(&id).copied());
+            self.header_fits.insert(id, fit);
             out.push(TileData {
                 id,
-                agent_label: meta.agent.label(),
+                agent_label,
                 icon_name: meta.agent.icon_name(),
                 project: meta.project.clone(),
                 branch,
-                waiting: self.activity.read(cx).state_of(id) == ActivityState::WaitingForInput,
+                waiting,
                 focused: focused == Some(id),
                 confirming_kill: pending_kill == Some(id),
+                context,
+                running: self.activity.read(cx).state_of(id) != ActivityState::Exited,
                 view,
+                fit,
             });
         }
         out
@@ -2131,7 +2328,7 @@ impl Render for Workspace {
             this.grid_action(action, window, cx);
         });
         let grid_ctx = GridCtx {
-            tiles: self.tile_data(&snap, cx),
+            tiles: self.tile_data(&snap, window, cx),
             pulse: appbar_ctx.pulse,
             // The scrim's 40-tick triangle wave —
             // `animation_clock::toast_pulse`'s first and only consumer
@@ -2140,6 +2337,7 @@ impl Render for Workspace {
                 let phase = crate::entities::animation_clock::toast_pulse(tick) as f32;
                 (phase - 20.0).abs() / 20.0
             },
+            tick,
             drag: self.state.read(cx).grid_drag(),
             slide: self.state.read(cx).grid_slide(),
             tile_size: {
