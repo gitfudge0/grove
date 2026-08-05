@@ -9,7 +9,7 @@
 
 use crate::views::rpx;
 use crate::views::tokens::*;
-use gpui::{div, prelude::*, AnyElement, App, Context, Window};
+use gpui::{div, prelude::*, AnyElement, App, Context, Focusable, Window};
 
 use grove_core::agent::Agent;
 
@@ -312,11 +312,56 @@ impl ModalLayer {
         };
         let (setup, run, teardown) = (norm(&st.setup), norm(&st.run), norm(&st.teardown));
         let path = st.project_path.clone();
+        let new_name = st.name.trim().to_string();
+        // Reject a rename that collides (case-insensitively) with another
+        // project's name: `RecentLaunch.project` and `grid_order` are keyed
+        // by name (see below), so two projects sharing a name would silently
+        // merge each other's recents and saved tile order.
+        if !new_name.is_empty() {
+            let collides = cx
+                .global::<SettingsState>()
+                .store
+                .projects
+                .iter()
+                .any(|p| p.path != path && p.name.eq_ignore_ascii_case(&new_name));
+            if collides {
+                self.open(
+                    Modal::Message(format!("A project named \"{new_name}\" already exists.")),
+                    cx,
+                );
+                return;
+            }
+        }
         SettingsState::update(cx, move |store| {
-            if let Some(p) = store.projects.iter_mut().find(|p| p.path == path) {
-                p.scripts.setup = setup;
-                p.scripts.run = run;
-                p.scripts.teardown = teardown;
+            let Some(idx) = store.projects.iter().position(|p| p.path == path) else {
+                return;
+            };
+            let old_name = store.projects[idx].name.clone();
+            store.projects[idx].scripts.setup = setup;
+            store.projects[idx].scripts.run = run;
+            store.projects[idx].scripts.teardown = teardown;
+            // Empty or unchanged: leave the persisted name untouched (no error
+            // UI — see the module's Task 4 note). `path` stays the identity
+            // key either way.
+            if new_name.is_empty() || new_name == old_name {
+                return;
+            }
+            store.projects[idx].name.clone_from(&new_name);
+            // `RecentLaunch.project` and `grid_order` are keyed by project
+            // NAME (not path — storage.rs:58, storage.rs:132), so a rename
+            // must migrate both or the palette's recents list and the grid's
+            // saved tile order silently orphan themselves.
+            for r in &mut store.recent_launches {
+                if r.project == old_name {
+                    r.project.clone_from(&new_name);
+                }
+            }
+            let old_prefix = format!("{old_name}::");
+            let new_prefix = format!("{new_name}::");
+            for key in &mut store.grid_order {
+                if let Some(rest) = key.strip_prefix(&old_prefix) {
+                    *key = format!("{new_prefix}{rest}");
+                }
             }
         });
         SettingsState::flush_now(cx);
@@ -474,11 +519,16 @@ impl ModalLayer {
     }
 }
 
-pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
+pub fn render(
+    layer: &ModalLayer,
+    dispatch: &ModalDispatch,
+    window: &gpui::Window,
+    cx: &App,
+) -> AnyElement {
     match layer.slot().get() {
         Some(Modal::Settings) => settings_modal(layer, dispatch, cx),
         Some(Modal::ShortcutOverlay) => shortcut_overlay(layer.state.read(cx).screen()),
-        Some(Modal::ScriptsEditor(st)) => scripts_editor(layer, st, dispatch, cx),
+        Some(Modal::ScriptsEditor(st)) => scripts_editor(layer, st, dispatch, window, cx),
         Some(Modal::Updating) => updating_modal(layer, dispatch, cx),
         Some(Modal::Changelog { .. }) => changelog_modal(layer, dispatch, cx),
         _ => div().into_any_element(),
@@ -1129,6 +1179,7 @@ fn scripts_editor(
     layer: &ModalLayer,
     st: &ScriptsEditorState,
     dispatch: &ModalDispatch,
+    window: &gpui::Window,
     cx: &App,
 ) -> AnyElement {
     let store = &cx.global::<SettingsState>().store;
@@ -1199,9 +1250,42 @@ fn scripts_editor(
         .flex()
         .flex_col()
         .gap(rpx(SPACE_SM))
-        .child(section_header("PROJECT THEME", 0.0, 0.0))
+        .child(section_header("PROJECT THEME", SPACE_SM, 0.0))
         .child(theme_row)
-        .child(caption(theme_caption));
+        .child(ui(theme_caption, TEXT_SMALL, c::FG_MUTE()));
+
+    // The restyled text-field chrome shared by the name field and the three
+    // lifecycle buffers: blends with the modal panel (`BG_RAIL`), a
+    // focus-reactive border (`c::MAGENTA()` focused, `c::BORDER()` otherwise),
+    // and `.appearance(false)` so the field never paints gpui-component's own
+    // near-white background over it (Task 1; mirrors `add_project.rs::field`).
+    let field_wrapper = |i: usize| -> Option<gpui::Div> {
+        layer.fields.get(i).map(|f| {
+            let focused = f.state().read(cx).focus_handle(cx).is_focused(window);
+            div()
+                .w_full()
+                .px(rpx(SPACE_2XL))
+                .py(rpx(SPACE_LG))
+                .rounded(rpx(RADIUS_CONTROL))
+                .bg(c::BG_RAIL())
+                .border_1()
+                .border_color(if focused { c::MAGENTA() } else { c::BORDER() })
+                .font(gpui::font(crate::fonts::MONO_FAMILY))
+                .text_size(rpx(TEXT_TITLE))
+                .child(
+                    gpui_component::input::Input::new(f.state())
+                        .appearance(false)
+                        .w_full(),
+                )
+        })
+    };
+
+    let name_section = div()
+        .flex()
+        .flex_col()
+        .gap(rpx(SPACE_SM))
+        .child(section_header("NAME", SPACE_SM, 0.0))
+        .children(field_wrapper(0));
 
     let field = |i: usize, label: &'static str, desc: &'static str| {
         let mut d = div()
@@ -1211,8 +1295,8 @@ fn scripts_editor(
             .w_full()
             .child(ui(label, TEXT_BODY, c::FG()))
             .child(ui(desc, TEXT_SMALL, c::FG_MUTE()));
-        if let Some(f) = layer.fields.get(i) {
-            d = d.child(gpui_component::input::Input::new(f.state()).w_full());
+        if let Some(input_el) = field_wrapper(i) {
+            d = d.child(input_el);
         }
         d
     };
@@ -1222,25 +1306,19 @@ fn scripts_editor(
         .flex_col()
         .gap(rpx(SPACE_3XL))
         .child(field(
-            0,
-            "Setup",
-            "Runs once when a new worktree is created, inside the new worktree's directory. \
-             Use it to install dependencies, copy ignored env files, or start the services \
-             an agent needs before you begin working.",
-        ))
-        .child(field(
             1,
-            "Run",
-            "Runs on demand when you press the play button (worktree row or session header). \
-             It opens an interactive terminal tab, so it suits dev servers, test watchers, \
-             or any command you want to watch and interact with.",
+            "Setup",
+            "Runs once when a worktree is created, inside its directory.",
         ))
         .child(field(
             2,
+            "Run",
+            "Runs on demand from the play button, in an interactive terminal tab.",
+        ))
+        .child(field(
+            3,
             "Teardown",
-            "Runs when you delete the worktree, before it is removed from disk. Use it to \
-             stop services, tear down databases, or clean up anything setup created. \
-             Deletion proceeds once it exits.",
+            "Runs before a worktree is deleted, while it still exists.",
         ));
 
     let scroll_area = div()
@@ -1253,10 +1331,11 @@ fn scripts_editor(
         .flex()
         .flex_col()
         .gap(rpx(SPACE_SM))
-        .child(section_header("LIFECYCLE SCRIPTS", 0.0, 0.0))
-        .child(caption(
-            "Shell snippets shared by every worktree of this project, run via $SHELL -lc. \
-             Leave a field blank to disable that step.",
+        .child(section_header("LIFECYCLE SCRIPTS", SPACE_SM, 0.0))
+        .child(ui(
+            "Shared by every worktree of this project, run via $SHELL -lc. Blank disables the step.",
+            TEXT_SMALL,
+            c::FG_MUTE(),
         ))
         .child(scroll_area);
 
@@ -1299,6 +1378,7 @@ fn scripts_editor(
                     .flex()
                     .flex_col()
                     .gap(rpx(SPACE_2XL))
+                    .child(name_section)
                     .child(project_theme_section)
                     .child(lifecycle_section)
                     .child(footer_row),

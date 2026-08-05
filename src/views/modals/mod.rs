@@ -622,6 +622,16 @@ impl ModalLayer {
                 ));
             }
             Modal::ScriptsEditor(st) => {
+                // The name field is first and single-line so it participates
+                // in the same ctrl+tab / click buffer traversal as the three
+                // lifecycle buffers below it.
+                self.fields.push(ModalInput::single_line(
+                    InputPolicy::default(),
+                    "project name",
+                    &st.name,
+                    window,
+                    cx,
+                ));
                 for (placeholder, initial) in [
                     ("npm install", &st.setup),
                     ("npm run dev", &st.run),
@@ -698,12 +708,15 @@ impl ModalLayer {
             }
             Some(Modal::ScriptsEditor(st)) => {
                 if let Some(v) = values.first() {
-                    st.setup.clone_from(v);
+                    st.name.clone_from(v);
                 }
                 if let Some(v) = values.get(1) {
-                    st.run.clone_from(v);
+                    st.setup.clone_from(v);
                 }
                 if let Some(v) = values.get(2) {
+                    st.run.clone_from(v);
+                }
+                if let Some(v) = values.get(3) {
                     st.teardown.clone_from(v);
                 }
             }
@@ -751,7 +764,7 @@ impl Render for ModalLayer {
             | ModalKind::ShortcutOverlay
             | ModalKind::ScriptsEditor
             | ModalKind::Updating
-            | ModalKind::Changelog => settings::render(self, &dispatch, cx),
+            | ModalKind::Changelog => settings::render(self, &dispatch, window, cx),
         };
 
         let framed = if kind.is_screen_replacement() {

@@ -316,6 +316,7 @@ impl Sidebar {
                         .get(idx)
                         .map(|p| crate::modal::ScriptsEditorState {
                             project_path: p.path.clone(),
+                            name: p.name.clone(),
                             setup: p.scripts.setup.clone().unwrap_or_default(),
                             run: p.scripts.run.clone().unwrap_or_default(),
                             teardown: p.scripts.teardown.clone().unwrap_or_default(),

@@ -111,6 +111,10 @@ pub enum ThemePickerScope {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScriptsEditorState {
     pub project_path: String,
+    /// Live edit buffer for the project's display name, seeded from
+    /// `Project::name` on open. Saved (and every name-keyed reference
+    /// migrated) in `save_scripts` if it changed.
+    pub name: String,
     pub setup: String,
     pub run: String,
     pub teardown: String,
@@ -926,6 +930,7 @@ mod tests {
     fn scripts(setup: &str) -> ScriptsEditorState {
         ScriptsEditorState {
             project_path: "/p".into(),
+            name: "p".into(),
             setup: setup.into(),
             run: String::new(),
             teardown: String::new(),

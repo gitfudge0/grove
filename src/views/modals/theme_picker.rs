@@ -772,7 +772,11 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                 .bg(c::BG())
                 .border_1()
                 .border_color(c::BORDER())
-                .child(gpui_component::input::Input::new(f.state()).w_full())
+                .child(
+                    gpui_component::input::Input::new(f.state())
+                        .appearance(false)
+                        .w_full(),
+                )
         });
         return modal_panel(
             MODAL_W_XL,

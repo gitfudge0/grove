@@ -304,7 +304,13 @@ fn input_modal(
         input_zone = input_zone.child(
             gpui_component::input::Input::new(field.state())
                 .flex_1()
-                .text_size(rpx(TEXT_TITLE)),
+                .text_size(rpx(TEXT_TITLE))
+                // The field is a bare run of text on the modal's own surface —
+                // gpui-component's default chrome paints a light box that reads
+                // as a foreign white slab here (launcher.rs:732 does the same).
+                // Last in the chain so it doesn't push `.text_size(` out of
+                // R3's window from the `.font()` pinned on the container.
+                .appearance(false),
         );
     }
 
