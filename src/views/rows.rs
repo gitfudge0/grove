@@ -631,6 +631,10 @@ fn project_row(
         ctx,
         RowAction::RemoveProject(idx),
     ));
+    // Fixed chrome never shrinks — see the comment at the cluster div for
+    // why it can't be `flex_1`. The blank middle is claimed by the filler
+    // div below instead of an auto margin here.
+    right = right.flex_shrink_0();
 
     div()
         .id(SharedString::from(format!("proj-{idx}")))
@@ -641,7 +645,6 @@ fn project_row(
         .child(
             div()
                 .flex()
-                .flex_1()
                 .min_w_0()
                 .items_center()
                 .gap(rpx(SPACE_LG))
@@ -655,6 +658,16 @@ fn project_row(
                     ICON_XS,
                     c::FG_MUTE(),
                 )))
+                // No `flex_1` here on purpose: `.truncate()` (`overflow_hidden`
+                // + `text_ellipsis`) makes gpui decide the ellipsis at MEASURE
+                // time (`gpui/src/elements/text.rs:659-672,739-751`) — whatever
+                // width the text measures at becomes its flex-basis, and a
+                // `flex_1` parent (basis 0%) never re-grows it afterward. By
+                // leaving this cluster's basis at `auto` (its own content size)
+                // and letting the filler below absorb the leftover space, the
+                // cluster only receives a *shrunk* definite width — and
+                // therefore only truncates — once the row is genuinely too
+                // narrow for everything.
                 .child(
                     ui(name.to_uppercase(), TEXT_BODY, c::FG())
                         .font_weight(FontWeight::BOLD)
@@ -669,6 +682,18 @@ fn project_row(
                         .child(status_dot(DOT_SM, count_color))
                         .child(mono(format!("{count}"), TEXT_SMALL, count_color)),
                 ),
+        )
+        // Clickable filler: the name cluster above can't be `flex_1` (see its
+        // comment), so the row's click target would otherwise only cover the
+        // cluster's content width, leaving the blank middle dead to clicks.
+        // This absorbs the leftover space (basis 0% + grow, so it never
+        // steals width from the name) and carries the same action.
+        .child(
+            div()
+                .flex_1()
+                .self_stretch()
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, ctx.on(RowAction::SelectProject(idx))),
         )
         .child(right)
         .into_any_element()
@@ -809,9 +834,15 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
             }
         })
         .child(
+            // No `flex_1` on this cluster — see the comment at `project_row`'s
+            // name child (`rows.rs`): `.truncate()` measures and fixes its
+            // ellipsis point at measure time, so a `flex_1` (basis 0%) parent
+            // would strand the name at whatever width it first ellipsized to.
+            // Leaving basis at `auto`, with the filler below absorbing the
+            // leftover space, means this cluster keeps its content width until
+            // the row is actually too narrow for both.
             div()
                 .flex()
-                .flex_1()
                 .min_w_0()
                 .items_center()
                 .gap(rpx(SPACE_MD))
@@ -830,13 +861,37 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
                 )))
                 .child(label),
         )
-        .when_some(git_suffix.clone(), |d, s| {
-            d.child(ui(s, TEXT_SMALL, c::FG_MUTE()).flex_none())
-        })
-        .when_some(*rollup, |d, st| {
-            d.child(state_glyph(st, ctx.tick, ctx.pulse))
-        })
-        .child(actions)
+        // Clickable filler: absorbs the row's blank middle so clicking it
+        // selects the worktree, same as clicking the name cluster — see the
+        // comment at `project_row`'s filler for why the cluster can't just
+        // be `flex_1` itself.
+        .child(
+            div()
+                .flex_1()
+                .self_stretch()
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    ctx.on(RowAction::SelectWorktree(proj, wt)),
+                ),
+        )
+        .child(
+            // The git-suffix, roll-up glyph and tool chrome are fixed-width
+            // and pinned to the row's right edge: `flex_shrink_0` so shrink
+            // pressure lands on the name cluster above; the filler above
+            // claims only the space the name cluster doesn't need.
+            div()
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .when_some(git_suffix.clone(), |d, s| {
+                    d.child(ui(s, TEXT_SMALL, c::FG_MUTE()).flex_none())
+                })
+                .when_some(*rollup, |d, st| {
+                    d.child(state_glyph(st, ctx.tick, ctx.pulse))
+                })
+                .child(actions),
+        )
         .into_any_element()
 }
 
@@ -861,9 +916,13 @@ fn session_row(
             ActivityState::Exited => c::FG_MUTE(),
         }
     };
+    // No `flex_1` here — see `project_row`'s name-child comment (`rows.rs`):
+    // `.truncate()` on the context text below fixes its ellipsis at measure
+    // time, so a `flex_1` (basis 0%) parent would never let it re-grow. The
+    // close button claims the right edge via `ml_auto()` instead, so this
+    // cluster keeps its own content width until the row truly runs out.
     let mut meta = div()
         .flex()
-        .flex_1()
         .min_w_0()
         .items_center()
         .gap(rpx(SPACE_MD))
@@ -899,6 +958,10 @@ fn session_row(
             RowAction::ArmKillSession(id),
         )
     };
+    // `AnyElement` isn't `Styled`, so the auto margin that pins it to the row's
+    // right edge (freeing the name cluster above to keep its content width)
+    // has to go on a thin wrapper div.
+    let close = div().flex_none().ml_auto().child(close);
 
     div()
         .id(SharedString::from(format!("sess-{}", id.raw())))
@@ -1038,6 +1101,9 @@ fn terminal_row(
             RowAction::ArmKillTerminal(idx),
         )
     };
+    // Wrapper for the same reason as `session_row`'s `close`: `AnyElement`
+    // isn't `Styled`, so the auto margin needs a thin div around it.
+    let close = div().flex_none().ml_auto().child(close);
     div()
         .id(SharedString::from(format!("term-{idx}")))
         .h(rpx(ROW_H))
@@ -1052,9 +1118,12 @@ fn terminal_row(
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, ctx.on(RowAction::SelectTerminal(idx)))
         .child(
+            // No `flex_1` — see `project_row`'s name-child comment (`rows.rs`):
+            // `.truncate()` fixes its ellipsis at measure time, so the name
+            // cluster keeps `auto` basis and the close button (fixed-width)
+            // claims the right edge via `ml_auto()` above instead.
             div()
                 .flex()
-                .flex_1()
                 .min_w_0()
                 .items_center()
                 .gap(rpx(SPACE_MD))
