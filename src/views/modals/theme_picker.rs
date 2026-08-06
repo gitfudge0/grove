@@ -21,7 +21,7 @@ use crate::modal::{ThemePickerReturn, ThemePickerScope};
 use crate::views::components::{
     body_text, caption, click_action, click_checkbox, click_row, divider_h, icon_btn, modal_body,
     modal_footer_hints, modal_header, modal_header_with_close, modal_panel, mono, note_text,
-    seg_button, seg_group, ui, ModalBtn, OnToggle, SegSide,
+    seg_button, seg_group, ui, ModalBtn, OnToggle, RowDensity, SegSide,
 };
 
 // ── local layout geometry (§8.4: geometry lives in the owning module) ─────
@@ -712,41 +712,12 @@ fn theme_row(
     click_row(
         id,
         active,
+        RowDensity::Compact,
         dispatch,
         click,
         mono(label, TEXT_BODY, if active { c::FG() } else { c::FG_DIM() }),
     )
     .flex_1()
-}
-
-/// A `ThemeManager` list row: `[6, 10]` padding, radius 6, `BG_HL` fill when
-/// active — distinct from the shared `click_row` (px8/py4, radius 4) used
-/// elsewhere (`theme_manager.rs`'s row shape). `click_row` fixes its padding
-/// and radius as internal tokens and exposes no density axis, so this row's
-/// looser shape cannot be expressed through it.
-fn manager_row(
-    id: impl Into<gpui::ElementId>,
-    active: bool,
-    dispatch: &ModalDispatch,
-    click: ModalClick,
-    content: impl IntoElement,
-) -> gpui::Stateful<gpui::Div> {
-    let dispatch = std::rc::Rc::clone(dispatch);
-    div()
-        .id(id)
-        .flex()
-        .items_center()
-        .gap(rpx(SPACE_LG))
-        .px(rpx(SPACE_XL))
-        .py(rpx(SPACE_MD))
-        .rounded(rpx(RADIUS_GROUP))
-        .when(active, |d| d.bg(c::BG_HL()))
-        .hover(|s| s.bg(c::BG_HOVER()))
-        .cursor_pointer()
-        .child(content)
-        .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
-            dispatch(click.clone(), window, cx);
-        })
 }
 
 fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
@@ -996,9 +967,13 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                         dispatch,
                         ModalClick::ThemeDeleteRequest(i),
                     ));
-                manager_row(
+                // The manager row's looser shape is `click_row`'s
+                // `RowDensity::Manager`: it carries a name, a badge, an
+                // eleven-swatch strip and four action buttons on one line.
+                click_row(
                     gpui::SharedString::from(format!("tm-{i}")),
                     active,
+                    RowDensity::Manager,
                     dispatch,
                     ModalClick::ThemeSelect(i),
                     div()

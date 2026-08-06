@@ -21,7 +21,7 @@ use crate::modal::{AddProjectStep, OnboardStep};
 use crate::views::components::{
     body_text, click_action, click_checkbox, click_row, divider_h, modal_action_sized, modal_body,
     modal_footer_hints, modal_header_row, modal_panel, mono, note_text, section_header, status_dot,
-    ui, ModalBtn,
+    ui, ModalBtn, RowDensity,
 };
 
 /// Rows of the directory match list kept on screen at once.
@@ -510,6 +510,7 @@ fn dir_list(path: &str, sel: usize, dispatch: &ModalDispatch) -> impl IntoElemen
         list = list.child(click_row(
             gpui::SharedString::from(format!("dir-{i}")),
             i == sel,
+            RowDensity::Compact,
             dispatch,
             ModalClick::WizardPickDir(i),
             div()
@@ -1016,7 +1017,7 @@ fn onboarding(
                 ))
                 // Tracking is faked with U+2009 inside `section_header`, never
                 // hand-spaced with literal U+0020 (§5.4).
-                .child(section_header("REPOSITORY OR FOLDER", SPACE_SM, 0.0));
+                .child(section_header("REPOSITORY OR FOLDER", SPACE_2XL, SPACE_SM, 0.0));
             let mut path_row = div().flex().items_center().gap(rpx(SPACE_LG));
             if let Some(f) = field(layer, 0, window, cx) {
                 path_row = path_row.child(div().flex_1().child(f));
@@ -1032,12 +1033,12 @@ fn onboarding(
 
             if !path.trim().is_empty() {
                 d = d
-                    .child(section_header("MATCHES", SPACE_SM, 0.0))
+                    .child(section_header("MATCHES", SPACE_2XL, SPACE_SM, 0.0))
                     .child(dir_list(path, *dir_sel, dispatch));
             }
 
             if name.is_some() {
-                d = d.child(section_header("NAME", SPACE_SM, 0.0));
+                d = d.child(section_header("NAME", SPACE_2XL, SPACE_SM, 0.0));
                 if let Some(f) = field(layer, 1, window, cx) {
                     d = d.child(f);
                 }
@@ -1074,6 +1075,7 @@ fn onboarding(
                         list = list.child(click_row(
                             gpui::SharedString::from(format!("ob-agent-{i}")),
                             active,
+                            RowDensity::Compact,
                             dispatch,
                             ModalClick::OnboardPickAgent(i),
                             ui(
@@ -1111,7 +1113,7 @@ fn onboarding(
                         .flex()
                         .items_center()
                         .gap(rpx(SPACE_3XL))
-                        .child(section_header("PERMISSIONS", 0.0, 0.0))
+                        .child(section_header("PERMISSIONS", SPACE_2XL, 0.0, 0.0))
                         .child(crate::views::components::seg_group(
                             div()
                                 .flex()

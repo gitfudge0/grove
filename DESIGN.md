@@ -449,9 +449,12 @@ pub fn tracked(label: &str) -> String {
 }
 ```
 
-Used only for mono, uppercase section labels (`section_header`,
-`src/views/components.rs` — `section_header`). Never apply it to prose — it destroys word
-shape and breaks copy/search.
+`section_header` (`src/views/components.rs`) no longer calls `tracked()` on
+its own label — faked tracking on an uppercase mono run read as "split-out"
+text rather than actual tracking, so the label now renders plain. `tracked()`
+itself is unchanged and still the only sanctioned way to fake tracking where a
+caller genuinely wants it: mono, uppercase text only. Never apply it to
+prose — it destroys word shape and breaks copy/search.
 
 ### 5.5 PTY text is outside the type system
 
@@ -631,6 +634,15 @@ carry two lines of content.
 `TILE_HEAD_H`, which is why a tile header and a chrome button read as the same
 weight.
 
+Two more row heights are derived rather than authored, on the same
+taller-than-`ROW_H`/`PALETTE_ROW_H` precedent above, owned by
+`src/views/modals/settings.rs`:
+
+| Constant | Formula | Value | Owner |
+|---|---|---|---|
+| `FIELD_H` | `CONTROL_H + SPACE_SM * 2` | 30 | `src/views/modals/settings.rs` — a settings row carrying a trailing control (segmented group, stepper), sized so the control fits without stacking or clipping |
+| `FIELD_H_TALL` | `FIELD_H + TEXT_SMALL + SPACE_SM` | 45 | `src/views/modals/settings.rs` — a two-line (label + sublabel) settings row, taller for the same reason `PALETTE_ROW_H` is taller than `ROW_H`: an extra line of content, not a new density |
+
 ### 8.2 Panel widths
 
 | Constant | Value | Owner |
@@ -685,6 +697,15 @@ height", it is *the appbar's* height; `RAIL_W` is not "a wide width", it is
 could migrate between, and hoisting them into a shared module would only
 obscure which module owns the number.
 
+Two more examples from `src/views/modals/settings.rs`: `STATUS_DOT_COL_W`
+(`DOT_MD + SPACE_SM * 2`) is *the Tools row's* leading dot column, sized so
+every agent name starts at the same x whether or not its row happens to show a
+dot; `CARD_LABEL_INDENT` (`SPACE_XL + 1`) is *the Settings cards'* label
+indent, derived from the card's own 1px border plus a row's `SPACE_XL` inset.
+Both are single-consumer, module-local `const`s for the same reason
+`APPBAR_H` is — no scale, no second consumer — even though the numbers they
+are built from are tokens.
+
 **Therefore:** chrome bar heights, rail widths, PTY padding, row heights and
 divider widths stay as named `pub const` in the module that owns the surface.
 Spacing, type, icon and dot sizes, modal widths, radius and control height live
@@ -734,7 +755,8 @@ It is consumed by `appbar`, `sidebar`, `rows`, `statusbar`, `grid`,
 | `note_text(content)` | Inline validation note under a field | sans, `TEXT_SMALL`, `RED` |
 | `caption(content)` | Muted one-liner explaining a control | sans, `TEXT_SMALL`, `FG_MUTE`, `px SPACE_XL` |
 | `caption_promoted(content)` | One shade up — **reserved for safety-relevant captions** | sans, `TEXT_SMALL`, `FG_DIM`, `px SPACE_XL` |
-| `section_header(label, top, bottom)` | Mono, uppercase, letter-tracked section label | mono, `TEXT_MICRO`, `FG_MUTE`, `pl SPACE_2XL`, `tracked()` |
+| `section_header(label, indent, top, bottom)` | Mono, uppercase section label. `indent` is an axis rather than a fixed `SPACE_2XL`: a label naming a bordered `card` sits flush with the card's edge, while a label over a flat list is inset to the list's text column | mono, `TEXT_MICRO`, `FG_MUTE`, `pl rpx(indent)` |
+| `row_sublabel(content, tone)` | The second line under a row's label — no indent of its own, since the row's label column already owns the left edge | sans, `TEXT_SMALL` | `SublabelTone::{Normal,Safety}` |
 
 #### Panel / modal structure
 
@@ -746,7 +768,8 @@ It is consumed by `appbar`, `sidebar`, `rows`, `statusbar`, `grid`,
 | `modal_header(title, accent)` | Header zone with a `TEXT_TITLE` title in `accent` | `px/py SPACE_3XL` |
 | `modal_header_with_close(id, title, accent, dispatch)` | `modal_header_row` with the title left and a trailing `close` icon button wired to `ModalClick::Cancel` | header tokens + `icon_btn` at `CONTROL_H`, `ICON_SM`, `FG_MUTE` |
 | `modal_header_row(content)` | Header zone for a custom row (title + step counter) | `px/py SPACE_3XL` |
-| `modal_body(content)` | Body zone: column with vertical rhythm | `px/pb SPACE_3XL`, `gap SPACE_XL` |
+| `modal_body(content)` | Body zone: column with vertical rhythm | `p SPACE_3XL` on all four sides (a zone pads uniformly, §6.1 — a header divider above it is a rule, not padding), `gap SPACE_XL` |
+| `card(rows)` | A filled, hairline-bordered card whose rows are separated by full-bleed `divider_h` rules rather than by whitespace — the shape Settings' sections and the project-settings theme block both draw. Rows carry their own padding; the card contributes none, so a row's fill can reach the card's inner edge (see `RowDensity::Card`) | `RADIUS_CONTROL`, 1px `BORDER`, `BG_STRIP` |
 | `footer_container(content)` | Full-bleed footer strip on `BG_STRIP`, bottom corners at `FOOTER_RADIUS` (11) | `px SPACE_3XL`, `py SPACE_LG` |
 | `modal_footer_hints(&[(key, label)])` | Footer of plain hints | `gap SPACE_3XL` |
 | `modal_footer_row(content)` | `footer_container` for a fully custom row | — |
@@ -762,12 +785,12 @@ It is consumed by `appbar`, `sidebar`, `rows`, `statusbar`, `grid`,
 | `modal_action(id, label, kind, on_click)` | Footer/action button | `px SPACE_2XL`, `py SPACE_MD`, `RADIUS_CONTROL`, 1px border, sans `TEXT_BODY` | `ModalBtn::{Plain,Primary,Danger,Accent}` | default, hover (`BG_HOVER`), pointer cursor |
 | `modal_action_sized(…, size, …)` | As above with an explicit text size | as above | + free text size | as above |
 | `click_action(id, label, kind, dispatch, click)` | `modal_action` wired to a `ModalClick` | as above | as `ModalBtn` | as above |
-| `modal_checkbox(id, label, checked, accent, on_toggle)` | 14px box; `accent` colours tick + checked border | box 14, `RADIUS_CONTROL`, tick mono `TEXT_MICRO`, `gap SPACE_LG`, label sans `TEXT_BODY` | `accent` | default, hover (`opacity 0.85`), checked, **disabled** (`on_toggle: None` → `FG_MUTE`, no pointer, no handler) |
+| `modal_checkbox(id, label, checked, accent, on_toggle)` | 14px box; `accent` colours tick + checked border. The tick is the `icons::icon("check", ..)` sprite, never a text-run character literal — see §9.3's mark rule | box 14, `RADIUS_CONTROL`, tick sprite sized to `CHECKBOX_TICK` (box − 2), `gap SPACE_LG`, label sans `TEXT_BODY` | `accent` | default, hover (`opacity 0.85`), checked, **disabled** (`on_toggle: None` → `FG_MUTE`, no pointer, no handler) |
 | `click_checkbox(…, enabled, dispatch, click)` | `modal_checkbox` wired to a `ModalClick` | as above | as above | as above |
 | `icon_btn(id, name, box_w, box_h, icon_size, color, hover_bg, hover_fg, hover_ring, on_click)` | **The** icon button. Every icon button in the app is this function | `RADIUS_CONTROL`, centred, `cursor_pointer` | box w/h, glyph size, rest tint, hover bg, optional hover fg, optional hover ring | default, hover (bg, optional fg recolour, optional `BORDER_SOFT` ring) |
 | `flat_icon_btn(id, name, box_w, icon_size, on_click)` | Thin wrapper: `icon_btn` at `CONTROL_H`, `FG_DIM` rest, `BG_HOVER` hover, no ring | `h CONTROL_H` (22) | `box_w`, `icon_size` | default, hover |
 | `flat_text_btn(id, label, text_size, h_padding, on_click)` | Flat borderless text button in the same 22px shape | `h CONTROL_H`, `RADIUS_CONTROL`, mono `FG_DIM` | text size, h-padding | default, hover |
-| `seg_button(id, label, active, side, danger, on_click)` | One segment of a two-way segmented control | `px SPACE_2XL`, `py SPACE_SM`, mono `TEXT_SMALL` | `SegSide::{Left,Right}`, `danger` | default, hover, **active**, **inert** (`on_click: None`) |
+| `seg_button(id, label, active, side, danger, on_click)` | One segment of a two-way segmented control. Sized by `CONTROL_H` rather than by vertical padding, so a segment is the same 22px as every other in-row control (§8.1) — the same shape `flat_text_btn` uses; `py` would stack on top of the fixed height, so there is none | `h CONTROL_H`, `px SPACE_2XL`, mono `TEXT_SMALL` | `SegSide::{Left,Right}`, `danger` | default, hover, **active**, **inert** (`on_click: None`) |
 | `seg_button_content(id, content, active, side, danger, on_click)` | `seg_button`'s shell around arbitrary content, for glyph segments; `content` owns its padding | outer corners at `RADIUS_CONTROL` on `side` only | as above | as above |
 | `seg_text_color(active, danger)` | The label tint rule: active+danger → `RED`, active → `FG`, else `FG_DIM` | — | — | — |
 | `seg_group(content)` | Bordered wrapper for a joined segment pair: 1px `BORDER`, `RADIUS_GROUP`, no internal gap | radius 6 | — | static |
@@ -813,8 +836,26 @@ parameter list and not a builder.
 | `cue_chip(label)` | Palette leading-glyph cue when a drill-in replaces the search icon | `SEL_TINT_SOFT` fill, mono `TEXT_MICRO` `CYAN` | static |
 | `status_dot(size, color)` | **The** filled activity dot — statusbar, terminal tab bar, sidebar rollups, session header | `rounded_full` | static |
 | `icon_slot(name, size, color)` | Fixed 24px icon slot so titles align regardless of glyph width | w 24 | static |
-| `click_row(id, selected, dispatch, click, content)` | The clickable list row every list shares | `gap/px SPACE_LG`, `py SPACE_SM`, `RADIUS_CONTROL` | default, hover (`BG_HOVER`), selected (`BG_HL`), pointer |
+| `click_row(id, selected, density, dispatch, click, content)` | The clickable list row every list shares. `density` picks how much room the row gives its content — see `RowDensity` below | `gap SPACE_LG`, plus whatever `density` picks | `RowDensity::{Compact,Manager,Card}` | default, hover (`BG_HOVER`), selected (`BG_HL`), pointer |
 | `palette_row(id, selected, dispatch, click, content)` | Palette results row | `h PALETTE_ROW_H` (44), `px SPACE_2XL`, `RADIUS_GROUP` | default, hover (`BG_HOVER`, **unselected only**), selected (`SEL_TINT_SOFT` + 1px `SEL_RING`), pointer |
+
+`RowDensity` (`src/views/components.rs`) is the axis `click_row` was missing
+when the theme manager's row used to fork the row shape — see §9.2, now down
+to five forks because this one resolved:
+
+| Variant | `px` | `py` | Corners | Fill |
+|---|---|---|---|---|
+| `Compact` | `SPACE_LG` | `SPACE_SM` | `RADIUS_CONTROL` | inset, rounded |
+| `Manager` | `SPACE_XL` | `SPACE_MD` | `RADIUS_GROUP` | inset, rounded |
+| `Card` | `SPACE_XL` | from content | square | full-bleed |
+
+`Card` takes its height from its content rather than from padding, and its
+hover fill is full-bleed and square: a rounded fill inset from the card's own
+edge would read as a second, floating surface inside the card.
+
+`SublabelTone` (`src/views/components.rs`) is `row_sublabel`'s two-tone axis:
+`Normal` is `caption`'s `FG_MUTE`, `Safety` is one shade up — `caption_promoted`'s
+`FG_DIM`, reserved for safety-relevant text (skip-permissions and friends).
 
 #### Handler types
 
@@ -834,17 +875,18 @@ clickable element without it is a bug.
 
 ### 9.2 What stays deliberately local, and why
 
-Consolidation is done; these six are the intentional exceptions, each for a
+Consolidation is done; these five are the intentional exceptions, each for a
 structural reason rather than inertia. Each names the **axis the shared
 component is missing**, because that is the thing that would have to change for
-the fork to end.
+the fork to end. (A sixth case — the theme manager's row — used to fork
+`click_row` over row density; that axis now exists as `RowDensity`, §9.1, so
+the row is no longer local and is not listed here.)
 
 | Local shape | Where | Why it is not shared |
 |---|---|---|
 | `label_text` | `src/views/session_header.rs` — `label_text` | Wraps `components::ui` and adds an optional `FontWeight::SEMIBOLD`. `ui()` has no weight parameter, and adding one to the app-wide primitive to serve one bar is the wrong trade. |
 | `hint_chip`'s key text | `src/views/statusbar.rs` — `hint_chip` | The chip's hover recolour lives on the parent row; a colour pinned on the inner run would win over the parent and kill the hover. |
 | `agent_menu`'s item label | `src/views/sidebar.rs` — `agent_menu` | Same reason, stated in the code comment there: "the item's hover recolor lives on the row, so this label must inherit its color." |
-| `manager_row` | `src/views/modals/theme_picker.rs` — `manager_row` | Missing axis: **row density.** `click_row` hard-codes `px SPACE_LG` / `py SPACE_SM` / `RADIUS_CONTROL`; the manager row is `px SPACE_XL` / `py SPACE_MD` / `RADIUS_GROUP` because it carries a name, a badge, an eleven-swatch strip and four action buttons in one row. Adding three padding parameters to the row every list shares, to serve one row, is the wrong trade. |
 | `row_actions`' agent bar | `src/views/modals/launcher.rs` — `row_actions` | Missing **three** axes at once: box size (`icon_slot` pins a private 24px `ICON_SLOT_W`, the bar needs `AGENT_BTN` = 26), corner rounding (`icon_slot` has none, the bar wants `RADIUS_GROUP`) and a selected-state 1px `YELLOW` border. `icon_slot`'s whole contract is *a fixed slot so titles align*; parameterising all three would leave nothing of it. |
 | Empty-state panels | `src/views/grid.rs` — `empty_state`, `src/views/rows.rs` — `empty_row`, `src/views/terminal_tab.rs` — `empty_terminals_state` | Three genuinely different containers — a full-bleed `size_full` canvas, an inline `py(24)` block inside a scrolling list, and a keycap-carrying hint. Only their inner text is shared, and it already is: all three build from `components::ui` / `mono` at `TEXT_TITLE` + `TEXT_BODY`. |
 
@@ -874,6 +916,24 @@ brand glyphs, `cog`, `command`, `sparkle`) opt out with
 
 An unknown name degrades to an empty `<svg>` rather than panicking — a missing
 icon must never take down a window.
+
+**A pictographic mark comes from the sprite, never from a text-run character
+literal.** `modal_checkbox`'s tick used to be a literal `"✓"` (U+2713) inside a
+`mono()`/`ui()` run; the bundled fonts (`fonts::UI_FAMILY`, `fonts::MONO_FAMILY`)
+have no glyph coverage for that codepoint, or for the wider Dingbats
+(U+2700–U+27BF), Miscellaneous Symbols (U+2600–U+26FF), Geometric Shapes
+(U+25A0–U+25FF), Box Drawing (U+2500–U+257F) or Braille Patterns (U+2800–U+28FF)
+blocks, so the literal silently fell back to a stand-in glyph rather than
+rendering the mark. The fix (`components::modal_checkbox`) draws the tick with
+`icons::icon("check", ..)` instead. Any new pictographic mark — a checkmark,
+cross, filled/hollow dot, star and the like — belongs in `src/icons.rs`'s
+sprite table, not as a character literal in a `ui()`/`mono()` string.
+
+This does **not** ban the keycap pattern in §5.2 (`⏎`, `↑↓`, `esc`, `←→`):
+those are real keyboard-key characters, deliberately rendered as text because
+they are read as *keys*, not as marks standing in for an icon, and the bundled
+fonts do cover them. The rule is about marks that are standing in for a sprite
+glyph the fonts do not have, not about banning any character outside ASCII.
 
 ---
 

@@ -7,8 +7,8 @@
 //! files as **source text** and fail on the exact patterns the sweep removed.
 //!
 //! It is deliberately *not* a real linter. No proc macro, no syntax tree, no
-//! dev-dependency, no extra toolchain — it runs in `cargo test` and it is ~200
-//! lines. That is the whole value proposition.
+//! dev-dependency, no extra toolchain — it runs in `cargo test` and it is a
+//! few hundred lines. That is the whole value proposition.
 //!
 //! **Known limits.** Because it reads text, it can be fooled:
 //!
@@ -32,8 +32,13 @@
 //! one — `icon_btn(.., SPACE_2XL, ..)` is off-scale but passes, because R6
 //! checks the shape of the argument, not which scale it came from.
 //!
-//! It is a tripwire, not a proof. A green run means "none of the five known
+//! It is a tripwire, not a proof. A green run means "none of the known
 //! regressions is present in an obvious form", never "the views conform".
+//!
+//! R8 is the narrowest of them by construction: it names three functions and
+//! checks each still mentions `CONTROL_H`. A source-text scan cannot tell an
+//! in-row control from any other element, so the rule guards the three that
+//! regressed rather than pretending to the general case its section states.
 //!
 //! Each rule cites the DESIGN.md section it enforces, and every exemption is a
 //! narrow entry in an allow-list below naming the §14 case that sanctions it.
@@ -385,8 +390,8 @@ const R4_ALLOW: &[(&str, Option<&str>, &str)] = &[
     (
         "settings.rs",
         Some("TEXT_DISPLAY"),
-        "Project Settings' redesigned header (mock-project-settings.html \
-         frames E1/E2, 'Variant D / Editable header'): the project name IS \
+        "Project Settings' redesigned header (the 'editable header' layout): \
+         the project name IS \
          the modal's header now, so it carries the one title in the panel — \
          a deliberate, reviewed exception, not a precedent for a fifth tier \
          elsewhere in chrome. Narrowed to its two call sites so the rest of \
@@ -576,6 +581,182 @@ fn r6_no_bare_numeric_literal_as_a_size_argument() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// R7 — no pictographic character literal in a text run (§9.3)
+// ---------------------------------------------------------------------------
+
+/// `true` for a codepoint that belongs in the icon sprite (`src/icons.rs`),
+/// never as a character literal in a string the view layer builds — the bug
+/// this rule was written to catch: `modal_checkbox`'s tick used to be a
+/// literal `"✓"` (U+2713), and the bundled fonts have no glyph for it (§9.3).
+///
+/// Scoped to the blocks §9.3 actually names: Dingbats, Miscellaneous Symbols,
+/// Geometric Shapes, Box Drawing, Braille Patterns, plus the dedicated
+/// checkmark/cross-mark codepoints that sit outside those blocks (U+2713,
+/// U+2714, U+2717, U+2718). It deliberately does **not** ban the whole
+/// General Punctuation block (U+2000-U+206F): U+2009 THIN SPACE is
+/// `tracked()`'s own building block (§5.4), and General Punctuation also
+/// hosts ordinary prose marks (en/em dash, ellipsis) with real font coverage.
+/// Real keyboard-key characters (`⏎` U+23CE, `↑` `↓` `←` `→` U+2190-2199,
+/// `esc`/`cmd`/`alt` as plain ASCII words) are outside every banned range, so
+/// the keycap pattern (§5.2) stays legal without an allow-list entry.
+///
+/// The dedicated checkmark/cross-mark codepoints (U+2713, U+2714, U+2717,
+/// U+2718 — the regression this rule exists to catch) already fall inside the
+/// Dingbats block (U+2700-U+27BF) below, so they need no separate arm.
+fn is_unmapped_pictographic_mark(c: char) -> bool {
+    let cp = c as u32;
+    matches!(cp,
+        0x2600..=0x27BF // Miscellaneous Symbols + Dingbats (incl. check/cross marks)
+        | 0x25A0..=0x25FF // Geometric Shapes
+        | 0x2500..=0x257F // Box Drawing
+        | 0x2800..=0x28FF // Braille Patterns
+    )
+}
+
+#[cfg(test)]
+mod r7_classifier_tests {
+    use super::is_unmapped_pictographic_mark as banned;
+
+    #[test]
+    fn bans_the_known_regressions() {
+        for c in ['✓', '✗', '●', '○', '◆', '★'] {
+            assert!(banned(c), "{c:?} should be banned");
+        }
+    }
+
+    #[test]
+    fn allows_the_keycap_glyphs_and_thin_space() {
+        for c in ['⏎', '↑', '↓', '←', '→', '\u{2009}'] {
+            assert!(!banned(c), "{c:?} must stay legal");
+        }
+    }
+}
+
+/// §14-sanctioned exceptions: not a text run at all, but a test fixture
+/// proving a sanitizer *strips* the very characters R7 bans.
+const R7_ALLOW: &[(&str, &str, &str)] = &[(
+    "rows.rs",
+    "sanitize_ui_text(\"",
+    "sanitize_drops_unrenderable_characters_and_collapses_whitespace \
+     (`rows.rs`): the sparkle literals are `sanitize_ui_text`'s test input, \
+     asserting the function strips exactly this class of character before it \
+     ever reaches a `ui()`/`mono()` text run — the opposite of the regression \
+     R7 catches, not an instance of it.",
+)];
+
+#[test]
+fn r7_no_pictographic_character_literal_in_a_text_run() {
+    let mut hits = Vec::new();
+    for l in view_lines() {
+        if is_comment(&l) {
+            continue;
+        }
+        if R7_ALLOW
+            .iter()
+            .any(|(f, snip, _)| *f == l.name && l.text.contains(snip))
+        {
+            continue;
+        }
+        if let Some(c) = l.text.chars().find(|c| is_unmapped_pictographic_mark(*c)) {
+            hits.push((
+                loc(&l),
+                format!("{}   [{c:?} = U+{:04X}]", l.text, c as u32),
+            ));
+        }
+    }
+    report(
+        "R7 no pictographic character literal in a text run",
+        "§9.3",
+        "A pictographic mark must come from the icon sprite (`icons::icon`), \
+         never as a character literal inside a `ui()`/`mono()` string: the \
+         bundled fonts have no glyph for Dingbats, Miscellaneous Symbols, \
+         Geometric Shapes, Box Drawing or Braille Patterns codepoints (or the \
+         dedicated check/cross marks), so a literal silently falls back to a \
+         stand-in glyph instead of rendering the mark. This is exactly the bug \
+         `modal_checkbox`'s old literal \"\\u{2713}\" was. It is not about the \
+         keycap pattern (§5.2, `⏎`/`↑↓`/`esc`/`←→`) — those characters are \
+         outside every banned range.",
+        hits,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// R8 — in-row controls declare CONTROL_H (§8.1)
+// ---------------------------------------------------------------------------
+
+/// Functions whose doc comment in `components.rs` explicitly claims the
+/// `CONTROL_H` (22) height §8.1 names as "the height of every flat icon/text
+/// button". Named by exact string match rather than parsed as an AST: a
+/// text-only scan cannot reliably tell "a function that claims CONTROL_H in
+/// its own body" (`flat_text_btn`, `seg_button`, both of which write
+/// `.h(rpx(CONTROL_H))` directly) from "a function that claims it by handing
+/// the token to another function as a positional argument"
+/// (`flat_icon_btn`, which passes `CONTROL_H` to `icon_btn`'s `box_h`
+/// parameter and never writes `.h(` itself). Requiring `.h(`/`.size(` to
+/// co-occur with `CONTROL_H` would false-negative on `flat_icon_btn`, so the
+/// check below only asks whether the token `CONTROL_H` appears anywhere in
+/// the named function's own body — narrower than "declares its height with
+/// CONTROL_H", but honest about what a source-text scan can tell apart.
+/// `icon_btn` and `seg_button_content` are deliberately not listed: neither's
+/// doc comment claims a fixed CONTROL_H height (both take the height, or the
+/// whole content box, from a caller).
+const CONTROL_H_FUNCTIONS: &[&str] = &["flat_icon_btn", "flat_text_btn", "seg_button"];
+
+/// The lines of `components.rs`'s body for `pub fn <name>`, from its
+/// signature line up to (not including) the next top-level `pub fn`/`fn`.
+fn function_body<'a>(lines: &'a [Line], name: &str) -> Vec<&'a Line> {
+    let start = lines.iter().position(|l| {
+        l.name == "components.rs" && l.text.trim_start().starts_with(&format!("pub fn {name}("))
+    });
+    let Some(start) = start else {
+        return Vec::new();
+    };
+    let mut end = lines.len();
+    for (i, l) in lines.iter().enumerate().skip(start + 1) {
+        if l.name != "components.rs" {
+            break;
+        }
+        let t = l.text.trim_start();
+        if t.starts_with("pub fn ") || t.starts_with("fn ") {
+            end = i;
+            break;
+        }
+    }
+    lines[start..end].iter().collect()
+}
+
+#[test]
+fn r8_the_three_named_control_h_functions_still_declare_it() {
+    let all = view_lines();
+    let mut hits = Vec::new();
+    for name in CONTROL_H_FUNCTIONS {
+        let body = function_body(&all, name);
+        if body.is_empty() {
+            hits.push((
+                "src/views/components.rs".to_string(),
+                format!("{name}: function not found — did it move or get renamed?"),
+            ));
+            continue;
+        }
+        let declares = body.iter().any(|l| l.text.contains("CONTROL_H"));
+        if !declares {
+            hits.push((loc(body[0]), format!("{name}: no CONTROL_H in its body")));
+        }
+    }
+    report(
+        "R8 the three named CONTROL_H functions still declare it",
+        "§8.1",
+        "flat_icon_btn, flat_text_btn and seg_button are the functions §8.1 \
+         names as CONTROL_H (22)-tall. `seg_button` regressed once by sizing \
+         itself with vertical padding instead; this checks that each named \
+         function's body still mentions the CONTROL_H token at all, so a \
+         reintroduced hard-coded height (or padding standing in for one) with \
+         no CONTROL_H anywhere in the function is caught.",
+        hits,
+    );
+}
+
 /// The allow-lists are the load-bearing part of this module: a rule that
 /// passes because it was watered down is worse than no rule. This guards
 /// against an entry losing its justification in a future edit.
@@ -588,6 +769,7 @@ fn every_allow_list_entry_carries_a_justification() {
         .chain(R3_REVIEWED.iter().copied())
         .chain(R3_KNOWN_VIOLATIONS.iter().map(|(f, _, why)| (*f, *why)))
         .chain(R4_ALLOW.iter().map(|(f, _, why)| (*f, *why)))
+        .chain(R7_ALLOW.iter().map(|(f, _, why)| (*f, *why)))
         .collect();
     for (file, why) in entries {
         assert!(

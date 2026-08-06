@@ -895,7 +895,7 @@ fn row_list(
         };
         if let Some(s) = section {
             if last_section != Some(s) {
-                list.push(section_header(s, SPACE_LG, SPACE_SM).into_any_element());
+                list.push(section_header(s, SPACE_2XL, SPACE_LG, SPACE_SM).into_any_element());
                 last_section = Some(s);
             }
         }
@@ -967,7 +967,9 @@ fn switch_list(
         let (icon, label, sub, waiting) = match row {
             SwitchRow::Session(j) => {
                 if !printed_sessions {
-                    list.push(section_header("SESSIONS", 0.0, SPACE_MD).into_any_element());
+                    list.push(
+                        section_header("SESSIONS", SPACE_2XL, 0.0, SPACE_MD).into_any_element(),
+                    );
                     printed_sessions = true;
                 }
                 registry.all().get(*j).map_or_else(
@@ -998,7 +1000,9 @@ fn switch_list(
             SwitchRow::Terminal(j) => {
                 if !printed_terminals {
                     let top = if i == 0 { 0.0 } else { 12.0 };
-                    list.push(section_header("TERMINALS", top, SPACE_MD).into_any_element());
+                    list.push(
+                        section_header("TERMINALS", SPACE_2XL, top, SPACE_MD).into_any_element(),
+                    );
                     printed_terminals = true;
                 }
                 registry.home_terminals().get(*j).map_or_else(
@@ -1041,7 +1045,9 @@ fn settings_list(st: &LauncherSlotState, dispatch: &ModalDispatch, cx: &App) -> 
     let mut last_section: Option<&'static str> = None;
     for (i, s) in crate::launcher::SettingRow::ALL.into_iter().enumerate() {
         if last_section != Some(s.section()) {
-            list.push(section_header(s.section(), SPACE_LG, SPACE_SM).into_any_element());
+            list.push(
+                section_header(s.section(), SPACE_2XL, SPACE_LG, SPACE_SM).into_any_element(),
+            );
             last_section = Some(s.section());
         }
         let selected = i == st.sel;

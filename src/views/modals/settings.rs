@@ -9,7 +9,7 @@
 
 use crate::views::rpx;
 use crate::views::tokens::*;
-use gpui::{div, prelude::*, AnyElement, App, Context, Focusable, Window};
+use gpui::{div, prelude::*, AnyElement, App, Context, Div, Focusable, Window};
 
 use grove_core::agent::Agent;
 
@@ -23,10 +23,10 @@ use crate::theme as c;
 use super::{Modal, ModalClick, ModalDispatch, ModalLayer, SettingToggle};
 use crate::modal::{ScriptsEditorState, ThemePickerReturn, ThemePickerScope};
 use crate::views::components::{
-    body_text, caption, caption_promoted, click_action, click_checkbox, click_row, divider_h,
-    flat_icon_btn, flat_text_btn, keycap, modal_body, modal_checkbox, modal_footer_hints,
-    modal_footer_row, modal_header, modal_header_row, modal_panel, mono, section_header,
-    seg_button, seg_group, status_dot, ui, ModalBtn, OnToggle, SegSide,
+    body_text, card, click_action, click_checkbox, click_row, divider_h, flat_icon_btn,
+    flat_text_btn, keycap, modal_body, modal_checkbox, modal_footer_hints, modal_footer_row,
+    modal_header, modal_header_row, modal_panel, mono, row_sublabel, section_header, seg_button,
+    seg_group, status_dot, ui, ModalBtn, OnToggle, RowDensity, SegSide, SublabelTone,
 };
 use crate::views::workspace::Workspace;
 use crate::zoom::{ZoomState, ZOOM_DEFAULT, ZOOM_STEP};
@@ -34,19 +34,32 @@ use crate::zoom::{ZoomState, ZOOM_DEFAULT, ZOOM_STEP};
 // ── local layout geometry (§8.4: layout constants live in the owning module) ──
 
 /// A settings row that carries a trailing control (segmented group, stepper)
-/// rather than plain text. Independently the same height as a worktree row,
-/// but the two are not linked: this one is sized by its control, that one by
-/// its dot-and-label density.
-const FIELD_H: f32 = 28.0;
+/// rather than plain text. Derived (§7.3's `FOOTER_RADIUS` pattern): CONTROL_H
+/// (22) plus SPACE_SM (4) top+bottom, so every control fits inside a settings
+/// row without stacking or clipping.
+const FIELD_H: f32 = CONTROL_H + SPACE_SM * 2.0;
 
-/// The Settings sections scroll before the modal outgrows a laptop viewport.
-const SETTINGS_SCROLL_MAX_H: f32 = 420.0;
+/// A two-line (label + sublabel) settings row. Taller than [`FIELD_H`] for the
+/// same reason `PALETTE_ROW_H` is taller than `ROW_H` (§8.1): extra line of
+/// content, not a new density.
+const FIELD_H_TALL: f32 = FIELD_H + TEXT_SMALL + SPACE_SM;
+
+/// The Settings sections scroll before the modal outgrows a laptop viewport —
+/// 14 whole [`FIELD_H`] rows tall (a multiple, not an arbitrary height) so the
+/// clip line never lands mid-row. 14 * 30 = 420, unchanged from the previous
+/// literal value.
+const SETTINGS_SCROLL_MAX_H: f32 = FIELD_H * 14.0;
 /// The changelog release list.
 const CHANGELOG_SCROLL_MAX_H: f32 = 420.0;
 
 /// The trailing "Set default" / "Default" column in a Tools row. Fixed so the
 /// rows do not reflow when the pill swaps for the button (§13).
 const TOOL_ACTION_W: f32 = 84.0;
+
+/// The leading status-dot column in a Tools row: [`DOT_MD`] plus a little
+/// breathing room on each side, so every agent name starts at the same x
+/// regardless of whether a row happens to show a dot.
+const STATUS_DOT_COL_W: f32 = DOT_MD + SPACE_SM * 2.0;
 
 /// The chord column in the shortcut overlay.
 const CHORD_COL_W: f32 = 150.0;
@@ -594,28 +607,107 @@ pub fn render(
     }
 }
 
-/// A drill-in settings row: label, value, and a trailing chevron when
-/// `chevron` is set (App theme / Archived projects — the rows that open
-/// another modal; `src/gui/view/modals/settings.rs:230-243,303-316`).
-fn settings_row(
-    id: &'static str,
+/// The shared grid every Settings row is laid out on: a growing label column,
+/// the row's own control cluster (control, then the drill-in chevron if any),
+/// and — when a sublabel is present — a second line below the label+control
+/// line that never affects the control's vertical position.
+///
+/// Returns the row's inner content only; [`setting_row_static`] and
+/// [`setting_row_link`] add the padding and height that make it a row, since
+/// the clickable case gets those from [`click_row`]'s own box.
+fn setting_row_grid(
     label: &'static str,
-    value: String,
+    sublabel: Option<(&'static str, SublabelTone)>,
+    control: Option<AnyElement>,
     chevron: bool,
-    dispatch: &ModalDispatch,
-    click: ModalClick,
-) -> impl IntoElement {
-    let mut row = div()
+) -> Div {
+    let mut cluster = div().flex().items_center().gap(rpx(SPACE_MD));
+    cluster = cluster.children(control);
+    if chevron {
+        cluster = cluster.child(crate::icons::icon("chev-right", ICON_SM, c::FG_MUTE()));
+    }
+
+    let label_line = div()
         .flex()
         .items_center()
         .gap(rpx(SPACE_LG))
-        .w_full()
         .child(ui(label, TEXT_BODY, c::FG()).flex_1())
-        .child(mono(value, TEXT_BODY, c::FG_DIM()));
-    if chevron {
-        row = row.child(crate::icons::icon("chev-right", ICON_SM, c::FG_MUTE()));
+        .child(cluster);
+
+    let mut col = div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(rpx(SPACE_SM))
+        .child(label_line);
+    if let Some((sub, tone)) = sublabel {
+        col = col.child(row_sublabel(sub, tone));
     }
-    click_row(id, false, dispatch, click, row)
+
+    div().flex().items_start().w_full().child(col)
+}
+
+/// A non-interactive row — the control itself (checkbox, segmented group,
+/// stepper) carries the interaction, so the row box stays inert rather than
+/// gaining a second, larger hit target over the same setting.
+fn setting_row_static(
+    label: &'static str,
+    sublabel: Option<(&'static str, SublabelTone)>,
+    control: Option<AnyElement>,
+) -> Div {
+    let h = if sublabel.is_some() {
+        FIELD_H_TALL
+    } else {
+        FIELD_H
+    };
+    div()
+        .flex()
+        .items_center()
+        .px(rpx(SPACE_XL))
+        .min_h(rpx(h))
+        .child(setting_row_grid(label, sublabel, control, false))
+}
+
+/// A drill-in row: the whole row is the hit target because the row *is* the
+/// control (App theme / Manage themes… / Archived projects). `RowDensity::Card`
+/// gives it the card's square, full-bleed hover fill rather than a rounded
+/// rect floating inside the card; its own `px` already applies `SPACE_XL`, so
+/// only the fixed row height needs restating (`Card`'s `py` is `None` —
+/// content decides height).
+fn setting_row_link(
+    id: &'static str,
+    label: &'static str,
+    value: Option<String>,
+    dispatch: &ModalDispatch,
+    click: ModalClick,
+) -> gpui::Stateful<Div> {
+    let value = value.map(|v| mono(v, TEXT_BODY, c::FG_DIM()).into_any_element());
+    click_row(
+        id,
+        false,
+        RowDensity::Card,
+        dispatch,
+        click,
+        setting_row_grid(label, None, value, true),
+    )
+    .min_h(rpx(FIELD_H))
+}
+
+/// The Settings cards' label indent: flush with the card's left edge plus the
+/// row's own inset. `card()`'s hairline `border_1()` (1px) plus a row's own
+/// `px(SPACE_XL)` (10px) = 11px from the card's outer edge.
+const CARD_LABEL_INDENT: f32 = SPACE_XL + 1.0;
+
+/// A [`card`] plus the small uppercase label that names it. The label is
+/// [`section_header`] at [`CARD_LABEL_INDENT`] — it used to be a local `ui()`
+/// fork, which put a sans run where §5.2 wants mono.
+fn settings_card_block(label: &'static str, body: Div) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .child(section_header(label, CARD_LABEL_INDENT, 0.0, SPACE_SM))
+        .child(body)
 }
 
 /// A checkbox row wired to a raw persist-and-repaint closure rather than a
@@ -658,247 +750,220 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
 
     // ── appearance ───────────────────────────────────────────────────────
     let zoom_pct = format!("{:.0}%", cx.global::<ZoomState>().zoom * 100.0);
-    let app_size_row = div()
-        .flex()
-        .items_center()
-        .h(rpx(FIELD_H))
-        .px(rpx(SPACE_XL))
-        .child(ui("App size", TEXT_BODY, c::FG()).flex_1())
-        .child(seg_group(
-            div()
-                .flex()
-                .items_center()
-                .child(flat_icon_btn(
-                    "set-zoom-out",
-                    "minus",
-                    STEPPER_BTN_W,
-                    ICON_MD,
+    let app_size_stepper = seg_group(
+        div()
+            .flex()
+            .items_center()
+            .child(flat_icon_btn(
+                "set-zoom-out",
+                "minus",
+                STEPPER_BTN_W,
+                ICON_MD,
+                |_, cx| {
+                    Workspace::set_zoom(cx.global::<ZoomState>().zoom - ZOOM_STEP, cx);
+                },
+            ))
+            .child(flat_text_btn(
+                "set-zoom-reset",
+                zoom_pct,
+                TEXT_BODY,
+                SPACE_XS,
+                |_, cx| {
+                    Workspace::set_zoom(ZOOM_DEFAULT, cx);
+                },
+            ))
+            .child(flat_icon_btn(
+                "set-zoom-in",
+                "plus",
+                STEPPER_BTN_W,
+                ICON_MD,
+                |_, cx| {
+                    Workspace::set_zoom(cx.global::<ZoomState>().zoom + ZOOM_STEP, cx);
+                },
+            )),
+    );
+
+    let appearance = settings_card_block(
+        "APPEARANCE",
+        card(vec![
+            setting_row_link(
+                "set-theme",
+                "App theme",
+                Some(setting_value(SettingRow::Theme, cx)),
+                dispatch,
+                ModalClick::OpenThemePicker,
+            )
+            .into_any_element(),
+            // Not in the iced original (`settings_iced.rs`) — the gpui-only
+            // entry point into `ThemeManager` (custom-theme CRUD), kept here
+            // since nothing else in Settings opens it.
+            setting_row_link(
+                "set-manage-themes",
+                "Manage themes…",
+                None,
+                dispatch,
+                ModalClick::OpenThemeManager,
+            )
+            .into_any_element(),
+            setting_row_static("App size", None, Some(app_size_stepper.into_any_element()))
+                .into_any_element(),
+            setting_row_static(
+                "Follow system appearance",
+                None,
+                Some(click_checkbox(
+                    "set-follow-system",
+                    "",
+                    store.theme_follow_system,
+                    c::CYAN(),
+                    true,
+                    dispatch,
+                    ModalClick::ToggleSetting(SettingToggle::ThemeFollowSystem),
+                )),
+            )
+            .into_any_element(),
+            setting_row_static(
+                "Project themes",
+                Some((
+                    "Let each project pin its PTYs to a specific theme",
+                    SublabelTone::Normal,
+                )),
+                Some(raw_checkbox(
+                    "set-project-themes",
+                    "",
+                    store.project_themes_enabled,
+                    c::MAGENTA(),
                     |_, cx| {
-                        Workspace::set_zoom(cx.global::<ZoomState>().zoom - ZOOM_STEP, cx);
-                    },
-                ))
-                .child(flat_text_btn(
-                    "set-zoom-reset",
-                    zoom_pct,
-                    TEXT_BODY,
-                    SPACE_XS,
-                    |_, cx| {
-                        Workspace::set_zoom(ZOOM_DEFAULT, cx);
-                    },
-                ))
-                .child(flat_icon_btn(
-                    "set-zoom-in",
-                    "plus",
-                    STEPPER_BTN_W,
-                    ICON_MD,
-                    |_, cx| {
-                        Workspace::set_zoom(cx.global::<ZoomState>().zoom + ZOOM_STEP, cx);
+                        SettingsState::update(cx, |store| {
+                            store.project_themes_enabled = !store.project_themes_enabled;
+                        });
+                        SettingsState::flush_now(cx);
+                        cx.refresh_windows();
                     },
                 )),
-        ));
-
-    let appearance = div()
-        .flex()
-        .flex_col()
-        .gap(rpx(SPACE_SM))
-        .child(section_header("APPEARANCE", SPACE_SM, SPACE_SM))
-        .child(settings_row(
-            "set-theme",
-            "App theme",
-            setting_value(SettingRow::Theme, cx),
-            true,
-            dispatch,
-            ModalClick::OpenThemePicker,
-        ))
-        // Not in the iced original (`settings_iced.rs`) — the gpui-only entry
-        // point into `ThemeManager` (custom-theme CRUD), kept here since
-        // nothing else in Settings opens it.
-        .child(settings_row(
-            "set-manage-themes",
-            "Manage themes…",
-            String::new(),
-            true,
-            dispatch,
-            ModalClick::OpenThemeManager,
-        ))
-        .child(app_size_row)
-        .child(div().px(rpx(SPACE_XL)).child(raw_checkbox(
-            "set-project-themes",
-            "Project themes",
-            store.project_themes_enabled,
-            c::MAGENTA(),
-            |_, cx| {
-                SettingsState::update(cx, |store| {
-                    store.project_themes_enabled = !store.project_themes_enabled;
-                });
-                SettingsState::flush_now(cx);
-                cx.refresh_windows();
-            },
-        )))
-        .child(caption("Let each project pin its PTYs to a specific theme"))
-        .child(div().px(rpx(SPACE_XL)).child(click_checkbox(
-            "set-follow-system",
-            "Follow system appearance",
-            store.theme_follow_system,
-            c::CYAN(),
-            true,
-            dispatch,
-            ModalClick::ToggleSetting(SettingToggle::ThemeFollowSystem),
-        )));
-
-    // ── projects ─────────────────────────────────────────────────────────
-    // Shown with "0" rather than hidden when nothing is archived (see the
-    // iced original's comment at `settings.rs:299-302`): a row that only
-    // appears after the first archive makes the feature undiscoverable at
-    // exactly the moment the user needs to know where their project went.
-    let projects = div()
-        .flex()
-        .flex_col()
-        .gap(rpx(SPACE_SM))
-        .child(section_header("PROJECTS", SPACE_XL, SPACE_SM))
-        .child(settings_row(
-            "set-archived",
-            "Archived projects",
-            format!("{archived}"),
-            true,
-            dispatch,
-            ModalClick::OpenArchivedProjects,
-        ));
+            )
+            .into_any_element(),
+        ]),
+    );
 
     // ── agents / terminal ────────────────────────────────────────────────
-    let backend_row = div()
-        .flex()
-        .items_center()
-        .h(rpx(FIELD_H))
-        .px(rpx(SPACE_XL))
-        .child(ui("Backend", TEXT_BODY, c::FG()).flex_1())
-        .child(seg_group(
-            div()
-                .flex()
-                .items_center()
-                .child(seg_button(
-                    "set-backend-native",
-                    "Native",
-                    !tmux_on,
-                    SegSide::Left,
-                    false,
-                    tmux_on.then(|| -> OnToggle {
-                        let dispatch = std::rc::Rc::clone(dispatch);
-                        Box::new(move |window, cx| {
-                            dispatch(ModalClick::ToggleSetting(SettingToggle::Tmux), window, cx);
-                        })
-                    }),
-                ))
-                .child(seg_button(
-                    "set-backend-tmux",
-                    "Tmux",
-                    tmux_on,
-                    SegSide::Right,
-                    false,
-                    (!tmux_on).then(|| -> OnToggle {
-                        let dispatch = std::rc::Rc::clone(dispatch);
-                        Box::new(move |window, cx| {
-                            dispatch(ModalClick::ToggleSetting(SettingToggle::Tmux), window, cx);
-                        })
-                    }),
-                )),
-        ));
+    let backend_seg = seg_group(
+        div()
+            .flex()
+            .items_center()
+            .child(seg_button(
+                "set-backend-native",
+                "Native",
+                !tmux_on,
+                SegSide::Left,
+                false,
+                tmux_on.then(|| -> OnToggle {
+                    let dispatch = std::rc::Rc::clone(dispatch);
+                    Box::new(move |window, cx| {
+                        dispatch(ModalClick::ToggleSetting(SettingToggle::Tmux), window, cx);
+                    })
+                }),
+            ))
+            .child(seg_button(
+                "set-backend-tmux",
+                "Tmux",
+                tmux_on,
+                SegSide::Right,
+                false,
+                (!tmux_on).then(|| -> OnToggle {
+                    let dispatch = std::rc::Rc::clone(dispatch);
+                    Box::new(move |window, cx| {
+                        dispatch(ModalClick::ToggleSetting(SettingToggle::Tmux), window, cx);
+                    })
+                }),
+            )),
+    );
 
-    let perms_row = div()
-        .flex()
-        .items_center()
-        .h(rpx(FIELD_H))
-        .px(rpx(SPACE_XL))
-        .child(ui("Permissions", TEXT_BODY, c::FG()).flex_1())
-        .child(seg_group(
-            div()
-                .flex()
-                .items_center()
-                .child(seg_button(
-                    "set-perms-skip",
-                    "Skip",
-                    skip_perms_on,
-                    SegSide::Left,
+    let perms_seg = seg_group(
+        div()
+            .flex()
+            .items_center()
+            .child(seg_button(
+                "set-perms-skip",
+                "Skip",
+                skip_perms_on,
+                SegSide::Left,
+                true,
+                (!skip_perms_on).then(|| -> OnToggle {
+                    let dispatch = std::rc::Rc::clone(dispatch);
+                    Box::new(move |window, cx| {
+                        dispatch(
+                            ModalClick::ToggleSetting(SettingToggle::SkipPermissions),
+                            window,
+                            cx,
+                        );
+                    })
+                }),
+            ))
+            .child(seg_button(
+                "set-perms-safe",
+                "Safe",
+                !skip_perms_on,
+                SegSide::Right,
+                false,
+                skip_perms_on.then(|| -> OnToggle {
+                    let dispatch = std::rc::Rc::clone(dispatch);
+                    Box::new(move |window, cx| {
+                        dispatch(
+                            ModalClick::ToggleSetting(SettingToggle::SkipPermissions),
+                            window,
+                            cx,
+                        );
+                    })
+                }),
+            )),
+    );
+
+    let agents_terminal = settings_card_block(
+        "AGENTS & TERMINAL",
+        card(vec![
+            setting_row_static("Backend", None, Some(backend_seg.into_any_element()))
+                .into_any_element(),
+            setting_row_static(
+                "Permissions",
+                Some((
+                    "Skip lets agents run any command without asking.",
+                    SublabelTone::Safety,
+                )),
+                Some(perms_seg.into_any_element()),
+            )
+            .into_any_element(),
+            setting_row_static(
+                "Claude in Chrome",
+                Some((
+                    "Lets Claude read and control your Chrome tabs.",
+                    SublabelTone::Normal,
+                )),
+                Some(click_checkbox(
+                    "set-chrome",
+                    "",
+                    store.chrome_enabled.unwrap_or(false),
+                    c::BLUE(),
                     true,
-                    (!skip_perms_on).then(|| -> OnToggle {
-                        let dispatch = std::rc::Rc::clone(dispatch);
-                        Box::new(move |window, cx| {
-                            dispatch(
-                                ModalClick::ToggleSetting(SettingToggle::SkipPermissions),
-                                window,
-                                cx,
-                            );
-                        })
-                    }),
-                ))
-                .child(seg_button(
-                    "set-perms-safe",
-                    "Safe",
-                    !skip_perms_on,
-                    SegSide::Right,
-                    false,
-                    skip_perms_on.then(|| -> OnToggle {
-                        let dispatch = std::rc::Rc::clone(dispatch);
-                        Box::new(move |window, cx| {
-                            dispatch(
-                                ModalClick::ToggleSetting(SettingToggle::SkipPermissions),
-                                window,
-                                cx,
-                            );
-                        })
-                    }),
+                    dispatch,
+                    ModalClick::ToggleSetting(SettingToggle::Chrome),
                 )),
-        ));
-
-    let agents_terminal = div()
-        .flex()
-        .flex_col()
-        .gap(rpx(SPACE_SM))
-        .child(section_header("AGENTS / TERMINAL", SPACE_XL, SPACE_SM))
-        .child(backend_row)
-        .child(perms_row)
-        .child(caption_promoted(
-            "Skip lets agents run any command without asking.",
-        ))
-        .child(div().px(rpx(SPACE_XL)).child(click_checkbox(
-            "set-chrome",
-            "Claude in Chrome",
-            store.chrome_enabled.unwrap_or(false),
-            c::BLUE(),
-            true,
-            dispatch,
-            ModalClick::ToggleSetting(SettingToggle::Chrome),
-        )))
-        .child(caption_promoted(
-            "Lets Claude read and control your Chrome tabs.",
-        ))
-        .child(div().px(rpx(SPACE_XL)).child(raw_checkbox(
-            "set-telemetry",
-            "Share anonymous usage data",
-            SettingsState::telemetry_enabled(store),
-            c::MAGENTA(),
-            |_, cx| {
-                let enabled =
-                    !SettingsState::telemetry_enabled(&cx.global::<SettingsState>().store);
-                SettingsState::update(cx, move |store| store.telemetry_enabled = Some(enabled));
-                SettingsState::flush_now(cx);
-                // Takes effect immediately, not at the next launch
-                // (`src/app/mod.rs:339-344`).
-                crate::telemetry::set_enabled(enabled);
-                cx.refresh_windows();
-            },
-        )));
+            )
+            .into_any_element(),
+        ]),
+    );
 
     // ── tools ────────────────────────────────────────────────────────────
-    let tools_header = div()
+    // The refresh action rides the card's own header strip rather than the
+    // micro-label above it, so it reads as belonging to the detected-agent
+    // list it reloads.
+    let tools_head = div()
         .flex()
         .items_center()
-        .pr(rpx(SPACE_XL))
-        .child(
-            div()
-                .flex_1()
-                .child(section_header("TOOLS", SPACE_XL, SPACE_SM)),
-        )
+        .justify_end()
+        .px(rpx(SPACE_XL))
+        .min_h(rpx(FIELD_H))
+        .border_b_1()
+        .border_color(c::BORDER_SOFT())
         .child(flat_icon_btn(
             "set-tools-refresh",
             "restart",
@@ -909,25 +974,61 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                 move |window, cx| dispatch(ModalClick::RefreshTools, window, cx)
             },
         ));
-    let tools_section = div()
-        .flex()
-        .flex_col()
-        .gap(rpx(SPACE_SM))
-        .child(tools_header)
-        .children(layer.tools.iter().map(|st| tool_row(st, dispatch, cx)));
+    let mut tools_rows: Vec<AnyElement> = vec![tools_head.into_any_element()];
+    tools_rows.extend(layer.tools.iter().map(|st| tool_row(st, dispatch, cx)));
+    let tools_section = settings_card_block("TOOLS", card(tools_rows));
 
-    // ── the scrolling body: sections above the updates strip ───────────────
+    // ── data & projects ──────────────────────────────────────────────────
+    // Archived projects is shown with "0" rather than hidden when nothing is
+    // archived (see the iced original's comment at `settings.rs:299-302`): a
+    // row that only appears after the first archive makes the feature
+    // undiscoverable at exactly the moment the user needs it.
+    let data_projects = settings_card_block(
+        "DATA & PROJECTS",
+        card(vec![
+            setting_row_link(
+                "set-archived",
+                "Archived projects",
+                Some(format!("{archived}")),
+                dispatch,
+                ModalClick::OpenArchivedProjects,
+            )
+            .into_any_element(),
+            setting_row_static(
+                "Share anonymous usage data",
+                None,
+                Some(raw_checkbox(
+                    "set-telemetry",
+                    "",
+                    SettingsState::telemetry_enabled(store),
+                    c::MAGENTA(),
+                    |_, cx| {
+                        let enabled =
+                            !SettingsState::telemetry_enabled(&cx.global::<SettingsState>().store);
+                        SettingsState::update(cx, move |store| {
+                            store.telemetry_enabled = Some(enabled);
+                        });
+                        SettingsState::flush_now(cx);
+                        // Takes effect immediately, not at the next launch
+                        // (`src/app/mod.rs:339-344`).
+                        crate::telemetry::set_enabled(enabled);
+                        cx.refresh_windows();
+                    },
+                )),
+            )
+            .into_any_element(),
+        ]),
+    );
+
+    // ── the scrolling body: cards above the updates strip ─────────────────
     let sections = div()
         .flex()
         .flex_col()
-        .gap(rpx(SPACE_LG))
+        .gap(rpx(SPACE_2XL))
         .child(appearance)
-        .child(divider_h())
-        .child(projects)
-        .child(divider_h())
         .child(agents_terminal)
-        .child(divider_h())
-        .child(tools_section);
+        .child(tools_section)
+        .child(data_projects);
 
     let scroll_body = div()
         .id("settings-scroll")
@@ -964,12 +1065,15 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                 },
             ))
             .child(div().flex_1())
-            .child(click_action(
+            .child(flat_text_btn(
                 "set-changelog",
                 "View changelog",
-                ModalBtn::Plain,
-                dispatch,
-                ModalClick::OpenChangelog,
+                TEXT_BODY,
+                SPACE_LG,
+                {
+                    let dispatch = std::rc::Rc::clone(dispatch);
+                    move |window, cx| dispatch(ModalClick::OpenChangelog, window, cx)
+                },
             ))
             .child(crate::views::components::footer_hint("esc", "close")),
     );
@@ -1004,17 +1108,27 @@ fn tool_row(st: &ToolStatus, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
             .border_1()
             .border_color(c::FG_MUTE())
     };
+    let dot_col = div()
+        .w(rpx(STATUS_DOT_COL_W))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .child(dot);
     let mut row = div()
         .flex()
         .items_center()
         .gap(rpx(SPACE_LG))
         .w_full()
-        .px(rpx(SPACE_LG))
+        .px(rpx(SPACE_XL))
         .py(rpx(SPACE_SM))
-        .child(dot)
+        .child(dot_col)
         .child(ui(cap(st.agent.label()), TEXT_BODY, label_color).flex_1())
         .child(mono(status, TEXT_BODY, status_color));
-    let slot = div().w(rpx(TOOL_ACTION_W)).flex().items_center();
+    let slot = div()
+        .w(rpx(TOOL_ACTION_W))
+        .flex()
+        .items_center()
+        .justify_end();
     let slot = if is_default {
         slot.child(keycap(mono("Default", TEXT_MICRO, c::FG_DIM())))
     } else if st.installed {
@@ -1153,11 +1267,16 @@ fn shortcut_overlay(screen: keymap::Screen) -> AnyElement {
 
     let mut body = div().flex().flex_col();
     if grouped {
-        body = body.child(section_header("GLOBAL", SPACE_SM, SPACE_SM));
+        body = body.child(section_header("GLOBAL", SPACE_2XL, SPACE_SM, SPACE_SM));
         for d in visible.iter().filter(|d| d.scopes.contains(&Scope::Global)) {
             body = body.child(row(d));
         }
-        body = body.child(section_header(screen.label(), SPACE_XL, SPACE_SM));
+        body = body.child(section_header(
+            screen.label(),
+            SPACE_2XL,
+            SPACE_XL,
+            SPACE_SM,
+        ));
         for d in visible
             .iter()
             .filter(|d| d.scopes.iter().any(|s| matches!(s, Scope::Screen(_))))
@@ -1171,7 +1290,7 @@ fn shortcut_overlay(screen: keymap::Screen) -> AnyElement {
     }
     // The two static rows (`settings.rs:665-669`).
     body = body
-        .child(section_header("EDITING", SPACE_XL, SPACE_SM))
+        .child(section_header("EDITING", SPACE_2XL, SPACE_XL, SPACE_SM))
         .child(static_row(
             &format!(
                 "{}+c / {}+v",
@@ -1236,13 +1355,13 @@ pub fn chord_label(def: &ShortcutDef) -> String {
 
 /// The lifecycle table's fixed label column (`Setup` / `Run` / `Teardown`),
 /// wide enough for the longest label without wasting width on the row's
-/// dominant flex-1 input (mock-project-settings.html frame E1).
+/// dominant flex-1 input.
 const SCRIPT_LABEL_COL_W: f32 = 92.0;
 /// The lifecycle table's trailing status-glyph column.
 const SCRIPT_STATUS_COL_W: f32 = 20.0;
 
-/// Project Settings — "Variant D / Editable header" (frames E1-E3 of
-/// mock-project-settings.html). The project name doubles as the header (no
+/// Project Settings — the "editable header" layout. The project name doubles
+/// as the header (no
 /// separate NAME section, no `Project Settings — {name}` title, killing the
 /// duplication the old layout had); the theme row lives in a bordered card;
 /// the three lifecycle buffers render as a compact single-line table; and the
@@ -1392,6 +1511,7 @@ fn scripts_editor(
         click_row(
             "se-theme-row",
             false,
+            RowDensity::Compact,
             dispatch,
             ModalClick::OpenProjectTheme,
             content,
@@ -1417,12 +1537,7 @@ fn scripts_editor(
             .into_any_element()
     };
 
-    let theme_card = div()
-        .rounded(rpx(RADIUS_CONTROL))
-        .border_1()
-        .border_color(c::BORDER())
-        .bg(c::BG_STRIP())
-        .child(theme_row);
+    let theme_card = card(vec![theme_row]);
 
     // ── Lifecycle scripts: a compact 3-row table (§ redesign point 3). Each
     // row is a fixed label column, a borderless flex-1 mono input whose only
@@ -1436,7 +1551,11 @@ fn scripts_editor(
         };
         let focused = f.state().read(cx).focus_handle(cx).is_focused(window);
         let has_value = !f.value(cx).trim().is_empty();
-        let rule = if focused { c::MAGENTA() } else { c::BORDER_SOFT() };
+        let rule = if focused {
+            c::MAGENTA()
+        } else {
+            c::BORDER_SOFT()
+        };
         let status: AnyElement = if has_value {
             status_dot(DOT_SM, c::GREEN()).into_any_element()
         } else {
@@ -1455,13 +1574,14 @@ fn scripts_editor(
             .gap(rpx(SPACE_XL))
             .py(rpx(SPACE_LG))
             .w_full()
-            .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(desc).build(window, cx))
-            .child(
-                div()
-                    .w(rpx(SCRIPT_LABEL_COL_W))
-                    .flex_shrink_0()
-                    .child(ui(label, TEXT_BODY, c::FG())),
-            )
+            .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(desc).build(window, cx)
+            })
+            .child(div().w(rpx(SCRIPT_LABEL_COL_W)).flex_shrink_0().child(ui(
+                label,
+                TEXT_BODY,
+                c::FG(),
+            )))
             .child(
                 div()
                     .flex_1()

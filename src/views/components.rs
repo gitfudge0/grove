@@ -29,6 +29,13 @@ const FOOTER_RADIUS: f32 = RADIUS_PANEL - 1.0;
 /// *the checkbox's* box, not a notch on a shared scale.
 const CHECKBOX_BOX: f32 = 14.0;
 
+/// The checkbox tick's glyph size: [`CHECKBOX_BOX`] less the box's 1px border
+/// on each side, so the mark fills the box without crossing the stroke. A
+/// derived value in the `FOOTER_RADIUS` sense (§7.3, §14's second literal
+/// case) — it moves with the box, it is never chosen independently. It lands
+/// on [`ICON_SM`], the list-density glyph tier.
+const CHECKBOX_TICK: f32 = CHECKBOX_BOX - 2.0;
+
 /// [`vline`]'s height: tall enough to separate two [`CONTROL_H`] clusters
 /// without drawing a full-height bar edge.
 const VLINE_H: f32 = 16.0;
@@ -129,11 +136,16 @@ pub fn tracked(label: &str) -> String {
 /// A mono, uppercase section label (`modal.rs:77-90`). Previously faked
 /// letter-spacing via [`tracked`]'s thin-space joins; that read as "split-out"
 /// text rather than tracking, so the label now renders plain.
-pub fn section_header(label: &str, top: f32, bottom: f32) -> Div {
+///
+/// `indent` is the label's left inset. It is an axis rather than a fixed
+/// `SPACE_2XL` because a label naming a bordered [`card`] sits flush with the
+/// card's edge, while a label over a flat list is inset to the list's text
+/// column.
+pub fn section_header(label: &str, indent: f32, top: f32, bottom: f32) -> Div {
     div()
         .pt(rpx(top))
         .pb(rpx(bottom))
-        .pl(rpx(SPACE_2XL))
+        .pl(rpx(indent))
         .child(mono(label, TEXT_MICRO, c::FG_MUTE()))
 }
 
@@ -349,10 +361,64 @@ pub fn click_checkbox(
     modal_checkbox(id, label, checked, accent, handler)
 }
 
-/// A clickable list row, the shape every modal list shares.
+/// How roomy a [`click_row`] is, and how its fill is shaped. This is the axis
+/// DESIGN.md §9.2 recorded as missing when `theme_picker`'s `manager_row`
+/// forked the row shape; it is an enum rather than three padding parameters so
+/// a call site picks a *density*, not a set of numbers.
+///
+/// | Variant | `px` | `py` | Corners | Fill |
+/// |---|---|---|---|---|
+/// | `Compact` | `SPACE_LG` | `SPACE_SM` | `RADIUS_CONTROL` | inset, rounded |
+/// | `Manager` | `SPACE_XL` | `SPACE_MD` | `RADIUS_GROUP` | inset, rounded |
+/// | `Card` | `SPACE_XL` | from content | square | full-bleed |
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowDensity {
+    /// The default list row every modal list shares.
+    Compact,
+    /// The theme manager's row, which carries a name, a badge, an
+    /// eleven-swatch strip and four action buttons on one line.
+    Manager,
+    /// A row inside a hairline-bordered [`card`]. It takes its height from its
+    /// content rather than from padding, and its hover fill is full-bleed and
+    /// square: a rounded fill inset from the card's own edge would read as a
+    /// second, floating surface inside the card.
+    Card,
+}
+
+impl RowDensity {
+    /// Horizontal padding.
+    fn px(self) -> f32 {
+        match self {
+            RowDensity::Compact => SPACE_LG,
+            RowDensity::Manager | RowDensity::Card => SPACE_XL,
+        }
+    }
+
+    /// Vertical padding, or `None` where the row's content sets its height.
+    fn py(self) -> Option<f32> {
+        match self {
+            RowDensity::Compact => Some(SPACE_SM),
+            RowDensity::Manager => Some(SPACE_MD),
+            RowDensity::Card => None,
+        }
+    }
+
+    /// Corner radius, or `None` for the square full-bleed fill.
+    fn radius(self) -> Option<f32> {
+        match self {
+            RowDensity::Compact => Some(RADIUS_CONTROL),
+            RowDensity::Manager => Some(RADIUS_GROUP),
+            RowDensity::Card => None,
+        }
+    }
+}
+
+/// A clickable list row, the shape every modal list shares. `density` picks
+/// how much room it gives its content — see [`RowDensity`].
 pub fn click_row(
     id: impl Into<gpui::ElementId>,
     selected: bool,
+    density: RowDensity,
     dispatch: &ModalDispatch,
     click: ModalClick,
     content: impl IntoElement,
@@ -363,9 +429,16 @@ pub fn click_row(
         .flex()
         .items_center()
         .gap(rpx(SPACE_LG))
-        .px(rpx(SPACE_LG))
-        .py(rpx(SPACE_SM))
-        .rounded(rpx(RADIUS_CONTROL))
+        .px(rpx(density.px()))
+        .map(|d| match density.py() {
+            Some(py) => d.py(rpx(py)),
+            // A `Card` row spans its card, so its fill must reach both edges.
+            None => d.w_full(),
+        })
+        .map(|d| match density.radius() {
+            Some(r) => d.rounded(rpx(r)),
+            None => d,
+        })
         .when(selected, |d| d.bg(c::BG_HL()))
         .hover(|s| s.bg(c::BG_HOVER()))
         .cursor_pointer()
@@ -428,9 +501,12 @@ pub fn modal_checkbox(
         .items_center()
         .justify_center();
     if checked {
-        box_ = box_.child(mono(
-            "✓",
-            TEXT_MICRO,
+        // The tick is a sprite, not a text run: §9.3 owns every mark in the
+        // app, and the bundled fonts have no U+2713 — a literal "✓" fell back
+        // to a stand-in glyph.
+        box_ = box_.child(crate::icons::icon(
+            "check",
+            CHECKBOX_TICK,
             if disabled { c::FG_MUTE() } else { accent },
         ));
     }
@@ -489,12 +565,16 @@ pub fn scrim_top_drop(content: impl IntoElement) -> Div {
         .child(content)
 }
 
-/// A modal's body zone: the 16px side padding every ported modal shares, with
-/// the caller choosing the vertical rhythm.
+/// A modal's body zone: the `SPACE_3XL` padding every ported modal shares on
+/// all four sides, with the caller choosing the rhythm *between* its children.
+/// The top edge is the same notch as the sides and the bottom because a zone
+/// pads uniformly (§6.1) — a header divider above it is a rule, not padding,
+/// and the body used to sit flush against it.
 pub fn modal_body(content: impl IntoElement) -> Div {
     div()
         .w_full()
         .px(rpx(SPACE_3XL))
+        .pt(rpx(SPACE_3XL))
         .pb(rpx(SPACE_3XL))
         .flex()
         .flex_col()
@@ -552,6 +632,57 @@ pub fn caption_promoted(content: impl Into<SharedString>) -> Div {
     div()
         .px(rpx(SPACE_XL))
         .child(ui(content, TEXT_SMALL, c::FG_DIM()))
+}
+
+/// Which of §9.1's two caption tones a [`row_sublabel`] takes. Named rather
+/// than a `bool` per §14 rule 3's spirit: `SublabelTone::Safety` says at the
+/// call site what `true` would not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SublabelTone {
+    /// The default explanatory sublabel — [`caption`]'s `FG_MUTE`.
+    Normal,
+    /// One shade up, reserved for safety-relevant text (skip-permissions and
+    /// friends) — [`caption_promoted`]'s `FG_DIM`.
+    Safety,
+}
+
+/// The second line under a row's label. This is [`caption`] /
+/// [`caption_promoted`]'s two-tone axis in the shape a row needs: no indent of
+/// its own, because the row's label column already owns the left edge.
+pub fn row_sublabel(content: impl Into<SharedString>, tone: SublabelTone) -> Div {
+    ui(
+        content,
+        TEXT_SMALL,
+        match tone {
+            SublabelTone::Normal => c::FG_MUTE(),
+            SublabelTone::Safety => c::FG_DIM(),
+        },
+    )
+}
+
+/// A filled, hairline-bordered card whose `rows` are separated by full-bleed
+/// [`divider_h`] rules rather than by whitespace — the shape Settings' sections
+/// and the project-settings theme block both draw. Same token set as a control
+/// surface: `RADIUS_CONTROL`, 1px `BORDER`, `BG_STRIP` (§7.1, §7.2).
+///
+/// Rows carry their own padding; the card contributes none, so a row's fill can
+/// reach the card's inner edge (see [`RowDensity::Card`]).
+pub fn card(rows: Vec<AnyElement>) -> Div {
+    let last = rows.len().saturating_sub(1);
+    let mut card = div()
+        .rounded(rpx(RADIUS_CONTROL))
+        .border_1()
+        .border_color(c::BORDER())
+        .bg(c::BG_STRIP())
+        .flex()
+        .flex_col();
+    for (i, row) in rows.into_iter().enumerate() {
+        card = card.child(row);
+        if i != last {
+            card = card.child(divider_h());
+        }
+    }
+    card
 }
 
 /// A flat, borderless icon button in a fixed-width hoverable box — the zoom
@@ -696,11 +827,17 @@ pub fn seg_button(
 ) -> AnyElement {
     seg_button_content(
         id,
-        div().px(rpx(SPACE_2XL)).py(rpx(SPACE_SM)).child(mono(
-            label,
-            TEXT_SMALL,
-            seg_text_color(active, danger),
-        )),
+        // Sized by [`CONTROL_H`] rather than by vertical padding, so a segment
+        // is the same 22px as every other in-row control (§8.1) — the same
+        // shape `flat_text_btn` uses. `py` would stack on top of the fixed
+        // height, so there is none.
+        div()
+            .h(rpx(CONTROL_H))
+            .px(rpx(SPACE_2XL))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(mono(label, TEXT_SMALL, seg_text_color(active, danger))),
         active,
         side,
         danger,
