@@ -118,6 +118,12 @@ pub struct ScriptsEditorState {
     pub setup: String,
     pub run: String,
     pub teardown: String,
+    /// Whether the header's name field is in its editable sub-state (pencil
+    /// clicked). Modelled after `Modal::ThemeManager`'s `rename: Option<…>`
+    /// (`:819-826`) — a focused rename field nested inside a modal that has
+    /// its own keyboard. `Default` = false so the field-0/field-1 focus tail
+    /// and the round trip through `ThemePicker` both start in display mode.
+    pub renaming: bool,
 }
 
 /// Where a `ThemePicker` goes when it closes (`src/app/modal.rs:79-82` plus
@@ -565,6 +571,12 @@ pub enum ModalAction {
     ThemeManagerDeleteCancel,
     ThemeManagerRenameSubmit,
     ThemeManagerRenameCancel,
+    /// `ScriptsEditor`: the pencil starts renaming the project name.
+    ScriptsRenameStart,
+    /// `ScriptsEditor`: check accepts the typed name locally (no disk write).
+    ScriptsRenameCommit,
+    /// `ScriptsEditor`: X restores the name from disk and leaves rename mode.
+    ScriptsRenameCancel,
     OnboardSkip,
     OnboardAdvance,
     /// `Onboarding`: Tab alternates path/name focus on the Project step.
@@ -837,10 +849,34 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
         // The palette owns its whole keyboard (`handle_session_launcher_key`).
         Modal::SessionLauncher(_) => V::FallThrough,
 
-        Modal::Settings | Modal::ArchivedProjects | Modal::ScriptsEditor(_) => match key {
+        Modal::Settings | Modal::ArchivedProjects => match key {
             K::Escape => V::Close,
             _ => V::Ignore,
         },
+
+        // Two sub-states, mirroring `Modal::ThemeManager`'s rename arm above.
+        // The previous single-arm version routed every character key to
+        // `V::Ignore`, which reaches `cx.stop_propagation()`
+        // (`views/modals/mod.rs`) before the platform input handler ever
+        // inserts text into the focused `Input` — typing was dead in both
+        // modes. `V::FallThrough` lets the focused field see the key first.
+        Modal::ScriptsEditor(st) => {
+            if st.renaming {
+                match key {
+                    K::Enter => V::Custom(A::ScriptsRenameCommit),
+                    K::Escape => V::Custom(A::ScriptsRenameCancel),
+                    // The rename buffer is a focused field; text is its own.
+                    _ => V::FallThrough,
+                }
+            } else {
+                match key {
+                    K::Escape => V::Close,
+                    K::Enter => V::Submit,
+                    // Text belongs to the focused script field.
+                    _ => V::FallThrough,
+                }
+            }
+        }
 
         // Cancel is gated by stage inside `ModalSlot::cancel`; there is no
         // separate refusal here.
@@ -934,6 +970,7 @@ mod tests {
             setup: setup.into(),
             run: String::new(),
             teardown: String::new(),
+            renaming: false,
         }
     }
 
@@ -1365,16 +1402,62 @@ mod tests {
 
     #[test]
     fn escape_only_modals() {
-        let scripts_editor = Modal::ScriptsEditor(Box::new(scripts("")));
+        // `Modal::ScriptsEditor` used to sit in this same list — it has real
+        // text fields, so grouping it with `Settings`/`ArchivedProjects`
+        // (which have none) is exactly how every character key ended up
+        // routed to `V::Ignore` and typing broke. It now falls through like
+        // `Modal::Input`; see `scripts_editor_typing_falls_through_to_the_field`.
         for m in [
             &Modal::Settings,
             &Modal::ArchivedProjects,
-            &scripts_editor,
             &teardown(TeardownStage::RunningScript),
         ] {
             assert_eq!(v(m, ModalKey::Escape), ModalKeyVerdict::Close, "{m:?}");
             assert_eq!(v(m, ModalKey::Char('q')), ModalKeyVerdict::Ignore, "{m:?}");
         }
+    }
+
+    /// The name field and the three lifecycle buffers are all single-line
+    /// (redesign "Variant D"), so Enter submits like it does for every other
+    /// bare single-line entry field (`Modal::Input`) rather than doing
+    /// nothing — but only while `renaming == false`; mid-rename Enter commits
+    /// the rename instead (`scripts_editor_rename_mode_keys` below).
+    #[test]
+    fn scripts_editor_enter_submits() {
+        let m = Modal::ScriptsEditor(Box::new(scripts("")));
+        assert_eq!(v(&m, ModalKey::Enter), ModalKeyVerdict::Submit);
+    }
+
+    /// A char key must fall through to the focused field, not be swallowed
+    /// by `V::Ignore` (the root cause: `Ignore` reaches
+    /// `cx.stop_propagation()` in `views/modals/mod.rs` before the platform
+    /// input handler ever inserts text into the focused `Input`, so every
+    /// keystroke used to die at the modal layer).
+    #[test]
+    fn scripts_editor_typing_falls_through_to_the_field() {
+        let m = Modal::ScriptsEditor(Box::new(scripts("")));
+        assert_eq!(v(&m, ModalKey::Char('a')), ModalKeyVerdict::FallThrough);
+        assert_eq!(v(&m, ModalKey::Tab), ModalKeyVerdict::FallThrough);
+    }
+
+    /// Rename mode (`st.renaming`) is a sub-state exactly like
+    /// `Modal::ThemeManager`'s `rename`: Enter/Escape commit/cancel the
+    /// rename rather than submitting/closing the whole modal, and a char key
+    /// still falls through to the focused name field.
+    #[test]
+    fn scripts_editor_rename_mode_keys() {
+        let mut st = scripts("");
+        st.renaming = true;
+        let m = Modal::ScriptsEditor(Box::new(st));
+        assert_eq!(
+            v(&m, ModalKey::Enter),
+            ModalKeyVerdict::Custom(ModalAction::ScriptsRenameCommit)
+        );
+        assert_eq!(
+            v(&m, ModalKey::Escape),
+            ModalKeyVerdict::Custom(ModalAction::ScriptsRenameCancel)
+        );
+        assert_eq!(v(&m, ModalKey::Char('x')), ModalKeyVerdict::FallThrough);
     }
 
     #[test]

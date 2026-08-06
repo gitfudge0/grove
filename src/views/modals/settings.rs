@@ -41,9 +41,6 @@ const FIELD_H: f32 = 28.0;
 
 /// The Settings sections scroll before the modal outgrows a laptop viewport.
 const SETTINGS_SCROLL_MAX_H: f32 = 420.0;
-/// The three script buffers scroll; taller than Settings because a single
-/// field plus its description is already most of a screen.
-const SCRIPTS_SCROLL_MAX_H: f32 = 480.0;
 /// The changelog release list.
 const CHANGELOG_SCROLL_MAX_H: f32 = 420.0;
 
@@ -193,6 +190,9 @@ impl ModalLayer {
             ModalClick::ThemeNew => self.open_theme_editor(None, window, cx),
             ModalClick::ThemeEditOpen(i) => self.open_theme_editor(Some(i), window, cx),
             ModalClick::ThemeEditSave => self.theme_editor_save(cx),
+            ModalClick::ScriptsRenameStart => self.scripts_rename_start(window, cx),
+            ModalClick::ScriptsRenameCommit => self.scripts_rename_commit(window, cx),
+            ModalClick::ScriptsRenameCancel => self.scripts_rename_cancel(window, cx),
             _ => {}
         }
     }
@@ -300,7 +300,7 @@ impl ModalLayer {
 
     /// Save with the empty→`None` normalization and the save-failure `Message`
     /// modal (`src/gui/scripts_editor.rs:79-107`).
-    fn save_scripts(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn save_scripts(&mut self, cx: &mut Context<Self>) {
         self.sync_wizard_buffers(cx);
         let Some(Modal::ScriptsEditor(st)) = self.slot.get() else {
             return;
@@ -372,6 +372,65 @@ impl ModalLayer {
         self.toast
             .update(cx, |t, cx| t.set_toast("scripts saved", cx));
         self.close(cx);
+    }
+
+    /// Pencil: enter rename mode and hand the caret to field 0 (the name).
+    /// Fields are not rebuilt — `renaming` only changes which one the header
+    /// renders — so the three script buffers keep their in-progress text.
+    pub(super) fn scripts_rename_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(Modal::ScriptsEditor(st)) = self.slot.get_mut() {
+            st.renaming = true;
+        }
+        if let Some(f) = self.fields.first() {
+            f.focus_at_end(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Check: accept the typed name **locally** into `st.name` — the header
+    /// switches back to display mode showing it, but nothing is written to
+    /// disk until the modal's own Save (`save_scripts` above), so Cancel/Esc
+    /// on the modal still undoes it in one story.
+    pub(super) fn scripts_rename_commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_wizard_buffers(cx);
+        if let Some(Modal::ScriptsEditor(st)) = self.slot.get_mut() {
+            st.renaming = false;
+        }
+        if let Some(f) = self.fields.get(1) {
+            f.focus_at_end(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// X: discard the typed name, reseeding field 0 from the store's current
+    /// `Project::name` (not `st.name`, which the buffer may have already
+    /// diverged from), and leave rename mode.
+    pub(super) fn scripts_rename_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current_name = match self.slot.get() {
+            Some(Modal::ScriptsEditor(st)) => cx
+                .global::<SettingsState>()
+                .store
+                .projects
+                .iter()
+                .find(|p| p.path == st.project_path)
+                .map(|p| p.name.clone()),
+            _ => None,
+        };
+        if let Some(name) = current_name {
+            if let Some(f) = self.fields.first() {
+                f.set_value(&name, window, cx);
+            }
+            if let Some(Modal::ScriptsEditor(st)) = self.slot.get_mut() {
+                st.name = name;
+            }
+        }
+        if let Some(Modal::ScriptsEditor(st)) = self.slot.get_mut() {
+            st.renaming = false;
+        }
+        if let Some(f) = self.fields.get(1) {
+            f.focus_at_end(window, cx);
+        }
+        cx.notify();
     }
 
     /// "Project theme" from the scripts editor: the documented `open_child`
@@ -1175,6 +1234,20 @@ pub fn chord_label(def: &ShortcutDef) -> String {
     format!("{prefix}{}", def.display_keys)
 }
 
+/// The lifecycle table's fixed label column (`Setup` / `Run` / `Teardown`),
+/// wide enough for the longest label without wasting width on the row's
+/// dominant flex-1 input (mock-project-settings.html frame E1).
+const SCRIPT_LABEL_COL_W: f32 = 92.0;
+/// The lifecycle table's trailing status-glyph column.
+const SCRIPT_STATUS_COL_W: f32 = 20.0;
+
+/// Project Settings — "Variant D / Editable header" (frames E1-E3 of
+/// mock-project-settings.html). The project name doubles as the header (no
+/// separate NAME section, no `Project Settings — {name}` title, killing the
+/// duplication the old layout had); the theme row lives in a bordered card;
+/// the three lifecycle buffers render as a compact single-line table; and the
+/// footer merges Archive/Cancel/Save into one strip instead of an in-body row
+/// plus a separate footer.
 fn scripts_editor(
     layer: &ModalLayer,
     st: &ScriptsEditorState,
@@ -1201,195 +1274,309 @@ fn scripts_editor(
         c::FG_DIM()
     };
 
-    let theme_row_content = div()
+    // ── Header: the project name IS the header (frame E1/E2). Display mode
+    // is static text plus a pencil button; rename is a deliberate, reversible
+    // sub-state (`st.renaming`, mirroring `Modal::ThemeManager`'s `rename`)
+    // entered by the pencil and left by check (accept, locally) or X
+    // (discard) — save/cancel/discard all still flow through
+    // `sync_wizard_buffers`/the modal's own Save, so this is a rendering
+    // change plus the explicit affordance, not a behavior change. ──
+    let name_field = layer.fields.first();
+    let name_focused = st.renaming
+        && name_field.is_some_and(|f| f.state().read(cx).focus_handle(cx).is_focused(window));
+    // The same focused/BORDER_SOFT rule the lifecycle rows use, not a
+    // dedicated always-on rule, so toggling pencil↔check never reflows the
+    // header (DESIGN.md §2.4) — both modes measure to the same line height.
+    let title_rule = if name_focused {
+        c::MAGENTA()
+    } else {
+        c::BORDER_SOFT()
+    };
+
+    let title_el: AnyElement = match (st.renaming, name_field) {
+        (true, Some(f)) => div()
+            .id("se-title-input")
+            .flex_1()
+            .min_w_0()
+            .border_b_1()
+            .border_color(title_rule)
+            .font(gpui::font(crate::fonts::UI_FAMILY))
+            .text_size(rpx(TEXT_DISPLAY))
+            .text_color(c::FG())
+            .child(
+                gpui_component::input::Input::new(f.state())
+                    .appearance(false)
+                    // `Input` applies its own `input_px`/`input_py` (10px/8px
+                    // at the default `Size::Medium`) regardless of
+                    // `.appearance(false)` — that inset, not the surrounding
+                    // divs, was what broke the title's left edge against the
+                    // rest of the panel. Zeroed here rather than compensated
+                    // for elsewhere.
+                    .pl(gpui::px(0.0))
+                    .pr(gpui::px(0.0))
+                    .py(gpui::px(0.0))
+                    .w_full(),
+            )
+            .into_any_element(),
+        _ => ui(project_name.clone(), TEXT_DISPLAY, c::FG())
+            .flex_1()
+            .min_w_0()
+            .into_any_element(),
+    };
+
+    let title_controls: AnyElement = if st.renaming {
+        div()
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_XS))
+            .child(flat_icon_btn(
+                "se-name-accept",
+                "check",
+                ICON_BTN_W_SM,
+                ICON_SM,
+                {
+                    let dispatch = std::rc::Rc::clone(dispatch);
+                    move |window, cx| dispatch(ModalClick::ScriptsRenameCommit, window, cx)
+                },
+            ))
+            .child(flat_icon_btn(
+                "se-name-discard",
+                "close",
+                ICON_BTN_W_SM,
+                ICON_SM,
+                {
+                    let dispatch = std::rc::Rc::clone(dispatch);
+                    move |window, cx| dispatch(ModalClick::ScriptsRenameCancel, window, cx)
+                },
+            ))
+            .into_any_element()
+    } else {
+        flat_icon_btn("se-name-edit", "edit", ICON_BTN_W_SM, ICON_SM, {
+            let dispatch = std::rc::Rc::clone(dispatch);
+            move |window, cx| dispatch(ModalClick::ScriptsRenameStart, window, cx)
+        })
+        .into_any_element()
+    };
+
+    let title_row = div()
         .flex()
         .items_center()
-        .gap(rpx(SPACE_LG))
+        .gap(rpx(SPACE_SM))
         .w_full()
-        .child(
-            ui(
-                "Project theme",
-                TEXT_BODY,
-                if themes_enabled {
-                    c::FG()
-                } else {
-                    c::FG_MUTE()
-                },
-            )
-            .flex_1(),
-        )
-        .child(mono(value_text, TEXT_BODY, value_color))
-        .child(crate::icons::icon("chev-right", ICON_SM, c::FG_MUTE()));
+        .child(title_el)
+        .child(title_controls);
 
+    let header_content = div()
+        .flex()
+        .flex_col()
+        .gap(rpx(SPACE_XS))
+        .w_full()
+        .child(title_row)
+        .child(mono(st.project_path.clone(), TEXT_SMALL, c::FG_MUTE()));
+    let header = modal_header_row(header_content);
+
+    // ── Project theme: one bordered card (§ redesign point 2). When project
+    // themes are off globally the row dims, drops its chevron, and the reason
+    // moves inline on the right — pushed there by its own flex spacer, not
+    // just a small gap, so it reads as a second, distinct piece of
+    // information rather than a run-on with the value (frame E3).
     let theme_row: AnyElement = if themes_enabled {
+        let content = div()
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_LG))
+            .w_full()
+            .child(ui("Project theme", TEXT_BODY, c::FG()).flex_1())
+            .child(mono(value_text, TEXT_BODY, value_color))
+            .child(crate::icons::icon("chev-right", ICON_SM, c::FG_MUTE()));
         click_row(
             "se-theme-row",
             false,
             dispatch,
             ModalClick::OpenProjectTheme,
-            theme_row_content,
+            content,
         )
         .into_any_element()
     } else {
         div()
             .flex()
             .items_center()
+            .gap(rpx(SPACE_LG))
             .px(rpx(SPACE_LG))
             .py(rpx(SPACE_SM))
-            .child(theme_row_content)
+            .w_full()
+            .opacity(0.5)
+            .child(ui("Project theme", TEXT_BODY, c::FG_MUTE()).flex_1())
+            .child(mono(value_text, TEXT_BODY, value_color))
+            .child(div().flex_1())
+            .child(mono(
+                "Enable Project themes in Settings",
+                TEXT_MICRO,
+                c::FG_MUTE(),
+            ))
             .into_any_element()
     };
 
-    let theme_caption = if themes_enabled {
-        "Pin every PTY in this project to a specific theme"
-    } else {
-        "Enable Project themes in Settings to use this"
-    };
+    let theme_card = div()
+        .rounded(rpx(RADIUS_CONTROL))
+        .border_1()
+        .border_color(c::BORDER())
+        .bg(c::BG_STRIP())
+        .child(theme_row);
 
-    let project_theme_section = div()
-        .flex()
-        .flex_col()
-        .gap(rpx(SPACE_SM))
-        .child(section_header("PROJECT THEME", SPACE_SM, 0.0))
-        .child(theme_row)
-        .child(ui(theme_caption, TEXT_SMALL, c::FG_MUTE()));
-
-    // The restyled text-field chrome shared by the name field and the three
-    // lifecycle buffers: blends with the modal panel (`BG_RAIL`), a
-    // focus-reactive border (`c::MAGENTA()` focused, `c::BORDER()` otherwise),
-    // and `.appearance(false)` so the field never paints gpui-component's own
-    // near-white background over it (Task 1; mirrors `add_project.rs::field`).
-    let field_wrapper = |i: usize| -> Option<gpui::Div> {
-        layer.fields.get(i).map(|f| {
-            let focused = f.state().read(cx).focus_handle(cx).is_focused(window);
+    // ── Lifecycle scripts: a compact 3-row table (§ redesign point 3). Each
+    // row is a fixed label column, a borderless flex-1 mono input whose only
+    // chrome is a 1px bottom rule, and a trailing status glyph. The three
+    // buffers are genuine `ModalInput::single_line` fields now (they used to
+    // be `multi_line` textareas) — see `views/modals/mod.rs`'s `ScriptsEditor`
+    // arm for why a `multi_line` buffer squeezed into one row broke typing.
+    let script_row = |i: usize, label: &'static str, desc: &'static str| -> AnyElement {
+        let Some(f) = layer.fields.get(i) else {
+            return div().into_any_element();
+        };
+        let focused = f.state().read(cx).focus_handle(cx).is_focused(window);
+        let has_value = !f.value(cx).trim().is_empty();
+        let rule = if focused { c::MAGENTA() } else { c::BORDER_SOFT() };
+        let status: AnyElement = if has_value {
+            status_dot(DOT_SM, c::GREEN()).into_any_element()
+        } else {
             div()
-                .w_full()
-                .px(rpx(SPACE_2XL))
-                .py(rpx(SPACE_LG))
-                .rounded(rpx(RADIUS_CONTROL))
-                .bg(c::BG_RAIL())
+                .size(rpx(DOT_SM))
+                .rounded_full()
                 .border_1()
-                .border_color(if focused { c::MAGENTA() } else { c::BORDER() })
-                .font(gpui::font(crate::fonts::MONO_FAMILY))
-                .text_size(rpx(TEXT_TITLE))
-                .child(
-                    gpui_component::input::Input::new(f.state())
-                        .appearance(false)
-                        .w_full(),
-                )
-        })
-    };
+                .border_color(c::FG_MUTE())
+                .into_any_element()
+        };
 
-    let name_section = div()
-        .flex()
-        .flex_col()
-        .gap(rpx(SPACE_SM))
-        .child(section_header("NAME", SPACE_SM, 0.0))
-        .children(field_wrapper(0));
-
-    let field = |i: usize, label: &'static str, desc: &'static str| {
-        let mut d = div()
+        div()
+            .id(("se-script-row", i as u64))
             .flex()
-            .flex_col()
-            .gap(rpx(SPACE_SM))
+            .items_center()
+            .gap(rpx(SPACE_XL))
+            .py(rpx(SPACE_LG))
             .w_full()
-            .child(ui(label, TEXT_BODY, c::FG()))
-            .child(ui(desc, TEXT_SMALL, c::FG_MUTE()));
-        if let Some(input_el) = field_wrapper(i) {
-            d = d.child(input_el);
-        }
-        d
+            .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(desc).build(window, cx))
+            .child(
+                div()
+                    .w(rpx(SCRIPT_LABEL_COL_W))
+                    .flex_shrink_0()
+                    .child(ui(label, TEXT_BODY, c::FG())),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .border_b_1()
+                    .border_color(rule)
+                    .font(gpui::font(crate::fonts::MONO_FAMILY))
+                    .text_size(rpx(TEXT_BODY))
+                    .child(
+                        gpui_component::input::Input::new(f.state())
+                            .appearance(false)
+                            // Zero `Input`'s own `input_px`/`input_py` inset
+                            // (see the title field's comment above) so the
+                            // mono text sits flush against the row's bottom
+                            // rule rather than floating inside a hidden box.
+                            .pl(gpui::px(0.0))
+                            .pr(gpui::px(0.0))
+                            .py(gpui::px(0.0))
+                            .w_full(),
+                    ),
+            )
+            .child(
+                div()
+                    .w(rpx(SCRIPT_STATUS_COL_W))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(status),
+            )
+            .into_any_element()
     };
 
-    let fields = div()
+    let lifecycle_table = div()
         .flex()
         .flex_col()
-        .gap(rpx(SPACE_3XL))
-        .child(field(
+        .child(script_row(
             1,
             "Setup",
             "Runs once when a worktree is created, inside its directory.",
         ))
-        .child(field(
+        .child(script_row(
             2,
             "Run",
             "Runs on demand from the play button, in an interactive terminal tab.",
         ))
-        .child(field(
+        .child(script_row(
             3,
             "Teardown",
             "Runs before a worktree is deleted, while it still exists.",
         ));
 
-    let scroll_area = div()
-        .id("scripts-editor-scroll")
-        .max_h(rpx(SCRIPTS_SCROLL_MAX_H))
-        .overflow_y_scroll()
-        .child(fields);
-
     let lifecycle_section = div()
         .flex()
         .flex_col()
         .gap(rpx(SPACE_SM))
-        .child(section_header("LIFECYCLE SCRIPTS", SPACE_SM, 0.0))
+        .child(ui("Lifecycle scripts", TEXT_BODY, c::FG()))
+        .child(lifecycle_table)
         .child(ui(
             "Shared by every worktree of this project, run via $SHELL -lc. Blank disables the step.",
             TEXT_SMALL,
             c::FG_MUTE(),
-        ))
-        .child(scroll_area);
-
-    let footer_row = div()
-        .flex()
-        .items_center()
-        .gap(rpx(SPACE_LG))
-        .child(click_action(
-            "se-archive",
-            "Archive project",
-            ModalBtn::Danger,
-            dispatch,
-            ModalClick::OpenArchiveGate,
-        ))
-        .child(div().flex_1())
-        .child(click_action(
-            "se-cancel",
-            "Cancel",
-            ModalBtn::Plain,
-            dispatch,
-            ModalClick::Cancel,
-        ))
-        .child(click_action(
-            "se-save",
-            "Save",
-            ModalBtn::Primary,
-            dispatch,
-            ModalClick::Save,
         ));
 
-    modal_panel(
-        MODAL_W_LG,
+    // ── Footer: one strip mixing a danger-colored text action, the discard
+    // hint and the two buttons (§ redesign point 4), the same mixed-content
+    // pattern `settings_modal`'s footer uses (`settings.rs:890-916`). ──
+    let footer = modal_footer_row(
         div()
-            .child(modal_header(
-                format!("Project Settings — {project_name}"),
-                c::CYAN(),
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_LG))
+            .child(
+                div()
+                    .id("se-archive")
+                    .cursor_pointer()
+                    .child(ui("Archive project", TEXT_BODY, c::RED()))
+                    .on_mouse_down(gpui::MouseButton::Left, {
+                        let dispatch = std::rc::Rc::clone(dispatch);
+                        move |_, window, cx| {
+                            dispatch(ModalClick::OpenArchiveGate, window, cx);
+                        }
+                    }),
+            )
+            .child(crate::views::components::footer_hint("esc", "discard"))
+            .child(div().flex_1())
+            .child(click_action(
+                "se-cancel",
+                "Cancel",
+                ModalBtn::Plain,
+                dispatch,
+                ModalClick::Cancel,
             ))
+            .child(click_action(
+                "se-save",
+                "Save",
+                ModalBtn::Primary,
+                dispatch,
+                ModalClick::Save,
+            )),
+    );
+
+    modal_panel(
+        MODAL_W_LG2,
+        div()
+            .child(header)
             .child(modal_body(
                 div()
                     .flex()
                     .flex_col()
                     .gap(rpx(SPACE_2XL))
-                    .child(name_section)
-                    .child(project_theme_section)
-                    .child(lifecycle_section)
-                    .child(footer_row),
+                    .child(theme_card)
+                    .child(lifecycle_section),
             ))
-            // Tab INDENTS inside a buffer; traversal is a click or ctrl-tab
-            // (carried decision 2). The footer says so rather than lying.
-            .child(modal_footer_hints(&[
-                ("tab", "indent"),
-                ("ctrl+tab / click", "next buffer"),
-                ("esc", "discard"),
-            ])),
+            .child(footer),
     )
     .into_any_element()
 }

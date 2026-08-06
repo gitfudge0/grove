@@ -422,6 +422,10 @@ impl ModalLayer {
             Some(ModalKind::Input) => self.submit_input(window, cx),
             Some(ModalKind::AgentPicker) => self.submit_agent_picker(cx),
             Some(ModalKind::AddProject) => self.wizard_next(window, cx),
+            // The name field and the three lifecycle buffers are all
+            // single-line now; Enter saves, exactly like clicking `Save`
+            // (`ModalClick::Save`, `settings.rs`).
+            Some(ModalKind::ScriptsEditor) => self.save_scripts(cx),
             _ => {}
         }
     }
@@ -449,6 +453,9 @@ impl ModalLayer {
             ModalAction::ThemeManagerDeleteCancel => self.theme_manager_delete_cancel(cx),
             ModalAction::ThemeManagerRenameSubmit => self.theme_manager_rename_submit(cx),
             ModalAction::ThemeManagerRenameCancel => self.theme_manager_rename_cancel(cx),
+            ModalAction::ScriptsRenameStart => self.scripts_rename_start(window, cx),
+            ModalAction::ScriptsRenameCommit => self.scripts_rename_commit(window, cx),
+            ModalAction::ScriptsRenameCancel => self.scripts_rename_cancel(window, cx),
             ModalAction::OnboardSkip => self.onboard_skip(cx),
             ModalAction::OnboardAdvance => self.onboard_advance(window, cx),
             ModalAction::OnboardToggleFocus => self.onboard_toggle_focus(window, cx),
@@ -622,11 +629,20 @@ impl ModalLayer {
                 ));
             }
             Modal::ScriptsEditor(st) => {
-                // The name field is first and single-line so it participates
-                // in the same ctrl+tab / click buffer traversal as the three
-                // lifecycle buffers below it.
+                // The name field is first so it keeps index 0 for
+                // `sync_wizard_buffers`/rename, even though display mode
+                // doesn't render it — only rename mode does
+                // (`settings.rs::scripts_editor`). The three lifecycle
+                // buffers are genuinely single-line `ModalInput`s; the actual
+                // typing bug was never these fields' height — it was
+                // `crate::modal`'s verdict table returning `V::Ignore` for
+                // every character key, which reaches `cx.stop_propagation()`
+                // (`:388` below) before the platform input handler ever
+                // consults the focused `Input`. Fixed by routing
+                // `Modal::ScriptsEditor` to `V::FallThrough` like every other
+                // modal with real text fields.
                 self.fields.push(ModalInput::single_line(
-                    InputPolicy::default(),
+                    policy,
                     "project name",
                     &st.name,
                     window,
@@ -637,8 +653,9 @@ impl ModalLayer {
                     ("npm run dev", &st.run),
                     ("docker compose down", &st.teardown),
                 ] {
-                    self.fields
-                        .push(ModalInput::multi_line(placeholder, initial, 6, window, cx));
+                    self.fields.push(ModalInput::single_line(
+                        policy, placeholder, initial, window, cx,
+                    ));
                 }
             }
             Modal::ThemeManager {
@@ -675,7 +692,15 @@ impl ModalLayer {
             );
             self.field_subs.push(sub);
         }
-        match self.fields.first() {
+        // `ScriptsEditor`'s field 0 (the name) is not rendered in display
+        // mode — the header shows static text plus a pencil until it's
+        // clicked — so focusing it on open would point the caret at nothing.
+        // Field 1 (Setup) is the first field actually on screen.
+        let default_focus = match modal {
+            Modal::ScriptsEditor(_) => self.fields.get(1).or_else(|| self.fields.first()),
+            _ => self.fields.first(),
+        };
+        match default_focus {
             // A field that is never focused silently eats nothing and looks
             // broken.
             Some(f) => f.focus_at_end(window, cx),

@@ -57,6 +57,9 @@ pub const MODAL_W_MD: f32 = 480.0;
 /// Modals whose rows carry a secondary column — a path, a hint, a trailing
 /// control — and would otherwise truncate at [`MODAL_W_MD`].
 pub const MODAL_W_LG: f32 = 560.0;
+/// The Project Settings panel: an editable-title header plus a compact
+/// lifecycle-scripts table, between [`MODAL_W_LG`] and [`MODAL_W_XL`].
+pub const MODAL_W_LG2: f32 = 600.0;
 /// The widest panel: the command palette and Settings, which host a scrolling
 /// results list rather than a form. Nothing goes above this.
 pub const MODAL_W_XL: f32 = 640.0;

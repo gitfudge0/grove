@@ -741,14 +741,20 @@ fn the_modal_binding_out_ranks_the_input_binding() {
     // Tab is claimed only where the modal asked for it.
     assert!(winning_action(ModalKind::AddProject, "tab").starts_with("grove_modal::"));
     assert!(!winning_action(ModalKind::SessionLauncher, "tab").starts_with("grove_modal::"));
-    // A multiline buffer keeps everything: Enter is a newline, Tab indents.
-    for key in ["up", "down", "enter", "tab"] {
+    // The name field and the three lifecycle buffers are all single-line
+    // since the "Variant D" redesign (`views/modals/mod.rs`'s `ScriptsEditor`
+    // field-construction arm; `InputPolicy::for_modal` no longer marks this
+    // kind `multi_line`), so Up/Down/Enter are the modal's, exactly like
+    // every other single-line-only kind above. It still doesn't want Tab
+    // (`ModalKind::wants_tab`), so Tab stays the field's own.
+    for key in ["up", "down", "enter"] {
         let winner = winning_action(ModalKind::ScriptsEditor, key);
         assert!(
-            !winner.starts_with("grove_modal::"),
+            winner.starts_with("grove_modal::"),
             "the scripts editor lost {key} to {winner}"
         );
     }
+    assert!(!winning_action(ModalKind::ScriptsEditor, "tab").starts_with("grove_modal::"));
     // Escape is nobody's action here — it still propagates to `on_key_down`.
     assert_eq!(
         winning_action(ModalKind::SessionLauncher, "escape"),

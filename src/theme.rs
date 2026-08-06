@@ -125,10 +125,20 @@ pub fn BORDER_SOFT() -> Hsla {
 /// Modal scrim: a translucent wash derived from the theme rather than a
 /// fixed black. Dark themes dim toward black; light themes dim toward the
 /// foreground so the wash stays visible on near-white backgrounds.
+///
+/// Shared by every modal (`scrim`/`scrim_top_drop`, `views/components.rs`),
+/// so this is a global bump rather than a modal-local override: every modal
+/// benefits from the background actually receding instead of just the one
+/// under review. `0.16` read as barely-there — PTY text stayed fully legible
+/// through it — so both tones sit inside the requested α0.55-0.70 band, with
+/// light themes a touch stronger since a bright page reads through a wash
+/// more than a dark one does at the same alpha.
 pub fn SCRIM() -> Hsla {
     theme::with_current(|t| {
-        let toward = if is_dark_of(t) { BLACK } else { ic(t.fg) };
-        alpha_rgba(mix(ic(t.bg), toward, 0.9), 0.16)
+        let dark = is_dark_of(t);
+        let toward = if dark { BLACK } else { ic(t.fg) };
+        let alpha = if dark { 0.62 } else { 0.7 };
+        alpha_rgba(mix(ic(t.bg), toward, 0.9), alpha)
     })
     .into()
 }

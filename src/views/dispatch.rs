@@ -68,6 +68,10 @@ pub enum ModalClick {
     ThemeNew,
     ThemeEditOpen(usize),
     ThemeEditSave,
+    /// ScriptsEditor header: pencil / check / X.
+    ScriptsRenameStart,
+    ScriptsRenameCommit,
+    ScriptsRenameCancel,
     /// AddProject / Onboarding wizard.
     WizardBrowse,
     WizardPickDir(usize),

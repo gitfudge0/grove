@@ -65,7 +65,11 @@ impl InputPolicy {
     /// The policy a given modal's field runs under, derived from the pure
     /// state machine so the two can never disagree.
     pub fn for_modal(kind: ModalKind) -> Self {
-        let multi_line = matches!(kind, ModalKind::ScriptsEditor | ModalKind::ThemeManager);
+        // `ScriptsEditor`'s name field and its three lifecycle buffers are
+        // all genuinely single-line since the "Variant D" redesign
+        // (`views/modals/mod.rs`'s `ScriptsEditor` field-construction arm) —
+        // `ThemeManager`'s editor buffer is the only survivor here.
+        let multi_line = matches!(kind, ModalKind::ThemeManager);
         Self {
             wants_arrows: kind.wants_arrows(),
             // A multiline buffer never claims Tab — see the module doc.
@@ -201,11 +205,20 @@ mod tests {
 
     #[test]
     fn multiline_modals_never_claim_tab_so_it_indents() {
-        for kind in [ModalKind::ScriptsEditor, ModalKind::ThemeManager] {
-            let p = InputPolicy::for_modal(kind);
-            assert!(p.multi_line, "{kind:?}");
-            assert!(!p.wants_tab, "{kind:?} must let Tab indent");
-        }
+        let kind = ModalKind::ThemeManager;
+        let p = InputPolicy::for_modal(kind);
+        assert!(p.multi_line, "{kind:?}");
+        assert!(!p.wants_tab, "{kind:?} must let Tab indent");
+    }
+
+    /// `ScriptsEditor`'s name field and its three lifecycle buffers are all
+    /// genuinely single-line since the "Variant D" redesign, so its fields
+    /// get the same `Enter`/`Up`/`Down` bindings any other single-line-only
+    /// modal gets (`modal_input_bindings` in `src/keymap.rs` skips a `kind`
+    /// entirely while `multi_line` is set).
+    #[test]
+    fn scripts_editor_is_no_longer_multi_line() {
+        assert!(!InputPolicy::for_modal(ModalKind::ScriptsEditor).multi_line);
     }
 
     #[test]

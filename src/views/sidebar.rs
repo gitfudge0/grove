@@ -320,6 +320,7 @@ impl Sidebar {
                             setup: p.scripts.setup.clone().unwrap_or_default(),
                             run: p.scripts.run.clone().unwrap_or_default(),
                             teardown: p.scripts.teardown.clone().unwrap_or_default(),
+                            renaming: false,
                         })
                 };
                 if let Some(state) = state {
