@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use gpui::{div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, Window};
 
 use crate::activity::ActivityState;
-use crate::fonts::{MONO_FAMILY, UI_FAMILY};
 use crate::entities::activity_store::ActivityStore;
 use crate::entities::animation_clock::AnimationClock;
 use crate::entities::project_tree::ProjectTree;
@@ -23,6 +22,7 @@ use crate::entities::upgrade_state::upgrade_available;
 use crate::entities::workspace_state::{
     clamp_sidebar_width, term_portion_for_cursor, LiveTile, PtyPane, WorkspaceState, RAIL_W,
 };
+use crate::fonts::{MONO_FAMILY, UI_FAMILY};
 use crate::keymap;
 use crate::settings::SettingsState;
 use crate::theme as c;
@@ -34,9 +34,9 @@ use crate::views::session_header::{self, SessionHeaderData, ToolAction, ToolClus
 use crate::views::sidebar::{self, Sidebar};
 use crate::views::statusbar::{self, StatusbarCtx};
 use crate::views::term_panel::{self, PanelAction, PanelCtx, ShellTab};
-use crate::views::tokens::{ICON_SM, SPACE_MD, SPACE_SM, TEXT_MICRO};
 use crate::views::terminal_tab::{self, TerminalTabAction, TerminalTabCtx};
 use crate::views::terminal_view::TerminalView;
+use crate::views::tokens::{ICON_SM, SPACE_MD, SPACE_SM, TEXT_MICRO};
 use crate::zoom::{self, ZoomState};
 
 pub struct Workspace {

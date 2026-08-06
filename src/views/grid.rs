@@ -413,9 +413,11 @@ fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
             ui(data.agent_label, TEXT_MICRO, c::FG_DIM()).font_weight(gpui::FontWeight::SEMIBOLD),
         );
     if fit.project {
-        identity = identity
-            .child(ui("·", TEXT_MICRO, c::FG_MUTE()))
-            .child(ui(data.project.clone(), TEXT_MICRO, c::FG_MUTE()));
+        identity = identity.child(ui("·", TEXT_MICRO, c::FG_MUTE())).child(ui(
+            data.project.clone(),
+            TEXT_MICRO,
+            c::FG_MUTE(),
+        ));
     }
     // Branchless sessions skip the segment entirely — otherwise the header
     // shows a trailing dot with nothing after it.

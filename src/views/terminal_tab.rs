@@ -147,38 +147,33 @@ fn home_terminal_bar(ctx: &TerminalTabCtx) -> AnyElement {
                     .min_w_0()
                     .flex_1()
                     .tooltip(move |window, cx| {
-                        gpui_component::tooltip::Tooltip::new(context.clone())
-                            .build(window, cx)
+                        gpui_component::tooltip::Tooltip::new(context.clone()).build(window, cx)
                     }),
             ),
         )
         .child(ui("~", TEXT_BODY, c::FG_MUTE()).flex_shrink_0())
         .child(vline().flex_shrink_0())
-        .child(
-            div().flex_shrink_0().child(tool_btn(
-                "home-term-restart",
-                "restart",
-                "restart",
-                false,
-                false,
-                move |window, cx| dispatch(TerminalTabAction::Restart, window, cx),
-            )),
-        )
-        .child(
-            div().flex_shrink_0().child(tool_btn(
-                "home-term-zen",
-                "zen",
-                // In zen the bar is the only way back out by mouse.
-                if ctx.chrome_visible {
-                    "zen"
-                } else {
-                    "exit zen"
-                },
-                false,
-                false,
-                move |window, cx| zen_dispatch(TerminalTabAction::ToggleZen, window, cx),
-            )),
-        );
+        .child(div().flex_shrink_0().child(tool_btn(
+            "home-term-restart",
+            "restart",
+            "restart",
+            false,
+            false,
+            move |window, cx| dispatch(TerminalTabAction::Restart, window, cx),
+        )))
+        .child(div().flex_shrink_0().child(tool_btn(
+            "home-term-zen",
+            "zen",
+            // In zen the bar is the only way back out by mouse.
+            if ctx.chrome_visible {
+                "zen"
+            } else {
+                "exit zen"
+            },
+            false,
+            false,
+            move |window, cx| zen_dispatch(TerminalTabAction::ToggleZen, window, cx),
+        )));
 
     div()
         .flex()

@@ -20,7 +20,6 @@ use crate::theme as c;
 /// Session bar height (`src/gui/metrics.rs:17`).
 pub const SESSBAR_H: f32 = 36.0;
 
-
 /// What the session bar's right-hand tool cluster asks the workspace to do
 /// (Plan 07 Task 5 Step 4, recorded ambiguity 2 — `terminal.rs:592-620`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,10 +214,7 @@ pub fn session_header(
         .min_w_0()
         .gap(rpx(SPACE_MD))
         .overflow_hidden()
-        .child(
-            crate::icons::icon(data.icon_name, ICON_MD, c::FG())
-                .into_any_element(),
-        )
+        .child(crate::icons::icon(data.icon_name, ICON_MD, c::FG()).into_any_element())
         .child(
             label_text(data.label.clone(), TEXT_TITLE, c::FG(), true)
                 .flex_shrink_0()
@@ -266,8 +262,7 @@ pub fn session_header(
                 .min_w_0()
                 .flex_1()
                 .tooltip(move |window, cx| {
-                    gpui_component::tooltip::Tooltip::new(full_title.clone())
-                        .build(window, cx)
+                    gpui_component::tooltip::Tooltip::new(full_title.clone()).build(window, cx)
                 })
                 .into_any_element()
         };
@@ -341,7 +336,6 @@ mod tests {
         assert_eq!(truncate_middle("ααααββββ", 5).chars().count(), 5);
         assert_eq!(truncate_middle("abc", 1), "abc");
     }
-
 
     /// A branchless session (a home terminal) must not render an orphan `·`.
     #[test]

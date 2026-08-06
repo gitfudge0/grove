@@ -299,7 +299,12 @@ impl ProjectTree {
     /// (spec §4). Three behaviors, all load-bearing: the 5s throttle, the
     /// in-flight guard that **skips** rather than overlaps, and dropping —
     /// never staling — an entry whose `git` call failed.
-    pub fn maybe_poll_git_state(&mut self, paths: Vec<String>, focused: bool, cx: &mut Context<Self>) {
+    pub fn maybe_poll_git_state(
+        &mut self,
+        paths: Vec<String>,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) {
         if !self.git_poll_due(Instant::now(), focused) || paths.is_empty() {
             return;
         }

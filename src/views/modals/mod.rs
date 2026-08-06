@@ -654,7 +654,11 @@ impl ModalLayer {
                     ("docker compose down", &st.teardown),
                 ] {
                     self.fields.push(ModalInput::single_line(
-                        policy, placeholder, initial, window, cx,
+                        policy,
+                        placeholder,
+                        initial,
+                        window,
+                        cx,
                     ));
                 }
             }
