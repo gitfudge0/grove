@@ -23,32 +23,22 @@ use crate::theme as c;
 use super::{Modal, ModalClick, ModalDispatch, ModalLayer, SettingToggle};
 use crate::modal::{ScriptsEditorState, ThemePickerReturn, ThemePickerScope};
 use crate::views::components::{
-    body_text, card, click_action, click_checkbox, click_row, divider_h, flat_icon_btn,
-    flat_text_btn, keycap, modal_body, modal_checkbox, modal_footer_hints, modal_footer_row,
-    modal_header, modal_header_row, modal_panel, mono, row_sublabel, section_header, seg_button,
-    seg_group, status_dot, ui, ModalBtn, OnToggle, RowDensity, SegSide, SublabelTone,
+    body_text, card, click_action, click_checkbox, click_row, divider_h, field_underline,
+    flat_icon_btn, flat_text_btn, flat_text_btn_tinted, keycap, modal_body, modal_checkbox,
+    modal_footer_hints, modal_footer_row, modal_header, modal_header_row, modal_panel, mono,
+    row_sublabel, section_header, seg_button, seg_group, status_dot, status_gutter, ui, ModalBtn,
+    OnToggle, RowDensity, SegSide, SublabelTone,
 };
 use crate::views::workspace::Workspace;
 use crate::zoom::{ZoomState, ZOOM_DEFAULT, ZOOM_STEP};
 
 // ── local layout geometry (§8.4: layout constants live in the owning module) ──
+//
+// ROW_PX, ROW_PY, ROW_LINE_GAP, ROW_MIN_H, MODAL_SCROLL_MAX_H,
+// FIELD_LABEL_COL_W, STATUS_DOT_COL_W, ICON_BTN_W, ICON_BTN_W_SM,
+// STEPPER_BTN_W and CARD_LABEL_INDENT now live in `tokens.rs` (via the
+// `use ... tokens::*` above) — both modals in this file share them.
 
-/// A settings row that carries a trailing control (segmented group, stepper)
-/// rather than plain text. Derived (§7.3's `FOOTER_RADIUS` pattern): CONTROL_H
-/// (22) plus SPACE_SM (4) top+bottom, so every control fits inside a settings
-/// row without stacking or clipping.
-const FIELD_H: f32 = CONTROL_H + SPACE_SM * 2.0;
-
-/// A two-line (label + sublabel) settings row. Taller than [`FIELD_H`] for the
-/// same reason `PALETTE_ROW_H` is taller than `ROW_H` (§8.1): extra line of
-/// content, not a new density.
-const FIELD_H_TALL: f32 = FIELD_H + TEXT_SMALL + SPACE_SM;
-
-/// The Settings sections scroll before the modal outgrows a laptop viewport —
-/// 14 whole [`FIELD_H`] rows tall (a multiple, not an arbitrary height) so the
-/// clip line never lands mid-row. 14 * 30 = 420, unchanged from the previous
-/// literal value.
-const SETTINGS_SCROLL_MAX_H: f32 = FIELD_H * 14.0;
 /// The changelog release list.
 const CHANGELOG_SCROLL_MAX_H: f32 = 420.0;
 
@@ -56,23 +46,11 @@ const CHANGELOG_SCROLL_MAX_H: f32 = 420.0;
 /// rows do not reflow when the pill swaps for the button (§13).
 const TOOL_ACTION_W: f32 = 84.0;
 
-/// The leading status-dot column in a Tools row: [`DOT_MD`] plus a little
-/// breathing room on each side, so every agent name starts at the same x
-/// regardless of whether a row happens to show a dot.
-const STATUS_DOT_COL_W: f32 = DOT_MD + SPACE_SM * 2.0;
-
 /// The chord column in the shortcut overlay.
 const CHORD_COL_W: f32 = 150.0;
 /// The static rows' chord column: the same grid, one gutter wider, because
 /// their literal chords (`cmd+c / cmd+v`) are longer than any registry chord.
 const STATIC_CHORD_COL_W: f32 = CHORD_COL_W + SPACE_XL * 2.0;
-
-/// The square box of a header/footer icon button.
-const ICON_BTN_W: f32 = 28.0;
-/// The narrower icon button used in the footer strip.
-const ICON_BTN_W_SM: f32 = 24.0;
-/// The stepper buttons inside the App-size segmented group.
-const STEPPER_BTN_W: f32 = 20.0;
 
 /// The current value shown on a settings row.
 pub fn setting_value(row: SettingRow, cx: &App) -> String {
@@ -620,6 +598,7 @@ fn setting_row_grid(
     sublabel: Option<(&'static str, SublabelTone)>,
     control: Option<AnyElement>,
     chevron: bool,
+    status: Option<AnyElement>,
 ) -> Div {
     let mut cluster = div().flex().items_center().gap(rpx(SPACE_MD));
     cluster = cluster.children(control);
@@ -639,42 +618,53 @@ fn setting_row_grid(
         .min_w_0()
         .flex()
         .flex_col()
-        .gap(rpx(SPACE_SM))
+        .gap(rpx(ROW_LINE_GAP))
         .child(label_line);
     if let Some((sub, tone)) = sublabel {
         col = col.child(row_sublabel(sub, tone));
     }
 
-    div().flex().items_start().w_full().child(col)
+    // `items_start`, deliberately: a tall sublabel must not drag the row's
+    // cross-axis alignment around. [`status_gutter`] is fixed at `CONTROL_H`
+    // and centres its own mark inside that height, which is what actually
+    // puts the mark on the label line — not this container's alignment.
+    div()
+        .flex()
+        .items_start()
+        .w_full()
+        .child(status_gutter(status))
+        .child(col)
 }
 
 /// A non-interactive row — the control itself (checkbox, segmented group,
 /// stepper) carries the interaction, so the row box stays inert rather than
-/// gaining a second, larger hit target over the same setting.
+/// gaining a second, larger hit target over the same setting. Every row leads
+/// with a [`status_gutter`] (empty here — no static row carries a status
+/// mark) so labels align with the rows that do. Sized by [`ROW_PX`]/[`ROW_PY`]
+/// padding around its content, with [`ROW_MIN_H`] as a floor only — never a
+/// fixed height (§9.1's `RowDensity::Card` precedent, applied to every
+/// settings row rather than treating them as the exception).
 fn setting_row_static(
     label: &'static str,
     sublabel: Option<(&'static str, SublabelTone)>,
     control: Option<AnyElement>,
 ) -> Div {
-    let h = if sublabel.is_some() {
-        FIELD_H_TALL
-    } else {
-        FIELD_H
-    };
     div()
         .flex()
         .items_center()
-        .px(rpx(SPACE_XL))
-        .min_h(rpx(h))
-        .child(setting_row_grid(label, sublabel, control, false))
+        .px(rpx(ROW_PX))
+        .py(rpx(ROW_PY))
+        .min_h(rpx(ROW_MIN_H))
+        .child(setting_row_grid(label, sublabel, control, false, None))
 }
 
 /// A drill-in row: the whole row is the hit target because the row *is* the
 /// control (App theme / Manage themes… / Archived projects). `RowDensity::Card`
 /// gives it the card's square, full-bleed hover fill rather than a rounded
-/// rect floating inside the card; its own `px` already applies `SPACE_XL`, so
-/// only the fixed row height needs restating (`Card`'s `py` is `None` —
-/// content decides height).
+/// rect floating inside the card; its `px`/`py` are restated at [`ROW_PX`]/
+/// [`ROW_PY`] (the row padding contract) since `RowDensity::Card`'s own
+/// defaults — `SPACE_XL` px, no py, content decides height — are the shared
+/// shape other `Card`/`Manager` rows outside Settings still want.
 fn setting_row_link(
     id: &'static str,
     label: &'static str,
@@ -689,15 +679,61 @@ fn setting_row_link(
         RowDensity::Card,
         dispatch,
         click,
-        setting_row_grid(label, None, value, true),
+        setting_row_grid(label, None, value, true, None),
     )
-    .min_h(rpx(FIELD_H))
+    .min_h(rpx(ROW_MIN_H))
+    .px(rpx(ROW_PX))
+    .py(rpx(ROW_PY))
 }
 
-/// The Settings cards' label indent: flush with the card's left edge plus the
-/// row's own inset. `card()`'s hairline `border_1()` (1px) plus a row's own
-/// `px(SPACE_XL)` (10px) = 11px from the card's outer edge.
-const CARD_LABEL_INDENT: f32 = SPACE_XL + 1.0;
+/// A settings row carrying a borderless [`field_underline`] input rather than
+/// a segmented control or checkbox — the three lifecycle-script rows. On the
+/// same grid [`setting_row_grid`] draws (leading [`status_gutter`], [`ROW_PX`]/
+/// [`ROW_PY`] padding, [`ROW_MIN_H`] as a floor), but with the label pinned to
+/// [`FIELD_LABEL_COL_W`] rather than flexing, so three fields' inputs all
+/// start at the same x. The input column is `flex_1().min_w_0()` so a long
+/// value shrinks and clips at the field's own right edge (via
+/// [`field_underline`]'s `overflow_hidden`) rather than overflowing into the
+/// card's border.
+fn setting_row_field(
+    label: &'static str,
+    sublabel: Option<(&'static str, SublabelTone)>,
+    status: Option<AnyElement>,
+    input: AnyElement,
+) -> Div {
+    let field_line = div()
+        .flex()
+        .items_center()
+        .gap(rpx(SPACE_LG))
+        .child(
+            div()
+                .w(rpx(FIELD_LABEL_COL_W))
+                .flex_shrink_0()
+                .child(ui(label, TEXT_BODY, c::FG())),
+        )
+        .child(div().flex_1().min_w_0().child(input));
+
+    let mut col = div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(rpx(ROW_LINE_GAP))
+        .child(field_line);
+    if let Some((sub, tone)) = sublabel {
+        col = col.child(row_sublabel(sub, tone));
+    }
+
+    div()
+        .flex()
+        .items_start()
+        .w_full()
+        .px(rpx(ROW_PX))
+        .py(rpx(ROW_PY))
+        .min_h(rpx(ROW_MIN_H))
+        .child(status_gutter(status))
+        .child(col)
+}
 
 /// A [`card`] plus the small uppercase label that names it. The label is
 /// [`section_header`] at [`CARD_LABEL_INDENT`] — it used to be a local `ui()`
@@ -706,7 +742,7 @@ fn settings_card_block(label: &'static str, body: Div) -> Div {
     div()
         .flex()
         .flex_col()
-        .child(section_header(label, CARD_LABEL_INDENT, 0.0, SPACE_SM))
+        .child(section_header(label, CARD_LABEL_INDENT, 0.0, SPACE_MD))
         .child(body)
 }
 
@@ -734,14 +770,14 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let tmux_on = store.tmux_enabled.unwrap_or(false);
     let skip_perms_on = store.dangerously_skip_permissions_enabled.unwrap_or(false);
 
-    // ── header ───────────────────────────────────────────────────────────
+    // ── header: title + close only — the save story moved to the footer's
+    // left cluster (§16a) ───────────────────────────────────────────────────
     let header = modal_header_row(
         div()
             .flex()
             .items_center()
             .gap(rpx(SPACE_XL))
             .child(ui("Settings", TEXT_TITLE, c::MAGENTA()).flex_1())
-            .child(ui("Changes save automatically.", TEXT_SMALL, c::FG_MUTE()))
             .child(flat_icon_btn("set-close", "close", ICON_BTN_W, ICON_MD, {
                 let dispatch = std::rc::Rc::clone(dispatch);
                 move |window, cx| dispatch(ModalClick::Cancel, window, cx)
@@ -960,8 +996,8 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         .flex()
         .items_center()
         .justify_end()
-        .px(rpx(SPACE_XL))
-        .min_h(rpx(FIELD_H))
+        .px(rpx(ROW_PX))
+        .min_h(rpx(ROW_MIN_H))
         .border_b_1()
         .border_color(c::BORDER_SOFT())
         .child(flat_icon_btn(
@@ -1024,7 +1060,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let sections = div()
         .flex()
         .flex_col()
-        .gap(rpx(SPACE_2XL))
+        .gap(rpx(SPACE_3XL))
         .child(appearance)
         .child(agents_terminal)
         .child(tools_section)
@@ -1032,7 +1068,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
 
     let scroll_body = div()
         .id("settings-scroll")
-        .max_h(rpx(SETTINGS_SCROLL_MAX_H))
+        .max_h(rpx(MODAL_SCROLL_MAX_H))
         .overflow_y_scroll()
         .child(sections);
 
@@ -1043,9 +1079,11 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         .child(scroll_body);
     body_zone = body_zone.children(update_actions(layer, dispatch, cx));
 
-    // ── footer: the version/status strip merges into the shared chrome,
-    // with an [esc] close hint trailing on the right
-    // (`src/gui/view/modals/settings.rs:589-609`). ─────────────────────────
+    // ── footer: left cluster = context (version/status/refresh, plus the
+    // save story that used to live in the header — §16a) and no destructive
+    // action here; spacer; right cluster = the esc hint immediately left of
+    // the one button (§16). No rule above this strip — `footer_container`'s
+    // `BG_STRIP` fill is already the zone edge (§7). ───────────────────────
     let current_ver = env!("CARGO_PKG_VERSION");
     let footer = modal_footer_row(
         div()
@@ -1064,7 +1102,9 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                     move |window, cx| dispatch(ModalClick::CheckUpdates, window, cx)
                 },
             ))
+            .child(ui("Changes save automatically.", TEXT_SMALL, c::FG_MUTE()))
             .child(div().flex_1())
+            .child(crate::views::components::footer_hint("esc", "close"))
             .child(flat_text_btn(
                 "set-changelog",
                 "View changelog",
@@ -1074,8 +1114,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                     let dispatch = std::rc::Rc::clone(dispatch);
                     move |window, cx| dispatch(ModalClick::OpenChangelog, window, cx)
                 },
-            ))
-            .child(crate::views::components::footer_hint("esc", "close")),
+            )),
     );
 
     modal_panel(
@@ -1084,7 +1123,6 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
             .child(header)
             .child(divider_h())
             .child(modal_body(body_zone))
-            .child(divider_h())
             .child(footer),
     )
     .into_any_element()
@@ -1108,20 +1146,18 @@ fn tool_row(st: &ToolStatus, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
             .border_1()
             .border_color(c::FG_MUTE())
     };
-    let dot_col = div()
-        .w(rpx(STATUS_DOT_COL_W))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .child(dot);
     let mut row = div()
         .flex()
         .items_center()
         .gap(rpx(SPACE_LG))
         .w_full()
-        .px(rpx(SPACE_XL))
-        .py(rpx(SPACE_SM))
-        .child(dot_col)
+        .px(rpx(ROW_PX))
+        // `ROW_PY` like every other row in every card. A denser roster inside
+        // the same card grammar is the drift the unification removed: two
+        // vertical rhythms in one panel read as a mistake, not as a density.
+        .py(rpx(ROW_PY))
+        .min_h(rpx(ROW_MIN_H))
+        .child(status_gutter(Some(dot.into_any_element())))
         .child(ui(cap(st.agent.label()), TEXT_BODY, label_color).flex_1())
         .child(mono(status, TEXT_BODY, status_color));
     let slot = div()
@@ -1353,20 +1389,14 @@ pub fn chord_label(def: &ShortcutDef) -> String {
     format!("{prefix}{}", def.display_keys)
 }
 
-/// The lifecycle table's fixed label column (`Setup` / `Run` / `Teardown`),
-/// wide enough for the longest label without wasting width on the row's
-/// dominant flex-1 input.
-const SCRIPT_LABEL_COL_W: f32 = 92.0;
-/// The lifecycle table's trailing status-glyph column.
-const SCRIPT_STATUS_COL_W: f32 = 20.0;
-
-/// Project Settings — the "editable header" layout. The project name doubles
-/// as the header (no
-/// separate NAME section, no `Project Settings — {name}` title, killing the
-/// duplication the old layout had); the theme row lives in a bordered card;
-/// the three lifecycle buffers render as a compact single-line table; and the
-/// footer merges Archive/Cancel/Save into one strip instead of an in-body row
-/// plus a separate footer.
+/// Project Settings — the "editable header" layout, unified onto the same
+/// row/card grammar App Settings uses (see the module doc and the
+/// modal-unification spec). The project name doubles as the header title (no
+/// separate NAME section, no `Project Settings — {name}` title); the path
+/// sits under it as a mono second line; the theme row and the three lifecycle
+/// buffers each become `settings_card_block`s on the shared row grid; and the
+/// footer's left cluster carries the destructive action, mirroring
+/// `settings_modal`'s footer contract.
 fn scripts_editor(
     layer: &ModalLayer,
     st: &ScriptsEditorState,
@@ -1387,19 +1417,22 @@ fn scripts_editor(
         None
     };
     let value_text = pinned_name.unwrap_or("Default (follow app)").to_string();
-    let value_color = if pinned_name.is_some() {
-        c::CYAN()
-    } else {
-        c::FG_DIM()
-    };
+    // §14: the pinned value is FG_DIM whether or not a theme is pinned — the
+    // wording ("Default (follow app)" versus a theme name) is already the
+    // carrier, so this is the only accented value in either modal and it
+    // loses its CYAN tint.
+    let value_color = c::FG_DIM();
 
-    // ── Header: the project name IS the header (frame E1/E2). Display mode
-    // is static text plus a pencil button; rename is a deliberate, reversible
-    // sub-state (`st.renaming`, mirroring `Modal::ThemeManager`'s `rename`)
-    // entered by the pencil and left by check (accept, locally) or X
-    // (discard) — save/cancel/discard all still flow through
-    // `sync_wizard_buffers`/the modal's own Save, so this is a rendering
-    // change plus the explicit affordance, not a behavior change. ──
+    // ── Header: the project name IS the header title. Display mode is a
+    // MAGENTA TEXT_TITLE run plus a header-tier pencil button; rename is a
+    // deliberate, reversible sub-state (`st.renaming`, mirroring
+    // `Modal::ThemeManager`'s `rename`) entered by the pencil and left by
+    // check (accept, locally) or X (discard) — save/cancel/discard all still
+    // flow through `sync_wizard_buffers`/the modal's own Save, so this is a
+    // rendering change plus the explicit affordance, not a behavior change.
+    // A close button sits at the far right, and the path is a mono TEXT_SMALL
+    // second line — the same shape App Settings' header now has (title +
+    // subtitle + close). ──
     let name_field = layer.fields.first();
     let name_focused = st.renaming
         && name_field.is_some_and(|f| f.state().read(cx).focus_handle(cx).is_focused(window));
@@ -1420,8 +1453,8 @@ fn scripts_editor(
             .border_b_1()
             .border_color(title_rule)
             .font(gpui::font(crate::fonts::UI_FAMILY))
-            .text_size(rpx(TEXT_DISPLAY))
-            .text_color(c::FG())
+            .text_size(rpx(TEXT_TITLE))
+            .text_color(c::MAGENTA())
             .child(
                 gpui_component::input::Input::new(f.state())
                     .appearance(false)
@@ -1437,7 +1470,7 @@ fn scripts_editor(
                     .w_full(),
             )
             .into_any_element(),
-        _ => ui(project_name.clone(), TEXT_DISPLAY, c::FG())
+        _ => ui(project_name.clone(), TEXT_TITLE, c::MAGENTA())
             .flex_1()
             .min_w_0()
             .into_any_element(),
@@ -1451,8 +1484,8 @@ fn scripts_editor(
             .child(flat_icon_btn(
                 "se-name-accept",
                 "check",
-                ICON_BTN_W_SM,
-                ICON_SM,
+                ICON_BTN_W,
+                ICON_MD,
                 {
                     let dispatch = std::rc::Rc::clone(dispatch);
                     move |window, cx| dispatch(ModalClick::ScriptsRenameCommit, window, cx)
@@ -1461,8 +1494,8 @@ fn scripts_editor(
             .child(flat_icon_btn(
                 "se-name-discard",
                 "close",
-                ICON_BTN_W_SM,
-                ICON_SM,
+                ICON_BTN_W,
+                ICON_MD,
                 {
                     let dispatch = std::rc::Rc::clone(dispatch);
                     move |window, cx| dispatch(ModalClick::ScriptsRenameCancel, window, cx)
@@ -1470,12 +1503,17 @@ fn scripts_editor(
             ))
             .into_any_element()
     } else {
-        flat_icon_btn("se-name-edit", "edit", ICON_BTN_W_SM, ICON_SM, {
+        flat_icon_btn("se-name-edit", "edit", ICON_BTN_W, ICON_MD, {
             let dispatch = std::rc::Rc::clone(dispatch);
             move |window, cx| dispatch(ModalClick::ScriptsRenameStart, window, cx)
         })
         .into_any_element()
     };
+
+    let close_btn = flat_icon_btn("se-close", "close", ICON_BTN_W, ICON_MD, {
+        let dispatch = std::rc::Rc::clone(dispatch);
+        move |window, cx| dispatch(ModalClick::Cancel, window, cx)
+    });
 
     let title_row = div()
         .flex()
@@ -1483,7 +1521,8 @@ fn scripts_editor(
         .gap(rpx(SPACE_SM))
         .w_full()
         .child(title_el)
-        .child(title_controls);
+        .child(title_controls)
+        .child(close_btn);
 
     let header_content = div()
         .flex()
@@ -1494,56 +1533,41 @@ fn scripts_editor(
         .child(mono(st.project_path.clone(), TEXT_SMALL, c::FG_MUTE()));
     let header = modal_header_row(header_content);
 
-    // ── Project theme: one bordered card (§ redesign point 2). When project
-    // themes are off globally the row dims, drops its chevron, and the reason
-    // moves inline on the right — pushed there by its own flex spacer, not
-    // just a small gap, so it reads as a second, distinct piece of
-    // information rather than a run-on with the value (frame E3).
+    // ── Project theme: a settings_card_block on the shared row grid. Enabled
+    // is a setting_row_link (the same drill-in shape "App theme" uses);
+    // disabled drops the chevron and the interaction, moving FG_MUTE and the
+    // reason to a sublabel rather than an opacity fade (§11/§14).
     let theme_row: AnyElement = if themes_enabled {
-        let content = div()
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_LG))
-            .w_full()
-            .child(ui("Project theme", TEXT_BODY, c::FG()).flex_1())
-            .child(mono(value_text, TEXT_BODY, value_color))
-            .child(crate::icons::icon("chev-right", ICON_SM, c::FG_MUTE()));
-        click_row(
+        setting_row_link(
             "se-theme-row",
-            false,
-            RowDensity::Compact,
+            "Project theme",
+            Some(value_text),
             dispatch,
             ModalClick::OpenProjectTheme,
-            content,
         )
         .into_any_element()
     } else {
-        div()
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_LG))
-            .px(rpx(SPACE_LG))
-            .py(rpx(SPACE_SM))
-            .w_full()
-            .opacity(0.5)
-            .child(ui("Project theme", TEXT_BODY, c::FG_MUTE()).flex_1())
-            .child(mono(value_text, TEXT_BODY, value_color))
-            .child(div().flex_1())
-            .child(mono(
-                "Enable Project themes in Settings",
-                TEXT_MICRO,
-                c::FG_MUTE(),
-            ))
-            .into_any_element()
+        setting_row_grid(
+            "Project theme",
+            Some(("Enable Project themes in Settings", SublabelTone::Normal)),
+            Some(mono(value_text, TEXT_BODY, value_color).into_any_element()),
+            false,
+            None,
+        )
+        .px(rpx(ROW_PX))
+        .py(rpx(ROW_PY))
+        .min_h(rpx(ROW_MIN_H))
+        .into_any_element()
     };
 
-    let theme_card = card(vec![theme_row]);
+    let project_theme_section = settings_card_block("PROJECT THEME", card(vec![theme_row]));
 
-    // ── Lifecycle scripts: a compact 3-row table (§ redesign point 3). Each
-    // row is a fixed label column, a borderless flex-1 mono input whose only
-    // chrome is a 1px bottom rule, and a trailing status glyph. The three
-    // buffers are genuine `ModalInput::single_line` fields now (they used to
-    // be `multi_line` textareas) — see `views/modals/mod.rs`'s `ScriptsEditor`
+    // ── Lifecycle scripts: three divider-separated setting_row_fields inside
+    // a settings_card_block, each carrying its description as a row_sublabel
+    // rather than a hover-only tooltip — a sublabel is visible without a
+    // pointer and does not duplicate an existing component (§13). The three
+    // buffers are genuine `ModalInput::single_line` fields (they used to be
+    // `multi_line` textareas) — see `views/modals/mod.rs`'s `ScriptsEditor`
     // arm for why a `multi_line` buffer squeezed into one row broke typing.
     let script_row = |i: usize, label: &'static str, desc: &'static str| -> AnyElement {
         let Some(f) = layer.fields.get(i) else {
@@ -1551,11 +1575,6 @@ fn scripts_editor(
         };
         let focused = f.state().read(cx).focus_handle(cx).is_focused(window);
         let has_value = !f.value(cx).trim().is_empty();
-        let rule = if focused {
-            c::MAGENTA()
-        } else {
-            c::BORDER_SOFT()
-        };
         let status: AnyElement = if has_value {
             status_dot(DOT_SM, c::GREEN()).into_any_element()
         } else {
@@ -1567,107 +1586,97 @@ fn scripts_editor(
                 .into_any_element()
         };
 
-        div()
+        let input = field_underline(focused)
             .id(("se-script-row", i as u64))
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_XL))
-            .py(rpx(SPACE_LG))
-            .w_full()
-            .tooltip(move |window, cx| {
-                gpui_component::tooltip::Tooltip::new(desc).build(window, cx)
-            })
-            .child(div().w(rpx(SCRIPT_LABEL_COL_W)).flex_shrink_0().child(ui(
-                label,
-                TEXT_BODY,
-                c::FG(),
-            )))
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .border_b_1()
-                    .border_color(rule)
-                    .font(gpui::font(crate::fonts::MONO_FAMILY))
-                    .text_size(rpx(TEXT_BODY))
-                    .child(
-                        gpui_component::input::Input::new(f.state())
-                            .appearance(false)
-                            // Zero `Input`'s own `input_px`/`input_py` inset
-                            // (see the title field's comment above) so the
-                            // mono text sits flush against the row's bottom
-                            // rule rather than floating inside a hidden box.
-                            .pl(gpui::px(0.0))
-                            .pr(gpui::px(0.0))
-                            .py(gpui::px(0.0))
-                            .w_full(),
-                    ),
+                gpui_component::input::Input::new(f.state())
+                    .appearance(false)
+                    // Zero `Input`'s own `input_px`/`input_py` inset (see the
+                    // title field's comment above) so the mono text sits
+                    // flush against the field's bottom rule rather than
+                    // floating inside a hidden box.
+                    .pl(gpui::px(0.0))
+                    .pr(gpui::px(0.0))
+                    .py(gpui::px(0.0))
+                    .w_full(),
             )
-            .child(
-                div()
-                    .w(rpx(SCRIPT_STATUS_COL_W))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(status),
-            )
-            .into_any_element()
+            .into_any_element();
+
+        setting_row_field(
+            label,
+            Some((desc, SublabelTone::Normal)),
+            Some(status),
+            input,
+        )
+        .into_any_element()
     };
 
-    let lifecycle_table = div()
-        .flex()
-        .flex_col()
-        .child(script_row(
+    let lifecycle_rows = vec![
+        script_row(
             1,
             "Setup",
             "Runs once when a worktree is created, inside its directory.",
-        ))
-        .child(script_row(
+        ),
+        script_row(
             2,
             "Run",
             "Runs on demand from the play button, in an interactive terminal tab.",
-        ))
-        .child(script_row(
+        ),
+        script_row(
             3,
             "Teardown",
             "Runs before a worktree is deleted, while it still exists.",
-        ));
+        ),
+    ];
 
-    let lifecycle_section = div()
+    let lifecycle_section = settings_card_block("LIFECYCLE SCRIPTS", card(lifecycle_rows));
+    let lifecycle_caption = ui(
+        "Shared by every worktree of this project, run via $SHELL -lc. Blank disables the step.",
+        TEXT_SMALL,
+        c::FG_MUTE(),
+    );
+
+    // ── the scrolling body: the same MODAL_SCROLL_MAX_H cap App Settings
+    // uses, so a project with a long theme list still fits a laptop
+    // viewport. ─────────────────────────────────────────────────────────────
+    let sections = div()
         .flex()
         .flex_col()
-        .gap(rpx(SPACE_SM))
-        .child(ui("Lifecycle scripts", TEXT_BODY, c::FG()))
-        .child(lifecycle_table)
-        .child(ui(
-            "Shared by every worktree of this project, run via $SHELL -lc. Blank disables the step.",
-            TEXT_SMALL,
-            c::FG_MUTE(),
-        ));
+        .gap(rpx(SPACE_3XL))
+        .child(project_theme_section)
+        .child(lifecycle_section)
+        .child(lifecycle_caption);
 
-    // ── Footer: one strip mixing a danger-colored text action, the discard
-    // hint and the two buttons (§ redesign point 4), the same mixed-content
-    // pattern `settings_modal`'s footer uses (`settings.rs:890-916`). ──
+    let scroll_body = div()
+        .id("scripts-editor-scroll")
+        .max_h(rpx(MODAL_SCROLL_MAX_H))
+        .overflow_y_scroll()
+        .child(sections);
+
+    // ── Footer: left cluster = the destructive action (Archive project, now
+    // a flat_text_btn_tinted rather than a bare `ui()` run with a raw
+    // `on_mouse_down`); spacer; right cluster = the esc hint immediately left
+    // of the Cancel/Save pair (§16). The two save models stay different —
+    // this modal keeps its explicit Cancel/Save rather than adopting App
+    // Settings' autosave. ───────────────────────────────────────────────────
     let footer = modal_footer_row(
         div()
             .flex()
             .items_center()
             .gap(rpx(SPACE_LG))
-            .child(
-                div()
-                    .id("se-archive")
-                    .cursor_pointer()
-                    .child(ui("Archive project", TEXT_BODY, c::RED()))
-                    .on_mouse_down(gpui::MouseButton::Left, {
-                        let dispatch = std::rc::Rc::clone(dispatch);
-                        move |_, window, cx| {
-                            dispatch(ModalClick::OpenArchiveGate, window, cx);
-                        }
-                    }),
-            )
-            .child(crate::views::components::footer_hint("esc", "discard"))
+            .child(flat_text_btn_tinted(
+                "se-archive",
+                "Archive project",
+                TEXT_BODY,
+                SPACE_SM,
+                c::RED(),
+                {
+                    let dispatch = std::rc::Rc::clone(dispatch);
+                    move |window, cx| dispatch(ModalClick::OpenArchiveGate, window, cx)
+                },
+            ))
             .child(div().flex_1())
+            .child(crate::views::components::footer_hint("esc", "discard"))
             .child(click_action(
                 "se-cancel",
                 "Cancel",
@@ -1685,17 +1694,11 @@ fn scripts_editor(
     );
 
     modal_panel(
-        MODAL_W_LG2,
+        MODAL_W_LG,
         div()
             .child(header)
-            .child(modal_body(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(rpx(SPACE_2XL))
-                    .child(theme_card)
-                    .child(lifecycle_section),
-            ))
+            .child(divider_h())
+            .child(modal_body(scroll_body))
             .child(footer),
     )
     .into_any_element()

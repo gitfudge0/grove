@@ -780,12 +780,31 @@ pub fn vline() -> Div {
 
 /// A flat, borderless text button in the same 22px-tall shape as
 /// [`flat_icon_btn`] — used for the zoom percentage's reset label
-/// (`src/gui/widgets/buttons.rs:455-495`, `control_btn_sized`).
+/// (`src/gui/widgets/buttons.rs:455-495`, `control_btn_sized`). Delegates to
+/// [`flat_text_btn_tinted`] at `FG_DIM`, the weight every existing call site
+/// wants, so none of them had to change when the colour axis was added.
 pub fn flat_text_btn(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
     text_size: f32,
     h_padding: f32,
+    on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<Div> {
+    // Delegates to `flat_text_btn_tinted`, which is the one that writes
+    // `.h(rpx(CONTROL_H))` — see its body for the §8.1 declaration this
+    // function shares.
+    flat_text_btn_tinted(id, label, text_size, h_padding, c::FG_DIM(), on_click)
+}
+
+/// [`flat_text_btn`] with the text colour as an axis, so a low-emphasis
+/// destructive action ("Archive project") has a component to be instead of a
+/// bare `ui()` run with a raw `on_mouse_down` and no button shape.
+pub fn flat_text_btn_tinted(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    text_size: f32,
+    h_padding: f32,
+    color: Hsla,
     on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
 ) -> gpui::Stateful<Div> {
     div()
@@ -798,10 +817,66 @@ pub fn flat_text_btn(
         .rounded(rpx(RADIUS_CONTROL))
         .hover(|s| s.bg(c::BG_HOVER()))
         .cursor_pointer()
-        .child(mono(label, text_size, c::FG_DIM()))
+        .child(mono(label, text_size, color))
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             on_click(window, cx);
         })
+}
+
+/// The app-wide borderless text field: a [`CONTROL_H`]-tall box with mono text
+/// vertically centred and a 1px bottom rule, `MAGENTA` when `focused` /
+/// `BORDER_SOFT` at rest. Was open-coded twice inside `scripts_editor` (the
+/// title field and the three script rows); both call sites now build their
+/// `gpui_component::input::Input` inside this shell.
+///
+/// The caller must still zero the wrapped `Input`'s own insets:
+/// `Input::new(state).appearance(false).pl(px(0.0)).pr(px(0.0)).py(px(0.0))`.
+/// `Input` applies its own `input_px`/`input_py` (10px/8px at the default
+/// `Size::Medium`) regardless of `.appearance(false)` — that inset, not the
+/// surrounding divs, is what breaks a field's left edge against the rest of
+/// the panel if left unzeroed.
+pub fn field_underline(focused: bool) -> Div {
+    let rule = if focused {
+        c::MAGENTA()
+    } else {
+        c::BORDER_SOFT()
+    };
+    div()
+        .h(rpx(CONTROL_H))
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .overflow_hidden()
+        .border_b_1()
+        .border_color(rule)
+        .font(gpui::font(MONO_FAMILY))
+        .text_size(rpx(TEXT_BODY))
+}
+
+/// A fixed [`STATUS_DOT_COL_W`] column holding an optional status mark.
+/// Reserved on every settings row so labels align whether or not the row
+/// carries a status — the same principle [`icon_slot`] applies to a fixed
+/// glyph slot ("a fixed slot so titles align regardless of glyph width"),
+/// applied here to the row grid instead of a palette row's leading icon.
+///
+/// Fixed at [`CONTROL_H`] tall and centred *inside that height*, not inside
+/// the row's overall height: a row's outer container is `items_start` (so a
+/// tall sublabel does not drag the whole row's cross-axis alignment around),
+/// which pins this gutter's top edge to the row's first line. Matching that
+/// line's own height — [`CONTROL_H`], the height of every in-row control —
+/// is what puts the mark's centre on the label line rather than the row's
+/// top edge (too high) or the row's overall centre (between the label and a
+/// sublabel, which is worse).
+pub fn status_gutter(dot: Option<AnyElement>) -> Div {
+    div()
+        .w(rpx(STATUS_DOT_COL_W))
+        .h(rpx(CONTROL_H))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .children(dot)
 }
 
 /// Which edge of a joined segmented-control group a [`seg_button`] sits at —

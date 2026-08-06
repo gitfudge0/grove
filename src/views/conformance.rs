@@ -387,17 +387,6 @@ const R4_ALLOW: &[(&str, Option<&str>, &str)] = &[
          the 'Environment' / 'Add your first project' / 'Start your first \
          session' titles) are exactly the sanctioned use.",
     ),
-    (
-        "settings.rs",
-        Some("TEXT_DISPLAY"),
-        "Project Settings' redesigned header (the 'editable header' layout): \
-         the project name IS \
-         the modal's header now, so it carries the one title in the panel — \
-         a deliberate, reviewed exception, not a precedent for a fifth tier \
-         elsewhere in chrome. Narrowed to its two call sites so the rest of \
-         `settings.rs` (Settings, the shortcut overlay, Updating/changelog) \
-         still gets checked.",
-    ),
 ];
 
 #[test]

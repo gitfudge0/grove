@@ -634,14 +634,70 @@ carry two lines of content.
 `TILE_HEAD_H`, which is why a tile header and a chrome button read as the same
 weight.
 
-Two more row heights are derived rather than authored, on the same
-taller-than-`ROW_H`/`PALETTE_ROW_H` precedent above, owned by
-`src/views/modals/settings.rs`:
+A settings row (App Settings and Project Settings both, since the
+Settings-modal unification gave them one shared row grid) is sized by
+**padding around its content**, not by a pinned height. A pinned height makes
+content either rattle inside a box built for something taller, or spill out of
+a box built for something shorter — the settings rows used to manage both at
+once, with a fixed `FIELD_H`/`FIELD_H_TALL` pair that assumed every row was
+either exactly one line or exactly two. §9.1's `RowDensity::Card` already
+documents the right model — it "takes its height from its content rather than
+from padding" — and the settings rows were the exception to that precedent,
+not a second rule. They now follow it:
 
 | Constant | Formula | Value | Owner |
 |---|---|---|---|
-| `FIELD_H` | `CONTROL_H + SPACE_SM * 2` | 30 | `src/views/modals/settings.rs` — a settings row carrying a trailing control (segmented group, stepper), sized so the control fits without stacking or clipping |
-| `FIELD_H_TALL` | `FIELD_H + TEXT_SMALL + SPACE_SM` | 45 | `src/views/modals/settings.rs` — a two-line (label + sublabel) settings row, taller for the same reason `PALETTE_ROW_H` is taller than `ROW_H`: an extra line of content, not a new density |
+| `ROW_PX` | `SPACE_2XL` | 12 | `src/views/tokens.rs` — a settings row's horizontal padding, **both** edges. The missing trailing edge, before this token existed, is what let a long script value run flush into the card's border |
+| `ROW_PY` | `SPACE_LG` | 8 | `src/views/tokens.rs` — a settings row's vertical padding, top and bottom |
+| `ROW_LINE_GAP` | `SPACE_MD` | 6 | `src/views/tokens.rs` — the gap between a row's label line and its sublabel line |
+| `ROW_MIN_H` | `CONTROL_H + ROW_PY * 2` | 38 | `src/views/tokens.rs` — a row's height **floor**, expressed as `min_h` only and never as `h()`: a row containing a `CONTROL_H` (22) control can never collapse smaller than that control fits |
+
+A row's real height falls out of its content plus `ROW_PY`, not out of a
+lookup by row kind: a single-line row measures `ROW_MIN_H` (38); a
+label+sublabel row measures `ROW_PY + CONTROL_H + ROW_LINE_GAP + TEXT_SMALL +
+ROW_PY` (55); and a sublabel that wraps to two lines grows the row instead of
+overflowing it. There is no tall variant to pick — tallness is just more
+content inside the same padding contract.
+
+One more constant is derived from `ROW_MIN_H` rather than authored:
+
+| Constant | Formula | Value | Owner |
+|---|---|---|---|
+| `MODAL_SCROLL_MAX_H` | `ROW_MIN_H * 12` | 456 | `src/views/tokens.rs` — the settings body's scroll cap, both modals |
+| `CARD_LABEL_INDENT` | `SPACE_2XL + 1` | 13 | `src/views/tokens.rs` — a settings card's label indent, derived from the card's own 1px border plus a row's `SPACE_2XL` inset |
+| `STATUS_DOT_COL_W` | `DOT_MD + SPACE_SM * 2` | 15 | `src/views/tokens.rs` — the leading status-dot column reserved on every settings row |
+
+Plus `FIELD_LABEL_COL_W` (92, `src/views/tokens.rs`) — the fixed label-column
+width shared by every field row in Project Settings, so three fields align on
+one edge regardless of label length.
+
+**All of these must stay derived, never re-authored as a literal.** Each
+formula names the failure mode a hardcoded value would reintroduce:
+
+- `MODAL_SCROLL_MAX_H` is a **maximum on the body, not a layout**: rows vary in
+  height now, so it can no longer be read as "N whole rows" the way a
+  fixed-height design could. If it were re-authored as a bare pixel number
+  instead of `ROW_MIN_H * 12`, the moment row geometry moved again a
+  hardcoded cap would silently clip the first Tools row out of the scrollable
+  body rather than growing with it — the same failure this token exists to
+  rule out.
+- `CARD_LABEL_INDENT` tracks a settings row's own horizontal padding. A card
+  label positioned by an independent literal drifts out of true against the
+  rows it names the moment that padding changes — a 1px misalignment that
+  reads as sloppiness rather than as a bug, because nothing crashes.
+
+These are the same "derived, not chosen" discipline as `FOOTER_RADIUS` (§7.3):
+the number is correct only because of what it is computed from, and moves the
+instant its input does.
+
+**This is a rule about content rows inside panels, not about chrome.** The row
+heights in the table at the top of this section — `APPBAR_H`, `SESSBAR_H`,
+`STATUS_H`, `ROW_H`, `PALETTE_ROW_H`, `TILE_HEAD_H` — stay fixed on purpose,
+because alignment across a bar depends on every row in it landing at the same
+pixel. A settings row inside a card has no neighbour bar to align against; a
+worktree row in the sidebar does. Do not carry the padding contract above
+into chrome, and do not carry a chrome bar's fixed height into a panel's
+content rows — each was the fix for a different failure.
 
 ### 8.2 Panel widths
 
@@ -697,14 +753,13 @@ height", it is *the appbar's* height; `RAIL_W` is not "a wide width", it is
 could migrate between, and hoisting them into a shared module would only
 obscure which module owns the number.
 
-Two more examples from `src/views/modals/settings.rs`: `STATUS_DOT_COL_W`
-(`DOT_MD + SPACE_SM * 2`) is *the Tools row's* leading dot column, sized so
-every agent name starts at the same x whether or not its row happens to show a
-dot; `CARD_LABEL_INDENT` (`SPACE_XL + 1`) is *the Settings cards'* label
-indent, derived from the card's own 1px border plus a row's `SPACE_XL` inset.
-Both are single-consumer, module-local `const`s for the same reason
-`APPBAR_H` is — no scale, no second consumer — even though the numbers they
-are built from are tokens.
+`STATUS_DOT_COL_W` (`DOT_MD + SPACE_SM * 2`) and `CARD_LABEL_INDENT`
+(`SPACE_2XL + 1`) used to be exactly this kind of example — single-consumer
+`const`s local to `src/views/modals/settings.rs` — until the Settings-modal
+unification gave each a second consumer (App Settings and Project Settings
+now share one row grid, §9.1). A derived value earns a *scale* home in
+`tokens.rs` the moment a second surface needs the same number for the same
+reason; until then it stays positional and module-local, same as `APPBAR_H`.
 
 **Therefore:** chrome bar heights, rail widths, PTY padding, row heights and
 divider widths stay as named `pub const` in the module that owns the surface.
@@ -733,6 +788,13 @@ does not contradict it.
 Four notches replaced nine ad-hoc widths across 23 call sites. Picking a width
 is now the same move as picking a spacing notch: if a modal is truncating, it
 goes up one tier, and if no tier fits, the modal is carrying too much (§13).
+
+**A fifth notch was tried and retired.** `MODAL_W_LG2` (600) was added to give
+Project Settings a shade more room than `MODAL_W_LG`, outside these four. It
+was deleted during the Settings-modal unification: it is exactly the "modal is
+carrying too much" case this section's closing rule already forbids, and
+Project Settings drops to `MODAL_W_LG` (560) instead. The four notches above
+are the whole scale, not four of five.
 
 ---
 
@@ -790,6 +852,8 @@ It is consumed by `appbar`, `sidebar`, `rows`, `statusbar`, `grid`,
 | `icon_btn(id, name, box_w, box_h, icon_size, color, hover_bg, hover_fg, hover_ring, on_click)` | **The** icon button. Every icon button in the app is this function | `RADIUS_CONTROL`, centred, `cursor_pointer` | box w/h, glyph size, rest tint, hover bg, optional hover fg, optional hover ring | default, hover (bg, optional fg recolour, optional `BORDER_SOFT` ring) |
 | `flat_icon_btn(id, name, box_w, icon_size, on_click)` | Thin wrapper: `icon_btn` at `CONTROL_H`, `FG_DIM` rest, `BG_HOVER` hover, no ring | `h CONTROL_H` (22) | `box_w`, `icon_size` | default, hover |
 | `flat_text_btn(id, label, text_size, h_padding, on_click)` | Flat borderless text button in the same 22px shape | `h CONTROL_H`, `RADIUS_CONTROL`, mono `FG_DIM` | text size, h-padding | default, hover |
+| `flat_text_btn_tinted(id, label, text_size, h_padding, color, on_click)` | `flat_text_btn` with a colour axis, so a low-emphasis destructive action ("Archive project") has a component to be instead of a bare `ui()` run with a raw `on_mouse_down` — no button shape, no hover. A full `Danger` `modal_action` in that footer slot would compete with the footer's own Save/Primary button, which is why this stays flat rather than promoted to a weight | `h CONTROL_H`, `RADIUS_CONTROL` | text size, h-padding, `color` | default, hover |
+| `field_underline(id, content, focused, on_click)` | The app-wide borderless text field: a `CONTROL_H` box, mono text vertically centred, 1px bottom rule, `MAGENTA` when focused / `BORDER_SOFT` at rest, with `Input`'s own `pl`/`pr`/`py` insets zeroed so the rule sits flush under the text rather than under padding. §8.1 makes every in-row control `CONTROL_H`; this was the one control that wasn't — a bare text run with a rule crammed under it, open-coded twice inside `scripts_editor` before the unification. Also `w_full()` plus `overflow_hidden()`, so a long value clips at the field's own right edge instead of running into the enclosing card's border | `h CONTROL_H`, `w_full`, `overflow_hidden`, `border_b_1` | — | default (`BORDER_SOFT`), focused (`MAGENTA`) |
 | `seg_button(id, label, active, side, danger, on_click)` | One segment of a two-way segmented control. Sized by `CONTROL_H` rather than by vertical padding, so a segment is the same 22px as every other in-row control (§8.1) — the same shape `flat_text_btn` uses; `py` would stack on top of the fixed height, so there is none | `h CONTROL_H`, `px SPACE_2XL`, mono `TEXT_SMALL` | `SegSide::{Left,Right}`, `danger` | default, hover, **active**, **inert** (`on_click: None`) |
 | `seg_button_content(id, content, active, side, danger, on_click)` | `seg_button`'s shell around arbitrary content, for glyph segments; `content` owns its padding | outer corners at `RADIUS_CONTROL` on `side` only | as above | as above |
 | `seg_text_color(active, danger)` | The label tint rule: active+danger → `RED`, active → `FG`, else `FG_DIM` | — | — | — |
@@ -836,6 +900,7 @@ parameter list and not a builder.
 | `cue_chip(label)` | Palette leading-glyph cue when a drill-in replaces the search icon | `SEL_TINT_SOFT` fill, mono `TEXT_MICRO` `CYAN` | static |
 | `status_dot(size, color)` | **The** filled activity dot — statusbar, terminal tab bar, sidebar rollups, session header | `rounded_full` | static |
 | `icon_slot(name, size, color)` | Fixed 24px icon slot so titles align regardless of glyph width | w 24 | static |
+| `status_gutter(dot)` | A fixed `STATUS_DOT_COL_W` column, reserved as column one on **every** settings row whether or not that row carries a status dot. Labels then start at the same x whether or not their row shows a dot — `icon_slot`'s rationale ("a fixed slot so titles align regardless of glyph width") applied to the row grid rather than a new idea. Fixed at `CONTROL_H` tall and centres its mark *inside that height*, not inside the row's overall height — the row's outer container is `items_start` (so a tall sublabel never drags the whole row's cross-axis alignment around), which pins this gutter's top edge to the row's first line, and matching that line's own height is what puts the mark's centre on the label line. Centring on the row's overall height instead was a real shipped bug the user caught in the running app: with a sublabel present, the row's centre falls *between* the label and sublabel lines, so the dot floats above the label rather than sitting on it | w `STATUS_DOT_COL_W` (15), h `CONTROL_H` | static |
 | `click_row(id, selected, density, dispatch, click, content)` | The clickable list row every list shares. `density` picks how much room the row gives its content — see `RowDensity` below | `gap SPACE_LG`, plus whatever `density` picks | `RowDensity::{Compact,Manager,Card}` | default, hover (`BG_HOVER`), selected (`BG_HL`), pointer |
 | `palette_row(id, selected, dispatch, click, content)` | Palette results row | `h PALETTE_ROW_H` (44), `px SPACE_2XL`, `RADIUS_GROUP` | default, hover (`BG_HOVER`, **unselected only**), selected (`SEL_TINT_SOFT` + 1px `SEL_RING`), pointer |
 
@@ -873,6 +938,78 @@ falls out of `icon_btn`, `modal_action_sized`, `click_row`, `palette_row`,
 `flat_text_btn`, `seg_button_content` and the enabled `modal_checkbox`. A
 clickable element without it is a bug.
 
+### 9.1.1 Panel-modal grammar
+
+App Settings and Project Settings were built independently and had drifted
+into two different modal grammars — different title sizes, a subtitle on one
+line versus two, a card label on one and a bare heading on the other, a status
+dot leading one row family and trailing the other. The Settings-modal
+unification collapsed both onto one contract. It is written up here as a
+contract rather than as a list of the sixteen-plus individual fixes, because a
+panel modal is not a pile of independent choices — each rule exists because of
+what sits next to it.
+
+**Header.** Always title (`TEXT_TITLE`, `MAGENTA` — the settings family
+accent) plus a close button, and a subtitle on a second line when the modal has
+one to give. The subtitle is mono when it names a path or a value, sans when it
+is prose; App Settings has none, because its one piece of standing context is
+the save story, and that belongs in the footer (below). Two lines, never
+one: a subtitle inline to the right of the title reads as decoration the
+moment the title is long enough to push it out toward the close button. The
+close button is present on every modal, `flat_icon_btn` at the header icon
+tier (28 + `ICON_MD`) — a modal dismissible only by `esc` fails the pointer
+user, and there is no reason a keyboard-only exit should be the only one.
+
+**The one rule after the header.** `divider_h()` sits directly under the
+header, and nowhere above the footer. `footer_container`'s `BG_STRIP` fill is
+already the visual edge of the footer zone — a lighter surface changing to a
+darker one *is* a seam. Adding a rule on top of that fill would be two
+separators marking the same boundary, and the header needs the rule because
+the header has no fill change of its own to do the job.
+
+**Sections.** Every section in a panel modal is a `settings_card_block`: a
+mono, uppercase `TEXT_MICRO` label at `CARD_LABEL_INDENT` sitting over a
+`card()`. A bare `card()` with no label, or a sans heading with no card at
+all, are the two ways this used to fork — both are gone. Rows inside the card
+are divider-separated by `card()`'s own hairlines; a row table that skips
+those dividers is a bespoke shape next to a shared one.
+
+**Rows.** One row family, on `setting_row_grid`, sized by the `ROW_PX`/`ROW_PY`
+padding contract with `ROW_MIN_H` as a floor, not by a pinned per-kind height
+(§8.1). `status_gutter` reserves its column on every row so labels
+align whether or not a row shows a dot (§9.1). Disabled is `FG_MUTE()` plus a
+dropped handler — `Option<handler>` structurally prevents the click, per
+§10.1's disabled pattern — and it is **never** `opacity()`: opacity is not a
+state in this system (§13), and a half-transparent row still paints a hover
+and still eats a click unless the handler is actually gone. Explanatory text
+under a row is a `row_sublabel`, never a `gpui_component` tooltip: a tooltip
+is invisible to a keyboard user, and it duplicates a component
+(`row_sublabel`) that already exists for exactly this job. Values are mono
+`TEXT_BODY` `FG_DIM` and never take an accent tint — §2.3 already requires the
+*text itself* to carry the state ("Default (follow app)" versus a theme name),
+so a tint on top of that would be a second channel for a signal that only
+needed one, and the first candidate for a third selection weight that §4.2
+warns against inventing.
+
+**Footer.** One contract: left cluster = context and secondary/destructive
+actions, a spacer, right cluster = hints then buttons. The hint always sits
+immediately left of the button pair, or right-most when there are none. A
+low-emphasis destructive action in the left cluster — "Archive project" — is a
+`flat_text_btn_tinted` in `RED`, not a full `ModalBtn::Danger`: a bordered
+danger button competing with the right cluster's Save reads as two calls to
+action instead of one primary action with an escape hatch beside it.
+
+**The two save models stay different, on purpose.** App Settings persists
+each control the moment it changes; Project Settings is a form with an
+explicit Save. This looks like the same kind of inconsistency the rest of this
+unification erased, but it is not — it is a real difference in what the modal
+*is*. Unifying it would be worse in both directions: an Apply button bolted
+onto a theme picker adds a step to a change that should be instant, and a
+project rename that commits mid-keystroke would write a half-typed name to
+disk the moment the field lost focus. Two save stories are the correct number
+here; the rest of the grammar above is what makes them still read as one
+family.
+
 ### 9.2 What stays deliberately local, and why
 
 Consolidation is done; these five are the intentional exceptions, each for a
@@ -889,6 +1026,7 @@ the row is no longer local and is not listed here.)
 | `agent_menu`'s item label | `src/views/sidebar.rs` — `agent_menu` | Same reason, stated in the code comment there: "the item's hover recolor lives on the row, so this label must inherit its color." |
 | `row_actions`' agent bar | `src/views/modals/launcher.rs` — `row_actions` | Missing **three** axes at once: box size (`icon_slot` pins a private 24px `ICON_SLOT_W`, the bar needs `AGENT_BTN` = 26), corner rounding (`icon_slot` has none, the bar wants `RADIUS_GROUP`) and a selected-state 1px `YELLOW` border. `icon_slot`'s whole contract is *a fixed slot so titles align*; parameterising all three would leave nothing of it. |
 | Empty-state panels | `src/views/grid.rs` — `empty_state`, `src/views/rows.rs` — `empty_row`, `src/views/terminal_tab.rs` — `empty_terminals_state` | Three genuinely different containers — a full-bleed `size_full` canvas, an inline `py(24)` block inside a scrolling list, and a keycap-carrying hint. Only their inner text is shared, and it already is: all three build from `components::ui` / `mono` at `TEXT_TITLE` + `TEXT_BODY`. |
+| `add_project.rs`'s local `FIELD_H` (28) | `src/views/modals/add_project.rs` | Deliberately **not** on the §8.1 padding contract, and not a candidate to move onto it. Its directory-picker list is windowed by `crate::launcher::scroll_offset_for`, whose visible-slice arithmetic assumes a fixed pixel row height — a content-sized row would desync the picker's scroll math from what is actually on screen. |
 
 The general rule this encodes: **share the text and the shell, not the
 colour-inheritance decision.** Whenever a parent owns the hover recolour, the
@@ -1096,6 +1234,30 @@ is shown by the selection treatment, not a focus ring (§10.1).
 - Nested cards. One level deep, for repeated items, modals and framed tool
   surfaces.
 - Chrome that competes with PTY output.
+- `opacity()` as a disabled state. Disabled is `FG_MUTE()` plus a dropped
+  handler (§10.1, §9.1.1) — a dimmed-but-live control still paints a hover and
+  still eats a click.
+- A tooltip standing in for a sublabel. A tooltip is invisible to a keyboard
+  user; `row_sublabel` exists for exactly this and does not have that problem
+  (§9.1.1).
+- Mono used for prose. Mono is for values and keys — a token read, not
+  language (§5.2).
+- An accent tint on a value. §2.3 already requires the text itself to carry
+  the state; a tint on top is a second channel for a signal that needed one.
+- A fifth type tier in chrome. Four tiers is the whole vocabulary (§5.3); a
+  design that needs a fifth is a design that is wrong, not a gap in the scale.
+- A bespoke row shape beside a shared row grid. One row family per surface,
+  not a table that reinvents dividers, padding and a label column from
+  scratch (§9.1.1).
+- A pinned height on a content row. Padding sizes a row; a fixed height only
+  fits the content the author happened to test, and either rattles around
+  shorter content or clips taller content the moment it appears (§8.1).
+- A fixed-size column whose mark aligns to the container rather than to the
+  line it annotates. `status_gutter` centring on a row's overall height
+  instead of its first line put the dot between the label and sublabel lines
+  rather than on the label it names (§9.1).
+- A field with no trailing inset. A value with padding on only one edge runs
+  into the enclosing card's border the moment it is long enough (§9.1).
 
 **Layout**
 
@@ -1122,6 +1284,10 @@ is shown by the selection treatment, not a focus ring (§10.1).
   segmented control or a hairline. They all exist in `components.rs`.
 - Pinning a text colour on a run whose parent row owns the hover recolour.
 - Adding a focus outline (§10.1).
+- A derived constant left hardcoded after its input changed. `MODAL_SCROLL_MAX_H`
+  as a bare pixel number would silently clip the first Tools row out of the
+  scrollable body the next time row geometry moved; the fix is the formula
+  (`ROW_MIN_H * 12`), not a new literal (§8.1).
 
 **Behaviour**
 
@@ -1240,3 +1406,14 @@ Accurate as of this branch. Do not describe the system as covering these.
    compiler will not tell you a helper is unused — a public item with no call
    site is not evidence a shape is dead, and grep is the only check before
    deleting.
+
+5. **A retired conformance exception.** `src/views/conformance.rs`'s R4 check
+   (§5.3) carried a `settings.rs` allow-list entry narrowed to `TEXT_DISPLAY`,
+   for Project Settings' header when the project name itself was the modal's
+   one title. The Settings-modal unification moved that header onto the
+   ordinary `TEXT_TITLE` contract every other modal header uses (§9.1.1), so
+   the exception no longer has a call site and is deleted along with it. It is
+   worth recording that it existed: a rule that once had a reviewed, narrowly
+   scoped exception is a stronger signal than a rule that was never tested,
+   and the next time someone reaches for a fifth type tier this is the
+   precedent that says it was tried and undone.
