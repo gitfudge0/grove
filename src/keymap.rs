@@ -78,6 +78,17 @@ pub enum GlobalShortcut {
     /// Swap between the home-terminal tab and whatever the agent side was
     /// showing (grid or single session), preserving the other side's context.
     ToggleTerminal,
+    /// Open or close the right-docked worktree terminal panel — the keyboard
+    /// twin of the session header's `term` button, and the only way in while
+    /// zen hides that button. Live on every screen but the grid, which never
+    /// renders the panel at all (the handler propagates there). Scoped
+    /// `Global` in the registry like every
+    /// other letter shortcut: `Screen(Zen)` cannot honestly describe a
+    /// runtime-gated chord, since off-screen a `ctrl-shift-letter` row is
+    /// swallowed by `key_to_bytes` before it would ever reach the PTY (see
+    /// `is_non_mac_platform_mod_letter_row` in `keyboard_matrix.rs`). The
+    /// `on_action` handler in `workspace.rs` gates on grid view itself.
+    ToggleTermPanel,
     /// Select the first session currently waiting for input, in tree order.
     JumpToWaitingSession,
     /// Move keyboard focus between grid tiles by `(dx, dy)`. Grid screen only.
@@ -296,6 +307,15 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         literal: false,
     },
     ShortcutDef {
+        action: Some(GlobalShortcut::ToggleTermPanel),
+        triggers: &["e", "E"],
+        display_keys: "e",
+        description: "toggle side terminal",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
         action: Some(GlobalShortcut::NewHomeTerminal),
         triggers: &["t", "T"],
         display_keys: "t",
@@ -384,6 +404,18 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         scopes: &[Scope::Screen(Screen::Workspace)],
         requires_alt: false,
         literal: true,
+    },
+    // Display-only: `zen_focus_bindings` generates the actual bindings —
+    // mod+→/← carry distinct actions (`FocusSidePanel`/`FocusAgentPane`), not
+    // one registry action, so this row stays outside the action-driven table.
+    ShortcutDef {
+        action: None,
+        triggers: &[],
+        display_keys: "←/→",
+        description: "focus side terminal / agent",
+        scopes: &[Scope::Screen(Screen::Zen)],
+        requires_alt: false,
+        literal: false,
     },
 ];
 
@@ -569,10 +601,13 @@ actions!(
         ShortcutOverlay,
         CloseFocusedSession,
         ToggleTerminal,
+        ToggleTermPanel,
         NewHomeTerminal,
         JumpToWaitingSession,
         ScrollHalfPageUp,
         ScrollHalfPageDown,
+        FocusSidePanel,
+        FocusAgentPane,
     ]
 );
 
@@ -703,6 +738,19 @@ fn term_panel_bindings() -> Vec<KeyBinding> {
     ]
 }
 
+/// Zen-only keyboard focus for the side terminal panel: mod+→ moves focus
+/// onto the panel, mod+← moves it back to the agent. Focus only — opening and
+/// closing the panel is `ToggleTermPanel`'s job. Scoped to `Zen` alone, so the
+/// same chords stay free for `AdjustTermPanel` in the workspace context.
+fn zen_focus_bindings() -> Vec<KeyBinding> {
+    let ctx = Some(Screen::Zen.key_context());
+    let prefix = platform_mod_prefix();
+    vec![
+        KeyBinding::new(&format!("{prefix}right"), FocusSidePanel, ctx),
+        KeyBinding::new(&format!("{prefix}left"), FocusAgentPane, ctx),
+    ]
+}
+
 /// The `"<ModalKind> > Input"` bindings that hand the modal back the keys a
 /// focused field would otherwise swallow. Derived from
 /// [`crate::views::modals::input::InputPolicy`] so the bindings and the
@@ -784,6 +832,7 @@ fn binding_for(keystroke: &str, sc: GlobalShortcut, ctx: Option<&str>) -> Option
         S::ShortcutOverlay => KeyBinding::new(keystroke, ShortcutOverlay, ctx),
         S::CloseFocusedSession => KeyBinding::new(keystroke, CloseFocusedSession, ctx),
         S::ToggleTerminal => KeyBinding::new(keystroke, ToggleTerminal, ctx),
+        S::ToggleTermPanel => KeyBinding::new(keystroke, ToggleTermPanel, ctx),
         S::NewHomeTerminal => KeyBinding::new(keystroke, NewHomeTerminal, ctx),
         S::JumpToWaitingSession => KeyBinding::new(keystroke, JumpToWaitingSession, ctx),
         S::ScrollHalfPage(true) => KeyBinding::new(keystroke, ScrollHalfPageUp, ctx),
@@ -809,6 +858,7 @@ pub fn bindings() -> Vec<KeyBinding> {
     out.extend(select_session_bindings());
     out.extend(grid_bindings());
     out.extend(term_panel_bindings());
+    out.extend(zen_focus_bindings());
     // Last, so a modal's `"… > Input"` binding also out-ranks anything above
     // it on a registration-order tie.
     out.extend(modal_input_bindings());
@@ -879,6 +929,7 @@ mod tests {
         let per_dir = 1 + grid_swap_prefixes().len();
         assert_eq!(grid_bindings().len(), GRID_DIRECTIONS.len() * per_dir);
         assert_eq!(term_panel_bindings().len(), 2);
+        assert_eq!(zen_focus_bindings().len(), 2);
     }
 
     /// Each direction key carries the `(dx, dy)` the by-hand iced arm gave it

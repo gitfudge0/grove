@@ -25,7 +25,7 @@
 //! | `grid_view` / `grid_focused` / `tile_order` | `Grove::{grid_view, grid_focused, tile_order}` (`src/gui/state.rs:112-117`) |
 //! | `chrome_visible` | `App::chrome_visible` (`src/app/mod.rs`) |
 //! | `grid_view_before_zen` / `grid_view_before_terminal` | `Grove::{grid_view_before_zen, grid_view_before_terminal}` |
-//! | `term_panel_open` / `term_panel_portion` | `Grove::{term_panel_open, term_panel_portion}` (`src/gui/state.rs:282-289`) |
+//! | `term_panel_open` / `term_panel_portion` | `Grove::{term_panel_open, term_panel_portion}` (`src/gui/state.rs:282-289`) — `term_panel_open` is per session here (`panel_open_sessions`, a set of the sessions left with their panel open), not the single global bool iced had; `term_panel_portion` (the width) stays global |
 //!
 //! **Plan 07 Task 2 Step 1 deviation.** The Plan 06 stub carried both a
 //! `chrome_visible`-shaped idea and a `zen` bool. Only one can be the stored
@@ -341,7 +341,15 @@ pub struct WorkspaceState {
     /// The tile order awaiting a `Store::grid_order` write; drained by the
     /// view that holds the `Store`.
     pending_grid_persist: Option<Vec<SessionId>>,
-    term_panel_open: bool,
+    /// The sessions whose panel was left open. Membership, not a bare bool,
+    /// is the state: "open" is per session (user's report — leaving the
+    /// panel open in session A must not leak into session B when B is
+    /// entered), so there is nothing to save and restore on a switch. A
+    /// session's open-ness is just whether it is in this set; a never-touched
+    /// session (or one with no active session at all) reads as closed
+    /// because it is absent. Entries are dropped in [`Self::on_session_removed`]
+    /// so the set cannot accumulate dead ids.
+    panel_open_sessions: HashSet<SessionId>,
     term_panel_portion: u16,
 }
 
@@ -378,7 +386,7 @@ impl Default for WorkspaceState {
             grid_drag: None,
             grid_slide: None,
             pending_grid_persist: None,
-            term_panel_open: false,
+            panel_open_sessions: HashSet::new(),
             term_panel_portion: TERM_PANEL_PORTION,
         }
     }
@@ -515,8 +523,12 @@ impl WorkspaceState {
     pub fn grid_slide(&self) -> Option<GridSlide> {
         self.grid_slide
     }
+    /// Derived, not stored: open-ness lives in [`Self::panel_open_sessions`],
+    /// keyed by the *active* session, so switching sessions can never leave a
+    /// stale bool behind to sync.
     pub fn term_panel_open(&self) -> bool {
-        self.term_panel_open
+        self.active_session
+            .is_some_and(|id| self.panel_open_sessions.contains(&id))
     }
     pub fn term_panel_portion(&self) -> u16 {
         self.term_panel_portion
@@ -797,6 +809,9 @@ impl WorkspaceState {
         if self.active_session == Some(id) {
             self.set_active_session(None);
         }
+        // Otherwise `id`'s open/closed membership would sit in the set
+        // forever, keyed to a session that can never become active again.
+        self.panel_open_sessions.remove(&id);
     }
 
     // ── transient affordances ───────────────────────────────────────────
@@ -1182,23 +1197,34 @@ impl WorkspaceState {
     }
 
     /// The session bar's `term` toggle. Port of `on_toggle_term_panel`
-    /// (`sessions.rs:62-88`). Refuses to open with no worktree to anchor to.
-    /// Returns the panel's new open state.
+    /// (`sessions.rs:62-88`). Refuses to open with no worktree to anchor to,
+    /// and — with the panel's open-ness now per session — with no active
+    /// session to anchor to either: there is nothing for the toggle to
+    /// record membership against. Returns the panel's new open state.
     pub fn toggle_term_panel(&mut self, has_worktree: bool) -> bool {
         self.open_agent_menu = None;
-        if !self.term_panel_open && !has_worktree {
+        let Some(id) = self.active_session else {
+            return false;
+        };
+        let currently_open = self.panel_open_sessions.contains(&id);
+        if !currently_open && !has_worktree {
             return false;
         }
-        self.term_panel_open = !self.term_panel_open;
+        let now_open = !currently_open;
+        if now_open {
+            self.panel_open_sessions.insert(id);
+        } else {
+            self.panel_open_sessions.remove(&id);
+        }
         // Focusing the just-opened panel is the natural default — that's why
         // the user opened it. Click the agent to switch. Closing leaves the
         // agent as the only interactive PTY.
-        self.focused_pane = if self.term_panel_open {
+        self.focused_pane = if now_open {
             FocusedPane::Panel
         } else {
             FocusedPane::Agent
         };
-        self.term_panel_open
+        now_open
     }
 
     /// Ctrl+Shift+←/→. Port of `adjust_term_panel_portion`
@@ -1225,7 +1251,7 @@ impl WorkspaceState {
     /// re-anchored terminal), otherwise the agent. Port of
     /// `reset_focused_pane` (`pty_input.rs:128-137`).
     pub fn reset_focused_pane(&mut self) {
-        self.focused_pane = if self.term_panel_open {
+        self.focused_pane = if self.term_panel_open() {
             FocusedPane::Panel
         } else {
             FocusedPane::Agent
@@ -1237,7 +1263,7 @@ impl WorkspaceState {
     /// ignored (tile focus is `grid_focused`'s job). Port of `focus_pane`
     /// (`pty_input.rs:146-158`).
     pub fn focus_pane(&mut self, pane: PtyPane) {
-        if !self.term_panel_open {
+        if !self.term_panel_open() {
             return;
         }
         self.focused_pane = match pane {
@@ -1249,21 +1275,18 @@ impl WorkspaceState {
 
     /// Whether input routes to the panel PTY: only while the panel is open
     /// *and* the panel pane holds the intent (`pty_input.rs:1180-1186`).
-    // Exercised only by this module's `#[cfg(test)]` assertions; rustc's
-    // non-test pass cannot see that use.
-    #[allow(dead_code)]
     pub fn panel_focused(&self) -> bool {
-        self.term_panel_open && matches!(self.focused_pane, FocusedPane::Panel)
+        self.term_panel_open() && matches!(self.focused_pane, FocusedPane::Panel)
     }
 
     /// Which PTY a keystroke reaches. The fallback at `pty_input.rs:170-178`
     /// is the load-bearing half: a worktree whose panel has **no shell** routes
     /// to the agent rather than silently swallowing input. In gpui this decides
     /// which `FocusHandle` the workspace focuses; the keystrokes themselves
-    /// then follow gpui focus (carried amendment 8).
-    // Exercised only by this module's `#[cfg(test)]` assertions; rustc's
-    // non-test pass cannot see that use.
-    #[allow(dead_code)]
+    /// then follow gpui focus (carried amendment 8). Now also the decider for
+    /// the zen-mode keyboard focus toggle (`keymap::FocusSidePanel` /
+    /// `FocusAgentPane`) and for routing `mod+w` to a focused panel shell
+    /// (`Workspace::close_focused`).
     pub fn input_target(&self, has_panel_shell: bool) -> PtyPane {
         if self.panel_focused() && has_panel_shell {
             PtyPane::Panel
@@ -2083,7 +2106,10 @@ mod tests {
     /// `sessions.rs:62-88`.
     #[test]
     fn the_panel_refuses_to_open_without_a_worktree_to_anchor_to() {
-        let mut w = WorkspaceState::default();
+        let mut w = WorkspaceState {
+            active_session: Some(sid(1)),
+            ..WorkspaceState::default()
+        };
         assert!(!w.toggle_term_panel(false));
         assert!(!w.term_panel_open());
         assert_eq!(w.focused_pane(), FocusedPane::Agent);
@@ -2098,6 +2124,34 @@ mod tests {
         assert!(!w.term_panel_open());
         assert_eq!(w.focused_pane(), FocusedPane::Agent);
         assert!(!w.panel_focused());
+    }
+
+    /// The reported bug: the panel used to be one global bool, so leaving it
+    /// open in session A leaked into session B on switch. Membership in
+    /// `panel_open_sessions` is per session now, so a switch shows whatever
+    /// *that* session was left with — closed for one that was never touched.
+    #[test]
+    fn term_panel_open_is_tracked_per_session() {
+        let mut w = WorkspaceState {
+            active_session: Some(sid(1)),
+            ..WorkspaceState::default()
+        };
+        assert!(w.toggle_term_panel(true));
+        assert!(w.term_panel_open());
+
+        // B has never touched the panel: closed, not A's leftover state.
+        w.active_session = Some(sid(2));
+        assert!(!w.term_panel_open());
+
+        // Back to A: still open, exactly as A left it.
+        w.active_session = Some(sid(1));
+        assert!(w.term_panel_open());
+
+        // Closing A's panel while A is active clears only A's membership.
+        assert!(!w.toggle_term_panel(true));
+        assert!(!w.term_panel_open());
+        w.active_session = Some(sid(2));
+        assert!(!w.term_panel_open());
     }
 
     /// `layout.rs:533-542`.
@@ -2146,7 +2200,10 @@ mod tests {
     /// `pty_input.rs:128-158`.
     #[test]
     fn focus_pane_only_counts_while_the_panel_is_open_and_ignores_tiles() {
-        let mut w = WorkspaceState::default();
+        let mut w = WorkspaceState {
+            active_session: Some(sid(1)),
+            ..WorkspaceState::default()
+        };
         // Panel closed: a click cannot move the intent.
         w.focus_pane(PtyPane::Panel);
         assert_eq!(w.focused_pane(), FocusedPane::Agent);
@@ -2170,7 +2227,10 @@ mod tests {
     /// from eating every keystroke.
     #[test]
     fn a_worktree_with_no_panel_shell_routes_input_to_the_agent() {
-        let mut w = WorkspaceState::default();
+        let mut w = WorkspaceState {
+            active_session: Some(sid(1)),
+            ..WorkspaceState::default()
+        };
         assert_eq!(w.input_target(false), PtyPane::Agent);
 
         w.toggle_term_panel(true);
@@ -2248,7 +2308,10 @@ mod tests {
     #[test]
     fn exit_grid_re_anchors_the_focused_pane() {
         let l = live(&[1, 2]);
-        let mut w = WorkspaceState::default();
+        let mut w = WorkspaceState {
+            active_session: Some(sid(1)),
+            ..WorkspaceState::default()
+        };
         w.toggle_term_panel(true);
         assert_eq!(w.focused_pane(), FocusedPane::Panel);
         w.toggle_grid(&l, &[]);

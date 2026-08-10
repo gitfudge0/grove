@@ -1095,26 +1095,27 @@ impl Workspace {
         window.focus(&handle, cx);
     }
 
-    /// The active session changed, so the panel re-anchors to a new worktree:
-    /// `reset_focused_pane` picks the intent (`pty_input.rs:128-137`) and the
-    /// matching handle takes the gpui focus. A worktree with no shell falls
-    /// back to the agent (`:170-178`).
+    /// The active session changed, so the panel re-anchors to the new
+    /// session's remembered open/closed state (`term_panel_open` is per
+    /// session — see `WorkspaceState::panel_open_sessions`): `reset_focused_pane`
+    /// picks the intent (`pty_input.rs:128-137`) and the matching handle
+    /// takes the gpui focus. A worktree with no shell falls back to the agent
+    /// (`:170-178`), and so does a session whose panel was left closed.
     fn reanchor_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.state.read(cx).term_panel_open() {
-            return;
-        }
-        // The newly anchored worktree spawns its first shell on demand, exactly
-        // as opening the panel does (`ensure_wt_terminal`).
-        if let Some(wt) = self.active_wt_path(cx) {
-            if self.registry.read(cx).wt_shells_need_spawn(&wt) {
-                self.spawn_wt_shell(&wt, cx);
+        if self.state.read(cx).term_panel_open() {
+            // The newly anchored worktree spawns its first shell on demand,
+            // exactly as opening the panel does (`ensure_wt_terminal`).
+            if let Some(wt) = self.active_wt_path(cx) {
+                if self.registry.read(cx).wt_shells_need_spawn(&wt) {
+                    self.spawn_wt_shell(&wt, cx);
+                }
             }
         }
         self.state.update(cx, |s, cx| {
             s.reset_focused_pane();
             cx.notify();
         });
-        if self.panel_view(cx).is_some() {
+        if self.state.read(cx).term_panel_open() && self.panel_view(cx).is_some() {
             self.focus_panel(window, cx);
         } else {
             self.focus_agent(window, cx);
@@ -1150,25 +1151,40 @@ impl Workspace {
                 });
                 self.focus_panel(window, cx);
             }
-            PanelAction::CloseShell(i) => {
-                let removed = self.registry.update(cx, |r, cx| {
-                    let removed = r.close_wt_shell(&wt, i);
-                    cx.notify();
-                    removed
-                });
-                // Dropping the entity ends its PTY: the reader task and the
-                // `PtyHandle` both die with it.
-                drop(removed);
-                // Whatever filled the closed slot — or the agent, if nothing
-                // did (`pty_input.rs:170-178`) — takes the input.
-                if self.panel_view(cx).is_some() {
-                    self.focus_panel(window, cx);
-                } else {
-                    self.focus_agent(window, cx);
-                }
-            }
+            PanelAction::CloseShell(i) => self.close_panel_shell(i, window, cx),
             PanelAction::Collapse => self.toggle_term_panel(window, cx),
             PanelAction::DividerPress => self.term_divider_press(cx),
+        }
+    }
+
+    /// Close the panel shell at `idx` in the active worktree — the ✕ tab
+    /// button's handler and the keyboard `mod+w` path both funnel through
+    /// here, so they never diverge. When that was the last shell in the
+    /// worktree, the panel collapses (`toggle_term_panel`, which also moves
+    /// the focus intent back to the agent) instead of sitting open on the
+    /// empty-panel fallback.
+    fn close_panel_shell(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(wt) = self.active_wt_path(cx) else {
+            return;
+        };
+        let removed = self.registry.update(cx, |r, cx| {
+            let removed = r.close_wt_shell(&wt, idx);
+            cx.notify();
+            removed
+        });
+        // Dropping the entity ends its PTY: the reader task and the
+        // `PtyHandle` both die with it.
+        drop(removed);
+        if self.registry.read(cx).wt_shells(&wt).is_empty() {
+            self.toggle_term_panel(window, cx);
+            return;
+        }
+        // Whatever filled the closed slot — or the agent, if nothing did
+        // (`pty_input.rs:170-178`) — takes the input.
+        if self.panel_view(cx).is_some() {
+            self.focus_panel(window, cx);
+        } else {
+            self.focus_agent(window, cx);
         }
     }
 
@@ -1411,7 +1427,24 @@ impl Workspace {
             }
             return;
         }
-        let target = if ws.grid_view() {
+        let grid_view = ws.grid_view();
+        // A panel shell — focused via `FocusSidePanel` or a mouse click —
+        // takes `mod+w` too, the same target the ✕ tab button closes and with
+        // the same no-confirmation behavior. Agent sessions keep their
+        // two-step confirm below, untouched.
+        if !grid_view {
+            let has_panel_shell = self.panel_view(cx).is_some();
+            if self.state.read(cx).input_target(has_panel_shell) == PtyPane::Panel {
+                if let Some(wt) = self.active_wt_path(cx) {
+                    if let Some(idx) = self.registry.read(cx).active_wt_shell_idx(&wt) {
+                        self.close_panel_shell(idx, window, cx);
+                    }
+                }
+                return;
+            }
+        }
+        let ws = self.state.read(cx);
+        let target = if grid_view {
             ws.grid_focused().or_else(|| ws.active_session())
         } else {
             ws.active_session()
@@ -2274,6 +2307,64 @@ impl Render for Workspace {
                     s.adjust_term_panel_portion(a.delta);
                     cx.notify();
                 });
+            }))
+            .on_action(
+                cx.listener(|this, _: &keymap::ToggleTermPanel, window, cx| {
+                    // Grid never renders the panel at all, so the chord must fall
+                    // through even though the screen still reports `Screen::Zen`
+                    // when entered from the grid (`screen_from_flags`).
+                    if this.state.read(cx).grid_view() {
+                        cx.propagate();
+                        return;
+                    }
+                    this.toggle_term_panel(window, cx);
+                }),
+            )
+            .on_action(cx.listener(|this, _: &keymap::FocusSidePanel, window, cx| {
+                // Zen-only (Zen key context binds this); the grid never shows
+                // the panel at all, so it must fall through even though the
+                // screen still reports `Screen::Zen` when entered from the
+                // grid (`screen_from_flags`).
+                if this.state.read(cx).grid_view() {
+                    cx.propagate();
+                    return;
+                }
+                let has_panel_shell = this.panel_view(cx).is_some();
+                if !this.state.read(cx).term_panel_open() {
+                    // The arrows switch focus only — they no longer open the
+                    // panel on demand (`mod+e`/`ToggleTermPanel` does that).
+                    // With the panel closed there is nothing to focus, so the
+                    // chord falls through to the PTY.
+                    cx.propagate();
+                    return;
+                }
+                if this.state.read(cx).input_target(has_panel_shell) == PtyPane::Panel {
+                    // Already there — let the chord reach the PTY.
+                    cx.propagate();
+                    return;
+                }
+                this.state.update(cx, |s, cx| {
+                    s.focus_pane(PtyPane::Panel);
+                    cx.notify();
+                });
+                this.focus_panel(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &keymap::FocusAgentPane, window, cx| {
+                if this.state.read(cx).grid_view() {
+                    cx.propagate();
+                    return;
+                }
+                let has_panel_shell = this.panel_view(cx).is_some();
+                if this.state.read(cx).input_target(has_panel_shell) != PtyPane::Panel {
+                    // Already on the agent — let the chord reach the PTY.
+                    cx.propagate();
+                    return;
+                }
+                this.state.update(cx, |s, cx| {
+                    s.focus_pane(PtyPane::Agent);
+                    cx.notify();
+                });
+                this.focus_agent(window, cx);
             }));
         // Plan 08 Task 3/5: the five stub actions open real modals. The three
         // palette entry points differ only in which list state the palette

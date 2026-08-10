@@ -421,9 +421,14 @@ impl TerminalView {
 }
 
 impl Render for TerminalView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let zoom = cx.global::<ZoomState>().zoom;
-        let cursor_visible = animation_clock::cursor_visible(self.clock.read(cx).tick());
+        // Only the focused PTY blinks a cursor. With two terminals side by side
+        // (agent + side panel, or several grid tiles) the cursor is the one
+        // unambiguous signal for *where the keystrokes go*, so an unfocused
+        // pane must not draw one.
+        let cursor_visible = self.focus.is_focused(window)
+            && animation_clock::cursor_visible(self.clock.read(cx).tick());
 
         div()
             .track_focus(&self.focus)
