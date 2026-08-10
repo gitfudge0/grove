@@ -23,9 +23,7 @@ pub fn init() {
     }
 
     // ponytail: single 5 MiB self-truncating log; swap in tracing-appender if per-day rotation is ever needed.
-    let should_truncate = fs::metadata(&path)
-        .map(|m| m.len() > MAX_LOG_BYTES)
-        .unwrap_or(false);
+    let should_truncate = fs::metadata(&path).is_ok_and(|m| m.len() > MAX_LOG_BYTES);
 
     // The log records project paths, branch names and command output — keep it
     // readable only by its owner. `mode` applies on creation only; a log file

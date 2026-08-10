@@ -866,7 +866,7 @@ mod tests {
                 .map(|b| {
                     b.keystrokes()
                         .iter()
-                        .map(|k| k.unparse())
+                        .map(gpui::KeybindingKeystroke::unparse)
                         .collect::<Vec<_>>()
                         .join(" ")
                 })

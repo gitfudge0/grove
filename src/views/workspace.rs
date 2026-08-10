@@ -1988,6 +1988,17 @@ impl Workspace {
 /// Logs and does nothing. Each stub names the plan that implements it.
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Startup discovery waits for `last_pty_dims` to repeat across two
+        // consecutive frames, but never forever: force it after this many
+        // frames in case dims never stop changing.
+        const TMUX_DISCOVERY_SETTLE_FRAMES: u32 = 60;
+        // A session that is attached but never painted (off the visible grid
+        // page) gets no layout pass and so no true dims; attach it at the
+        // focused pane's dims rather than leaving it dark forever. Counts
+        // only after discovery, so anything still pending after this many
+        // frames is off-screen and will not get dims of its own.
+        const TMUX_ATTACH_FALLBACK_FRAMES: u32 = 90;
+
         // The single zoom application point. `WithRemSize` does not exist at
         // this rev; `Window::with_rem_size` is for scoped overrides.
         let zoom_value = cx.global::<ZoomState>().zoom;
@@ -2029,7 +2040,7 @@ impl Render for Workspace {
         };
         let window_focused = window.is_window_active();
         self.tree.clone().update(cx, |t, cx| {
-            t.maybe_poll_git_state(paths, window_focused, cx)
+            t.maybe_poll_git_state(paths, window_focused, cx);
         });
 
         // Window activation: `window_focused` gates the "focused session is
@@ -2072,7 +2083,6 @@ impl Render for Workspace {
         // reattach uses the session's real dims instead of a bogus one, but
         // never wait forever: force it after `TMUX_DISCOVERY_SETTLE_FRAMES`
         // in case dims never stop changing.
-        const TMUX_DISCOVERY_SETTLE_FRAMES: u32 = 60;
         if !self.tmux_discovered {
             self.tmux_discovery_frames += 1;
             let settled = self.prev_pty_dims == Some(self.last_pty_dims);
@@ -2085,13 +2095,8 @@ impl Render for Workspace {
             }
         }
 
-        /// A session that is attached but never painted (off the visible grid
-        /// page) gets no layout pass and so no true dims; attach it at the
-        /// focused pane's dims rather than leaving it dark forever.
-        const TMUX_ATTACH_FALLBACK_FRAMES: u32 = 90;
-        // Counts only after discovery, and stops the frame it fires — the
-        // painted path has had 90 frames by then, so anything still pending
-        // is off-screen and will not get dims of its own.
+        // Stops the frame it fires — the painted path has had 90 frames by
+        // then.
         if self.tmux_discovered && self.tmux_attach_frames <= TMUX_ATTACH_FALLBACK_FRAMES {
             self.tmux_attach_frames += 1;
             if self.tmux_attach_frames > TMUX_ATTACH_FALLBACK_FRAMES {
@@ -2176,7 +2181,7 @@ impl Render for Workspace {
             let focused_ok = window.focused(cx).is_some_and(|f| {
                 Some(&f) == body_handle.as_ref() || Some(&f) == panel_handle.as_ref()
             });
-            self.last_body_focused = body.as_ref().map(|v| v.entity_id());
+            self.last_body_focused = body.as_ref().map(gpui::Entity::entity_id);
             if !focused_ok {
                 self.focused_once = true;
                 if let Some(handle) = body_handle {
@@ -2516,7 +2521,7 @@ mod tests {
         ONCE.call_once(|| {
             let dir =
                 std::env::temp_dir().join(format!("grove-gpui-workspace-{}", std::process::id()));
-            let _ = std::fs::create_dir_all(&dir);
+            let _ = fs_err::create_dir_all(&dir);
             std::env::set_var("GROVE_CONFIG_DIR", &dir);
         });
     }
@@ -2581,7 +2586,7 @@ mod tests {
 
             // Dismiss it *without* going through "Skip setup", so `onboarded`
             // is still false: only the latch can keep it shut.
-            cx.update(|cx| modals.update(cx, |l, cx| l.close(cx)));
+            cx.update(|cx| modals.update(cx, super::super::modals::ModalLayer::close));
             cx.update(|cx| ws.update(cx, Workspace::first_run_check));
             assert!(
                 !cx.update(|cx| modals.read(cx).is_open()),

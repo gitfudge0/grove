@@ -92,7 +92,7 @@ pub struct TerminalSession {
     /// entirely — do not "fix" this back to element state.
     scene_cache: Option<(TermSceneKey, Rc<TermScene>)>,
     /// Dropping the `Task` stops the reader, so this field *is* the reader.
-    _reader: Task<()>,
+    reader: Task<()>,
 }
 
 impl TerminalSession {
@@ -172,7 +172,7 @@ impl TerminalSession {
             pane_pid,
             pending_attach: None,
             scene_cache: None,
-            _reader: Self::spawn_reader(rx, cx),
+            reader: Self::spawnreader(rx, cx),
         }
     }
 
@@ -223,7 +223,7 @@ impl TerminalSession {
             pane_pid: None,
             pending_attach: Some(name.to_string()),
             scene_cache: None,
-            _reader: Self::spawn_reader(None, cx),
+            reader: Self::spawnreader(None, cx),
         }
     }
 
@@ -254,7 +254,7 @@ impl TerminalSession {
         };
         let rx = pty.take_receiver();
         self.pty = Some(pty);
-        self._reader = Self::spawn_reader(rx, cx);
+        self.reader = Self::spawnreader(rx, cx);
         self.pane_pid = tmux::pane_pid(&name);
     }
 
@@ -309,7 +309,7 @@ impl TerminalSession {
             pane_pid: None,
             pending_attach: None,
             scene_cache: None,
-            _reader: Self::spawn_reader(rx, cx),
+            reader: Self::spawnreader(rx, cx),
         }
     }
 
@@ -327,7 +327,7 @@ impl TerminalSession {
     /// loop blocks for the session's whole life, and parking one executor pool
     /// thread per session would starve the pool once Plan 05 makes sessions
     /// plural. The thread ends on EOF (or when the receiver is dropped).
-    fn spawn_reader(rx: Option<Receiver<Vec<u8>>>, cx: &mut Context<Self>) -> Task<()> {
+    fn spawnreader(rx: Option<Receiver<Vec<u8>>>, cx: &mut Context<Self>) -> Task<()> {
         let Some(rx) = rx else {
             return Task::ready(());
         };

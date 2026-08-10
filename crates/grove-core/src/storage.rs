@@ -229,10 +229,9 @@ fn adopt_orphaned_worktree_dirs_in(
         .map(|p| p.worktree_dir().to_string())
         .collect();
 
-    let entries = match fs::read_dir(root) {
-        Ok(e) => e,
-        // A machine that has never created a grove worktree has no root yet.
-        Err(_) => return 0,
+    // A machine that has never created a grove worktree has no root yet.
+    let Ok(entries) = fs::read_dir(root) else {
+        return 0;
     };
 
     // dir name -> resolved project index, for the candidates that produced a
@@ -246,7 +245,7 @@ fn adopt_orphaned_worktree_dirs_in(
         if name.starts_with('.') || !entry.path().is_dir() {
             continue;
         }
-        if owned.iter().any(|d| *d == name) {
+        if owned.contains(&name) {
             continue;
         }
         if let Some(idx) = resolve_candidate_owner(&entry.path(), projects, &owner_repo, &name) {

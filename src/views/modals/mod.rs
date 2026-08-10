@@ -1145,7 +1145,7 @@ mod tests {
         ONCE.call_once(|| {
             let dir =
                 std::env::temp_dir().join(format!("grove-gpui-modals-{}", std::process::id()));
-            let _ = std::fs::create_dir_all(&dir);
+            let _ = fs_err::create_dir_all(&dir);
             std::env::set_var("GROVE_CONFIG_DIR", &dir);
         });
     }
@@ -1212,7 +1212,7 @@ mod tests {
         let picked = grove_core::theme::current().name.to_string();
         assert_ne!(picked, original);
 
-        modals.update(vcx, |l, cx| l.theme_picker_submit(cx));
+        modals.update(vcx, super::ModalLayer::theme_picker_submit);
         vcx.run_until_parked();
         assert_eq!(
             grove_core::theme::current().name.as_ref(),

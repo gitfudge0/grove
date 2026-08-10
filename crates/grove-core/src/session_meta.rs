@@ -169,7 +169,7 @@ pub fn repair_stale_projects(
             continue;
         }
         let old_project = meta.project.clone();
-        meta.project = correct.clone();
+        meta.project.clone_from(&correct);
         match write(&name, &meta) {
             Ok(()) => {
                 tracing::info!(

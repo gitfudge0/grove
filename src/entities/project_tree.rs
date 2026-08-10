@@ -39,8 +39,11 @@ const IS_REPO_TTL: Duration = Duration::from_secs(5);
 /// Throttle window for the git-state poll (`update/mod.rs:1254`).
 const GIT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// Degraded cadence while the window is unfocused — still catches up
-/// eventually rather than stopping outright.
-const GIT_POLL_INTERVAL_UNFOCUSED: Duration = Duration::from_secs(60);
+/// eventually rather than stopping outright. Twelve times
+/// [`GIT_POLL_INTERVAL`]; spelled in minutes only because
+/// `clippy::duration_suboptimal_units` insists, so the ratio is stated here
+/// rather than left to be read off two different units.
+const GIT_POLL_INTERVAL_UNFOCUSED: Duration = Duration::from_mins(1);
 
 #[derive(Default)]
 pub struct ProjectTree {
@@ -521,7 +524,7 @@ mod tests {
         assert!(tree.git_poll_due(t0, false));
         assert!(!tree.git_poll_due(t0 + Duration::from_secs(5), false));
         assert!(!tree.git_poll_due(t0 + Duration::from_secs(59), false));
-        assert!(tree.git_poll_due(t0 + Duration::from_secs(60), false));
+        assert!(tree.git_poll_due(t0 + Duration::from_mins(1), false));
     }
 
     /// `update/mod.rs:1288-1299` — failure drops, it does not stale.
