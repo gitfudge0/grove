@@ -270,7 +270,8 @@ impl TerminalSession {
     /// and the same `TERM`/`LC_ALL` environment. Always native — a teardown
     /// script must die with the modal, so it never gets a tmux sidecar.
     pub fn spawn_script(script: &str, cwd: &str, cx: &mut Context<Self>) -> Self {
-        let mut cmd = CommandBuilder::new(grove_core::env_path::login_shell());
+        let shell = grove_core::env_path::login_shell();
+        let mut cmd = CommandBuilder::new(&shell);
         #[cfg(windows)]
         cmd.arg("-Command");
         #[cfg(not(windows))]
@@ -284,7 +285,9 @@ impl TerminalSession {
         let mut pty = match grove_terminal::pty::spawn(cmd, INIT_ROWS, INIT_COLS) {
             Ok(pty) => Some(pty),
             Err(e) => {
-                tracing::error!("grove-gpui: could not spawn the teardown script: {e}");
+                tracing::error!(
+                    "grove-gpui: could not spawn the lifecycle script (cwd={cwd:?}): {e}"
+                );
                 spawn_error = Some(e.to_string());
                 None
             }

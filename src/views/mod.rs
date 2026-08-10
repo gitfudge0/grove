@@ -26,6 +26,7 @@ pub mod dispatch;
 pub mod grid;
 pub mod modals;
 pub mod rows;
+pub(crate) mod scripts;
 pub mod session_header;
 pub mod sidebar;
 pub mod statusbar;

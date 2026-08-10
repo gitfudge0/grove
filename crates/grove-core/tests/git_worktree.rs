@@ -13,10 +13,12 @@
 //! If `git` is not on `PATH` at all, every test skips cleanly via an early
 //! `return` with an explanatory `eprintln!` rather than failing the suite.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use fs_err as fs;
 use grove_core::git::{
     add_worktree, current_branch, list_worktrees, remove_worktree, worktree_git_state,
-    worktrees_root,
+    worktree_owner_repo, worktrees_root,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -255,4 +257,66 @@ fn current_branch_returns_the_checked_out_branch_name() {
     let repo_str = repo.path().to_str().expect("utf8 path");
 
     assert_eq!(current_branch(repo_str), "main");
+}
+
+/// `worktree_owner_repo` must report the OWNING repository's main checkout for
+/// a grove-managed worktree that lives nowhere near it on disk — the
+/// authoritative ownership answer the startup adoption pass
+/// (`storage::adopt_orphaned_worktree_dirs`) is built on. A unit test cannot
+/// reach this: the answer comes from `git rev-parse --git-common-dir` against a
+/// real linked worktree.
+#[test]
+fn worktree_owner_repo_reports_the_owning_main_checkout() {
+    if !git_available() {
+        eprintln!(
+            "git not found on PATH; skipping worktree_owner_repo_reports_the_owning_main_checkout"
+        );
+        return;
+    }
+    let repo = tempfile::tempdir().expect("tempdir");
+    init_repo_with_commit(repo.path());
+    let repo_str = repo.path().to_str().expect("utf8 path");
+
+    // Unique per-run dir name so concurrent runs never collide on the shared,
+    // real `~/.config/grove/worktrees` root (same convention as above).
+    let dir_key = format!(
+        "grove-owner-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let root = worktrees_root().expect("worktrees_root");
+    let _guard = WorktreeRootGuard(root.join(&dir_key));
+
+    let dest = add_worktree(repo_str, &dir_key, "feature-x").expect("add_worktree");
+
+    let owner = worktree_owner_repo(&dest).expect("worktree_owner_repo on a real worktree");
+    let canon = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    assert_eq!(
+        canon(&owner),
+        canon(repo.path()),
+        "the owning repo of a grove-managed worktree must be the main checkout, \
+         not the worktree's own directory"
+    );
+
+    remove_worktree(repo_str, &dest).expect("remove_worktree");
+}
+
+/// A directory that is not a worktree (or repo) at all yields `None` rather
+/// than a bogus owner.
+#[test]
+fn worktree_owner_repo_on_non_git_directory_returns_none() {
+    if !git_available() {
+        eprintln!(
+            "git not found on PATH; skipping worktree_owner_repo_on_non_git_directory_returns_none"
+        );
+        return;
+    }
+    let plain = tempfile::tempdir().expect("tempdir");
+    assert!(
+        worktree_owner_repo(plain.path().to_str().expect("utf8 path")).is_none(),
+        "a plain directory has no owning repository"
+    );
 }

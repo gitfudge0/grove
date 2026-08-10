@@ -298,6 +298,12 @@ pub enum PaletteRow {
     TerminalHome,
     TerminalWt,
     AddProject,
+    /// ACTIONS row, worktree-scoped: runs the active session's project's
+    /// `run` script. Carries no payload — the launcher resolves the target
+    /// (worktree path + script) at activation time, the same condition as
+    /// the session header's ▶ button (`views/workspace.rs`'s
+    /// `active_run_script`).
+    RunScript,
     /// ACTIONS row: opens the "switch to session" drill-in.
     SwitchToSession,
     /// ACTIONS row: opens the Settings drill-in.
@@ -325,6 +331,7 @@ pub enum RowIdentity {
     TerminalHome,
     TerminalWt,
     AddProject,
+    RunScript,
     SwitchToSession,
     Settings,
     Setting(SettingRow),
@@ -352,6 +359,7 @@ pub fn row_identity(row: &PaletteRow) -> RowIdentity {
         PaletteRow::TerminalHome => RowIdentity::TerminalHome,
         PaletteRow::TerminalWt => RowIdentity::TerminalWt,
         PaletteRow::AddProject => RowIdentity::AddProject,
+        PaletteRow::RunScript => RowIdentity::RunScript,
         PaletteRow::SwitchToSession => RowIdentity::SwitchToSession,
         PaletteRow::Settings => RowIdentity::Settings,
         PaletteRow::Setting(s) => RowIdentity::Setting(*s),
@@ -587,6 +595,7 @@ pub fn root_rows(
     fallback_worktrees: &[(usize, String, Agent)],
     project_count: usize,
     active_project: usize,
+    has_run_script: bool,
 ) -> Vec<PaletteRow> {
     let mut rows: Vec<PaletteRow> = Vec::new();
     if recents.is_empty() {
@@ -613,6 +622,11 @@ pub fn root_rows(
         PaletteRow::NewSession,
         PaletteRow::TerminalHome,
         PaletteRow::TerminalWt,
+    ]);
+    if has_run_script {
+        rows.push(PaletteRow::RunScript);
+    }
+    rows.extend([
         PaletteRow::SwitchToSession,
         PaletteRow::AddProject,
         PaletteRow::Settings,
@@ -627,6 +641,7 @@ pub fn typed_rows(
     query: &str,
     combos: &[(usize, String, String, Agent)],
     recency: &[(usize, String, Agent)],
+    has_run_script: bool,
 ) -> Vec<PaletteRow> {
     let mut scored: Vec<(u32, usize, PaletteRow)> = Vec::new();
     for (proj, project_name, wt_path, agent) in combos {
@@ -665,6 +680,9 @@ pub fn typed_rows(
     }
     if !query.trim().is_empty() && fuzzy_match(query, "reload themes", "", "") {
         rows.push(PaletteRow::ReloadThemes);
+    }
+    if has_run_script && !query.trim().is_empty() && fuzzy_match(query, "run script", "", "") {
+        rows.push(PaletteRow::RunScript);
     }
     rows
 }
@@ -896,6 +914,7 @@ mod tests {
             PaletteRow::TerminalHome,
             PaletteRow::TerminalWt,
             PaletteRow::AddProject,
+            PaletteRow::RunScript,
             PaletteRow::SwitchToSession,
             PaletteRow::Settings,
             PaletteRow::ReloadThemes,
@@ -924,11 +943,41 @@ mod tests {
     #[test]
     fn the_root_list_is_recents_first_then_the_action_block() {
         let recents = vec![(0, "/w".to_string(), Agent::Claude)];
-        let rows = root_rows(&recents, &[], 1, 0);
+        let rows = root_rows(&recents, &[], 1, 0, false);
         assert!(matches!(rows[0], PaletteRow::Recent { .. }));
         assert_eq!(rows[1], PaletteRow::NewSession);
         assert!(rows.contains(&PaletteRow::Settings));
         assert!(rows.contains(&PaletteRow::SwitchToSession));
+    }
+
+    #[test]
+    fn the_root_list_includes_run_script_right_after_terminal_wt_when_present() {
+        let recents = vec![(0, "/w".to_string(), Agent::Claude)];
+        let rows = root_rows(&recents, &[], 1, 0, true);
+        let Some(wt_ix) = rows
+            .iter()
+            .position(|r| matches!(r, PaletteRow::TerminalWt))
+        else {
+            unreachable!("TerminalWt must be present");
+        };
+        assert_eq!(rows[wt_ix + 1], PaletteRow::RunScript);
+        let Some(switch_ix) = rows
+            .iter()
+            .position(|r| matches!(r, PaletteRow::SwitchToSession))
+        else {
+            unreachable!("SwitchToSession must be present");
+        };
+        assert!(
+            wt_ix + 1 < switch_ix,
+            "RunScript must precede SwitchToSession"
+        );
+    }
+
+    #[test]
+    fn the_root_list_omits_run_script_when_absent() {
+        let recents = vec![(0, "/w".to_string(), Agent::Claude)];
+        let rows = root_rows(&recents, &[], 1, 0, false);
+        assert!(!rows.contains(&PaletteRow::RunScript));
     }
 
     #[test]
@@ -940,7 +989,7 @@ mod tests {
             (3, "/w3".to_string(), Agent::Claude),
             (4, "/w4".to_string(), Agent::Claude),
         ];
-        let rows = root_rows(&recents, &[], 5, 0);
+        let rows = root_rows(&recents, &[], 5, 0, false);
         let recent_count = rows
             .iter()
             .filter(|r| matches!(r, PaletteRow::Recent { .. }))
@@ -980,7 +1029,7 @@ mod tests {
             (0, "/p0".to_string(), Agent::Claude),
             (1, "/p1".to_string(), Agent::Claude),
         ];
-        let rows = root_rows(&[], &fallback, 2, 1);
+        let rows = root_rows(&[], &fallback, 2, 1, false);
         // Active project first (`root_project_order`).
         assert_eq!(rows[0], combo(1, "/p1"));
         assert_eq!(rows[1], combo(0, "/p0"));
@@ -988,7 +1037,7 @@ mod tests {
 
     #[test]
     fn the_root_list_is_never_empty_even_with_no_projects() {
-        let rows = root_rows(&[], &[], 0, 0);
+        let rows = root_rows(&[], &[], 0, 0, false);
         assert_eq!(rows[0], PaletteRow::NewSession);
     }
 
@@ -1009,47 +1058,56 @@ mod tests {
             ),
             (1, "other".to_string(), "/wt/x".to_string(), Agent::Claude),
         ];
-        let rows = typed_rows("feat", &combos, &[]);
+        let rows = typed_rows("feat", &combos, &[], false);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0], combo(0, "/wt/feat"));
     }
 
     #[test]
     fn typing_settings_surfaces_the_settings_rows() {
-        let rows = typed_rows("theme", &[], &[]);
+        let rows = typed_rows("theme", &[], &[], false);
         assert!(rows.contains(&PaletteRow::Setting(SettingRow::Theme)));
     }
 
     #[test]
     fn an_empty_query_surfaces_no_settings_rows() {
         // Browse-all lists combos only; a bare query must not inject settings.
-        let rows = typed_rows("", &[], &[]);
+        let rows = typed_rows("", &[], &[], true);
         assert!(!rows.iter().any(|r| matches!(r, PaletteRow::Setting(_))));
         assert!(!rows.contains(&PaletteRow::ReloadThemes));
         assert!(!rows.contains(&PaletteRow::AddProject));
+        assert!(!rows.contains(&PaletteRow::RunScript));
     }
 
     #[test]
     fn typing_add_project_surfaces_the_add_project_row() {
-        let rows = typed_rows("add project", &[], &[]);
+        let rows = typed_rows("add project", &[], &[], false);
         assert!(rows.contains(&PaletteRow::AddProject));
     }
 
     #[test]
+    fn typing_run_script_surfaces_the_run_script_row_only_when_present() {
+        let rows = typed_rows("run script", &[], &[], true);
+        assert!(rows.contains(&PaletteRow::RunScript));
+        let rows = typed_rows("run script", &[], &[], false);
+        assert!(!rows.contains(&PaletteRow::RunScript));
+    }
+
+    #[test]
     fn typing_a_prefix_of_add_project_still_surfaces_it() {
-        let rows = typed_rows("add", &[], &[]);
+        let rows = typed_rows("add", &[], &[], false);
         assert!(rows.contains(&PaletteRow::AddProject));
     }
 
     #[test]
     fn typing_settings_surfaces_the_settings_drill_in_opener() {
-        let rows = typed_rows("settings", &[], &[]);
+        let rows = typed_rows("settings", &[], &[], false);
         assert!(rows.contains(&PaletteRow::Settings));
     }
 
     #[test]
     fn an_unrelated_query_does_not_surface_the_settings_drill_in_opener() {
-        let rows = typed_rows("zzz", &[], &[]);
+        let rows = typed_rows("zzz", &[], &[], false);
         assert!(!rows.contains(&PaletteRow::Settings));
     }
 

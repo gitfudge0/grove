@@ -958,8 +958,21 @@ impl Workspace {
     fn tool_action(&mut self, action: ToolAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             // `on_run_script` (`src/gui/update/sessions.rs:147-177`): the run
-            // script opens the terminal panel for the active worktree.
-            ToolAction::RunScript => self.toggle_term_panel(window, cx),
+            // script opens the terminal panel (if closed) for the active
+            // worktree, then spawns the project's `run` script in it — same
+            // as the launcher palette's `ModalEvent::RunScript` (`:1638`).
+            ToolAction::RunScript => {
+                let Some((wt_path, script)) = self.active_run_script(cx) else {
+                    return;
+                };
+                if !self.state.read(cx).term_panel_open() {
+                    self.state.update(cx, |s, cx| {
+                        s.toggle_term_panel(true);
+                        cx.notify();
+                    });
+                }
+                self.spawn_wt_script(&wt_path, &script, cx);
+            }
             ToolAction::ToggleTermPanel => self.toggle_term_panel(window, cx),
             ToolAction::ToggleZen => self.toggle_zen(window, cx),
             ToolAction::RequestKill => {
@@ -1033,6 +1046,20 @@ impl Workspace {
     fn active_wt_path(&self, cx: &App) -> Option<String> {
         let id = self.state.read(cx).active_session()?;
         self.registry.read(cx).meta(id).map(|m| m.wt_path.clone())
+    }
+
+    /// The active session's worktree path paired with its project's non-blank
+    /// `run` script — the single source of truth for both the header's ▶
+    /// button visibility and what that button executes.
+    fn active_run_script(&self, cx: &App) -> Option<(String, String)> {
+        let id = self.state.read(cx).active_session()?;
+        let meta = self.registry.read(cx).meta(id)?;
+        let wt_path = meta.wt_path.clone();
+        let store = &cx.global::<SettingsState>().store;
+        let script = grove_core::storage::project_for_worktree_path(&store.projects, &wt_path)
+            .and_then(|(_, p)| p.scripts.run.clone())
+            .filter(|s| !s.trim().is_empty())?;
+        Some((wt_path, script))
     }
 
     fn toggle_term_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1240,36 +1267,14 @@ impl Workspace {
     /// route through here since gpui has no `spawn_script_session`
     /// equivalent to the iced original.
     fn spawn_wt_script(&mut self, wt_path: &str, script: &str, cx: &mut Context<Self>) {
-        let (id, label) = self
-            .registry
-            .update(cx, |r, _| (r.next_home_id(), r.next_wt_label()));
-        let session = cx.new(|cx| TerminalSession::spawn_script(script, wt_path, cx));
-        if let Some(err) = session.read(cx).spawn_error().map(str::to_string) {
-            self.toast.update(cx, |t, cx| {
-                t.set_error(format!("terminal failed: {err}"), cx);
-            });
-            return;
-        }
-        let meta = crate::entities::session_registry::SessionMeta {
-            id,
-            project: String::new(),
-            wt_path: wt_path.to_string(),
-            agent: grove_core::agent::Agent::Terminal,
-            label,
-            spawned_at: std::time::Instant::now(),
-            attention: None,
-            // Home terminals and panel shells are always native.
-            tmux: false,
-            tmux_name: None,
-        };
-        self.registry.update(cx, |r, cx| {
-            r.push_wt_shell(wt_path, meta, Some(session));
-            cx.notify();
-        });
-        self.state.update(cx, |s, cx| {
-            s.focus_pane(PtyPane::Panel);
-            cx.notify();
-        });
+        crate::views::scripts::spawn_wt_script(
+            &self.registry,
+            &self.state,
+            Some(&self.toast),
+            wt_path,
+            script,
+            cx,
+        );
     }
 
     /// The panel's active shell view, memoized per shell id exactly as the
@@ -1773,6 +1778,7 @@ impl Workspace {
         let tool_dispatch = self.dispatcher(cx, |this, action: ToolAction, window, cx| {
             this.tool_action(action, window, cx);
         });
+        let has_run_script = self.active_run_script(cx).is_some();
         let ws = self.state.read(cx);
         let (term_panel_open, chrome_visible, portion, pending_kill, active) = (
             ws.term_panel_open(),
@@ -1781,17 +1787,6 @@ impl Workspace {
             ws.pending_kill(),
             ws.active_session(),
         );
-        let has_run_script = active
-            .and_then(|id| self.registry.read(cx).meta(id).map(|m| m.project.clone()))
-            .is_some_and(|project| {
-                cx.global::<SettingsState>().store.projects.iter().any(|p| {
-                    p.name == project
-                        && p.scripts
-                            .run
-                            .as_deref()
-                            .is_some_and(|s| !s.trim().is_empty())
-                })
-            });
         let cluster = ToolCluster {
             has_run_script,
             term_panel_open,

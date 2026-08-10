@@ -420,6 +420,8 @@ pub fn cleanup(files: &AttentionFiles) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     // ── parse_state ──────────────────────────────────────────────────────────

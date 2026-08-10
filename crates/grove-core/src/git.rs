@@ -267,6 +267,56 @@ pub fn remove_worktree(project_path: &str, wt_path: &str) -> Result<()> {
     Ok(())
 }
 
+/// The main checkout of the repository that owns the worktree at `wt_path`,
+/// asked of `git` itself rather than guessed from the directory layout.
+///
+/// `git rev-parse --git-common-dir` yields the OWNING repository's `.git`
+/// directory (as opposed to `--git-dir`, which for a linked worktree points at
+/// `<repo>/.git/worktrees/<name>`), so its parent is the project's main
+/// checkout path. This is the authoritative answer even when the worktree
+/// directory sits somewhere completely unrelated to the repo — which is
+/// exactly the case for grove-managed worktrees under [`worktrees_root`].
+///
+/// Returns `None` when `wt_path` is not a worktree, `git` is unavailable, or
+/// the output cannot be interpreted; callers treat that as "unknown owner"
+/// rather than as an error worth failing a startup pass over.
+pub fn worktree_owner_repo(wt_path: &str) -> Option<PathBuf> {
+    tracing::debug!(
+        args = "rev-parse --path-format=absolute --git-common-dir",
+        cwd = %wt_path,
+        "running git command"
+    );
+    let out = Command::new("git")
+        .args([
+            "-C",
+            wt_path,
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        tracing::warn!(
+            status = ?out.status,
+            stderr = %String::from_utf8_lossy(&out.stderr),
+            "git command failed"
+        );
+        return None;
+    }
+    let common = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if common.is_empty() {
+        return None;
+    }
+    // `<repo>/.git` -> `<repo>`. A bare repo has no such parent layout, so a
+    // missing/empty parent means "no main checkout to speak of".
+    let parent = Path::new(&common).parent()?;
+    if parent.as_os_str().is_empty() {
+        return None;
+    }
+    Some(parent.to_path_buf())
+}
+
 pub fn worktrees_root() -> Result<PathBuf> {
     // Worktrees always live under `~/.config/grove/worktrees` on both macOS and
     // Linux. We intentionally do not use `dirs::config_dir()` here because on
@@ -317,19 +367,27 @@ pub fn valid_project_name(name: &str) -> bool {
         && !name.contains("..")
 }
 
-pub fn add_worktree(project_path: &str, project_name: &str, name: &str) -> Result<String> {
+/// Create a worktree named `name` for the repo at `project_path`, placed at
+/// `worktrees_root()/<worktree_dir>/<name>`.
+///
+/// `worktree_dir` is the project's PINNED directory key
+/// (`storage::Project::worktree_dir()`), not necessarily its current display
+/// name: renaming a project must not orphan the worktree directories it
+/// already has on disk, so the key is frozen at the first rename.
+pub fn add_worktree(project_path: &str, worktree_dir: &str, name: &str) -> Result<String> {
     if !valid_worktree_name(name) {
         return Err(GitError::InvalidWorktreeName);
     }
-    // `project_name` is a path component under `worktrees_root()` just like
+    // `worktree_dir` is a path component under `worktrees_root()` just like
     // `name`, so it gets the same treatment rather than being trusted because
-    // it came from our own config file.
-    if !valid_project_name(project_name) {
+    // it came from our own config file — a pinned key is every bit as much a
+    // path component as a live project name.
+    if !valid_project_name(worktree_dir) {
         return Err(GitError::InvalidProjectName);
     }
     let root = worktrees_root()?;
     create_private_dir(&root)?;
-    let dest = root.join(project_name).join(name);
+    let dest = root.join(worktree_dir).join(name);
     if let Some(parent) = dest.parent() {
         create_private_dir(parent)?;
     }
@@ -448,6 +506,8 @@ pub fn copy_worktree_includes(project_path: &str, wt_path: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     // ── list_worktrees_many ──────────────────────────────────────────────────

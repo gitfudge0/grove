@@ -737,6 +737,8 @@ fn run(cmd: &mut Command, what: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use std::path::PathBuf;
 

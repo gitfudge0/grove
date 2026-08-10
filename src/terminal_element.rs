@@ -706,6 +706,7 @@ mod tests {
                 scripts: grove_core::storage::ProjectScripts::default(),
                 theme: pin.map(ToString::to_string),
                 archived: false,
+                worktree_dir: None,
             }],
             ..Store::default()
         }

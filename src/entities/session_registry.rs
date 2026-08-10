@@ -356,6 +356,31 @@ impl SessionRegistry {
             .collect()
     }
 
+    /// Rename a project in every live session's in-memory metadata. The
+    /// on-disk sidecar rename is `grove_core::session_meta::rename_project`
+    /// (a separate call, since this registry never touches disk); this is
+    /// the LIVE half — without it a running app keeps showing the old name
+    /// in the tree/rail until restart, even though the settings store and
+    /// the sidecars were already fixed.
+    ///
+    /// Home terminals and per-worktree panel shells never carry a project
+    /// name (always `String::new()`, see `SpawnTarget::home` and the
+    /// `push_wt_meta`/`push_home_meta` test seams), so only `order` is
+    /// touched. Returns the number of sessions updated.
+    pub fn rename_project(&mut self, from: &str, to: &str) -> usize {
+        if from == to {
+            return 0;
+        }
+        let mut count = 0;
+        for m in &mut self.order {
+            if m.project == from {
+                m.project = to.to_string();
+                count += 1;
+            }
+        }
+        count
+    }
+
     // ── home terminals ──────────────────────────────────────────────────
 
     #[must_use]
@@ -614,6 +639,30 @@ mod tests {
         let b = r.insert_meta("alpha".into(), "/a-x".into(), Agent::Codex);
         assert_eq!(r.by_project("alpha"), vec![a, b]);
         assert_eq!(r.by_project("nope"), Vec::<SessionId>::new());
+    }
+
+    /// A rename relabels every live session of that project and leaves
+    /// others (and the id/order) alone.
+    #[test]
+    fn rename_project_relabels_matching_sessions_only() {
+        let mut r = SessionRegistry::new();
+        let a = r.insert_meta("alpha".into(), "/a".into(), Agent::Claude);
+        let g = r.insert_meta("gamma".into(), "/g".into(), Agent::Claude);
+        let b = r.insert_meta("alpha".into(), "/a-x".into(), Agent::Codex);
+
+        let count = r.rename_project("alpha", "alpha-renamed");
+        assert_eq!(count, 2);
+        assert_eq!(r.by_project("alpha"), Vec::<SessionId>::new());
+        assert_eq!(r.by_project("alpha-renamed"), vec![a, b]);
+        assert_eq!(r.meta(g).map(|m| m.project.as_str()), Some("gamma"));
+    }
+
+    /// Same name in and out is a no-op — no spurious rewrite, no false count.
+    #[test]
+    fn rename_project_is_a_noop_when_names_match() {
+        let mut r = SessionRegistry::new();
+        r.insert_meta("alpha".into(), "/a".into(), Agent::Claude);
+        assert_eq!(r.rename_project("alpha", "alpha"), 0);
     }
 
     /// `src/app/terminals.rs:78-81` — the label sequence never rewinds, so a

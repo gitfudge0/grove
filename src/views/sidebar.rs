@@ -327,8 +327,11 @@ impl Sidebar {
                     self.open_modal(crate::modal::Modal::ScriptsEditor(Box::new(state)), cx);
                 }
             }
-            // `on_run_script` (`src/gui/update/sessions.rs:147-177`) opens the
-            // worktree's terminal panel; the workspace owns that split.
+            // `on_run_script` (`src/gui/update/sessions.rs:147-177`): selects
+            // the row's worktree, opens the terminal panel if it's closed,
+            // then spawns the project's `run` script in it via the shared
+            // `views::scripts::spawn_wt_script` — the same path the header
+            // ▶ / palette (`Workspace::spawn_wt_script`) uses.
             RowAction::RunScript(proj, wt) => {
                 self.state.update(cx, |s, cx| {
                     s.select_worktree(proj, wt, &snap);
@@ -337,6 +340,33 @@ impl Sidebar {
                     }
                     cx.notify();
                 });
+                let wt_path = snap
+                    .projects
+                    .iter()
+                    .find(|p| p.idx == proj)
+                    .and_then(|p| p.worktrees.get(wt))
+                    .map(|w| w.path.clone());
+                let Some(wt_path) = wt_path else {
+                    return;
+                };
+                let script = {
+                    let store = &cx.global::<SettingsState>().store;
+                    grove_core::storage::project_for_worktree_path(&store.projects, &wt_path)
+                        .and_then(|(_, p)| p.scripts.run.as_deref().map(str::trim))
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                };
+                let Some(script) = script else {
+                    return;
+                };
+                crate::views::scripts::spawn_wt_script(
+                    &self.registry,
+                    &self.state,
+                    self.toast.as_ref(),
+                    &wt_path,
+                    &script,
+                    cx,
+                );
             }
             // Task 4 fills the wizard; the slot opens now.
             RowAction::AddProject => {

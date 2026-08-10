@@ -447,6 +447,8 @@ fn parse_paste_json(trimmed: &str) -> Result<PastedColors, String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     #[test]

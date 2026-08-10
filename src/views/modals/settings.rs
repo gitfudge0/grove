@@ -320,7 +320,21 @@ impl ModalLayer {
                 return;
             }
         }
+        // Read back outside the closure: `SettingsState::update`'s closure is
+        // `move` and its `old_name` is local to it, but the sidecar/registry
+        // propagation below needs both names once the store mutation (and its
+        // own empty/unchanged short-circuit) has actually happened.
+        let renamed_from = cx
+            .global::<SettingsState>()
+            .store
+            .projects
+            .iter()
+            .find(|p| p.path == path)
+            .map(|p| p.name.clone())
+            .filter(|old_name| !new_name.is_empty() && *old_name != new_name);
+        let new_name_for_update = new_name.clone();
         SettingsState::update(cx, move |store| {
+            let new_name = new_name_for_update;
             let Some(idx) = store.projects.iter().position(|p| p.path == path) else {
                 return;
             };
@@ -334,6 +348,13 @@ impl ModalLayer {
             if new_name.is_empty() || new_name == old_name {
                 return;
             }
+            // Freeze the grove-managed worktree DIRECTORY at the name it was
+            // created under before the name moves out from under it. Without
+            // this the rename orphans every existing worktree directory (rule
+            // 2 of `project_for_worktree_path` stops matching) and new
+            // worktrees land in a second directory under the new name.
+            // Metadata only — nothing on disk is moved.
+            grove_core::storage::pin_worktree_dir_on_rename(&mut store.projects[idx], &old_name);
             store.projects[idx].name.clone_from(&new_name);
             // `RecentLaunch.project` and `grid_order` are keyed by project
             // NAME (not path — storage.rs:58, storage.rs:132), so a rename
@@ -356,6 +377,16 @@ impl ModalLayer {
         if cx.global::<SettingsState>().is_dirty() {
             self.open(Modal::Message("Scripts could not be saved.".into()), cx);
             return;
+        }
+        // The rename committed to the settings store above; propagate it to
+        // session metadata so a name lookup can't cross-wire to the wrong
+        // project (`crates/grove-core/src/session_meta.rs` rot this closes).
+        // Persisted sidecars first, then the live in-memory registry — a
+        // running app must not keep showing the old name until restart.
+        if let Some(old_name) = renamed_from {
+            grove_core::session_meta::rename_project(&old_name, &new_name);
+            self.registry
+                .update(cx, |r, _| r.rename_project(&old_name, &new_name));
         }
         self.toast
             .update(cx, |t, cx| t.set_toast("scripts saved", cx));

@@ -79,10 +79,284 @@ pub struct Project {
     /// matching how `ProjectScripts`' fields are handled above.
     #[serde(default, skip_serializing_if = "is_false")]
     pub archived: bool,
+    /// The directory component under `git::worktrees_root()` that holds this
+    /// project's grove-managed worktrees. Pinned on the FIRST rename and never
+    /// changed afterwards, so renaming a project cannot orphan worktrees that
+    /// already exist on disk. `None` means "same as `name`" — the state every
+    /// project starts in and most stay in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_dir: Option<String>,
 }
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+impl Project {
+    /// The directory this project's grove-managed worktrees live under, inside
+    /// `git::worktrees_root()`. Falls back to the display name for every
+    /// project that has never been renamed (`worktree_dir == None`), which is
+    /// the layout `git::add_worktree` has always created.
+    pub fn worktree_dir(&self) -> &str {
+        self.worktree_dir.as_deref().unwrap_or(&self.name)
+    }
+}
+
+/// Freeze `project.worktree_dir` at `old_name` if it is not already pinned —
+/// the single decision a project rename has to make about its worktree
+/// directory.
+///
+/// Called from the store mutation that applies a rename, BEFORE/while
+/// `name` changes. An unrenamed project carries `None` (dir == name); the
+/// first rename pins the dir at the name the directory on disk was actually
+/// created under; every later rename leaves that pin alone. Nothing on disk is
+/// moved, created or deleted — this is metadata only.
+pub fn pin_worktree_dir_on_rename(project: &mut Project, old_name: &str) {
+    if project.worktree_dir.is_none() {
+        project.worktree_dir = Some(old_name.to_string());
+    }
+}
+
+/// Resolves the project that owns a worktree path, by path rather than by
+/// the (possibly stale) project-name snapshot session metadata records.
+///
+/// Persisted session metadata (`crate::session_meta`) stores the project as
+/// a NAME snapshot taken when the session launched; that name goes stale the
+/// moment the project is renamed, while `wt_path` — an actual filesystem
+/// path — never does. A lifecycle-script lookup that keys the SCRIPT off the
+/// stale name while the CWD it runs in comes from `wt_path` can end up
+/// pointing at two different projects, running one project's script inside
+/// another's worktree. Resolving the project from `wt_path` through this
+/// function keeps "which script" and "where it runs" anchored to the same
+/// project.
+///
+/// Resolution order (first match wins):
+/// 1. Exact match: `project.path == wt_path` (trailing `/` trimmed from
+///    both sides before comparing).
+/// 2. Grove-managed worktree: `wt_path` lives under
+///    `worktrees_root()/<project.worktree_dir()>/...` — the layout
+///    `git::add_worktree` (`root.join(worktree_dir).join(name)`) actually
+///    creates worktrees at. The directory key is the PINNED
+///    `Project::worktree_dir` (falling back to `name` when unpinned), never
+///    the live display name: keying off the mutable name meant a rename
+///    orphaned every worktree directory the project already had.
+/// 3. Native worktree under the project root: `project.path` is a
+///    path-component prefix of `wt_path`. When several projects match by
+///    prefix (a project nested inside its parent's directory tree), the
+///    LONGEST `project.path` wins, so a nested project's own worktree is
+///    attributed to it rather than to its parent.
+///
+/// Comparisons are by path COMPONENT (via `std::path::Path`), never by raw
+/// string prefix: `/globus/code` must not match `/globus/codebase`.
+///
+/// Returns `None` when no project claims the path.
+pub fn project_for_worktree_path<'a>(
+    projects: &'a [Project],
+    wt_path: &str,
+) -> Option<(usize, &'a Project)> {
+    let wt = Path::new(wt_path.trim_end_matches('/'));
+
+    // 1. Exact match.
+    if let Some(hit) = projects
+        .iter()
+        .enumerate()
+        .find(|(_, p)| Path::new(p.path.trim_end_matches('/')) == wt)
+    {
+        return Some(hit);
+    }
+
+    // 2. Grove-managed worktree layout:
+    //    <worktrees_root>/<project.worktree_dir()>/<name>.
+    if let Ok(root) = crate::git::worktrees_root() {
+        if let Some(hit) = projects
+            .iter()
+            .enumerate()
+            .find(|(_, p)| wt.starts_with(root.join(p.worktree_dir())))
+        {
+            return Some(hit);
+        }
+    }
+
+    // 3. Native worktree under the project root: longest-prefix match.
+    projects
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| wt.starts_with(Path::new(p.path.trim_end_matches('/'))))
+        .max_by_key(|(_, p)| p.path.trim_end_matches('/').len())
+}
+
+/// Adopt worktree directories under `git::worktrees_root()` that no project
+/// currently claims, pinning each onto the project that genuinely owns its
+/// worktrees.
+///
+/// This closes the gap left by the era when the directory was keyed off the
+/// mutable display name: a project renamed BEFORE `Project::worktree_dir`
+/// existed has a directory on disk named after its old name that nothing
+/// matches any more. Rather than guess from the name, each candidate
+/// directory's worktrees are handed to `git` (see
+/// `git::worktree_owner_repo`), which reports the repository that actually
+/// owns them; only a unanimous, unambiguous answer results in an adoption.
+///
+/// Metadata only: no directory is ever created, moved or removed. Returns the
+/// number of projects whose `worktree_dir` was pinned, so the caller can log
+/// and decide whether to persist.
+///
+/// COST: this walks a directory tree and spawns one `git` per worktree. It is
+/// a ONE-SHOT startup pass and must never be called from a render path.
+/// `project_for_worktree_path` deliberately stays pure and subprocess-free.
+pub fn adopt_orphaned_worktree_dirs(projects: &mut [Project]) -> usize {
+    let root = match crate::git::worktrees_root() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "worktree adoption skipped: no worktrees root");
+            return 0;
+        }
+    };
+    adopt_orphaned_worktree_dirs_in(&root, projects, crate::git::worktree_owner_repo)
+}
+
+/// Testable core of [`adopt_orphaned_worktree_dirs`]: the worktrees root and
+/// the owning-repo oracle are both injected, so tests can drive the whole
+/// decision table against a `tempfile::TempDir` without a real `git` or the
+/// user's real `~/.config/grove/worktrees`.
+fn adopt_orphaned_worktree_dirs_in(
+    root: &Path,
+    projects: &mut [Project],
+    owner_repo: impl Fn(&str) -> Option<PathBuf>,
+) -> usize {
+    let owned: Vec<String> = projects
+        .iter()
+        .map(|p| p.worktree_dir().to_string())
+        .collect();
+
+    let entries = match fs::read_dir(root) {
+        Ok(e) => e,
+        // A machine that has never created a grove worktree has no root yet.
+        Err(_) => return 0,
+    };
+
+    // dir name -> resolved project index, for the candidates that produced a
+    // unanimous answer. Collected first so a project claimed by TWO candidate
+    // directories can be detected and refused rather than won by whichever
+    // `read_dir` happened to yield first.
+    let mut claims: Vec<(String, usize)> = Vec::new();
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || !entry.path().is_dir() {
+            continue;
+        }
+        if owned.iter().any(|d| *d == name) {
+            continue;
+        }
+        if let Some(idx) = resolve_candidate_owner(&entry.path(), projects, &owner_repo, &name) {
+            if projects[idx].worktree_dir.is_some() {
+                tracing::warn!(
+                    dir = %name,
+                    project = %projects[idx].name,
+                    pinned = %projects[idx].worktree_dir(),
+                    "not adopting orphaned worktree dir: project already has a pinned worktree dir"
+                );
+                continue;
+            }
+            claims.push((name, idx));
+        }
+    }
+
+    let mut adopted = 0;
+    for (dir, idx) in &claims {
+        if claims.iter().any(|(d, i)| i == idx && d != dir) {
+            let others: Vec<&str> = claims
+                .iter()
+                .filter(|(_, i)| i == idx)
+                .map(|(d, _)| d.as_str())
+                .collect();
+            tracing::warn!(
+                project = %projects[*idx].name,
+                candidates = ?others,
+                "not adopting orphaned worktree dirs: two directories claim the same project"
+            );
+            continue;
+        }
+        projects[*idx].worktree_dir = Some(dir.clone());
+        tracing::info!(
+            dir = %dir,
+            project = %projects[*idx].name,
+            "adopted orphaned worktree dir onto its owning project"
+        );
+        adopted += 1;
+    }
+    adopted
+}
+
+/// The single project every worktree inside `candidate` belongs to, or `None`
+/// when the answer is not unanimous (mixed owners, an owner that is not a
+/// registered project, or no worktrees at all). Each refusal is logged.
+fn resolve_candidate_owner(
+    candidate: &Path,
+    projects: &[Project],
+    owner_repo: &impl Fn(&str) -> Option<PathBuf>,
+    dir_name: &str,
+) -> Option<usize> {
+    let entries = match fs::read_dir(candidate) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(dir = %dir_name, error = %e, "not adopting orphaned worktree dir: unreadable");
+            return None;
+        }
+    };
+    let mut resolved: Option<usize> = None;
+    for entry in entries.flatten() {
+        let wt = entry.path();
+        if entry.file_name().to_string_lossy().starts_with('.') || !wt.is_dir() {
+            continue;
+        }
+        let Some(wt_str) = wt.to_str() else { continue };
+        let idx = owner_repo(wt_str).and_then(|repo| {
+            projects
+                .iter()
+                .position(|p| same_dir(&repo, Path::new(&p.path)))
+        });
+        match idx {
+            None => {
+                tracing::warn!(
+                    dir = %dir_name,
+                    worktree = %wt.display(),
+                    "not adopting orphaned worktree dir: worktree resolves to no known project"
+                );
+                return None;
+            }
+            Some(i) => match resolved {
+                Some(prev) if prev != i => {
+                    tracing::warn!(
+                        dir = %dir_name,
+                        first = %projects[prev].name,
+                        second = %projects[i].name,
+                        "not adopting orphaned worktree dir: worktrees resolve to different projects"
+                    );
+                    return None;
+                }
+                _ => resolved = Some(i),
+            },
+        }
+    }
+    if resolved.is_none() {
+        tracing::warn!(
+            dir = %dir_name,
+            "not adopting orphaned worktree dir: no worktree inside it resolved to a project"
+        );
+    }
+    resolved
+}
+
+/// Whether two paths name the same directory, compared as paths (canonicalized
+/// where possible, trailing separators trimmed) rather than as strings.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let norm = |p: &Path| {
+        let trimmed = Path::new(p.to_string_lossy().trim_end_matches('/')).to_path_buf();
+        fs::canonicalize(&trimmed).unwrap_or(trimmed)
+    };
+    norm(a) == norm(b)
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -344,7 +618,9 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use crate::agent::Agent;
 
@@ -394,6 +670,7 @@ mod tests {
                     scripts: ProjectScripts::default(),
                     theme: None,
                     archived: false,
+                    worktree_dir: None,
                 },
                 Project {
                     name: "other".into(),
@@ -401,6 +678,7 @@ mod tests {
                     scripts: ProjectScripts::default(),
                     theme: Some("dracula".into()),
                     archived: true,
+                    worktree_dir: None,
                 },
             ],
             default_agent: Some(Agent::Claude),
@@ -651,7 +929,12 @@ mod tests {
     // `std::env::set_var` mutates process-global state and `cargo test` runs
     // tests concurrently, so every test here that sets `CONFIG_DIR_ENV` is
     // serialized behind this mutex, mirroring `theme.rs`'s `CUSTOM_TEST_LOCK`.
-    static CONFIG_DIR_ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    //
+    // `pub(crate)`: `session_meta.rs`'s tests also mutate this same
+    // process-global env var and must serialize against these tests too, not
+    // just against each other — a second, independent mutex over the same
+    // global would not prevent interleaving between the two modules.
+    pub(crate) static CONFIG_DIR_ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// RAII guard that always restores (or removes) the env var on drop, even
     /// if the test body panics, so one failing test can't poison the ones
@@ -771,6 +1054,7 @@ mod tests {
                     scripts: ProjectScripts::default(),
                     theme: None,
                     archived: archived.contains(&i),
+                    worktree_dir: None,
                 })
                 .collect(),
             ..Store::default()
@@ -947,6 +1231,7 @@ mod tests {
             scripts: ProjectScripts::default(),
             theme: None,
             archived: true,
+            worktree_dir: None,
         };
         let json = serde_json::to_string(&project).expect("serialize project");
         let recovered: Project = serde_json::from_str(&json).expect("deserialize project");
@@ -960,5 +1245,359 @@ mod tests {
             1,
             "exactly one archived key per project — no per-worktree variant: {json}"
         );
+    }
+
+    // ── project_for_worktree_path ───────────────────────────────────────
+
+    fn project(name: &str, path: &str) -> Project {
+        Project {
+            name: name.to_string(),
+            path: path.to_string(),
+            scripts: ProjectScripts::default(),
+            theme: None,
+            archived: false,
+            worktree_dir: None,
+        }
+    }
+
+    /// Rule 1: an exact `project.path == wt_path` match wins, trailing
+    /// slashes trimmed on both sides.
+    #[test]
+    fn project_for_worktree_path_exact_match() {
+        let projects = vec![project("myapp", "/home/user/myapp/")];
+        let (idx, p) =
+            project_for_worktree_path(&projects, "/home/user/myapp").expect("exact match");
+        assert_eq!(idx, 0);
+        assert_eq!(p.name, "myapp");
+    }
+
+    /// Rule 2: a worktree under `worktrees_root()/<project.name>/...` is
+    /// attributed to that project even though `project.path` (the project's
+    /// own checkout root) is unrelated to the worktree path — this is
+    /// grove's own managed-worktree layout (`git::add_worktree`).
+    #[test]
+    fn project_for_worktree_path_grove_managed_worktree() {
+        let root = crate::git::worktrees_root().expect("worktrees_root");
+        let projects = vec![project("myapp", "/completely/unrelated/path")];
+        let wt = root.join("myapp").join("feature-x");
+        let (idx, p) = project_for_worktree_path(&projects, wt.to_str().expect("utf8 path"))
+            .expect("grove-managed match");
+        assert_eq!(idx, 0);
+        assert_eq!(p.name, "myapp");
+    }
+
+    /// Rule 3, nested case: a project registered at a path nested inside
+    /// another project's root must win the prefix match over its parent —
+    /// the longest `project.path` wins.
+    #[test]
+    fn project_for_worktree_path_nested_project_longest_prefix_wins() {
+        let projects = vec![
+            project("SIP-ROOT", "/globus/code"),
+            project("physician-portal", "/globus/code/physician-portal"),
+        ];
+        let (idx, p) =
+            project_for_worktree_path(&projects, "/globus/code/physician-portal/feature-x")
+                .expect("nested match");
+        assert_eq!(p.name, "physician-portal");
+        assert_eq!(idx, 1);
+    }
+
+    /// Rule 3 must compare by path COMPONENT, not raw string prefix:
+    /// `/globus/code` is not a prefix of `/globus/codebase`.
+    #[test]
+    fn project_for_worktree_path_rejects_false_string_prefix() {
+        let projects = vec![project("SIP-ROOT", "/globus/code")];
+        assert!(
+            project_for_worktree_path(&projects, "/globus/codebase/some-worktree").is_none(),
+            "/globus/codebase must not be treated as nested under /globus/code"
+        );
+    }
+
+    /// No project claims the path at all: `None`, not a panic or a wrong
+    /// fallback guess.
+    #[test]
+    fn project_for_worktree_path_no_match_returns_none() {
+        let projects = vec![project("myapp", "/home/user/myapp")];
+        assert!(project_for_worktree_path(&projects, "/completely/unrelated").is_none());
+    }
+
+    // ── worktree_dir: the rename-proof directory key ─────────────────────
+
+    /// The accessor is the whole point of the `Option`: unpinned projects read
+    /// as their name, pinned ones as the frozen directory.
+    #[test]
+    fn worktree_dir_falls_back_to_name_and_honours_pin() {
+        let mut p = project("myapp", "/home/user/myapp");
+        assert_eq!(
+            p.worktree_dir(),
+            "myapp",
+            "an unpinned project's worktree dir must be its name"
+        );
+        p.worktree_dir = Some("old-name".into());
+        p.name = "NewName".into();
+        assert_eq!(
+            p.worktree_dir(),
+            "old-name",
+            "a pinned worktree dir must survive a rename of the display name"
+        );
+    }
+
+    /// Rule 2 after a rename: the worktree lives under the PINNED directory,
+    /// which no longer matches the project's display name at all. Keying rule 2
+    /// off `name` (as it once did) orphans exactly this worktree.
+    #[test]
+    fn project_for_worktree_path_uses_pinned_dir_after_rename() {
+        let root = crate::git::worktrees_root().expect("worktrees_root");
+        let mut p = project("SIP-ROOT", "/completely/unrelated/path");
+        p.worktree_dir = Some("careconvoy-ai-web".into());
+        let projects = vec![p];
+
+        let wt = root
+            .join("careconvoy-ai-web")
+            .join("super-user-segregation");
+        let (idx, hit) = project_for_worktree_path(&projects, wt.to_str().expect("utf8 path"))
+            .expect("pinned-dir match");
+        assert_eq!(idx, 0);
+        assert_eq!(hit.name, "SIP-ROOT");
+
+        // And the NEW name must claim nothing: no such directory relationship
+        // exists, so inventing one would re-introduce the split-brain the pin
+        // exists to prevent.
+        let under_new_name = root.join("SIP-ROOT").join("super-user-segregation");
+        assert!(
+            project_for_worktree_path(&projects, under_new_name.to_str().expect("utf8 path"))
+                .is_none(),
+            "a pinned project must not also claim <worktrees_root>/<new name>/..."
+        );
+    }
+
+    /// `projects.json` must stay clean for the overwhelmingly common unpinned
+    /// case, and a pin must survive a round trip.
+    #[test]
+    fn worktree_dir_none_is_omitted_and_some_round_trips() {
+        let unpinned = project("myapp", "/home/user/myapp");
+        let json = serde_json::to_string(&unpinned).expect("serialize");
+        assert!(
+            !json.contains("worktree_dir"),
+            "worktree_dir: None must be skipped during serialization: {json}"
+        );
+
+        let mut pinned = project("NewName", "/home/user/myapp");
+        pinned.worktree_dir = Some("old-name".into());
+        let json = serde_json::to_string(&pinned).expect("serialize");
+        let recovered: Project = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(recovered.worktree_dir.as_deref(), Some("old-name"));
+
+        // A config file written before the field existed loads as unpinned.
+        let legacy: Project =
+            serde_json::from_str(r#"{"name":"a","path":"/tmp/a","scripts":{}}"#).expect("legacy");
+        assert!(legacy.worktree_dir.is_none());
+        assert_eq!(legacy.worktree_dir(), "a");
+    }
+
+    /// The pinning rule: the FIRST rename freezes the directory at the name it
+    /// was created under; later renames must leave that pin alone, or the
+    /// second rename would orphan the directory the first one saved.
+    #[test]
+    fn pin_worktree_dir_on_rename_pins_once_and_only_once() {
+        let mut p = project("careconvoy-ai-web", "/globus/code");
+        pin_worktree_dir_on_rename(&mut p, "careconvoy-ai-web");
+        assert_eq!(
+            p.worktree_dir.as_deref(),
+            Some("careconvoy-ai-web"),
+            "the first rename must pin the dir at the OLD name"
+        );
+
+        // Second rename: the pin must not follow the intermediate name.
+        p.name = "SIP-ROOT".into();
+        pin_worktree_dir_on_rename(&mut p, "SIP-ROOT");
+        assert_eq!(
+            p.worktree_dir.as_deref(),
+            Some("careconvoy-ai-web"),
+            "an already-pinned worktree dir must never be re-pinned"
+        );
+    }
+
+    // ── adoption of already-orphaned worktree directories ────────────────
+    //
+    // These drive `adopt_orphaned_worktree_dirs_in` with an injected root and
+    // an injected owning-repo oracle, so they need neither a real `git` nor
+    // the user's real `~/.config/grove/worktrees`, and they never touch
+    // `GROVE_CONFIG_DIR` (which `worktrees_root()` does not consult anyway).
+
+    /// Builds `<tmp>/<dir>/<wt>` for every `(dir, wt)` pair and returns the
+    /// root. Caller removes the tree.
+    fn worktree_fixture(tag: &str, layout: &[(&str, &str)]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "grove_test_adopt_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        for (dir, wt) in layout {
+            fs::create_dir_all(root.join(dir).join(wt)).expect("create fixture worktree");
+        }
+        root
+    }
+
+    /// Oracle that maps a worktree path to an owning repo by the LAST path
+    /// component, standing in for what `git rev-parse --git-common-dir` reports.
+    fn oracle(map: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<PathBuf> {
+        move |wt: &str| {
+            let leaf = Path::new(wt).file_name()?.to_string_lossy().to_string();
+            map.iter()
+                .find(|(name, _)| *name == leaf)
+                .map(|(_, repo)| PathBuf::from(*repo))
+        }
+    }
+
+    /// Happy path: a directory named after the project's OLD name, whose
+    /// worktrees all belong to one project, is adopted onto that project.
+    #[test]
+    fn adopt_pins_unclaimed_dir_onto_its_unanimous_owner() {
+        let root = worktree_fixture("happy", &[("careconvoy-ai-web", "wt-a"), ("other", "kept")]);
+        let mut projects = vec![
+            project("SIP-ROOT", "/globus/code"),
+            project("other", "/globus/other"),
+        ];
+
+        let adopted = adopt_orphaned_worktree_dirs_in(
+            &root,
+            &mut projects,
+            oracle(&[("wt-a", "/globus/code")]),
+        );
+
+        assert_eq!(adopted, 1, "exactly one directory was adoptable");
+        assert_eq!(
+            projects[0].worktree_dir.as_deref(),
+            Some("careconvoy-ai-web"),
+            "the orphaned dir must be pinned onto the project git says owns it"
+        );
+        assert!(
+            projects[1].worktree_dir.is_none(),
+            "an uninvolved project must be left alone"
+        );
+        // `other/` is already that project's own dir, so it is not a candidate
+        // and needs no oracle answer at all.
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Refusal: the candidate's worktrees belong to two different projects, so
+    /// there is no single right answer — leave the state visible instead.
+    #[test]
+    fn adopt_refuses_when_worktrees_resolve_to_different_projects() {
+        let root = worktree_fixture("mixed", &[("mystery", "wt-a"), ("mystery", "wt-b")]);
+        let mut projects = vec![
+            project("alpha", "/globus/alpha"),
+            project("beta", "/globus/beta"),
+        ];
+
+        let adopted = adopt_orphaned_worktree_dirs_in(
+            &root,
+            &mut projects,
+            oracle(&[("wt-a", "/globus/alpha"), ("wt-b", "/globus/beta")]),
+        );
+
+        assert_eq!(adopted, 0);
+        assert!(
+            projects.iter().all(|p| p.worktree_dir.is_none()),
+            "an ambiguous directory must pin nothing at all"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Refusal: two candidate directories both resolve to the same project.
+    /// First-one-wins is not acceptable — skip BOTH and leave it visible.
+    #[test]
+    fn adopt_refuses_when_two_dirs_claim_the_same_project() {
+        let root = worktree_fixture("dupe", &[("old-name", "wt-a"), ("older-name", "wt-b")]);
+        let mut projects = vec![project("alpha", "/globus/alpha")];
+
+        let adopted = adopt_orphaned_worktree_dirs_in(
+            &root,
+            &mut projects,
+            oracle(&[("wt-a", "/globus/alpha"), ("wt-b", "/globus/alpha")]),
+        );
+
+        assert_eq!(adopted, 0);
+        assert!(
+            projects[0].worktree_dir.is_none(),
+            "neither contender may win when two dirs claim one project"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Refusal: a worktree whose owning repo is not a registered project at
+    /// all, and an empty candidate directory — neither yields an owner.
+    #[test]
+    fn adopt_refuses_unresolvable_and_empty_candidates() {
+        let root = worktree_fixture("unresolved", &[("mystery", "wt-a")]);
+        fs::create_dir_all(root.join("empty")).expect("create empty candidate");
+        let mut projects = vec![project("alpha", "/globus/alpha")];
+
+        let adopted = adopt_orphaned_worktree_dirs_in(&root, &mut projects, oracle(&[]));
+
+        assert_eq!(adopted, 0);
+        assert!(projects[0].worktree_dir.is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Refusal: the resolved project is already pinned, so its directory was
+    /// decided once and must not be silently repointed.
+    #[test]
+    fn adopt_refuses_when_project_is_already_pinned() {
+        let root = worktree_fixture("pinned", &[("even-older", "wt-a")]);
+        let mut projects = vec![project("alpha", "/globus/alpha")];
+        projects[0].worktree_dir = Some("old-name".into());
+
+        let adopted = adopt_orphaned_worktree_dirs_in(
+            &root,
+            &mut projects,
+            oracle(&[("wt-a", "/globus/alpha")]),
+        );
+
+        assert_eq!(adopted, 0);
+        assert_eq!(
+            projects[0].worktree_dir.as_deref(),
+            Some("old-name"),
+            "an existing pin must not be overwritten by adoption"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Dotfiles (`.DS_Store` really is in the user's worktrees root) and plain
+    /// files must never be treated as candidate directories.
+    #[test]
+    fn adopt_ignores_dotfiles_and_plain_files() {
+        let root = worktree_fixture("noise", &[(".hidden", "wt-a")]);
+        fs::write(root.join(".DS_Store"), b"junk").expect("write junk file");
+        fs::write(root.join("stray.txt"), b"junk").expect("write junk file");
+        let mut projects = vec![project("alpha", "/globus/alpha")];
+
+        let adopted = adopt_orphaned_worktree_dirs_in(
+            &root,
+            &mut projects,
+            oracle(&[("wt-a", "/globus/alpha")]),
+        );
+
+        assert_eq!(adopted, 0, "hidden entries and files are not candidates");
+        assert!(projects[0].worktree_dir.is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A worktrees root that does not exist yet (a machine that has never
+    /// created a grove worktree) is a no-op, not an error.
+    #[test]
+    fn adopt_on_missing_root_is_a_no_op() {
+        let root = std::env::temp_dir().join("grove_test_adopt_absent_root_does_not_exist");
+        let _ = fs::remove_dir_all(&root);
+        let mut projects = vec![project("alpha", "/globus/alpha")];
+        assert_eq!(
+            adopt_orphaned_worktree_dirs_in(&root, &mut projects, oracle(&[])),
+            0
+        );
+        assert!(projects[0].worktree_dir.is_none());
     }
 }

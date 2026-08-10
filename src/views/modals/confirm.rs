@@ -110,7 +110,9 @@ impl ModalLayer {
         name: &str,
         cx: &mut Context<Self>,
     ) {
-        match git::add_worktree(&project.path, &project.name, name) {
+        // The pinned directory key, not the display name: renaming a project
+        // must not scatter its worktrees across two directories.
+        match git::add_worktree(&project.path, project.worktree_dir(), name) {
             Ok(path) => {
                 if let Err(e) = git::copy_worktree_includes(&project.path, &path) {
                     tracing::warn!("grove-gpui: worktree includes not copied: {e}");

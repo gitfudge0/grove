@@ -434,6 +434,7 @@ mod tests {
             scripts: grove_core::storage::ProjectScripts::default(),
             theme: None,
             archived: false,
+            worktree_dir: None,
         }
     }
 

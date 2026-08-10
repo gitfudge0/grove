@@ -123,10 +123,32 @@ impl ModalLayer {
                     &fallback,
                     tree_paths.len(),
                     self.state.read(cx).proj_idx(),
+                    self.active_run_script(cx).is_some(),
                 )
             }
-            _ => launcher::typed_rows(&st.query, &combos, &recents),
+            _ => launcher::typed_rows(
+                &st.query,
+                &combos,
+                &recents,
+                self.active_run_script(cx).is_some(),
+            ),
         }
+    }
+
+    /// The active session's worktree path paired with its project's
+    /// non-blank `run` script — the same condition `Workspace::
+    /// active_run_script` (`src/views/workspace.rs`) uses for the session
+    /// header's ▶ button. `Workspace`'s copy is private to that view, so
+    /// this is the launcher's own equivalent rather than a shared call.
+    fn active_run_script(&self, cx: &App) -> Option<(String, String)> {
+        let id = self.state.read(cx).active_session()?;
+        let meta = self.registry.read(cx).meta(id)?;
+        let wt_path = meta.wt_path.clone();
+        let store = &cx.global::<SettingsState>().store;
+        let script = grove_core::storage::project_for_worktree_path(&store.projects, &wt_path)
+            .and_then(|(_, p)| p.scripts.run.clone())
+            .filter(|s| !s.trim().is_empty())?;
+        Some((wt_path, script))
     }
 
     /// The switch drill-in's display order: sessions most-recently-used first
@@ -179,9 +201,10 @@ impl ModalLayer {
     /// stay in sync — that sync was the whole point of the helper in the
     /// iced original (`src/gui/session_launcher/palette.rs:883-905`,
     /// `row_action_scripts`).
-    fn row_action_scripts(&self, proj: usize, cx: &App) -> Vec<(&'static str, String)> {
+    fn row_action_scripts(&self, wt_path: &str, cx: &App) -> Vec<(&'static str, String)> {
         let store = &cx.global::<SettingsState>().store;
-        let Some(p) = store.projects.get(proj) else {
+        let Some((_, p)) = grove_core::storage::project_for_worktree_path(&store.projects, wt_path)
+        else {
             return Vec::new();
         };
         [
@@ -238,7 +261,7 @@ impl ModalLayer {
         let Some(Modal::SessionLauncher(st)) = self.slot.get() else {
             return 0;
         };
-        let Some(crate::launcher::RowIdentity::Session { proj, .. }) = st.anchor.clone() else {
+        let Some(crate::launcher::RowIdentity::Session { wt_path, .. }) = st.anchor.clone() else {
             return 2;
         };
         let base = if cx.global::<SettingsState>().store.project_themes_enabled {
@@ -246,7 +269,7 @@ impl ModalLayer {
         } else {
             2
         };
-        base + self.row_action_scripts(proj, cx).len()
+        base + self.row_action_scripts(&wt_path, cx).len()
     }
 
     /// Ask the results zone to bring the selected row into view, but only when
@@ -426,6 +449,7 @@ impl ModalLayer {
             | PaletteRow::TerminalHome
             | PaletteRow::TerminalWt
             | PaletteRow::AddProject
+            | PaletteRow::RunScript
             | PaletteRow::ReloadThemes => {}
         }
         cx.notify();
@@ -535,6 +559,14 @@ impl ModalLayer {
             PaletteRow::TerminalHome | PaletteRow::TerminalWt => {
                 self.close(cx);
                 cx.emit(ModalEvent::NewHomeTerminal);
+            }
+            PaletteRow::RunScript => {
+                let Some((wt_path, script)) = self.active_run_script(cx) else {
+                    cx.notify();
+                    return;
+                };
+                self.close(cx);
+                cx.emit(ModalEvent::RunScript { wt_path, script });
             }
             PaletteRow::Setting(s) => self.activate_setting(s, window, cx),
             PaletteRow::ReloadThemes => {
@@ -652,7 +684,7 @@ impl ModalLayer {
                 cx,
             );
         } else if sel >= base {
-            let scripts = self.row_action_scripts(proj, cx);
+            let scripts = self.row_action_scripts(&wt_path, cx);
             let Some((_, script)) = scripts.get(sel - base) else {
                 return;
             };
@@ -818,6 +850,7 @@ fn row_label(row: &PaletteRow, cx: &App) -> (String, String, &'static str) {
         PaletteRow::TerminalHome => ("Home terminal".into(), String::new(), "term"),
         PaletteRow::TerminalWt => ("Worktree terminal".into(), String::new(), "term"),
         PaletteRow::AddProject => ("Add project…".into(), String::new(), "plus"),
+        PaletteRow::RunScript => ("Run script".into(), String::new(), "play"),
         PaletteRow::SwitchToSession => ("Switch to session…".into(), String::new(), "restart"),
         PaletteRow::Settings => ("Settings…".into(), String::new(), "cog"),
         // The value, not the section: activating a toggle row leaves the
@@ -1208,7 +1241,11 @@ fn row_actions(
     }
 
     let base = if project_themes_enabled { 3 } else { 2 };
-    for (i, (kind, _)) in layer.row_action_scripts(proj, cx).into_iter().enumerate() {
+    for (i, (kind, _)) in layer
+        .row_action_scripts(&wt_path, cx)
+        .into_iter()
+        .enumerate()
+    {
         let (label, color) = match kind {
             "setup" => ("Setup script", c::GREEN()),
             "run" => ("Run script", c::CYAN()),
@@ -1312,6 +1349,7 @@ mod tests {
                 scripts: grove_core::storage::ProjectScripts::default(),
                 theme: None,
                 archived: false,
+                worktree_dir: None,
             }],
             ..Store::default()
         }
@@ -1419,6 +1457,7 @@ mod tests {
                     scripts: grove_core::storage::ProjectScripts::default(),
                     theme: None,
                     archived: false,
+                    worktree_dir: None,
                 },
                 Project {
                     name: "beta".to_string(),
@@ -1426,6 +1465,7 @@ mod tests {
                     scripts: grove_core::storage::ProjectScripts::default(),
                     theme: None,
                     archived: false,
+                    worktree_dir: None,
                 },
             ],
             ..Store::default()

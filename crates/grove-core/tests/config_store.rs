@@ -24,6 +24,8 @@
 //! `serde_json` contract (which is what `save`/`load` are thin wrappers
 //! around).
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use fs_err as fs;
 use grove_core::agent::Agent;
 use grove_core::storage::{self, write_atomic, Project, RecentLaunch, Store};
@@ -107,6 +109,7 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
                 scripts: grove_core::storage::ProjectScripts::default(),
                 theme: Some("dracula".into()),
                 archived: false,
+                worktree_dir: None,
             },
             Project {
                 name: "other".into(),
@@ -114,6 +117,7 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
                 scripts: grove_core::storage::ProjectScripts::default(),
                 theme: None,
                 archived: false,
+                worktree_dir: None,
             },
         ],
         default_agent: Some(Agent::Claude),
@@ -210,6 +214,7 @@ fn save_then_load_round_trips_through_real_paths() {
             scripts: grove_core::storage::ProjectScripts::default(),
             theme: Some("dracula".into()),
             archived: false,
+            worktree_dir: None,
         }],
         default_agent: Some(Agent::Codex),
         theme: Some("tokyonight".into()),

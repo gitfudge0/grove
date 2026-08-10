@@ -70,6 +70,43 @@ pub fn boot(cx: &mut gpui::App) {
         }
     };
 
+    // 3a2. Adopt worktree directories under `worktrees_root()` that no project
+    //      claims — the residue of the era when that directory was keyed off
+    //      the mutable project name, so a rename orphaned it (see
+    //      `storage::adopt_orphaned_worktree_dirs`). Metadata only: it pins
+    //      `Project::worktree_dir` and never touches a directory. It must run
+    //      BEFORE the session-meta repair below, because that repair resolves
+    //      ownership through `project_for_worktree_path`, which now keys off
+    //      the pinned dir. One-shot startup pass — never a render path.
+    let adopted = storage::adopt_orphaned_worktree_dirs(&mut store.projects);
+    if adopted > 0 {
+        tracing::info!(adopted, "grove-gpui: adopted orphaned worktree directories");
+        storage::persist(&store);
+    }
+
+    // 3b. Repair session sidecars whose `project` names a project that no
+    //     longer exists under the just-loaded list — the rot
+    //     `session_meta.rs`'s module doc describes (a rename that predates
+    //     this propagation, or a project deleted/recreated while sessions
+    //     from the old one were still parked). One pass, right after the
+    //     project list is known and before anything else reads a sidecar
+    //     (`grove_core::tmux::list_grove_sessions`, called from
+    //     `Workspace::discover_tmux_sessions` on startup, does exactly that).
+    //     Path→project resolution is deliberately not reimplemented here —
+    //     `grove_core::storage::project_for_worktree_path` is the one source
+    //     of truth for that rule.
+    let known_projects: Vec<(String, String)> = store
+        .projects
+        .iter()
+        .map(|p| (p.name.clone(), p.path.clone()))
+        .collect();
+    let repaired = grove_core::session_meta::repair_stale_projects(&known_projects, |wt_path| {
+        storage::project_for_worktree_path(&store.projects, wt_path).map(|(_, p)| p.name.clone())
+    });
+    if repaired > 0 {
+        tracing::info!(repaired, "grove-gpui: repaired stale session-meta projects");
+    }
+
     // 4. User themes must exist before a persisted custom name is resolved,
     //    or a valid custom selection silently falls back on the first frame.
     let _ = theme::load_custom();

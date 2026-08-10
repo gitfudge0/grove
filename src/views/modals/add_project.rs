@@ -314,6 +314,8 @@ impl ModalLayer {
                 scripts: grove_core::storage::ProjectScripts::default(),
                 theme: None,
                 archived: false,
+                // New project: the worktree dir is its name until a rename pins it.
+                worktree_dir: None,
             });
         });
         SettingsState::flush_now(cx);
@@ -407,6 +409,8 @@ impl ModalLayer {
                                 scripts: grove_core::storage::ProjectScripts::default(),
                                 theme: None,
                                 archived: false,
+                                // New project: the worktree dir is its name until a rename pins it.
+                                worktree_dir: None,
                             });
                         });
                         SettingsState::flush_now(cx);

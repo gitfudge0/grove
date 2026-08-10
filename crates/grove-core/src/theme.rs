@@ -1036,6 +1036,8 @@ pub fn duplicate_name(base: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     fn sample(name: &str, kind: ThemeKind) -> Theme {
