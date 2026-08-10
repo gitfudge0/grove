@@ -33,9 +33,6 @@
 //! and a constant `0.0` while nothing waits, so call sites interpolate
 //! unconditionally.
 
-// Views land through Plan 07; several accessors have no caller yet.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -220,11 +217,6 @@ impl ActivityStore {
     #[must_use]
     pub fn waiting_count(&self) -> usize {
         self.waiting.len()
-    }
-
-    #[must_use]
-    pub fn window_focused(&self) -> bool {
-        self.window_focused
     }
 
     // ── window focus ────────────────────────────────────────────────────

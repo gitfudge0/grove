@@ -617,7 +617,7 @@ corners round at `RADIUS_CONTROL` (4) inside a `seg_group` bordered at
 | `session_header::SESSBAR_H` | 36 | `src/views/session_header.rs` |
 | `statusbar::STATUS_H` | 26 | `src/views/statusbar.rs` |
 | `rows::ROW_H` | 28 | `src/views/rows.rs` |
-| `components::PALETTE_ROW_H` | 44 | `src/views/components.rs` |
+| `components::PALETTE_ROW_H` | 54 | `src/views/components.rs` |
 | `grid::TILE_HEAD_H` | 22 | `src/views/grid.rs` |
 | `tokens::CONTROL_H` | 22 | `src/views/tokens.rs` |
 | `launcher::AGENT_BTN` | 26 | `src/views/modals/launcher.rs` — the agent bar's square icon box |
@@ -627,7 +627,7 @@ A worktree row showing a branch chip is `ROW_H + 14 = 42` tall
 is computed from that function, so the renderer and `row_height` must agree —
 changing one without the other misplaces the menu.
 
-`PALETTE_ROW_H` (44) is deliberately taller than `ROW_H` (28): palette rows
+`PALETTE_ROW_H` (54) is deliberately taller than `ROW_H` (28): palette rows
 carry two lines of content.
 
 `CONTROL_H` (22) is the height of every flat icon/text button and equals
@@ -796,6 +796,13 @@ carrying too much" case this section's closing rule already forbids, and
 Project Settings drops to `MODAL_W_LG` (560) instead. The four notches above
 are the whole scale, not four of five.
 
+`PALETTE_W` (760) has now been retired the same way. The command palette used
+to render at its own private 760px width, wider than every other modal, and
+now sits on `MODAL_W_XL` (640) like everything else. This is a real tradeoff,
+not a free win: palette rows carry both a title and a subtitle (a "project ·
+worktree" style label), so at the narrower 640px, long labels truncate sooner
+than they did at 760px.
+
 ---
 
 ## 9. Components
@@ -828,12 +835,13 @@ It is consumed by `appbar`, `sidebar`, `rows`, `statusbar`, `grid`,
 | `scrim(content)` | Full-bleed `SCRIM` backdrop, content centred | — |
 | `scrim_top_drop(content)` | Palette variant: top-dropped | `pt(rpx(80))` |
 | `modal_header(title, accent)` | Header zone with a `TEXT_TITLE` title in `accent` | `px/py SPACE_3XL` |
-| `modal_header_with_close(id, title, accent, dispatch)` | `modal_header_row` with the title left and a trailing `close` icon button wired to `ModalClick::Cancel` | header tokens + `icon_btn` at `CONTROL_H`, `ICON_SM`, `FG_MUTE` |
+| `modal_header_with_close(id, title, accent, dispatch)` | `modal_header_row` with the title left and a trailing `close` icon button wired to `ModalClick::Cancel` | header tokens + `flat_icon_btn` at the header icon tier: `ICON_BTN_W` (28), `ICON_MD` |
 | `modal_header_row(content)` | Header zone for a custom row (title + step counter) | `px/py SPACE_3XL` |
 | `modal_body(content)` | Body zone: column with vertical rhythm | `p SPACE_3XL` on all four sides (a zone pads uniformly, §6.1 — a header divider above it is a rule, not padding), `gap SPACE_XL` |
 | `card(rows)` | A filled, hairline-bordered card whose rows are separated by full-bleed `divider_h` rules rather than by whitespace — the shape Settings' sections and the project-settings theme block both draw. Rows carry their own padding; the card contributes none, so a row's fill can reach the card's inner edge (see `RowDensity::Card`) | `RADIUS_CONTROL`, 1px `BORDER`, `BG_STRIP` |
 | `footer_container(content)` | Full-bleed footer strip on `BG_STRIP`, bottom corners at `FOOTER_RADIUS` (11) | `px SPACE_3XL`, `py SPACE_LG` |
-| `modal_footer_hints(&[(key, label)])` | Footer of plain hints | `gap SPACE_3XL` |
+| `modal_footer(left, hints, buttons)` | **The** footer for every modal: left cluster = context/secondary/destructive action, a spacer, right cluster = hints then buttons. Hints sit immediately left of the buttons, or right-most when there are none — the spacer pushes the whole right cluster over, not per-caller alignment. An empty `hints` or empty `buttons` contributes no group at all, so there's no empty flex box eating a gap | `footer_container` + `gap SPACE_XL` between clusters |
+| `modal_footer_hints(&[(key, label)])` | Footer of plain hints. Now a thin call to `modal_footer(None, hints, vec![])` — because `modal_footer` right-aligns its right cluster when there are no buttons, the hints render right-aligned, not left | `gap SPACE_3XL` |
 | `modal_footer_row(content)` | `footer_container` for a fully custom row | — |
 | `divider_h()` | Full-bleed 1px rule in `BORDER_SOFT` — sections *inside* a panel | `px(1.0)` |
 | `divider_h_strong()` | The same rule at full `BORDER` strength, for *structural* zone edges (chrome bar boundaries) — §7.2's two tones | `px(1.0)` |
@@ -847,13 +855,14 @@ It is consumed by `appbar`, `sidebar`, `rows`, `statusbar`, `grid`,
 | `modal_action(id, label, kind, on_click)` | Footer/action button | `px SPACE_2XL`, `py SPACE_MD`, `RADIUS_CONTROL`, 1px border, sans `TEXT_BODY` | `ModalBtn::{Plain,Primary,Danger,Accent}` | default, hover (`BG_HOVER`), pointer cursor |
 | `modal_action_sized(…, size, …)` | As above with an explicit text size | as above | + free text size | as above |
 | `click_action(id, label, kind, dispatch, click)` | `modal_action` wired to a `ModalClick` | as above | as `ModalBtn` | as above |
+| `click_action_enabled(id, label, kind, enabled, dispatch, click)` | `click_action` with an enabled axis, mirroring `click_checkbox`'s parameter order: when `enabled: false` it keeps the same box geometry — so the footer doesn't reflow when the action becomes available — but drops everything interactive: `BORDER_SOFT` border instead of the weight's, unfilled `BG`, `FG_MUTE` label, no `cursor_pointer`, no hover, no `on_mouse_down` at all (handler structurally absent per §10.1, never `opacity()`) | `px SPACE_2XL`, `py SPACE_MD`, `RADIUS_CONTROL`, 1px border | as `ModalBtn` | default, disabled (`enabled: false`) |
 | `modal_checkbox(id, label, checked, accent, on_toggle)` | 14px box; `accent` colours tick + checked border. The tick is the `icons::icon("check", ..)` sprite, never a text-run character literal — see §9.3's mark rule | box 14, `RADIUS_CONTROL`, tick sprite sized to `CHECKBOX_TICK` (box − 2), `gap SPACE_LG`, label sans `TEXT_BODY` | `accent` | default, hover (`opacity 0.85`), checked, **disabled** (`on_toggle: None` → `FG_MUTE`, no pointer, no handler) |
 | `click_checkbox(…, enabled, dispatch, click)` | `modal_checkbox` wired to a `ModalClick` | as above | as above | as above |
 | `icon_btn(id, name, box_w, box_h, icon_size, color, hover_bg, hover_fg, hover_ring, on_click)` | **The** icon button. Every icon button in the app is this function | `RADIUS_CONTROL`, centred, `cursor_pointer` | box w/h, glyph size, rest tint, hover bg, optional hover fg, optional hover ring | default, hover (bg, optional fg recolour, optional `BORDER_SOFT` ring) |
 | `flat_icon_btn(id, name, box_w, icon_size, on_click)` | Thin wrapper: `icon_btn` at `CONTROL_H`, `FG_DIM` rest, `BG_HOVER` hover, no ring | `h CONTROL_H` (22) | `box_w`, `icon_size` | default, hover |
 | `flat_text_btn(id, label, text_size, h_padding, on_click)` | Flat borderless text button in the same 22px shape | `h CONTROL_H`, `RADIUS_CONTROL`, mono `FG_DIM` | text size, h-padding | default, hover |
 | `flat_text_btn_tinted(id, label, text_size, h_padding, color, on_click)` | `flat_text_btn` with a colour axis, so a low-emphasis destructive action ("Archive project") has a component to be instead of a bare `ui()` run with a raw `on_mouse_down` — no button shape, no hover. A full `Danger` `modal_action` in that footer slot would compete with the footer's own Save/Primary button, which is why this stays flat rather than promoted to a weight | `h CONTROL_H`, `RADIUS_CONTROL` | text size, h-padding, `color` | default, hover |
-| `field_underline(id, content, focused, on_click)` | The app-wide borderless text field: a `CONTROL_H` box, mono text vertically centred, 1px bottom rule, `MAGENTA` when focused / `BORDER_SOFT` at rest, with `Input`'s own `pl`/`pr`/`py` insets zeroed so the rule sits flush under the text rather than under padding. §8.1 makes every in-row control `CONTROL_H`; this was the one control that wasn't — a bare text run with a rule crammed under it, open-coded twice inside `scripts_editor` before the unification. Also `w_full()` plus `overflow_hidden()`, so a long value clips at the field's own right edge instead of running into the enclosing card's border | `h CONTROL_H`, `w_full`, `overflow_hidden`, `border_b_1` | — | default (`BORDER_SOFT`), focused (`MAGENTA`) |
+| `field_underline(focused: bool) -> Div` | The app-wide borderless text field shell: a `CONTROL_H` box, mono text vertically centred, 1px bottom rule, `MAGENTA` when focused / `BORDER_SOFT` at rest. §8.1 makes every in-row control `CONTROL_H`; this was the one control that wasn't — a bare text run with a rule crammed under it, open-coded twice inside `scripts_editor` before the unification. Takes only `focused`; the caller chains `.child(...)` on the returned `Div` to build the field. **Caller contract:** the wrapped `Input` must zero gpui-component's own `input_px`/`input_py` and claim its width, verbatim `.appearance(false).pl(px(0.0)).pr(px(0.0)).py(px(0.0)).w_full()` — `Input` applies that padding regardless of `.appearance(false)`, which drops only the border and fill, so an unzeroed inset is what breaks a field's left edge out of true against the rest of the panel, and `w_full()` is what stops the field collapsing to its content inside this shell's `min_w_0` flex row. Also `overflow_hidden()`, so a long value clips at the field's own right edge instead of running into the enclosing card's border | `h CONTROL_H`, `w_full`, `overflow_hidden`, `border_b_1` | — | default (`BORDER_SOFT`), focused (`MAGENTA`) |
 | `seg_button(id, label, active, side, danger, on_click)` | One segment of a two-way segmented control. Sized by `CONTROL_H` rather than by vertical padding, so a segment is the same 22px as every other in-row control (§8.1) — the same shape `flat_text_btn` uses; `py` would stack on top of the fixed height, so there is none | `h CONTROL_H`, `px SPACE_2XL`, mono `TEXT_SMALL` | `SegSide::{Left,Right}`, `danger` | default, hover, **active**, **inert** (`on_click: None`) |
 | `seg_button_content(id, content, active, side, danger, on_click)` | `seg_button`'s shell around arbitrary content, for glyph segments; `content` owns its padding | outer corners at `RADIUS_CONTROL` on `side` only | as above | as above |
 | `seg_text_color(active, danger)` | The label tint rule: active+danger → `RED`, active → `FG`, else `FG_DIM` | — | — | — |
@@ -899,10 +908,11 @@ parameter list and not a builder.
 | `footer_hint(key, label)` | One keycap + muted label pair | `gap SPACE_MD`, label mono `TEXT_MICRO` `FG_MUTE` | static |
 | `cue_chip(label)` | Palette leading-glyph cue when a drill-in replaces the search icon | `SEL_TINT_SOFT` fill, mono `TEXT_MICRO` `CYAN` | static |
 | `status_dot(size, color)` | **The** filled activity dot — statusbar, terminal tab bar, sidebar rollups, session header | `rounded_full` | static |
+| `status_dot_hollow(size, color)` | `status_dot`'s "absent / not installed" counterpart: same circle, same size, drawn as a 1px ring (`border_1`, `border_color`) instead of a filled `bg` — colour alone must never be the sole carrier of state (§2.3); filled versus hollow is a shape difference that survives greyscale, colour-blindness and a dimmed display, which is why it keeps the full 1px hairline in the state's own colour rather than a washed-out fill | `rounded_full`, `border_1` | static |
 | `icon_slot(name, size, color)` | Fixed 24px icon slot so titles align regardless of glyph width | w 24 | static |
 | `status_gutter(dot)` | A fixed `STATUS_DOT_COL_W` column, reserved as column one on **every** settings row whether or not that row carries a status dot. Labels then start at the same x whether or not their row shows a dot — `icon_slot`'s rationale ("a fixed slot so titles align regardless of glyph width") applied to the row grid rather than a new idea. Fixed at `CONTROL_H` tall and centres its mark *inside that height*, not inside the row's overall height — the row's outer container is `items_start` (so a tall sublabel never drags the whole row's cross-axis alignment around), which pins this gutter's top edge to the row's first line, and matching that line's own height is what puts the mark's centre on the label line. Centring on the row's overall height instead was a real shipped bug the user caught in the running app: with a sublabel present, the row's centre falls *between* the label and sublabel lines, so the dot floats above the label rather than sitting on it | w `STATUS_DOT_COL_W` (15), h `CONTROL_H` | static |
 | `click_row(id, selected, density, dispatch, click, content)` | The clickable list row every list shares. `density` picks how much room the row gives its content — see `RowDensity` below | `gap SPACE_LG`, plus whatever `density` picks | `RowDensity::{Compact,Manager,Card}` | default, hover (`BG_HOVER`), selected (`BG_HL`), pointer |
-| `palette_row(id, selected, dispatch, click, content)` | Palette results row | `h PALETTE_ROW_H` (44), `px SPACE_2XL`, `RADIUS_GROUP` | default, hover (`BG_HOVER`, **unselected only**), selected (`SEL_TINT_SOFT` + 1px `SEL_RING`), pointer |
+| `palette_row(id, selected, dispatch, click, content)` | Palette results row | `h PALETTE_ROW_H` (54), `px SPACE_2XL`, `RADIUS_GROUP` | default, hover (`BG_HOVER`, **unselected only**), selected (`SEL_TINT_SOFT` + 1px `SEL_RING`), pointer |
 
 `RowDensity` (`src/views/components.rs`) is the axis `click_row` was missing
 when the theme manager's row used to fork the row shape — see §9.2, now down
@@ -940,25 +950,62 @@ clickable element without it is a bug.
 
 ### 9.1.1 Panel-modal grammar
 
-App Settings and Project Settings were built independently and had drifted
-into two different modal grammars — different title sizes, a subtitle on one
-line versus two, a card label on one and a bare heading on the other, a status
-dot leading one row family and trailing the other. The Settings-modal
-unification collapsed both onto one contract. It is written up here as a
-contract rather than as a list of the sixteen-plus individual fixes, because a
-panel modal is not a pile of independent choices — each rule exists because of
-what sits next to it.
+Every panel modal in `src/views/modals/` — all 23 of them — shares one
+grammar. It is written up here as a contract rather than as a list of
+individual fixes, because a panel modal is not a pile of independent choices —
+each rule exists because of what sits next to it.
 
-**Header.** Always title (`TEXT_TITLE`, `MAGENTA` — the settings family
-accent) plus a close button, and a subtitle on a second line when the modal has
-one to give. The subtitle is mono when it names a path or a value, sans when it
-is prose; App Settings has none, because its one piece of standing context is
-the save story, and that belongs in the footer (below). Two lines, never
-one: a subtitle inline to the right of the title reads as decoration the
-moment the title is long enough to push it out toward the close button. The
-close button is present on every modal, `flat_icon_btn` at the header icon
-tier (28 + `ICON_MD`) — a modal dismissible only by `esc` fails the pointer
-user, and there is no reason a keyboard-only exit should be the only one.
+App Settings and Project Settings are the origin story. The two were built
+independently and had drifted into two different modal grammars — different
+title sizes, a subtitle on one line versus two, a card label on one and a bare
+heading on the other, a status dot leading one row family and trailing the
+other. The Settings-modal unification that fixed those sixteen-plus drifts is
+the contract below — and it did not stop at the two modals that surfaced it;
+it was applied across every panel modal in the app.
+
+**The four-child shape.** Every panel modal is, in order: header,
+`divider_h()`, `modal_body`, footer. No panel modal skips a child or reorders
+them, with exactly two exceptions, both pre-existing layout cases rather than
+drift:
+
+- **Onboarding** replaces the whole screen — full-viewport, no scrim, no panel
+  shell, no close X — and uses a "Skip setup" affordance in place of a close
+  button.
+- **The command palette** top-drops (`scrim_top_drop`) and has a search row
+  instead of a title row, so it has neither a header nor a close X. It is
+  still bound by "the one rule after the header" below: it must not put a
+  `divider_h()` directly above its footer, even though it has no header
+  divider at the top to begin with.
+
+**Header.** Always title (`TEXT_TITLE`) plus a close button, and a subtitle on
+a second line when the modal has one to give. `MAGENTA` is the default accent
+for every modal header, not only the settings family; `RED` is for a
+destructive one ("Remove project", "Delete worktree"). `CYAN` and `AMBER` are
+not modal-header colours — both were, before the sweep, and both are gone now:
+one accent per emphasis level (default, destructive), not a header-specific
+palette of its own. The subtitle is mono when it names a path or a value,
+sans when it is prose; App Settings has none, because its one piece of
+standing context is the save story, and that belongs in the footer (below).
+Two lines, never one: a subtitle inline to the right of the title reads as
+decoration the moment the title is long enough to push it out toward the
+close button.
+
+**Close button, with three named exceptions.** Every panel modal has a close
+button, `flat_icon_btn` at the header icon tier (28 + `ICON_MD`) — a modal
+dismissible only by `esc` fails the pointer user, and there is no reason a
+keyboard-only exit should be the only one. Three states refuse or repurpose
+`ModalClick::Cancel` closely enough that a close X would be dead or actively
+misleading; each renders a plain `modal_header` (no close) and no footer at
+all:
+
+- `Teardown`/`RunningScript` (`src/views/modals/project.rs`) — Cancel means
+  "skip the teardown script", not "dismiss the modal".
+- `Teardown`/`Removing` and `RemoveProject`'s `in_progress` state
+  (`src/views/modals/project.rs`) — Cancel is refused outright
+  (`CancelOutcome::Refused`) while the destructive operation is running.
+- `Updating`/`Updating` (`src/views/modals/settings.rs`,
+  `UpgradeState::Updating`) — Escape/Cancel is refused while an update is in
+  flight.
 
 **The one rule after the header.** `divider_h()` sits directly under the
 header, and nowhere above the footer. `footer_container`'s `BG_STRIP` fill is
@@ -991,13 +1038,32 @@ so a tint on top of that would be a second channel for a signal that only
 needed one, and the first candidate for a third selection weight that §4.2
 warns against inventing.
 
-**Footer.** One contract: left cluster = context and secondary/destructive
-actions, a spacer, right cluster = hints then buttons. The hint always sits
-immediately left of the button pair, or right-most when there are none. A
-low-emphasis destructive action in the left cluster — "Archive project" — is a
-`flat_text_btn_tinted` in `RED`, not a full `ModalBtn::Danger`: a bordered
-danger button competing with the right cluster's Save reads as two calls to
-action instead of one primary action with an escape hatch beside it.
+**Footer.** `modal_footer(left, hints, buttons)` is the one implementation
+every modal's footer goes through. Left cluster = context and
+secondary/destructive actions, a spacer, right cluster = hints then buttons.
+The hint always sits immediately left of the button pair, or right-most when
+there are none. A low-emphasis destructive action in the left cluster —
+"Archive project" — is a `flat_text_btn_tinted` in `RED`, not a full
+`ModalBtn::Danger`: a bordered danger button competing with the right
+cluster's Save reads as two calls to action instead of one primary action with
+an escape hatch beside it.
+
+**One scroll cap.** `MODAL_SCROLL_MAX_H` (§6) is the scroll-viewport cap for
+every scrolling modal body — Settings, Project Settings/ScriptsEditor, the
+command palette results list, the theme manager list, and any modal body added
+after this one. It is one constant, not a per-modal number to pick.
+
+**One multiline exception.** The ThemeManager JSON editor is the one field in
+the app that keeps a bordered box instead of `field_underline`, because
+`field_underline` is `CONTROL_H` (22px) tall and physically cannot host a
+multi-row text buffer. Every other single-line field in the app uses
+`field_underline`.
+
+**Selection lists.** Every selection list uses `card()` +
+`click_row(RowDensity::Card)`. `palette_row` (`PALETTE_ROW_H`, 54px — §9.1) is
+reserved specifically for the command palette, because its rows carry a title
+*and* a subtitle, which `card()`/`click_row` rows don't — a second shape for a
+genuinely second layout, not a fork of the first.
 
 **The two save models stay different, on purpose.** App Settings persists
 each control the moment it changes; Project Settings is a form with an

@@ -8,10 +8,6 @@
 //! Paint order is `src/gui/pty.rs:216-330`: base fill, merged background
 //! quads, text runs, selection overlay, cursor.
 
-// The selection field is wired by Plan 04 Task 5; the constructor already
-// carries it so the paint path does not change shape later.
-#![allow(dead_code)]
-
 use std::cell::Cell as StdCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -134,7 +130,6 @@ pub struct PrepaintState {
     scene: Rc<TermScene>,
     selection_quads: Vec<PaintQuad>,
     cursor: Option<PaintQuad>,
-    dims: (u16, u16),
     line_height: Pixels,
 }
 
@@ -493,7 +488,6 @@ impl Element for TerminalElement {
             scene,
             selection_quads,
             cursor,
-            dims,
             line_height: px(cell_h),
         }
     }

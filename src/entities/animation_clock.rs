@@ -8,11 +8,6 @@
 //! auto-reverse EaseInOut) and the onboarding entrance map to gpui's
 //! `with_animation` instead (spec §4). Do **not** wire them to this tick.
 
-// The phase accessors and the cadence controls are ported in one go so the
-// Plan 04-07 region ports are mechanical; most have no caller until the region
-// that animates lands.
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use gpui::{Context, Task};
@@ -33,6 +28,9 @@ pub fn is_fast(busy: bool, has_ptys: bool, focused: bool, animating: bool, dirty
 }
 
 /// The timer period implied by the gating inputs.
+// Exercised only by this module's `#[cfg(test)]` cadence table; the live clock
+// calls `is_fast` directly and stores the period it derived.
+#[allow(dead_code)]
 pub fn cadence(
     busy: bool,
     has_ptys: bool,
@@ -97,10 +95,6 @@ impl AnimationClock {
 
     pub fn tick(&self) -> u64 {
         self.tick
-    }
-
-    pub fn is_fast(&self) -> bool {
-        self.fast
     }
 
     /// Recomputes the cadence from the gating inputs; restarts the timer only

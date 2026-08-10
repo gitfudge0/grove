@@ -14,10 +14,6 @@
 //! [`SpawnTarget`]; ownership of the resulting sessions lives in
 //! [`crate::entities::session_registry::SessionRegistry`].
 
-// The full readout surface is ported in one go so Tasks 3-5 and Plan 05 are
-// mechanical; several accessors have no caller until their consumer lands.
-#![allow(dead_code)]
-
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
@@ -28,7 +24,7 @@ use futures::StreamExt as _;
 use gpui::{Context, Task};
 use grove_core::session_meta::{self, SessionMeta};
 use grove_core::tmux;
-use grove_terminal::{GroveTerm, MouseEncoding, MouseMode, PtyHandle, Snapshot};
+use grove_terminal::{GroveTerm, MouseMode, PtyHandle, Snapshot};
 
 use crate::entities::session_registry::SpawnTarget;
 use crate::terminal::keys;
@@ -40,10 +36,6 @@ use portable_pty::CommandBuilder;
 /// (`crates/grove-core/src/session.rs:53-54`).
 const INIT_ROWS: u16 = 24;
 const INIT_COLS: u16 = 80;
-
-/// Where a session opens when the registry has no project to open in.
-/// Overridable so the manual checklist can point the terminal at any tree.
-const CWD_ENV: &str = "GROVE_GPUI_SESSION_CWD";
 
 /// Which kind of PTY is on the other end. Scroll and copy-mode behavior differ
 /// (`session.rs:667-705`): tmux keeps its scrollback in copy-mode on the
@@ -619,20 +611,8 @@ impl TerminalSession {
         self.scene_cache = Some((key, scene));
     }
 
-    pub fn history_size(&self) -> usize {
-        self.term.history_size()
-    }
-
     pub fn app_cursor(&self) -> bool {
         self.term.app_cursor()
-    }
-
-    pub fn mouse_mode(&self) -> MouseMode {
-        self.term.mouse_mode()
-    }
-
-    pub fn encoding(&self) -> MouseEncoding {
-        self.term.encoding()
     }
 
     pub fn backend(&self) -> &Backend {
@@ -717,15 +697,6 @@ impl TerminalSession {
     pub fn snap_to_bottom(&mut self) {
         self.term.scroll_to(0);
     }
-}
-
-/// The manual-checklist escape hatch (`GROVE_GPUI_SESSION_CWD`), now only the
-/// **default** target for when the registry has no projects to open in.
-pub fn default_cwd() -> String {
-    if let Some(dir) = std::env::var(CWD_ENV).ok().filter(|d| !d.is_empty()) {
-        return dir;
-    }
-    std::env::current_dir().map_or_else(|_| "/".to_string(), |p| p.display().to_string())
 }
 
 /// Create the persistent tmux session and attach an embedded client to it,

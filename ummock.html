@@ -1,0 +1,1906 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Grove Modals — UMMock: Audit &amp; Standard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  /* ============================================================
+     GROVE DESIGN TOKENS
+     ============================================================ */
+  :root {
+    /* spacing */
+    --sp-xs: 2px;  --sp-sm: 4px;  --sp-md: 6px;  --sp-lg: 8px;
+    --sp-xl: 10px; --sp-2xl: 12px; --sp-3xl: 16px;
+    /* text */
+    --tx-micro: 10px; --tx-small: 11px; --tx-body: 12px;
+    --tx-title: 13px; --tx-display: 20px; --tx-display-lg: 32px;
+    /* radius */
+    --r-control: 4px; --r-group: 6px; --r-panel: 12px;
+    /* metrics */
+    --h-control: 22px; --row-px: 12px; --row-py: 8px; --row-minh: 38px;
+    --scroll-cap: 456px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+    /* --- theme: tokyonight-day (light) --- */
+    --bg: #e1e2e7;
+    --bg-rail: #d8d9de;
+    --bg-strip: #cfd0d5;
+    --bg-hl: #c4c8da;
+    --bg-hover: #d1d4e1;
+    --border: #cbcedd;
+    --border-soft: #d8d9e2;
+    --scrim: rgba(61,100,193,.70);
+    --fg: #3760bf;
+    --fg-dim: #6172b0;
+    --fg-mute: #848cb5;
+    --magenta: #9854f1;
+    --red: #f52a65;
+    --red-wash: #e0d0d9;
+    --cyan: #007197;
+    --green: #587539;
+    --yellow: #8c6c3e;
+    --blue: #2e7de9;
+    --amber: #a45a4b;
+    --sel-tint: rgba(0,113,151,.10);
+    --sel-ring: rgba(0,113,151,.5);
+    --panel-shadow: 0 12px 40px rgba(0,0,0,.35);
+
+    /* --- board chrome (independent of app theme, Figma-like) --- */
+    --board-bg: #f2f2f4;
+    --board-dot: #d9d9dc;
+    --board-fg: #16181d;
+    --board-mute: #6b7280;
+    --board-surface: #ffffff;
+    --board-border: #e2e3e8;
+    --board-ink: #111827;
+  }
+
+  html.dark {
+    /* --- theme: tokyonight-storm (dark) --- */
+    --bg: #24283b;
+    --bg-rail: #1e2131;
+    --bg-strip: #181b28;
+    --bg-hl: #373b51;
+    --bg-hover: #2e3247;
+    --border: #39415d;
+    --border-soft: #2e3242;
+    --scrim: rgba(4,4,6,.62);
+    --fg: #c0caf5;
+    --fg-dim: #a1aad0;
+    --fg-mute: #565f89;
+    --magenta: #bb9af7;
+    --red: #f7768e;
+    --red-wash: #37405f;
+    --cyan: #7dcfff;
+    --green: #9ece6a;
+    --yellow: #e0af68;
+    --blue: #7aa2f7;
+    --amber: #e79571;
+    --sel-tint: rgba(125,207,255,.10);
+    --sel-ring: rgba(125,207,255,.5);
+    --panel-shadow: 0 12px 40px rgba(0,0,0,.35);
+
+    --board-bg: #0e1015;
+    --board-dot: #22252d;
+    --board-fg: #e6e8ec;
+    --board-mute: #949aa6;
+    --board-surface: #171a21;
+    --board-border: #2a2e38;
+    --board-ink: #e6e8ec;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--board-bg); color: var(--board-fg);
+    font-family: var(--ui);
+    overflow: hidden;
+  }
+
+  /* ---------- pan / zoom ---------- */
+  #viewport {
+    position: fixed; inset: 0; overflow: hidden; cursor: grab;
+    background-image: radial-gradient(circle, var(--board-dot) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  #viewport.panning { cursor: grabbing; }
+  #canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; padding: 72px; width: max-content; }
+
+  .hud {
+    position: fixed; right: 16px; bottom: 16px; z-index: 20; display: flex; gap: 6px; align-items: center;
+    background: var(--board-surface); border: 1px solid var(--board-border); border-radius: 8px; padding: 6px 8px;
+    font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.18); color: var(--board-fg);
+  }
+  .hud button { border: 1px solid var(--board-border); background: var(--board-surface); color: var(--board-fg);
+    border-radius: 5px; padding: 3px 9px; font: inherit; cursor: pointer; }
+  .hud .zoom-pct { min-width: 46px; text-align: center; color: var(--board-mute); font-family: var(--mono); }
+  .theme-toggle {
+    position: fixed; right: 16px; top: 16px; z-index: 20; border: 1px solid var(--board-border);
+    background: var(--board-surface); color: var(--board-fg); border-radius: 9999px; padding: 7px 15px;
+    font: inherit; font-size: 13px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.18);
+  }
+
+  /* ---------- page chrome (inside canvas) ---------- */
+  .page-header { margin-bottom: 30px; max-width: 1100px; }
+  .page-header h1 { font-size: 30px; font-weight: 750; margin: 0 0 8px; letter-spacing: -.02em; }
+  .page-header .subtitle { font-size: 14px; color: var(--board-mute); margin: 0 0 18px; max-width: 860px; line-height: 1.55; }
+  .legend {
+    display: inline-flex; gap: 20px; flex-wrap: wrap; align-items: center;
+    background: var(--board-surface); border: 1px solid var(--board-border);
+    border-radius: 10px; padding: 11px 16px; font-size: 12px; color: var(--board-mute);
+  }
+  .legend b { color: var(--board-fg); }
+  .legend .tag { display: inline-flex; align-items: center; gap: 7px; }
+  .legend .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .sw-cur { background: #64748b; }
+  .sw-drift { background: #e0b33a; }
+  .sw-prop { background: #14a06f; }
+
+  .section-heading {
+    font-size: 19px; font-weight: 750; margin: 64px 0 4px; padding-bottom: 9px;
+    border-bottom: 2px solid var(--board-border); display: flex; align-items: baseline; gap: 11px;
+    max-width: 1100px; letter-spacing: -.01em;
+  }
+  .section-heading .section-letter {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; border-radius: 6px; background: var(--board-ink);
+    color: var(--board-bg); font-size: 13px; font-weight: 800; align-self: center;
+  }
+  .section-heading .sh-note { font-size: 12px; font-weight: 400; color: var(--board-mute); }
+
+  .frame-row { display: flex; gap: 34px; margin-top: 30px; align-items: flex-start; }
+  .frame-row.wrapish { flex-wrap: nowrap; }
+
+  .frame { position: relative; }
+  .frame-caption { margin-bottom: 11px; max-width: 560px; }
+  .frame-id {
+    display: inline-block; font-size: 11px; font-weight: 800; letter-spacing: .03em;
+    color: var(--board-bg); background: var(--board-ink); border-radius: 4px; padding: 2px 7px; margin-right: 8px;
+    font-family: var(--mono);
+  }
+  .frame-name { font-size: 14px; font-weight: 650; color: var(--board-fg); }
+  .tagchip {
+    display: inline-block; font-size: 9.5px; font-weight: 800; letter-spacing: .08em;
+    border-radius: 3px; padding: 2px 6px; margin-left: 8px; vertical-align: 1px; color: #fff;
+  }
+  .tag-cur { background: #64748b; }
+  .tag-prop { background: #14a06f; }
+  .frame-desc { font-size: 12px; color: var(--board-mute); margin: 5px 0 0; line-height: 1.5; max-width: 620px; }
+  .pairlink {
+    display: inline-flex; align-items: center; gap: 5px; margin-top: 7px;
+    font-family: var(--mono); font-size: 10px; letter-spacing: .04em;
+    color: #0b7d9e; border: 1px dashed #6fbdd4; background: rgba(0,150,190,.08);
+    border-radius: 4px; padding: 2px 7px;
+  }
+  html.dark .pairlink { color: #7dcfff; border-color: #35617a; background: rgba(125,207,255,.09); }
+
+  /* scrim backdrop pad so panels read in context */
+  .scrimpad {
+    background: var(--scrim); border-radius: 16px; padding: 40px;
+    display: flex; justify-content: center; align-items: flex-start;
+    border: 1px solid rgba(127,127,127,.18);
+  }
+  .scrimpad.tallpad { padding: 40px; }
+
+  /* spec card frame (not a modal) */
+  .speccard {
+    background: var(--board-surface); border: 1px solid var(--board-border); border-radius: 12px;
+    padding: 20px 22px; width: 720px; box-shadow: 0 1px 3px rgba(0,0,0,.06), 0 10px 28px rgba(0,0,0,.06);
+  }
+  .speccard h4 { margin: 0 0 4px; font-size: 13px; font-weight: 700; letter-spacing: -.01em; }
+  .speccard .sc-sub { font-size: 11.5px; color: var(--board-mute); margin: 0 0 14px; }
+  .rulelist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+  .rulelist li {
+    font-family: var(--mono); font-size: 11px; line-height: 1.65; color: var(--board-fg);
+    padding: 8px 0 8px 20px; border-top: 1px solid var(--board-border); position: relative;
+  }
+  .rulelist li:first-child { border-top: 0; }
+  .rulelist li::before { content: "▪"; position: absolute; left: 4px; color: #14a06f; }
+  .rulelist b { color: #0b7d9e; font-weight: 700; }
+  html.dark .rulelist b { color: #7dcfff; }
+  .rulelist i { font-style: normal; color: var(--board-mute); }
+
+  /* sticky notes */
+  .sticky-note {
+    display: inline-block; background: #fff6bf; border: 1px solid #e2cf69; color: #4a4320;
+    font-size: 12px; line-height: 1.55; padding: 13px 15px; width: 300px; border-radius: 3px;
+    box-shadow: 0 8px 18px rgba(0,0,0,.16); align-self: center;
+  }
+  .sticky-note b { display: block; color: #2c2810; font-size: 10px; letter-spacing: .09em;
+    text-transform: uppercase; margin-bottom: 5px; font-family: var(--mono); }
+  .rot-a { transform: rotate(-1.6deg); }
+  .rot-b { transform: rotate(1.5deg); }
+  .rot-c { transform: rotate(-2.4deg); }
+  .rot-d { transform: rotate(2.2deg); }
+  .note-strip { display: flex; gap: 34px; margin-top: 34px; align-items: flex-start; }
+
+  /* connector between paired frames */
+  .connector { display: flex; align-items: center; align-self: center; }
+  .conn-arrow {
+    display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 10px;
+    color: #0b7d9e; letter-spacing: .05em;
+  }
+  html.dark .conn-arrow { color: #7dcfff; }
+
+  /* ============================================================
+     SHARED GROVE MODAL COMPONENT CSS
+     ============================================================ */
+  .modal {
+    background: var(--bg-rail); border: 1px solid var(--border); border-radius: var(--r-panel);
+    box-shadow: var(--panel-shadow); color: var(--fg); overflow: hidden; flex: none;
+  }
+  html:not(.dark) .modal { box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+  .w420 { width: 420px; } .w480 { width: 480px; } .w560 { width: 560px; } .w640 { width: 640px; }
+
+  .m-header {
+    padding: var(--sp-3xl); display: flex; align-items: flex-start; gap: var(--sp-2xl);
+  }
+  .m-title { font-size: var(--tx-title); color: var(--magenta); font-weight: 600; line-height: 1.3; flex: 1; }
+  .m-title.danger { color: var(--red); }
+  .m-title .sep { color: var(--fg-mute); font-weight: 400; }
+  .m-title .path { font-family: var(--mono); font-weight: 400; }
+  .m-meta { font-family: var(--mono); font-size: var(--tx-small); color: var(--fg-mute); align-self: center; }
+  .m-sub { font-size: var(--tx-small); color: var(--fg-mute); margin-top: var(--sp-sm); font-weight: 400; }
+
+  .iconbtn {
+    width: 28px; height: 22px; border-radius: var(--r-control); border: 0; background: transparent;
+    color: var(--fg-mute); display: inline-flex; align-items: center; justify-content: center; flex: none; padding: 0;
+  }
+  .iconbtn.mini { width: 22px; height: 22px; }
+  .iconbtn.cy { color: var(--cyan); } .iconbtn.rd { color: var(--red); }
+
+  .m-divider { height: 1px; background: var(--border-soft); }
+
+  .m-body { padding: var(--sp-3xl); display: flex; flex-direction: column; gap: var(--sp-xl); }
+  .m-body.gap0 { gap: 0; } .m-body.gap6 { gap: var(--sp-md); }
+  .m-body.gap8 { gap: var(--sp-lg); } .m-body.gap12 { gap: var(--sp-2xl); }
+  .m-body.gap16 { gap: var(--sp-3xl); }
+  .m-body.p12 { padding: var(--sp-2xl); }
+  .m-body.capped { max-height: var(--scroll-cap); overflow: hidden; }
+
+  .m-footer {
+    padding: var(--sp-lg) var(--sp-3xl); background: var(--bg-strip);
+    border-bottom-left-radius: 11px; border-bottom-right-radius: 11px;
+    display: flex; align-items: center; gap: var(--sp-2xl);
+  }
+  .m-footer .spacer { flex: 1; }
+  .hints { display: flex; align-items: center; gap: var(--sp-3xl); }
+  .btns { display: flex; align-items: center; gap: var(--sp-lg); }
+
+  .hint { display: inline-flex; align-items: center; gap: var(--sp-md); }
+  .keycap {
+    font-family: var(--mono); font-size: var(--tx-small); color: var(--fg-dim);
+    background: var(--bg-hl); border-radius: var(--r-control); padding: 2px var(--sp-md); line-height: 1.35;
+  }
+  .hint .lbl { font-family: var(--mono); font-size: var(--tx-micro); color: var(--fg-mute); }
+
+  .btn {
+    font-family: var(--ui); font-size: var(--tx-body); line-height: 1.2;
+    padding: var(--sp-md) var(--sp-2xl); border-radius: var(--r-control);
+    border: 1px solid var(--border); background: transparent; color: var(--fg-dim); cursor: default;
+    display: inline-flex; align-items: center; gap: var(--sp-md);
+  }
+  .btn.plain { color: var(--fg-dim); border-color: var(--border); background: transparent; }
+  .btn.primary { color: var(--fg); border-color: var(--border); background: var(--bg-hl); }
+  .btn.danger { color: var(--red); border-color: var(--red); background: var(--bg-hl); }
+  .btn.accent { color: var(--magenta); border-color: var(--magenta); background: var(--bg-hl); }
+  .btn.flat { border-color: transparent; background: transparent; color: var(--fg-dim); padding-left: var(--sp-md); padding-right: var(--sp-md); }
+  .btn.flat.cy { color: var(--cyan); }
+  .btn.block { width: 100%; justify-content: center; }
+
+  .field {
+    height: var(--h-control); border-bottom: 1px solid var(--border-soft);
+    font-family: var(--mono); font-size: var(--tx-body); color: var(--fg);
+    display: flex; align-items: center; width: 100%;
+  }
+  .field.focus { border-bottom-color: var(--magenta); }
+  .field .ph { color: var(--fg-mute); }
+  .field .caret { width: 1px; height: 13px; background: var(--magenta); margin-left: 1px; }
+
+  .card {
+    border-radius: var(--r-control); border: 1px solid var(--border); background: var(--bg-strip); overflow: hidden;
+  }
+  .row {
+    padding: var(--row-py) var(--row-px); min-height: var(--row-minh);
+    display: flex; align-items: center; gap: var(--sp-xl); border-top: 1px solid var(--border-soft);
+  }
+  .row:first-child { border-top: 0; }
+  .row.sel { background: var(--bg-hl); }
+  .row .grow { flex: 1; min-width: 0; }
+  .row .lab { font-size: var(--tx-body); color: var(--fg); }
+  .row .lab13 { font-size: var(--tx-title); color: var(--fg); }
+  .row .sublab { font-size: var(--tx-small); color: var(--fg-mute); margin-top: var(--sp-md); line-height: 1.4; }
+  .row .trail { font-size: var(--tx-small); color: var(--fg-mute); }
+  .row .mono { font-family: var(--mono); }
+
+  .seg { display: inline-flex; height: var(--h-control); border: 1px solid var(--border);
+    border-radius: var(--r-group); overflow: hidden; }
+  .seg span {
+    display: inline-flex; align-items: center; padding: 0 var(--sp-2xl);
+    font-family: var(--mono); font-size: var(--tx-small); color: var(--fg-mute);
+    border-left: 1px solid var(--border);
+  }
+  .seg span:first-child { border-left: 0; }
+  .seg span.on { background: var(--bg-hl); color: var(--fg); }
+  .seg span.on.warn { background: var(--red-wash); color: var(--fg); }
+
+  .checkbox { width: 14px; height: 14px; border-radius: var(--r-control); border: 1px solid var(--border);
+    background: var(--bg-strip); display: inline-flex; align-items: center; justify-content: center; flex: none; }
+  .checkbox.on { border-color: var(--magenta); color: var(--magenta); }
+  .checkbox.on.rd { border-color: var(--red); color: var(--red); }
+  .cbrow { display: flex; align-items: center; gap: var(--sp-lg); font-size: var(--tx-body); color: var(--fg-dim); }
+
+  .section-label { font-family: var(--mono); font-size: var(--tx-micro); color: var(--fg-mute);
+    text-transform: uppercase; letter-spacing: .1em; }
+  .lbl-row { display: flex; align-items: baseline; gap: var(--sp-lg); }
+  .lbl-row .spacer { flex: 1; }
+
+  .txt { font-size: var(--tx-body); color: var(--fg-dim); line-height: 1.5; }
+  .txt13 { font-size: var(--tx-title); color: var(--fg-mute); }
+  .mute11 { font-size: var(--tx-small); color: var(--fg-mute); line-height: 1.45; }
+  .red11 { font-size: var(--tx-small); color: var(--red); }
+  .green12 { font-size: var(--tx-body); color: var(--green); display: flex; align-items: center; gap: var(--sp-md); }
+  .monotxt { font-family: var(--mono); }
+
+  .ic { width: 14px; height: 14px; flex: none; display: block; }
+  .ic10 { width: 10px; height: 10px; } .ic12 { width: 12px; height: 12px; }
+  .ic16 { width: 16px; height: 16px; } .ic32 { width: 32px; height: 32px; }
+
+  .progress { height: 6px; border-radius: var(--r-control); border: 1px solid var(--border);
+    background: var(--bg-strip); overflow: hidden; }
+  .progress > i { display: block; height: 100%; background: var(--red); }
+
+  .pty { height: 120px; border-radius: var(--r-group); background: var(--bg-strip);
+    border: 1px solid var(--border-soft); padding: var(--sp-xl) var(--sp-2xl);
+    font-family: var(--mono); font-size: var(--tx-small); line-height: 1.7; overflow: hidden; }
+  .pty .g { color: var(--green); } .pty .d { color: var(--fg-mute); }
+
+  .swatchrow { display: inline-flex; gap: 3px; align-items: center; }
+  .swatchrow i { width: 10px; height: 10px; border-radius: 2px; display: block; }
+  .swatchrow.tiny i { width: 8px; height: 8px; }
+
+  .ordiv { display: flex; align-items: center; gap: var(--sp-xl); }
+  .ordiv .ln { flex: 1; height: 1px; background: var(--border-soft); }
+  .ordiv .t { font-size: var(--tx-small); color: var(--fg-mute); }
+
+  .pathchip { border-radius: var(--r-control); border: 1px solid var(--border); background: var(--bg-strip);
+    padding: var(--sp-md) var(--sp-xl); display: flex; align-items: center; gap: var(--sp-lg); }
+  .pathchip .p { font-family: var(--mono); font-size: var(--tx-body); color: var(--fg); flex: 1; }
+
+  .palrow {
+    height: 54px; border-radius: var(--r-group); padding: 0 var(--sp-2xl);
+    display: flex; align-items: center; gap: var(--sp-xl); border: 1px solid transparent;
+  }
+  .palrow.on { background: var(--sel-tint); border-color: var(--sel-ring); }
+  .palrow .t { font-size: var(--tx-title); color: var(--fg); }
+  .palrow .s { font-family: var(--mono); font-size: var(--tx-small); color: var(--fg-mute); margin-top: var(--sp-xs); }
+
+  .looserow { padding: var(--sp-md) var(--sp-xl); border-radius: var(--r-group);
+    display: flex; align-items: center; gap: var(--sp-xl); }
+  .looserow.on { background: var(--bg-hover); }
+  .badge { font-family: var(--mono); font-size: var(--tx-micro); color: var(--fg-mute);
+    border: 1px solid var(--border); border-radius: var(--r-control); padding: 1px 5px; }
+
+  .agentring { width: 16px; height: 16px; border-radius: 3px; display: inline-flex;
+    align-items: center; justify-content: center; color: var(--yellow); flex: none; }
+
+  /* B1 annotation layer */
+  .anno-wrap { position: relative; }
+  .anno {
+    position: absolute; font-family: var(--mono); font-size: 10px; color: var(--cyan);
+    white-space: nowrap; display: flex; align-items: center; gap: 6px;
+  }
+  .anno .dash { display: block; height: 1px; background: var(--cyan); opacity: .7; }
+  .anno .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--cyan); flex: none; }
+  .anno.left { flex-direction: row-reverse; }
+
+  /* ---------- Section C: variants ---------- */
+  .tag-var { background: #7c3aed; }
+  .vnote {
+    margin-top: 10px; max-width: 560px; font-size: 11.5px; line-height: 1.5;
+    color: var(--board-mute); border-left: 2px solid #7c3aed; padding: 2px 0 2px 10px;
+  }
+  .vnote b { color: var(--board-fg); font-weight: 600; }
+  .statecol { flex: 1; display: flex; flex-direction: column; gap: var(--sp-lg); min-width: 0; }
+  .statelbl { font-family: var(--mono); font-size: var(--tx-micro); color: var(--fg-mute);
+    text-transform: uppercase; letter-spacing: .1em; }
+  .fieldlbl { font-size: var(--tx-small); color: var(--fg-dim); }
+  .caselbl {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--board-mute); margin: 14px 0 6px;
+  }
+
+  /* C1b — boxed, filled */
+  .f-boxed {
+    width: 100%; padding: var(--sp-md) var(--sp-xl); border-radius: var(--r-control);
+    background: var(--bg); border: 1px solid var(--border);
+    font-family: var(--mono); font-size: var(--tx-body); color: var(--fg);
+    display: flex; align-items: center;
+  }
+  .f-boxed.focus { border-color: var(--magenta); }
+
+  /* C1c — boxed, strip-filled + focus ring */
+  .f-ring {
+    width: 100%; padding: var(--sp-md) var(--sp-xl); padding-top: 7px; padding-bottom: 7px;
+    border-radius: var(--r-group); background: var(--bg-strip); border: 1px solid var(--border-soft);
+    font-family: var(--mono); font-size: var(--tx-body); color: var(--fg);
+    display: flex; align-items: center;
+  }
+  .f-ring.focus { border-color: var(--magenta); box-shadow: 0 0 0 2px rgba(187,154,247,.25); }
+  html:not(.dark) .f-ring.focus { box-shadow: 0 0 0 2px rgba(152,84,241,.25); }
+
+  /* C1d — underline on a filled well */
+  .f-well {
+    width: 100%; padding: var(--sp-md) var(--sp-xl); background: var(--bg);
+    border-top-left-radius: var(--r-control); border-top-right-radius: var(--r-control);
+    border-bottom: 1px solid var(--border-soft);
+    font-family: var(--mono); font-size: var(--tx-body); color: var(--fg);
+    display: flex; align-items: center;
+  }
+  .f-well.focus { border-bottom-color: var(--magenta); }
+
+  /* C2b — keycap inside button */
+  .btn .inkey {
+    font-family: var(--mono); font-size: var(--tx-micro); color: var(--fg-mute);
+    background: var(--bg-hl); border-radius: 3px; padding: 1px var(--sp-sm); line-height: 1.3;
+  }
+  .btn.primary .inkey { background: var(--bg); color: var(--fg-dim); }
+
+  /* C2c — two-tier footer */
+  .m-footer.tier {
+    display: block; padding: 0;
+  }
+  .m-footer.tier .hintbar {
+    padding: var(--sp-sm) var(--sp-3xl); display: flex; align-items: center; gap: var(--sp-3xl);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .m-footer.tier .hintbar .hint .keycap { font-size: var(--tx-micro); padding: 1px var(--sp-sm); }
+  .m-footer.tier .btnbar {
+    padding: var(--sp-lg) var(--sp-3xl); display: flex; align-items: center; gap: var(--sp-2xl);
+  }
+  .m-footer.tier .btnbar .spacer { flex: 1; }
+
+
+  /* ---------- chosen-variant chip ---------- */
+  .tag-chosen { background: #14a06f; }
+
+  /* ---------- C2g statusbar footer (the chosen scheme) ---------- */
+  .m-footer.bare {
+    background: transparent; border-top: 1px solid var(--border-soft);
+    border-bottom-left-radius: var(--r-panel); border-bottom-right-radius: var(--r-panel);
+  }
+  .m-footer.bare .hint .keycap { background: transparent; padding: 1px 0; font-size: var(--tx-micro); }
+  .m-footer.bare .hint .lbl { font-size: var(--tx-micro); }
+
+  .exception-note {
+    font-family: var(--mono); font-size: 10px; color: #0b7d9e; border: 1px dashed #6fbdd4;
+    background: rgba(0,150,190,.08); border-radius: 4px; padding: 4px 8px; margin-top: 8px; display: inline-block;
+  }
+  html.dark .exception-note { color: #7dcfff; border-color: #35617a; background: rgba(125,207,255,.09); }
+</style>
+</head>
+<body>
+<button class="theme-toggle" id="themeToggle" type="button">☀ Light</button>
+<div class="hud">
+  <button type="button" id="zoomOut">−</button>
+  <span class="zoom-pct" id="zoomPct">100%</span>
+  <button type="button" id="zoomIn">+</button>
+  <button type="button" id="zoomFit">Fit</button>
+</div>
+
+<div id="viewport">
+<div id="canvas">
+
+<!-- ===== inline SVG sprite (no external URLs) ===== -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="g-x"><path d="M5 5l14 14M19 5L5 19"/></g>
+    <g id="g-search"><circle cx="11" cy="11" r="6"/><path d="M15.5 15.5L21 21"/></g>
+    <g id="g-branch"><circle cx="7" cy="5" r="2.2"/><circle cx="7" cy="19" r="2.2"/><circle cx="17" cy="9" r="2.2"/><path d="M7 7.2v9.6M17 11.2c0 3-3.2 3.6-6.4 3.6H9"/></g>
+    <g id="g-folder"><path d="M3 6.5A1.5 1.5 0 014.5 5h4l2 2.5h7A1.5 1.5 0 0119 9v8.5A1.5 1.5 0 0117.5 19h-13A1.5 1.5 0 013 17.5z"/></g>
+    <g id="g-chev"><path d="M9 5l7 7-7 7"/></g>
+    <g id="g-play"><path d="M7 4.5l12 7.5-12 7.5z"/></g>
+    <g id="g-trash"><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 10.5v6.5M14 10.5v6.5"/></g>
+    <g id="g-edit"><path d="M15.5 4.5l4 4L8 20H4v-4z"/><path d="M13 7l4 4"/></g>
+    <g id="g-check"><path d="M4.5 12.5l5 5 10-11"/></g>
+    <g id="g-refresh"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M19.2 11A7.5 7.5 0 006 7.6L4 9.5M4.8 13A7.5 7.5 0 0018 16.4l2-1.9"/></g>
+    <g id="g-copy"><rect x="4" y="4" width="11" height="11" rx="2"/><path d="M9 20h9a2 2 0 002-2V9"/></g>
+    <g id="g-agent"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M8.5 12.5v1.5M15.5 12.5v1.5"/></g>
+    <g id="g-plus"><path d="M12 5v14M5 12h14"/></g>
+    <g id="g-minus"><path d="M5 12h14"/></g>
+  </defs>
+</svg>
+
+  <div class="page-header">
+    <h1>Grove Modals — UMMock: Audit &amp; Standard</h1>
+    <p class="subtitle">A design review of all 20 modal surfaces shipping in Grove today, the drift that accumulated between them, and one standardized modal grammar — <em>UMModal</em> — that every surface can be rebuilt on.</p>
+    <div class="legend">
+      <span class="tag"><span class="swatch sw-cur"></span><b>CURRENT</b> = as shipped today</span>
+      <span class="tag"><span class="swatch sw-drift"></span><b>DRIFT</b> = inconsistency callout (sticky note)</span>
+      <span class="tag"><span class="swatch sw-prop"></span><b>PROPOSED</b> = the standardized version</span>
+      <span class="tag">Frame IDs <b>A1…A17</b> (current) · <b>B1…B8</b> (standard)</span>
+    </div>
+  </div>
+
+<!-- ================================================================
+     SECTION A — CURRENT INVENTORY
+     ================================================================ -->
+<div class="section-heading"><span class="section-letter">A</span> Current inventory
+  <span class="sh-note">Every modal at its real shipped width, rendered with the real tokens and the real copy.</span>
+</div>
+
+<!-- ---------------- ROW 1 ---------------- -->
+<div class="frame-row wrapish">
+
+  <!-- A1 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A1</span><span class="frame-name">Confirm</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">The baseline confirm. 480 wide, magenta title, close X, enter/esc hints, plain + primary footer.</p>
+      <span class="pairlink">→ standardized as B3</span>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-header">
+          <div class="m-title">Quit Grove?</div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body">
+          <div class="txt">2 sessions are still running. Quit anyway?</div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints">
+            <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+          </div>
+          <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Quit</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A2 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A2</span><span class="frame-name">Confirm — destructive</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">Same shell, red title and danger button. Hint chord changes from ⏎ to y.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-header">
+          <div class="m-title danger">Remove worktree?</div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body">
+          <div class="txt">The worktree <span class="monotxt">feature-auth</span> and its branch will be removed.</div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints">
+            <span class="hint"><span class="keycap">y</span><span class="lbl">remove</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+          </div>
+          <div class="btns"><button class="btn plain">Cancel</button><button class="btn danger">Remove</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A3 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A3</span><span class="frame-name">Input</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">Single underline field with leading icon, plus inline validation in red 11px.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-header">
+          <div class="m-title">New worktree</div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body">
+          <div style="display:flex;align-items:center;gap:10px">
+            <svg class="ic16" style="color:var(--fg-mute)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-branch"/></svg>
+            <div class="field focus">feature/auth<span class="caret"></span></div>
+          </div>
+          <div class="red11">Invalid name: use letters, digits, '-', '_' or '.'</div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints">
+            <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+          </div>
+          <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Submit</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A4 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A4</span><span class="frame-name">Message</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">Dismiss-only. Note the single Close is <em>Primary</em> here — but Plain in UpdateFailed and Changelog.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-header">
+          <div class="m-title">Notice</div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body">
+          <div class="txt">Grove could not attach to the existing tmux server. A new server was started for this session.</div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints"><span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span></div>
+          <div class="btns"><button class="btn primary">Close</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- drift notes strip 1 -->
+<div class="note-strip">
+  <div class="sticky-note rot-a"><b>Drift 1 — width</b>Five widths, weak rules. AgentPicker is 560 while its confirm-family siblings are 480. ThemePicker is 480 despite two-column rows. 420 has exactly one user.</div>
+  <div class="sticky-note rot-b"><b>Drift 2 — header forks</b>Three surfaces re-implement the shared header instead of using it: the Add-project wizard, Settings, and ScriptsEditor.</div>
+  <div class="sticky-note rot-c"><b>Drift 3 — body gap</b>The body gap token is overridden almost everywhere. Six values in production: 0, 6, 8, 10, 12, 16.</div>
+  <div class="sticky-note rot-d"><b>Drift 4 — overflow</b>Three strategies coexist: max-height 456 + scroll, a 6-row window, and an 8-row window. ShortcutOverlay caps nothing at all.</div>
+</div>
+
+<!-- ---------------- ROW 2 ---------------- -->
+<div class="frame-row wrapish">
+
+  <!-- A5 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A5</span><span class="frame-name">AgentPicker</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">560 wide — wider than its confirm-family siblings for a single-column list. Left footer slot holds a bordered button.</p>
+      <span class="pairlink">→ standardized as B4</span>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w560">
+        <div class="m-header">
+          <div class="m-title">Start session <span class="sep">/</span> <span class="path">grove</span> <span class="sep">/</span> <span class="path">feature-auth</span></div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body">
+          <div class="card">
+            <div class="row sel">
+              <span class="agentring"><svg class="ic16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-agent"/></svg></span>
+              <span class="grow lab">Claude</span><span class="trail">Default</span>
+            </div>
+            <div class="row">
+              <span class="agentring" style="color:var(--fg-mute)"><svg class="ic16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-agent"/></svg></span>
+              <span class="grow lab">Codex</span>
+            </div>
+            <div class="row">
+              <span class="agentring" style="color:var(--fg-mute)"><svg class="ic16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-agent"/></svg></span>
+              <span class="grow lab">OpenCode</span>
+            </div>
+          </div>
+        </div>
+        <div class="m-footer">
+          <button class="btn plain">Default</button>
+          <div class="spacer"></div>
+          <div class="hints">
+            <span class="hint"><span class="keycap">↑↓</span><span class="lbl">choose</span></span>
+            <span class="hint"><span class="keycap">⏎</span><span class="lbl">launch</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+          </div>
+          <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Launch</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A6 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A6</span><span class="frame-name">RemoveProject</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">Destructive confirm with an opt-in checkbox and a three-hint footer.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w560">
+        <div class="m-header">
+          <div class="m-title danger">Remove project</div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body">
+          <div class="txt">'grove' will be unregistered from Grove. Its sessions will be ended.</div>
+          <div class="mute11">Running sessions for this project will be stopped.</div>
+          <div class="cbrow">
+            <span class="checkbox on rd"><svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><use href="#g-check"/></svg></span>
+            Delete 2 non-main worktrees from disk
+          </div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints">
+            <span class="hint"><span class="keycap">y</span><span class="lbl">remove</span></span>
+            <span class="hint"><span class="keycap">space</span><span class="lbl">toggle delete</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+          </div>
+          <div class="btns"><button class="btn plain">Cancel</button><button class="btn danger">Remove</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A7 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A7</span><span class="frame-name">RemoveProject — progress</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">Blocking state: bare header, no close X, no footer at all. The one legitimate reason to drop the X.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w560">
+        <div class="m-header">
+          <div class="m-title danger">Remove project</div>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body">
+          <div class="mute11">Removing 1 of 2: feature-auth</div>
+          <div class="progress"><i style="width:40%"></i></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A8 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A8</span><span class="frame-name">ArchivedProjects</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">Hints-only footer, no buttons — the "do dismiss-only modals get a button?" question answered the other way.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w560">
+        <div class="m-header">
+          <div class="m-title">Archived projects</div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body capped">
+          <div class="card">
+            <div class="row">
+              <span class="grow">
+                <div class="lab13">gitfudge-web</div>
+                <div class="sublab monotxt">~/dev/…/gitfudge-web</div>
+              </span>
+              <button class="iconbtn mini cy"><svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-refresh"/></svg></button>
+              <button class="iconbtn mini rd"><svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-trash"/></svg></button>
+            </div>
+            <div class="row">
+              <span class="grow">
+                <div class="lab13">gitfudge-api</div>
+                <div class="sublab monotxt">~/dev/…/gitfudge-api</div>
+              </span>
+              <button class="iconbtn mini cy"><svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-refresh"/></svg></button>
+              <button class="iconbtn mini rd"><svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-trash"/></svg></button>
+            </div>
+          </div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints"><span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- drift notes strip 2 -->
+<div class="note-strip">
+  <div class="sticky-note rot-b"><b>Drift 5 — dismiss button</b>"Close" is a Primary button in Message, but a Plain button in UpdateFailed and Changelog. ArchivedProjects has no button at all.</div>
+  <div class="sticky-note rot-c"><b>Drift 6 — button order</b>Updating (Updated) is the only modal in the app that puts the primary action first: Restart, then Later.</div>
+  <div class="sticky-note rot-a"><b>Drift 7 — footer weight in bodies</b>Bordered footer-weight buttons keep showing up inside bodies: "Change", "Kill all sessions", "Browse for folder…".</div>
+  <div class="sticky-note rot-d"><b>Drift 8 — left footer slot</b>The low-emphasis left slot contract is broken twice: a bordered "Default" in AgentPicker, and a bordered <em>Primary</em> "+ New theme" in ThemeManager.</div>
+</div>
+
+<!-- ---------------- ROW 3 ---------------- -->
+<div class="frame-row wrapish">
+
+  <!-- A9 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A9</span><span class="frame-name">AddProject — step 1 of 2</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">Wizard header is hand-rolled: title, mono step counter, X. Body gap 12, hero button, or-divider, path field, dir list.</p>
+      <span class="pairlink">→ standardized as B6</span>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w640">
+        <div class="m-header">
+          <div class="m-title">Add project</div>
+          <div class="m-meta">Step 1 of 2</div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body gap12">
+          <button class="btn accent block"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-folder"/></svg>Browse for folder…</button>
+          <div class="mute11" style="text-align:center">Or drop a folder anywhere in this window</div>
+          <div class="ordiv"><span class="ln"></span><span class="t">Or type a path</span><span class="ln"></span></div>
+          <div class="field focus">~/dev/gitf<span class="caret"></span></div>
+          <div class="card">
+            <div class="row"><span class="grow lab mono">gitfudge0/</span></div>
+            <div class="row"><span class="grow lab mono">gitfudge-web/</span></div>
+            <div class="row"><span class="grow lab mono">gitfudge-api/</span></div>
+          </div>
+          <div class="mute11 monotxt">↓2 more</div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints">
+            <span class="hint"><span class="keycap">tab</span><span class="lbl">complete</span></span>
+            <span class="hint"><span class="keycap">↑↓</span><span class="lbl">select</span></span>
+            <span class="hint"><span class="keycap">⏎</span><span class="lbl">continue</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+          </div>
+          <div class="btns"><button class="btn plain">Cancel</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A10 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A10</span><span class="frame-name">AddProject — step 2 of 2</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">Same header fork. The bordered "Change" button lives inside the body, at footer weight.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w640">
+        <div class="m-header">
+          <div class="m-title">Add project <span class="sep">·</span> Step 2 of 2</div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body gap12">
+          <div class="section-label">Folder</div>
+          <div class="pathchip">
+            <svg class="ic" style="color:var(--fg-mute)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-folder"/></svg>
+            <span class="p">~/dev/gitfudge0/grove</span>
+            <button class="btn plain">Change</button>
+          </div>
+          <div class="green12">
+            <svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><use href="#g-check"/></svg>
+            Git repository · branch main
+          </div>
+          <div class="lbl-row">
+            <span class="section-label">Name</span><span class="spacer"></span>
+            <span class="mute11 monotxt">Empty uses 'grove'</span>
+          </div>
+          <div class="field focus"><span class="ph">grove</span><span class="caret"></span></div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints">
+            <span class="hint"><span class="keycap">⏎</span><span class="lbl">add</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">back</span></span>
+          </div>
+          <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Add project</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A11 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A11</span><span class="frame-name">SessionLauncher</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">Headerless top-drop palette. Search zone padded 16, list zone padded 12. Selection uses cyan tint + ring.</p>
+      <span class="pairlink">→ standardized as B8</span>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w640">
+        <div style="padding:16px;display:flex;align-items:center;gap:10px">
+          <svg class="ic16" style="color:var(--fg-mute)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-search"/></svg>
+          <span class="monotxt" style="font-size:12px;color:var(--fg-mute)">type to search sessions…</span>
+        </div>
+        <div class="m-divider"></div>
+        <div style="padding:12px;display:flex;flex-direction:column;gap:6px">
+          <div class="section-label" style="padding:0 12px 2px">Recent</div>
+          <div class="palrow on">
+            <span class="agentring"><svg class="ic16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-agent"/></svg></span>
+            <span style="flex:1">
+              <div class="t">grove / feature-auth</div>
+              <div class="s">claude · running · 12m</div>
+            </span>
+            <span class="keycap">⏎</span>
+          </div>
+          <div class="palrow">
+            <span class="agentring" style="color:var(--fg-mute)"><svg class="ic16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-agent"/></svg></span>
+            <span style="flex:1">
+              <div class="t">gitfudge-web / main</div>
+              <div class="s">codex · idle · 3h</div>
+            </span>
+          </div>
+          <div class="section-label" style="padding:8px 12px 2px">Actions</div>
+          <div class="palrow">
+            <span class="agentring" style="color:var(--fg-mute)"><svg class="ic16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-plus"/></svg></span>
+            <span style="flex:1">
+              <div class="t">New worktree…</div>
+              <div class="s">grove</div>
+            </span>
+          </div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints">
+            <span class="hint"><span class="keycap">↑↓</span><span class="lbl">navigate</span></span>
+            <span class="hint"><span class="keycap">tab</span><span class="lbl">actions</span></span>
+            <span class="hint"><span class="keycap">⏎</span><span class="lbl">open</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A12 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A12</span><span class="frame-name">ThemePicker</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">480 — the narrowest list modal in the app, despite rows carrying a secondary swatch column.</p>
+      <span class="pairlink">→ standardized as B5</span>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-header">
+          <div class="m-title">Theme</div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body">
+          <div class="cbrow">
+            <span class="checkbox"></span>
+            Follow system appearance
+          </div>
+          <div class="seg"><span class="on">Dark</span><span>Light</span></div>
+          <div class="card">
+            <div class="row">
+              <span class="grow lab mono">tokyonight-night</span>
+              <span class="swatchrow"><i style="background:#1a1b26"></i><i style="background:#7aa2f7"></i><i style="background:#bb9af7"></i><i style="background:#9ece6a"></i></span>
+            </div>
+            <div class="row sel">
+              <span class="grow lab mono">tokyonight-storm</span>
+              <span class="swatchrow"><i style="background:#24283b"></i><i style="background:#7aa2f7"></i><i style="background:#bb9af7"></i><i style="background:#9ece6a"></i></span>
+            </div>
+            <div class="row">
+              <span class="grow lab mono">tokyonight-day</span>
+              <span class="swatchrow"><i style="background:#e1e2e7"></i><i style="background:#2e7de9"></i><i style="background:#9854f1"></i><i style="background:#587539"></i></span>
+            </div>
+          </div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints">
+            <span class="hint"><span class="keycap">↑↓</span><span class="lbl">select</span></span>
+            <span class="hint"><span class="keycap">⏎</span><span class="lbl">apply</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+          </div>
+          <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Apply</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- drift notes strip 3 -->
+<div class="note-strip">
+  <div class="sticky-note rot-c"><b>Drift 9 — esc vocabulary</b>The esc hint is labelled seven different ways: cancel, close, back, later, skip &amp; remove, back to settings, and "close (or press the same chord again)".</div>
+  <div class="sticky-note rot-a"><b>Drift 10 — boxed groups</b>Three "boxed group" recipes in circulation. Radius 4 vs 6 chosen with no rule, and theme swatches use radius 2 — off the scale entirely.</div>
+  <div class="sticky-note rot-d"><b>Drift 11 — highlight color</b>Three colors mean "the active thing": magenta for keyboard focus, cyan ring for selection, yellow ring for the agent row.</div>
+  <div class="sticky-note rot-b"><b>Drift 12 — shadow</b>Panel shadow is a hard-coded black rgba in an otherwise fully tokenized system, so the light theme inherits the same heavy 40px dark drop.</div>
+</div>
+
+<!-- ---------------- ROW 4 ---------------- -->
+<div class="frame-row wrapish">
+
+  <!-- A13 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A13</span><span class="frame-name">ThemeManager</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">Loose rows instead of a card. The left footer slot holds a bordered <em>Primary</em> button.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w560">
+        <div class="m-header">
+          <div class="m-title">Manage themes</div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body gap6">
+          <div class="looserow on">
+            <span class="lab13 monotxt">tokyonight-storm</span>
+            <span class="badge">built-in</span>
+            <span class="swatchrow tiny" style="flex:1">
+              <i style="background:#24283b"></i><i style="background:#1e2131"></i><i style="background:#7aa2f7"></i><i style="background:#bb9af7"></i><i style="background:#9ece6a"></i><i style="background:#e0af68"></i><i style="background:#f7768e"></i>
+            </span>
+            <button class="iconbtn mini"><svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-edit"/></svg></button>
+            <button class="iconbtn mini"><svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-branch"/></svg></button>
+            <button class="iconbtn mini"><svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-copy"/></svg></button>
+            <button class="iconbtn mini rd"><svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-trash"/></svg></button>
+          </div>
+          <div class="looserow">
+            <span class="lab13 monotxt">grove-mono</span>
+            <span class="badge">custom</span>
+            <span class="swatchrow tiny" style="flex:1">
+              <i style="background:#101014"></i><i style="background:#191920"></i><i style="background:#8ab4f8"></i><i style="background:#c58af9"></i><i style="background:#81c995"></i><i style="background:#fdd663"></i><i style="background:#f28b82"></i>
+            </span>
+            <button class="iconbtn mini"><svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-edit"/></svg></button>
+            <button class="iconbtn mini"><svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-branch"/></svg></button>
+            <button class="iconbtn mini"><svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-copy"/></svg></button>
+            <button class="iconbtn mini rd"><svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-trash"/></svg></button>
+          </div>
+        </div>
+        <div class="m-footer">
+          <button class="btn primary">+ New theme</button>
+          <div class="spacer"></div>
+          <div class="hints">
+            <span class="hint"><span class="keycap">↑↓</span><span class="lbl">select</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A14 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A14</span><span class="frame-name">Settings</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">Header hand-rolled but pixel-identical to the shared one. Right footer button is flat where every other modal is bordered.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w640">
+        <div class="m-header">
+          <div class="m-title">Settings</div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body gap16 capped">
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div class="section-label">Appearance</div>
+            <div class="card">
+              <div class="row">
+                <span class="grow lab">App theme</span>
+                <span class="trail monotxt">Tokyonight Storm</span>
+                <svg class="ic12" style="color:var(--fg-mute)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-chev"/></svg>
+              </div>
+              <div class="row">
+                <span class="grow lab">App size</span>
+                <span class="seg"><span>−</span><span>Reset</span><span>+</span></span>
+              </div>
+              <div class="row">
+                <span class="checkbox on"><svg class="ic12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><use href="#g-check"/></svg></span>
+                <span class="grow lab">Follow system appearance</span>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div class="section-label">Agents &amp; terminal</div>
+            <div class="card">
+              <div class="row">
+                <span class="grow">
+                  <div class="lab">Permissions</div>
+                  <div class="sublab">Skip lets agents run any command without asking.</div>
+                </span>
+                <span class="seg"><span class="on warn">Skip</span><span>Safe</span></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="m-footer">
+          <span class="mute11 monotxt">v0.4.2</span>
+          <span class="mute11">Changes save automatically.</span>
+          <div class="spacer"></div>
+          <div class="hints"><span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span></div>
+          <div class="btns"><button class="btn flat">View changelog</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A15 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A15</span><span class="frame-name">ShortcutOverlay</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">Body gap 0, fixed 150px keycap column — and no scroll cap at all, so the panel just grows.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w640">
+        <div class="m-header">
+          <div class="m-title">Keyboard shortcuts</div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body gap0">
+          <div class="section-label" style="padding-bottom:8px">Global</div>
+          <div style="display:flex;align-items:center;padding:8px 0">
+            <span style="width:150px"><span class="keycap">mod+k</span></span>
+            <span class="txt">Open the session launcher</span>
+          </div>
+          <div style="display:flex;align-items:center;padding:8px 0">
+            <span style="width:150px"><span class="keycap">mod+j</span></span>
+            <span class="txt">Jump to the next running session</span>
+          </div>
+          <div style="display:flex;align-items:center;padding:8px 0">
+            <span style="width:150px"><span class="keycap">esc</span></span>
+            <span class="txt">Dismiss the topmost overlay</span>
+          </div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints"><span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A16 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A16</span><span class="frame-name">Updating → Updated</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">The only 420 in the app, and the only footer that puts the primary action first.</p>
+      <span class="pairlink">→ standardized as B7</span>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w420">
+        <div class="m-header">
+          <div class="m-title">Updating Grove</div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body">
+          <div class="txt">Update installed. Restart Grove to apply</div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints"><span class="hint"><span class="keycap">esc</span><span class="lbl">later</span></span></div>
+          <div class="btns"><button class="btn primary">Restart</button><button class="btn plain">Later</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A17 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">A17</span><span class="frame-name">Teardown</span><span class="tagchip tag-cur">CURRENT</span>
+      <p class="frame-desc">Embedded PTY box at radius 6 inside a radius-12 panel; no close X while the script runs.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w560">
+        <div class="m-header">
+          <div class="m-title danger">Delete worktree <span class="sep">/</span> <span class="path">feature-auth</span></div>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body">
+          <div class="pty">
+            <div class="g">$ ./scripts/teardown.sh feature-auth</div>
+            <div class="d">stopping containers… ok</div>
+          </div>
+          <div class="txt13">Running teardown script…</div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints"><span class="hint"><span class="keycap">esc</span><span class="lbl">skip &amp; remove</span></span></div>
+          <div class="btns"><button class="btn plain">Skip &amp; remove</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     SECTION B — THE PROPOSED STANDARD
+     ================================================================ -->
+<div class="section-heading"><span class="section-letter">B</span> UMModal — the proposed standard
+  <span class="sh-note">One header, one body rhythm, one footer contract. Pairs: A1→B3 · A5→B4 · A12→B5 · A9→B6 · A16→B7 · A11→B8.</span>
+</div>
+
+<div class="frame-row wrapish">
+
+  <!-- B1 anatomy -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">B1</span><span class="frame-name">Anatomy</span><span class="tagchip tag-prop">PROPOSED</span>
+      <p class="frame-desc">The single modal skeleton, annotated. Every other B frame is this shell with different content.</p>
+    </div>
+    <div class="scrimpad" style="padding:40px 150px 40px 150px">
+      <div class="anno-wrap">
+        <!-- annotations, drawn on the canvas outside the modal -->
+        <div class="anno left" style="right:100%; top:14px;"><span>header pad 16 / 16 · title 13 accent</span><span class="dash" style="width:74px"></span><span class="dot"></span></div>
+        <div class="anno" style="left:100%; top:14px;"><span class="dot"></span><span class="dash" style="width:74px"></span><span>close X 28×22 · always present</span></div>
+        <div class="anno" style="left:100%; top:40px;"><span class="dot"></span><span class="dash" style="width:74px"></span><span>meta slot — step / subtitle</span></div>
+        <div class="anno left" style="right:100%; top:70px;"><span>1px divider, full bleed</span><span class="dash" style="width:74px"></span><span class="dot"></span></div>
+        <div class="anno left" style="right:100%; top:112px;"><span>body pad 16 · gap 10</span><span class="dash" style="width:74px"></span><span class="dot"></span></div>
+        <div class="anno" style="left:100%; top:150px;"><span class="dot"></span><span class="dash" style="width:74px"></span><span>field: strip fill r6 · focus = magenta border + 2px ring</span></div>
+        <div class="anno left" style="right:100%; bottom:16px;"><span>divider + py 8 on rail, no strip</span><span class="dash" style="width:74px"></span><span class="dot"></span></div>
+        <div class="anno" style="left:100%; bottom:16px;"><span class="dot"></span><span class="dash" style="width:74px"></span><span>hints left mono 10 · buttons right, gap 8</span></div>
+
+        <div class="modal w560">
+          <div class="m-header">
+            <div>
+              <div class="m-title">Modal title</div>
+              <div class="m-sub">Optional subtitle line, 11px mute</div>
+            </div>
+            <div style="flex:1"></div>
+            <div class="m-meta">Step 1 of 2</div>
+            <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+          </div>
+          <div class="m-divider"></div>
+          <div class="m-body gap16">
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <div class="section-label">Section</div>
+              <div class="txt">Body content sits at gap 10. Sentence text is 12px fg-dim.</div>
+              <div class="f-ring focus">field contract · strip fill · r6 · focus ring<span class="caret"></span></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <div class="section-label">Card section</div>
+              <div class="card">
+                <div class="row"><span class="grow lab">Row · px12 py8 · min-h 38</span><span class="trail">meta</span></div>
+                <div class="row"><span class="grow lab">Row</span><span class="trail">meta</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="m-footer bare">
+            <div class="hints">
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+            </div>
+            <div class="spacer"></div>
+            <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Confirm</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- B2 rules -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">B2</span><span class="frame-name">The rules</span><span class="tagchip tag-prop">PROPOSED</span>
+      <p class="frame-desc">Ten decisions that collapse the drift. Each one is checkable in review.</p>
+    </div>
+    <div class="speccard">
+      <h4>UMModal — normative rules</h4>
+      <p class="sc-sub">One line each. If a surface can't follow a rule, it needs a documented exception (there is currently exactly one).</p>
+      <ul class="rulelist">
+        <li><b>Width by content class:</b> SM 420 sentence-only · MD 480 form / short list · LG 560 rows with a secondary column · XL 640 scrolling list or palette. <i>AgentPicker→480, ThemePicker→560 per this rule.</i></li>
+        <li><b>One header component with slots</b> (meta, subtitle, step). Close X always present, except blocking-progress states.</li>
+        <li><b>One overflow strategy:</b> body max-height 456 + scroll. Row-windowing and uncapped bodies removed.</li>
+        <li><b>One footer:</b> no strip fill — a 1px border-soft divider over a transparent py 8 row on the rail. Hints left in mono 10, buttons right, always secondary → affirmative. Hints-only modals are the same row minus the button group.</li>
+        <li><b>esc hint vocabulary:</b> exactly "cancel" (abandons input), "close" (nothing to lose), or "back" (returns to parent). Nothing else.</li>
+        <li><b>The left footer slot retires.</b> Hints occupy that position. Former left-slot content moves into the body as a flat tinted text action (AgentPicker's "Set as default"), or into the header meta slot (Settings' version string). <i>Dismiss-only modals: a single "Close", Primary, always.</i></li>
+        <li><b>No bordered buttons inside bodies</b> — in-body actions are flat tinted text buttons.</li>
+        <li><b>One field:</b> strip fill, radius 6, 1px border-soft, px 10 / py 7. Focus = 1px magenta border + a 2px magenta-tinted outer ring. The bare <i>field_underline</i> contract retires. <i>Launcher search zone: headerless, borderless input on the rail — the one sanctioned exception.</i></li>
+        <li><b>One boxed-group recipe:</b> card = radius 4 + border + strip fill. Groups-of-controls radius 6. Panel radius 12. Nothing else.</li>
+        <li><b>One focus / selection language:</b> magenta = keyboard focus, cyan tint + ring = selection. The yellow agent ring is retired.</li>
+        <li><b>Shadow becomes a theme token</b> — the light theme gets a lighter, tighter shadow instead of the same 40px black drop.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="frame-row wrapish">
+
+  <!-- B3 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">B3</span><span class="frame-name">Confirm</span><span class="tagchip tag-prop">PROPOSED</span>
+      <p class="frame-desc">Unchanged in shape — it was already the reference. Now it is the literal component everything else instantiates.</p>
+      <span class="pairlink">← rebuilt from A1</span>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-header">
+          <div class="m-title">Quit Grove?</div>
+          <div style="flex:1"></div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body">
+          <div class="txt">2 sessions are still running. Quit anyway?</div>
+        </div>
+        <div class="m-footer bare">
+            <div class="hints">
+            <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+          </div>
+            <div class="spacer"></div>
+            <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Quit</button></div>
+          </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- B4 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">B4</span><span class="frame-name">AgentPicker</span><span class="tagchip tag-prop">PROPOSED</span>
+      <p class="frame-desc">560 → 480 (single-column list = MD). "Default" becomes flat tinted text in the left slot. Selection is cyan, not yellow.</p>
+      <span class="pairlink">← rebuilt from A5</span>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-header">
+          <div>
+            <div class="m-title">Start session</div>
+            <div class="m-sub monotxt">grove / feature-auth</div>
+          </div>
+          <div style="flex:1"></div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body">
+          <div class="card">
+            <div class="row" style="background:var(--sel-tint);box-shadow:inset 0 0 0 1px var(--sel-ring)">
+              <span style="color:var(--cyan);display:flex"><svg class="ic16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-agent"/></svg></span>
+              <span class="grow lab">Claude</span><span class="trail">Default</span>
+            </div>
+            <div class="row">
+              <span style="color:var(--fg-mute);display:flex"><svg class="ic16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-agent"/></svg></span>
+              <span class="grow lab">Codex</span>
+            </div>
+            <div class="row">
+              <span style="color:var(--fg-mute);display:flex"><svg class="ic16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-agent"/></svg></span>
+              <span class="grow lab">OpenCode</span>
+            </div>
+          </div>
+          <button class="btn flat cy" style="align-self:flex-start">Set as default</button>
+        </div>
+        <div class="m-footer bare">
+            <div class="hints">
+            <span class="hint"><span class="keycap">⏎</span><span class="lbl">launch</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+          </div>
+            <div class="spacer"></div>
+            <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Launch</button></div>
+          </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- B5 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">B5</span><span class="frame-name">ThemePicker</span><span class="tagchip tag-prop">PROPOSED</span>
+      <p class="frame-desc">480 → 560 (rows carry a secondary column = LG). Card list is scroll-capped at 456; selection is cyan tint + ring.</p>
+      <span class="pairlink">← rebuilt from A12</span>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w560">
+        <div class="m-header">
+          <div class="m-title">Theme</div>
+          <div style="flex:1"></div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body capped">
+          <div class="cbrow">
+            <span class="checkbox"></span>
+            Follow system appearance
+          </div>
+          <div class="seg"><span class="on">Dark</span><span>Light</span></div>
+          <div class="card">
+            <div class="row">
+              <span class="grow lab mono">tokyonight-night</span>
+              <span class="swatchrow"><i style="background:#1a1b26"></i><i style="background:#7aa2f7"></i><i style="background:#bb9af7"></i><i style="background:#9ece6a"></i></span>
+            </div>
+            <div class="row" style="background:var(--sel-tint);box-shadow:inset 0 0 0 1px var(--sel-ring)">
+              <span class="grow lab mono">tokyonight-storm</span>
+              <span class="swatchrow"><i style="background:#24283b"></i><i style="background:#7aa2f7"></i><i style="background:#bb9af7"></i><i style="background:#9ece6a"></i></span>
+            </div>
+            <div class="row">
+              <span class="grow lab mono">tokyonight-day</span>
+              <span class="swatchrow"><i style="background:#e1e2e7"></i><i style="background:#2e7de9"></i><i style="background:#9854f1"></i><i style="background:#587539"></i></span>
+            </div>
+          </div>
+          <button class="btn flat cy" style="align-self:flex-start">Manage themes</button>
+        </div>
+        <div class="m-footer bare">
+            <div class="hints">
+            <span class="hint"><span class="keycap">⏎</span><span class="lbl">apply</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+          </div>
+            <div class="spacer"></div>
+            <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Apply</button></div>
+          </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="frame-row wrapish">
+
+  <!-- B6 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">B6</span><span class="frame-name">AddProject — step 1 of 2</span><span class="tagchip tag-prop">PROPOSED</span>
+      <p class="frame-desc">Wizard fork deleted: the shared header carries "Step 1 of 2" in its meta slot. In-body actions are flat cyan text.</p>
+      <span class="pairlink">← rebuilt from A9</span>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w640">
+        <div class="m-header">
+          <div class="m-title">Add project</div>
+          <div style="flex:1"></div>
+          <div class="m-meta">Step 1 of 2</div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body capped">
+          <button class="btn flat cy" style="align-self:flex-start"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-folder"/></svg>Browse for folder…</button>
+          <div class="mute11">Or drop a folder anywhere in this window</div>
+          <div class="f-ring focus">~/dev/gitf<span class="caret"></span></div>
+          <div class="card">
+            <div class="row"><span class="grow lab mono">gitfudge0/</span></div>
+            <div class="row"><span class="grow lab mono">gitfudge-web/</span></div>
+            <div class="row"><span class="grow lab mono">gitfudge-api/</span></div>
+          </div>
+          <div class="mute11 monotxt">↓2 more</div>
+        </div>
+        <div class="m-footer bare">
+            <div class="hints">
+            <span class="hint"><span class="keycap">tab</span><span class="lbl">complete</span></span>
+            <span class="hint"><span class="keycap">⏎</span><span class="lbl">continue</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+          </div>
+            <div class="spacer"></div>
+            <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Continue</button></div>
+          </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- B7 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">B7</span><span class="frame-name">Updating → Updated</span><span class="tagchip tag-prop">PROPOSED</span>
+      <p class="frame-desc">Sentence-only content keeps 420 (SM). Buttons flip to the standard order, and the esc hint becomes "close".</p>
+      <span class="pairlink">← rebuilt from A16</span>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w420">
+        <div class="m-header">
+          <div class="m-title">Updating Grove</div>
+          <div style="flex:1"></div>
+          <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+        </div>
+        <div class="m-divider"></div>
+        <div class="m-body">
+          <div class="txt">Update installed. Restart Grove to apply</div>
+        </div>
+        <div class="m-footer bare">
+            <div class="hints"><span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span></div>
+            <div class="spacer"></div>
+            <div class="btns"><button class="btn plain">Later</button><button class="btn primary">Restart</button></div>
+          </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- B8 -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">B8</span><span class="frame-name">SessionLauncher</span><span class="tagchip tag-prop">PROPOSED</span>
+      <p class="frame-desc">The one sanctioned exception: a headerless search zone with a borderless input that sits directly on the rail. Everything else normalizes — list padding 16, scroll cap 456.</p>
+      <span class="pairlink">← rebuilt from A11</span>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w640">
+        <div style="padding:16px;display:flex;align-items:center;gap:10px">
+          <svg class="ic16" style="color:var(--fg-mute)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-search"/></svg>
+          <span class="monotxt" style="font-size:12px;color:var(--fg-mute)">type to search sessions…</span>
+        </div>
+        <div class="m-divider"></div>
+        <div style="padding:16px;display:flex;flex-direction:column;gap:6px;max-height:456px;overflow:hidden">
+          <div class="section-label" style="padding:0 12px 2px">Recent</div>
+          <div class="palrow on">
+            <span style="color:var(--cyan);display:flex"><svg class="ic16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-agent"/></svg></span>
+            <span style="flex:1">
+              <div class="t">grove / feature-auth</div>
+              <div class="s">claude · running · 12m</div>
+            </span>
+            <span class="keycap">⏎</span>
+          </div>
+          <div class="palrow">
+            <span style="color:var(--fg-mute);display:flex"><svg class="ic16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-agent"/></svg></span>
+            <span style="flex:1">
+              <div class="t">gitfudge-web / main</div>
+              <div class="s">codex · idle · 3h</div>
+            </span>
+          </div>
+          <div class="section-label" style="padding:8px 12px 2px">Actions</div>
+          <div class="palrow">
+            <span style="color:var(--fg-mute);display:flex"><svg class="ic16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-plus"/></svg></span>
+            <span style="flex:1">
+              <div class="t">New worktree…</div>
+              <div class="s">grove</div>
+            </span>
+          </div>
+        </div>
+        <div class="m-footer bare">
+            <div class="hints">
+            <span class="hint"><span class="keycap">↑↓</span><span class="lbl">navigate</span></span>
+            <span class="hint"><span class="keycap">tab</span><span class="lbl">actions</span></span>
+            <span class="hint"><span class="keycap">⏎</span><span class="lbl">open</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span>
+          </div>
+            <div class="spacer"></div>
+          </div>
+      </div>
+    </div>
+    <div class="exception-note">SANCTIONED EXCEPTION — launcher search zone: headerless, borderless input. Command-palette surfaces only.</div>
+  </div>
+</div>
+
+<!-- ================================================================
+     SECTION C — VARIANTS: PICK A DIRECTION
+     ================================================================ -->
+<div class="section-heading"><span class="section-letter">C</span> Variants: pick a direction
+  <span class="sh-note">Two open questions to settle before the standard locks. Pick one per row; the winner folds into B1/B2.</span>
+</div>
+
+<!-- ---------------- ROW C1 — INPUT FIELDS ---------------- -->
+<div class="frame-row wrapish">
+
+  <!-- C1a -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C1a</span><span class="frame-name">Field — current, underline</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">Baseline for comparison. 22px tall, border-bottom 1px, magenta when focused, mono 12px.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-body gap16">
+          <div style="display:flex;gap:16px">
+            <div class="statecol">
+              <div class="statelbl">Unfocused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="field">feature/auth</div>
+            </div>
+            <div class="statecol">
+              <div class="statelbl">Focused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="field focus">feature/auth<span class="caret"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> as shipped — smallest, but reads as a hairline, weak affordance.</p>
+  </div>
+
+  <!-- C1b -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C1b</span><span class="frame-name">Field — boxed, filled</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">Full-width box, px10/py6 (~30px), radius 4, bg inset against the rail, 1px border; magenta border on focus.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-body gap16">
+          <div style="display:flex;gap:16px">
+            <div class="statecol">
+              <div class="statelbl">Unfocused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-boxed">feature/auth</div>
+            </div>
+            <div class="statecol">
+              <div class="statelbl">Focused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-boxed focus">feature/auth<span class="caret"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> matches the theme-editor field precedent already in the app; clear hit target.</p>
+  </div>
+
+  <!-- C1c -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C1c</span><span class="frame-name">Field — boxed, strip-filled + focus ring</span><span class="tagchip tag-var">VARIANT</span><span class="tagchip tag-chosen">✓ CHOSEN</span>
+      <p class="frame-desc">px10/py7 (~32px), radius 6, bg-strip like cards, border-soft; focus = magenta border + 2px magenta-tinted outer ring.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-body gap16">
+          <div style="display:flex;gap:16px">
+            <div class="statecol">
+              <div class="statelbl">Unfocused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-ring">feature/auth</div>
+            </div>
+            <div class="statecol">
+              <div class="statelbl">Focused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-ring focus">feature/auth<span class="caret"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> heaviest presence; focus unmissable; adds a ring treatment the app doesn't have yet.</p>
+  </div>
+
+  <!-- C1d -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C1d</span><span class="frame-name">Field — underline on a filled well</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">bg fill, px10/py6, top corners radius 4, bottom border 1px — magenta when focused. Keeps the underline language.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-body gap16">
+          <div style="display:flex;gap:16px">
+            <div class="statecol">
+              <div class="statelbl">Unfocused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-well">feature/auth</div>
+            </div>
+            <div class="statecol">
+              <div class="statelbl">Focused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-well focus">feature/auth<span class="caret"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> smallest visual change that still fills the space; keeps the underline identity.</p>
+  </div>
+</div>
+
+<!-- ---------------- ROW C2 — FOOTERS ---------------- -->
+<div class="frame-row wrapish">
+
+  <!-- C2a -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C2a</span><span class="frame-name">Footer — current</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">One strip px16/py8: left slot · spacer · keycap hints (gap 16) · bordered buttons (gap 8).</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-body" style="min-height:60px">
+          <div class="txt">2 sessions are still running. Quit anyway?</div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints">
+            <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+          </div>
+          <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Quit</button></div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> hints and buttons compete on one line; hints read as clutter next to buttons.</p>
+  </div>
+
+  <!-- C2b -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C2b</span><span class="frame-name">Footer — hints merged into buttons</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">No separate hint group; each button carries its keycap inline, right of the label. Left slot stays.</p>
+    </div>
+    <div class="scrimpad">
+      <div style="display:flex;flex-direction:column;gap:0">
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">2 sessions are still running. Quit anyway?</div>
+          </div>
+          <div class="m-footer">
+            <button class="btn flat cy">Session list</button>
+            <div class="spacer"></div>
+            <div class="btns">
+              <button class="btn plain">Cancel <span class="inkey">esc</span></button>
+              <button class="btn primary">Quit <span class="inkey">⏎</span></button>
+            </div>
+          </div>
+        </div>
+        <div class="caselbl">Buttons-less case (launcher-style)</div>
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">Palette rows above; nothing to confirm.</div>
+          </div>
+          <div class="m-footer">
+            <div class="spacer"></div>
+            <div class="hints">
+              <span class="hint"><span class="keycap">↑↓</span><span class="lbl">navigate</span></span>
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">open</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> one vocabulary, zero duplication; shortcut discoverability tied to its action; keycap inside a button is a new pattern. Note the buttons-less case has to fall back to a loose hint row — the scheme has no home for it.</p>
+  </div>
+
+  <!-- C2c -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C2c</span><span class="frame-name">Footer — two-tier</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">Thin hint bar (py4, mono 10px, left-aligned) above the button row (py8, right), split by 1px border-soft.</p>
+    </div>
+    <div class="scrimpad">
+      <div style="display:flex;flex-direction:column;gap:0">
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">2 sessions are still running. Quit anyway?</div>
+          </div>
+          <div class="m-footer tier">
+            <div class="hintbar">
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+            </div>
+            <div class="btnbar">
+              <button class="btn flat cy">Session list</button>
+              <div class="spacer"></div>
+              <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Quit</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="caselbl">Buttons-less case (launcher-style)</div>
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">Palette rows above; nothing to confirm.</div>
+          </div>
+          <div class="m-footer tier">
+            <div class="hintbar" style="border-bottom:0">
+              <span class="hint"><span class="keycap">↑↓</span><span class="lbl">navigate</span></span>
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">open</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> cleanest separation; taller footer (+~22px); hints get a consistent home even in button-less modals — the buttons-less case is just the top tier alone.</p>
+  </div>
+
+  <!-- C2d -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C2d</span><span class="frame-name">Footer — hints left, buttons right</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">Hints take the far-left position the left slot used to hold; left-slot content relocates to the body or header meta.</p>
+    </div>
+    <div class="scrimpad">
+      <div style="display:flex;flex-direction:column;gap:0">
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">2 sessions are still running. Quit anyway?</div>
+          </div>
+          <div class="m-footer">
+            <div class="hints">
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+            </div>
+            <div class="spacer"></div>
+            <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Quit</button></div>
+          </div>
+        </div>
+        <div class="caselbl">Buttons-less case (launcher-style)</div>
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">Palette rows above; nothing to confirm.</div>
+          </div>
+          <div class="m-footer">
+            <div class="hints">
+              <span class="hint"><span class="keycap">↑↓</span><span class="lbl">navigate</span></span>
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">open</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span>
+            </div>
+            <div class="spacer"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> smallest change; fixes the crowding; kills the left-slot contract everyone keeps breaking — the buttons-less case is identical minus the button group.</p>
+  </div>
+
+  <!-- C2g -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C2g</span><span class="frame-name">Footer — statusbar</span><span class="tagchip tag-var">VARIANT</span><span class="tagchip tag-chosen">✓ CHOSEN</span>
+      <p class="frame-desc">No strip fill: a 1px border-soft divider over a transparent py8 row on the rail. Mono 10px hints left, buttons right.</p>
+    </div>
+    <div class="scrimpad">
+      <div style="display:flex;flex-direction:column;gap:0">
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">2 sessions are still running. Quit anyway?</div>
+          </div>
+          <div class="m-footer bare">
+            <div class="hints">
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+            </div>
+            <div class="spacer"></div>
+            <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Quit</button></div>
+          </div>
+        </div>
+        <div class="caselbl">Buttons-less case (launcher-style)</div>
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">Palette rows above; nothing to confirm.</div>
+          </div>
+          <div class="m-footer bare">
+            <div class="hints">
+              <span class="hint"><span class="keycap">↑↓</span><span class="lbl">navigate</span></span>
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">open</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span>
+            </div>
+            <div class="spacer"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> quietest; modal reads as one surface; loses the visual "end of modal" anchor the strip provides.</p>
+  </div>
+</div>
+
+</div><!-- /#canvas -->
+</div><!-- /#viewport -->
+
+<script>
+(function () {
+  var vp = document.getElementById('viewport'), cv = document.getElementById('canvas');
+  var x = 0, y = 0, z = 1, MIN = 0.1, MAX = 2.5;
+  function apply() {
+    cv.style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + z + ')';
+    document.getElementById('zoomPct').textContent = Math.round(z * 100) + '%';
+  }
+  function fit() {
+    var w = cv.scrollWidth, h = cv.scrollHeight;
+    z = Math.min(MAX, Math.max(MIN, Math.min(innerWidth / w, innerHeight / h) * 0.95));
+    x = (innerWidth - w * z) / 2; y = Math.max(20, (innerHeight - h * z) / 2);
+    apply();
+  }
+  vp.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var nz = Math.min(MAX, Math.max(MIN, z * Math.exp(-e.deltaY * 0.0015)));
+    x = e.clientX - (e.clientX - x) * (nz / z);
+    y = e.clientY - (e.clientY - y) * (nz / z);
+    z = nz; apply();
+  }, { passive: false });
+  var panning = false, px = 0, py = 0;
+  vp.addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    panning = true; px = e.clientX - x; py = e.clientY - y;
+    vp.classList.add('panning'); vp.setPointerCapture(e.pointerId);
+  });
+  vp.addEventListener('pointermove', function (e) {
+    if (panning) { x = e.clientX - px; y = e.clientY - py; apply(); }
+  });
+  vp.addEventListener('pointerup', function () { panning = false; vp.classList.remove('panning'); });
+  document.getElementById('zoomIn').onclick = function () { z = Math.min(MAX, z * 1.25); apply(); };
+  document.getElementById('zoomOut').onclick = function () { z = Math.max(MIN, z / 1.25); apply(); };
+  document.getElementById('zoomFit').onclick = fit;
+  document.getElementById('themeToggle').onclick = function () {
+    var dark = document.documentElement.classList.toggle('dark');
+    this.textContent = dark ? '☀ Light' : '☾ Dark';
+  };
+  document.documentElement.classList.add('dark');
+  document.getElementById('themeToggle').textContent = '☀ Light';
+  fit();
+})();
+</script>
+</body>
+</html>

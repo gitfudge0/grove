@@ -6,10 +6,6 @@
 //! nothing here needs an entity or a `Context`. Line references in each doc
 //! comment point at the iced original.
 
-// The chrome, the input wrapper and the archive/teardown helpers are built
-// once here and consumed by Tasks 4-6 of gpui rewrite plan 08.
-#![allow(dead_code)]
-
 use crate::views::rpx;
 use crate::views::tokens::*;
 use gpui::{div, prelude::*, px, AnyElement, Div, Hsla, MouseButton, SharedString};
@@ -19,10 +15,16 @@ use crate::theme as c;
 
 use super::dispatch::{ModalClick, ModalDispatch};
 
-/// The footer strip's bottom radius: [`RADIUS_PANEL`] minus the panel's 1px
-/// content inset, so the strip hugs the inner corner without covering the
-/// border (`modal.rs:117-120`).
-const FOOTER_RADIUS: f32 = RADIUS_PANEL - 1.0;
+/// The focus ring's width, drawn as a zero-blur outer shadow spread around a
+/// focused [`field_box`] (plan.md §1). Single-consumer geometry, so per
+/// DESIGN.md §14 it is a module constant here rather than a `tokens.rs` scale
+/// entry: it is *the ring's* width, not a notch on a shared scale.
+const FOCUS_RING_W: f32 = 2.0;
+
+/// [`modal_header_slotted`]'s close-button id when a caller passes none. A
+/// modal has exactly one close button, so the constant is unambiguous within
+/// any one modal — which is the whole scope gpui's element ids are keyed on.
+const DEFAULT_CLOSE_ID: &str = "modal-close";
 
 /// The checkbox's box side. Single-consumer geometry, so per DESIGN.md §14 it
 /// is a module constant here rather than a `tokens.rs` scale entry: it is
@@ -76,7 +78,16 @@ pub fn mono(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
 /// the command palette (`modal.rs:13-37`). `content` carries its own zone
 /// padding, so the panel itself is unpadded apart from the 1px inset that
 /// keeps the filled footer strip inside the border stroke.
+/// The shadow's colour is [`crate::theme::PANEL_SHADOW`] and its geometry the
+/// `PANEL_SHADOW_*` tokens, forked light/dark by [`crate::theme::is_dark`] —
+/// both were a hard-coded `rgba(0,0,0,.35) 0 12px 40px` here, which is the one
+/// piece of panel chrome that never tracked a theme swap (plan.md §3).
 pub fn modal_panel(width: f32, content: impl IntoElement) -> Div {
+    let (y, blur) = if c::is_dark() {
+        (PANEL_SHADOW_Y, PANEL_SHADOW_BLUR)
+    } else {
+        (PANEL_SHADOW_Y_LIGHT, PANEL_SHADOW_BLUR_LIGHT)
+    };
     div()
         .w(rpx(width))
         .p(px(1.0))
@@ -86,9 +97,9 @@ pub fn modal_panel(width: f32, content: impl IntoElement) -> Div {
         .border_color(c::BORDER())
         .rounded(rpx(RADIUS_PANEL))
         .shadow(vec![gpui::BoxShadow {
-            color: gpui::hsla(0.0, 0.0, 0.0, 0.35),
-            offset: gpui::point(px(0.0), px(12.0)),
-            blur_radius: px(40.0),
+            color: c::PANEL_SHADOW(),
+            offset: gpui::point(px(0.0), px(y)),
+            blur_radius: px(blur),
             spread_radius: px(0.0),
             inset: false,
         }])
@@ -121,6 +132,16 @@ pub fn keycap_text(label: impl Into<SharedString>, color: Hsla) -> Div {
     keycap(mono(label, TEXT_SMALL, color))
 }
 
+/// [`keycap_text`] with no chip behind it — the statusbar footer's keycap
+/// weight (plan.md §2). A filled chip per hint turned a left-aligned hint row
+/// into a row of buttons competing with the actual button group on the right;
+/// the glyph alone still reads as a key because the label beside it names the
+/// action. Same shell (so padding and rhythm match a filled keycap), fill only
+/// dropped.
+pub fn keycap_text_flat(label: impl Into<SharedString>, color: Hsla) -> Div {
+    keycap_filled(gpui::transparent_black(), mono(label, TEXT_SMALL, color))
+}
+
 /// Letter-spaced section label. Neither iced nor gpui at this rev has
 /// letter-spacing, so the characters are joined with U+2009 THIN SPACE exactly
 /// as `src/gui/rows.rs:650-655` does.
@@ -149,56 +170,188 @@ pub fn section_header(label: &str, indent: f32, top: f32, bottom: f32) -> Div {
         .child(mono(label, TEXT_MICRO, c::FG_MUTE()))
 }
 
-/// One keycap + muted label pair in a footer hint strip, e.g. "[↑↓] navigate"
-/// (`modal.rs:95-105`).
-pub fn footer_hint(key: &'static str, label: &'static str) -> Div {
+/// One flat-keycap + muted label pair — the statusbar footer's hint shape
+/// (plan.md §2). The bordered-keycap weight it replaced (a filled chip per
+/// hint) retired with the old `BG_STRIP`-filled footer.
+pub fn footer_hint_flat(key: &'static str, label: &'static str) -> Div {
     div()
         .flex()
         .items_center()
         .gap(rpx(SPACE_MD))
-        .child(keycap_text(key, c::FG_DIM()))
+        .child(keycap_text_flat(key, c::FG_DIM()))
         .child(mono(label, TEXT_MICRO, c::FG_MUTE()))
 }
 
-/// The full-bleed footer strip: `BG_STRIP` fill, `[8, 16]` padding, bottom
-/// corners rounded to stay flush with the panel's radius (`modal.rs:109-131`).
+/// The footer zone — variant C2g "statusbar" (plan.md §2). A 1px
+/// [`divider_h`] over a **transparent** `py SPACE_LG` row sitting directly on
+/// the panel's rail, replacing the old `BG_STRIP` strip.
+///
+/// The strip was the last surface in the app that fenced off a zone with a
+/// fill rather than a rule, and a filled band under a modal read as a second
+/// panel rather than that panel's last row. Dropping the fill also retired
+/// the old inner-corner radius: with nothing painted in the corner there is
+/// no inner radius to keep flush, so the panel's own [`RADIUS_PANEL`] is the
+/// only corner left.
+///
+/// The divider is drawn **here**, not by the caller: a footer without its rule
+/// is not a footer. Callers that still emit their own `divider_h()` above a
+/// footer are the migration's work.
 pub fn footer_container(content: impl IntoElement) -> Div {
-    div()
-        .w_full()
-        .px(rpx(SPACE_3XL))
-        .py(rpx(SPACE_LG))
-        .bg(c::BG_STRIP())
-        .rounded_bl(rpx(FOOTER_RADIUS))
-        .rounded_br(rpx(FOOTER_RADIUS))
-        .child(content)
+    div().w_full().flex().flex_col().child(divider_h()).child(
+        div()
+            .w_full()
+            .px(rpx(SPACE_3XL))
+            .py(rpx(SPACE_LG))
+            .child(content),
+    )
 }
 
-/// A footer strip of plain hints with the palette's 14px inter-hint spacing
-/// (`modal.rs:135-146`).
-pub fn modal_footer_hints(hints: &[(&'static str, &'static str)]) -> Div {
-    let mut row = div().flex().items_center().gap(rpx(SPACE_3XL));
-    for (key, label) in hints {
-        row = row.child(footer_hint(key, label));
+/// **The** footer for every modal — plan.md §2's variant C2g "statusbar", in
+/// one function: hints at the left edge, a spacer, buttons at the right.
+///
+/// One vocabulary everywhere. A hints-only modal (the launcher, the shortcut
+/// overlay, the archived-project list) is *this* row minus the button group,
+/// not a second component — which is why [`modal_footer_hints`] is now a call
+/// to this rather than a layout of its own.
+///
+/// **The left slot is gone.** It held a caption, a flat destructive action, a
+/// version string and — in one case — a Primary button, which is four different
+/// things wearing one slot, and the Primary was a §9.1.1 violation outright.
+/// Each of those relocates into the body as a [`body_action`] or into the
+/// header's meta slot; nothing lands back here.
+///
+/// Hints are flat-keycap ([`footer_hint_flat`]) and left-aligned because the
+/// footer now reads as a statusbar: the row's low-emphasis end is where the eye
+/// starts, and the affirmative action is where it ends. Button order inside
+/// `buttons` is the caller's — always secondary(`Plain`) then
+/// affirmative(`Primary`/`Danger`). An empty `hints` or `buttons` contributes no
+/// group at all, so a footer never carries an empty flex box whose gap counts.
+pub fn modal_footer(hints: &[(&'static str, &'static str)], buttons: Vec<AnyElement>) -> Div {
+    let mut row = div().flex().items_center();
+
+    if !hints.is_empty() {
+        let mut group = div().flex().items_center().gap(rpx(SPACE_3XL));
+        for (key, label) in hints {
+            group = group.child(footer_hint_flat(key, label));
+        }
+        row = row.child(group);
     }
+
+    // Pushes the button group to the right edge whatever the hints measure —
+    // no per-caller alignment, and no reflow when a hint's copy changes.
+    row = row.child(div().flex_1());
+
+    if !buttons.is_empty() {
+        row = row.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(rpx(SPACE_LG))
+                .children(buttons),
+        );
+    }
+
     footer_container(row)
 }
 
-/// [`footer_container`] for callers needing a fully custom row
-/// (`modal.rs:148-154`).
-pub fn modal_footer_row(content: impl IntoElement) -> Div {
-    footer_container(content)
+/// A footer of plain hints and no buttons — [`modal_footer`]'s second case,
+/// spelled as a name because it is how a third of the modals end.
+pub fn modal_footer_hints(hints: &[(&'static str, &'static str)]) -> Div {
+    modal_footer(hints, Vec::new())
 }
 
-/// A modal header zone: `[14, 16]` padding around a size-13 title in `accent`
-/// (`modal.rs:156-160`).
-pub fn modal_header(title: impl Into<SharedString>, accent: Hsla) -> Div {
-    modal_header_row(ui(title, TEXT_TITLE, accent))
+/// **The** modal header — plan.md §3's "one header component with optional
+/// slots". Every header in the app is this function with a different set of
+/// slots filled; the wizard's step counter, Settings' version line and
+/// ScriptsEditor's subtitle were three forks of one shape.
+///
+/// - `title` / `accent` — always present.
+/// - `meta` — the right-aligned metadata slot: a step counter ("Step 2 of 3"),
+///   a version string, a status chip. Sits left of the close button.
+/// - `subtitle` — a second line under the title, inside the same header zone.
+/// - `dispatch` — `Some` renders the trailing close button, wired to
+///   [`ModalClick::Cancel`]. `None` renders no close, which is how a
+///   blocking-progress state (a teardown mid-run, an update installing) says
+///   "there is nothing to cancel" *structurally* rather than by drawing a
+///   button that does nothing.
+/// - `id` — the close button's element id, which must be unique within the
+///   modal (gpui bleeds hover state between duplicate ids). Only read when
+///   `dispatch` is `Some`.
+///
+/// The close button sits at the **header icon tier** — an [`ICON_BTN_W`] (28)
+/// box around an [`ICON_MD`] (14) glyph — which DESIGN.md §9.1.1 names verbatim
+/// ("`flat_icon_btn` at the header icon tier (28 + `ICON_MD`)").
+pub fn modal_header_slotted(
+    id: Option<&'static str>,
+    title: impl Into<SharedString>,
+    accent: Hsla,
+    meta: Option<AnyElement>,
+    subtitle: Option<AnyElement>,
+    dispatch: Option<&ModalDispatch>,
+) -> Div {
+    modal_header_slotted_custom(
+        id,
+        ui(title, TEXT_TITLE, accent).flex_1().into_any_element(),
+        meta,
+        subtitle,
+        dispatch,
+    )
 }
 
-/// [`modal_header`] plus a trailing close icon button dispatching
+/// [`modal_header_slotted`] for callers whose title zone is not a plain
+/// string — e.g. `ScriptsEditor`'s rename-capable title, which swaps the
+/// static title for a live `Input` plus pencil/check/discard controls. Same
+/// row shape (title content + `meta` + close, with `subtitle` stacked below)
+/// as the string version, which delegates here with its title pre-rendered
+/// as a `ui()` run.
+pub fn modal_header_slotted_custom(
+    id: Option<&'static str>,
+    title_content: AnyElement,
+    meta: Option<AnyElement>,
+    subtitle: Option<AnyElement>,
+    dispatch: Option<&ModalDispatch>,
+) -> Div {
+    let close = dispatch.map(|dispatch| {
+        let dispatch = std::rc::Rc::clone(dispatch);
+        flat_icon_btn(
+            id.unwrap_or(DEFAULT_CLOSE_ID),
+            "close",
+            ICON_BTN_W,
+            ICON_MD,
+            move |window, cx| dispatch(ModalClick::Cancel, window, cx),
+        )
+    });
+
+    modal_header_row(
+        div()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_MD))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_XL))
+                    .w_full()
+                    .child(title_content)
+                    .children(meta)
+                    .children(close),
+            )
+            .children(subtitle),
+    )
+}
+
+/// [`modal_header_slotted`] plus a trailing close icon button dispatching
 /// [`ModalClick::Cancel`] — the shape the theme manager and the archived-project
-/// list each used to fork. Same token contract as [`modal_header`]: `px/py
-/// SPACE_3XL` around a [`TEXT_TITLE`] title in `accent`.
+/// list each used to fork. Same token contract as [`modal_header_slotted`]:
+/// `px/py SPACE_3XL` around a [`TEXT_TITLE`] title in `accent`.
+///
+/// The close button sits at the **header icon tier** — an [`ICON_BTN_W`] (28)
+/// box around an [`ICON_MD`] (14) glyph — which DESIGN.md §9.1.1 names
+/// verbatim ("`flat_icon_btn` at the header icon tier (28 + `ICON_MD`)"). It
+/// was a bare [`icon_btn`] at [`CONTROL_H`] (22) + [`ICON_SM`] before the
+/// modal-consistency sweep; that was drift toward the in-row control tier
+/// (§8.1), not a second header tier.
 ///
 /// `id` must be unique within the modal (gpui bleeds hover state between
 /// duplicate ids).
@@ -208,31 +361,13 @@ pub fn modal_header_with_close(
     accent: Hsla,
     dispatch: &ModalDispatch,
 ) -> Div {
-    let dispatch = std::rc::Rc::clone(dispatch);
-    modal_header_row(
-        div()
-            .flex()
-            .items_center()
-            .w_full()
-            .child(div().flex_1().child(ui(title, TEXT_TITLE, accent)))
-            .child(icon_btn(
-                id,
-                "close",
-                CONTROL_H,
-                CONTROL_H,
-                ICON_SM,
-                c::FG_MUTE(),
-                c::BG_HOVER(),
-                None,
-                false,
-                move |window, cx| dispatch(ModalClick::Cancel, window, cx),
-            )),
-    )
+    modal_header_slotted(Some(id), title, accent, None, None, Some(dispatch))
 }
 
-/// [`modal_header`] for callers needing more than a bare title in the header
-/// zone, e.g. a title plus a right-aligned step counter (`modal.rs:162-171`).
-pub fn modal_header_row(content: impl IntoElement) -> Div {
+/// [`modal_header_slotted`]'s internal row shell for callers needing more than
+/// a bare title in the header zone, e.g. a title plus a right-aligned step
+/// counter (`modal.rs:162-171`).
+fn modal_header_row(content: impl IntoElement) -> Div {
     div()
         .w_full()
         .px(rpx(SPACE_3XL))
@@ -243,12 +378,6 @@ pub fn modal_header_row(content: impl IntoElement) -> Div {
 /// A checkbox's toggle handler. `None` renders the checkbox disabled.
 pub type OnToggle = Box<dyn Fn(&mut gpui::Window, &mut gpui::App)>;
 
-/// [`ModalBtn::Accent`]'s rest-border alpha: the accent is present but held
-/// back at rest so the full-strength hover border reads as a change. Carried
-/// over from the Add-project hero button, which hand-rolled this tint before
-/// the weight existed.
-const ACCENT_BORDER_REST_ALPHA: f32 = 0.45;
-
 /// Visual weight of a modal footer button (`modal.rs:193-200`).
 ///
 /// | Weight | Text | Border | Hover border | Fill |
@@ -256,9 +385,13 @@ const ACCENT_BORDER_REST_ALPHA: f32 = 0.45;
 /// | `Plain` | `FG_DIM` | `BORDER` | unchanged | `BG` (unfilled) |
 /// | `Primary` | `FG` | `BORDER` | unchanged | `BG_HL` |
 /// | `Danger` | `RED` | `RED` | unchanged | `BG_HL` |
-/// | `Accent` | `FG` | `MAGENTA` α0.45 | `MAGENTA` | `BG_HL` |
 ///
 /// Every weight also takes the shared `BG_HOVER` fill on hover.
+///
+/// The bordered `Accent` hero weight (the Add-project wizard's "Browse…"
+/// button) retired with plan.md §3's in-body button sweep: "no bordered
+/// buttons inside bodies" turned that hero button into a flat tinted
+/// [`body_action`], leaving no caller for a fourth weight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModalBtn {
     /// Dismiss / secondary action.
@@ -267,17 +400,13 @@ pub enum ModalBtn {
     Primary,
     /// Default affirmative action with destructive consequences.
     Danger,
-    /// Affirmative action with emphasis — the accent-bordered hero button that
-    /// starts something new (the Add-project wizard's folder browser), sharing
-    /// the appbar `+`'s accent role.
-    Accent,
 }
 
 impl ModalBtn {
     fn text_color(self) -> Hsla {
         match self {
             ModalBtn::Plain => c::FG_DIM(),
-            ModalBtn::Primary | ModalBtn::Accent => c::FG(),
+            ModalBtn::Primary => c::FG(),
             ModalBtn::Danger => c::RED(),
         }
     }
@@ -285,22 +414,16 @@ impl ModalBtn {
     fn border_color(self) -> Hsla {
         match self {
             ModalBtn::Danger => c::RED(),
-            ModalBtn::Accent => Hsla {
-                a: ACCENT_BORDER_REST_ALPHA,
-                ..c::MAGENTA()
-            },
             ModalBtn::Plain | ModalBtn::Primary => c::BORDER(),
         }
     }
 
-    /// The border on hover. `Accent` is the only weight that moves on this
-    /// axis; it must be applied inside the component because gpui's `hover`
-    /// refuses a second call on the same element (see [`icon_btn`]).
+    /// The border on hover. No current weight moves on this axis; kept as a
+    /// seam (rather than deleted outright) because [`modal_action_sized`]
+    /// reads it unconditionally and a future weight is the likeliest way this
+    /// gets used again.
     fn hover_border_color(self) -> Option<Hsla> {
-        match self {
-            ModalBtn::Accent => Some(c::MAGENTA()),
-            _ => None,
-        }
+        None
     }
 
     /// `Plain` is unfilled; the affirmative weights sit on `BG_HL`
@@ -340,6 +463,46 @@ pub fn click_action(
     })
 }
 
+/// [`click_action`] with an enabled axis — the button shape for a footer's
+/// primary action that cannot fire yet (an empty required field, a form with
+/// nothing changed to save).
+///
+/// `enabled: false` keeps the box geometry (`px SPACE_2XL` / `py SPACE_MD`,
+/// [`RADIUS_CONTROL`], 1px border) so the footer does not reflow when the
+/// action becomes available (§2.4), and drops *everything* interactive:
+/// `BORDER_SOFT` instead of the weight's border, the unfilled `BG`, a
+/// [`FG_MUTE`](crate::theme::FG_MUTE) label, no `cursor_pointer`, no hover and
+/// no `on_mouse_down` at all. Per DESIGN.md §10.1 the handler is *structurally*
+/// absent rather than guarded by a boolean the paint path could forget, and per
+/// §9.1.1 disabled is `FG_MUTE` plus a dropped handler and **never**
+/// `opacity()` — a half-transparent button still paints a hover and still eats
+/// the click.
+///
+/// Mirrors [`click_checkbox`]'s parameter order (`.., enabled, dispatch,
+/// click`), which is the house shape for a dispatch-wired control with a
+/// disabled state.
+pub fn click_action_enabled(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    kind: ModalBtn,
+    enabled: bool,
+    dispatch: &ModalDispatch,
+    click: ModalClick,
+) -> AnyElement {
+    if enabled {
+        return click_action(id, label, kind, dispatch, click).into_any_element();
+    }
+    div()
+        .px(rpx(SPACE_2XL))
+        .py(rpx(SPACE_MD))
+        .rounded(rpx(RADIUS_CONTROL))
+        .border_1()
+        .border_color(c::BORDER_SOFT())
+        .bg(c::BG())
+        .child(ui(label, TEXT_BODY, c::FG_MUTE()))
+        .into_any_element()
+}
+
 /// A checkbox wired to a [`ModalClick`]. `enabled: false` renders it disabled.
 pub fn click_checkbox(
     id: &'static str,
@@ -368,13 +531,10 @@ pub fn click_checkbox(
 ///
 /// | Variant | `px` | `py` | Corners | Fill |
 /// |---|---|---|---|---|
-/// | `Compact` | `SPACE_LG` | `SPACE_SM` | `RADIUS_CONTROL` | inset, rounded |
 /// | `Manager` | `SPACE_XL` | `SPACE_MD` | `RADIUS_GROUP` | inset, rounded |
 /// | `Card` | `SPACE_XL` | from content | square | full-bleed |
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowDensity {
-    /// The default list row every modal list shares.
-    Compact,
     /// The theme manager's row, which carries a name, a badge, an
     /// eleven-swatch strip and four action buttons on one line.
     Manager,
@@ -389,7 +549,6 @@ impl RowDensity {
     /// Horizontal padding.
     fn px(self) -> f32 {
         match self {
-            RowDensity::Compact => SPACE_LG,
             RowDensity::Manager | RowDensity::Card => SPACE_XL,
         }
     }
@@ -397,7 +556,6 @@ impl RowDensity {
     /// Vertical padding, or `None` where the row's content sets its height.
     fn py(self) -> Option<f32> {
         match self {
-            RowDensity::Compact => Some(SPACE_SM),
             RowDensity::Manager => Some(SPACE_MD),
             RowDensity::Card => None,
         }
@@ -406,7 +564,6 @@ impl RowDensity {
     /// Corner radius, or `None` for the square full-bleed fill.
     fn radius(self) -> Option<f32> {
         match self {
-            RowDensity::Compact => Some(RADIUS_CONTROL),
             RowDensity::Manager => Some(RADIUS_GROUP),
             RowDensity::Card => None,
         }
@@ -626,14 +783,6 @@ pub fn caption(content: impl Into<SharedString>) -> Div {
         .child(ui(content, TEXT_SMALL, c::FG_MUTE()))
 }
 
-/// One shade up from [`caption`] — reserved for safety-relevant captions,
-/// e.g. skip-permissions (`src/gui/view/modals/settings.rs:148-152`).
-pub fn caption_promoted(content: impl Into<SharedString>) -> Div {
-    div()
-        .px(rpx(SPACE_XL))
-        .child(ui(content, TEXT_SMALL, c::FG_DIM()))
-}
-
 /// Which of §9.1's two caption tones a [`row_sublabel`] takes. Named rather
 /// than a `bool` per §14 rule 3's spirit: `SublabelTone::Safety` says at the
 /// call site what `true` would not.
@@ -642,7 +791,7 @@ pub enum SublabelTone {
     /// The default explanatory sublabel — [`caption`]'s `FG_MUTE`.
     Normal,
     /// One shade up, reserved for safety-relevant text (skip-permissions and
-    /// friends) — [`caption_promoted`]'s `FG_DIM`.
+    /// friends) — `FG_DIM` rather than [`caption`]'s `FG_MUTE`.
     Safety,
 }
 
@@ -772,6 +921,22 @@ pub fn status_dot(size: f32, color: Hsla) -> Div {
     div().size(rpx(size)).rounded_full().bg(color)
 }
 
+/// [`status_dot`]'s "absent / not installed" counterpart: the same circle at
+/// the same size, drawn as a 1px ring instead of a fill.
+///
+/// The pair is a §2.3 case — colour is never the sole carrier of state. Filled
+/// versus hollow is a *shape* difference, so present-versus-absent survives
+/// greyscale, a colour-blind reader and a dimmed display, where two tints of
+/// the same disc would not. Which is also why the ring keeps the full 1px
+/// hairline in the state's own colour rather than a washed-out fill (§7.2).
+pub fn status_dot_hollow(size: f32, color: Hsla) -> Div {
+    div()
+        .size(rpx(size))
+        .rounded_full()
+        .border_1()
+        .border_color(color)
+}
+
 /// A 1px vertical hairline separating clusters inside a bar
 /// (`src/gui/widgets/primitives.rs`'s `vline`).
 pub fn vline() -> Div {
@@ -823,35 +988,115 @@ pub fn flat_text_btn_tinted(
         })
 }
 
-/// The app-wide borderless text field: a [`CONTROL_H`]-tall box with mono text
-/// vertically centred and a 1px bottom rule, `MAGENTA` when `focused` /
-/// `BORDER_SOFT` at rest. Was open-coded twice inside `scripts_editor` (the
-/// title field and the three script rows); both call sites now build their
-/// `gpui_component::input::Input` inside this shell.
+/// **The** app-wide text field — plan.md §1's variant C1c, "boxed + focus
+/// ring", which replaces the old bare-bottom-rule underline field.
 ///
-/// The caller must still zero the wrapped `Input`'s own insets:
-/// `Input::new(state).appearance(false).pl(px(0.0)).pr(px(0.0)).py(px(0.0))`.
+/// A full-width box: `px FIELD_PX` / `py FIELD_PY` (~32px tall around a
+/// [`TEXT_BODY`] mono run), [`RADIUS_GROUP`] corners, a [`BG_STRIP`] fill and a
+/// 1px [`BORDER_SOFT`] hairline. Focused, the hairline goes full-strength
+/// `MAGENTA` and a [`FOCUS_RING_W`] ring in [`FOCUS_RING`] is drawn *outside*
+/// it.
+///
+/// An underline could only say "focused" by recolouring one edge, which on a
+/// bare panel left a field with no resting shape at all — an input the user had
+/// to find by clicking. The box gives it one, and the ring keeps keyboard focus
+/// legible in the single magenta language §3 settles on.
+///
+/// The ring is a zero-blur, [`FOCUS_RING_W`]-spread outer `BoxShadow` because
+/// gpui's `Div` at this rev has no outline primitive — `border_2` would grow
+/// the box and reflow the row on focus, and a wrapper div would need the same
+/// radius maintained in two places. It is a ring in every respect but the API
+/// it is spelled with.
+///
+/// **Caller contract** (still load bearing). The wrapped `Input` must be
+/// built with its own insets zeroed and its width claimed, verbatim:
+///
+/// ```ignore
+/// field_box(focused).child(
+///     Input::new(state)
+///         .appearance(false)
+///         .pl(px(0.0))
+///         .pr(px(0.0))
+///         .py(px(0.0))
+///         .w_full(),
+/// )
+/// ```
+///
 /// `Input` applies its own `input_px`/`input_py` (10px/8px at the default
-/// `Size::Medium`) regardless of `.appearance(false)` — that inset, not the
-/// surrounding divs, is what breaks a field's left edge against the rest of
-/// the panel if left unzeroed.
-pub fn field_underline(focused: bool) -> Div {
-    let rule = if focused {
-        c::MAGENTA()
-    } else {
-        c::BORDER_SOFT()
-    };
+/// `Size::Medium`) **regardless of `.appearance(false)`** — `appearance` drops
+/// the border and the fill, not the padding. That inset, not the surrounding
+/// divs, is what breaks a field's left edge out of true against the rest of the
+/// panel if left unzeroed, and `w_full()` is what stops the field from
+/// collapsing to its content inside this shell's `min_w_0` flex row.
+///
+/// [`BG_STRIP`]: crate::theme::BG_STRIP
+/// [`BORDER_SOFT`]: crate::theme::BORDER_SOFT
+/// [`FOCUS_RING`]: crate::theme::FOCUS_RING
+pub fn field_box(focused: bool) -> Div {
     div()
-        .h(rpx(CONTROL_H))
         .w_full()
         .min_w_0()
         .flex()
         .items_center()
         .overflow_hidden()
-        .border_b_1()
-        .border_color(rule)
+        .px(rpx(FIELD_PX))
+        .py(rpx(FIELD_PY))
+        .rounded(rpx(RADIUS_GROUP))
+        .bg(c::BG_STRIP())
+        .border_1()
+        .border_color(if focused {
+            c::MAGENTA()
+        } else {
+            c::BORDER_SOFT()
+        })
+        .when(focused, |d| {
+            d.shadow(vec![gpui::BoxShadow {
+                color: c::FOCUS_RING(),
+                offset: gpui::point(px(0.0), px(0.0)),
+                blur_radius: px(0.0),
+                spread_radius: px(FOCUS_RING_W),
+                inset: false,
+            }])
+        })
         .font(gpui::font(MONO_FAMILY))
         .text_size(rpx(TEXT_BODY))
+}
+
+/// A flat tinted text action **inside** a modal body — plan.md §2/§3's
+/// replacement for both the retired footer left slot (AgentPicker's "Default",
+/// ThemeManager's "+ New theme", ScriptsEditor's "Archive project") and the
+/// bordered in-body buttons §3 forbids ("Change", "Kill all sessions",
+/// onboarding's "Browse…").
+///
+/// A bordered button inside a body reads as a second call to action competing
+/// with the footer's affirmative one; flat tinted text reads as what it is — an
+/// action available here, subordinate to the panel's own. `tone` carries the
+/// action's flavour (`CYAN` for a neutral in-body action, `RED` for a
+/// destructive one), which is the only axis these ever varied on.
+///
+/// [`flat_text_btn_tinted`] in the [`click_action`] shape: same shell, wired
+/// straight to a [`ModalClick`] rather than to a bare closure. `id` must be
+/// unique within the modal.
+pub fn body_action(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    tone: Hsla,
+    dispatch: &ModalDispatch,
+    click: ModalClick,
+) -> gpui::Stateful<Div> {
+    let dispatch = std::rc::Rc::clone(dispatch);
+    // `flat_text_btn_tinted`'s row-only users get shrink-to-content for free
+    // from a horizontal flex parent; a column parent stretches children to
+    // full width by default instead, which reads as a full-bleed band with a
+    // centred label rather than a subordinate flat action. Pin this variant
+    // to its content size and the leading edge so it reads correctly in
+    // either axis.
+    flat_text_btn_tinted(id, label, TEXT_BODY, SPACE_MD, tone, move |window, cx| {
+        dispatch(click.clone(), window, cx);
+    })
+    .flex_none()
+    .self_start()
+    .justify_start()
 }
 
 /// A fixed [`STATUS_DOT_COL_W`] column holding an optional status mark.

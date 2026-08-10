@@ -30,11 +30,6 @@
 //! out arithmetically: `iced::animation::Easing` is not a dependency of
 //! grove-gpui and must not become one. `EaseOutCubic` is `1 - (1 - t)^3`.
 
-// The slide helpers' only consumer is the tile painter (Task 4); the layout
-// helpers' is the grid view. Same pattern as `keymap.rs` and
-// `workspace_state.rs` carry for their not-yet-landed consumers.
-#![allow(dead_code)]
-
 use std::time::{Duration, Instant};
 
 /// Grid dimensions `(cols, rows)` for `n` sessions.
@@ -179,6 +174,9 @@ pub fn reconcile_tile_order(live_keys: &[String], saved_order: &[String]) -> Vec
 /// it, so we refocus that same slot; if the killed tile was last, clamp to
 /// the new last slot instead.
 /// Port of `src/gui/update/shortcuts.rs:574-580`.
+// TODO(unwired): the ported refocus rule has a passing test but no caller —
+// killing the focused grid tile never consults it.
+#[allow(dead_code)]
 #[must_use]
 pub fn grid_focus_after_kill(killed_pos: Option<usize>, len: usize) -> Option<usize> {
     if len == 0 {

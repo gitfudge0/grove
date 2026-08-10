@@ -16,9 +16,6 @@
 //! agent-menu overlay walk must both call [`row_height`], or the overlay lands
 //! on the wrong row.
 
-// The renderers that consume these land in Task 5.
-#![allow(dead_code)]
-
 use crate::views::rpx;
 use crate::views::tokens::*;
 use std::collections::HashMap;

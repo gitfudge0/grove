@@ -6,13 +6,9 @@
 //! `confirm_modal_response` :558-576, `submit_modal_confirm` :577-604,
 //! `choose_tmux` :535-540) and `src/app/mod.rs:563-658`.
 
-// The chrome, the input wrapper and the archive/teardown helpers are built
-// once here and consumed by Tasks 4-6 of gpui rewrite plan 08.
-#![allow(dead_code)]
-
 use crate::views::rpx;
 use crate::views::tokens::*;
-use gpui::{div, prelude::*, AnyElement, App, Context, Window};
+use gpui::{div, prelude::*, px, AnyElement, App, Context, Focusable as _, Window};
 use grove_core::agent::Agent;
 use grove_core::{git, storage};
 
@@ -22,8 +18,9 @@ use crate::theme as c;
 use super::{Modal, ModalClick, ModalDispatch, ModalEvent, ModalLayer};
 use crate::modal::ConfirmKind;
 use crate::views::components::{
-    click_action, divider_h, icon_slot, modal_body, modal_footer_hints, modal_header, modal_panel,
-    palette_row, ui, ModalBtn,
+    body_action, body_text, card, click_action, click_row, divider_h, field_box, icon_slot,
+    modal_body, modal_footer, modal_header_with_close, modal_panel, note_text, ui, ModalBtn,
+    RowDensity,
 };
 
 /// The agent order the picker lists (`src/app/mod.rs:168`); availability is
@@ -254,10 +251,15 @@ impl ModalLayer {
 
 // ── the views ────────────────────────────────────────────────────────────
 
-pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
+pub fn render(
+    layer: &ModalLayer,
+    dispatch: &ModalDispatch,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
     match layer.slot().get() {
         Some(Modal::Input { title, note, .. }) => {
-            input_modal(layer, title, note.as_deref(), dispatch)
+            input_modal(layer, title, note.as_deref(), dispatch, window, cx)
         }
         Some(Modal::Confirm {
             title,
@@ -277,90 +279,83 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
 }
 
 /// The generic single-field prompt (`view/modals/confirm.rs:18-69`): title,
-/// the field, and an inline red note cleared on the next edit. Zoned exactly
-/// as the iced original — header / divider / input-zone / divider /
-/// buttons-zone / divider / footer (`confirm.rs:33-67`) — with the same
-/// leading `git-branch` icon in the field row (`confirm.rs:33-40`).
+/// the field, and an inline red note cleared on the next edit. Rebuilt onto
+/// the shared four-child modal grammar (§9.1.1) — header / divider / body /
+/// footer — with the same leading `git-branch` icon in the field row
+/// (`confirm.rs:33-40`).
 fn input_modal(
     layer: &ModalLayer,
     title: &str,
     note: Option<&str>,
     dispatch: &ModalDispatch,
+    window: &Window,
+    cx: &App,
 ) -> AnyElement {
-    let mut input_zone = div()
-        .w_full()
-        .flex()
-        .items_center()
-        .gap(rpx(SPACE_LG))
-        .px(rpx(SPACE_3XL))
-        .py(rpx(SPACE_3XL))
-        // The field holds a branch name — a token, so mono (§5.2). Pinned on
-        // the container because the inner `Input` renders its own text and
-        // inherits the container's text style; kept as the chain's last call
-        // so it stays inside R3's window from the `.text_size(` below.
-        .font(gpui::font(crate::fonts::MONO_FAMILY));
+    let mut body = div().flex().flex_col().gap(rpx(SPACE_LG));
     if let Some(field) = layer.fields.first() {
-        input_zone = input_zone.child(crate::icons::icon("git-branch", ICON_LG, c::FG_MUTE()));
-        input_zone = input_zone.child(
-            gpui_component::input::Input::new(field.state())
-                .flex_1()
-                .text_size(rpx(TEXT_TITLE))
-                // The field is a bare run of text on the modal's own surface —
-                // gpui-component's default chrome paints a light box that reads
-                // as a foreign white slab here (launcher.rs:732 does the same).
-                // Last in the chain so it doesn't push `.text_size(` out of
-                // R3's window from the `.font()` pinned on the container.
-                .appearance(false),
+        let focused = field.state().read(cx).focus_handle(cx).is_focused(window);
+        body = body.child(
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(rpx(SPACE_LG))
+                .child(crate::icons::icon("git-branch", ICON_LG, c::FG_MUTE()))
+                .child(
+                    field_box(focused).flex_1().child(
+                        gpui_component::input::Input::new(field.state())
+                            .appearance(false)
+                            .pl(px(0.0))
+                            .pr(px(0.0))
+                            .py(px(0.0))
+                            .w_full(),
+                    ),
+                ),
         );
     }
-
-    let mut buttons_zone = div()
-        .flex()
-        .flex_col()
-        .gap(rpx(SPACE_LG))
-        .px(rpx(SPACE_3XL))
-        .py(rpx(SPACE_2XL));
     if let Some(note) = note {
-        buttons_zone = buttons_zone.child(ui(note.to_string(), TEXT_BODY, c::RED()));
+        body = body.child(note_text(note.to_string()));
     }
-    buttons_zone = buttons_zone.child(
-        div()
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_LG))
-            .child(div().flex_1())
-            .child(click_action(
-                "in-cancel",
-                "Cancel",
-                ModalBtn::Plain,
-                dispatch,
-                ModalClick::Cancel,
-            ))
-            .child(click_action(
-                "in-ok",
-                "Submit",
-                ModalBtn::Primary,
-                dispatch,
-                ModalClick::Submit,
-            )),
-    );
 
     modal_panel(
         MODAL_W_MD,
         div()
-            .child(modal_header(title.to_string(), c::MAGENTA()))
+            .child(modal_header_with_close(
+                "in-close",
+                title.to_string(),
+                c::MAGENTA(),
+                dispatch,
+            ))
             .child(divider_h())
-            .child(input_zone)
-            .child(divider_h())
-            .child(buttons_zone)
-            .child(divider_h())
-            .child(modal_footer_hints(&[("⏎", "confirm"), ("esc", "cancel")])),
+            .child(modal_body(body))
+            .child(modal_footer(
+                &[("⏎", "confirm"), ("esc", "cancel")],
+                vec![
+                    click_action(
+                        "in-cancel",
+                        "Cancel",
+                        ModalBtn::Plain,
+                        dispatch,
+                        ModalClick::Cancel,
+                    )
+                    .into_any_element(),
+                    click_action(
+                        "in-ok",
+                        "Submit",
+                        ModalBtn::Primary,
+                        dispatch,
+                        ModalClick::Submit,
+                    )
+                    .into_any_element(),
+                ],
+            )),
     )
     .into_any_element()
 }
 
 /// `confirm_modal` (`view/modals/confirm.rs:70-133`) with its destructive
-/// styling. Escape = no, Enter = yes, `y`/`n`.
+/// styling, rebuilt onto the shared four-child modal grammar (§9.1.1).
+/// Escape = no, Enter = yes, `y`/`n`.
 fn confirm_modal(
     title: &str,
     prompt: &str,
@@ -374,134 +369,127 @@ fn confirm_modal(
         _ if destructive => ("Remove", "remove"),
         _ => ("Confirm", "confirm"),
     };
-    let footer = if destructive {
-        modal_footer_hints(&[("y", label_lower), ("esc", "cancel")])
+    let hints: &[(&'static str, &'static str)] = if destructive {
+        &[("y", label_lower), ("esc", "cancel")]
     } else {
-        modal_footer_hints(&[("⏎", "confirm"), ("esc", "cancel")])
+        &[("⏎", "confirm"), ("esc", "cancel")]
     };
     modal_panel(
         MODAL_W_MD,
         div()
-            .child(modal_header(title.to_string(), accent))
-            .child(modal_body(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(rpx(SPACE_2XL))
-                    .child(ui(prompt.to_string(), TEXT_TITLE, c::FG_DIM()))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(rpx(SPACE_LG))
-                            .child(div().flex_1())
-                            .child(click_action(
-                                "cf-no",
-                                "Cancel",
-                                ModalBtn::Plain,
-                                dispatch,
-                                ModalClick::Confirm(false),
-                            ))
-                            .child(click_action(
-                                "cf-yes",
-                                label,
-                                if destructive {
-                                    ModalBtn::Danger
-                                } else {
-                                    ModalBtn::Primary
-                                },
-                                dispatch,
-                                ModalClick::Confirm(true),
-                            )),
-                    ),
+            .child(modal_header_with_close(
+                "cf-close",
+                title.to_string(),
+                accent,
+                dispatch,
             ))
-            .child(footer),
+            .child(divider_h())
+            .child(modal_body(body_text(prompt.to_string())))
+            .child(modal_footer(
+                hints,
+                vec![
+                    click_action(
+                        "cf-no",
+                        "Cancel",
+                        ModalBtn::Plain,
+                        dispatch,
+                        ModalClick::Confirm(false),
+                    )
+                    .into_any_element(),
+                    click_action(
+                        "cf-yes",
+                        label,
+                        if destructive {
+                            ModalBtn::Danger
+                        } else {
+                            ModalBtn::Primary
+                        },
+                        dispatch,
+                        ModalClick::Confirm(true),
+                    )
+                    .into_any_element(),
+                ],
+            )),
     )
     .into_any_element()
 }
 
-/// `message_modal` (`view/modals/confirm.rs:446-472`): text and one dismiss.
+/// `message_modal` (`view/modals/confirm.rs:446-472`): text and one dismiss,
+/// rebuilt onto the shared four-child modal grammar (§9.1.1).
 fn message_modal(text: &str, dispatch: &ModalDispatch) -> AnyElement {
     modal_panel(
         MODAL_W_MD,
         div()
-            .child(modal_header("Notice", c::CYAN()))
-            .child(modal_body(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(rpx(SPACE_2XL))
-                    .child(ui(text.to_string(), TEXT_TITLE, c::FG_DIM()))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .child(div().flex_1())
-                            .child(click_action(
-                                "msg-ok",
-                                "Close",
-                                ModalBtn::Primary,
-                                dispatch,
-                                ModalClick::Cancel,
-                            )),
-                    ),
+            .child(modal_header_with_close(
+                "msg-close",
+                "Notice",
+                c::MAGENTA(),
+                dispatch,
             ))
-            .child(modal_footer_hints(&[("esc", "close")])),
+            .child(divider_h())
+            .child(modal_body(body_text(text.to_string())))
+            .child(modal_footer(
+                &[("esc", "close")],
+                vec![click_action(
+                    "msg-ok",
+                    "Close",
+                    ModalBtn::Primary,
+                    dispatch,
+                    ModalClick::Cancel,
+                )
+                .into_any_element()],
+            )),
     )
     .into_any_element()
 }
 
-/// `tmux_choice_modal` (`view/modals/settings.rs:30-57`). Escape deliberately
-/// persists nothing, so the footer does not offer it as a choice.
+/// `tmux_choice_modal` (`view/modals/settings.rs:30-57`), rebuilt onto the
+/// shared four-child modal grammar (§9.1.1). Escape deliberately persists
+/// nothing, so the footer does not offer it as a choice.
 fn tmux_choice_modal(dispatch: &ModalDispatch) -> AnyElement {
     modal_panel(
         MODAL_W_MD,
         div()
-            .child(modal_header("Session backend", c::CYAN()))
-            .child(modal_body(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(rpx(SPACE_XL))
-                    .child(ui(
-                        "Use tmux for new sessions? Existing sessions keep their \
-                         current backend.",
-                        TEXT_TITLE,
-                        c::FG_DIM(),
-                    ))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(rpx(SPACE_LG))
-                            .child(div().flex_1())
-                            .child(click_action(
-                                "tmux-no",
-                                "Native",
-                                ModalBtn::Plain,
-                                dispatch,
-                                ModalClick::ChooseTmux(false),
-                            ))
-                            .child(click_action(
-                                "tmux-yes",
-                                "Tmux",
-                                ModalBtn::Primary,
-                                dispatch,
-                                ModalClick::ChooseTmux(true),
-                            )),
-                    ),
+            .child(modal_header_with_close(
+                "tmux-close",
+                "Session backend",
+                c::MAGENTA(),
+                dispatch,
             ))
-            .child(modal_footer_hints(&[
-                ("⏎", "tmux"),
-                ("n", "native"),
-                ("esc", "close"),
-            ])),
+            .child(divider_h())
+            .child(modal_body(body_text(
+                "Use tmux for new sessions? Existing sessions keep their \
+                 current backend.",
+            )))
+            .child(modal_footer(
+                &[("⏎", "tmux"), ("n", "native"), ("esc", "close")],
+                vec![
+                    click_action(
+                        "tmux-no",
+                        "Native",
+                        ModalBtn::Plain,
+                        dispatch,
+                        ModalClick::ChooseTmux(false),
+                    )
+                    .into_any_element(),
+                    click_action(
+                        "tmux-yes",
+                        "Tmux",
+                        ModalBtn::Primary,
+                        dispatch,
+                        ModalClick::ChooseTmux(true),
+                    )
+                    .into_any_element(),
+                ],
+            )),
     )
     .into_any_element()
 }
 
 /// `agent_picker_modal` (`view/modals/settings.rs:58-129`): the available
-/// agents with a selection cursor, Space toggling the default.
+/// agents with a selection cursor, Space toggling the default. Rebuilt onto
+/// the shared four-child modal grammar (§9.1.1); the agent list moves from
+/// `palette_row` to the `card`/`click_row` selection-list shape (§9.1.1).
 fn agent_picker_modal(
     project: &str,
     wt_path: &str,
@@ -518,88 +506,92 @@ fn agent_picker_modal(
         format!("Start session / {project} / {wt_name}")
     };
 
-    let mut list = div()
-        .flex()
-        .flex_col()
-        .gap(rpx(SPACE_XS))
-        .p(rpx(SPACE_LG))
-        .w_full();
+    let mut rows: Vec<AnyElement> = Vec::new();
     for (i, agent) in agents.iter().enumerate() {
         let selected = i == sel;
         let is_default = default == Some(*agent);
-        list = list.child(palette_row(
-            gpui::SharedString::from(format!("agent-{i}")),
-            selected,
-            dispatch,
-            ModalClick::SelectRow(i),
-            div()
-                .flex()
-                .items_center()
-                .gap(rpx(SPACE_LG))
-                .w_full()
-                .child(icon_slot(
-                    agent.icon_name(),
-                    ICON_LG,
-                    if selected { c::YELLOW() } else { c::FG_MUTE() },
-                ))
-                .child(
-                    ui(
-                        agent.label().to_string(),
-                        TEXT_BODY,
-                        if selected { c::FG() } else { c::FG_DIM() },
-                    )
-                    .flex_1(),
+        let content = div()
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_LG))
+            .w_full()
+            .child(icon_slot(
+                agent.icon_name(),
+                ICON_LG,
+                if selected { c::YELLOW() } else { c::FG_MUTE() },
+            ))
+            .child(
+                ui(
+                    agent.label().to_string(),
+                    TEXT_BODY,
+                    if selected { c::FG() } else { c::FG_DIM() },
                 )
-                .when(is_default, |d| {
-                    d.child(ui("Default", TEXT_SMALL, c::FG_MUTE()))
-                }),
-        ));
+                .flex_1(),
+            )
+            .when(is_default, |d| {
+                d.child(ui("Default", TEXT_SMALL, c::FG_MUTE()))
+            });
+        rows.push(
+            click_row(
+                ("agent", i),
+                selected,
+                RowDensity::Card,
+                dispatch,
+                ModalClick::SelectRow(i),
+                content,
+            )
+            .min_h(rpx(ROW_MIN_H))
+            .px(rpx(ROW_PX))
+            .py(rpx(ROW_PY))
+            .into_any_element(),
+        );
     }
 
-    let actions = div()
-        .flex()
-        .items_center()
-        .gap(rpx(SPACE_LG))
-        .child(click_action(
-            "ap-default",
-            "Default",
-            ModalBtn::Plain,
-            dispatch,
-            ModalClick::ToggleDefaultAgent,
-        ))
-        .child(div().flex_1())
-        .child(click_action(
-            "ap-cancel",
-            "Cancel",
-            ModalBtn::Plain,
-            dispatch,
-            ModalClick::Cancel,
-        ))
-        .child(click_action(
-            "ap-launch",
-            "Launch",
-            ModalBtn::Primary,
-            dispatch,
-            ModalClick::Submit,
-        ));
-
     modal_panel(
-        MODAL_W_LG,
+        MODAL_W_MD,
         div()
-            .child(modal_header(title, c::MAGENTA()))
+            .child(modal_header_with_close(
+                "ap-close",
+                title,
+                c::MAGENTA(),
+                dispatch,
+            ))
+            .child(divider_h())
             .child(modal_body(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(rpx(SPACE_2XL))
-                    .child(list)
-                    .child(actions),
+                    .gap(rpx(SPACE_LG))
+                    .child(card(rows))
+                    .child(body_action(
+                        "ap-default",
+                        "Default",
+                        c::CYAN(),
+                        dispatch,
+                        ModalClick::ToggleDefaultAgent,
+                    )),
             ))
-            .child(modal_footer_hints(&[
-                ("↑↓", "choose"),
-                ("⏎", "launch"),
-                ("esc", "cancel"),
-            ])),
+            .child(modal_footer(
+                &[("↑↓", "choose"), ("⏎", "launch"), ("esc", "cancel")],
+                vec![
+                    click_action(
+                        "ap-cancel",
+                        "Cancel",
+                        ModalBtn::Plain,
+                        dispatch,
+                        ModalClick::Cancel,
+                    )
+                    .into_any_element(),
+                    click_action(
+                        "ap-launch",
+                        "Launch",
+                        ModalBtn::Primary,
+                        dispatch,
+                        ModalClick::Submit,
+                    )
+                    .into_any_element(),
+                ],
+            )),
     )
     .into_any_element()
 }

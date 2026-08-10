@@ -19,10 +19,6 @@
 //! `on_key_down`. That is the structural replacement for iced's
 //! `should_forward` Escape carve-out — see [`crate::modal`]'s module doc.
 
-// The chrome, the input wrapper and the archive/teardown helpers are built
-// once here and consumed by Tasks 4-6 of gpui rewrite plan 08.
-#![allow(dead_code)]
-
 pub mod add_project;
 pub mod confirm;
 pub mod input;
@@ -146,6 +142,15 @@ pub struct ModalLayer {
     /// wheel straight back to the selected row. `render` is handed a
     /// `&ModalLayer`, hence the `Cell`.
     palette_scrolled_to: std::cell::Cell<Option<(crate::modal::LauncherView, usize)>>,
+    /// The scroll position of the *other* keyboard-navigable modal list — the
+    /// theme picker's themes and the wizard's directory matches. One handle
+    /// serves both: only one modal renders at a time, and `open` clears it so a
+    /// stale offset can't leak from one list into the next.
+    pub(super) list_scroll: gpui::ScrollHandle,
+    /// `(tag, row)` last scrolled to, where `tag` distinguishes row sets that
+    /// share the handle (the picker's dark/light tabs). Same
+    /// only-a-changed-selection-may-scroll rule as `palette_scrolled_to`.
+    list_scrolled_to: std::cell::Cell<Option<(usize, usize)>>,
 }
 
 impl EventEmitter<ModalEvent> for ModalLayer {}
@@ -192,6 +197,8 @@ impl ModalLayer {
             teardown_poll: None,
             palette_scroll: gpui::ScrollHandle::new(),
             palette_scrolled_to: std::cell::Cell::new(None),
+            list_scroll: gpui::ScrollHandle::new(),
+            list_scrolled_to: std::cell::Cell::new(None),
         }
     }
 
@@ -208,12 +215,35 @@ impl ModalLayer {
         self.slot.is_open()
     }
 
+    // Exercised only by this module's `#[cfg(test)]` assertions, which read the
+    // open modal's kind; the render path matches on `slot.get()` instead.
+    #[allow(dead_code)]
     pub fn kind(&self) -> Option<ModalKind> {
         self.slot.kind()
     }
 
     pub fn slot(&self) -> &ModalSlot {
         &self.slot
+    }
+
+    /// Bring row `sel` of a shared-handle list into view, addressing it by the
+    /// index it actually occupies among the scroll container's direct children
+    /// (`card` interleaves dividers, so the two differ). Guarded like
+    /// `scroll_palette_to`: `scroll_to_item` resolves in prepaint, so
+    /// re-issuing it every frame would fight the mouse wheel.
+    pub(super) fn scroll_list_to(&self, tag: usize, sel: usize, child_ix: usize) {
+        if self.list_scrolled_to.get() == Some((tag, sel)) {
+            return;
+        }
+        self.list_scrolled_to.set(Some((tag, sel)));
+        self.list_scroll.scroll_to_item(child_ix);
+    }
+
+    /// Drop the retained offset — it only means anything against the list it
+    /// was measured on.
+    pub(super) fn reset_list_scroll(&self) {
+        self.list_scroll.set_offset(gpui::Point::default());
+        self.list_scrolled_to.set(None);
     }
 
     /// Open `modal`, replacing whatever was there. The old modal's field is
@@ -226,17 +256,7 @@ impl ModalLayer {
             self.detect_tools(cx);
         }
         self.slot.open(modal);
-        self.fields.clear();
-        self.field_subs.clear();
-        self.needs_focus = true;
-        cx.notify();
-    }
-
-    /// The window's close request. The quit confirm clobbers whatever is open
-    /// and cancelling does not restore it — a known, deliberately preserved
-    /// gap (`modals.rs:350-354`).
-    pub fn open_quit_confirm(&mut self, native_running: usize, cx: &mut Context<Self>) {
-        self.slot.open_quit_confirm(native_running);
+        self.reset_list_scroll();
         self.fields.clear();
         self.field_subs.clear();
         self.needs_focus = true;
@@ -247,6 +267,13 @@ impl ModalLayer {
     /// for close (Teardown skips, RemoveProject refuses, ThemePicker and the
     /// changelog return to their parent).
     pub fn cancel(&mut self, cx: &mut Context<Self>) -> CancelOutcome {
+        // Every door out of the `ThemePicker` — Escape, the Cancel button, the
+        // close X and `theme_picker_submit`'s tail — arrives here, so the live
+        // preview it drove is undone here too. It has to run *before*
+        // `slot.cancel()`, which may already have swapped the picker out for
+        // the modal it returns to. Self-guarding, and a no-op on the commit
+        // path, which consumes `original` first.
+        self.restore_theme_before_leaving(cx);
         let outcome = self.slot.cancel();
         match outcome {
             CancelOutcome::Refused => {}
@@ -690,6 +717,9 @@ impl ModalLayer {
                         // A query edit rebuilds the row set from scratch, so
                         // the retained offset belongs to a list that is gone.
                         this.reset_palette_scroll();
+                        // Same for the wizard's directory matches, which the
+                        // typed path rebuilds.
+                        this.reset_list_scroll();
                         cx.notify();
                     }
                 },
@@ -777,7 +807,7 @@ impl Render for ModalLayer {
             | ModalKind::Confirm
             | ModalKind::Message
             | ModalKind::TmuxChoice
-            | ModalKind::AgentPicker => confirm::render(self, &dispatch, cx),
+            | ModalKind::AgentPicker => confirm::render(self, &dispatch, window, cx),
             ModalKind::RemoveProject
             | ModalKind::ArchiveProject
             | ModalKind::ArchivedProjects
@@ -787,7 +817,7 @@ impl Render for ModalLayer {
             }
             ModalKind::SessionLauncher => launcher::render(self, &dispatch, cx),
             ModalKind::ThemePicker | ModalKind::ThemeManager => {
-                theme_picker::render(self, &dispatch, cx)
+                theme_picker::render(self, &dispatch, window, cx)
             }
             ModalKind::Settings
             | ModalKind::ShortcutOverlay
@@ -1105,6 +1135,99 @@ mod tests {
         );
     }
 
+    /// Points `grove_core::storage` at a private directory for this process so
+    /// the theme test below — whose commit path runs `SettingsState::flush_now`
+    /// — never writes the developer's real `projects.json`. Mirrors
+    /// `settings.rs`'s helper of the same name.
+    fn isolate_config_dir() {
+        use std::sync::Once;
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            let dir =
+                std::env::temp_dir().join(format!("grove-gpui-modals-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&dir);
+            std::env::set_var("GROVE_CONFIG_DIR", &dir);
+        });
+    }
+
+    /// The theme picker's live preview must be undone when it is cancelled and
+    /// **kept** when it is committed. Both exits run through
+    /// [`ModalLayer::cancel`]; only the commit path consumes `original`, which
+    /// is what keeps the restore from clobbering the theme just pinned.
+    #[gpui::test]
+    fn cancelling_the_theme_picker_restores_the_theme_and_submitting_does_not(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::modal::{ThemePickerReturn, ThemePickerScope};
+        use theme_picker::ThemePreview;
+
+        isolate_config_dir();
+        cx.update(boot_globals);
+        let keys = Rc::new(RefCell::new(Vec::new()));
+        let (root, vcx) = cx.add_window_view(|_, cx| build_root(cx, keys.clone()));
+        vcx.run_until_parked();
+        let modals = root.read_with(vcx, |r, _| r.modals.clone());
+
+        // `Store::default()` pins no theme, so the picker opens with
+        // `original` = the default dark theme.
+        let original = crate::theme::DEFAULT_DARK_THEME.to_string();
+        vcx.update(|_, cx| crate::theme::ThemeState::set_by_name(cx, &original));
+
+        // ── cancel: the preview is rolled back ──────────────────────────
+        modals.update(vcx, |l, cx| {
+            l.open_theme_picker(ThemePickerScope::App, ThemePickerReturn::Close, cx);
+            // Move off the opening selection so a *different* theme is live.
+            l.theme_picker_move(1, cx);
+        });
+        vcx.run_until_parked();
+        let previewed = grove_core::theme::current().name.to_string();
+        assert_ne!(
+            previewed, original,
+            "the picker must be previewing something other than the original"
+        );
+
+        modals.update(vcx, |l, cx| {
+            l.cancel(cx);
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            grove_core::theme::current().name.as_ref(),
+            original,
+            "cancel must put the original theme back"
+        );
+        assert!(
+            modals.read_with(vcx, |_, cx| {
+                cx.try_global::<ThemePreview>()
+                    .is_none_or(|p| p.project.is_none() && p.app.is_none())
+            }),
+            "cancel must drop the live preview global"
+        );
+
+        // ── submit: the commit survives the same exit ───────────────────
+        modals.update(vcx, |l, cx| {
+            l.open_theme_picker(ThemePickerScope::App, ThemePickerReturn::Close, cx);
+            l.theme_picker_move(1, cx);
+        });
+        vcx.run_until_parked();
+        let picked = grove_core::theme::current().name.to_string();
+        assert_ne!(picked, original);
+
+        modals.update(vcx, |l, cx| l.theme_picker_submit(cx));
+        vcx.run_until_parked();
+        assert_eq!(
+            grove_core::theme::current().name.as_ref(),
+            picked,
+            "submit must not be undone by cancel's restore"
+        );
+        assert!(
+            !modals.read_with(vcx, |l, _| l.is_open()),
+            "submit closes the picker"
+        );
+
+        // The active theme is process-global; leave it as it was found.
+        vcx.update(|_, cx| crate::theme::ThemeState::set_by_name(cx, &original));
+    }
+
     /// The realistic open path: the modal is opened by its **keybinding**,
     /// dispatched while the terminal holds focus.
     #[gpui::test]
@@ -1141,4 +1264,267 @@ mod tests {
             );
         }
     }
+
+    // ── G-tier: relocated left-footer-slot actions (G1) ─────────────────
+    //
+    // plan.md §2 retires the footer's low-emphasis left slot and moves its
+    // four call sites into the body as flat tinted `body_action`s. A dropped
+    // click handler in that move produces a button that looks perfect and
+    // does nothing — invisible to a visual pass.
+    //
+    // WEAKENED from the plan's "click it through the real render tree": the
+    // `body_action`/`flat_text_btn_tinted` shell wires its click through a
+    // bare `.on_mouse_down`, never through gpui's `.debug_selector()` (a
+    // test-only, `id()`-distinct opt-in each call site would have to add) —
+    // so `VisualTestContext::debug_bounds` never sees `"ap-default"` and
+    // friends and a coordinate-based `simulate_click` has nothing to aim at.
+    // Adding `.debug_selector` calls at each site is a production-code edit,
+    // out of scope here. Instead this proves the same thing two other ways:
+    // (a) a source-text check that the exact `id` literal is passed to
+    // `body_action`/`flat_text_btn` alongside the exact `ModalClick` the plan
+    // names, so the two can't silently drift apart at the call site, and (b)
+    // driving that same `ModalClick` through `ModalLayer::on_click` — the
+    // real handler `body_action`'s closure calls, not a test double — and
+    // asserting the effect the plan documents.
+    #[gpui::test]
+    fn relocated_left_slot_actions_still_dispatch_their_click(cx: &mut TestAppContext) {
+        isolate_config_dir();
+        cx.update(boot_globals);
+        let keys = Rc::new(RefCell::new(Vec::new()));
+        let (root, vcx) = cx.add_window_view(|_, cx| build_root(cx, keys.clone()));
+        vcx.run_until_parked();
+        let modals = root.read_with(vcx, |r, _| r.modals.clone());
+
+        let confirm_src = include_str!("confirm.rs");
+        let theme_picker_src = include_str!("theme_picker.rs");
+        let settings_src = include_str!("settings.rs");
+        assert!(
+            confirm_src.contains("\"ap-default\"")
+                && confirm_src.contains("ModalClick::ToggleDefaultAgent"),
+            "confirm.rs must still wire ap-default to ToggleDefaultAgent"
+        );
+        assert!(
+            theme_picker_src.contains("\"tm-new\"")
+                && theme_picker_src.contains("ModalClick::ThemeNew"),
+            "theme_picker.rs must still wire tm-new to ThemeNew"
+        );
+        assert!(
+            settings_src.contains("\"se-archive\"")
+                && settings_src.contains("ModalClick::OpenArchiveGate"),
+            "settings.rs must still wire se-archive to OpenArchiveGate"
+        );
+        assert!(
+            settings_src.contains("\"set-updates-refresh\"")
+                && settings_src.contains("ModalClick::CheckUpdates"),
+            "settings.rs must still wire set-updates-refresh to CheckUpdates"
+        );
+
+        // ── AgentPicker "Default" (confirm.rs:566) → ToggleDefaultAgent ──
+        modals.update(vcx, |l, cx| {
+            l.open(
+                Modal::AgentPicker {
+                    project: "p".into(),
+                    wt_path: "/w".into(),
+                    sel: 0,
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        let before = vcx.update(|_, cx| cx.global::<SettingsState>().store.default_agent);
+        root.update_in(vcx, |_, window, cx| {
+            modals.update(cx, |l, cx| {
+                l.on_click(ModalClick::ToggleDefaultAgent, window, cx);
+            });
+        });
+        vcx.run_until_parked();
+        let after = vcx.update(|_, cx| cx.global::<SettingsState>().store.default_agent);
+        assert_ne!(
+            before, after,
+            "ap-default's ModalClick must still toggle the default agent"
+        );
+        modals.update(vcx, |l, cx| {
+            l.cancel(cx);
+        });
+        vcx.run_until_parked();
+
+        // ── ThemeManager "+ New theme" (theme_picker.rs:1110) → ThemeNew ─
+        modals.update(vcx, |l, cx| {
+            l.open(
+                Modal::ThemeManager {
+                    selected: 0,
+                    rename: None,
+                    rename_error: None,
+                    pending_delete: None,
+                    editor: None,
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        root.update_in(vcx, |_, window, cx| {
+            modals.update(cx, |l, cx| {
+                l.on_click(ModalClick::ThemeNew, window, cx);
+            });
+        });
+        vcx.run_until_parked();
+        assert!(
+            matches!(
+                modals.read_with(vcx, |l, _| l.slot().get().cloned()),
+                Some(Modal::ThemeManager {
+                    editor: Some(_),
+                    ..
+                })
+            ),
+            "tm-new's ModalClick must still open the theme editor"
+        );
+        modals.update(vcx, |l, cx| {
+            l.cancel(cx);
+        });
+        vcx.run_until_parked();
+
+        // ── ScriptsEditor "Archive project" (settings.rs:1658) → OpenArchiveGate ──
+        vcx.update(|_, cx| {
+            SettingsState::update(cx, |store| {
+                store.projects.push(grove_core::storage::Project {
+                    name: "p".into(),
+                    path: "/p".into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    theme: None,
+                    archived: false,
+                });
+            });
+        });
+        modals.update(vcx, |l, cx| {
+            l.open(
+                Modal::ScriptsEditor(Box::new(crate::modal::ScriptsEditorState {
+                    project_path: "/p".into(),
+                    name: "p".into(),
+                    setup: String::new(),
+                    run: String::new(),
+                    teardown: String::new(),
+                    renaming: false,
+                })),
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        root.update_in(vcx, |_, window, cx| {
+            modals.update(cx, |l, cx| {
+                l.on_click(ModalClick::OpenArchiveGate, window, cx);
+            });
+        });
+        vcx.run_until_parked();
+        assert!(
+            matches!(
+                modals.read_with(vcx, |l, _| l.slot().kind()),
+                Some(ModalKind::ArchiveProject)
+            ),
+            "se-archive's ModalClick must still open the archive gate"
+        );
+        modals.update(vcx, |l, cx| {
+            l.cancel(cx);
+        });
+        vcx.run_until_parked();
+
+        // ── Settings "Check for updates" (settings.rs:1103) → CheckUpdates ──
+        modals.update(vcx, |l, cx| {
+            l.open(Modal::Settings, cx);
+        });
+        vcx.run_until_parked();
+        // Asserted immediately, before `run_until_parked`: `check()` sets
+        // `UpgradeState::Checking` synchronously and only then spawns the
+        // background fetch, which — drained by `run_until_parked` — may
+        // already have resolved to `Error`/`UpToDate` by the time anything
+        // reads the state back, racing the very thing this test wants to
+        // observe.
+        let checking = root.update_in(vcx, |_, window, cx| {
+            modals.update(cx, |l, cx| {
+                l.on_click(ModalClick::CheckUpdates, window, cx);
+                matches!(
+                    l.upgrade.read(cx).state(),
+                    crate::entities::upgrade_state::UpgradeState::Checking
+                )
+            })
+        });
+        assert!(
+            checking,
+            "set-updates-refresh's ModalClick must still dispatch CheckUpdates"
+        );
+        vcx.run_until_parked();
+    }
+
+    /// The blocking-progress states are the sanctioned no-close-X cases
+    /// (plan.md §9.1.1): an in-flight removal or teardown cannot be safely
+    /// interrupted, so Escape must be refused rather than closing the modal
+    /// out from under the operation. Covers two of the three named states —
+    /// `RemoveProject { in_progress: true }` and `Teardown { stage: Removing
+    /// }` — both fully driven by pure `Modal` state; `Updating` is not
+    /// covered here because reaching its in-flight state requires
+    /// `Upgrade::start_update`, which needs a real `UpgradeState::Available`
+    /// release only a live network check can produce.
+    #[gpui::test]
+    fn blocking_progress_states_refuse_escape(cx: &mut TestAppContext) {
+        cx.update(boot_globals);
+        let keys = Rc::new(RefCell::new(Vec::new()));
+        let (root, vcx) = cx.add_window_view(|_, cx| build_root(cx, keys.clone()));
+        vcx.run_until_parked();
+        let modals = root.read_with(vcx, |r, _| r.modals.clone());
+
+        // RemoveProject, mid-removal.
+        modals.update(vcx, |l, cx| {
+            l.open(
+                Modal::RemoveProject {
+                    idx: 0,
+                    name: "p".into(),
+                    project_path: "/p".into(),
+                    worktrees: vec![],
+                    also_remove_worktrees: false,
+                    in_progress: true,
+                    done: 0,
+                    current: String::new(),
+                    errors: vec![],
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(
+            modals.read_with(vcx, |l, _| l.is_open()),
+            "escape must be refused while RemoveProject is in progress"
+        );
+
+        // Teardown, mid-`git worktree remove` — cancel is refused
+        // (`ModalSlot::cancel`'s `Removing` arm), no footer and no close X.
+        modals.update(vcx, |l, cx| {
+            l.open(
+                Modal::Teardown {
+                    wt_path: "/w".into(),
+                    project_path: "/p".into(),
+                    stage: crate::modal::TeardownStage::Removing,
+                    message: "Removing worktree…".into(),
+                    removal_started: true,
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(
+            modals.read_with(vcx, |l, _| l.is_open()),
+            "escape must be refused while Teardown is removing"
+        );
+    }
+
+    // G6 (Updating(Updated): Later before Restart, each dispatching its own
+    // action) is skipped: `Upgrade::state` is a private field with no
+    // test-only setter, and reaching `UpgradeState::Updated` for real only
+    // happens through `Upgrade::start_update`, which requires
+    // `self.available()` to already hold a release — itself only reachable
+    // through a live network `check()`. Driving it hermetically would need a
+    // production-code test hook, which is out of scope for a test-only
+    // change.
 }

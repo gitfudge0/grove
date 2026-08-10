@@ -17,9 +17,6 @@
 //! (`order`) beside a `HashMap` of the live entities, which also lets every
 //! pure bookkeeping rule below be unit-tested without spawning a PTY.
 
-// The registry's full surface lands in one go so Tasks 4-7 are mechanical.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -37,7 +34,8 @@ pub struct SessionId(u64);
 
 impl SessionId {
     /// Test/fixture constructor. Production ids only come from
-    /// [`SessionRegistry::next_id`].
+    /// [`SessionRegistry::next_id`], so only `#[cfg(test)]` code calls this.
+    #[allow(dead_code)]
     #[must_use]
     pub const fn from_raw(raw: u64) -> Self {
         Self(raw)
@@ -450,14 +448,6 @@ impl SessionRegistry {
     #[must_use]
     pub fn active_wt_shell_idx(&self, wt_path: &str) -> Option<usize> {
         self.wt_active.get(wt_path).copied()
-    }
-
-    /// The active shell's live entity, if any.
-    #[must_use]
-    pub fn active_wt_shell(&self, wt_path: &str) -> Option<&Entity<TerminalSession>> {
-        let i = self.active_wt_shell_idx(wt_path)?;
-        let id = self.wt.get(wt_path)?.get(i)?.id;
-        self.wt_terms.get(&id)
     }
 
     /// The entity of the shell at `idx`, for the view's per-shell cache.

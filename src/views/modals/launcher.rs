@@ -14,7 +14,7 @@
 
 use crate::views::rpx;
 use crate::views::tokens::*;
-use gpui::{div, prelude::*, AnyElement, App, Context, Window};
+use gpui::{div, prelude::*, px, AnyElement, App, Context, Window};
 use grove_core::agent::Agent;
 
 use crate::launcher::{self, PaletteRow, SwitchRow};
@@ -34,18 +34,6 @@ use crate::views::components::{
 /// the slot and the title. (`components::ICON_SLOT_W` is private, so its 24 is
 /// restated here — §14's "derived geometry as a named constant".)
 const ROW_TEXT_INDENT: f32 = SPACE_2XL + 24.0 + SPACE_LG;
-
-/// The palette's own panel width — wider than [`MODAL_W_XL`] (shared by
-/// every other modal) because its rows carry a title *and* a subtitle and
-/// need the extra horizontal room to avoid truncating both.
-const PALETTE_W: f32 = 760.0;
-
-/// The results zone's scroll viewport height. Every list now renders all of
-/// its rows and the zone scrolls the selection into view, so this is one free
-/// choice of how much palette the user sees — deliberately decoupled from any
-/// row count, which is what let the old row-window and this height drift apart
-/// and clip the selected row.
-const PALETTE_LIST_MAX_H: f32 = 452.0;
 
 /// Every `(proj, project_name, wt_path, agent)` combo the palette can list.
 fn combos(
@@ -729,9 +717,14 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
             .gap(rpx(SPACE_LG))
             .child(leading_glyph(st.view))
             .child(
-                gpui_component::input::Input::new(f.state())
-                    .appearance(false)
-                    .flex_1(),
+                div().flex_1().min_w_0().child(
+                    gpui_component::input::Input::new(f.state())
+                        .appearance(false)
+                        .pl(px(0.0))
+                        .pr(px(0.0))
+                        .py(px(0.0))
+                        .w_full(),
+                ),
             )
     });
 
@@ -752,7 +745,7 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     // `scroll_to_item`.
     let list_zone = div()
         .id("palette-list")
-        .max_h(rpx(PALETTE_LIST_MAX_H))
+        .max_h(rpx(MODAL_SCROLL_MAX_H))
         .overflow_y_scroll()
         .track_scroll(&layer.palette_scroll)
         .p(rpx(SPACE_2XL))
@@ -779,12 +772,17 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     };
 
     modal_panel(
-        PALETTE_W,
+        // Per DESIGN.md §8.5, every modal is capped at MODAL_W_XL ("nothing
+        // goes above this"); the palette's old extra width was retired the
+        // same way MODAL_W_LG2 was retired for Project Settings.
+        MODAL_W_XL,
         div()
             .children(search)
             .child(divider_h())
             .child(list_zone)
-            .child(divider_h())
+            // No `divider_h()` here: §9.1.1 puts a rule directly under the
+            // header and nowhere above a footer — `footer_container`'s
+            // `BG_STRIP` fill already draws that seam.
             .child(modal_footer_hints(hints)),
     )
     .into_any_element()

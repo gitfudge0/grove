@@ -15,9 +15,6 @@
 //! Plan 07's grid-tile scrim (`terminal.rs:1098`), **not** to this toast, which
 //! does not pulse — it stays unconsumed on purpose.
 
-// `set_error` has its first caller in Plan 08's modals.
-#![allow(dead_code)]
-
 use std::time::{Duration, Instant};
 
 use gpui::{Context, Task};
@@ -32,6 +29,9 @@ pub enum ToastKind {
 pub struct Toast {
     pub message: String,
     pub kind: ToastKind,
+    // Read only by `expired_at`, which `#[cfg(test)]` code is what currently
+    // calls; the live toast expires on its own gpui timer instead.
+    #[allow(dead_code)]
     pub created: Instant,
 }
 
@@ -48,6 +48,9 @@ impl Toast {
 
     /// Whether the toast should be dismissed as of `now`. Pure so expiry is
     /// unit-testable without waiting.
+    // The pure, injectable half of expiry — exercised only by this module's
+    // `#[cfg(test)]` table so it needs no sleeping; production uses the timer.
+    #[allow(dead_code)]
     #[must_use]
     pub fn expired_at(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.created) >= Self::ttl(self.kind)
@@ -114,12 +117,15 @@ impl ToastState {
 
     /// The pure half of [`Self::clear_if_current`], so supersession is
     /// testable without a gpui `App`.
+    // Exercised only by this module's `#[cfg(test)]` supersession assertions.
+    #[allow(dead_code)]
     #[must_use]
     pub const fn timer_still_owns_the_toast(&self, seq: u64) -> bool {
         seq == self.seq
     }
 
     /// Test/pure seam: record a toast without arming a timer.
+    #[allow(dead_code)]
     fn set_without_timer(&mut self, message: &str, kind: ToastKind) -> u64 {
         self.seq = self.seq.wrapping_add(1);
         self.current = Some(Toast {

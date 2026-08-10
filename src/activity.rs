@@ -16,8 +16,6 @@
 //! next door in `entities/activity_store.rs`; this module stays pure and
 //! gpui-free so every rule above is testable without an `App`.
 
-// Several items have consumers only in Plan 07's views.
-#![allow(dead_code)]
 // The four timing constants are ported verbatim from `src/gui/activity.rs`,
 // units included — they are read against each other (`INPUT_QUIET` tracks
 // `WORKING_RECENT` on purpose), so rewriting one as `from_mins` to satisfy a

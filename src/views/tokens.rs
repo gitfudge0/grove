@@ -2,7 +2,9 @@
 //! [`crate::views::rpx`]). See DESIGN.md for the rationale and the mapping
 //! rules; every new call site must use a token rather than a bare literal.
 
-// Not every token has a caller yet.
+// File-level by design: this module is a design-token scale. A scale is
+// declared in full so call sites pick a step rather than invent a literal;
+// unused steps are what makes it a scale.
 #![allow(dead_code)]
 
 // ── spacing: gaps, padding, margins ──────────────────────────────────────
@@ -66,6 +68,35 @@ pub const RADIUS_CONTROL: f32 = 4.0;
 pub const RADIUS_GROUP: f32 = 6.0;
 pub const RADIUS_PANEL: f32 = 12.0;
 pub const RADIUS_FULL: f32 = 999.0;
+/// The theme-swatch chip's corner — below [`RADIUS_CONTROL`], because a swatch
+/// is a colour sample a few pixels wide and the control radius on a 10px chip
+/// reads as a circle. On the scale rather than a `theme_picker` local so the
+/// radius vocabulary (2 swatches · 4 controls/cards · 6 rows/groups/fields ·
+/// 12 panel) is declared in one place (plan.md §3).
+pub const SWATCH_RADIUS: f32 = 2.0;
+
+// ── text-field geometry (plan.md §1, variant C1c "boxed + focus ring") ────
+/// A boxed field's horizontal padding, both edges.
+pub const FIELD_PX: f32 = SPACE_XL;
+/// A boxed field's vertical padding, top and bottom. With a [`TEXT_BODY`] mono
+/// run plus the box's 1px border on each side this measures ~22px tall — the
+/// control tier one notch above [`CONTROL_H`], which is what a field needs to
+/// carry a border and a ring without crowding its own text.
+pub const FIELD_PY: f32 = 2.0;
+
+// ── panel drop-shadow geometry (plan.md §3) ──────────────────────────────
+// Paired with `crate::theme::PANEL_SHADOW`, whose alpha forks the same way.
+// A light theme's shadow is lighter *and* tighter: a long, soft shadow that
+// reads as depth on a dark page reads as smudge on a bright one.
+
+/// A panel shadow's vertical offset on dark themes.
+pub const PANEL_SHADOW_Y: f32 = 12.0;
+/// A panel shadow's blur radius on dark themes.
+pub const PANEL_SHADOW_BLUR: f32 = 40.0;
+/// [`PANEL_SHADOW_Y`] on light themes.
+pub const PANEL_SHADOW_Y_LIGHT: f32 = 6.0;
+/// [`PANEL_SHADOW_BLUR`] on light themes.
+pub const PANEL_SHADOW_BLUR_LIGHT: f32 = 24.0;
 
 // ── control heights ──────────────────────────────────────────────────────
 /// Flat icon/text buttons and tile headers.
@@ -95,13 +126,19 @@ pub const ROW_LINE_GAP: f32 = SPACE_MD;
 /// overflowing it. This constant is never a fixed height and never an `h()`.
 pub const ROW_MIN_H: f32 = CONTROL_H + ROW_PY * 2.0;
 
-/// Both settings modals' body scrolls before the panel outgrows a laptop
-/// viewport. Rows vary in height now (they size by content, not a fixed
-/// row height), so this is no longer "N whole rows" — it is a cap on the
-/// body, expressed as a multiple of [`ROW_MIN_H`] so the clip line still
-/// lands near a row boundary rather than at an arbitrary pixel. It is a
-/// **maximum**, not a layout: real content may be shorter or (per-row)
-/// taller than this multiple would suggest.
+/// The scroll cap for **every** scrolling modal body — the one height at which
+/// a panel's body starts scrolling rather than growing past a laptop viewport.
+/// Settings was merely the first caller; a modal that scrolls a list, a
+/// changelog or a results column caps here too, because how tall a panel may
+/// grow is a property of the *window*, not of what a given modal happens to
+/// show. (The per-modal caps this replaced — a 360, a 420, a 452 — were three
+/// answers to one question, and their spread was drift, not intent.)
+///
+/// Rows vary in height (they size by content, not a fixed row height), so this
+/// is not "N whole rows" — it is a cap on the body, expressed as a multiple of
+/// [`ROW_MIN_H`] so the clip line still lands near a row boundary rather than
+/// at an arbitrary pixel. It is a **maximum**, not a layout: real content may
+/// be shorter, or (per-row) taller, than the multiple suggests.
 pub const MODAL_SCROLL_MAX_H: f32 = ROW_MIN_H * 12.0;
 
 /// The settings-row label column's fixed width, wide enough for the longest

@@ -112,6 +112,11 @@ pub struct Workspace {
     /// the same reason, and additionally needs *this* entity (it counts the
     /// running native sessions and runs [`Workspace::shutdown`]).
     close_hook_registered: bool,
+    /// The first-run check runs on the first frame and never again — a latch
+    /// in the same family as `close_hook_registered` above. Without it every
+    /// later render would re-open the wizard the moment the user skipped it,
+    /// because `store.onboarded` only flips on the *last* step.
+    first_run_checked: bool,
     /// Last frame's header-segment decision per session, so
     /// [`grid::fit_segments`] has a `prev` to apply hysteresis against. A
     /// render-time memo, not app state: it is deliberately *not* on
@@ -368,6 +373,7 @@ impl Workspace {
             last_body_focused: None,
             activation_observed: false,
             close_hook_registered: false,
+            first_run_checked: false,
             last_pty_dims: (24, 80),
             prev_pty_dims: None,
             tmux_discovery_frames: 0,
@@ -555,6 +561,38 @@ impl Workspace {
             })
             .unwrap_or(true)
         });
+    }
+
+    /// First run: a config that has never completed the wizard opens it, on
+    /// the very first frame, before anything else can take the keyboard.
+    ///
+    /// `store.onboarded` is the whole condition — not "has no projects". A
+    /// user who finished setup and later removed every project is *not* a
+    /// fresh install, which is exactly what the field's own contract says
+    /// (`grove-core/src/storage.rs:105-110`). The flag is written by the
+    /// wizard's two exits — "Skip setup" and the final step — so a skipped
+    /// wizard stays skipped across launches.
+    ///
+    /// The modal is a **screen replacement**, not a panel over the workspace
+    /// (DESIGN.md §9.1.1's first exception), so opening it from the first
+    /// frame — ahead of `render`'s `focused_once` block, which is gated off
+    /// while a modal is open — is what keeps the terminal from stealing focus
+    /// out from under it on the same frame. Mirrors iced starting the flow
+    /// from app construction (`src/app/onboarding.rs`, whose step sequence
+    /// begins at `Welcome`).
+    ///
+    /// The latch is set on the first *call*, not on the open: the check is
+    /// what must happen once, so a user who dismisses the wizard by any route
+    /// other than its own two exits does not get it back on the next repaint.
+    fn first_run_check(&mut self, cx: &mut Context<Self>) {
+        if self.first_run_checked {
+            return;
+        }
+        self.first_run_checked = true;
+        if cx.global::<SettingsState>().store.onboarded {
+            return;
+        }
+        self.open_modal(crate::modal::Modal::onboarding(), cx);
     }
 
     // ── tmux sidecar discovery and reattach (Task 5) ────────────────────
@@ -2011,6 +2049,10 @@ impl Render for Workspace {
             self.register_close_hook(window, cx);
         }
 
+        // First run: a config that has never been through the wizard gets it
+        // now. Self-latching, so a later frame never re-opens it.
+        self.first_run_check(cx);
+
         // The agent pane's dims, cached for reattach (the element itself
         // resizes what it paints; a session that is attached but not on
         // screen still needs a truthful size).
@@ -2465,6 +2507,119 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── the first-run gate (DESIGN.md §9.1.1's screen-replacement case) ──
+
+    /// Points `grove_core::storage` at a private directory for this process so
+    /// the first-run test below — which boots a real `SettingsState` and a
+    /// real `Workspace` — can never write the developer's real
+    /// `projects.json`. Mirrors the helper of the same name in
+    /// `views/modals/mod.rs` and `settings.rs`.
+    fn isolate_config_dir() {
+        use std::sync::Once;
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            let dir =
+                std::env::temp_dir().join(format!("grove-gpui-workspace-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&dir);
+            std::env::set_var("GROVE_CONFIG_DIR", &dir);
+        });
+    }
+
+    /// The globals `Workspace::new` and `Workspace::render` read, seeded from a
+    /// store whose only interesting field is `onboarded`.
+    fn boot_globals(onboarded: bool, cx: &mut App) {
+        let store = grove_core::storage::Store {
+            onboarded,
+            ..grove_core::storage::Store::default()
+        };
+        cx.set_global(SettingsState::new(store));
+        cx.set_global(crate::theme::ThemeState::new(
+            false,
+            crate::theme::DEFAULT_DARK_THEME.to_string(),
+            crate::theme::DEFAULT_LIGHT_THEME.to_string(),
+        ));
+        cx.set_global(ZoomState::new(1.0));
+        // Seeded for the same reason `app.rs:136-140` seeds it: a session can
+        // read it before the frame that writes it exists.
+        cx.set_global(crate::zoom::CurrentPtyDims::default());
+        gpui_component::init(cx);
+        cx.bind_keys(crate::keymap::bindings());
+    }
+
+    /// The wiring: a config that has never been through the wizard opens it, a
+    /// config that has does not — and once it is out of the way it stays out,
+    /// even though `onboarded` is still false. That last leg is what
+    /// `first_run_checked` buys; the wizard's own exits are what flip the flag.
+    ///
+    /// Driven through [`Workspace::first_run_check`] on a windowless entity
+    /// rather than through a rendered window, because `Workspace::render`'s
+    /// first frame also spawns the pinned home terminal — a **real** PTY on a
+    /// real bridge thread, which gpui's test scheduler rejects as
+    /// non-deterministic. The latch lives inside `first_run_check` precisely so
+    /// the whole decision is reachable without a frame; that `render` calls it
+    /// is asserted by [`the_first_frame_runs_the_first_run_check`] below.
+    #[gpui::test]
+    fn a_fresh_config_opens_the_wizard_and_only_once(cx: &mut gpui::TestAppContext) {
+        use crate::modal::ModalKind;
+
+        for onboarded in [false, true] {
+            isolate_config_dir();
+            cx.update(|cx| boot_globals(onboarded, cx));
+            let ws = cx.update(|cx| cx.new(Workspace::new));
+            let modals = cx.update(|cx| ws.read(cx).modals.clone());
+
+            cx.update(|cx| ws.update(cx, Workspace::first_run_check));
+            let opened = cx.update(|cx| modals.read(cx).kind());
+            if onboarded {
+                assert_eq!(
+                    opened, None,
+                    "an onboarded config must not be shown the wizard"
+                );
+                continue;
+            }
+            assert_eq!(
+                opened,
+                Some(ModalKind::Onboarding),
+                "onboarded=false must open the first-run wizard"
+            );
+
+            // Dismiss it *without* going through "Skip setup", so `onboarded`
+            // is still false: only the latch can keep it shut.
+            cx.update(|cx| modals.update(cx, |l, cx| l.close(cx)));
+            cx.update(|cx| ws.update(cx, Workspace::first_run_check));
+            assert!(
+                !cx.update(|cx| modals.read(cx).is_open()),
+                "a later frame must not re-open the wizard"
+            );
+        }
+    }
+
+    /// The other half of the wiring, guarded the same way
+    /// [`every_exit_path_flushes_first`] is: the first-run check is actually
+    /// reached from `render`. Without this, the test above would keep passing
+    /// against a `first_run_check` nothing ever calls — which is the exact bug
+    /// it exists to close.
+    ///
+    /// Only the source *above* `mod tests` counts, or the assertion's own
+    /// string literal would satisfy it.
+    #[test]
+    fn the_first_frame_runs_the_first_run_check() {
+        let src = include_str!("workspace.rs");
+        let marker = "\n#[cfg(test)]\nmod tests {";
+        assert!(
+            src.contains(marker),
+            "the test-module marker moved; this guard would be reading itself"
+        );
+        let production = src.split(marker).next().unwrap_or(src);
+        assert!(
+            production
+                .lines()
+                .any(|l| l.trim() == "self.first_run_check(cx);"),
+            "Workspace::render no longer calls first_run_check, so the \
+             onboarding wizard is unreachable again"
+        );
+    }
 
     /// **The** structural guarantee (carried decision 7): there are exactly
     /// three process-terminating paths — the close request, the quit confirm

@@ -19,18 +19,10 @@ use crate::theme as c;
 use super::{Modal, ModalClick, ModalDispatch, ModalEvent, ModalLayer};
 use crate::modal::{AddProjectStep, OnboardStep};
 use crate::views::components::{
-    body_text, click_action, click_checkbox, click_row, divider_h, modal_action_sized, modal_body,
-    modal_footer_hints, modal_header_row, modal_panel, mono, note_text, section_header, status_dot,
-    ui, ModalBtn, RowDensity,
+    body_action, body_text, card, click_action, click_checkbox, click_row, divider_h, field_box,
+    modal_body, modal_footer, modal_header_slotted, modal_panel, mono, note_text, section_header,
+    status_dot, ui, ModalBtn, RowDensity,
 };
-
-/// Rows of the directory match list kept on screen at once.
-const DIR_ROWS: usize = 6;
-
-/// Height of one directory-match row and of the wizard's field rows. Layout
-/// geometry local to this wizard (§8.4), sitting between [`CONTROL_H`] (22) and
-/// the palette row (44).
-const FIELD_H: f32 = 28.0;
 
 impl ModalLayer {
     /// The wizard's clicks, plus every click Tasks 5-6's modals raise that is
@@ -481,13 +473,18 @@ pub fn render(
     }
 }
 
-/// The step-1 directory match list, driven by the typed path. Rows are
-/// windowed to `DIR_ROWS` around the selection, with "↑N more" / "↓N more"
-/// overflow indicators when the list runs past the window
-/// (`src/gui/add_project.rs`'s `dir_matches`).
-fn dir_list(path: &str, sel: usize, dispatch: &ModalDispatch) -> impl IntoElement {
+/// The step-1 directory match list, driven by the typed path. Every match
+/// renders; the shared `MODAL_SCROLL_MAX_H` cap scrolls the overflow, and
+/// `layer.list_scroll` keeps the arrowed-to row in view — retiring the old
+/// `DIR_ROWS` window and its "↑N more" / "↓N more" indicators.
+fn dir_list(
+    layer: &ModalLayer,
+    path: &str,
+    sel: usize,
+    dispatch: &ModalDispatch,
+) -> impl IntoElement {
     let entries = add_project::list_dirs(path);
-    let mut list = div().flex().flex_col().gap(rpx(SPACE_XS));
+    let list = div().flex().flex_col().gap(rpx(SPACE_XS));
     if entries.is_empty() {
         return list.child(div().px(rpx(SPACE_LG)).py(rpx(SPACE_SM)).child(ui(
             "No matches",
@@ -495,90 +492,77 @@ fn dir_list(path: &str, sel: usize, dispatch: &ModalDispatch) -> impl IntoElemen
             c::FG_MUTE(),
         )));
     }
-    let offset = crate::launcher::scroll_offset_for(0, sel, DIR_ROWS, entries.len());
-    let above = offset;
-    let below = entries.len().saturating_sub(offset + DIR_ROWS);
-    if above > 0 {
-        list = list.child(div().px(rpx(SPACE_LG)).child(mono(
-            format!("↑{above} more"),
-            TEXT_SMALL,
-            c::FG_MUTE(),
-        )));
-    }
-    for (i, entry) in entries.iter().enumerate().skip(offset).take(DIR_ROWS) {
+    let mut rows = Vec::new();
+    for (i, entry) in entries.iter().enumerate() {
         let name = format!("{}/", add_project::path_basename(entry));
-        list = list.child(click_row(
-            gpui::SharedString::from(format!("dir-{i}")),
-            i == sel,
-            RowDensity::Compact,
-            dispatch,
-            ModalClick::WizardPickDir(i),
-            div()
-                .flex_1()
-                .h(rpx(FIELD_H))
-                .flex()
-                .items_center()
+        rows.push(
+            click_row(
+                gpui::SharedString::from(format!("dir-{i}")),
+                i == sel,
+                RowDensity::Card,
+                dispatch,
+                ModalClick::WizardPickDir(i),
                 // A directory name is a token, not language (§5.2).
-                .child(mono(
+                mono(
                     name,
                     TEXT_BODY,
                     if i == sel { c::FG() } else { c::FG_DIM() },
-                )),
-        ));
+                ),
+            )
+            .min_h(rpx(ROW_MIN_H))
+            .px(rpx(ROW_PX))
+            .py(rpx(ROW_PY))
+            .into_any_element(),
+        );
     }
-    if below > 0 {
-        list = list.child(div().px(rpx(SPACE_LG)).child(mono(
-            format!("↓{below} more"),
-            TEXT_SMALL,
-            c::FG_MUTE(),
-        )));
+    // The card *is* the scroll container: `scroll_to_item` addresses the
+    // tracked element's direct children, and `card` interleaves a divider
+    // after every row but the last, so row `k` sits at child `2k`.
+    if sel < entries.len() {
+        layer.scroll_list_to(0, sel, sel * 2);
     }
-    list
+    list.child(
+        card(rows)
+            .id("dir-list")
+            .max_h(rpx(MODAL_SCROLL_MAX_H))
+            .overflow_y_scroll()
+            .track_scroll(&layer.list_scroll),
+    )
 }
 
-/// A restyled text-input container matching the main-branch wizard's field
-/// chrome: blends with the modal panel (`BG_RAIL`), radius 4, `[8, 12]`
-/// padding, 13px text, and a focus-reactive border — `c::MAGENTA()` while the
-/// field is focused, `c::BORDER()` otherwise.
-fn field(layer: &ModalLayer, idx: usize, window: &Window, cx: &App) -> Option<impl IntoElement> {
+/// A [`field_box`]-wrapped `Input` bound to `layer.fields[idx]`, or
+/// `None` if that field doesn't exist (§9.1.1 rule 6). Every wizard/onboarding
+/// single-line text field goes through this one helper so the `Input`'s own
+/// insets stay zeroed per `field_box`'s doc comment — the five chained
+/// calls there are a contract, not a style choice.
+fn field_row(layer: &ModalLayer, idx: usize, window: &Window, cx: &App) -> Option<Div> {
     layer.fields.get(idx).map(|f| {
         let focused = f.state().read(cx).focus_handle(cx).is_focused(window);
-        div()
-            .w_full()
-            .px(rpx(SPACE_2XL))
-            .py(rpx(SPACE_LG))
-            .rounded(rpx(RADIUS_CONTROL))
-            .bg(c::BG_RAIL())
-            .border_1()
-            .border_color(if focused { c::MAGENTA() } else { c::BORDER() })
-            // Both wizard fields hold tokens — a filesystem path and a project
-            // name that becomes a directory — so the run is mono (§5.2). The
-            // family and size are pinned here because the inner `Input` renders
-            // its own text and inherits the container's text style.
-            .font(gpui::font(crate::fonts::MONO_FAMILY))
-            .text_size(rpx(TEXT_TITLE))
-            .child(
-                gpui_component::input::Input::new(f.state())
-                    .appearance(false)
-                    .w_full(),
-            )
+        field_box(focused).child(
+            gpui_component::input::Input::new(f.state())
+                .appearance(false)
+                .pl(gpui::px(0.0))
+                .pr(gpui::px(0.0))
+                .py(gpui::px(0.0))
+                .w_full(),
+        )
     })
 }
 
-/// The wizard's shared header: a title in `c::MAGENTA()` plus a right-aligned
-/// "Step {n} of 2" (`src/gui/add_project.rs`'s `view` header row).
-fn wizard_header(step_no: u8) -> Div {
-    modal_header_row(
-        div()
-            .flex()
-            .items_center()
-            .child(ui("Add project", TEXT_TITLE, c::MAGENTA()).flex_1())
-            // A step counter is a count, so mono (§5.2).
-            .child(mono(
-                format!("Step {step_no} of 2"),
-                TEXT_SMALL,
-                c::FG_MUTE(),
-            )),
+/// The wizard's shared header: a title in `c::MAGENTA()`, a right-aligned
+/// "Step {n} of 2" in the header's `meta` slot, and a close X dispatching
+/// [`ModalClick::Cancel`] (`src/gui/add_project.rs`'s `view` header row).
+/// `close_id` must be unique within the modal (gpui bleeds hover state
+/// between duplicate ids, §9.1).
+fn wizard_header(step_no: u8, close_id: &'static str, dispatch: &ModalDispatch) -> Div {
+    modal_header_slotted(
+        Some(close_id),
+        "Add project",
+        c::MAGENTA(),
+        // A step counter is a count, so mono (§5.2).
+        Some(mono(format!("Step {step_no} of 2"), TEXT_SMALL, c::FG_MUTE()).into_any_element()),
+        None,
+        Some(dispatch),
     )
 }
 
@@ -594,18 +578,14 @@ fn pick_source(
     } else {
         "Browse for folder…"
     };
-    let dispatch_browse = std::rc::Rc::clone(dispatch);
-    // The shared action button (§13: no re-implemented button shells).
-    // `ModalBtn::Accent` carries the whole colour axis — BG_HL fill, accent
-    // border at rest brightening to full accent on hover — so nothing colour-
-    // related is chained here. Only the hero's shape is, which the shared
-    // component genuinely cannot express.
-    let browse = modal_action_sized(
+    // No bordered buttons inside bodies (plan.md §3) — the hero button becomes
+    // a flat magenta-tinted body action, still wired to the same dispatch.
+    let browse = body_action(
         "ap-browse-hero",
         browse_label,
-        ModalBtn::Accent,
-        TEXT_TITLE,
-        move |window, cx| dispatch_browse(ModalClick::WizardBrowse, window, cx),
+        c::MAGENTA(),
+        dispatch,
+        ModalClick::WizardBrowse,
     )
     .w_full()
     .py(rpx(SPACE_XL))
@@ -639,40 +619,37 @@ fn pick_source(
         .child(browse)
         .child(drop_hint)
         .child(or_divider);
-    if let Some(f) = field(layer, 0, window, cx) {
+    if let Some(f) = field_row(layer, 0, window, cx) {
         body = body.child(f);
     }
-    body = body.child(dir_list(&st.path, st.dir_sel, dispatch));
+    body = body.child(dir_list(layer, &st.path, st.dir_sel, dispatch));
     if let Some(note) = &st.note {
-        body = body.child(ui(note.clone(), TEXT_BODY, c::RED()));
+        body = body.child(note_text(note.clone()));
     }
-    body = body.child(
-        div()
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_LG))
-            .child(div().flex_1())
-            .child(click_action(
-                // Distinct from the details step's Cancel: gpui bleeds hover
-                // state between duplicate ids (§9.1).
-                "ap-cancel-src",
-                "Cancel",
-                ModalBtn::Plain,
-                dispatch,
-                ModalClick::Cancel,
-            )),
-    );
     modal_panel(
         MODAL_W_XL,
         div()
-            .child(wizard_header(1))
+            .child(wizard_header(1, "ap-close-src", dispatch))
+            .child(divider_h())
             .child(modal_body(body))
-            .child(modal_footer_hints(&[
-                ("tab", "complete"),
-                ("↑↓", "select"),
-                ("⏎", "continue"),
-                ("esc", "cancel"),
-            ])),
+            .child(modal_footer(
+                &[
+                    ("tab", "complete"),
+                    ("↑↓", "select"),
+                    ("⏎", "continue"),
+                    ("esc", "cancel"),
+                ],
+                vec![click_action(
+                    // Distinct from the details step's Cancel: gpui bleeds
+                    // hover state between duplicate ids (§9.1).
+                    "ap-cancel-src",
+                    "Cancel",
+                    ModalBtn::Plain,
+                    dispatch,
+                    ModalClick::Cancel,
+                )
+                .into_any_element()],
+            )),
     )
     .into_any_element()
 }
@@ -702,10 +679,10 @@ fn details(
                 .flex_1()
                 .overflow_hidden(),
         )
-        .child(click_action(
+        .child(body_action(
             "ap-change",
             "Change",
-            ModalBtn::Plain,
+            c::CYAN(),
             dispatch,
             ModalClick::WizardBack,
         ));
@@ -738,15 +715,15 @@ fn details(
         .flex()
         .flex_col()
         .gap(rpx(SPACE_2XL))
-        // Section labels are mono (§5.2).
-        .child(mono("Folder", TEXT_SMALL, c::FG_MUTE()))
+        // Section labels are section_header (§5.2, §9.1.1 rule 7).
+        .child(section_header("FOLDER", SPACE_2XL, SPACE_SM, 0.0))
         .child(chip)
         .child(badge)
         .child(
             div()
                 .flex()
                 .items_center()
-                .child(mono("Name", TEXT_SMALL, c::FG_MUTE()))
+                .child(section_header("NAME", SPACE_2XL, SPACE_SM, 0.0))
                 .child(div().flex_1())
                 // Quotes a directory name, so mono (§5.2).
                 .child(mono(
@@ -755,7 +732,7 @@ fn details(
                     c::FG_MUTE(),
                 )),
         );
-    if let Some(f) = field(layer, 0, window, cx) {
+    if let Some(f) = field_row(layer, 0, window, cx) {
         body = body.child(f);
     }
     if st.git_branch.is_none() {
@@ -777,37 +754,37 @@ fn details(
         }
     }
     if let Some(note) = &st.note {
-        body = body.child(ui(note.clone(), TEXT_BODY, c::RED()));
+        body = body.child(note_text(note.clone()));
     }
-    body = body.child(
-        div()
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_LG))
-            .child(div().flex_1())
-            .child(click_action(
-                // See the pick-source step's Cancel — ids must be unique per
-                // view (§9.1).
-                "ap-cancel-name",
-                "Cancel",
-                ModalBtn::Plain,
-                dispatch,
-                ModalClick::Cancel,
-            ))
-            .child(click_action(
-                "ap-add",
-                "Add project",
-                ModalBtn::Primary,
-                dispatch,
-                ModalClick::WizardNext,
-            )),
-    );
     modal_panel(
         MODAL_W_XL,
         div()
-            .child(wizard_header(2))
+            .child(wizard_header(2, "ap-close-name", dispatch))
+            .child(divider_h())
             .child(modal_body(body))
-            .child(modal_footer_hints(&[("⏎", "add"), ("esc", "back")])),
+            .child(modal_footer(
+                &[("⏎", "add"), ("esc", "back")],
+                vec![
+                    click_action(
+                        // See the pick-source step's Cancel — ids must be
+                        // unique per view (§9.1).
+                        "ap-cancel-name",
+                        "Cancel",
+                        ModalBtn::Plain,
+                        dispatch,
+                        ModalClick::Cancel,
+                    )
+                    .into_any_element(),
+                    click_action(
+                        "ap-add",
+                        "Add project",
+                        ModalBtn::Primary,
+                        dispatch,
+                        ModalClick::WizardNext,
+                    )
+                    .into_any_element(),
+                ],
+            )),
     )
     .into_any_element()
 }
@@ -1019,13 +996,13 @@ fn onboarding(
                 // hand-spaced with literal U+0020 (§5.4).
                 .child(section_header("REPOSITORY OR FOLDER", SPACE_2XL, SPACE_SM, 0.0));
             let mut path_row = div().flex().items_center().gap(rpx(SPACE_LG));
-            if let Some(f) = field(layer, 0, window, cx) {
+            if let Some(f) = field_row(layer, 0, window, cx) {
                 path_row = path_row.child(div().flex_1().child(f));
             }
-            path_row = path_row.child(click_action(
+            path_row = path_row.child(body_action(
                 "ob-browse",
                 if layer.picker_open { "Waiting…" } else { "Browse…" },
-                ModalBtn::Plain,
+                c::MAGENTA(),
                 dispatch,
                 ModalClick::WizardBrowse,
             ));
@@ -1034,12 +1011,12 @@ fn onboarding(
             if !path.trim().is_empty() {
                 d = d
                     .child(section_header("MATCHES", SPACE_2XL, SPACE_SM, 0.0))
-                    .child(dir_list(path, *dir_sel, dispatch));
+                    .child(dir_list(layer, path, *dir_sel, dispatch));
             }
 
             if name.is_some() {
                 d = d.child(section_header("NAME", SPACE_2XL, SPACE_SM, 0.0));
-                if let Some(f) = field(layer, 1, window, cx) {
+                if let Some(f) = field_row(layer, 1, window, cx) {
                     d = d.child(f);
                 }
             }
@@ -1069,31 +1046,29 @@ fn onboarding(
                 Some(p) => {
                     d = d.child(body_text(format!("Launch an agent inside {}.", p.name)));
                     let agents = super::confirm::available_agents();
-                    let mut list = div().flex().flex_col();
+                    let mut rows = Vec::new();
                     for (i, a) in agents.iter().enumerate() {
                         let active = i == *agent_sel;
-                        list = list.child(click_row(
-                            gpui::SharedString::from(format!("ob-agent-{i}")),
-                            active,
-                            RowDensity::Compact,
-                            dispatch,
-                            ModalClick::OnboardPickAgent(i),
-                            ui(
-                                a.label().to_string(),
-                                TEXT_TITLE,
-                                if active { c::FG() } else { c::FG_DIM() },
-                            ),
-                        ));
+                        rows.push(
+                            click_row(
+                                gpui::SharedString::from(format!("ob-agent-{i}")),
+                                active,
+                                RowDensity::Card,
+                                dispatch,
+                                ModalClick::OnboardPickAgent(i),
+                                ui(
+                                    a.label().to_string(),
+                                    TEXT_TITLE,
+                                    if active { c::FG() } else { c::FG_DIM() },
+                                ),
+                            )
+                            .min_h(rpx(ROW_MIN_H))
+                            .px(rpx(ROW_PX))
+                            .py(rpx(ROW_PY))
+                            .into_any_element(),
+                        );
                     }
-                    d = d.child(
-                        div()
-                            .w_full()
-                            .rounded(rpx(RADIUS_CONTROL))
-                            .border_1()
-                            .border_color(c::BORDER())
-                            .bg(c::BG_STRIP())
-                            .child(list),
-                    );
+                    d = d.child(card(rows));
                 }
                 None => {
                     d = d.child(body_text(

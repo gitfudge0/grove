@@ -5,11 +5,6 @@
 //! No gpui types. The directory match list is a pure function of the typed
 //! path, so it is tested against a temp tree, never against `$HOME`.
 
-// The wizard's pure surface is ported whole from the iced oracle; the live-edit
-// setters are driven by gpui-component's own `InputState` rather than by hand,
-// so they have no caller here.
-#![allow(dead_code)]
-
 use fs_err as fs;
 
 use crate::modal::{AddProjectState, AddProjectStep};
@@ -118,18 +113,15 @@ pub fn opened() -> AddProjectState {
 
 /// Live edit of the step-1 path buffer (`add_project.rs:146-155`). Guarded to
 /// the pick-source step, and it resets the match cursor and clears the note.
+// Exercised only by this module's `#[cfg(test)]` step-guard assertions; the live
+// wizard edits its buffers through gpui-component's own `InputState`.
+#[allow(dead_code)]
 pub fn set_path(st: &mut AddProjectState, s: String) {
     if st.step == AddProjectStep::PickSource {
         st.path = s;
         st.dir_sel = 0;
         st.note = None;
     }
-}
-
-/// Live edit of the step-2 name field (`add_project.rs:157-162`).
-pub fn set_name(st: &mut AddProjectState, s: String) {
-    st.name = s;
-    st.note = None;
 }
 
 /// `add_project.rs:164-178`.

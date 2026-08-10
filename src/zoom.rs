@@ -1,9 +1,5 @@
 //! UI zoom: the clamp/step table and the `set_rem_size` application point.
 
-// The zoomed cell metrics are Plan 04's inputs; they have no caller until the
-// terminal element lands.
-#![allow(dead_code)]
-
 use crate::fonts;
 
 /// Bounds, step and reset target, from `src/gui/metrics.rs:46-49`.
@@ -64,6 +60,9 @@ impl ZoomState {
     }
 
     /// The rem size this zoom level implies.
+    // Exercised only by this module's `#[cfg(test)]` assertions; the live window
+    // sets its rem size from `Zoom` at the root instead.
+    #[allow(dead_code)]
     pub fn rem_size(&self) -> f32 {
         REM_BASE * self.zoom
     }
@@ -113,6 +112,8 @@ pub fn snap(zoom: f32) -> f32 {
 }
 
 /// One step of zoom in the given direction.
+// Exercised only by this module's `#[cfg(test)]` clamp ladder.
+#[allow(dead_code)]
 pub fn step(zoom: f32, delta: f32) -> f32 {
     snap(zoom + delta)
 }

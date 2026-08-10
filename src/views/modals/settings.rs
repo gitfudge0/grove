@@ -23,11 +23,11 @@ use crate::theme as c;
 use super::{Modal, ModalClick, ModalDispatch, ModalLayer, SettingToggle};
 use crate::modal::{ScriptsEditorState, ThemePickerReturn, ThemePickerScope};
 use crate::views::components::{
-    body_text, card, click_action, click_checkbox, click_row, divider_h, field_underline,
-    flat_icon_btn, flat_text_btn, flat_text_btn_tinted, keycap, modal_body, modal_checkbox,
-    modal_footer_hints, modal_footer_row, modal_header, modal_header_row, modal_panel, mono,
-    row_sublabel, section_header, seg_button, seg_group, status_dot, status_gutter, ui, ModalBtn,
-    OnToggle, RowDensity, SegSide, SublabelTone,
+    body_action, body_text, card, click_action, click_checkbox, click_row, divider_h,
+    flat_icon_btn, flat_text_btn, keycap, modal_body, modal_checkbox, modal_footer,
+    modal_footer_hints, modal_header_slotted, modal_header_slotted_custom, modal_panel, mono,
+    row_sublabel, section_header, seg_button, seg_group, status_dot, status_dot_hollow,
+    status_gutter, ui, ModalBtn, OnToggle, RowDensity, SegSide, SublabelTone,
 };
 use crate::views::workspace::Workspace;
 use crate::zoom::{ZoomState, ZOOM_DEFAULT, ZOOM_STEP};
@@ -38,9 +38,6 @@ use crate::zoom::{ZoomState, ZOOM_DEFAULT, ZOOM_STEP};
 // FIELD_LABEL_COL_W, STATUS_DOT_COL_W, ICON_BTN_W, ICON_BTN_W_SM,
 // STEPPER_BTN_W and CARD_LABEL_INDENT now live in `tokens.rs` (via the
 // `use ... tokens::*` above) — both modals in this file share them.
-
-/// The changelog release list.
-const CHANGELOG_SCROLL_MAX_H: f32 = 420.0;
 
 /// The trailing "Set default" / "Default" column in a Tools row. Fixed so the
 /// rows do not reflow when the pill swaps for the button (§13).
@@ -577,7 +574,7 @@ pub fn render(
 ) -> AnyElement {
     match layer.slot().get() {
         Some(Modal::Settings) => settings_modal(layer, dispatch, cx),
-        Some(Modal::ShortcutOverlay) => shortcut_overlay(layer.state.read(cx).screen()),
+        Some(Modal::ShortcutOverlay) => shortcut_overlay(layer.state.read(cx).screen(), dispatch),
         Some(Modal::ScriptsEditor(st)) => scripts_editor(layer, st, dispatch, window, cx),
         Some(Modal::Updating) => updating_modal(layer, dispatch, cx),
         Some(Modal::Changelog { .. }) => changelog_modal(layer, dispatch, cx),
@@ -686,53 +683,37 @@ fn setting_row_link(
     .py(rpx(ROW_PY))
 }
 
-/// A settings row carrying a borderless [`field_underline`] input rather than
-/// a segmented control or checkbox — the three lifecycle-script rows. On the
-/// same grid [`setting_row_grid`] draws (leading [`status_gutter`], [`ROW_PX`]/
-/// [`ROW_PY`] padding, [`ROW_MIN_H`] as a floor), but with the label pinned to
-/// [`FIELD_LABEL_COL_W`] rather than flexing, so three fields' inputs all
-/// start at the same x. The input column is `flex_1().min_w_0()` so a long
-/// value shrinks and clips at the field's own right edge (via
-/// [`field_underline`]'s `overflow_hidden`) rather than overflowing into the
-/// card's border.
+/// A settings row carrying an underline-style input (matching the
+/// rename-title field's shape) rather than a segmented control or checkbox —
+/// the three lifecycle-script rows. Stacked
+/// top-to-bottom rather than the two-column gutter layout other rows use: a
+/// single title line carrying the label and its sublabel side by side, then
+/// the full-width input — all left-aligned to the row's own [`ROW_PX`]/
+/// [`ROW_PY`] padding with no extra indent.
 fn setting_row_field(
     label: &'static str,
     sublabel: Option<(&'static str, SublabelTone)>,
-    status: Option<AnyElement>,
     input: AnyElement,
 ) -> Div {
-    let field_line = div()
-        .flex()
-        .items_center()
-        .gap(rpx(SPACE_LG))
-        .child(
-            div()
-                .w(rpx(FIELD_LABEL_COL_W))
-                .flex_shrink_0()
-                .child(ui(label, TEXT_BODY, c::FG())),
-        )
-        .child(div().flex_1().min_w_0().child(input));
+    let mut title_line =
+        div()
+            .flex()
+            .items_baseline()
+            .gap(rpx(SPACE_SM))
+            .child(ui(label, TEXT_BODY, c::FG()));
+    if let Some((sub, tone)) = sublabel {
+        title_line = title_line.child(row_sublabel(sub, tone));
+    }
 
-    let mut col = div()
-        .flex_1()
-        .min_w_0()
+    let col = div()
         .flex()
         .flex_col()
         .gap(rpx(ROW_LINE_GAP))
-        .child(field_line);
-    if let Some((sub, tone)) = sublabel {
-        col = col.child(row_sublabel(sub, tone));
-    }
-
-    div()
-        .flex()
-        .items_start()
         .w_full()
-        .px(rpx(ROW_PX))
-        .py(rpx(ROW_PY))
-        .min_h(rpx(ROW_MIN_H))
-        .child(status_gutter(status))
-        .child(col)
+        .child(title_line)
+        .child(input);
+
+    div().w_full().px(rpx(ROW_PX)).py(rpx(ROW_PY)).child(col)
 }
 
 /// A [`card`] plus the small uppercase label that names it. The label is
@@ -770,18 +751,17 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let tmux_on = store.tmux_enabled.unwrap_or(false);
     let skip_perms_on = store.dangerously_skip_permissions_enabled.unwrap_or(false);
 
-    // ── header: title + close only — the save story moved to the footer's
-    // left cluster (§16a) ───────────────────────────────────────────────────
-    let header = modal_header_row(
-        div()
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_XL))
-            .child(ui("Settings", TEXT_TITLE, c::MAGENTA()).flex_1())
-            .child(flat_icon_btn("set-close", "close", ICON_BTN_W, ICON_MD, {
-                let dispatch = std::rc::Rc::clone(dispatch);
-                move |window, cx| dispatch(ModalClick::Cancel, window, cx)
-            })),
+    // ── header: title, close, and the version string riding the header's
+    // meta slot — the interactive update/restart actions moved into the body
+    // as flat `body_action`s (the left footer slot retired, plan.md §2). ────
+    let current_ver = env!("CARGO_PKG_VERSION");
+    let header = modal_header_slotted(
+        Some("set-close"),
+        "Settings",
+        c::MAGENTA(),
+        Some(mono(format!("v{current_ver}"), TEXT_SMALL, c::FG_DIM()).into_any_element()),
+        None,
+        Some(dispatch),
     );
 
     // ── appearance ───────────────────────────────────────────────────────
@@ -1072,49 +1052,45 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         .overflow_y_scroll()
         .child(sections);
 
+    // ── the update status/refresh row: used to live in the footer's left
+    // slot, which retired (plan.md §2). The version string moved to the
+    // header's meta slot; this row keeps the status text, the interactive
+    // "check updates" action (now a flat `body_action`) and the save-story
+    // caption, all in the body. ─────────────────────────────────────────
+    let updates_row = div()
+        .flex()
+        .items_center()
+        .gap(rpx(SPACE_XL))
+        .child(update_status_line(layer, cx))
+        .child(body_action(
+            "set-updates-refresh",
+            "Check for updates",
+            c::CYAN(),
+            dispatch,
+            ModalClick::CheckUpdates,
+        ))
+        .child(ui("Changes save automatically.", TEXT_SMALL, c::FG_MUTE()))
+        .into_any_element();
+
     let mut body_zone = div()
         .flex()
         .flex_col()
         .gap(rpx(SPACE_XL))
-        .child(scroll_body);
+        .child(scroll_body)
+        .child(updates_row);
     body_zone = body_zone.children(update_actions(layer, dispatch, cx));
 
-    // ── footer: left cluster = context (version/status/refresh, plus the
-    // save story that used to live in the header — §16a) and no destructive
-    // action here; spacer; right cluster = the esc hint immediately left of
-    // the one button (§16). No rule above this strip — `footer_container`'s
-    // `BG_STRIP` fill is already the zone edge (§7). ───────────────────────
-    let current_ver = env!("CARGO_PKG_VERSION");
-    let footer = modal_footer_row(
-        div()
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_XL))
-            .child(mono(format!("v{current_ver}"), TEXT_SMALL, c::FG_DIM()))
-            .child(update_status_line(layer, cx))
-            .child(flat_icon_btn(
-                "set-updates-refresh",
-                "restart",
-                ICON_BTN_W_SM,
-                ICON_SM,
-                {
-                    let dispatch = std::rc::Rc::clone(dispatch);
-                    move |window, cx| dispatch(ModalClick::CheckUpdates, window, cx)
-                },
-            ))
-            .child(ui("Changes save automatically.", TEXT_SMALL, c::FG_MUTE()))
-            .child(div().flex_1())
-            .child(crate::views::components::footer_hint("esc", "close"))
-            .child(flat_text_btn(
-                "set-changelog",
-                "View changelog",
-                TEXT_BODY,
-                SPACE_LG,
-                {
-                    let dispatch = std::rc::Rc::clone(dispatch);
-                    move |window, cx| dispatch(ModalClick::OpenChangelog, window, cx)
-                },
-            )),
+    // ── footer: statusbar scheme — the esc hint left, the one affirmative
+    // button right (plan.md §2). ────────────────────────────────────────
+    let footer = modal_footer(
+        &[("esc", "close")],
+        vec![
+            flat_text_btn("set-changelog", "View changelog", TEXT_BODY, SPACE_LG, {
+                let dispatch = std::rc::Rc::clone(dispatch);
+                move |window, cx| dispatch(ModalClick::OpenChangelog, window, cx)
+            })
+            .into_any_element(),
+        ],
     );
 
     modal_panel(
@@ -1142,9 +1118,7 @@ fn tool_row(st: &ToolStatus, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     let dot = if st.installed {
         status_dot(DOT_MD, c::GREEN())
     } else {
-        status_dot(DOT_MD, gpui::transparent_black())
-            .border_1()
-            .border_color(c::FG_MUTE())
+        status_dot_hollow(DOT_MD, c::FG_MUTE())
     };
     let mut row = div()
         .flex()
@@ -1168,10 +1142,10 @@ fn tool_row(st: &ToolStatus, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     let slot = if is_default {
         slot.child(keycap(mono("Default", TEXT_MICRO, c::FG_DIM())))
     } else if st.installed {
-        slot.child(click_action(
+        slot.child(body_action(
             "set-default-agent",
             "Set default",
-            ModalBtn::Plain,
+            c::CYAN(),
             dispatch,
             ModalClick::SetDefaultAgent(st.agent),
         ))
@@ -1223,26 +1197,26 @@ fn update_actions(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Vec
         .gap(rpx(SPACE_LG))
         .px(rpx(SPACE_LG));
     if upgrade.method() != grove_core::upgrade::InstallMethod::Unknown {
-        row = row.child(click_action(
+        row = row.child(body_action(
             "up-now",
             "Update now",
-            ModalBtn::Primary,
+            c::CYAN(),
             dispatch,
             ModalClick::StartUpdate,
         ));
     }
     row = row
-        .child(click_action(
+        .child(body_action(
             "up-skip",
             "Skip this version",
-            ModalBtn::Plain,
+            c::CYAN(),
             dispatch,
             ModalClick::SkipVersion,
         ))
-        .child(click_action(
+        .child(body_action(
             "up-copy",
             "Copy URL",
-            ModalBtn::Plain,
+            c::CYAN(),
             dispatch,
             ModalClick::CopyReleaseUrl,
         ));
@@ -1271,7 +1245,7 @@ fn update_actions(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Vec
 
 /// Generated from `keymap::SHORTCUTS`, filtered by the current screen, plus
 /// exactly two static rows (recorded ambiguity 6).
-fn shortcut_overlay(screen: keymap::Screen) -> AnyElement {
+fn shortcut_overlay(screen: keymap::Screen, dispatch: &ModalDispatch) -> AnyElement {
     let visible: Vec<&ShortcutDef> = SHORTCUTS
         .iter()
         .filter(|d| !d.display_keys.is_empty())
@@ -1337,15 +1311,28 @@ fn shortcut_overlay(screen: keymap::Screen) -> AnyElement {
         ))
         .child(static_row("esc", "Close modals"));
 
+    let header = modal_header_slotted(
+        Some("so-close"),
+        "Keyboard shortcuts",
+        c::MAGENTA(),
+        None,
+        None,
+        Some(dispatch),
+    );
+
+    let scroll_body = div()
+        .id("shortcut-overlay-scroll")
+        .max_h(rpx(MODAL_SCROLL_MAX_H))
+        .overflow_y_scroll()
+        .child(body);
+
     modal_panel(
         MODAL_W_XL,
         div()
-            .child(modal_header("Keyboard shortcuts", c::MAGENTA()))
-            .child(modal_body(body))
-            .child(modal_footer_hints(&[(
-                "esc",
-                "close (or press the same chord again)",
-            )])),
+            .child(header)
+            .child(divider_h())
+            .child(modal_body(scroll_body))
+            .child(modal_footer_hints(&[("esc", "close")])),
     )
     .into_any_element()
 }
@@ -1510,28 +1497,30 @@ fn scripts_editor(
         .into_any_element()
     };
 
-    let close_btn = flat_icon_btn("se-close", "close", ICON_BTN_W, ICON_MD, {
-        let dispatch = std::rc::Rc::clone(dispatch);
-        move |window, cx| dispatch(ModalClick::Cancel, window, cx)
-    });
-
     let title_row = div()
         .flex()
         .items_center()
         .gap(rpx(SPACE_SM))
-        .w_full()
+        .flex_1()
+        .min_w_0()
         .child(title_el)
         .child(title_controls)
-        .child(close_btn);
+        .into_any_element();
 
-    let header_content = div()
-        .flex()
-        .flex_col()
-        .gap(rpx(SPACE_XS))
-        .w_full()
-        .child(title_row)
-        .child(mono(st.project_path.clone(), TEXT_SMALL, c::FG_MUTE()));
-    let header = modal_header_row(header_content);
+    // The rename-capable title (an `Input` swapped in for the plain string,
+    // with its own pencil/check/discard controls) cannot ride
+    // `modal_header_slotted`'s plain-`SharedString` title slot, so it rides
+    // `modal_header_slotted_custom`'s `title_content` slot instead — the
+    // header's own close button (`dispatch: Some`) renders once, at the same
+    // position every other modal uses, rather than a second one embedded in
+    // this row.
+    let header = modal_header_slotted_custom(
+        None,
+        title_row,
+        None,
+        Some(mono(st.project_path.clone(), TEXT_SMALL, c::FG_MUTE()).into_any_element()),
+        Some(dispatch),
+    );
 
     // ── Project theme: a settings_card_block on the shared row grid. Enabled
     // is a setting_row_link (the same drill-in shape "App theme" uses);
@@ -1574,20 +1563,19 @@ fn scripts_editor(
             return div().into_any_element();
         };
         let focused = f.state().read(cx).focus_handle(cx).is_focused(window);
-        let has_value = !f.value(cx).trim().is_empty();
-        let status: AnyElement = if has_value {
-            status_dot(DOT_SM, c::GREEN()).into_any_element()
-        } else {
-            div()
-                .size(rpx(DOT_SM))
-                .rounded_full()
-                .border_1()
-                .border_color(c::FG_MUTE())
-                .into_any_element()
-        };
 
-        let input = field_underline(focused)
+        let input = div()
             .id(("se-script-row", i as u64))
+            .w_full()
+            .min_w_0()
+            .border_b_1()
+            .border_color(if focused {
+                c::MAGENTA()
+            } else {
+                c::BORDER_SOFT()
+            })
+            .font(gpui::font(crate::fonts::MONO_FAMILY))
+            .text_size(rpx(TEXT_BODY))
             .child(
                 gpui_component::input::Input::new(f.state())
                     .appearance(false)
@@ -1602,13 +1590,7 @@ fn scripts_editor(
             )
             .into_any_element();
 
-        setting_row_field(
-            label,
-            Some((desc, SublabelTone::Normal)),
-            Some(status),
-            input,
-        )
-        .into_any_element()
+        setting_row_field(label, Some((desc, SublabelTone::Normal)), input).into_any_element()
     };
 
     let lifecycle_rows = vec![
@@ -1639,13 +1621,26 @@ fn scripts_editor(
     // ── the scrolling body: the same MODAL_SCROLL_MAX_H cap App Settings
     // uses, so a project with a long theme list still fits a laptop
     // viewport. ─────────────────────────────────────────────────────────────
+    // The footer's left slot retired (plan.md §2) — "Archive project" moves
+    // into the body as a red-tinted flat `body_action`, sitting under the
+    // lifecycle caption where a destructive, subordinate action reads as
+    // such rather than competing with the footer's Cancel/Save pair.
+    let archive_action = body_action(
+        "se-archive",
+        "Archive project",
+        c::RED(),
+        dispatch,
+        ModalClick::OpenArchiveGate,
+    );
+
     let sections = div()
         .flex()
         .flex_col()
         .gap(rpx(SPACE_3XL))
         .child(project_theme_section)
         .child(lifecycle_section)
-        .child(lifecycle_caption);
+        .child(lifecycle_caption)
+        .child(archive_action);
 
     let scroll_body = div()
         .id("scripts-editor-scroll")
@@ -1653,44 +1648,31 @@ fn scripts_editor(
         .overflow_y_scroll()
         .child(sections);
 
-    // ── Footer: left cluster = the destructive action (Archive project, now
-    // a flat_text_btn_tinted rather than a bare `ui()` run with a raw
-    // `on_mouse_down`); spacer; right cluster = the esc hint immediately left
-    // of the Cancel/Save pair (§16). The two save models stay different —
-    // this modal keeps its explicit Cancel/Save rather than adopting App
-    // Settings' autosave. ───────────────────────────────────────────────────
-    let footer = modal_footer_row(
-        div()
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_LG))
-            .child(flat_text_btn_tinted(
-                "se-archive",
-                "Archive project",
-                TEXT_BODY,
-                SPACE_SM,
-                c::RED(),
-                {
-                    let dispatch = std::rc::Rc::clone(dispatch);
-                    move |window, cx| dispatch(ModalClick::OpenArchiveGate, window, cx)
-                },
-            ))
-            .child(div().flex_1())
-            .child(crate::views::components::footer_hint("esc", "discard"))
-            .child(click_action(
+    // ── Footer: statusbar scheme — the esc hint left, Cancel/Save right
+    // (§9.1.1). The two save models stay different — this modal keeps its
+    // explicit Cancel/Save rather than adopting App Settings' autosave. The
+    // hint reads "cancel" (not "discard"): the same escape gesture the
+    // Cancel button already names, so hint and button agree. ───────────────
+    let footer = modal_footer(
+        &[("esc", "cancel")],
+        vec![
+            click_action(
                 "se-cancel",
                 "Cancel",
                 ModalBtn::Plain,
                 dispatch,
                 ModalClick::Cancel,
-            ))
-            .child(click_action(
+            )
+            .into_any_element(),
+            click_action(
                 "se-save",
                 "Save",
                 ModalBtn::Primary,
                 dispatch,
                 ModalClick::Save,
-            )),
+            )
+            .into_any_element(),
+        ],
     );
 
     modal_panel(
@@ -1729,31 +1711,13 @@ fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                 .child(body_text(label))
                 .into_any_element()
         }
-        UpgradeState::Updated => div()
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_LG))
-            .child(body_text("Update installed. Restart Grove to apply"))
-            .child(
-                div()
-                    .flex()
-                    .gap(rpx(SPACE_LG))
-                    .child(click_action(
-                        "up-restart",
-                        "Restart",
-                        ModalBtn::Primary,
-                        dispatch,
-                        ModalClick::RestartApp,
-                    ))
-                    .child(click_action(
-                        "up-later",
-                        "Later",
-                        ModalBtn::Plain,
-                        dispatch,
-                        ModalClick::Cancel,
-                    )),
-            )
-            .into_any_element(),
+        // The Restart/Later pair moved to the footer (§9.1.1) — the body now
+        // carries only the sentence.
+        UpgradeState::Updated => {
+            body_text("Update installed. Restart Grove to apply").into_any_element()
+        }
+        // The Close button moved to the footer (§9.1.1) — the body now
+        // carries only the message and the error text.
         UpgradeState::UpdateFailed(e) => div()
             .flex()
             .flex_col()
@@ -1762,25 +1726,73 @@ fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
             // `UpgradeError`'s own `Display`, deliberately unchanged
             // (recorded ambiguity 7).
             .child(ui(e.clone(), TEXT_SMALL, c::FG_MUTE()))
-            .child(click_action(
-                "up-close",
-                "Close",
-                ModalBtn::Plain,
-                dispatch,
-                ModalClick::Cancel,
-            ))
             .into_any_element(),
         _ => div().child(body_text("Updating…")).into_any_element(),
     };
 
+    // ── header: the one named exception to "every panel gets a close X"
+    // (§9.1.1) — `Updating(_)` genuinely refuses Escape while a stage is in
+    // flight (`escape_closes`), so a close X there would be a dead control.
+    // Every other state (`Updated`, `UpdateFailed`, and any rare fallback)
+    // gets one; `"up-header-close"` stays distinct from the `UpdateFailed`
+    // body's own `"up-close"` button id. ────────────────────────────────────
+    let header = match &state {
+        UpgradeState::Updating(_) => {
+            modal_header_slotted(None, "Updating Grove", c::MAGENTA(), None, None, None)
+        }
+        _ => modal_header_slotted(
+            Some("up-header-close"),
+            "Updating Grove",
+            c::MAGENTA(),
+            None,
+            None,
+            Some(dispatch),
+        ),
+    };
+
     let panel = div()
-        .child(modal_header("Updating Grove", c::MAGENTA()))
+        .child(header)
+        .child(divider_h())
         .child(modal_body(body));
     let panel = match &state {
-        // No hint while it runs: the key is refused, and a footer that says
-        // otherwise would be a lie.
+        // No footer while it runs: the key is refused, and a footer that
+        // says otherwise would be a lie.
         UpgradeState::Updating(_) => panel,
-        UpgradeState::Updated => panel.child(modal_footer_hints(&[("esc", "later")])),
+        // Later (Plain) first, Restart (Primary) last — the app's only
+        // primary-first footer until now (plan.md, "Fix Updating(Updated)
+        // button order").
+        UpgradeState::Updated => panel.child(modal_footer(
+            &[("esc", "close")],
+            vec![
+                click_action(
+                    "up-later",
+                    "Later",
+                    ModalBtn::Plain,
+                    dispatch,
+                    ModalClick::Cancel,
+                )
+                .into_any_element(),
+                click_action(
+                    "up-restart",
+                    "Restart",
+                    ModalBtn::Primary,
+                    dispatch,
+                    ModalClick::RestartApp,
+                )
+                .into_any_element(),
+            ],
+        )),
+        UpgradeState::UpdateFailed(_) => panel.child(modal_footer(
+            &[("esc", "close")],
+            vec![click_action(
+                "up-close",
+                "Close",
+                ModalBtn::Primary,
+                dispatch,
+                ModalClick::Cancel,
+            )
+            .into_any_element()],
+        )),
         _ => panel.child(modal_footer_hints(&[("esc", "close")])),
     };
     modal_panel(MODAL_W_SM, panel).into_any_element()
@@ -1835,7 +1847,7 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
             }
             div()
                 .id("changelog-scroll")
-                .max_h(rpx(CHANGELOG_SCROLL_MAX_H))
+                .max_h(rpx(MODAL_SCROLL_MAX_H))
                 .overflow_y_scroll()
                 .child(list)
                 .into_any_element()
@@ -1845,22 +1857,27 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
     modal_panel(
         MODAL_W_LG,
         div()
-            .child(modal_header("Changelog", c::MAGENTA()))
-            .child(modal_body(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(rpx(SPACE_LG))
-                    .child(body)
-                    .child(click_action(
-                        "cl-close",
-                        "Back to Settings",
-                        ModalBtn::Plain,
-                        dispatch,
-                        ModalClick::Cancel,
-                    )),
+            .child(modal_header_slotted(
+                Some("cl-close"),
+                "Changelog",
+                c::MAGENTA(),
+                None,
+                None,
+                Some(dispatch),
             ))
-            .child(modal_footer_hints(&[("esc", "back to settings")])),
+            .child(divider_h())
+            .child(modal_body(body))
+            .child(modal_footer(
+                &[("esc", "back")],
+                vec![click_action(
+                    "cl-back",
+                    "Back",
+                    ModalBtn::Primary,
+                    dispatch,
+                    ModalClick::Cancel,
+                )
+                .into_any_element()],
+            )),
     )
     .into_any_element()
 }

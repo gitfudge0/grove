@@ -8,10 +8,6 @@
 //! :746-796, `kick_off_remove_project` :797-856, `advance_remove_project`
 //! :857-906) and `src/app/teardown.rs:11-40,187-199`.
 
-// The chrome, the input wrapper and the archive/teardown helpers are built
-// once here and consumed by Tasks 4-6 of gpui rewrite plan 08.
-#![allow(dead_code)]
-
 use crate::views::rpx;
 use crate::views::tokens::*;
 use gpui::{div, prelude::*, AnyElement, App, Context};
@@ -23,8 +19,9 @@ use crate::theme as c;
 use super::{Modal, ModalClick, ModalDispatch, ModalEvent, ModalLayer};
 use crate::modal::TeardownStage;
 use crate::views::components::{
-    body_text, click_action, click_checkbox, icon_btn, modal_body, modal_footer_hints,
-    modal_header, modal_header_with_close, modal_panel, mono, status_dot, ui, ModalBtn,
+    body_action, body_text, card, click_action, click_action_enabled, click_checkbox, divider_h,
+    icon_btn, modal_body, modal_footer, modal_footer_hints, modal_header_slotted,
+    modal_header_with_close, modal_panel, mono, note_text, status_dot, ui, ModalBtn,
 };
 
 // ── local layout geometry (§8.4: geometry lives in the owning module) ─────
@@ -41,10 +38,6 @@ const ROW_ACTION_SLOT_W: f32 = CONTROL_H * 2.0 + SPACE_XS;
 /// Vertical breathing room for an inline "nothing here" block inside a modal
 /// body — one modal zone padding step above and below.
 const EMPTY_STATE_PY: f32 = SPACE_3XL * 2.0;
-
-/// The scrolling archived-project list's ceiling, past which the panel would
-/// outgrow a short window.
-const LIST_MAX_H: f32 = 360.0;
 
 /// The teardown modal's embedded PTY viewport: tall enough for a script's
 /// last ~15 lines without pushing the stage message off a laptop screen.
@@ -554,7 +547,7 @@ fn remove_project_modal(
         current,
         errors,
     } = *progress;
-    let body = if in_progress {
+    let body: AnyElement = if in_progress {
         let status = if done >= worktree_count {
             "Finishing…".to_string()
         } else {
@@ -572,23 +565,20 @@ fn remove_project_modal(
             (done as f32 / worktree_count as f32).clamp(0.0, 1.0)
         }));
         if !errors.is_empty() {
-            list = list.child(ui(
-                format!("{} worktree(s) failed to remove", errors.len()),
-                TEXT_SMALL,
-                c::RED(),
-            ));
+            list = list.child(note_text(format!(
+                "{} worktree(s) failed to remove",
+                errors.len()
+            )));
         }
-        list
+        list.into_any_element()
     } else {
         let mut d = div()
             .flex()
             .flex_col()
             .gap(rpx(SPACE_XL))
-            .child(ui(
-                format!("'{name}' will be unregistered from Grove. Its sessions will be ended."),
-                TEXT_TITLE,
-                c::FG_DIM(),
-            ))
+            .child(body_text(format!(
+                "'{name}' will be unregistered from Grove. Its sessions will be ended."
+            )))
             .child(ui(
                 "Running sessions for this project will be stopped.",
                 TEXT_BODY,
@@ -611,46 +601,66 @@ fn remove_project_modal(
             ));
         }
         if !errors.is_empty() {
-            d = d.child(ui(
-                format!("{} worktree(s) failed to remove", errors.len()),
-                TEXT_SMALL,
-                c::RED(),
-            ));
+            d = d.child(note_text(format!(
+                "{} worktree(s) failed to remove",
+                errors.len()
+            )));
         }
-        d.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(rpx(SPACE_LG))
-                .child(div().flex_1())
-                .child(click_action(
+        d.into_any_element()
+    };
+
+    // Cancel is refused while `in_progress` — an in-flight `git worktree
+    // remove` cannot be interrupted, so the close X would be dead there
+    // (§9.1.1 exception). It comes back once the confirm stage is showing.
+    let header = modal_header_slotted(
+        Some("rm-proj-close"),
+        "Remove project",
+        c::RED(),
+        None,
+        None,
+        if in_progress { None } else { Some(dispatch) },
+    );
+
+    let mut panel = div()
+        .child(header)
+        .child(divider_h())
+        .child(modal_body(body));
+    if !in_progress {
+        // The delete-worktrees hint only makes sense when the checkbox it
+        // names is actually on screen (`worktree_count > 0`).
+        let hints: &[(&'static str, &'static str)] = if worktree_count > 0 {
+            &[
+                ("y", "remove"),
+                ("space", "toggle delete"),
+                ("esc", "cancel"),
+            ]
+        } else {
+            &[("y", "remove"), ("esc", "cancel")]
+        };
+        panel = panel.child(modal_footer(
+            hints,
+            vec![
+                click_action(
                     "rm-proj-no",
                     "Cancel",
                     ModalBtn::Plain,
                     dispatch,
                     ModalClick::Cancel,
-                ))
-                .child(click_action(
+                )
+                .into_any_element(),
+                click_action(
                     "rm-proj-yes",
                     "Remove",
                     ModalBtn::Danger,
                     dispatch,
                     ModalClick::RemoveProjectConfirm,
-                )),
-        )
-    };
-
-    let mut panel = div()
-        .child(modal_header("Remove project", c::RED()))
-        .child(modal_body(body));
-    if !in_progress {
-        // Cancel is refused while busy — no footer, no key, is offered then.
-        panel = panel.child(modal_footer_hints(&[
-            ("y", "remove"),
-            ("space", "toggle delete"),
-            ("esc", "cancel"),
-        ]));
+                )
+                .into_any_element(),
+            ],
+        ));
     }
+    // `in_progress` keeps no footer at all: Cancel is refused while busy, so
+    // there is nothing to offer.
 
     // MODAL_W_LG, not the default MODAL_W_MD: the removal-progress body prints
     // an untruncated worktree name above the progress bar, and at 480 a long
@@ -688,7 +698,7 @@ fn archive_project_modal(
 ) -> AnyElement {
     let blocked = !sessions.is_empty();
 
-    let body = if blocked {
+    let body: AnyElement = if blocked {
         let mut strip = div().flex().flex_col().gap(rpx(SPACE_SM));
         for (wt, agent, running) in sessions {
             strip = strip.child(
@@ -717,10 +727,10 @@ fn archive_project_modal(
                 .items_center()
                 .justify_center()
                 .pt(rpx(SPACE_SM))
-                .child(click_action(
+                .child(body_action(
                     "arch-kill",
                     format!("Kill all sessions ({})", sessions.len()),
-                    ModalBtn::Danger,
+                    c::RED(),
                     dispatch,
                     ModalClick::ArchiveKillSessions,
                 )),
@@ -748,6 +758,7 @@ fn archive_project_modal(
                 TEXT_SMALL,
                 c::FG_MUTE(),
             ))
+            .into_any_element()
     } else {
         div()
             .flex()
@@ -757,61 +768,45 @@ fn archive_project_modal(
                 "'{name}' will be hidden from the sidebar. Nothing is deleted — its scripts, \
              theme, and worktrees all stay exactly as they are."
             )))
-    };
-
-    let archive_btn: AnyElement = if blocked {
-        div()
-            .px(rpx(SPACE_2XL))
-            .py(rpx(SPACE_MD))
-            .rounded(rpx(RADIUS_CONTROL))
-            .border_1()
-            .border_color(c::BORDER_SOFT())
-            .child(ui("Archive", TEXT_BODY, c::FG_MUTE()))
             .into_any_element()
-    } else {
-        click_action(
-            "arch-yes",
-            "Archive",
-            ModalBtn::Primary,
-            dispatch,
-            ModalClick::ArchiveConfirm,
-        )
-        .into_any_element()
     };
 
-    let mut footer_row = div()
-        .flex()
-        .items_center()
-        .gap(rpx(SPACE_3XL))
-        .child(crate::views::components::footer_hint("y", "archive"))
-        .child(crate::views::components::footer_hint("n", "cancel"))
-        .child(div().flex_1());
-    if blocked {
-        footer_row = footer_row.child(ui(
-            "Archive is unavailable while sessions are running.",
-            TEXT_SMALL,
-            c::FG_MUTE(),
+    let panel_content = div()
+        .child(modal_header_with_close(
+            "arch-close",
+            format!("Archive '{name}'?"),
+            c::AMBER(),
+            dispatch,
+        ))
+        .child(divider_h())
+        .child(modal_body(body))
+        .child(modal_footer(
+            &[("y", "archive"), ("n", "cancel")],
+            vec![
+                click_action(
+                    "arch-no",
+                    "Cancel",
+                    ModalBtn::Plain,
+                    dispatch,
+                    ModalClick::Cancel,
+                )
+                .into_any_element(),
+                click_action_enabled(
+                    "arch-yes",
+                    "Archive",
+                    ModalBtn::Primary,
+                    !blocked,
+                    dispatch,
+                    ModalClick::ArchiveConfirm,
+                ),
+            ],
         ));
-    }
-    let footer = crate::views::components::modal_footer_row(
-        footer_row
-            .child(click_action(
-                "arch-no",
-                "Cancel",
-                ModalBtn::Plain,
-                dispatch,
-                ModalClick::Cancel,
-            ))
-            .child(archive_btn),
-    );
 
-    modal_panel(
-        MODAL_W_SM,
-        div()
-            .child(modal_header(format!("Archive '{name}'?"), c::AMBER()))
-            .child(modal_body(body))
-            .child(footer),
-    )
+    if blocked {
+        modal_panel(MODAL_W_LG, panel_content)
+    } else {
+        modal_panel(MODAL_W_SM, panel_content)
+    }
     .into_any_element()
 }
 
@@ -861,46 +856,50 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
             .child(ui("No archived projects.", TEXT_BODY, c::FG_MUTE()))
             .into_any_element()
     } else {
-        let mut list = div()
-            .id("archived-projects-list")
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_SM))
-            .max_h(rpx(LIST_MAX_H))
-            .overflow_y_scroll();
-        for (idx, name, path) in &rows {
-            let slot = div()
-                .w(rpx(ROW_ACTION_SLOT_W))
-                .flex()
-                .items_center()
-                .gap(rpx(SPACE_XS))
-                .child(archive_mini(
-                    "arch-restore",
-                    "restore",
-                    c::CYAN(),
-                    c::BG_HOVER(),
-                    dispatch,
-                    ModalClick::RestoreArchived(*idx),
-                ))
-                .child(archive_mini(
-                    "arch-delete",
-                    "trash",
-                    c::RED(),
-                    c::RED_WASH(),
-                    dispatch,
-                    ModalClick::DeleteArchived(*idx),
-                ));
+        // §9.2 / rule 9: a `card()` of non-clickable rows, the same shape
+        // `setting_row_link` (`settings.rs`) uses for its container. Unlike a
+        // settings link, this row has no single natural destination — it
+        // holds two opposite, position-addressed actions (Restore, Delete)
+        // behind their own mini buttons. A row-level click here previously
+        // dispatched Restore in addition to whichever mini button was
+        // clicked, since nothing stopped propagation: a Delete click ran
+        // Delete then Restore against a list that had already shifted. The
+        // mini buttons already cover both actions, so the row itself stays
+        // inert rather than adding a redundant, colliding click target.
+        let card_rows: Vec<AnyElement> = rows
+            .iter()
+            .map(|(idx, name, path)| {
+                let slot = div()
+                    .w(rpx(ROW_ACTION_SLOT_W))
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_XS))
+                    .child(archive_mini(
+                        "arch-restore",
+                        "restore",
+                        c::CYAN(),
+                        c::BG_HOVER(),
+                        dispatch,
+                        ModalClick::RestoreArchived(*idx),
+                    ))
+                    .child(archive_mini(
+                        "arch-delete",
+                        "trash",
+                        c::RED(),
+                        c::RED_WASH(),
+                        dispatch,
+                        ModalClick::DeleteArchived(*idx),
+                    ));
 
-            list = list.child(
                 div()
+                    .id(gpui::SharedString::from(format!("arch-row-{idx}")))
                     .flex()
                     .items_center()
                     .gap(rpx(SPACE_XL))
                     .w_full()
-                    .px(rpx(SPACE_XL))
-                    .py(rpx(SPACE_MD))
-                    .rounded(rpx(RADIUS_GROUP))
-                    .hover(|s| s.bg(c::BG_HL()))
+                    .min_h(rpx(ROW_MIN_H))
+                    .px(rpx(ROW_PX))
+                    .py(rpx(ROW_PY))
                     .child(
                         ui(name.clone(), TEXT_TITLE, c::FG())
                             .flex_1()
@@ -915,23 +914,30 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
                         .flex_1()
                         .overflow_hidden(),
                     )
-                    .child(slot),
-            );
-        }
-        list.into_any_element()
-    };
+                    .child(slot)
+                    .into_any_element()
+            })
+            .collect();
 
-    let header = modal_header_with_close(
-        "arch-list-close",
-        "Archived projects",
-        c::MAGENTA(),
-        dispatch,
-    );
+        div()
+            .id("archived-projects-list")
+            .max_h(rpx(MODAL_SCROLL_MAX_H))
+            .overflow_y_scroll()
+            .w_full()
+            .child(card(card_rows))
+            .into_any_element()
+    };
 
     modal_panel(
         MODAL_W_LG,
         div()
-            .child(header)
+            .child(modal_header_with_close(
+                "arch-list-close",
+                "Archived projects",
+                c::MAGENTA(),
+                dispatch,
+            ))
+            .child(divider_h())
             .child(modal_body(body))
             .child(modal_footer_hints(&[("esc", "close")])),
     )
@@ -952,7 +958,17 @@ fn teardown_modal(
         .file_name()
         .map_or_else(|| wt_path.to_string(), |f| f.to_string_lossy().into_owned());
 
-    let mut body = div()
+    // `body_text` is `TEXT_TITLE`/`FG_DIM` (rule 5) — the exact weight `Done`
+    // already used. Mid-flight the message stays one notch dimmer
+    // (`FG_MUTE`), a distinction worth keeping since it is how this modal
+    // tells "still working" from "final word" at a glance.
+    let message_el = if done {
+        body_text(message.to_string()).into_any_element()
+    } else {
+        ui(message.to_string(), TEXT_TITLE, c::FG_MUTE()).into_any_element()
+    };
+
+    let body = div()
         .flex()
         .flex_col()
         .gap(rpx(SPACE_XL))
@@ -966,44 +982,59 @@ fn teardown_modal(
                 .overflow_hidden()
                 .child(v)
         }))
-        .child(ui(
-            message.to_string(),
-            TEXT_TITLE,
-            if done { c::FG_DIM() } else { c::FG_MUTE() },
-        ));
-    body = body
-        .when(done, |d| {
-            d.child(click_action(
+        .child(message_el);
+
+    // Buttons live in the footer now (rule 2). Mid-removal (`Removing`): an
+    // in-flight `git worktree remove` cannot be safely interrupted, so there
+    // is genuinely no button and no footer for this stage — not even a
+    // disabled hint.
+    let footer = match stage {
+        TeardownStage::Done { .. } => Some(modal_footer(
+            &[("esc", "close")],
+            vec![click_action(
                 "td-close",
                 "Close",
                 ModalBtn::Primary,
                 dispatch,
                 ModalClick::Cancel,
-            ))
-        })
-        .when(matches!(stage, TeardownStage::RunningScript), |d| {
-            d.child(click_action(
+            )
+            .into_any_element()],
+        )),
+        // "esc" here is off the plain cancel/close/back vocabulary on purpose:
+        // Escape doesn't just dismiss this modal, it skips the running script
+        // and proceeds straight to removal — a real, semantic action, so the
+        // hint says what it does rather than pretending it's a dismissal.
+        TeardownStage::RunningScript => Some(modal_footer(
+            &[("esc", "skip & remove")],
+            vec![click_action(
                 "td-skip",
                 "Skip & remove",
                 ModalBtn::Plain,
                 dispatch,
                 ModalClick::Cancel,
-            ))
-        });
-    // Mid-removal (`Removing`): an in-flight `git worktree remove` cannot be
-    // safely interrupted, so there is genuinely no button and no footer for
-    // this stage — not even a disabled hint.
-    let footer = match stage {
-        TeardownStage::Done { .. } => Some(modal_footer_hints(&[("esc", "close")])),
-        TeardownStage::RunningScript => Some(modal_footer_hints(&[("esc", "skip & remove")])),
+            )
+            .into_any_element()],
+        )),
         TeardownStage::Removing => None,
     };
 
+    // §9.1.1 exception: Cancel means "skip the script" during `RunningScript`
+    // and is refused during `Removing` — a close X there would be either
+    // actively destructive or dead, so it is absent in both. `Done` is the
+    // only stage where Cancel really does close, so it is the only stage that
+    // gets one.
+    let header = modal_header_slotted(
+        Some("td-close-x"),
+        format!("Delete worktree / {wt_name}"),
+        c::RED(),
+        None,
+        None,
+        if done { Some(dispatch) } else { None },
+    );
+
     let mut panel = div()
-        .child(modal_header(
-            format!("Delete worktree / {wt_name}"),
-            c::RED(),
-        ))
+        .child(header)
+        .child(divider_h())
         .child(modal_body(body));
     if let Some(footer) = footer {
         panel = panel.child(footer);

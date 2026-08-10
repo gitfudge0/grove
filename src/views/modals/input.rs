@@ -40,11 +40,7 @@
 //!   (`input/state.rs:1685`) unless that flag is set, which is the whole
 //!   reason Escape reaches the modal layer from inside a focused field.
 
-// The chrome, the input wrapper and the archive/teardown helpers are built
-// once here and consumed by Tasks 4-6 of gpui rewrite plan 08.
-#![allow(dead_code)]
-
-use gpui::{App, AppContext as _, Context, Entity, Window};
+use gpui::{App, AppContext as _, Entity, Window};
 use gpui_component::input::InputState;
 
 use crate::modal::ModalKind;
@@ -83,7 +79,6 @@ impl InputPolicy {
 /// keystrokes the modal steals from it.
 pub struct ModalInput {
     state: Entity<InputState>,
-    policy: InputPolicy,
 }
 
 impl ModalInput {
@@ -104,7 +99,7 @@ impl ModalInput {
             }
             st
         });
-        Self { state, policy }
+        Self { state }
     }
 
     /// Build a multiline buffer of `rows` visible lines (the scripts-editor
@@ -127,32 +122,15 @@ impl ModalInput {
             }
             st
         });
-        Self {
-            state,
-            policy: InputPolicy {
-                wants_arrows: false,
-                wants_tab: false,
-                multi_line: true,
-            },
-        }
+        Self { state }
     }
 
     pub fn state(&self) -> &Entity<InputState> {
         &self.state
     }
 
-    pub fn policy(&self) -> InputPolicy {
-        self.policy
-    }
-
     pub fn value(&self, cx: &App) -> String {
         self.state.read(cx).value().to_string()
-    }
-
-    /// Focus on mount. A field that is never focused silently eats nothing and
-    /// looks broken (gpui-development skill pitfall; carried decision 5).
-    pub fn focus(&self, window: &mut Window, cx: &mut App) {
-        self.state.update(cx, |st, cx| st.focus(window, cx));
     }
 
     /// Focus and put the caret at the end — the move-cursor-to-end idiom
@@ -176,18 +154,6 @@ impl ModalInput {
     pub fn override_context(host: ModalKind) -> String {
         format!("{} > Input", host.key_context())
     }
-}
-
-/// `Context`-taking convenience for views that build their fields inside
-/// `Entity::new`.
-pub fn single_line_in<V: 'static>(
-    policy: InputPolicy,
-    placeholder: &str,
-    initial: &str,
-    window: &mut Window,
-    cx: &mut Context<V>,
-) -> ModalInput {
-    ModalInput::single_line(policy, placeholder, initial, window, cx)
 }
 
 #[cfg(test)]

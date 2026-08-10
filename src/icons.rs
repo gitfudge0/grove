@@ -16,7 +16,9 @@
 //! with `style.text.color` (`crates/gpui/src/elements/svg.rs:110`), so the tint
 //! is `Styled::text_color`.
 
-// `icon`/`spinner` are consumed by Task 5's row renderers.
+// File-level by design: this module is a sprite sheet. Every glyph in the set
+// is declared whether or not a screen currently draws it, so an unused entry is
+// the point rather than a defect.
 #![allow(dead_code)]
 
 use crate::views::rpx;

@@ -28,10 +28,6 @@
 //! Everything else in `helpers.rs` and its acceptance tests is behavior, not
 //! geometry, and is carried across below.
 
-// The palette's pure surface is ported whole (carried decision 6); the
-// highlight-range helpers land with Plan 10's polish pass.
-#![allow(dead_code)]
-
 use grove_core::agent::Agent;
 
 // ── the fuzzy scorer (`src/gui/launcher.rs:95-240`) ──────────────────────
@@ -129,6 +125,10 @@ fn subsequence_score(hay: &[char], need: &[char]) -> Option<u32> {
 /// Case-insensitive substring search returning the **char** index range of the
 /// first occurrence, so callers can slice the original string by `chars()`
 /// without a lowercase transform changing UTF-8 byte lengths.
+// TODO(unwired): the palette's match-highlight trio (`ci_find_range` ->
+// `fuzzy_match_indices` -> `FuzzyMatch`) is complete and tested, but no row
+// renderer highlights the matched spans, so nothing calls it.
+#[allow(dead_code)]
 fn ci_find_range(haystack: &str, needle: &str) -> Option<(usize, usize)> {
     if needle.is_empty() {
         return None;
@@ -151,6 +151,8 @@ fn ci_find_range(haystack: &str, needle: &str) -> Option<(usize, usize)> {
 }
 
 /// The matched char ranges per field, for the typing-state highlight.
+// TODO(unwired): see `ci_find_range`.
+#[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FuzzyMatch {
     pub matched: bool,
@@ -160,6 +162,8 @@ pub struct FuzzyMatch {
 }
 
 /// Same matching semantics as [`fuzzy_match`], plus the ranges to highlight.
+// TODO(unwired): see `ci_find_range`.
+#[allow(dead_code)]
 pub fn fuzzy_match_indices(
     query: &str,
     project: &str,
@@ -265,6 +269,9 @@ impl SettingRow {
     }
 
     /// Rows that flip in place instead of opening a pane.
+    // Exercised only by this module's `#[cfg(test)]` row table; the rebuilt
+    // Settings modal decides toggle-vs-pane per row at its own call site.
+    #[allow(dead_code)]
     pub fn is_toggle(self) -> bool {
         matches!(
             self,
@@ -418,6 +425,9 @@ pub fn agent_sel_for(available: &[Agent], agent: Agent) -> usize {
 }
 
 /// The three states of the Theme sub-pane's mode row, in Tab-cycle order.
+// TODO(unwired): the Tab-cycles-the-theme-mode row was ported with its test but
+// never given a key handler; the rebuilt Settings modal sets the mode directly.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThemeMode {
     Dark,
@@ -427,6 +437,8 @@ pub enum ThemeMode {
 
 /// Tab in the Theme sub-pane cycles Dark → Light → System → Dark. The current
 /// mode is System whenever `follow_system` is set (`helpers.rs:650-673`).
+// TODO(unwired): see `ThemeMode`.
+#[allow(dead_code)]
 pub fn next_theme_mode(dark: bool, follow_system: bool) -> ThemeMode {
     if follow_system {
         ThemeMode::Dark
@@ -438,6 +450,10 @@ pub fn next_theme_mode(dark: bool, follow_system: bool) -> ThemeMode {
 }
 
 /// One action in the update-available strip (`helpers.rs:664-716`).
+// TODO(unwired): the whole update-available strip — `UpdateAction`, its
+// `label`, `update_available_actions` and `check_updates_opens_strip` — is
+// built and tested, but no view expands a strip when an update is known.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpdateAction {
     UpdateNow,
@@ -446,6 +462,8 @@ pub enum UpdateAction {
 }
 
 impl UpdateAction {
+    // TODO(unwired): see `UpdateAction`.
+    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             UpdateAction::UpdateNow => "Update now",
@@ -458,6 +476,8 @@ impl UpdateAction {
 /// The strip's actions, in display order. "Update now" is hidden for an
 /// unknown install method (notify-only), so the strip and the keyboard nav
 /// derive from one list and their indices can never disagree.
+// TODO(unwired): see `UpdateAction`.
+#[allow(dead_code)]
 pub fn update_available_actions(method_unknown: bool) -> Vec<UpdateAction> {
     let mut actions = Vec::with_capacity(3);
     if !method_unknown {
@@ -511,6 +531,8 @@ pub fn merge_switch_rows(sessions: &[usize], terminals: &[usize]) -> Vec<SwitchR
 /// Whether activating the Check-for-updates row expands the actions strip (a
 /// release is already known to be available — re-checking would only throw
 /// that answer away) instead of firing a fresh check (`helpers.rs:738-745`).
+// TODO(unwired): see `UpdateAction`.
+#[allow(dead_code)]
 pub fn check_updates_opens_strip(update_available: bool) -> bool {
     update_available
 }
@@ -521,6 +543,11 @@ pub fn check_updates_opens_strip(update_available: bool) -> bool {
 /// This is the gpui replacement for `helpers.rs`'s four pixel scroll-offset
 /// helpers (see the module doc): gpui scrolls by item index, so "keep the
 /// selection visible" needs no layout model at all.
+///
+/// Test-only: gpui's own list scrolling now handles this at runtime, so
+/// nothing calls this outside its unit tests below — kept `#[cfg(test)]`
+/// because those tests still document the intended windowing behaviour.
+#[cfg(test)]
 pub fn scroll_offset_for(offset: usize, selected: usize, visible: usize, total: usize) -> usize {
     if visible == 0 || total == 0 {
         return 0;

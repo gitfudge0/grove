@@ -53,13 +53,8 @@
 //! [`WorkspaceState::select_worktree`] as a single forward pass each; nothing
 //! here writes `active_session` and then re-reads it to fix up `wt_idx`.
 
-// Several accessors and Plan 07 fields have no caller until their consumer
-// lands (Tasks 5-7, Plan 07).
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 
-use gpui::Context;
 use grove_core::storage::Store;
 
 use crate::entities::session_registry::SessionId;
@@ -164,6 +159,10 @@ pub enum FocusedPane {
 pub enum PtyPane {
     Agent,
     Panel,
+    // Vocabulary entry: the doc above is the contract — the enum exists so every
+    // click origin can be named with one type, and `focus_pane` deliberately
+    // ignores a tile origin. Constructed by `#[cfg(test)]` code only.
+    #[allow(dead_code)]
     Tile(SessionId),
 }
 
@@ -474,6 +473,9 @@ impl WorkspaceState {
     pub fn sidebar_width(&self) -> f32 {
         self.sidebar_width
     }
+    // Exercised only by this module's `#[cfg(test)]` assertions; rustc's
+    // non-test pass cannot see that use.
+    #[allow(dead_code)]
     pub fn focused_pane(&self) -> FocusedPane {
         self.focused_pane
     }
@@ -501,6 +503,9 @@ impl WorkspaceState {
     pub fn grid_view_before_zen(&self) -> bool {
         self.grid_view_before_zen
     }
+    // Exercised only by this module's `#[cfg(test)]` assertions; rustc's
+    // non-test pass cannot see that use.
+    #[allow(dead_code)]
     pub fn grid_view_before_terminal(&self) -> bool {
         self.grid_view_before_terminal
     }
@@ -509,9 +514,6 @@ impl WorkspaceState {
     }
     pub fn grid_slide(&self) -> Option<GridSlide> {
         self.grid_slide
-    }
-    pub fn clear_grid_slide(&mut self) {
-        self.grid_slide = None;
     }
     pub fn term_panel_open(&self) -> bool {
         self.term_panel_open
@@ -1247,6 +1249,9 @@ impl WorkspaceState {
 
     /// Whether input routes to the panel PTY: only while the panel is open
     /// *and* the panel pane holds the intent (`pty_input.rs:1180-1186`).
+    // Exercised only by this module's `#[cfg(test)]` assertions; rustc's
+    // non-test pass cannot see that use.
+    #[allow(dead_code)]
     pub fn panel_focused(&self) -> bool {
         self.term_panel_open && matches!(self.focused_pane, FocusedPane::Panel)
     }
@@ -1256,18 +1261,15 @@ impl WorkspaceState {
     /// to the agent rather than silently swallowing input. In gpui this decides
     /// which `FocusHandle` the workspace focuses; the keystrokes themselves
     /// then follow gpui focus (carried amendment 8).
+    // Exercised only by this module's `#[cfg(test)]` assertions; rustc's
+    // non-test pass cannot see that use.
+    #[allow(dead_code)]
     pub fn input_target(&self, has_panel_shell: bool) -> PtyPane {
         if self.panel_focused() && has_panel_shell {
             PtyPane::Panel
         } else {
             PtyPane::Agent
         }
-    }
-
-    /// Every mutation reaches views through the entity, so the one place that
-    /// knows a repaint is due is the caller that had `&mut Context`.
-    pub fn notify(cx: &mut Context<Self>) {
-        cx.notify();
     }
 }
 

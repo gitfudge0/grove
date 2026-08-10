@@ -10,7 +10,9 @@
 
 use crate::views::rpx;
 use crate::views::tokens::*;
-use gpui::{div, prelude::*, px, AnyElement, App, Context, Hsla, SharedString};
+use gpui::{
+    div, prelude::*, px, AnyElement, App, Context, Focusable as _, Hsla, SharedString, Window,
+};
 use grove_core::theme::{Theme, ThemeKind};
 
 use crate::settings::SettingsState;
@@ -19,9 +21,9 @@ use crate::theme as c;
 use super::{Modal, ModalClick, ModalDispatch, ModalLayer};
 use crate::modal::{ThemePickerReturn, ThemePickerScope};
 use crate::views::components::{
-    body_text, caption, click_action, click_checkbox, click_row, divider_h, icon_btn, modal_body,
-    modal_footer_hints, modal_header, modal_header_with_close, modal_panel, mono, note_text,
-    seg_button, seg_group, ui, ModalBtn, OnToggle, RowDensity, SegSide,
+    body_action, body_text, caption, card, click_action, click_checkbox, click_row, divider_h,
+    icon_btn, modal_body, modal_footer, modal_footer_hints, modal_header_with_close, modal_panel,
+    mono, note_text, seg_button, seg_group, ui, ModalBtn, OnToggle, RowDensity, SegSide,
 };
 
 // ── local layout geometry (§8.4: geometry lives in the owning module) ─────
@@ -30,13 +32,6 @@ use crate::views::components::{
 /// glance and the manager row's 11-colour strip — share it, so a theme reads
 /// the same size wherever it is previewed.
 const SWATCH_SIZE: f32 = ICON_XS;
-
-/// The swatch's corner. §14 case 3 (optical correction): `RADIUS_CONTROL` (4)
-/// is tuned for a 22px control, and on a [`SWATCH_SIZE`] (10px) square it eats
-/// nearly half the edge — the mark stops reading as a colour chip and starts
-/// reading as a dot. 2 keeps the corner softened without rounding the swatch
-/// away. Not a token: it has exactly two consumers, both in this file.
-const SWATCH_RADIUS: f32 = 2.0;
 
 /// The manager row's swatch column. Deliberately narrower than the full
 /// 11-swatch strip: the strip clips rather than pushing the row's action
@@ -51,10 +46,6 @@ const CARET_H: f32 = TEXT_BODY * 1.1;
 /// Vertical breathing room for an inline "nothing here" block inside a modal
 /// body — one modal zone padding step above and below.
 const EMPTY_STATE_PY: f32 = SPACE_3XL * 2.0;
-
-/// The scrolling theme list's ceiling, past which the panel would outgrow a
-/// short window.
-const LIST_MAX_H: f32 = 360.0;
 
 /// A tooltip-carrying icon mini button for a `ThemeManager` row action
 /// (edit/rename/duplicate/delete) — `src/gui/widgets/buttons.rs`'
@@ -142,6 +133,10 @@ pub struct ThemePreview {
     pub project: Option<(String, Option<Theme>)>,
     /// App-scope preview: the whole window shows this theme until the picker
     /// commits or cancels.
+    // Written by the picker and read back only by `views::modals`'
+    // `#[cfg(test)]` "preview global is clear" assertion; the render path reads
+    // the global through `ThemePreview::for_project`.
+    #[allow(dead_code)]
     pub app: Option<Theme>,
 }
 
@@ -398,17 +393,38 @@ impl ModalLayer {
         }
         SettingsState::flush_now(cx);
         ThemePreview::clear(cx);
+        // Commit **consumes** `original`: the picker leaves through
+        // `ModalLayer::cancel`, which restores `original` on the way out, and
+        // the theme just pinned above is precisely the one that must survive.
+        // Emptying it here is what makes that restore a no-op on this path —
+        // see [`Self::restore_theme_before_leaving`].
+        if let Some(Modal::ThemePicker { original, .. }) = self.slot.get_mut() {
+            original.clear();
+        }
         self.cancel(cx);
     }
 
-    /// Escape: restore `original` before leaving (`src/app/modal.rs:74-94`).
-    pub(super) fn theme_picker_cancel(&mut self, cx: &mut Context<Self>) {
-        if let Some(Modal::ThemePicker { original, .. }) = self.slot.get() {
-            let original = original.clone();
-            crate::theme::ThemeState::set_by_name(cx, &original);
+    /// Undo the live preview on the way out of a `ThemePicker`: restore
+    /// `original` and drop the [`ThemePreview`] global
+    /// (`src/app/modal.rs:74-94`). Does **not** leave the modal — that is
+    /// [`ModalLayer::cancel`]'s job, and this runs as its first step, while
+    /// the slot still holds the picker.
+    ///
+    /// `original` is consumed, mirroring how `ModalSlot::cancel` consumes
+    /// `return_to` on the same exit: an empty `original` means "there is
+    /// nothing to go back to", which is exactly the state
+    /// [`Self::theme_picker_submit`] leaves behind once it has pinned the new
+    /// theme. Self-guarding — a no-op unless a `ThemePicker` is open.
+    pub(super) fn restore_theme_before_leaving(&mut self, cx: &mut Context<Self>) {
+        let Some(Modal::ThemePicker { original, .. }) = self.slot.get_mut() else {
+            return;
+        };
+        let original = std::mem::take(original);
+        if original.is_empty() {
+            return;
         }
+        crate::theme::ThemeState::set_by_name(cx, &original);
         ThemePreview::clear(cx);
-        self.cancel(cx);
     }
 
     // ── ThemeManager ────────────────────────────────────────────────────
@@ -531,10 +547,15 @@ impl ModalLayer {
 
 // ── the views ────────────────────────────────────────────────────────────
 
-pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
+pub fn render(
+    layer: &ModalLayer,
+    dispatch: &ModalDispatch,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
     match layer.slot().get() {
         Some(Modal::ThemePicker { .. }) => picker(layer, dispatch, cx),
-        Some(Modal::ThemeManager { .. }) => manager(layer, dispatch),
+        Some(Modal::ThemeManager { .. }) => manager(layer, dispatch, window, cx),
         _ => div().into_any_element(),
     }
 }
@@ -574,7 +595,6 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
     };
     let sel = if *dark_tab { *sel_dark } else { *sel_light };
     let themes = selectable(kind);
-    let offset = crate::launcher::scroll_offset_for(0, sel, 8, themes.len());
 
     let tabs = seg_group(
         div()
@@ -608,43 +628,74 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
             )),
     );
 
-    // Shared `click_row`s sitting in a `BG_STRIP`/`BORDER`/radius-4 list
-    // container (`theme_picker.rs:60-83`).
-    let mut list = div().flex().flex_col();
+    // Shared `click_row`s (§9.1.1's `RowDensity::Card` shape, the same one
+    // `setting_row_link` in `settings.rs` uses) sitting inside a `card()`.
+    let mut rows: Vec<AnyElement> = Vec::new();
+    // Where the selected theme lands in `rows`; the project scope prepends a
+    // "Default (follow app)" row, so it isn't `sel`.
+    let mut selected_row: Option<usize> = None;
     if matches!(scope, ThemePickerScope::Project(_)) {
-        list = list.child(theme_row(
-            "tp-default",
-            *project_use_default,
-            dispatch,
-            ModalClick::ThemePickerUseDefault,
-            "Default (follow app)".to_string(),
-        ));
-    }
-    for (i, t) in themes.iter().enumerate().skip(offset).take(8) {
-        let active = i == sel && !*project_use_default;
-        list = list.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .w_full()
-                .child(theme_row(
-                    gpui::SharedString::from(format!("tp-{i}")),
-                    active,
-                    dispatch,
-                    ModalClick::SelectRow(i),
-                    t.name.to_string(),
-                ))
-                .child(swatch(t)),
+        rows.push(
+            theme_row(
+                "tp-default",
+                *project_use_default,
+                dispatch,
+                ModalClick::ThemePickerUseDefault,
+                mono(
+                    "Default (follow app)",
+                    TEXT_BODY,
+                    if *project_use_default {
+                        c::FG()
+                    } else {
+                        c::FG_DIM()
+                    },
+                ),
+            )
+            .into_any_element(),
         );
     }
-    let list = div()
-        .w_full()
-        .rounded(rpx(RADIUS_CONTROL))
-        .border_1()
-        .border_color(c::BORDER())
-        .bg(c::BG_STRIP())
-        .child(list);
+    for (i, t) in themes.iter().enumerate() {
+        let active = i == sel && !*project_use_default;
+        if i == sel {
+            selected_row = Some(rows.len());
+        }
+        let content = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .child(mono(
+                t.name.to_string(),
+                TEXT_BODY,
+                if active { c::FG() } else { c::FG_DIM() },
+            ))
+            .child(swatch(t));
+        rows.push(
+            theme_row(
+                gpui::SharedString::from(format!("tp-{i}")),
+                active,
+                dispatch,
+                ModalClick::SelectRow(i),
+                content,
+            )
+            .into_any_element(),
+        );
+    }
+    // Retires the hard-coded 8-row window: the whole list renders and the
+    // shared MODAL_SCROLL_MAX_H cap scrolls it, matching the manager list's
+    // own scroll container below. The `card` itself is the scroll container
+    // rather than a child of one, because `scroll_to_item` addresses the
+    // tracked element's *direct* children — and those are the card's rows.
+    // `card` interleaves a divider after every row but the last, so row `k`
+    // sits at child `2k`.
+    if let Some(k) = selected_row {
+        layer.scroll_list_to(usize::from(*dark_tab), sel, k * 2);
+    }
+    let list = card(rows)
+        .id("theme-picker-list")
+        .max_h(rpx(MODAL_SCROLL_MAX_H))
+        .overflow_y_scroll()
+        .track_scroll(&layer.list_scroll);
 
     let title = match scope {
         ThemePickerScope::App => "Theme".to_string(),
@@ -665,62 +716,60 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
     }
     body = body.child(tabs).child(list);
 
-    // Body-level `[flex-1, Cancel(Plain), Apply(Primary)]` action row — the
-    // picker stage has no footer-hints strip, unlike the manager and
-    // delete-confirm stages below.
-    body = body.child(
-        div()
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_LG))
-            .child(div().flex_1())
-            .child(click_action(
-                "tp-cancel",
-                "Cancel",
-                ModalBtn::Plain,
-                dispatch,
-                ModalClick::Cancel,
-            ))
-            .child(click_action(
-                "tp-apply",
-                "Apply",
-                ModalBtn::Primary,
-                dispatch,
-                ModalClick::ThemePickerApply,
-            )),
-    );
-
     modal_panel(
-        MODAL_W_MD,
+        MODAL_W_LG,
         div()
-            .child(modal_header(title, c::MAGENTA()))
-            .child(modal_body(body)),
+            .child(modal_header_with_close(
+                "tp-close",
+                title,
+                c::MAGENTA(),
+                dispatch,
+            ))
+            .child(divider_h())
+            .child(modal_body(body))
+            .child(modal_footer(
+                &[("↑↓", "select"), ("⏎", "apply"), ("esc", "cancel")],
+                vec![
+                    click_action(
+                        "tp-cancel",
+                        "Cancel",
+                        ModalBtn::Plain,
+                        dispatch,
+                        ModalClick::Cancel,
+                    )
+                    .into_any_element(),
+                    click_action(
+                        "tp-apply",
+                        "Apply",
+                        ModalBtn::Primary,
+                        dispatch,
+                        ModalClick::ThemePickerApply,
+                    )
+                    .into_any_element(),
+                ],
+            )),
     )
     .into_any_element()
 }
 
-/// A picker-list row: the shared [`click_row`] carrying the theme's name.
-/// A theme name is a token, so it is set in mono (§5.2); `FG` when active,
-/// `FG_DIM` otherwise.
+/// A picker-list row: the shared [`click_row`] in the same [`RowDensity::Card`]
+/// shape `setting_row_link` (`settings.rs`) uses, sitting inside a [`card`].
+/// `content` carries the theme's name (mono, §5.2) plus the trailing
+/// [`swatch`] glance, or just the name for the "Default (follow app)" row.
 fn theme_row(
     id: impl Into<gpui::ElementId>,
     active: bool,
     dispatch: &ModalDispatch,
     click: ModalClick,
-    label: String,
+    content: impl IntoElement,
 ) -> gpui::Stateful<gpui::Div> {
-    click_row(
-        id,
-        active,
-        RowDensity::Compact,
-        dispatch,
-        click,
-        mono(label, TEXT_BODY, if active { c::FG() } else { c::FG_DIM() }),
-    )
-    .flex_1()
+    click_row(id, active, RowDensity::Card, dispatch, click, content)
+        .min_h(rpx(ROW_MIN_H))
+        .px(rpx(ROW_PX))
+        .py(rpx(ROW_PY))
 }
 
-fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
+fn manager(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx: &App) -> AnyElement {
     let Some(Modal::ThemeManager {
         selected,
         rename,
@@ -734,7 +783,19 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
 
     // The editor sub-view wins over the list (`modals.rs:186-228`).
     if editor.is_some() {
+        // The ONE sanctioned multiline exception to `field_box`'s single-line
+        // contract (see its doc comment): a 14-row JSON buffer can't fit a
+        // `FIELD_PY`-padded box sized for one line, so this field keeps its
+        // own bordered box instead. It still owes the app's zeroed-inset half
+        // of that contract — `.pl/.pr/.py` zeroed on the wrapped `Input` so
+        // its own padding doesn't double up with this box's — via the same
+        // five calls `field_box`'s callers make.
+        //
+        // The other half of the contract is honoured too: a focus-reactive
+        // border, `c::MAGENTA()` focused / `c::BORDER()` at rest, the way
+        // every other field in the app behaves.
         let field = layer.fields.first().map(|f| {
+            let focused = f.state().read(cx).focus_handle(cx).is_focused(window);
             div()
                 .w_full()
                 .px(rpx(SPACE_XL))
@@ -742,17 +803,26 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                 .rounded(rpx(RADIUS_GROUP))
                 .bg(c::BG())
                 .border_1()
-                .border_color(c::BORDER())
+                .border_color(if focused { c::MAGENTA() } else { c::BORDER() })
                 .child(
                     gpui_component::input::Input::new(f.state())
                         .appearance(false)
+                        .pl(px(0.0))
+                        .pr(px(0.0))
+                        .py(px(0.0))
                         .w_full(),
                 )
         });
         return modal_panel(
-            MODAL_W_XL,
+            MODAL_W_LG,
             div()
-                .child(modal_header("Theme editor", c::MAGENTA()))
+                .child(modal_header_with_close(
+                    "tm-editor-close",
+                    "Theme editor",
+                    c::MAGENTA(),
+                    dispatch,
+                ))
+                .child(divider_h())
                 .child(modal_body(
                     div()
                         .flex()
@@ -761,18 +831,31 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                         .child(body_text(
                             "Paste a theme JSON object, or edit the one below.",
                         ))
-                        .children(field)
-                        .child(div().flex().gap(rpx(SPACE_LG)).child(click_action(
+                        .children(field),
+                ))
+                // Tab INDENTS inside a multiline buffer (carried decision 2);
+                // the footer says so rather than pretending it traverses.
+                .child(modal_footer(
+                    &[("tab", "indent"), ("esc", "back")],
+                    vec![
+                        click_action(
+                            "tm-editor-cancel",
+                            "Cancel",
+                            ModalBtn::Plain,
+                            dispatch,
+                            ModalClick::Cancel,
+                        )
+                        .into_any_element(),
+                        click_action(
                             "tm-save",
                             "Save",
                             ModalBtn::Primary,
                             dispatch,
                             ModalClick::ThemeEditSave,
-                        ))),
-                ))
-                // Tab INDENTS inside a multiline buffer (carried decision 2);
-                // the footer says so rather than pretending it traverses.
-                .child(modal_footer_hints(&[("tab", "indent"), ("esc", "back")])),
+                        )
+                        .into_any_element(),
+                    ],
+                )),
         )
         .into_any_element();
     }
@@ -787,33 +870,39 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
             .flex_col()
             .gap(rpx(SPACE_LG))
             .child(body_text(format!("Delete theme \"{name}\"?")))
-            .child(caption("This cannot be undone."))
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap(rpx(SPACE_LG))
-                    .child(click_action(
-                        "tm-del-cancel",
-                        "Cancel",
-                        ModalBtn::Plain,
-                        dispatch,
-                        ModalClick::ThemeDeleteCancel,
-                    ))
-                    .child(click_action(
-                        "tm-del-confirm",
-                        "Delete",
-                        ModalBtn::Danger,
-                        dispatch,
-                        ModalClick::ThemeDeleteConfirm,
-                    )),
-            );
+            .child(caption("This cannot be undone."));
         return modal_panel(
-            MODAL_W_SM,
+            MODAL_W_LG,
             div()
-                .child(modal_header("Delete theme", c::RED()))
+                .child(modal_header_with_close(
+                    "tm-del-close",
+                    "Delete theme",
+                    c::RED(),
+                    dispatch,
+                ))
+                .child(divider_h())
                 .child(modal_body(body_zone))
-                .child(modal_footer_hints(&[("y", "delete"), ("esc", "cancel")])),
+                .child(modal_footer(
+                    &[("y", "delete"), ("esc", "cancel")],
+                    vec![
+                        click_action(
+                            "tm-del-cancel",
+                            "Cancel",
+                            ModalBtn::Plain,
+                            dispatch,
+                            ModalClick::ThemeDeleteCancel,
+                        )
+                        .into_any_element(),
+                        click_action(
+                            "tm-del-confirm",
+                            "Delete",
+                            ModalBtn::Danger,
+                            dispatch,
+                            ModalClick::ThemeDeleteConfirm,
+                        )
+                        .into_any_element(),
+                    ],
+                )),
         )
         .into_any_element();
     }
@@ -875,17 +964,17 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
                                         .bg(c::FG_DIM()),
                                 ),
                         )
-                        .child(click_action(
+                        .child(body_action(
                             "tm-rename-save",
                             "Save",
-                            ModalBtn::Primary,
+                            c::CYAN(),
                             dispatch,
                             ModalClick::ThemeRenameCommit,
                         ))
-                        .child(click_action(
+                        .child(body_action(
                             "tm-rename-cancel",
                             "Cancel",
-                            ModalBtn::Plain,
+                            c::CYAN(),
                             dispatch,
                             // No `ModalClick` variant exists for a
                             // mouse-driven rename-cancel (only
@@ -996,7 +1085,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
         }
         div()
             .id("theme-manager-list")
-            .max_h(rpx(LIST_MAX_H))
+            .max_h(rpx(MODAL_SCROLL_MAX_H))
             .overflow_y_scroll()
             .w_full()
             .child(list)
@@ -1009,26 +1098,32 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch) -> AnyElement {
     // (`theme_manager.rs:214-222`).
     let header = modal_header_with_close("tm-close", "Manage themes", c::MAGENTA(), dispatch);
 
-    let body_zone = div()
-        .flex()
-        .flex_col()
-        .gap(rpx(SPACE_XL))
-        .child(div().flex().justify_end().child(click_action(
-            "tm-new",
-            "+ New theme",
-            ModalBtn::Primary,
-            dispatch,
-            ModalClick::ThemeNew,
-        )))
-        .child(list_content);
+    // The footer's left slot is retired (plan.md §2): "+ New theme" moves
+    // into the body as a flat magenta `body_action` at the foot of the list,
+    // rather than the Primary button the old left slot forced it to be —
+    // that was already a §9.1.1 contract violation, since a footer's left
+    // cluster is low-emphasis by definition.
+    let new_theme_btn = body_action(
+        "tm-new",
+        "+ New theme",
+        c::MAGENTA(),
+        dispatch,
+        ModalClick::ThemeNew,
+    );
 
     modal_panel(
         MODAL_W_LG,
         div()
             .child(header)
             .child(divider_h())
-            .child(modal_body(body_zone))
-            .child(divider_h())
+            .child(modal_body(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_LG))
+                    .child(list_content)
+                    .child(new_theme_btn),
+            ))
             .child(modal_footer_hints(&[("↑↓", "select"), ("esc", "close")])),
     )
     .into_any_element()

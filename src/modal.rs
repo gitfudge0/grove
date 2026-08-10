@@ -24,15 +24,16 @@
 //! The drift guard [`bound_chords`] + its test is what keeps the second row
 //! honest: a context may not bind a chord this module's verdict table ignores.
 
-// The full variant set and verdict table are ported ahead of the views that
-// consume them (Tasks 3-6 fill them in one wave at a time).
-#![allow(dead_code)]
-
 // ── the payload types ported from `src/app/modal.rs` ─────────────────────
 
 /// What a `Confirm` modal is actually confirming (`src/app/modal.rs:177-186`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfirmKind {
+    // TODO(unwired): `views::modals::confirm` handles this arm
+    // (`open_remove_project`), but nothing ever raises it — the live
+    // remove-project flow opens `Modal::RemoveProject` directly. A handled
+    // confirm with no producer is an unwired path, not dead code.
+    #[allow(dead_code)]
     RemoveProject(usize),
     /// Worktree path.
     RemoveWorktree(String),
@@ -475,6 +476,29 @@ impl Modal {
             kind: ConfirmKind::Quit,
         }
     }
+
+    /// The first-run wizard in its opening state: step one, nothing typed,
+    /// every choice on its documented default ("safe" permissions, the first
+    /// agent, the path field focused). The iced original seeds the same thing
+    /// when it starts the flow (`src/app/onboarding.rs:37-42`'s step sequence
+    /// begins at `Welcome`).
+    ///
+    /// A constructor rather than a literal at the call site because the
+    /// variant has nine fields and exactly one legitimate initial value;
+    /// `Workspace::render`'s first-run gate is the only caller.
+    pub fn onboarding() -> Modal {
+        Modal::Onboarding {
+            step: OnboardStep::Welcome,
+            path: String::new(),
+            dir_sel: 0,
+            name: None,
+            note: None,
+            added_proj: None,
+            agent_sel: 0,
+            perms_skip: false,
+            name_focused: false,
+        }
+    }
 }
 
 // ── the pure key alphabet ────────────────────────────────────────────────
@@ -505,12 +529,17 @@ pub struct ModalMods {
 }
 
 impl ModalMods {
+    // Both constants are `#[cfg(test)]`-only spellings of a chord's modifier
+    // state, used by this crate's verdict-table assertions; the live path
+    // builds `ModalMods` from a real `gpui::Modifiers`.
+    #[allow(dead_code)]
     pub const NONE: ModalMods = ModalMods {
         ctrl: false,
         alt: false,
         shift: false,
         platform: false,
     };
+    #[allow(dead_code)]
     pub const CTRL: ModalMods = ModalMods {
         ctrl: true,
         alt: false,
@@ -572,6 +601,10 @@ pub enum ModalAction {
     ThemeManagerRenameSubmit,
     ThemeManagerRenameCancel,
     /// `ScriptsEditor`: the pencil starts renaming the project name.
+    // TODO(unwired): this is the *keyboard* half of a live feature —
+    // `ModalClick::ScriptsRenameStart` fires from the pencil and is handled, but
+    // `key_verdict` never produces this action, so there is no key for it.
+    #[allow(dead_code)]
     ScriptsRenameStart,
     /// `ScriptsEditor`: check accepts the typed name locally (no disk write).
     ScriptsRenameCommit,
@@ -629,13 +662,6 @@ impl ModalSlot {
     /// There is no stack and no restore (carried decision 4).
     pub fn open(&mut self, modal: Modal) {
         self.modal = Some(modal);
-    }
-
-    /// The window's close request. Known, deliberately preserved gap: the quit
-    /// confirm clobbers any open modal and cancelling does not restore it
-    /// (`modals.rs:350-354`).
-    pub fn open_quit_confirm(&mut self, native_running: usize) {
-        self.open(Modal::quit_confirm(native_running));
     }
 
     /// Force the slot empty, ignoring every per-modal cancel rule. Only for
@@ -932,6 +958,10 @@ pub fn escape_should_dismiss(
 
 /// A chord bound as a gpui **action** in a modal's own key context (carried
 /// decision 3, second row of the module-doc table).
+// The drift guard and its table are consumed by `#[cfg(test)]` code only —
+// `keyboard_matrix` and this module's own tests assert every bound chord is
+// claimed by `key_verdict`. Nothing in the render path reads them.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModalChord {
     pub key: ModalKey,
@@ -941,6 +971,7 @@ pub struct ModalChord {
 /// The chords each modal's key context binds as actions. The drift guard test
 /// asserts every one of them is claimed by [`key_verdict`]; a context that
 /// binds a chord the table ignores would silently swallow it.
+#[allow(dead_code)]
 pub fn bound_chords(kind: ModalKind) -> &'static [ModalChord] {
     match kind {
         // The overlay closes on Escape **or** its own registry chord
@@ -1042,7 +1073,11 @@ mod tests {
     fn quit_confirm_clobbers_the_open_modal_and_cancelling_leaves_none() {
         let mut slot = ModalSlot::new();
         slot.open(Modal::Settings);
-        slot.open_quit_confirm(2);
+        // The window's close request: the quit confirm clobbers any open modal
+        // and cancelling does not restore it — a deliberately preserved gap
+        // (`modals.rs:350-354`). This is the same call `Workspace`'s
+        // close-request handler makes.
+        slot.open(Modal::quit_confirm(2));
         let Some(Modal::Confirm { kind, prompt, .. }) = slot.get() else {
             unreachable!()
         };

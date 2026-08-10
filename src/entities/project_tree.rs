@@ -16,9 +16,6 @@
 //! grove-core supplies every git call as-is (Global Constraint 3 candidate 2):
 //! `git::{is_repo, list_worktrees, worktree_git_state, git_state_suffix}`.
 
-// The view-facing readers land in Task 5.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -66,6 +63,9 @@ pub struct ProjectTree {
     /// Dropping a `Task` cancels it, so these fields *are* the running jobs;
     /// overwriting one supersedes the previous run.
     git_poll: Option<Task<()>>,
+    // Never *read* — written to keep the spawned sweep alive. Dropping a `Task`
+    // cancels it, so removing this field would silently cancel every sweep.
+    #[allow(dead_code)]
     sweep: Option<Task<()>>,
 }
 
@@ -75,6 +75,8 @@ impl ProjectTree {
         Self::default()
     }
 
+    // Exercised only by this module's `#[cfg(test)]` generation-guard assertions.
+    #[allow(dead_code)]
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
@@ -150,6 +152,9 @@ impl ProjectTree {
     }
 
     /// `update/mod.rs:1326-1334`.
+    // TODO(unwired): built and complete, but no caller ever pre-warms the
+    // worktree cache — see `sweep_wt_cache` below.
+    #[allow(dead_code)]
     pub fn ensure_wt_cached(&mut self, proj: usize, active_proj: usize, store: &Store) {
         if proj == active_proj || self.wt_cache.contains_key(&proj) {
             return;
@@ -172,6 +177,9 @@ impl ProjectTree {
     /// Fold in an off-thread sweep, unless the generation moved while it ran.
     /// Returns whether the result was applied — the discard is the whole point
     /// of the guard, so it is observable.
+    // Reached in production only from `sweep_wt_cache`, which is itself unwired;
+    // `#[cfg(test)]` code is what currently exercises the discard guard.
+    #[allow(dead_code)]
     pub fn apply_sweep(&mut self, generation: u64, swept: HashMap<usize, Vec<Worktree>>) -> bool {
         if generation != self.generation {
             return false;
@@ -183,6 +191,10 @@ impl ProjectTree {
     /// Sweep every non-active project's worktrees off the UI thread. Until the
     /// result lands, inactive projects render with no worktrees — exactly as
     /// they already do on a cold cache.
+    // TODO(unwired): a complete, generation-guarded background pre-warm of the
+    // worktree cache with a passing discard test — nothing calls it, so inactive
+    // projects only ever get worktrees via `switch_active_project`'s hand-off.
+    #[allow(dead_code)]
     pub fn sweep_wt_cache(&mut self, store: &Store, active_proj: usize, cx: &mut Context<Self>) {
         let generation = self.generation;
         let targets: Vec<(usize, String)> = store

@@ -21,8 +21,9 @@
 //! change ~40 themes at once.
 
 #![allow(non_snake_case)]
-// The full token vocabulary is ported in one go so the Plan 04-07 region ports
-// are mechanical; most tokens have no caller until their region lands.
+// File-level by design: this module is the colour-role vocabulary. A role is
+// declared because the palette defines it, not because a widget happens to draw
+// it today, so unused roles are expected rather than dead.
 #![allow(dead_code)]
 
 use gpui::{BorrowAppContext as _, Hsla, Rgba, WindowAppearance};
@@ -143,6 +144,28 @@ pub fn SCRIM() -> Hsla {
     .into()
 }
 
+/// The drop shadow every floating panel casts (plan.md §3's last bullet). Was
+/// a hard-coded `rgba(0,0,0,.35)` inside `modal_panel`, which is why a light
+/// theme's panel wore a dark theme's shadow: a bright page needs a lighter,
+/// tighter shadow or the panel reads as cut out of the page rather than lifted
+/// off it. The *geometry* that goes with each weight is
+/// [`PANEL_SHADOW_Y`](crate::views::tokens::PANEL_SHADOW_Y) and friends,
+/// selected by [`is_dark`].
+///
+/// Black at an alpha, not a blend of the theme's colors: a shadow is absence of
+/// light, so tinting it with the palette would make it read as a glow.
+pub fn PANEL_SHADOW() -> Hsla {
+    theme::with_current(|t| alpha_rgba(BLACK, if is_dark_of(t) { 0.35 } else { 0.18 })).into()
+}
+
+/// Whether the active theme is a dark one — the view layer's read-only handle
+/// on the same question [`is_dark_of`] answers for a borrowed theme. Views pick
+/// *geometry* by it (the panel shadow's offset and blur); colour forks stay
+/// inside this module.
+pub fn is_dark() -> bool {
+    theme::with_current(is_dark_of)
+}
+
 // ── text ─────────────────────────────────────────────────────────────────
 
 pub fn FG() -> Hsla {
@@ -166,6 +189,19 @@ pub fn CYAN() -> Hsla {
 pub fn MAGENTA() -> Hsla {
     theme::with_current(|t| ic(t.magenta)).into()
 }
+/// The keyboard-focus ring: MAGENTA held back to a tint, drawn *outside* a
+/// focused control's own 1px magenta border (plan.md §1, variant C1c). One
+/// token, two weights: a dark theme reads a 25% magenta wash on a dark surface
+/// clearly, while the same alpha over a near-white light surface all but
+/// disappears, so light themes get a stronger tint rather than a second token.
+///
+/// Derived with [`alpha`] rather than a hand-written `Hsla` literal so the ring
+/// tracks a theme swap exactly as MAGENTA does (§14.3).
+pub fn FOCUS_RING() -> Hsla {
+    let a = theme::with_current(|t| if is_dark_of(t) { 0.25 } else { 0.35 });
+    alpha(MAGENTA(), a)
+}
+
 pub fn GREEN() -> Hsla {
     theme::with_current(|t| ic(t.green)).into()
 }
@@ -468,6 +504,26 @@ mod tests {
         lum_rgba(c.into())
     }
 
+    /// Serializes tests that mutate the global active theme
+    /// (`grove_core::theme::set`) — nothing else in this crate touches it,
+    /// but a test that temporarily swaps it must not race a concurrently
+    /// running test that reads the default (e.g.
+    /// `default_theme_is_tokyonight_dark`).
+    static ACTIVE_THEME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Restores whatever theme was active before the test ran, even on panic.
+    struct ActiveThemeGuard(theme::Theme);
+    impl ActiveThemeGuard {
+        fn capture() -> Self {
+            Self(theme::current())
+        }
+    }
+    impl Drop for ActiveThemeGuard {
+        fn drop(&mut self) {
+            theme::set(self.0.clone());
+        }
+    }
+
     #[test]
     fn mix_endpoints_and_midpoint() {
         let a = Rgba {
@@ -512,6 +568,9 @@ mod tests {
     /// The default active theme is TokyoNight dark (`crates/grove-core/src/theme.rs:695`).
     #[test]
     fn default_theme_is_tokyonight_dark() {
+        let _lock = ACTIVE_THEME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         theme::with_current(|t| {
             assert_eq!(t.name, "tokyonight");
             assert_eq!(t.bg, theme::Color::Rgb(0x1a, 0x1b, 0x26));
@@ -591,6 +650,139 @@ mod tests {
         // The live accessors agree with the parameterized variants.
         assert!(lum(BG_STRIP()) < lum(BG_RAIL()));
         assert!(lum(BG_RAIL()) < lum(BG()));
+    }
+
+    /// FOCUS_RING is MAGENTA with only its alpha overridden (plan.md §1):
+    /// hue/saturation/lightness must be bit-identical to MAGENTA's, and alpha
+    /// must be exactly 0.25 on a dark theme / 0.35 on a light one — the two
+    /// weights `FOCUS_RING`'s doc comment names. Checked against every
+    /// bundled theme, following the same template as
+    /// `amber_sits_between_yellow_and_red`.
+    #[test]
+    fn focus_ring_derives_from_magenta_at_the_theme_relative_alpha() {
+        assert!(theme::BUILTINS.len() > 30, "expected the full bundled set");
+        let _lock = ACTIVE_THEME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = ActiveThemeGuard::capture();
+
+        let (mut saw_dark, mut saw_light) = (0u32, 0u32);
+        for t in theme::BUILTINS {
+            // Independent, per-theme expectation — built from the theme's
+            // raw magenta, not from anything the live accessor touches.
+            let m: Hsla = magenta_of(t).into();
+            let want_a = if is_dark_of(t) { 0.25 } else { 0.35 };
+            let expected = alpha(m, want_a);
+
+            // The live accessor, exercised for real by making this theme
+            // the active one — not re-derived by hand a second time.
+            theme::set(t.clone());
+            let live = FOCUS_RING();
+
+            assert_eq!(
+                (live.h, live.s, live.l),
+                (expected.h, expected.s, expected.l),
+                "theme '{}': FOCUS_RING hue/sat/lightness drifted from MAGENTA's",
+                t.name
+            );
+            assert!(
+                (live.a - want_a).abs() < 1e-6,
+                "theme '{}': FOCUS_RING alpha {} != expected {want_a} ({})",
+                t.name,
+                live.a,
+                if is_dark_of(t) { "dark" } else { "light" }
+            );
+            if is_dark_of(t) {
+                saw_dark += 1;
+            } else {
+                saw_light += 1;
+            }
+        }
+        assert!(saw_dark > 0, "no dark theme was exercised");
+        assert!(saw_light > 0, "no light theme was exercised");
+    }
+
+    /// PANEL_SHADOW is heavier on dark themes than light (plan.md §3's last
+    /// bullet): both the colour's alpha and the accompanying
+    /// `PANEL_SHADOW_Y`/`PANEL_SHADOW_BLUR` geometry must be strictly larger
+    /// on the dark branch, in every bundled theme, or a light panel inherits
+    /// a dark-theme shadow that reads as cut out of the page rather than
+    /// lifted off it.
+    #[test]
+    fn panel_shadow_is_heavier_in_dark_themes_than_light() {
+        use crate::views::tokens::{
+            PANEL_SHADOW_BLUR, PANEL_SHADOW_BLUR_LIGHT, PANEL_SHADOW_Y, PANEL_SHADOW_Y_LIGHT,
+        };
+        assert!(theme::BUILTINS.len() > 30, "expected the full bundled set");
+        // `black_box` defeats constant folding so clippy's
+        // `assertions_on_constants` doesn't flag comparing two `const`
+        // tokens whose relationship is exactly what this test exists to
+        // pin — the values themselves are still read from the real tokens,
+        // not duplicated as literals.
+        let (y, y_light) = (
+            std::hint::black_box(PANEL_SHADOW_Y),
+            std::hint::black_box(PANEL_SHADOW_Y_LIGHT),
+        );
+        assert!(
+            y > y_light,
+            "dark-theme shadow offset must exceed the light-theme offset"
+        );
+        let (blur, blur_light) = (
+            std::hint::black_box(PANEL_SHADOW_BLUR),
+            std::hint::black_box(PANEL_SHADOW_BLUR_LIGHT),
+        );
+        assert!(
+            blur > blur_light,
+            "dark-theme shadow blur must exceed the light-theme blur"
+        );
+        let dark_alpha: f32 = alpha_rgba(BLACK, 0.35).a;
+        let light_alpha: f32 = alpha_rgba(BLACK, 0.18).a;
+        assert!(
+            dark_alpha > light_alpha,
+            "dark-theme shadow alpha {dark_alpha} must exceed light-theme alpha {light_alpha}"
+        );
+        let _lock = ACTIVE_THEME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = ActiveThemeGuard::capture();
+
+        let (mut saw_dark, mut saw_light) = (0u32, 0u32);
+        for t in theme::BUILTINS {
+            // Independent, per-theme expectation.
+            let want = if is_dark_of(t) { 0.35 } else { 0.18 };
+            let expected: Rgba = alpha_rgba(BLACK, want);
+
+            // The live accessor, exercised for real under this theme.
+            theme::set(t.clone());
+            let live: Rgba = PANEL_SHADOW().into();
+
+            assert!(
+                (live.a - want).abs() < 1e-6,
+                "theme '{}': PANEL_SHADOW alpha {} != expected {want}",
+                t.name,
+                live.a
+            );
+            assert!(
+                (live.a - expected.a).abs() < 1e-6,
+                "theme '{}': PANEL_SHADOW alpha {} disagrees with independent derivation {}",
+                t.name,
+                live.a,
+                expected.a
+            );
+            // Never the pre-C2g hard-coded literal on a light theme.
+            if !is_dark_of(t) {
+                assert!(
+                    (live.a - 0.35).abs() > 1e-6,
+                    "theme '{}': light theme still wears the dark-theme literal 0.35",
+                    t.name
+                );
+                saw_light += 1;
+            } else {
+                saw_dark += 1;
+            }
+        }
+        assert!(saw_dark > 0, "no dark theme was exercised");
+        assert!(saw_light > 0, "no light theme was exercised");
     }
 
     #[test]

@@ -9,10 +9,6 @@
 //! never transport, and never re-implements semver comparison
 //! (`grove_core::upgrade::update_available` decides Available vs UpToDate).
 
-// The whole machine lands in one TDD'd go; Task 4's `Upgrade` entity is its
-// only production consumer.
-#![allow(dead_code)]
-
 use grove_core::upgrade::{update_available, Release, ReleaseNote, Stage};
 
 /// Drives the Updates UI and the cog's dot (`src/gui/state.rs:447-458`).

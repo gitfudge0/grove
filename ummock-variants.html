@@ -1,0 +1,1192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Grove — Input &amp; Footer Options</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  /* ============================================================
+     GROVE DESIGN TOKENS
+     ============================================================ */
+  :root {
+    /* spacing */
+    --sp-xs: 2px;  --sp-sm: 4px;  --sp-md: 6px;  --sp-lg: 8px;
+    --sp-xl: 10px; --sp-2xl: 12px; --sp-3xl: 16px;
+    /* text */
+    --tx-micro: 10px; --tx-small: 11px; --tx-body: 12px;
+    --tx-title: 13px; --tx-display: 20px; --tx-display-lg: 32px;
+    /* radius */
+    --r-control: 4px; --r-group: 6px; --r-panel: 12px;
+    /* metrics */
+    --h-control: 22px; --row-px: 12px; --row-py: 8px; --row-minh: 38px;
+    --scroll-cap: 456px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+    /* --- theme: tokyonight-day (light) --- */
+    --bg: #e1e2e7;
+    --bg-rail: #d8d9de;
+    --bg-strip: #cfd0d5;
+    --bg-hl: #c4c8da;
+    --bg-hover: #d1d4e1;
+    --border: #cbcedd;
+    --border-soft: #d8d9e2;
+    --scrim: rgba(61,100,193,.70);
+    --fg: #3760bf;
+    --fg-dim: #6172b0;
+    --fg-mute: #848cb5;
+    --magenta: #9854f1;
+    --red: #f52a65;
+    --red-wash: #e0d0d9;
+    --cyan: #007197;
+    --green: #587539;
+    --yellow: #8c6c3e;
+    --blue: #2e7de9;
+    --amber: #a45a4b;
+    --sel-tint: rgba(0,113,151,.10);
+    --sel-ring: rgba(0,113,151,.5);
+    --panel-shadow: 0 12px 40px rgba(0,0,0,.35);
+
+    /* --- board chrome (independent of app theme, Figma-like) --- */
+    --board-bg: #f2f2f4;
+    --board-dot: #d9d9dc;
+    --board-fg: #16181d;
+    --board-mute: #6b7280;
+    --board-surface: #ffffff;
+    --board-border: #e2e3e8;
+    --board-ink: #111827;
+  }
+
+  html.dark {
+    /* --- theme: tokyonight-storm (dark) --- */
+    --bg: #24283b;
+    --bg-rail: #1e2131;
+    --bg-strip: #181b28;
+    --bg-hl: #373b51;
+    --bg-hover: #2e3247;
+    --border: #39415d;
+    --border-soft: #2e3242;
+    --scrim: rgba(4,4,6,.62);
+    --fg: #c0caf5;
+    --fg-dim: #a1aad0;
+    --fg-mute: #565f89;
+    --magenta: #bb9af7;
+    --red: #f7768e;
+    --red-wash: #37405f;
+    --cyan: #7dcfff;
+    --green: #9ece6a;
+    --yellow: #e0af68;
+    --blue: #7aa2f7;
+    --amber: #e79571;
+    --sel-tint: rgba(125,207,255,.10);
+    --sel-ring: rgba(125,207,255,.5);
+    --panel-shadow: 0 12px 40px rgba(0,0,0,.35);
+
+    --board-bg: #0e1015;
+    --board-dot: #22252d;
+    --board-fg: #e6e8ec;
+    --board-mute: #949aa6;
+    --board-surface: #171a21;
+    --board-border: #2a2e38;
+    --board-ink: #e6e8ec;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--board-bg); color: var(--board-fg);
+    font-family: var(--ui);
+    overflow: hidden;
+  }
+
+  /* ---------- pan / zoom ---------- */
+  #viewport {
+    position: fixed; inset: 0; overflow: hidden; cursor: grab;
+    background-image: radial-gradient(circle, var(--board-dot) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  #viewport.panning { cursor: grabbing; }
+  #canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; padding: 72px; width: max-content; }
+
+  .hud {
+    position: fixed; right: 16px; bottom: 16px; z-index: 20; display: flex; gap: 6px; align-items: center;
+    background: var(--board-surface); border: 1px solid var(--board-border); border-radius: 8px; padding: 6px 8px;
+    font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.18); color: var(--board-fg);
+  }
+  .hud button { border: 1px solid var(--board-border); background: var(--board-surface); color: var(--board-fg);
+    border-radius: 5px; padding: 3px 9px; font: inherit; cursor: pointer; }
+  .hud .zoom-pct { min-width: 46px; text-align: center; color: var(--board-mute); font-family: var(--mono); }
+  .theme-toggle {
+    position: fixed; right: 16px; top: 16px; z-index: 20; border: 1px solid var(--board-border);
+    background: var(--board-surface); color: var(--board-fg); border-radius: 9999px; padding: 7px 15px;
+    font: inherit; font-size: 13px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.18);
+  }
+
+  /* ---------- page chrome (inside canvas) ---------- */
+  .page-header { margin-bottom: 30px; max-width: 1100px; }
+  .page-header h1 { font-size: 30px; font-weight: 750; margin: 0 0 8px; letter-spacing: -.02em; }
+  .page-header .subtitle { font-size: 14px; color: var(--board-mute); margin: 0 0 18px; max-width: 860px; line-height: 1.55; }
+  .legend {
+    display: inline-flex; gap: 20px; flex-wrap: wrap; align-items: center;
+    background: var(--board-surface); border: 1px solid var(--board-border);
+    border-radius: 10px; padding: 11px 16px; font-size: 12px; color: var(--board-mute);
+  }
+  .legend b { color: var(--board-fg); }
+  .legend .tag { display: inline-flex; align-items: center; gap: 7px; }
+  .legend .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .sw-cur { background: #64748b; }
+  .sw-drift { background: #e0b33a; }
+  .sw-prop { background: #14a06f; }
+
+  .section-heading {
+    font-size: 19px; font-weight: 750; margin: 64px 0 4px; padding-bottom: 9px;
+    border-bottom: 2px solid var(--board-border); display: flex; align-items: baseline; gap: 11px;
+    max-width: 1100px; letter-spacing: -.01em;
+  }
+  .section-heading .section-letter {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; border-radius: 6px; background: var(--board-ink);
+    color: var(--board-bg); font-size: 13px; font-weight: 800; align-self: center;
+  }
+  .section-heading .sh-note { font-size: 12px; font-weight: 400; color: var(--board-mute); }
+
+  .frame-row { display: flex; gap: 34px; margin-top: 30px; align-items: flex-start; }
+  .frame-row.wrapish { flex-wrap: nowrap; }
+
+  .frame { position: relative; }
+  .frame-caption { margin-bottom: 11px; max-width: 560px; }
+  .frame-id {
+    display: inline-block; font-size: 11px; font-weight: 800; letter-spacing: .03em;
+    color: var(--board-bg); background: var(--board-ink); border-radius: 4px; padding: 2px 7px; margin-right: 8px;
+    font-family: var(--mono);
+  }
+  .frame-name { font-size: 14px; font-weight: 650; color: var(--board-fg); }
+  .tagchip {
+    display: inline-block; font-size: 9.5px; font-weight: 800; letter-spacing: .08em;
+    border-radius: 3px; padding: 2px 6px; margin-left: 8px; vertical-align: 1px; color: #fff;
+  }
+  .tag-cur { background: #64748b; }
+  .tag-prop { background: #14a06f; }
+  .frame-desc { font-size: 12px; color: var(--board-mute); margin: 5px 0 0; line-height: 1.5; max-width: 620px; }
+  .pairlink {
+    display: inline-flex; align-items: center; gap: 5px; margin-top: 7px;
+    font-family: var(--mono); font-size: 10px; letter-spacing: .04em;
+    color: #0b7d9e; border: 1px dashed #6fbdd4; background: rgba(0,150,190,.08);
+    border-radius: 4px; padding: 2px 7px;
+  }
+  html.dark .pairlink { color: #7dcfff; border-color: #35617a; background: rgba(125,207,255,.09); }
+
+  /* scrim backdrop pad so panels read in context */
+  .scrimpad {
+    background: var(--scrim); border-radius: 16px; padding: 40px;
+    display: flex; justify-content: center; align-items: flex-start;
+    border: 1px solid rgba(127,127,127,.18);
+  }
+  .scrimpad.tallpad { padding: 40px; }
+
+  /* spec card frame (not a modal) */
+  .speccard {
+    background: var(--board-surface); border: 1px solid var(--board-border); border-radius: 12px;
+    padding: 20px 22px; width: 720px; box-shadow: 0 1px 3px rgba(0,0,0,.06), 0 10px 28px rgba(0,0,0,.06);
+  }
+  .speccard h4 { margin: 0 0 4px; font-size: 13px; font-weight: 700; letter-spacing: -.01em; }
+  .speccard .sc-sub { font-size: 11.5px; color: var(--board-mute); margin: 0 0 14px; }
+  .rulelist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+  .rulelist li {
+    font-family: var(--mono); font-size: 11px; line-height: 1.65; color: var(--board-fg);
+    padding: 8px 0 8px 20px; border-top: 1px solid var(--board-border); position: relative;
+  }
+  .rulelist li:first-child { border-top: 0; }
+  .rulelist li::before { content: "▪"; position: absolute; left: 4px; color: #14a06f; }
+  .rulelist b { color: #0b7d9e; font-weight: 700; }
+  html.dark .rulelist b { color: #7dcfff; }
+  .rulelist i { font-style: normal; color: var(--board-mute); }
+
+  /* sticky notes */
+  .sticky-note {
+    display: inline-block; background: #fff6bf; border: 1px solid #e2cf69; color: #4a4320;
+    font-size: 12px; line-height: 1.55; padding: 13px 15px; width: 300px; border-radius: 3px;
+    box-shadow: 0 8px 18px rgba(0,0,0,.16); align-self: center;
+  }
+  .sticky-note b { display: block; color: #2c2810; font-size: 10px; letter-spacing: .09em;
+    text-transform: uppercase; margin-bottom: 5px; font-family: var(--mono); }
+  .rot-a { transform: rotate(-1.6deg); }
+  .rot-b { transform: rotate(1.5deg); }
+  .rot-c { transform: rotate(-2.4deg); }
+  .rot-d { transform: rotate(2.2deg); }
+  .note-strip { display: flex; gap: 34px; margin-top: 34px; align-items: flex-start; }
+
+  /* connector between paired frames */
+  .connector { display: flex; align-items: center; align-self: center; }
+  .conn-arrow {
+    display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 10px;
+    color: #0b7d9e; letter-spacing: .05em;
+  }
+  html.dark .conn-arrow { color: #7dcfff; }
+
+  /* ============================================================
+     SHARED GROVE MODAL COMPONENT CSS
+     ============================================================ */
+  .modal {
+    background: var(--bg-rail); border: 1px solid var(--border); border-radius: var(--r-panel);
+    box-shadow: var(--panel-shadow); color: var(--fg); overflow: hidden; flex: none;
+  }
+  html:not(.dark) .modal { box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+  .w420 { width: 420px; } .w480 { width: 480px; } .w560 { width: 560px; } .w640 { width: 640px; }
+
+  .m-header {
+    padding: var(--sp-3xl); display: flex; align-items: flex-start; gap: var(--sp-2xl);
+  }
+  .m-title { font-size: var(--tx-title); color: var(--magenta); font-weight: 600; line-height: 1.3; flex: 1; }
+  .m-title.danger { color: var(--red); }
+  .m-title .sep { color: var(--fg-mute); font-weight: 400; }
+  .m-title .path { font-family: var(--mono); font-weight: 400; }
+  .m-meta { font-family: var(--mono); font-size: var(--tx-small); color: var(--fg-mute); align-self: center; }
+  .m-sub { font-size: var(--tx-small); color: var(--fg-mute); margin-top: var(--sp-sm); font-weight: 400; }
+
+  .iconbtn {
+    width: 28px; height: 22px; border-radius: var(--r-control); border: 0; background: transparent;
+    color: var(--fg-mute); display: inline-flex; align-items: center; justify-content: center; flex: none; padding: 0;
+  }
+  .iconbtn.mini { width: 22px; height: 22px; }
+  .iconbtn.cy { color: var(--cyan); } .iconbtn.rd { color: var(--red); }
+
+  .m-divider { height: 1px; background: var(--border-soft); }
+
+  .m-body { padding: var(--sp-3xl); display: flex; flex-direction: column; gap: var(--sp-xl); }
+  .m-body.gap0 { gap: 0; } .m-body.gap6 { gap: var(--sp-md); }
+  .m-body.gap8 { gap: var(--sp-lg); } .m-body.gap12 { gap: var(--sp-2xl); }
+  .m-body.gap16 { gap: var(--sp-3xl); }
+  .m-body.p12 { padding: var(--sp-2xl); }
+  .m-body.capped { max-height: var(--scroll-cap); overflow: hidden; }
+
+  .m-footer {
+    padding: var(--sp-lg) var(--sp-3xl); background: var(--bg-strip);
+    border-bottom-left-radius: 11px; border-bottom-right-radius: 11px;
+    display: flex; align-items: center; gap: var(--sp-2xl);
+  }
+  .m-footer .spacer { flex: 1; }
+  .hints { display: flex; align-items: center; gap: var(--sp-3xl); }
+  .btns { display: flex; align-items: center; gap: var(--sp-lg); }
+
+  .hint { display: inline-flex; align-items: center; gap: var(--sp-md); }
+  .keycap {
+    font-family: var(--mono); font-size: var(--tx-small); color: var(--fg-dim);
+    background: var(--bg-hl); border-radius: var(--r-control); padding: 2px var(--sp-md); line-height: 1.35;
+  }
+  .hint .lbl { font-family: var(--mono); font-size: var(--tx-micro); color: var(--fg-mute); }
+
+  .btn {
+    font-family: var(--ui); font-size: var(--tx-body); line-height: 1.2;
+    padding: var(--sp-md) var(--sp-2xl); border-radius: var(--r-control);
+    border: 1px solid var(--border); background: transparent; color: var(--fg-dim); cursor: default;
+    display: inline-flex; align-items: center; gap: var(--sp-md);
+  }
+  .btn.plain { color: var(--fg-dim); border-color: var(--border); background: transparent; }
+  .btn.primary { color: var(--fg); border-color: var(--border); background: var(--bg-hl); }
+  .btn.danger { color: var(--red); border-color: var(--red); background: var(--bg-hl); }
+  .btn.accent { color: var(--magenta); border-color: var(--magenta); background: var(--bg-hl); }
+  .btn.flat { border-color: transparent; background: transparent; color: var(--fg-dim); padding-left: var(--sp-md); padding-right: var(--sp-md); }
+  .btn.flat.cy { color: var(--cyan); }
+  .btn.block { width: 100%; justify-content: center; }
+
+  .field {
+    height: var(--h-control); border-bottom: 1px solid var(--border-soft);
+    font-family: var(--mono); font-size: var(--tx-body); color: var(--fg);
+    display: flex; align-items: center; width: 100%;
+  }
+  .field.focus { border-bottom-color: var(--magenta); }
+  .field .ph { color: var(--fg-mute); }
+  .field .caret { width: 1px; height: 13px; background: var(--magenta); margin-left: 1px; }
+
+  .card {
+    border-radius: var(--r-control); border: 1px solid var(--border); background: var(--bg-strip); overflow: hidden;
+  }
+  .row {
+    padding: var(--row-py) var(--row-px); min-height: var(--row-minh);
+    display: flex; align-items: center; gap: var(--sp-xl); border-top: 1px solid var(--border-soft);
+  }
+  .row:first-child { border-top: 0; }
+  .row.sel { background: var(--bg-hl); }
+  .row .grow { flex: 1; min-width: 0; }
+  .row .lab { font-size: var(--tx-body); color: var(--fg); }
+  .row .lab13 { font-size: var(--tx-title); color: var(--fg); }
+  .row .sublab { font-size: var(--tx-small); color: var(--fg-mute); margin-top: var(--sp-md); line-height: 1.4; }
+  .row .trail { font-size: var(--tx-small); color: var(--fg-mute); }
+  .row .mono { font-family: var(--mono); }
+
+  .seg { display: inline-flex; height: var(--h-control); border: 1px solid var(--border);
+    border-radius: var(--r-group); overflow: hidden; }
+  .seg span {
+    display: inline-flex; align-items: center; padding: 0 var(--sp-2xl);
+    font-family: var(--mono); font-size: var(--tx-small); color: var(--fg-mute);
+    border-left: 1px solid var(--border);
+  }
+  .seg span:first-child { border-left: 0; }
+  .seg span.on { background: var(--bg-hl); color: var(--fg); }
+  .seg span.on.warn { background: var(--red-wash); color: var(--fg); }
+
+  .checkbox { width: 14px; height: 14px; border-radius: var(--r-control); border: 1px solid var(--border);
+    background: var(--bg-strip); display: inline-flex; align-items: center; justify-content: center; flex: none; }
+  .checkbox.on { border-color: var(--magenta); color: var(--magenta); }
+  .checkbox.on.rd { border-color: var(--red); color: var(--red); }
+  .cbrow { display: flex; align-items: center; gap: var(--sp-lg); font-size: var(--tx-body); color: var(--fg-dim); }
+
+  .section-label { font-family: var(--mono); font-size: var(--tx-micro); color: var(--fg-mute);
+    text-transform: uppercase; letter-spacing: .1em; }
+  .lbl-row { display: flex; align-items: baseline; gap: var(--sp-lg); }
+  .lbl-row .spacer { flex: 1; }
+
+  .txt { font-size: var(--tx-body); color: var(--fg-dim); line-height: 1.5; }
+  .txt13 { font-size: var(--tx-title); color: var(--fg-mute); }
+  .mute11 { font-size: var(--tx-small); color: var(--fg-mute); line-height: 1.45; }
+  .red11 { font-size: var(--tx-small); color: var(--red); }
+  .green12 { font-size: var(--tx-body); color: var(--green); display: flex; align-items: center; gap: var(--sp-md); }
+  .monotxt { font-family: var(--mono); }
+
+  .ic { width: 14px; height: 14px; flex: none; display: block; }
+  .ic10 { width: 10px; height: 10px; } .ic12 { width: 12px; height: 12px; }
+  .ic16 { width: 16px; height: 16px; } .ic32 { width: 32px; height: 32px; }
+
+  .progress { height: 6px; border-radius: var(--r-control); border: 1px solid var(--border);
+    background: var(--bg-strip); overflow: hidden; }
+  .progress > i { display: block; height: 100%; background: var(--red); }
+
+  .pty { height: 120px; border-radius: var(--r-group); background: var(--bg-strip);
+    border: 1px solid var(--border-soft); padding: var(--sp-xl) var(--sp-2xl);
+    font-family: var(--mono); font-size: var(--tx-small); line-height: 1.7; overflow: hidden; }
+  .pty .g { color: var(--green); } .pty .d { color: var(--fg-mute); }
+
+  .swatchrow { display: inline-flex; gap: 3px; align-items: center; }
+  .swatchrow i { width: 10px; height: 10px; border-radius: 2px; display: block; }
+  .swatchrow.tiny i { width: 8px; height: 8px; }
+
+  .ordiv { display: flex; align-items: center; gap: var(--sp-xl); }
+  .ordiv .ln { flex: 1; height: 1px; background: var(--border-soft); }
+  .ordiv .t { font-size: var(--tx-small); color: var(--fg-mute); }
+
+  .pathchip { border-radius: var(--r-control); border: 1px solid var(--border); background: var(--bg-strip);
+    padding: var(--sp-md) var(--sp-xl); display: flex; align-items: center; gap: var(--sp-lg); }
+  .pathchip .p { font-family: var(--mono); font-size: var(--tx-body); color: var(--fg); flex: 1; }
+
+  .palrow {
+    height: 54px; border-radius: var(--r-group); padding: 0 var(--sp-2xl);
+    display: flex; align-items: center; gap: var(--sp-xl); border: 1px solid transparent;
+  }
+  .palrow.on { background: var(--sel-tint); border-color: var(--sel-ring); }
+  .palrow .t { font-size: var(--tx-title); color: var(--fg); }
+  .palrow .s { font-family: var(--mono); font-size: var(--tx-small); color: var(--fg-mute); margin-top: var(--sp-xs); }
+
+  .looserow { padding: var(--sp-md) var(--sp-xl); border-radius: var(--r-group);
+    display: flex; align-items: center; gap: var(--sp-xl); }
+  .looserow.on { background: var(--bg-hover); }
+  .badge { font-family: var(--mono); font-size: var(--tx-micro); color: var(--fg-mute);
+    border: 1px solid var(--border); border-radius: var(--r-control); padding: 1px 5px; }
+
+  .agentring { width: 16px; height: 16px; border-radius: 3px; display: inline-flex;
+    align-items: center; justify-content: center; color: var(--yellow); flex: none; }
+
+  /* B1 annotation layer */
+  .anno-wrap { position: relative; }
+  .anno {
+    position: absolute; font-family: var(--mono); font-size: 10px; color: var(--cyan);
+    white-space: nowrap; display: flex; align-items: center; gap: 6px;
+  }
+  .anno .dash { display: block; height: 1px; background: var(--cyan); opacity: .7; }
+  .anno .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--cyan); flex: none; }
+  .anno.left { flex-direction: row-reverse; }
+
+  /* ---------- Section C: variants ---------- */
+  .tag-var { background: #7c3aed; }
+  .tag-chosen { background: #14a06f; }
+  .vnote {
+    margin-top: 10px; max-width: 560px; font-size: 11.5px; line-height: 1.5;
+    color: var(--board-mute); border-left: 2px solid #7c3aed; padding: 2px 0 2px 10px;
+  }
+  .vnote b { color: var(--board-fg); font-weight: 600; }
+  .statecol { flex: 1; display: flex; flex-direction: column; gap: var(--sp-lg); min-width: 0; }
+  .statelbl { font-family: var(--mono); font-size: var(--tx-micro); color: var(--fg-mute);
+    text-transform: uppercase; letter-spacing: .1em; }
+  .fieldlbl { font-size: var(--tx-small); color: var(--fg-dim); }
+  .caselbl {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--board-mute); margin: 14px 0 6px;
+  }
+
+  /* C1b — boxed, filled */
+  .f-boxed {
+    width: 100%; padding: var(--sp-md) var(--sp-xl); border-radius: var(--r-control);
+    background: var(--bg); border: 1px solid var(--border);
+    font-family: var(--mono); font-size: var(--tx-body); color: var(--fg);
+    display: flex; align-items: center;
+  }
+  .f-boxed.focus { border-color: var(--magenta); }
+
+  /* C1c — boxed, strip-filled + focus ring */
+  .f-ring {
+    width: 100%; padding: var(--sp-md) var(--sp-xl); padding-top: 7px; padding-bottom: 7px;
+    border-radius: var(--r-group); background: var(--bg-strip); border: 1px solid var(--border-soft);
+    font-family: var(--mono); font-size: var(--tx-body); color: var(--fg);
+    display: flex; align-items: center;
+  }
+  .f-ring.focus { border-color: var(--magenta); box-shadow: 0 0 0 2px rgba(187,154,247,.25); }
+  html:not(.dark) .f-ring.focus { box-shadow: 0 0 0 2px rgba(152,84,241,.25); }
+
+  /* C1d — underline on a filled well */
+  .f-well {
+    width: 100%; padding: var(--sp-md) var(--sp-xl); background: var(--bg);
+    border-top-left-radius: var(--r-control); border-top-right-radius: var(--r-control);
+    border-bottom: 1px solid var(--border-soft);
+    font-family: var(--mono); font-size: var(--tx-body); color: var(--fg);
+    display: flex; align-items: center;
+  }
+  .f-well.focus { border-bottom-color: var(--magenta); }
+
+  /* C2b — keycap inside button */
+  .btn .inkey {
+    font-family: var(--mono); font-size: var(--tx-micro); color: var(--fg-mute);
+    background: var(--bg-hl); border-radius: 3px; padding: 1px var(--sp-sm); line-height: 1.3;
+  }
+  .btn.primary .inkey { background: var(--bg); color: var(--fg-dim); }
+
+  /* C2c — two-tier footer */
+  .m-footer.tier {
+    display: block; padding: 0;
+  }
+  .m-footer.tier .hintbar {
+    padding: var(--sp-sm) var(--sp-3xl); display: flex; align-items: center; gap: var(--sp-3xl);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .m-footer.tier .hintbar .hint .keycap { font-size: var(--tx-micro); padding: 1px var(--sp-sm); }
+  .m-footer.tier .btnbar {
+    padding: var(--sp-lg) var(--sp-3xl); display: flex; align-items: center; gap: var(--sp-2xl);
+  }
+  .m-footer.tier .btnbar .spacer { flex: 1; }
+
+  .exception-note {
+    font-family: var(--mono); font-size: 10px; color: #0b7d9e; border: 1px dashed #6fbdd4;
+    background: rgba(0,150,190,.08); border-radius: 4px; padding: 4px 8px; margin-top: 8px; display: inline-block;
+  }
+  html.dark .exception-note { color: #7dcfff; border-color: #35617a; background: rgba(125,207,255,.09); }
+
+  /* C1e — terminal prompt */
+  .f-prompt {
+    width: 100%; padding: var(--sp-md) var(--sp-xl); border-radius: var(--r-control);
+    background: var(--bg-strip); border: 1px solid transparent;
+    font-family: var(--mono); font-size: var(--tx-body); color: var(--fg);
+    display: flex; align-items: center; gap: var(--sp-lg);
+  }
+  .f-prompt .prompt { color: var(--magenta); }
+  .f-prompt.focus { border-color: var(--magenta); }
+  .blockcaret { width: 7px; height: 14px; background: var(--magenta); opacity: .6; display: block; }
+
+  /* C1f — left accent bar */
+  .f-accent {
+    width: 100%; padding: var(--sp-md) var(--sp-xl); border-radius: var(--r-control);
+    background: var(--bg); border: 1px solid var(--border);
+    font-family: var(--mono); font-size: var(--tx-body); color: var(--fg);
+    display: flex; align-items: center;
+  }
+  .f-accent.focus { box-shadow: inset 2px 0 0 var(--magenta); }
+
+  /* C1g — label-in-field */
+  .f-inlabel {
+    width: 100%; padding: var(--sp-xl); border-radius: var(--r-control);
+    background: var(--bg); border: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: var(--sp-xs);
+  }
+  .f-inlabel .il-lbl {
+    font-family: var(--mono); font-size: var(--tx-micro); color: var(--fg-mute);
+    text-transform: uppercase; letter-spacing: .1em;
+  }
+  .f-inlabel .il-val {
+    font-family: var(--mono); font-size: var(--tx-body); color: var(--fg);
+    display: flex; align-items: center;
+  }
+  .f-inlabel.focus { border-color: var(--magenta); }
+  .f-inlabel.focus .il-lbl { color: var(--magenta); }
+
+  /* C1h — sunken inset */
+  .f-sunken {
+    width: 100%; padding: var(--sp-md) var(--sp-xl); border-radius: var(--r-control);
+    background: var(--bg-strip); border: 1px solid transparent;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,.3);
+    font-family: var(--mono); font-size: var(--tx-body); color: var(--fg);
+    display: flex; align-items: center;
+  }
+  html:not(.dark) .f-sunken { box-shadow: inset 0 1px 2px rgba(0,0,0,.14); }
+  .f-sunken.focus { border-color: var(--magenta); }
+
+  /* C2e — hints in the header */
+  .hdr-hints { display: flex; align-items: center; gap: var(--sp-lg); align-self: center; }
+  .hdr-hints .keycap { font-size: var(--tx-micro); padding: 1px var(--sp-sm); }
+
+  /* C2f — borderless text actions */
+  .btn.text {
+    border-color: transparent; background: transparent; padding: var(--sp-md) 0;
+    color: var(--fg-dim);
+  }
+  .btn.text.aff { color: var(--magenta); font-weight: 600; }
+  .btns.textbtns { gap: var(--sp-3xl); }
+
+  /* C2g — statusbar footer */
+  .m-footer.bare {
+    background: transparent; border-top: 1px solid var(--border-soft);
+    border-bottom-left-radius: 11px; border-bottom-right-radius: 11px;
+  }
+  .m-footer.bare .hint .keycap { background: transparent; padding: 1px 0; font-size: var(--tx-micro); }
+  .m-footer.bare .hint .lbl { font-size: var(--tx-micro); }
+
+  .row-heading {
+    font-size: 17px; font-weight: 750; margin: 46px 0 0; padding-bottom: 9px;
+    border-bottom: 2px solid var(--board-border); display: flex; align-items: center; gap: 11px;
+    letter-spacing: -.01em; max-width: 1100px;
+  }
+  .row-heading .row-num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; border-radius: 6px; background: #7c3aed; color: #fff;
+    font-size: 12px; font-weight: 800;
+  }
+  .row-heading .rh-note { font-size: 12px; font-weight: 400; color: var(--board-mute); }
+  #canvas { padding: 56px; }
+  .frame-row { gap: 30px; margin-top: 26px; }
+</style>
+</head>
+<body>
+<button class="theme-toggle" id="themeToggle" type="button">☀ Light</button>
+<div class="hud">
+  <button type="button" id="zoomOut">−</button>
+  <span class="zoom-pct" id="zoomPct">100%</span>
+  <button type="button" id="zoomIn">+</button>
+  <button type="button" id="zoomFit">Fit</button>
+</div>
+
+<div id="viewport">
+<div id="canvas">
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="g-x"><path d="M5 5l14 14M19 5L5 19"/></g>
+    <g id="g-search"><circle cx="11" cy="11" r="6"/><path d="M15.5 15.5L21 21"/></g>
+    <g id="g-branch"><circle cx="7" cy="5" r="2.2"/><circle cx="7" cy="19" r="2.2"/><circle cx="17" cy="9" r="2.2"/><path d="M7 7.2v9.6M17 11.2c0 3-3.2 3.6-6.4 3.6H9"/></g>
+    <g id="g-folder"><path d="M3 6.5A1.5 1.5 0 014.5 5h4l2 2.5h7A1.5 1.5 0 0119 9v8.5A1.5 1.5 0 0117.5 19h-13A1.5 1.5 0 013 17.5z"/></g>
+    <g id="g-chev"><path d="M9 5l7 7-7 7"/></g>
+    <g id="g-play"><path d="M7 4.5l12 7.5-12 7.5z"/></g>
+    <g id="g-trash"><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 10.5v6.5M14 10.5v6.5"/></g>
+    <g id="g-edit"><path d="M15.5 4.5l4 4L8 20H4v-4z"/><path d="M13 7l4 4"/></g>
+    <g id="g-check"><path d="M4.5 12.5l5 5 10-11"/></g>
+    <g id="g-refresh"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M19.2 11A7.5 7.5 0 006 7.6L4 9.5M4.8 13A7.5 7.5 0 0018 16.4l2-1.9"/></g>
+    <g id="g-copy"><rect x="4" y="4" width="11" height="11" rx="2"/><path d="M9 20h9a2 2 0 002-2V9"/></g>
+    <g id="g-agent"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M8.5 12.5v1.5M15.5 12.5v1.5"/></g>
+    <g id="g-plus"><path d="M12 5v14M5 12h14"/></g>
+    <g id="g-minus"><path d="M5 12h14"/></g>
+  </defs>
+</svg>
+
+  <div class="page-header">
+    <h1>Grove — Input &amp; Footer Options</h1>
+    <p class="subtitle">Two open questions to settle before the modal standard locks, with 8 options each: how an input field should occupy its space, and how keyboard hints and buttons should share the footer. Pick one per row.</p>
+    <div class="legend">
+      <span class="tag"><span class="swatch" style="background:#7c3aed"></span><b>VARIANT</b> = a direction to choose between</span>
+      <span class="tag"><b>C1a</b> and <b>C2a</b> are today's shipped versions, included as baselines</span>
+      <span class="tag">Every frame is at real size, in the real tokens · toggle the theme top-right</span>
+    </div>
+  </div>
+
+<div class="row-heading"><span class="row-num">1</span> Input fields <span class="rh-note">Today's field is a bare 22px underline. 8 options, each shown unfocused and focused side by side. C1a is the baseline.</span></div>
+<div class="frame-row wrapish">
+
+  <!-- C1a -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C1a</span><span class="frame-name">Field — current, underline</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">Baseline for comparison. 22px tall, border-bottom 1px, magenta when focused, mono 12px.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-body gap16">
+          <div style="display:flex;gap:16px">
+            <div class="statecol">
+              <div class="statelbl">Unfocused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="field">feature/auth</div>
+            </div>
+            <div class="statecol">
+              <div class="statelbl">Focused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="field focus">feature/auth<span class="caret"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> as shipped — smallest, but reads as a hairline, weak affordance.</p>
+  </div>
+
+  <!-- C1b -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C1b</span><span class="frame-name">Field — boxed, filled</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">Full-width box, px10/py6 (~30px), radius 4, bg inset against the rail, 1px border; magenta border on focus.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-body gap16">
+          <div style="display:flex;gap:16px">
+            <div class="statecol">
+              <div class="statelbl">Unfocused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-boxed">feature/auth</div>
+            </div>
+            <div class="statecol">
+              <div class="statelbl">Focused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-boxed focus">feature/auth<span class="caret"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> matches the theme-editor field precedent already in the app; clear hit target.</p>
+  </div>
+
+  <!-- C1c -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C1c</span><span class="frame-name">Field — boxed, strip-filled + focus ring</span><span class="tagchip tag-var">VARIANT</span><span class="tagchip tag-chosen">✓ CHOSEN</span>
+      <p class="frame-desc">px10/py7 (~32px), radius 6, bg-strip like cards, border-soft; focus = magenta border + 2px magenta-tinted outer ring.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-body gap16">
+          <div style="display:flex;gap:16px">
+            <div class="statecol">
+              <div class="statelbl">Unfocused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-ring">feature/auth</div>
+            </div>
+            <div class="statecol">
+              <div class="statelbl">Focused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-ring focus">feature/auth<span class="caret"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> heaviest presence; focus unmissable; adds a ring treatment the app doesn't have yet.</p>
+  </div>
+
+  <!-- C1d -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C1d</span><span class="frame-name">Field — underline on a filled well</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">bg fill, px10/py6, top corners radius 4, bottom border 1px — magenta when focused. Keeps the underline language.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-body gap16">
+          <div style="display:flex;gap:16px">
+            <div class="statecol">
+              <div class="statelbl">Unfocused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-well">feature/auth</div>
+            </div>
+            <div class="statecol">
+              <div class="statelbl">Focused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-well focus">feature/auth<span class="caret"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> smallest visual change that still fills the space; keeps the underline identity.</p>
+  </div>
+</div>
+
+<div class="frame-row wrapish">
+
+  <!-- C1e -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C1e</span><span class="frame-name">Field — terminal prompt</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">Magenta ❯ glyph leading, text on a bg-strip well px10/py6 radius 4, borderless at rest; focus adds a magenta border and a block caret.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-body gap16">
+          <div style="display:flex;gap:16px">
+            <div class="statecol">
+              <div class="statelbl">Unfocused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-prompt"><span class="prompt">❯</span>feature/auth</div>
+            </div>
+            <div class="statecol">
+              <div class="statelbl">Focused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-prompt focus"><span class="prompt">❯</span>feature/auth<span class="blockcaret"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> leans into Grove's terminal identity; prompt glyph doubles as focus anchor; unusual for form fields.</p>
+  </div>
+
+  <!-- C1f -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C1f</span><span class="frame-name">Field — left accent bar</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">Box as in C1b, but focus is a 2px magenta left edge bar — the border itself never changes color.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-body gap16">
+          <div style="display:flex;gap:16px">
+            <div class="statecol">
+              <div class="statelbl">Unfocused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-accent">feature/auth</div>
+            </div>
+            <div class="statecol">
+              <div class="statelbl">Focused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-accent focus">feature/auth<span class="caret"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> quieter focus than a full magenta outline; scans well in stacked forms; accent bar is a new pattern.</p>
+  </div>
+
+  <!-- C1g -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C1g</span><span class="frame-name">Field — label-in-field</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">~40px box carrying its own mono 10px label above the value. No separate label row; label turns magenta on focus.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-body gap16">
+          <div style="display:flex;gap:16px">
+            <div class="statecol">
+              <div class="statelbl">Unfocused</div>
+              <div class="f-inlabel">
+                <div class="il-lbl">Branch name</div>
+                <div class="il-val">feature/auth</div>
+              </div>
+            </div>
+            <div class="statecol">
+              <div class="statelbl">Focused</div>
+              <div class="f-inlabel focus">
+                <div class="il-lbl">Branch name</div>
+                <div class="il-val">feature/auth<span class="caret"></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> self-labeling — kills the separate label row and aligns with section-header vocabulary; tallest option.</p>
+  </div>
+
+  <!-- C1h -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C1h</span><span class="frame-name">Field — sunken inset</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">bg-strip fill with an inner top shadow instead of a border; a magenta border only appears on focus.</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-body gap16">
+          <div style="display:flex;gap:16px">
+            <div class="statecol">
+              <div class="statelbl">Unfocused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-sunken">feature/auth</div>
+            </div>
+            <div class="statecol">
+              <div class="statelbl">Focused</div>
+              <div class="fieldlbl">Branch name</div>
+              <div class="f-sunken focus">feature/auth<span class="caret"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> reads as carved into the panel; depth without a heavy outline; inset shadows are theme-sensitive (weaker in light).</p>
+  </div>
+</div>
+
+<div class="row-heading"><span class="row-num">2</span> Footers <span class="rh-note">Today hints and buttons share one line. 8 options for resolving the crowding, each shown with its buttons-less case. C2a is the baseline.</span></div>
+<div class="frame-row wrapish">
+
+  <!-- C2a -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C2a</span><span class="frame-name">Footer — current</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">One strip px16/py8: left slot · spacer · keycap hints (gap 16) · bordered buttons (gap 8).</p>
+    </div>
+    <div class="scrimpad">
+      <div class="modal w480">
+        <div class="m-body" style="min-height:60px">
+          <div class="txt">2 sessions are still running. Quit anyway?</div>
+        </div>
+        <div class="m-footer">
+          <div class="spacer"></div>
+          <div class="hints">
+            <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+            <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+          </div>
+          <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Quit</button></div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> hints and buttons compete on one line; hints read as clutter next to buttons.</p>
+  </div>
+
+  <!-- C2b -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C2b</span><span class="frame-name">Footer — hints merged into buttons</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">No separate hint group; each button carries its keycap inline, right of the label. Left slot stays.</p>
+    </div>
+    <div class="scrimpad">
+      <div style="display:flex;flex-direction:column;gap:0">
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">2 sessions are still running. Quit anyway?</div>
+          </div>
+          <div class="m-footer">
+            <button class="btn flat cy">Session list</button>
+            <div class="spacer"></div>
+            <div class="btns">
+              <button class="btn plain">Cancel <span class="inkey">esc</span></button>
+              <button class="btn primary">Quit <span class="inkey">⏎</span></button>
+            </div>
+          </div>
+        </div>
+        <div class="caselbl">Buttons-less case (launcher-style)</div>
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">Palette rows above; nothing to confirm.</div>
+          </div>
+          <div class="m-footer">
+            <div class="spacer"></div>
+            <div class="hints">
+              <span class="hint"><span class="keycap">↑↓</span><span class="lbl">navigate</span></span>
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">open</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> one vocabulary, zero duplication; shortcut discoverability tied to its action; keycap inside a button is a new pattern. Note the buttons-less case has to fall back to a loose hint row — the scheme has no home for it.</p>
+  </div>
+
+  <!-- C2c -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C2c</span><span class="frame-name">Footer — two-tier</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">Thin hint bar (py4, mono 10px, left-aligned) above the button row (py8, right), split by 1px border-soft.</p>
+    </div>
+    <div class="scrimpad">
+      <div style="display:flex;flex-direction:column;gap:0">
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">2 sessions are still running. Quit anyway?</div>
+          </div>
+          <div class="m-footer tier">
+            <div class="hintbar">
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+            </div>
+            <div class="btnbar">
+              <button class="btn flat cy">Session list</button>
+              <div class="spacer"></div>
+              <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Quit</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="caselbl">Buttons-less case (launcher-style)</div>
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">Palette rows above; nothing to confirm.</div>
+          </div>
+          <div class="m-footer tier">
+            <div class="hintbar" style="border-bottom:0">
+              <span class="hint"><span class="keycap">↑↓</span><span class="lbl">navigate</span></span>
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">open</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> cleanest separation; taller footer (+~22px); hints get a consistent home even in button-less modals — the buttons-less case is just the top tier alone.</p>
+  </div>
+
+  <!-- C2d -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C2d</span><span class="frame-name">Footer — hints left, buttons right</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">Hints take the far-left position the left slot used to hold; left-slot content relocates to the body or header meta.</p>
+    </div>
+    <div class="scrimpad">
+      <div style="display:flex;flex-direction:column;gap:0">
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">2 sessions are still running. Quit anyway?</div>
+          </div>
+          <div class="m-footer">
+            <div class="hints">
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+            </div>
+            <div class="spacer"></div>
+            <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Quit</button></div>
+          </div>
+        </div>
+        <div class="caselbl">Buttons-less case (launcher-style)</div>
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">Palette rows above; nothing to confirm.</div>
+          </div>
+          <div class="m-footer">
+            <div class="hints">
+              <span class="hint"><span class="keycap">↑↓</span><span class="lbl">navigate</span></span>
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">open</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span>
+            </div>
+            <div class="spacer"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> smallest change; fixes the crowding; kills the left-slot contract everyone keeps breaking — the buttons-less case is identical minus the button group.</p>
+  </div>
+</div>
+
+<div class="frame-row wrapish">
+
+  <!-- C2e -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C2e</span><span class="frame-name">Footer — hints in the header</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">Footer becomes buttons-only; the keycap hints move up to the header's right side, before the close X.</p>
+    </div>
+    <div class="scrimpad">
+      <div style="display:flex;flex-direction:column;gap:0">
+        <div class="modal w480">
+          <div class="m-header">
+            <div class="m-title">Quit Grove?</div>
+            <div style="flex:1"></div>
+            <div class="hdr-hints">
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+            </div>
+            <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+          </div>
+          <div class="m-divider"></div>
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">2 sessions are still running. Quit anyway?</div>
+          </div>
+          <div class="m-footer">
+            <div class="spacer"></div>
+            <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Quit</button></div>
+          </div>
+        </div>
+        <div class="caselbl">Buttons-less case (launcher-style)</div>
+        <div class="modal w480">
+          <div class="m-header">
+            <div class="m-title">Open session</div>
+            <div style="flex:1"></div>
+            <div class="hdr-hints">
+              <span class="hint"><span class="keycap">↑↓</span><span class="lbl">navigate</span></span>
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">open</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span>
+            </div>
+            <button class="iconbtn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#g-x"/></svg></button>
+          </div>
+          <div class="m-divider"></div>
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">Palette rows above; nothing to confirm — and no footer at all.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> footer decluttered completely; hints visible before you read the body; header gets busy on modals with 4 hints. Buttons-less modals lose their footer entirely.</p>
+  </div>
+
+  <!-- C2f -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C2f</span><span class="frame-name">Footer — borderless text actions</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">Strip and hints stay; buttons lose border and fill entirely — Cancel in fg-dim, Quit in magenta, gap 16.</p>
+    </div>
+    <div class="scrimpad">
+      <div style="display:flex;flex-direction:column;gap:0">
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">2 sessions are still running. Quit anyway?</div>
+          </div>
+          <div class="m-footer">
+            <div class="hints">
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+            </div>
+            <div class="spacer"></div>
+            <div class="btns textbtns"><button class="btn text">Cancel</button><button class="btn text aff">Quit</button></div>
+          </div>
+        </div>
+        <div class="caselbl">Buttons-less case (launcher-style)</div>
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">Palette rows above; nothing to confirm.</div>
+          </div>
+          <div class="m-footer">
+            <div class="hints">
+              <span class="hint"><span class="keycap">↑↓</span><span class="lbl">navigate</span></span>
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">open</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span>
+            </div>
+            <div class="spacer"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> lightest footer; matches flat-button precedent in Settings; weaker affordance for the primary action.</p>
+  </div>
+
+  <!-- C2g -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C2g</span><span class="frame-name">Footer — statusbar</span><span class="tagchip tag-var">VARIANT</span><span class="tagchip tag-chosen">✓ CHOSEN</span>
+      <p class="frame-desc">No strip fill: a 1px border-soft divider over a transparent py8 row on the rail. Mono 10px hints left, buttons right.</p>
+    </div>
+    <div class="scrimpad">
+      <div style="display:flex;flex-direction:column;gap:0">
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">2 sessions are still running. Quit anyway?</div>
+          </div>
+          <div class="m-footer bare">
+            <div class="hints">
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+            </div>
+            <div class="spacer"></div>
+            <div class="btns"><button class="btn plain">Cancel</button><button class="btn primary">Quit</button></div>
+          </div>
+        </div>
+        <div class="caselbl">Buttons-less case (launcher-style)</div>
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">Palette rows above; nothing to confirm.</div>
+          </div>
+          <div class="m-footer bare">
+            <div class="hints">
+              <span class="hint"><span class="keycap">↑↓</span><span class="lbl">navigate</span></span>
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">open</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span>
+            </div>
+            <div class="spacer"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> quietest; modal reads as one surface; loses the visual "end of modal" anchor the strip provides.</p>
+  </div>
+
+  <!-- C2h -->
+  <div class="frame">
+    <div class="frame-caption">
+      <span class="frame-id">C2h</span><span class="frame-name">Footer — primary-emphasis split</span><span class="tagchip tag-var">VARIANT</span>
+      <p class="frame-desc">One bordered button only — the affirmative. Cancel exists solely as the esc hint; no Cancel button is rendered.</p>
+    </div>
+    <div class="scrimpad">
+      <div style="display:flex;flex-direction:column;gap:0">
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">2 sessions are still running. Quit anyway?</div>
+          </div>
+          <div class="m-footer">
+            <div class="spacer"></div>
+            <div class="hints">
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">confirm</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">cancel</span></span>
+            </div>
+            <div class="btns"><button class="btn primary">Quit</button></div>
+          </div>
+        </div>
+        <div class="caselbl">Buttons-less case (launcher-style) — unchanged</div>
+        <div class="modal w480">
+          <div class="m-body" style="min-height:60px">
+            <div class="txt">Palette rows above; nothing to confirm.</div>
+          </div>
+          <div class="m-footer">
+            <div class="spacer"></div>
+            <div class="hints">
+              <span class="hint"><span class="keycap">↑↓</span><span class="lbl">navigate</span></span>
+              <span class="hint"><span class="keycap">⏎</span><span class="lbl">open</span></span>
+              <span class="hint"><span class="keycap">esc</span><span class="lbl">close</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="vnote"><b>Tradeoff:</b> boldest simplification — mouse users lose an explicit Cancel; keyboard-first app may not care.</p>
+  </div>
+</div>
+
+</div><!-- /#canvas -->
+</div><!-- /#viewport -->
+
+<script>
+(function () {
+  var vp = document.getElementById('viewport'), cv = document.getElementById('canvas');
+  var x = 0, y = 0, z = 1, MIN = 0.1, MAX = 2.5;
+  function apply() {
+    cv.style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + z + ')';
+    document.getElementById('zoomPct').textContent = Math.round(z * 100) + '%';
+  }
+  function fit() {
+    var w = cv.scrollWidth, h = cv.scrollHeight;
+    z = Math.min(MAX, Math.max(MIN, Math.min(innerWidth / w, innerHeight / h) * 0.95));
+    x = (innerWidth - w * z) / 2; y = Math.max(20, (innerHeight - h * z) / 2);
+    apply();
+  }
+  vp.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var nz = Math.min(MAX, Math.max(MIN, z * Math.exp(-e.deltaY * 0.0015)));
+    x = e.clientX - (e.clientX - x) * (nz / z);
+    y = e.clientY - (e.clientY - y) * (nz / z);
+    z = nz; apply();
+  }, { passive: false });
+  var panning = false, px = 0, py = 0;
+  vp.addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    panning = true; px = e.clientX - x; py = e.clientY - y;
+    vp.classList.add('panning'); vp.setPointerCapture(e.pointerId);
+  });
+  vp.addEventListener('pointermove', function (e) {
+    if (panning) { x = e.clientX - px; y = e.clientY - py; apply(); }
+  });
+  vp.addEventListener('pointerup', function () { panning = false; vp.classList.remove('panning'); });
+  document.getElementById('zoomIn').onclick = function () { z = Math.min(MAX, z * 1.25); apply(); };
+  document.getElementById('zoomOut').onclick = function () { z = Math.max(MIN, z / 1.25); apply(); };
+  document.getElementById('zoomFit').onclick = fit;
+  document.getElementById('themeToggle').onclick = function () {
+    var dark = document.documentElement.classList.toggle('dark');
+    this.textContent = dark ? '☀ Light' : '☾ Dark';
+  };
+  document.documentElement.classList.add('dark');
+  document.getElementById('themeToggle').textContent = '☀ Light';
+  fit();
+})();
+</script>
+</body>
+</html>
