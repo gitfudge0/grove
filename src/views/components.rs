@@ -911,6 +911,10 @@ pub fn icon_btn(
         .cursor_pointer()
         .child(crate::icons::icon(name, icon_size, color))
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            // The button owns its press: without this it also reaches the row
+            // underneath, whose SelectSession clears the two-step kill this
+            // click just armed.
+            cx.stop_propagation();
             on_click(window, cx);
         })
 }
