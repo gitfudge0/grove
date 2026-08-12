@@ -1,0 +1,60 @@
+{
+  "slug": "session-view-toggle",
+  "created": "2026-08-12",
+  "request": "Let's introduce a new change where we add an icon in the projects header or the sidebar to toggle between the current projects view and a new session view. The session list is a card list that shows details about the session, with a plus icon that allows me to add more sessions. Ideate, brainstorm, argue, and mock this.",
+  "route": [
+    "decide",
+    "design"
+  ],
+  "route_reason": "understand dropped: no document corpus, the ask is concrete. verify-plan/implement/review dropped: the user asked to ideate, argue and mock only \u2014 no code is written this run, so there is no diff to plan tests for or review.",
+  "implement_baseline": null,
+  "stages": {
+    "understand": {
+      "status": "skipped",
+      "artifact": null,
+      "summary": null
+    },
+    "decide": {
+      "status": "done",
+      "artifact": "1-decision.html",
+      "summary": "Ship option C \u2014 a rail content mode (RailMode{Tree,Sessions}) toggled from the PROJECTS header, not a third top-level view; pay for it by deleting the TreeExpand SessionsOnly stop; + opens the existing launcher."
+    },
+    "design": {
+      "status": "gated",
+      "artifact": "2-mock.html",
+      "summary": "21-frame board: expand-sessions toggle in the PROJECTS header, two-row session card (identity row + project/branch/context row), attention-first sort, 220px + N=40 + empty + launcher frames."
+    },
+    "verify-plan": {
+      "status": "skipped",
+      "artifact": null,
+      "summary": null
+    },
+    "implement": {
+      "status": "skipped",
+      "artifact": null,
+      "summary": null
+    },
+    "review": {
+      "status": "skipped",
+      "artifact": null,
+      "summary": null
+    }
+  },
+  "gates": {
+    "1-decide": {
+      "answered": true,
+      "response": "go, mock option C",
+      "at": "2026-08-12"
+    },
+    "2-design": {
+      "answered": false,
+      "response": null,
+      "at": null
+    },
+    "3-verify-plan": {
+      "answered": false,
+      "response": null,
+      "at": null
+    }
+  }
+}

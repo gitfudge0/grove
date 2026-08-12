@@ -1,0 +1,1217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Grove — Rail content mode: PROJECTS ↔ SESSIONS</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  /* ============================================================
+     BOARD CHROME TOKENS (the canvas itself, not the product)
+     ============================================================ */
+  :root {
+    --board-bg: #f5f5f7;
+    --board-surface: #ffffff;
+    --board-border: #e5e7eb;
+    --board-muted: #6b7280;
+    --board-fg: #111827;
+    --board-primary: #4f46e5;
+    --board-danger: #dc2626;
+    --board-ok: #16a34a;
+  }
+  html.dark {
+    --board-bg: #0b0d12;
+    --board-surface: #161a22;
+    --board-border: #2a2f3a;
+    --board-muted: #9199a6;
+    --board-fg: #e6e8ec;
+    --board-primary: #6366f1;
+    --board-danger: #f87171;
+    --board-ok: #4ade80;
+  }
+
+  /* ============================================================
+     GROVE DESIGN TOKENS — tokyonight-storm (dark, the priority)
+     Verified values. Never a bare literal below this block.
+     ============================================================ */
+  :root {
+    --BG:          #24283b;
+    --BG_RAIL:     #1e2130;
+    --BG_STRIP:    #181b28;
+    --BG_HOVER:    #2e3247;
+    --BG_HL:       #373b51;
+    --BORDER:      #3d4259;
+    --BORDER_SOFT: #2f3348;
+    --FG:          #c0caf5;
+    --FG_DIM:      #a1aad0;
+    --FG_MUTE:     #565f89;
+    --BLUE:        #7aa2f7;
+    --CYAN:        #7dcfff;
+    --MAGENTA:     #bb9af7;
+    --GREEN:       #9ece6a;
+    --YELLOW:      #e0af68;
+    --RED:         #f7768e;
+    --AMBER:       #e5a172;
+    --AMBER_ROW_TINT:  rgba(229,161,114,.12);
+    --RED_WASH:        #463448;
+    --SEL_TINT_SOFT:   rgba(125,207,255,.10);
+    --SEL_TINT_STRONG: rgba(125,207,255,.22);
+    --SEL_RING:        rgba(125,207,255,.50);
+    --FOCUS_RING:      rgba(187,154,247,.25);
+    --SCRIM:           rgba(4,4,6,.62);
+    --PANEL_SHADOW: 0 12px 40px rgba(0,0,0,.35);
+  }
+  /* tokyonight-day — optional light counterpart; neutrals derived, accents verified */
+  html.dark {
+    --BG:          #e1e2e7;
+    --BG_RAIL:     #d8dae2;
+    --BG_STRIP:    #eaebf0;
+    --BG_HOVER:    #ccd0e0;
+    --BG_HL:       #c4c8da;
+    --BORDER:      #a9b0cc;
+    --BORDER_SOFT: #c9cddd;
+    --FG:          #3760bf;
+    --FG_DIM:      #6172b0;
+    --FG_MUTE:     #848cb5;
+    --BLUE:        #2e7de9;
+    --CYAN:        #007197;
+    --MAGENTA:     #9854f1;
+    --GREEN:       #587539;
+    --YELLOW:      #8c6c3e;
+    --RED:         #f52a65;
+    --AMBER:       #b45f22;
+    --AMBER_ROW_TINT:  rgba(180,95,34,.12);
+    --RED_WASH:        #e6d2dd;
+    --SEL_TINT_SOFT:   rgba(0,113,151,.10);
+    --SEL_TINT_STRONG: rgba(0,113,151,.22);
+    --SEL_RING:        rgba(0,113,151,.50);
+    --FOCUS_RING:      rgba(152,84,241,.25);
+    --SCRIM:           rgba(90,92,120,.45);
+    --PANEL_SHADOW: 0 6px 24px rgba(0,0,0,.18);
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--board-bg); color: var(--board-fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow: hidden;
+  }
+
+  /* ---- pan/zoom viewport ---- */
+  #viewport {
+    position: fixed; inset: 0; overflow: hidden; cursor: grab;
+    background-image: radial-gradient(circle, #d9d9dc 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  html.dark #viewport { background-image: radial-gradient(circle, #23262e 1px, transparent 1px); }
+  #viewport.panning { cursor: grabbing; }
+  #canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; padding: 60px; width: max-content; }
+
+  .hud {
+    position: fixed; right: 16px; bottom: 16px; z-index: 10; display: flex; gap: 6px; align-items: center;
+    background: var(--board-surface); border: 1px solid var(--board-border); border-radius: 8px; padding: 6px 8px;
+    font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+  }
+  .hud button { border: 1px solid var(--board-border); background: var(--board-surface); color: var(--board-fg); border-radius: 5px; padding: 3px 9px; font: inherit; cursor: pointer; }
+  .hud .zoom-pct { min-width: 42px; text-align: center; color: var(--board-muted); }
+  .theme-toggle {
+    position: fixed; right: 16px; top: 16px; z-index: 10; border: 1px solid var(--board-border);
+    background: var(--board-surface); color: var(--board-fg); border-radius: 9999px; padding: 7px 14px;
+    font: inherit; font-size: 13px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+  }
+
+  /* ---- board header / sections / frames ---- */
+  .page-header { margin-bottom: 24px; }
+  .page-header h1 { font-size: 28px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .page-header .subtitle { font-size: 14px; color: var(--board-muted); margin: 0 0 18px; max-width: 900px; line-height: 1.6; }
+  .legend {
+    display: inline-flex; gap: 18px; flex-wrap: wrap; align-items: center;
+    background: var(--board-surface); border: 1px solid var(--board-border);
+    border-radius: 8px; padding: 10px 16px; font-size: 12px; color: var(--board-muted);
+  }
+  .legend b { color: var(--board-fg); }
+  .legend .tag { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .swatch.before { background: var(--board-danger); }
+  .swatch.after  { background: var(--board-ok); }
+
+  .section-heading {
+    font-size: 18px; font-weight: 700; margin: 64px 0 6px; padding-bottom: 8px;
+    border-bottom: 2px solid var(--board-border); display: flex; align-items: baseline; gap: 10px;
+  }
+  .section-letter {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; border-radius: 6px;
+    background: var(--board-primary); color: #fff; font-size: 13px; font-weight: 700;
+  }
+  .section-sub { font-size: 13px; font-weight: 400; color: var(--board-muted); }
+
+  .frame-row { display: flex; gap: 40px; margin-top: 26px; align-items: flex-start; position: relative; }
+  .frame { position: relative; }
+  .frame-caption { margin-bottom: 10px; max-width: 560px; }
+  .frame-id {
+    display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
+    color: #fff; background: #111827; border-radius: 4px; padding: 2px 7px; margin-right: 8px;
+  }
+  html.dark .frame-id { background: #4b5563; }
+  .frame-name { font-size: 14px; font-weight: 600; }
+  .frame-desc { font-size: 12px; color: var(--board-muted); margin: 5px 0 0; line-height: 1.55; }
+
+  .frame-card {
+    background: var(--BG); border: 1px solid var(--BORDER); border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.10), 0 10px 30px rgba(0,0,0,0.10);
+  }
+  .frame-card.screen { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+  .frame-card.desktop { width: 1280px; height: 800px; }
+  .frame-card.bare { background: transparent; border: 0; box-shadow: none; }
+
+  .connector-row { display: flex; align-items: center; color: #b8bac0; font-size: 22px; align-self: center; padding-top: 60px; }
+
+  .sticky-note {
+    display: inline-block; background: #fff8c5; border: 1px solid #e6d97a; color: #4a4320;
+    font-size: 12.5px; line-height: 1.6; padding: 14px 18px; max-width: 560px; border-radius: 3px;
+    box-shadow: 0 6px 16px rgba(0,0,0,0.12); transform: rotate(-1deg); margin: 34px 0 0;
+    vertical-align: top;
+  }
+  .sticky-note b { color: #2c2810; }
+  .sticky-note ul { margin: 8px 0 0; padding-left: 18px; }
+  .sticky-note li { margin-bottom: 4px; }
+  .sticky-note.blue { background: #e8f0ff; border-color: #a9c4f0; color: #22355c; transform: rotate(0.8deg); }
+  .sticky-note.blue b { color: #12213c; }
+
+  /* ============================================================
+     GROVE PRODUCT CSS — every number is a token
+     UI sans: IBM Plex Sans (substituted). Mono: ui-monospace.
+     NO ITALICS ANYWHERE.
+     ============================================================ */
+  .g { font-family: "IBM Plex Sans", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--FG); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+  /* type tiers */
+  .t-micro   { font-size: 10px; }   /* TEXT_MICRO */
+  .t-small   { font-size: 11px; }   /* TEXT_SMALL */
+  .t-body    { font-size: 12px; }   /* TEXT_BODY */
+  .t-title   { font-size: 13px; }   /* TEXT_TITLE */
+  .t-display { font-size: 20px; }   /* TEXT_DISPLAY — empty state only */
+  .t-display-lg { font-size: 32px; }/* TEXT_DISPLAY_LG — empty state only */
+
+  .fg { color: var(--FG); } .dim { color: var(--FG_DIM); } .mute { color: var(--FG_MUTE); }
+  .c-green{color:var(--GREEN)} .c-amber{color:var(--AMBER)} .c-red{color:var(--RED)}
+  .c-cyan{color:var(--CYAN)} .c-blue{color:var(--BLUE)} .c-mag{color:var(--MAGENTA)}
+  .c-yellow{color:var(--YELLOW)}
+
+  /* the fake letter-spacing: real U+2009 THIN SPACE between glyphs, as tracked() does */
+  .tracked { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; }
+
+  /* --- app shell --- */
+  .app { display: flex; flex-direction: column; height: 100%; background: var(--BG); }
+  .appbar {
+    height: 44px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 10px;
+    background: var(--BG_STRIP); border-bottom: 1px solid var(--BORDER);
+  }
+  .appbar-spacer { flex: 1; }
+  .statusbar {
+    height: 26px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 10px;
+    background: var(--BG_STRIP); border-top: 1px solid var(--BORDER); color: var(--FG_MUTE); font-size: 11px;
+  }
+  .shell { flex: 1; display: flex; min-height: 0; }
+  .rail { width: 320px; flex: none; background: var(--BG_RAIL); display: flex; flex-direction: column; min-height: 0; }
+  .rail.narrow { width: 220px; }
+  .divider { width: 6px; flex: none; background: var(--BG_STRIP); border-left: 1px solid var(--BORDER); border-right: 1px solid var(--BORDER); }
+  .body { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--BG); }
+
+  /* --- SESSBAR: the PROJECTS / SESSIONS header --- */
+  .sessbar {
+    height: 36px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 6px 0 10px;
+    border-bottom: 1px solid var(--BORDER);
+  }
+  .sessbar .spacer { flex: 1; }
+
+  /* --- icon button --- */
+  .icon-btn {
+    width: 28px; height: 28px; flex: none; display: flex; align-items: center; justify-content: center;
+    border-radius: 4px; border: 1px solid transparent; color: var(--FG_DIM); background: transparent; cursor: pointer;
+  }
+  .icon-btn.sm { width: 24px; height: 24px; }
+  .icon-btn.hover { border-color: var(--BORDER_SOFT); background: var(--BG_HOVER); color: var(--FG); }
+  .icon-btn.active { border-color: var(--BORDER_SOFT); background: var(--BG_HL); color: var(--CYAN); }
+  .icon-btn.disabled { border-color: transparent; background: transparent; color: var(--FG_MUTE); }
+
+  .ico { display: block; }
+  .ico-xs { width: 10px; height: 10px; }
+  .ico-sm { width: 12px; height: 12px; }
+  .ico-md { width: 14px; height: 14px; }
+  .ico-lg { width: 16px; height: 16px; }
+  .ico-display { width: 32px; height: 32px; }
+
+  /* --- sidebar tree rows (existing) --- */
+  .tree { flex: 1; overflow: hidden; padding: 4px 0; }
+  .srow {
+    height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 10px 0 10px;
+    position: relative; color: var(--FG_DIM); font-size: 12px; cursor: pointer;
+  }
+  .srow.tall { height: 42px; }
+  .srow.sel { background: var(--BG_HL); color: var(--FG); }
+  .srow.hover { background: var(--BG_HOVER); }
+  .srow .glyph { width: 14px; flex: none; display: flex; align-items: center; justify-content: center; }
+  .srow .glyph.dimmed { color: var(--FG_MUTE); }
+  .srow.wt { padding-left: 26px; }
+  .srow.ses { padding-left: 46px; }
+  .abar { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--AMBER); }
+  .pulse { animation: pulseAlpha 1.2s ease-in-out infinite; }
+  @keyframes pulseAlpha { 0%,100% { opacity: 1 } 50% { opacity: .32 } }
+  .branch-chip {
+    display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 4px;
+    background: var(--BORDER_SOFT); color: var(--FG_DIM); font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .stack { display: flex; flex-direction: column; gap: 2px; }
+
+  /* --- card() — zero padding of its own, rows carry padding --- */
+  .card {
+    border-radius: 4px; background: var(--BG_STRIP); border: 1px solid var(--BORDER);
+    display: flex; flex-direction: column; overflow: hidden; position: relative;
+  }
+  .card > .crow + .crow { border-top: 1px solid var(--BORDER_SOFT); }
+  .crow {
+    display: flex; align-items: center; gap: 8px; padding: 0 10px; width: 100%;
+    min-height: 38px; cursor: pointer;
+  }
+  .crow.hover { background: var(--BG_HOVER); }
+  .crow.sel   { background: var(--BG_HL); }
+  .crow.body  { flex-direction: column; align-items: stretch; gap: 6px; padding-top: 8px; padding-bottom: 8px; }
+  .crow .line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .grow1 { flex: 1; min-width: 0; }
+  .trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .card.attn { background: var(--AMBER_ROW_TINT); }
+  .card.armed { background: var(--RED_WASH); border-color: var(--RED); }
+  .card.focused { border-color: var(--SEL_RING); background: var(--SEL_TINT_SOFT); }
+
+  .cardlist { flex: 1; overflow: hidden; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+
+  /* dots — filled vs hollow is a SHAPE difference */
+  .dot { width: 6px; height: 6px; border-radius: 999px; flex: none; background: currentColor; }
+  .dot.md { width: 7px; height: 7px; }
+  .dot.hollow { background: transparent; border: 1px solid currentColor; }
+  .statuscol { width: 15px; flex: none; display: flex; align-items: center; justify-content: center; }
+
+  /* spinner: 12 frames, ~270deg open arc, one step every 3 ticks */
+  .spin { animation: spin12 1.44s steps(12, end) infinite; transform-origin: 50% 50%; }
+  @keyframes spin12 { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }
+
+  /* keycap */
+  .keycap {
+    display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 4px;
+    background: var(--BG_HL); color: var(--FG_DIM); font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .keycap.neutral { background: var(--BORDER_SOFT); }
+
+  /* action buttons */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 4px;
+    border: 1px solid var(--BORDER); font-size: 12px; cursor: pointer;
+    font-family: "IBM Plex Sans", -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .btn.plain   { color: var(--FG_DIM); background: var(--BG); }
+  .btn.primary { color: var(--FG); background: var(--BG_HL); }
+  .btn.danger  { color: var(--RED); border-color: var(--RED); background: var(--BG_HL); }
+
+  /* terminal body */
+  .tile-head {
+    height: 22px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 8px;
+    background: var(--BG_STRIP); border-bottom: 1px solid var(--BORDER); color: var(--FG_MUTE); font-size: 11px;
+  }
+  .term {
+    flex: 1; min-height: 0; overflow: hidden; padding: 8px 10px; background: var(--BG);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; color: var(--FG_DIM);
+  }
+  .term .p { color: var(--MAGENTA); }
+  .caret { display: inline-block; width: 7px; height: 13px; background: var(--FG); vertical-align: -2px; animation: pulseAlpha 1.1s steps(1,end) infinite; }
+
+  /* modal */
+  .scrim { position: absolute; inset: 0; background: var(--SCRIM); display: flex; align-items: flex-start; justify-content: center; padding-top: 80px; }
+  .panel {
+    width: 480px; background: var(--BG); border: 1px solid var(--BORDER); border-radius: 12px;
+    box-shadow: var(--PANEL_SHADOW); overflow: hidden;
+  }
+  .panel-field { display: flex; align-items: center; gap: 8px; padding: 2px 10px; min-height: 38px; border-bottom: 1px solid var(--BORDER_SOFT); }
+  .panel-list { padding: 6px; display: flex; flex-direction: column; gap: 2px; max-height: 456px; overflow: hidden; }
+  .prow {
+    height: 54px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-radius: 6px;
+    border: 1px solid transparent; cursor: pointer;
+  }
+  .prow.sel { background: var(--SEL_TINT_SOFT); border-color: var(--SEL_RING); }
+  .prow.hover { background: var(--BG_HOVER); }
+  .prow .slot { width: 24px; flex: none; display: flex; align-items: center; justify-content: center; }
+  .panel-foot { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--BORDER_SOFT); color: var(--FG_MUTE); font-size: 11px; }
+
+  /* annotation callouts */
+  .anno { position: absolute; font-size: 11px; color: var(--board-muted); line-height: 1.45; }
+  .anno b { color: var(--board-fg); }
+  .anno .rule { position: absolute; background: var(--board-primary); opacity: .5; }
+  .anno-code { font-family: ui-monospace, monospace; color: var(--board-primary); }
+  .annobox { display: flex; gap: 10px; align-items: flex-start; font-size: 11.5px; color: var(--board-muted); line-height: 1.5; max-width: 330px; }
+  .annobox .n {
+    flex: none; width: 18px; height: 18px; border-radius: 4px; background: var(--board-primary); color: #fff;
+    font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+  }
+  .annobox b { color: var(--board-fg); }
+  .annolist { display: flex; flex-direction: column; gap: 12px; padding-top: 26px; }
+
+  .marker {
+    position: absolute; width: 18px; height: 18px; border-radius: 4px; background: var(--board-primary); color: #fff;
+    font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; z-index: 3;
+  }
+  .swatchrow { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11px; color: var(--board-muted); margin-top: 12px; }
+</style>
+</head>
+<body>
+
+<!-- ===================== ICON SPRITE (16x16, stroke 1.6) ===================== -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="d-plus"><path d="M8 3v10M3 8h10"/></g>
+    <g id="d-minus"><path d="M3 8h10"/></g>
+    <g id="d-close"><path d="M4 4l8 8M12 4l-8 8"/></g>
+    <g id="d-check"><path d="M3.5 8.5l3 3 6-7"/></g>
+    <g id="d-chev-right"><path d="M6 3.5l5 4.5-5 4.5"/></g>
+    <g id="d-chev-down"><path d="M3.5 6l4.5 5 4.5-5"/></g>
+    <g id="d-collapse-right"><path d="M9.5 3.5v9M7 5.5L4.5 8 7 10.5M4.5 8h5"/></g>
+    <g id="d-expand-sessions"><path d="M2.5 4h5M2.5 8h5M2.5 12h5M11 5.5v5M13.5 8h-5"/></g>
+    <g id="d-more"><circle cx="3.5" cy="8" r=".9" fill="currentColor" stroke="none"/><circle cx="8" cy="8" r=".9" fill="currentColor" stroke="none"/><circle cx="12.5" cy="8" r=".9" fill="currentColor" stroke="none"/></g>
+    <g id="d-term"><path d="M2.5 3.5h11v9h-11zM5 6.5L7 8.5 5 10.5M8.5 10.5h3"/></g>
+    <g id="d-cog"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M14.2 8h-1.6M3.4 8H1.8M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1M12.4 12.4l-1.1-1.1M4.7 4.7L3.6 3.6"/></g>
+    <g id="d-search"><circle cx="7" cy="7" r="4"/><path d="M10.2 10.2L13.5 13.5"/></g>
+    <g id="d-git-branch"><circle cx="4.5" cy="3.8" r="1.6"/><circle cx="4.5" cy="12.2" r="1.6"/><circle cx="11.5" cy="6.2" r="1.6"/><path d="M4.5 5.4v5.2M11.5 7.8c0 2.2-2.3 2.6-4.2 2.9"/></g>
+    <g id="d-folder"><path d="M2 4.5h4l1.2 1.6H14v6.4H2z"/></g>
+    <g id="d-folder-open"><path d="M2 4.5h4l1.2 1.6H13v1.4H4.4L2.6 12.5H2z"/><path d="M4.4 7.5H14l-1.6 5H2.6z"/></g>
+    <g id="d-claude"><path d="M8 2.2l1.9 4 4 1.8-4 1.8-1.9 4-1.9-4-4-1.8 4-1.8z"/></g>
+    <g id="d-codex"><path d="M5.6 4.6L2.4 8l3.2 3.4M10.4 4.6L13.6 8l-3.2 3.4M9.2 3.4L6.8 12.6"/></g>
+    <g id="d-opencode"><circle cx="8" cy="8" r="5"/><path d="M8 5.4v2.6l1.8 1.2"/></g>
+    <g id="d-trash"><path d="M3 4.4h10M6.4 4.4V2.8h3.2v1.6M4.4 4.4l.7 8.8h5.8l.7-8.8"/></g>
+    <g id="d-command"><path d="M5.6 3a1.6 1.6 0 100 3.2h4.8a1.6 1.6 0 100-3.2 1.6 1.6 0 00-1.6 1.6v6.8a1.6 1.6 0 11-1.6-1.6h4.8a1.6 1.6 0 11-1.6 1.6V4.6A1.6 1.6 0 005.6 3z"/></g>
+    <g id="d-restart"><path d="M13 8a5 5 0 11-1.6-3.7M13 2.6V5.4h-2.8"/></g>
+    <g id="d-split"><path d="M2.5 3h11v10h-11zM8 3v10"/></g>
+    <g id="d-zen"><path d="M2.5 5.5v-3h3M13.5 5.5v-3h-3M2.5 10.5v3h3M13.5 10.5v3h-3"/></g>
+    <g id="d-grid"><path d="M2.5 2.5h5v5h-5zM8.5 2.5h5v5h-5zM2.5 8.5h5v5h-5zM8.5 8.5h5v5h-5z"/></g>
+    <g id="d-dot"><circle cx="8" cy="8" r="3" fill="currentColor" stroke="none"/></g>
+    <g id="d-ring"><circle cx="8" cy="8" r="3"/></g>
+    <g id="d-sparkle"><path d="M8 2.5l1.3 3.2L12.5 7l-3.2 1.3L8 11.5 6.7 8.3 3.5 7l3.2-1.3z"/></g>
+    <g id="d-spinner"><path d="M8 1.5a6.5 6.5 0 1 1-4.6 1.9"/></g>
+  </defs>
+</svg>
+
+<button class="theme-toggle" id="themeToggle" type="button">☾ Light theme (tokyonight-day)</button>
+<div class="hud">
+  <button type="button" id="zoomOut">−</button>
+  <span class="zoom-pct" id="zoomPct">100%</span>
+  <button type="button" id="zoomIn">+</button>
+  <button type="button" id="zoomFit">Fit</button>
+</div>
+
+<div id="viewport"><div id="canvas">
+
+  <div class="page-header">
+    <h1>Grove — Rail content mode: P&#8202;R&#8202;O&#8202;J&#8202;E&#8202;C&#8202;T&#8202;S ↔ S&#8202;E&#8202;S&#8202;S&#8202;I&#8202;O&#8202;N&#8202;S</h1>
+    <p class="subtitle">
+      Approved direction <b>option C</b>: the cross-project session list is a <b>content mode of the existing rail</b>, not a new top-level view.
+      One icon button in the rail header swaps the rail's contents; the letter-spaced mono label swaps with it and is the mode indicator.
+      The body/terminal to the right <b>never moves</b> — that is the whole point of the option. Frames are true-size at design px (zoom&nbsp;1.0 → 1&nbsp;design&nbsp;px = 1&nbsp;CSS&nbsp;px).
+      Theme shown is tokyonight-storm; the top-right pill flips to tokyonight-day.
+    </p>
+    <div class="legend">
+      <span class="tag"><span class="swatch before"></span><b>TODAY</b> = existing behaviour, unchanged</span>
+      <span class="tag"><span class="swatch after"></span><b>NEW</b> = the rail content mode</span>
+      <span class="tag">Frame IDs (<b>A1</b>, <b>C1</b>…) are referenced across captions</span>
+      <span class="tag"><b>AMBER</b> = needs you &nbsp;·&nbsp; <b>GREEN</b> = running &nbsp;·&nbsp; <b>CYAN</b> = selection &nbsp;·&nbsp; <b>RED</b> = destructive</span>
+    </div>
+  </div>
+
+  <!-- ================= SECTION A — full window, both modes ================= -->
+  <div class="section-heading"><span class="section-letter">A</span> Full window — the diff <span class="section-sub">1280 × 800, RAIL_W 320, APPBAR_H 44, SESSBAR_H 36, STATUS_H 26</span></div>
+
+  <div class="frame-row">
+
+    <!-- A1 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">A1</span><span class="frame-name">Tree mode — today (baseline)</span>
+        <p class="frame-desc">The rail as it ships now: project → worktree → session tree. The toggle button sits in the header at rest. Compare against A2 — everything right of SIDEBAR_DIVIDER_W is byte-identical.</p>
+      </div>
+      <div class="frame-card screen desktop g">
+        <!-- appbar -->
+        <div class="appbar">
+          <span class="c-mag" style="display:flex"><svg class="ico ico-lg"><use href="#d-sparkle"/></svg></span>
+          <span class="t-title fg" style="font-weight:600">grove</span>
+          <span class="appbar-spacer"></span>
+          <div class="icon-btn"><svg class="ico ico-md"><use href="#d-split"/></svg></div>
+          <div class="icon-btn"><svg class="ico ico-md"><use href="#d-grid"/></svg></div>
+          <div class="icon-btn"><svg class="ico ico-md"><use href="#d-zen"/></svg></div>
+          <div class="icon-btn"><svg class="ico ico-md"><use href="#d-cog"/></svg></div>
+        </div>
+        <div class="shell">
+          <!-- rail: tree -->
+          <div class="rail">
+            <div class="sessbar">
+              <span class="tracked mute">P&#8202;R&#8202;O&#8202;J&#8202;E&#8202;C&#8202;T&#8202;S</span>
+              <span class="spacer"></span>
+              <div class="icon-btn" title="Session list"><svg class="ico ico-md"><use href="#d-expand-sessions"/></svg></div>
+              <div class="icon-btn"><svg class="ico ico-md"><use href="#d-collapse-right"/></svg></div>
+              <div class="icon-btn"><svg class="ico ico-md"><use href="#d-plus"/></svg></div>
+            </div>
+            <div class="tree">
+              <div class="srow"><span class="glyph"><svg class="ico ico-sm"><use href="#d-chev-down"/></svg></span><span class="fg">grove</span></div>
+              <div class="srow wt tall"><span class="glyph"><svg class="ico ico-sm"><use href="#d-chev-down"/></svg></span>
+                <div class="stack"><span class="fg t-body">grove</span><span class="branch-chip"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg>main</span></div>
+              </div>
+              <div class="srow ses"><span class="abar pulse"></span><span class="glyph c-amber"><svg class="ico ico-sm"><use href="#d-claude"/></svg></span><span class="fg">claude 1</span><span class="grow1"></span><span class="c-amber statuscol"><span class="dot"></span></span></div>
+              <div class="srow ses"><span class="glyph c-green"><svg class="ico ico-sm"><use href="#d-codex"/></svg></span><span>codex 1</span><span class="grow1"></span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span></div>
+              <div class="srow wt tall"><span class="glyph"><svg class="ico ico-sm"><use href="#d-chev-right"/></svg></span>
+                <div class="stack"><span class="t-body">rail-mode</span><span class="branch-chip"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg>feat/rail-mode</span></div>
+              </div>
+              <div class="srow"><span class="glyph"><svg class="ico ico-sm"><use href="#d-chev-down"/></svg></span><span class="fg">skills</span></div>
+              <div class="srow wt tall"><span class="glyph"><svg class="ico ico-sm"><use href="#d-chev-down"/></svg></span>
+                <div class="stack"><span class="t-body">skills</span><span class="branch-chip"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg>main</span></div>
+              </div>
+              <div class="srow ses sel"><span class="glyph c-green"><svg class="ico ico-sm"><use href="#d-claude"/></svg></span><span>claude 1</span><span class="grow1"></span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span></div>
+              <div class="srow ses"><span class="glyph dimmed"><svg class="ico ico-sm"><use href="#d-codex"/></svg></span><span>codex 1</span><span class="grow1"></span><span class="mute statuscol"><span class="dot hollow"></span></span></div>
+              <div class="srow"><span class="glyph"><svg class="ico ico-sm"><use href="#d-chev-right"/></svg></span><span class="fg">dotfiles</span></div>
+            </div>
+          </div>
+          <div class="divider"></div>
+          <!-- body -->
+          <div class="body">
+            <div class="tile-head"><svg class="ico ico-sm"><use href="#d-term"/></svg><span>skills / claude 1</span><span class="grow1"></span><span class="c-green" style="display:flex"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span></div>
+            <div class="term">
+              <div><span class="p">~/dev/skills</span> $ claude</div>
+              <div>&nbsp;</div>
+              <div class="fg">● Running cargo test (skills conformance)</div>
+              <div>  R1 tokens ......... ok</div>
+              <div>  R2 border weight .. ok</div>
+              <div>  R3 no-reflow ...... ok</div>
+              <div>  R4 colour+glyph ... ok</div>
+              <div>  R5 motion ......... ok</div>
+              <div>&nbsp;</div>
+              <div>&gt; <span class="caret"></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="statusbar">
+          <span class="c-green" style="display:flex"><span class="dot"></span></span><span>2 running</span>
+          <span class="c-amber" style="display:flex"><span class="dot"></span></span><span>1 needs you</span>
+          <span class="grow1"></span>
+          <span class="mono">~/dev/skills</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <!-- A2 -->
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">A2</span><span class="frame-name">Sessions mode — the money frame</span>
+        <p class="frame-desc">Same window, same terminal, same scroll position. Only the rail's contents changed; the header label flipped to SESSIONS and the toggle is in its active state. A <b>+</b> row closes the list (see&nbsp;J1/J2).</p>
+      </div>
+      <div class="frame-card screen desktop g">
+        <div class="appbar">
+          <span class="c-mag" style="display:flex"><svg class="ico ico-lg"><use href="#d-sparkle"/></svg></span>
+          <span class="t-title fg" style="font-weight:600">grove</span>
+          <span class="appbar-spacer"></span>
+          <div class="icon-btn"><svg class="ico ico-md"><use href="#d-split"/></svg></div>
+          <div class="icon-btn"><svg class="ico ico-md"><use href="#d-grid"/></svg></div>
+          <div class="icon-btn"><svg class="ico ico-md"><use href="#d-zen"/></svg></div>
+          <div class="icon-btn"><svg class="ico ico-md"><use href="#d-cog"/></svg></div>
+        </div>
+        <div class="shell">
+          <div class="rail">
+            <div class="sessbar">
+              <span class="tracked c-cyan">S&#8202;E&#8202;S&#8202;S&#8202;I&#8202;O&#8202;N&#8202;S</span>
+              <span class="spacer"></span>
+              <div class="icon-btn active" title="Project tree"><svg class="ico ico-md"><use href="#d-expand-sessions"/></svg></div>
+              <div class="icon-btn"><svg class="ico ico-md"><use href="#d-collapse-right"/></svg></div>
+              <div class="icon-btn"><svg class="ico ico-md"><use href="#d-plus"/></svg></div>
+            </div>
+            <div class="cardlist">
+              <!-- needs you -->
+              <div class="card attn">
+                <span class="abar pulse"></span>
+                <div class="crow"><span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+                  <span class="t-body fg trunc grow1">claude 1</span>
+                  <span class="c-amber statuscol"><span class="dot"></span></span>
+                  <span class="t-micro c-amber">needs you</span>
+                  <span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span>
+                </div>
+                <div class="crow body">
+                  <div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div>
+                  <div class="line"><span class="t-small mute trunc">Waiting for your input</span></div>
+                </div>
+              </div>
+              <!-- working, focused -->
+              <div class="card focused">
+                <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+                  <span class="t-body fg trunc grow1">claude 1</span>
+                  <span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span>
+                  <span class="t-micro c-green">working</span>
+                  <span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span>
+                </div>
+                <div class="crow body">
+                  <div class="line"><span class="t-small dim mono trunc">skills</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div>
+                  <div class="line"><span class="t-small mute trunc">Running cargo test</span></div>
+                </div>
+              </div>
+              <div class="card">
+                <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span>
+                  <span class="t-body fg trunc grow1">codex 1</span>
+                  <span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span>
+                  <span class="t-micro c-green">working</span>
+                  <span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span>
+                </div>
+                <div class="crow body">
+                  <div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">feat/rail-mode</span></div>
+                  <div class="line"><span class="t-small mute trunc">Edited src/views/sidebar.rs</span></div>
+                </div>
+              </div>
+              <div class="card">
+                <div class="crow"><span class="dim" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span>
+                  <span class="t-body fg trunc grow1">codex 1</span>
+                  <span class="mute statuscol"><span class="dot hollow"></span></span>
+                  <span class="t-micro mute">idle</span>
+                  <span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span>
+                </div>
+                <div class="crow body">
+                  <div class="line"><span class="t-small dim mono trunc">skills</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div>
+                  <div class="line"><span class="t-small mute trunc">$ </span></div>
+                </div>
+              </div>
+              <div class="card">
+                <div class="crow"><span class="c-blue" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+                  <span class="t-body fg trunc grow1">claude 2</span>
+                  <span class="c-blue statuscol"><span class="dot"></span></span>
+                  <span class="t-micro c-blue">done</span>
+                  <span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span>
+                </div>
+                <div class="crow body">
+                  <div class="line"><span class="t-small dim mono trunc">dotfiles</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">fix/kill-arm</span></div>
+                  <div class="line"><span class="t-small mute trunc">Finished — 3 files changed</span></div>
+                </div>
+              </div>
+              <!-- plus row -->
+              <div class="card">
+                <div class="crow"><span class="c-mag" style="display:flex"><svg class="ico ico-md"><use href="#d-plus"/></svg></span>
+                  <span class="t-body dim grow1">New session</span>
+                  <span class="keycap neutral">⌘&#8202;N</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="divider"></div>
+          <div class="body">
+            <div class="tile-head"><svg class="ico ico-sm"><use href="#d-term"/></svg><span>skills / claude 1</span><span class="grow1"></span><span class="c-green" style="display:flex"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span></div>
+            <div class="term">
+              <div><span class="p">~/dev/skills</span> $ claude</div>
+              <div>&nbsp;</div>
+              <div class="fg">● Running cargo test (skills conformance)</div>
+              <div>  R1 tokens ......... ok</div>
+              <div>  R2 border weight .. ok</div>
+              <div>  R3 no-reflow ...... ok</div>
+              <div>  R4 colour+glyph ... ok</div>
+              <div>  R5 motion ......... ok</div>
+              <div>&nbsp;</div>
+              <div>&gt; <span class="caret"></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="statusbar">
+          <span class="c-green" style="display:flex"><span class="dot"></span></span><span>2 running</span>
+          <span class="c-amber" style="display:flex"><span class="dot"></span></span><span>1 needs you</span>
+          <span class="grow1"></span>
+          <span class="mono">~/dev/skills</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sticky-note blue">
+    <b>Why this is the whole point.</b> A1 and A2 are the same 1280×800 window. The appbar, SIDEBAR_DIVIDER_W&nbsp;6 divider,
+    TILE_HEAD_H&nbsp;22 terminal head, terminal scrollback and STATUS_H&nbsp;26 status bar are identical pixels in both frames.
+    No layout animation, no view transition — the rail's child list is simply a different builder. Because the rail keeps its
+    width, nothing in the body reflows, so the terminal never re-wraps (a PTY resize is the expensive, visible cost option&nbsp;A/B would have paid).
+  </div>
+
+  <!-- ================= SECTION B — the toggle ================= -->
+  <div class="section-heading"><span class="section-letter">B</span> The toggle itself <span class="section-sub">SESSBAR_H 36 · ICON_BTN_W 28 box + ICON_MD 14 glyph</span></div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">B1</span><span class="frame-name">Header — tree mode</span>
+        <p class="frame-desc">Label reads PROJECTS. The <span class="anno-code">expand-sessions</span> button is at rest: transparent ring, no fill, FG_DIM glyph.</p>
+      </div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);border:1px solid var(--BORDER);border-radius:4px;overflow:hidden">
+          <div class="sessbar">
+            <span class="tracked mute">P&#8202;R&#8202;O&#8202;J&#8202;E&#8202;C&#8202;T&#8202;S</span>
+            <span class="spacer"></span>
+            <div class="icon-btn"><svg class="ico ico-md"><use href="#d-expand-sessions"/></svg></div>
+            <div class="icon-btn"><svg class="ico ico-md"><use href="#d-collapse-right"/></svg></div>
+            <div class="icon-btn"><svg class="ico ico-md"><use href="#d-plus"/></svg></div>
+          </div>
+          <div style="height:60px"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">B2</span><span class="frame-name">Header — sessions mode</span>
+        <p class="frame-desc">Same three buttons in the same slots. The first is now <b>active</b>: BG_HL fill, BORDER_SOFT ring, CYAN glyph. Label flipped to SESSIONS in CYAN — the label is the mode indicator, the fill is the confirmation.</p>
+      </div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);border:1px solid var(--BORDER);border-radius:4px;overflow:hidden">
+          <div class="sessbar">
+            <span class="tracked c-cyan">S&#8202;E&#8202;S&#8202;S&#8202;I&#8202;O&#8202;N&#8202;S</span>
+            <span class="spacer"></span>
+            <div class="icon-btn active"><svg class="ico ico-md"><use href="#d-expand-sessions"/></svg></div>
+            <div class="icon-btn"><svg class="ico ico-md"><use href="#d-collapse-right"/></svg></div>
+            <div class="icon-btn"><svg class="ico ico-md"><use href="#d-plus"/></svg></div>
+          </div>
+          <div style="height:60px"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">B3</span><span class="frame-name">Button state ladder</span>
+        <p class="frame-desc">Four states of the one button, on the rail background. Geometry is identical in all four — only the ring, the fill and the glyph tint change, so <b>nothing reflows</b>.</p>
+      </div>
+      <div class="frame-card bare">
+        <div class="g" style="display:flex;gap:24px;background:var(--BG_RAIL);border:1px solid var(--BORDER);border-radius:4px;padding:14px 18px">
+          <div style="text-align:center"><div class="icon-btn"><svg class="ico ico-md"><use href="#d-expand-sessions"/></svg></div><div class="t-micro mute" style="margin-top:6px">rest</div></div>
+          <div style="text-align:center"><div class="icon-btn hover"><svg class="ico ico-md"><use href="#d-expand-sessions"/></svg></div><div class="t-micro mute" style="margin-top:6px">hover</div></div>
+          <div style="text-align:center"><div class="icon-btn active"><svg class="ico ico-md"><use href="#d-expand-sessions"/></svg></div><div class="t-micro mute" style="margin-top:6px">active</div></div>
+          <div style="text-align:center"><div class="icon-btn active" style="box-shadow:0 0 0 2px var(--FOCUS_RING)"><svg class="ico ico-md"><use href="#d-expand-sessions"/></svg></div><div class="t-micro mute" style="margin-top:6px">kb focus</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sticky-note">
+      <b>Icon choice: <span style="font-family:ui-monospace,monospace">expand-sessions</span> — no new glyph.</b>
+      <ul>
+        <li><b>expand-sessions</b> already means "surface the sessions" everywhere else in the rail, so a user who has used it once knows what this does. Its shape (a stack of rows + a plus/expand mark) literally draws "a list of sessions". <b>Chosen.</b></li>
+        <li><b>term</b> was rejected: the appbar already uses terminal-ish marks, and a terminal box reads "open a shell", i.e. an action, not a view swap.</li>
+        <li><b>more</b> was rejected: three dots means "overflow menu" in this codebase and would promise a popup.</li>
+      </ul>
+      Zero new sprites, zero new components: the toggle is <span style="font-family:ui-monospace,monospace">icon_btn</span> at the header tier with an added <i style="font-style:normal;text-decoration:underline">active</i> weight it already supports.
+    </div>
+  </div>
+
+  <!-- ================= SECTION C — card anatomy ================= -->
+  <div class="section-heading"><span class="section-letter">C</span> Card anatomy <span class="section-sub">RAIL_W 320 minus 8px list padding each side → card is 304 wide</span></div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">C1</span><span class="frame-name">One card, annotated</span>
+        <p class="frame-desc">Two rows. Row 1 = identity + status. Row 2 = provenance + live context. Every number is a token; nothing here is a new component.</p>
+      </div>
+      <div class="frame-card bare" style="position:relative">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px">
+          <div class="card attn" style="position:relative">
+            <span class="abar pulse"></span>
+            <span class="marker" style="left:-9px;top:9px">1</span>
+            <span class="marker" style="left:22px;top:-9px">2</span>
+            <span class="marker" style="left:96px;top:-9px">3</span>
+            <span class="marker" style="right:52px;top:-9px">4</span>
+            <span class="marker" style="right:-9px;top:9px">5</span>
+            <span class="marker" style="left:22px;bottom:26px">6</span>
+            <span class="marker" style="left:22px;bottom:-9px">7</span>
+            <div class="crow">
+              <span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+              <span class="t-body fg trunc grow1">claude 1</span>
+              <span class="c-amber statuscol"><span class="dot"></span></span>
+              <span class="t-micro c-amber">needs you</span>
+              <span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span>
+            </div>
+            <div class="crow body">
+              <div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div>
+              <div class="line"><span class="t-small mute trunc">Waiting for your input</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="frame" style="margin-left:8px"></div>
+    </div>
+
+    <div class="annolist">
+      <div class="annobox"><span class="n">1</span><div><b>Attention bar</b> — ATTENTION_BAR_W&nbsp;3, full card height, AMBER, alpha-pulsing. Same element as the sidebar row's leading bar. Present only for <span class="anno-code">waiting</span>.</div></div>
+      <div class="annobox"><span class="n">2</span><div><b>Agent glyph slot</b> — ICON_MD&nbsp;14 in a fixed slot (GLYPH_SLOT_W&nbsp;14) so titles align across claude / codex / opencode. Sprite from <span class="anno-code">TileData.icon_name</span>. Tinted by status, never by agent.</div></div>
+      <div class="annobox"><span class="n">3</span><div><b>Label</b> — <span class="anno-code">TileData.agent_label</span>, sans TEXT_BODY&nbsp;12, FG, truncating. Grows to fill; it is the only flexible element in row&nbsp;1.</div></div>
+      <div class="annobox"><span class="n">4</span><div><b>Status pair</b> — DOT_SM&nbsp;6 (or the 12-frame spinner) inside STATUS_DOT_COL_W&nbsp;15, plus the status <b>word</b> at TEXT_MICRO&nbsp;10. Colour is never alone: dot shape + word + (for needs-you) the pulse all carry it.</div></div>
+      <div class="annobox"><span class="n">5</span><div><b>In-row icon button</b> — ICON_BTN_W_SM&nbsp;24 with the <span class="anno-code">more</span> sprite. Occupies its slot at all times and only gains its ring/fill on hover, so the row never reflows.</div></div>
+      <div class="annobox"><span class="n">6</span><div><b>Provenance line</b> — project (mono TEXT_SMALL&nbsp;11, FG_DIM) + <span class="anno-code">git-branch</span> at ICON_XS&nbsp;10 + branch (FG_MUTE). Project is mandatory here: the list is cross-project, so a bare "claude&nbsp;1" would be ambiguous.</div></div>
+      <div class="annobox"><span class="n">7</span><div><b>Context line</b> — <span class="anno-code">TileData.context</span>, TEXT_SMALL&nbsp;11, FG_MUTE, single line, truncating. ROW_LINE_GAP&nbsp;6 separates it from line&nbsp;6.</div></div>
+      <div class="annobox"><span class="n">·</span><div><b>Geometry</b> — <span class="anno-code">card()</span>: RADIUS_CONTROL&nbsp;4, BG_STRIP, 1px BORDER, <b>zero own padding</b>. Rows: <span class="anno-code">RowDensity::Card</span> px&nbsp;10, no py, gap&nbsp;8, ROW_MIN_H&nbsp;38 as a floor, square corners so hover fill reaches the inner edge. One full-bleed 1px BORDER_SOFT divider between the two rows, none after the last. List gap SPACE_MD&nbsp;6, list padding SPACE_LG&nbsp;8.</div></div>
+    </div>
+  </div>
+
+  <div class="sticky-note">
+    <b>Why two rows and not three.</b> ROW_MIN_H&nbsp;38 is a floor, so a 3-row card costs ≥114px and only ~5 cards fit a 800px window —
+    the list stops being a scan surface. Collapsing provenance + context into one <span style="font-family:ui-monospace,monospace">body</span> row
+    (two text lines at ROW_LINE_GAP&nbsp;6) lands the card at <b>~85px</b>, so ~8 cards are visible without scrolling, which is the whole reason
+    the mode exists. Row 1 is the identity you click; row 2 is the answer to "which one is this and what is it doing".
+  </div>
+
+  <!-- ================= SECTION D — card states ================= -->
+  <div class="section-heading"><span class="section-letter">D</span> Card states <span class="section-sub">every state pairs colour with a glyph, a word, or a pulse</span></div>
+
+  <div class="frame-row" style="flex-wrap:wrap;max-width:1360px">
+
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">D1</span><span class="frame-name">Needs you</span>
+        <p class="frame-desc">AMBER. 3px bar pulsing on alpha + AMBER_ROW_TINT fill + filled dot + the word.</p></div>
+      <div class="frame-card bare"><div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px">
+        <div class="card attn"><span class="abar pulse"></span>
+          <div class="crow"><span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 1</span><span class="c-amber statuscol"><span class="dot"></span></span><span class="t-micro c-amber">needs you</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+          <div class="crow body"><div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">Waiting for your input</span></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">D2</span><span class="frame-name">Working</span>
+        <p class="frame-desc">GREEN. The 12-frame spinner replaces the dot in the same 15px column — motion, not colour, is the signal.</p></div>
+      <div class="frame-card bare"><div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px">
+        <div class="card">
+          <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg trunc grow1">codex 1</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+          <div class="crow body"><div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">feat/rail-mode</span></div><div class="line"><span class="t-small mute trunc">Running cargo test</span></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">D3</span><span class="frame-name">Idle</span>
+        <p class="frame-desc">No accent. Hollow dot — a <b>shape</b> difference, so present-vs-absent survives greyscale.</p></div>
+      <div class="frame-card bare"><div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px">
+        <div class="card">
+          <div class="crow"><span class="dim" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg trunc grow1">codex 1</span><span class="mute statuscol"><span class="dot hollow"></span></span><span class="t-micro mute">idle</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+          <div class="crow body"><div class="line"><span class="t-small dim mono trunc">skills</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">$ </span></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">D4</span><span class="frame-name">Done</span>
+        <p class="frame-desc">BLUE (informational, not "running"). Filled dot + the word; context carries the outcome.</p></div>
+      <div class="frame-card bare"><div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px">
+        <div class="card">
+          <div class="crow"><span class="c-blue" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 2</span><span class="c-blue statuscol"><span class="dot"></span></span><span class="t-micro c-blue">done</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+          <div class="crow body"><div class="line"><span class="t-small dim mono trunc">dotfiles</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">fix/kill-arm</span></div><div class="line"><span class="t-small mute trunc">Finished — 3 files changed</span></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">D5</span><span class="frame-name">Exited</span>
+        <p class="frame-desc">Process gone. Glyph <b>dims</b> rather than disappears, keeping the slot; the <span class="anno-code">close</span> mark is the shape signal. Border stays 1px BORDER — never opacity on the whole card.</p></div>
+      <div class="frame-card bare"><div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px">
+        <div class="card">
+          <div class="crow"><span class="mute" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body dim trunc grow1">claude 3</span><span class="mute statuscol"><svg class="ico ico-sm"><use href="#d-close"/></svg></span><span class="t-micro mute">exited</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+          <div class="crow body"><div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">feat/rail-mode</span></div><div class="line"><span class="t-small mute trunc">exit 130</span></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">D6</span><span class="frame-name">Armed for kill (two-step)</span>
+        <p class="frame-desc">Second click on the row's kill affordance. RED_WASH fill, RED border, the word <b>Kill?</b> and a Danger-weight confirm. Same two rows, same heights — arming never resizes the card.</p></div>
+      <div class="frame-card bare"><div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px">
+        <div class="card armed">
+          <div class="crow"><span class="c-red" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 1</span><span class="c-red statuscol"><span class="dot"></span></span><span class="t-micro c-red">kill?</span><span class="icon-btn sm" style="border-color:var(--RED);color:var(--RED)"><svg class="ico ico-sm"><use href="#d-trash"/></svg></span></div>
+          <div class="crow body"><div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small c-red trunc">Click again to terminate · Esc cancels</span></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">D7</span><span class="frame-name">Hover &amp; selected</span>
+        <p class="frame-desc">Row-level, not card-level: the hover fill is square and full-bleed to the card's inner edge because rows carry the padding and the card contributes none.</p></div>
+      <div class="frame-card bare"><div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
+        <div class="card">
+          <div class="crow hover"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 1</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span><span class="icon-btn sm hover"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+          <div class="crow body"><div class="line"><span class="t-small dim mono trunc">skills</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">Running cargo test</span></div></div>
+        </div>
+        <div class="card focused">
+          <div class="crow sel"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 1</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+          <div class="crow body"><div class="line"><span class="t-small dim mono trunc">skills</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">Running cargo test</span></div></div>
+        </div>
+      </div></div>
+    </div>
+  </div>
+
+  <!-- ================= SECTION E — sort order ================= -->
+  <div class="section-heading"><span class="section-letter">E</span> Sort order <span class="section-sub">attention-first: needs-you → working → idle → done (exited last)</span></div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">E1</span><span class="frame-name">8 sessions across 3 projects</span>
+        <p class="frame-desc">A flat cross-project list. Ordering is by status band, then most-recent activity inside the band. Project is on every card because there is no tree to inherit it from.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;height:760px;background:var(--BG_RAIL);border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;overflow:hidden">
+          <div class="sessbar"><span class="tracked c-cyan">S&#8202;E&#8202;S&#8202;S&#8202;I&#8202;O&#8202;N&#8202;S</span><span class="spacer"></span><div class="icon-btn active"><svg class="ico ico-md"><use href="#d-expand-sessions"/></svg></div><div class="icon-btn"><svg class="ico ico-md"><use href="#d-collapse-right"/></svg></div><div class="icon-btn"><svg class="ico ico-md"><use href="#d-plus"/></svg></div></div>
+          <div class="cardlist">
+            <div class="card attn"><span class="abar pulse"></span>
+              <div class="crow"><span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 1</span><span class="c-amber statuscol"><span class="dot"></span></span><span class="t-micro c-amber">needs you</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+              <div class="crow body"><div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">Waiting for your input</span></div></div>
+            </div>
+            <div class="card attn"><span class="abar pulse"></span>
+              <div class="crow"><span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg trunc grow1">codex 2</span><span class="c-amber statuscol"><span class="dot"></span></span><span class="t-micro c-amber">needs you</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+              <div class="crow body"><div class="line"><span class="t-small dim mono trunc">dotfiles</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">Approve edit to .zshrc?</span></div></div>
+            </div>
+            <div class="card focused">
+              <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 1</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+              <div class="crow body"><div class="line"><span class="t-small dim mono trunc">skills</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">Running cargo test</span></div></div>
+            </div>
+            <div class="card">
+              <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg trunc grow1">codex 1</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+              <div class="crow body"><div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">feat/rail-mode</span></div><div class="line"><span class="t-small mute trunc">Edited src/views/sidebar.rs</span></div></div>
+            </div>
+            <div class="card">
+              <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 2</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+              <div class="crow body"><div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">fix/kill-arm</span></div><div class="line"><span class="t-small mute trunc">Edited src/views/tokens.rs</span></div></div>
+            </div>
+            <div class="card">
+              <div class="crow"><span class="dim" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg trunc grow1">codex 1</span><span class="mute statuscol"><span class="dot hollow"></span></span><span class="t-micro mute">idle</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+              <div class="crow body"><div class="line"><span class="t-small dim mono trunc">skills</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">$ </span></div></div>
+            </div>
+            <div class="card">
+              <div class="crow"><span class="dim" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 3</span><span class="mute statuscol"><span class="dot hollow"></span></span><span class="t-micro mute">idle</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+              <div class="crow body"><div class="line"><span class="t-small dim mono trunc">dotfiles</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">fix/kill-arm</span></div><div class="line"><span class="t-small mute trunc">$ </span></div></div>
+            </div>
+            <div class="card">
+              <div class="crow"><span class="c-blue" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 4</span><span class="c-blue statuscol"><span class="dot"></span></span><span class="t-micro c-blue">done</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+              <div class="crow body"><div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">Finished — 3 files changed</span></div></div>
+            </div>
+            <div class="card">
+              <div class="crow"><span class="c-mag" style="display:flex"><svg class="ico ico-md"><use href="#d-plus"/></svg></span><span class="t-body dim grow1">New session</span><span class="keycap neutral">⌘&#8202;N</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sticky-note" style="max-width:400px">
+      <b>Ordering rule.</b> Stable sort on <span style="font-family:ui-monospace,monospace">(band, −last_activity, project, label)</span> where band =
+      needs-you&nbsp;0, working&nbsp;1, idle&nbsp;2, done&nbsp;3, exited&nbsp;4. Bands are readable without a header row because the leading
+      3px AMBER bars cluster at the top and the spinners cluster below them — <b>no group headings are added</b>, and grouping/filtering is
+      explicitly out of scope. Reordering happens on a state change with <b>no animation</b> (motion is reserved for spinner / pulse / caret).
+    </div>
+  </div>
+
+  <!-- ================= SECTION F — narrow rail ================= -->
+  <div class="section-heading"><span class="section-letter">F</span> Narrow rail <span class="section-sub">SIDEBAR_MIN_W 220 — the named risk</span></div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">F1</span><span class="frame-name">220px — cards survive, nothing clips</span>
+        <p class="frame-desc">Card is 204 wide. The status <b>word</b> drops (below 260px) — colour is still carried by the dot shape, the spinner and the attention bar, so R4 holds. Label, project and branch truncate with ellipsis; the header label still fits because tracked() text is TEXT_MICRO 10.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:220px;height:480px;background:var(--BG_RAIL);border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;overflow:hidden">
+          <div class="sessbar" style="padding-left:8px"><span class="tracked c-cyan">S&#8202;E&#8202;S&#8202;S&#8202;I&#8202;O&#8202;N&#8202;S</span><span class="spacer"></span><div class="icon-btn active"><svg class="ico ico-md"><use href="#d-expand-sessions"/></svg></div><div class="icon-btn"><svg class="ico ico-md"><use href="#d-plus"/></svg></div></div>
+          <div class="cardlist">
+            <div class="card attn"><span class="abar pulse"></span>
+              <div class="crow"><span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 1</span><span class="c-amber statuscol"><span class="dot"></span></span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+              <div class="crow body"><div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">Waiting for your input</span></div></div>
+            </div>
+            <div class="card focused">
+              <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 1</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+              <div class="crow body"><div class="line"><span class="t-small dim mono trunc">skills</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">Running cargo test</span></div></div>
+            </div>
+            <div class="card">
+              <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg trunc grow1">codex 1</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+              <div class="crow body"><div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">feat/rail-mode</span></div><div class="line"><span class="t-small mute trunc">Edited src/views/sidebar.rs</span></div></div>
+            </div>
+            <div class="card">
+              <div class="crow"><span class="dim" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg trunc grow1">codex 1</span><span class="mute statuscol"><span class="dot hollow"></span></span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+              <div class="crow body"><div class="line"><span class="t-small dim mono trunc">skills</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">$ </span></div></div>
+            </div>
+            <div class="card">
+              <div class="crow"><span class="c-mag" style="display:flex"><svg class="ico ico-md"><use href="#d-plus"/></svg></span><span class="t-body dim grow1">New session</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">F2</span><span class="frame-name">Width budget, 220 → 204 card</span>
+        <p class="frame-desc">Row 1 arithmetic proving there is no clip. Row 2's two lines are pure truncating text and therefore always fit.</p></div>
+      <div class="frame-card" style="padding:18px;background:var(--board-surface);border-color:var(--board-border)">
+        <table style="font-size:12px;border-collapse:collapse;color:var(--board-muted)">
+          <tr><td style="padding:3px 14px 3px 0">card inner width</td><td class="mono" style="text-align:right">204 − 2×1 border = 202</td></tr>
+          <tr><td style="padding:3px 14px 3px 0">row px 10 ×2</td><td class="mono" style="text-align:right">−20 → 182</td></tr>
+          <tr><td style="padding:3px 14px 3px 0">agent glyph slot 14 + gap 8</td><td class="mono" style="text-align:right">−22 → 160</td></tr>
+          <tr><td style="padding:3px 14px 3px 0">more button 24 + gap 8</td><td class="mono" style="text-align:right">−32 → 128</td></tr>
+          <tr><td style="padding:3px 14px 3px 0">status col 15 + gap 8</td><td class="mono" style="text-align:right">−23 → 105</td></tr>
+          <tr><td style="padding:3px 14px 3px 0;color:var(--board-fg)"><b>left for the label</b></td><td class="mono" style="text-align:right;color:var(--board-ok)"><b>105 px ≈ 15 chars</b></td></tr>
+          <tr><td colspan="2" style="padding-top:10px;line-height:1.5">"claude 1" needs ~48px, so the label never truncates at realistic lengths; a long custom label ellipsises rather than pushing the status column off the edge.</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= SECTION G — scroll ================= -->
+  <div class="section-heading"><span class="section-letter">G</span> Scale <span class="section-sub">N = 40 sessions — the scroll cost, made visible</span></div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">G1</span><span class="frame-name">40 sessions, top of list</span>
+        <p class="frame-desc">At ~85px + 6px gap per card, a 800px window shows roughly 8. The remaining 32 are a real scroll. The list scrolls; the SESSBAR and the <b>+</b> row are pinned so "new session" is never scrolled away.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;height:730px;background:var(--BG_RAIL);border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;overflow:hidden;position:relative">
+          <div class="sessbar"><span class="tracked c-cyan">S&#8202;E&#8202;S&#8202;S&#8202;I&#8202;O&#8202;N&#8202;S</span><span class="mute t-micro" style="margin-left:6px">40</span><span class="spacer"></span><div class="icon-btn active"><svg class="ico ico-md"><use href="#d-expand-sessions"/></svg></div><div class="icon-btn"><svg class="ico ico-md"><use href="#d-collapse-right"/></svg></div><div class="icon-btn"><svg class="ico ico-md"><use href="#d-plus"/></svg></div></div>
+          <div class="cardlist" id="bigList"></div>
+          <!-- pinned + row -->
+          <div style="flex:none;padding:8px;border-top:1px solid var(--BORDER)">
+            <div class="card"><div class="crow"><span class="c-mag" style="display:flex"><svg class="ico ico-md"><use href="#d-plus"/></svg></span><span class="t-body dim grow1">New session</span><span class="keycap neutral">⌘&#8202;N</span></div></div>
+          </div>
+          <!-- scrollbar hint -->
+          <div style="position:absolute;right:2px;top:44px;bottom:96px;width:3px;background:var(--BORDER_SOFT);border-radius:999px"><div style="width:3px;height:22%;background:var(--FG_MUTE);border-radius:999px"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sticky-note" style="max-width:400px">
+      <b>The honest cost.</b> Forty sessions is ~3,600px of list: the two AMBER cards are visible, everything below "working" is a scroll away.
+      That is acceptable <b>only</b> because the sort puts what needs you at the top — the list is a triage surface, not a browser.
+      If 40 turns out to be common, the answer is the count badge in the header plus (later) filtering — <b>not</b> shrinking the card,
+      because every element on it is already at its smallest legal tier.
+    </div>
+  </div>
+
+  <!-- ================= SECTION H — empty ================= -->
+  <div class="section-heading"><span class="section-letter">H</span> Empty state <span class="section-sub">the only place TEXT_DISPLAY tiers are allowed</span></div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">H1</span><span class="frame-name">Sessions mode, zero sessions</span>
+        <p class="frame-desc">ICON_DISPLAY 32 mark, TEXT_DISPLAY 20 headline, TEXT_BODY 12 support, and a Primary action that opens the same launcher as the <b>+</b> row (J2). The <b>+</b> row stays pinned below so the two paths agree.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;height:420px;background:var(--BG_RAIL);border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;overflow:hidden">
+          <div class="sessbar"><span class="tracked c-cyan">S&#8202;E&#8202;S&#8202;S&#8202;I&#8202;O&#8202;N&#8202;S</span><span class="mute t-micro" style="margin-left:6px">0</span><span class="spacer"></span><div class="icon-btn active"><svg class="ico ico-md"><use href="#d-expand-sessions"/></svg></div><div class="icon-btn disabled"><svg class="ico ico-md"><use href="#d-collapse-right"/></svg></div><div class="icon-btn"><svg class="ico ico-md"><use href="#d-plus"/></svg></div></div>
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;text-align:center">
+            <span class="mute" style="display:flex"><svg class="ico ico-display"><use href="#d-term"/></svg></span>
+            <div class="t-display fg">No sessions</div>
+            <div class="t-body mute" style="line-height:1.5;max-width:240px">Start an agent in any project and it appears here, newest attention first.</div>
+            <div class="btn primary"><svg class="ico ico-md"><use href="#d-plus"/></svg>New session</div>
+          </div>
+          <div style="flex:none;padding:8px;border-top:1px solid var(--BORDER)">
+            <div class="card"><div class="crow"><span class="c-mag" style="display:flex"><svg class="ico ico-md"><use href="#d-plus"/></svg></span><span class="t-body dim grow1">New session</span><span class="keycap neutral">⌘&#8202;N</span></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">H2</span><span class="frame-name">Empty state in the full window</span>
+        <p class="frame-desc">Placement check: the empty state lives inside the 320 rail only. The body keeps whatever it was showing — here, the no-session placeholder that already ships.</p></div>
+      <div class="frame-card screen g" style="width:900px;height:420px">
+        <div class="shell" style="height:100%">
+          <div class="rail">
+            <div class="sessbar"><span class="tracked c-cyan">S&#8202;E&#8202;S&#8202;S&#8202;I&#8202;O&#8202;N&#8202;S</span><span class="mute t-micro" style="margin-left:6px">0</span><span class="spacer"></span><div class="icon-btn active"><svg class="ico ico-md"><use href="#d-expand-sessions"/></svg></div><div class="icon-btn disabled"><svg class="ico ico-md"><use href="#d-collapse-right"/></svg></div><div class="icon-btn"><svg class="ico ico-md"><use href="#d-plus"/></svg></div></div>
+            <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;text-align:center">
+              <span class="mute" style="display:flex"><svg class="ico ico-display"><use href="#d-term"/></svg></span>
+              <div class="t-display fg">No sessions</div>
+              <div class="t-body mute" style="line-height:1.5;max-width:240px">Start an agent in any project and it appears here, newest attention first.</div>
+              <div class="btn primary"><svg class="ico ico-md"><use href="#d-plus"/></svg>New session</div>
+            </div>
+          </div>
+          <div class="divider"></div>
+          <div class="body" style="align-items:center;justify-content:center">
+            <div class="t-display-lg mute" style="font-family:ui-monospace,monospace">grove</div>
+            <div class="t-body mute" style="margin-top:8px">Nothing running.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= SECTION J — the + and the launcher ================= -->
+  <div class="section-heading"><span class="section-letter">J</span> The <span style="font-family:ui-monospace,monospace">+</span> affordance <span class="section-sub">it opens the EXISTING launcher palette — no new modal</span></div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">J1</span><span class="frame-name">The plus row, rest &amp; hover</span>
+        <p class="frame-desc">A one-row <span class="anno-code">card()</span> — same component, same 4px radius, same 1px BORDER, single row so it reads as an action rather than a session. MAGENTA glyph (agent/new). The keycap is metadata, BORDER_SOFT weight.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
+          <div class="card"><div class="crow"><span class="c-mag" style="display:flex"><svg class="ico ico-md"><use href="#d-plus"/></svg></span><span class="t-body dim grow1">New session</span><span class="keycap neutral">⌘&#8202;N</span></div></div>
+          <div class="card"><div class="crow hover"><span class="c-mag" style="display:flex"><svg class="ico ico-md"><use href="#d-plus"/></svg></span><span class="t-body fg grow1">New session</span><span class="keycap neutral">⌘&#8202;N</span></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <div class="frame">
+      <div class="frame-caption"><span class="frame-id">J2</span><span class="frame-name">Existing launcher palette (unchanged)</span>
+        <p class="frame-desc">MODAL_W_MD 480, RADIUS_PANEL 12, panel shadow, SCRIM over the window. PALETTE_ROW_H 54 rows with the fixed 24px leading slot, RADIUS_GROUP 6, selection = SEL_TINT_SOFT + SEL_RING. This is shown only to prove the <b>+</b> lands somewhere that already exists.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:640px;height:520px;background:var(--BG);border:1px solid var(--BORDER);border-radius:10px;overflow:hidden;position:relative">
+          <div class="scrim">
+            <div class="panel">
+              <div class="panel-field">
+                <span class="mute" style="display:flex"><svg class="ico ico-md"><use href="#d-search"/></svg></span>
+                <span class="t-body fg grow1">cla<span class="caret"></span></span>
+                <span class="keycap neutral">esc</span>
+              </div>
+              <div class="panel-list">
+                <div class="prow sel"><span class="slot c-mag"><svg class="ico ico-lg"><use href="#d-claude"/></svg></span>
+                  <div class="grow1" style="min-width:0"><div class="t-body fg">claude</div><div class="t-small mute trunc">grove · main · ~/dev/grove</div></div>
+                  <span class="keycap">↵</span></div>
+                <div class="prow"><span class="slot c-mag"><svg class="ico ico-lg"><use href="#d-claude"/></svg></span>
+                  <div class="grow1" style="min-width:0"><div class="t-body fg">claude</div><div class="t-small mute trunc">grove · feat/rail-mode · ~/dev/grove-wt/rail-mode</div></div></div>
+                <div class="prow hover"><span class="slot c-mag"><svg class="ico ico-lg"><use href="#d-claude"/></svg></span>
+                  <div class="grow1" style="min-width:0"><div class="t-body fg">claude</div><div class="t-small mute trunc">skills · main · ~/dev/skills</div></div></div>
+                <div class="prow"><span class="slot dim"><svg class="ico ico-lg"><use href="#d-term"/></svg></span>
+                  <div class="grow1" style="min-width:0"><div class="t-body fg">shell</div><div class="t-small mute trunc">dotfiles · main · ~/dev/dotfiles</div></div></div>
+              </div>
+              <div class="panel-foot"><span class="keycap neutral">↑↓</span><span>navigate</span><span class="keycap neutral">↵</span><span>launch</span><span class="grow1"></span><span>4 of 12</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= SECTION K — scope + data ================= -->
+  <div class="section-heading"><span class="section-letter">K</span> Scope &amp; data notes</div>
+
+  <div class="frame-row">
+    <div class="sticky-note" style="max-width:420px;margin-top:20px">
+      <b>Deliberately NOT shown — out of scope per the decision.</b>
+      <ul>
+        <li>No changes to <b>grid</b> or <b>zen</b> views. The toggle is rail-local and does not exist in the appbar.</li>
+        <li>No <b>grouping</b>, no <b>filter</b>, no <b>search</b>, no <b>pinning</b> in the card list. Sort order is the only organisation.</li>
+        <li>No <b>bulk actions</b> — no multi-select, no "kill all", no checkboxes.</li>
+        <li>Cards are <b>not the default mode on first launch</b>: the rail opens on the project tree, exactly as today. Mode is remembered per run only after the user flips it.</li>
+        <li>No drag-to-reorder, no card resize, no per-card settings surface beyond the existing <span style="font-family:ui-monospace,monospace">more</span> menu.</li>
+      </ul>
+    </div>
+
+    <div class="sticky-note blue" style="max-width:440px;margin-top:20px">
+      <b>Data model: every element maps to existing <span style="font-family:ui-monospace,monospace">TileData</span>.</b>
+      <ul>
+        <li>agent glyph → <span style="font-family:ui-monospace,monospace">icon_name</span> · label → <span style="font-family:ui-monospace,monospace">agent_label</span></li>
+        <li>project line → <span style="font-family:ui-monospace,monospace">project</span> + <span style="font-family:ui-monospace,monospace">branch</span></li>
+        <li>context line → <span style="font-family:ui-monospace,monospace">context</span></li>
+        <li>needs-you → <span style="font-family:ui-monospace,monospace">waiting</span> · working → <span style="font-family:ui-monospace,monospace">running</span> · selection ring → <span style="font-family:ui-monospace,monospace">focused</span> · D6 → <span style="font-family:ui-monospace,monospace">confirming_kill</span></li>
+      </ul>
+      <b>Gaps to resolve before build:</b>
+      <ul>
+        <li><b>done vs idle vs exited</b> are three distinct card states (D3/D4/D5) but <span style="font-family:ui-monospace,monospace">TileData</span> only carries the booleans <span style="font-family:ui-monospace,monospace">waiting</span>/<span style="font-family:ui-monospace,monospace">running</span>. Either widen it to hold the <span style="font-family:ui-monospace,monospace">ActivityState</span> enum, or accept collapsing D3/D4/D5 into one "not running" state. <b>Recommendation: carry the enum</b> — it is already computed upstream, and the sort bands need it anyway.</li>
+        <li>The header <b>count badge</b> (G1, H1) is a derived <span style="font-family:ui-monospace,monospace">len()</span>, not a field — free.</li>
+        <li>Nothing on the card uses <span style="font-family:ui-monospace,monospace">spawned_at</span>, <span style="font-family:ui-monospace,monospace">wt_path</span>, <span style="font-family:ui-monospace,monospace">tmux</span> or <span style="font-family:ui-monospace,monospace">tmux_name</span>. Relative age was drawn and cut: at 320px it competed with the context line, which is strictly more informative.</li>
+      </ul>
+    </div>
+
+    <div class="sticky-note" style="max-width:400px;margin-top:20px">
+      <b>Conformance self-check (R1–R8).</b>
+      <ul>
+        <li><b>R1 tokens</b> — card 4 / list gap 6 / list pad 8 / row px 10 / min-h 38 / bar 3 / glyph 14 / status col 15 / btn 24 &amp; 28 — all named tokens.</li>
+        <li><b>R2 borders</b> — 1px only. BORDER on the card and rail edges, BORDER_SOFT for the intra-card divider and button rings.</li>
+        <li><b>R3 no reflow</b> — the <span style="font-family:ui-monospace,monospace">more</span> button holds its 24px slot at rest; hover only paints. Arming (D6) changes fill and words, never geometry. The disabled header button (H1) drops its ring, never its box, and never uses opacity.</li>
+        <li><b>R4 colour never alone</b> — dot fill-vs-hollow, spinner, close mark, the status word and the pulse each independently encode the state.</li>
+        <li><b>R5 motion</b> — spinner, attention pulse, caret blink. Nothing else moves; the list does not animate on re-sort.</li>
+        <li><b>R6–R8</b> — no new component, no new sprite, no new tier: card(), Card rows, icon_btn, keycap, status_dot, palette_row are all reused as-is.</li>
+      </ul>
+    </div>
+  </div>
+
+</div><!-- /#canvas --></div><!-- /#viewport -->
+
+<script>
+(function () {
+  /* ---- build the N=40 list (G1) from data, so the frame is honest about volume ---- */
+  var projects = ['grove', 'skills', 'dotfiles'];
+  var branches = ['main', 'feat/rail-mode', 'fix/kill-arm'];
+  var contexts = ['Running cargo test', 'Edited src/views/sidebar.rs', 'Edited src/theme.rs', 'Waiting for your input', 'Building release'];
+  var states = [
+    { k: 'needs you', cls: 'c-amber', attn: true,  spin: false, hollow: false },
+    { k: 'working',   cls: 'c-green', attn: false, spin: true,  hollow: false },
+    { k: 'idle',      cls: 'mute',    attn: false, spin: false, hollow: true  },
+    { k: 'done',      cls: 'c-blue',  attn: false, spin: false, hollow: false }
+  ];
+  var order = [0,0,1,1,1,1,1,1,2,2]; /* only the top of the list is rendered; the rest is scrolled away */
+  var host = document.getElementById('bigList');
+  if (host) {
+    order.forEach(function (si, i) {
+      var s = states[si];
+      var agent = i % 3 === 1 ? 'd-codex' : 'd-claude';
+      var mark = s.spin
+        ? '<svg class="ico ico-sm spin"><use href="#d-spinner"/></svg>'
+        : '<span class="dot' + (s.hollow ? ' hollow' : '') + '"></span>';
+      var el = document.createElement('div');
+      el.className = 'card' + (s.attn ? ' attn' : '');
+      el.innerHTML =
+        (s.attn ? '<span class="abar pulse"></span>' : '') +
+        '<div class="crow"><span class="' + s.cls + '" style="display:flex"><svg class="ico ico-md"><use href="#' + agent + '"/></svg></span>' +
+        '<span class="t-body fg trunc grow1">' + (agent === 'd-codex' ? 'codex ' : 'claude ') + (1 + (i % 4)) + '</span>' +
+        '<span class="' + s.cls + ' statuscol">' + mark + '</span>' +
+        '<span class="t-micro ' + s.cls + '">' + s.k + '</span>' +
+        '<span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>' +
+        '<div class="crow body"><div class="line"><span class="t-small dim mono trunc">' + projects[i % 3] + '</span>' +
+        '<span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span>' +
+        '<span class="t-small mute mono trunc">' + branches[(i + 1) % 3] + '</span></div>' +
+        '<div class="line"><span class="t-small mute trunc">' + (s.k === 'needs you' ? 'Waiting for your input' : contexts[i % contexts.length]) + '</span></div></div>';
+      host.appendChild(el);
+    });
+    var more = document.createElement('div');
+    more.className = 't-small mute';
+    more.style.cssText = 'padding:8px 10px;text-align:center';
+    more.textContent = '30 more below — scroll';
+    host.appendChild(more);
+  }
+
+  /* ---- pan / zoom ---- */
+  var vp = document.getElementById('viewport'), cv = document.getElementById('canvas');
+  var x = 0, y = 0, z = 1, MIN = 0.1, MAX = 2.5;
+  function apply() {
+    cv.style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + z + ')';
+    document.getElementById('zoomPct').textContent = Math.round(z * 100) + '%';
+  }
+  function fit() {
+    var w = cv.scrollWidth, h = cv.scrollHeight;
+    z = Math.min(MAX, Math.max(MIN, Math.min(innerWidth / w, innerHeight / h) * 0.95));
+    x = (innerWidth - w * z) / 2; y = Math.max(20, (innerHeight - h * z) / 2);
+    apply();
+  }
+  vp.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var nz = Math.min(MAX, Math.max(MIN, z * Math.exp(-e.deltaY * 0.0015)));
+    x = e.clientX - (e.clientX - x) * (nz / z);
+    y = e.clientY - (e.clientY - y) * (nz / z);
+    z = nz; apply();
+  }, { passive: false });
+  var panning = false, px = 0, py = 0;
+  vp.addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    panning = true; px = e.clientX - x; py = e.clientY - y;
+    vp.classList.add('panning'); vp.setPointerCapture(e.pointerId);
+  });
+  vp.addEventListener('pointermove', function (e) { if (panning) { x = e.clientX - px; y = e.clientY - py; apply(); } });
+  vp.addEventListener('pointerup', function () { panning = false; vp.classList.remove('panning'); });
+  document.getElementById('zoomIn').onclick = function () { z = Math.min(MAX, z * 1.25); apply(); };
+  document.getElementById('zoomOut').onclick = function () { z = Math.max(MIN, z / 1.25); apply(); };
+  document.getElementById('zoomFit').onclick = fit;
+  document.getElementById('themeToggle').onclick = function () {
+    var light = document.documentElement.classList.toggle('dark');
+    this.textContent = light ? '☀ Dark theme (tokyonight-storm)' : '☾ Light theme (tokyonight-day)';
+  };
+  fit();
+})();
+</script>
+</body>
+</html>

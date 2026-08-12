@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Decision — Session card view toggle (Grove)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --cream:#F3EEE1; --card:#FBF8EF; --navy:#2E2A6E; --navy-dark:#211D4E;
+  --text:#26234F; --text-dim:#78749C; --line:#D8D2E8;
+  --for:#2E2A6E; --conditional:#A9791B; --skeptical:#A3402F;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--cream);color:var(--text);
+  font-family:'Inter',system-ui,sans-serif;font-size:15px;line-height:1.55;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:1120px;margin:0 auto;padding:48px 28px 72px}
+h1,h2,h3,.node,.label,.sc{font-family:'Space Grotesk',system-ui,sans-serif}
+.sc{font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:var(--text-dim)}
+
+/* header */
+.top{display:flex;gap:32px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}
+.titlebox{background:var(--navy);color:var(--card);padding:20px 26px;border-radius:3px;max-width:600px}
+.titlebox h1{margin:0;font-size:27px;line-height:1.2;font-weight:700}
+.titlebox p{margin:8px 0 0;font-size:13.5px;color:#C9C4E8}
+.meta{font-size:13px;min-width:230px}
+.meta div{padding:4px 0;border-bottom:1px dashed var(--line)}
+.meta b{font-family:'Space Grotesk';color:var(--navy);font-weight:700;margin-right:8px}
+
+/* process band */
+.band{display:flex;gap:36px;align-items:flex-start;margin:46px 0 8px;flex-wrap:wrap}
+.tree{flex:0 0 auto}
+.node{border:1.5px solid var(--navy);border-radius:3px;padding:8px 13px;font-size:12px;
+  font-weight:700;letter-spacing:.05em;text-transform:uppercase;background:var(--card);
+  text-align:center;white-space:nowrap}
+.node.fill{background:var(--navy);color:var(--card)}
+.stem{width:1.5px;height:20px;background:var(--navy);margin:0 auto}
+.bar{height:1.5px;background:var(--navy)}
+.fan{display:flex}
+.fan>div{flex:1;display:flex;flex-direction:column;align-items:center}
+.fan .stem{height:16px}
+.bandtext{flex:1;min-width:280px;font-size:14px;color:var(--text)}
+.bandtext p{margin:0 0 10px}
+
+/* recommendation */
+.rec{background:var(--card);border:2.5px solid var(--navy);border-radius:4px;padding:26px 28px;margin:38px 0 10px}
+.rec .kicker{display:inline-block;background:var(--navy);color:var(--card);font-family:'Space Grotesk';
+  font-size:10.5px;letter-spacing:.16em;font-weight:700;padding:4px 10px;border-radius:2px}
+.rec h2{margin:14px 0 6px;font-size:22px;line-height:1.3}
+.rec .sub{margin:0;font-size:14.5px;color:var(--text)}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:22px;margin-top:26px;
+  border-top:1px dashed var(--line);padding-top:22px}
+.grid4 h3{margin:0 0 8px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--navy)}
+.grid4 ul{margin:0;padding-left:16px;font-size:13.2px}
+.grid4 li{margin-bottom:7px}
+
+/* options table */
+.opts{margin:44px 0 0}
+.opt{display:grid;grid-template-columns:118px 1fr 150px;gap:18px;align-items:start;
+  padding:14px 0;border-bottom:1px dashed var(--line)}
+.opt:first-of-type{border-top:1px dashed var(--line)}
+.opt .k{font-family:'Space Grotesk';font-weight:700;font-size:12.5px;color:var(--navy);
+  border-left:3px solid var(--navy);padding-left:10px}
+.opt .v{font-size:13.4px}
+.verdict{font-family:'Space Grotesk';font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+  font-weight:700;padding-top:2px}
+.v-no{color:var(--skeptical)} .v-yes{color:var(--for)} .v-part{color:var(--conditional)}
+
+/* personas */
+.chainrow{padding:24px 0;border-bottom:1px dashed var(--line);display:grid;
+  grid-template-columns:minmax(300px,0.85fr) 1fr;gap:34px;align-items:start}
+.chain{display:flex;align-items:center;flex-wrap:wrap;gap:0}
+.chain .link{width:16px;height:1.5px;background:var(--navy);flex:0 0 16px}
+.who{background:var(--navy);color:var(--card);border-radius:3px;padding:9px 13px}
+.who .n{font-family:'Space Grotesk';font-weight:700;font-size:13.5px;line-height:1.2}
+.who .r{font-size:11px;color:#C9C4E8;margin-top:2px}
+.prio{border:1.5px solid var(--navy);border-radius:3px;padding:8px 11px;font-size:11px;
+  font-family:'Space Grotesk';font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+  background:var(--card);max-width:150px;line-height:1.3}
+.pill{border-radius:999px;padding:5px 13px;font-family:'Space Grotesk';font-size:10.5px;
+  font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#fff}
+.pill.for{background:var(--for)} .pill.cond{background:var(--conditional)} .pill.skep{background:var(--skeptical)}
+.ann h4{margin:0 0 3px;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--text-dim);font-family:'Space Grotesk'}
+.ann p{margin:0 0 14px;font-size:13.6px}
+.ann p:last-child{margin-bottom:0}
+
+/* legend */
+.legend{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:16px 20px;
+  margin:26px 0;display:flex;gap:16px;align-items:flex-start;font-size:13px}
+.ico{flex:0 0 26px;height:26px;border-radius:50%;border:1.5px solid var(--navy);color:var(--navy);
+  display:flex;align-items:center;justify-content:center;font-family:'Space Grotesk';font-weight:700;font-size:14px}
+
+/* sketch */
+.sketch{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:22px;margin-top:14px}
+.mock{display:flex;gap:14px;flex-wrap:wrap}
+.rail{width:262px;border:1.5px solid var(--navy);border-radius:4px;overflow:hidden;background:var(--cream)}
+.railhdr{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);
+  font-family:'Space Grotesk';font-size:10px;letter-spacing:.18em;font-weight:700;color:var(--text-dim)}
+.railhdr .btns{margin-left:auto;display:flex;gap:6px}
+.railhdr .b{width:18px;height:18px;border:1px solid var(--line);border-radius:2px;display:flex;
+  align-items:center;justify-content:center;font-size:11px;color:var(--navy);background:var(--card)}
+.railhdr .b.on{background:var(--navy);color:var(--card);border-color:var(--navy)}
+.scard{margin:8px;background:var(--card);border:1px solid var(--line);border-radius:4px}
+.scard .r1{display:flex;align-items:center;gap:7px;padding:7px 9px;font-size:12px}
+.scard .r2{padding:6px 9px;border-top:1px solid var(--line);font-size:10.5px;color:var(--text-dim);
+  display:flex;justify-content:space-between;gap:8px}
+.dot{width:7px;height:7px;border-radius:50%;flex:0 0 7px}
+.bar3{width:3px;align-self:stretch;border-radius:2px}
+.scard.att{display:flex}
+.plus{margin:8px;border:1px dashed var(--navy);border-radius:4px;text-align:center;padding:8px;
+  font-size:12px;color:var(--navy);font-family:'Space Grotesk';font-weight:700}
+.caption{font-size:12.5px;color:var(--text-dim);margin-top:12px;max-width:560px}
+
+footer{margin-top:52px;border-top:1.5px solid var(--navy);padding-top:14px;
+  display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+
+@media (max-width:760px){
+  .grid4{grid-template-columns:repeat(2,1fr)}
+  .chainrow{grid-template-columns:1fr;gap:16px}
+  .opt{grid-template-columns:1fr;gap:6px}
+  .band{flex-direction:column}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <div class="titlebox">
+      <h1>Does a session card list earn a third top-level view?</h1>
+      <p>Grove — gpui desktop agent-session manager. Proposed: an icon in the PROJECTS header that flips between the projects tree and a session card list with a “+”.</p>
+    </div>
+    <div class="meta">
+      <div><b>Scope</b> UI shell / view state</div>
+      <div><b>Domain</b> Developer tooling, single-user</div>
+      <div><b>Surfaces</b> sidebar.rs · workspace.rs · grid.rs</div>
+      <div><b>Perspectives</b> 6</div>
+      <div><b>Date</b> 2026-08-12</div>
+    </div>
+  </div>
+
+  <div class="band">
+    <div class="tree">
+      <div class="node fill" style="width:190px;margin:0 auto">The Process</div>
+      <div class="stem"></div>
+      <div class="bar"></div>
+      <div class="fan">
+        <div><div class="stem"></div><div class="node">Cast</div></div>
+        <div><div class="stem"></div><div class="node fill">Independent reads</div></div>
+        <div><div class="stem"></div><div class="node fill">Decide</div></div>
+      </div>
+    </div>
+    <div class="bandtext">
+      <p>Six role-specific voices were given the same grounded brief — the real code: <b>grid_view: bool</b> at <code>workspace_state.rs:326</code>, the 36px PROJECTS header that already carries two icon buttons, the 3-state collapse ring whose middle stop is literally <b>SessionsOnly</b>, and the three existing session-creation entry points that all funnel into <code>Sidebar::spawn_session_in</code>.</p>
+      <p>Each answered alone, with no sight of the others. Where they converged without coordination is treated as the strongest signal in the room.</p>
+    </div>
+  </div>
+
+  <div class="rec">
+    <span class="kicker">RECOMMENDATION</span>
+    <h2>Build it as a <em>rail content mode</em>, not a third top-level view. Ship option&nbsp;C — and pay for it by deleting <code>SessionsOnly</code>.</h2>
+    <p class="sub">
+      Add one icon to the PROJECTS header that swaps the rail’s <em>contents</em> between the project tree and a flat, cross-project session card list, sorted attention-first. The body and terminal never move. Introduce <code>RailMode { Tree, Sessions }</code> local to the sidebar entity — <b>not</b> a third state on <code>grid_view</code>, which stays a bool. Simultaneously collapse the tree-cycle ring from <code>Collapsed → SessionsOnly → All</code> back to two stops, because the new mode does that job properly. Net user-visible modes: unchanged. The <b>+</b> goes at the bottom of the card list and opens the <em>existing</em> launcher palette — a fourth doorway to the same funnel, not a fourth funnel.
+    </p>
+    <div class="grid4">
+      <div>
+        <h3>Why</h3>
+        <ul>
+          <li>The real unmet need every voice named independently is <b>cross-project attention triage</b>, not “a new view”. The tree buries that under project nodes; a flat list surfaces it.</li>
+          <li>C is the only option that keeps the terminal on screen while you scan — the daily-driver’s single hardest requirement.</li>
+          <li>Zero new tokens, zero new components: <code>card()</code>, <code>RowDensity::Card</code> and <code>palette_row</code> already exist. Conformance R1–R8 passes untouched.</li>
+          <li>Retiring <code>SessionsOnly</code> means the feature <em>reduces</em> the surface it lands in rather than adding to it.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Risks to watch</h3>
+        <ul>
+          <li><b>220px.</b> <code>SIDEBAR_MIN_W</code> is 220 — a two-line card with label, branch, project and status has to degrade legibly, not clip. Prove this before anything else.</li>
+          <li><b>Density collapse at N=40.</b> Cards are ~54px vs the tree’s 28px row. Forty sessions is a 2,160px scroll. Attention-first sort is what makes that survivable; without it the list is worse than the tree.</li>
+          <li>Two rail modes means a persisted preference, a restore path, and a keybinding — small, but it is real state that must round-trip.</li>
+          <li>The <b>+</b> risks reading as “new session <em>here</em>” with no worktree context. It must open the launcher, never silently spawn.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Conditions</h3>
+        <ul>
+          <li>Card must render acceptably at 220px before implementation is approved.</li>
+          <li>Sort order is fixed and non-configurable: needs-you → working → idle → done. No user sort in v1.</li>
+          <li>Ship the <code>SessionsOnly</code> removal in the same change, not “later”.</li>
+          <li>Reuse <code>TileData</code>’s shape for the card view model rather than minting a third session view model.</li>
+          <li>Toggle icon must be a distinct glyph from the existing plus and cycle buttons — three icons in a 36px header is the ceiling.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Out of scope</h3>
+        <ul>
+          <li>Any change to <code>grid_view</code>, the grid tiles, or zen mode.</li>
+          <li>A third value on the view enum; telemetry’s two-bool screen derivation stays as-is.</li>
+          <li>Session grouping, filtering, search, or pinning in the card list.</li>
+          <li>Making the card list the default rail mode on first launch.</li>
+          <li>Bulk actions (kill-all, multi-select) on cards.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <h2 style="margin:48px 0 4px;font-size:17px">The four options as put to the room</h2>
+  <div class="opts">
+    <div class="opt">
+      <div class="k">A — Third mode</div>
+      <div class="v">Rail replaced by a session card list; <code>grid_view</code> becomes a 3-state enum; toggled from the PROJECTS header.</div>
+      <div class="verdict v-no">Rejected</div>
+    </div>
+    <div class="opt">
+      <div class="k">B — Enrich grid</div>
+      <div class="v">The existing full-screen grid <em>is</em> the session view; fatten <code>TileData</code>, add a “+” tile. No new state at all.</div>
+      <div class="verdict v-part">Partly adopted</div>
+    </div>
+    <div class="opt">
+      <div class="k">C — Rail flip</div>
+      <div class="v">The rail swaps tree for a flat session card list. Body and terminal untouched. Sidebar-local state.</div>
+      <div class="verdict v-yes">Adopted</div>
+    </div>
+    <div class="opt">
+      <div class="k">D — Do nothing</div>
+      <div class="v">Tree + <code>SessionsOnly</code> + launcher already cover it; the real complaint is “the tree is a bad session index”.</div>
+      <div class="verdict v-part">Diagnosis kept</div>
+    </div>
+    <div class="opt">
+      <div class="k">E — Emergent</div>
+      <div class="v">Proposed in-room: don’t add a mode, <em>reorder</em> the existing tree so attention-flagged sessions float to a pinned strip at the top. Rejected as it breaks the tree’s one virtue — stable spatial memory.</div>
+      <div class="verdict v-no">Rejected</div>
+    </div>
+  </div>
+
+  <div class="sketch">
+    <div class="sc" style="margin-bottom:14px">Shape of the adopted option — rail at RAIL_W 320</div>
+    <div class="mock">
+      <div class="rail">
+        <div class="railhdr"><span>P R O J E C T S</span>
+          <span class="btns"><span class="b">+</span><span class="b">⌄</span><span class="b on">▤</span></span></div>
+        <div class="scard att">
+          <div class="bar3" style="background:var(--skeptical)"></div>
+          <div style="flex:1">
+            <div class="r1"><span class="dot" style="background:var(--skeptical)"></span><b>claude 1</b><span style="color:var(--text-dim)">needs you</span></div>
+            <div class="r2"><span>grove</span><span>feat/session-view</span></div>
+          </div>
+        </div>
+        <div class="scard att">
+          <div class="bar3" style="background:transparent"></div>
+          <div style="flex:1">
+            <div class="r1"><span class="dot" style="background:var(--conditional)"></span><b>codex 2</b><span style="color:var(--text-dim)">working</span></div>
+            <div class="r2"><span>skills</span><span>main</span></div>
+          </div>
+        </div>
+        <div class="scard att">
+          <div class="bar3" style="background:transparent"></div>
+          <div style="flex:1">
+            <div class="r1"><span class="dot" style="background:var(--text-dim)"></span><b>claude 3</b><span style="color:var(--text-dim)">idle</span></div>
+            <div class="r2"><span>grove</span><span>fix/deny</span></div>
+          </div>
+        </div>
+        <div class="plus">+  new session</div>
+      </div>
+      <div style="flex:1;min-width:220px;border:1.5px dashed var(--line);border-radius:4px;
+                  display:flex;align-items:center;justify-content:center;color:var(--text-dim);
+                  font-family:'Space Grotesk';font-size:12px;letter-spacing:.1em;min-height:210px">
+        TERMINAL — UNCHANGED, STILL VISIBLE
+      </div>
+    </div>
+    <p class="caption">Third header icon toggles rail contents only. Cards are <code>card()</code> with a full-bleed divider between the two rows; the 3px attention bar is the same one the tree rows already carry; status is a dot <em>and</em> a word, never colour alone.</p>
+  </div>
+
+  <h2 style="margin:50px 0 2px;font-size:17px">The room, independently</h2>
+  <p style="margin:0 0 18px;color:var(--text-dim);font-size:13.5px">Six reads, each written without sight of the others.</p>
+
+  <div class="chainrow">
+    <div class="chain">
+      <div class="who"><div class="n">Priya Raghavan</div><div class="r">Product — owns what ships</div></div>
+      <div class="link"></div>
+      <div class="prio">Solve the stated problem, not the requested feature</div>
+      <div class="link"></div>
+      <span class="pill cond">Conditional</span>
+    </div>
+    <div class="ann">
+      <h4>Take</h4>
+      <p>The ask is phrased as a view but the pain is a query: “which of my running agents is blocked on me right now, across all projects.” Nothing in Grove answers that in one glance — the tree answers “what projects do I have”, the grid answers “show me everything at once”, and the launcher answers “start something new”. Build the answer to the actual question and the view falls out of it. If we build the view first we’ll ship a prettier tree.</p>
+      <h4>Flags</h4>
+      <p>If the card list isn’t sorted attention-first it has no reason to exist — it’s the tree with more whitespace. Sort order is the feature; the cards are packaging.</p>
+    </div>
+  </div>
+
+  <div class="chainrow">
+    <div class="chain">
+      <div class="who"><div class="n">Tomás Lindqvist</div><div class="r">UX / information architecture</div></div>
+      <div class="link"></div>
+      <div class="prio">Mode legibility &amp; scan cost</div>
+      <div class="link"></div>
+      <span class="pill skep">Skeptical of A</span>
+    </div>
+    <div class="ann">
+      <h4>Take</h4>
+      <p>Grove has two top-level modes today and a user can always tell which one they’re in because one has a sidebar and one doesn’t. A third breaks that: “sidebar replaced by cards” and “full-screen grid of cards” look like the same thing at a glance and behave differently. That’s the worst kind of mode — visually near-identical, functionally distinct. Also: a card list is <em>slower</em> to scan than a 28px row list once you pass roughly a dozen items, because scanning is driven by items-per-viewport, not per-item prettiness. Cards win only if each card carries information the row genuinely can’t.</p>
+      <h4>Flags</h4>
+      <p>At 40 sessions the card list is strictly worse than the tree unless sort does the work. Define the N where it stops helping and say out loud that we accept it.</p>
+    </div>
+  </div>
+
+  <div class="chainrow">
+    <div class="chain">
+      <div class="who"><div class="n">Wren Okafor</div><div class="r">gpui / Rust — owns workspace.rs</div></div>
+      <div class="link"></div>
+      <div class="prio">Keep shell state representable</div>
+      <div class="link"></div>
+      <span class="pill skep">Skeptical</span>
+    </div>
+    <div class="ann">
+      <h4>Take</h4>
+      <p>There is no screen enum today — there’s <code>grid_view: bool</code> plus <code>grid_view_before_zen</code> and <code>grid_view_before_terminal</code>, and telemetry reconstructs a screen name from two bools at <code>workspace_state.rs:503</code>. Widening that bool to a three-state enum forces every “remember what it was before” shadow field to widen with it, and every restore path becomes a 3×3 matrix I have to hand-verify. The render switch at <code>workspace.rs:2547</code> is currently three branches; option A makes it five with two that differ only in what fills the rail. Sidebar-local state costs me nothing — the sidebar entity already owns its own collapse ring.</p>
+      <h4>Flags</h4>
+      <p>Whatever we choose, the mode must survive zen-mode round-tripping. That’s where the existing before-zen fields came from, and it’s the bug we’ll ship if we’re careless.</p>
+    </div>
+  </div>
+
+  <div class="chainrow">
+    <div class="chain">
+      <div class="who"><div class="n">Dana Ibarra</div><div class="r">Design system + conformance suite</div></div>
+      <div class="link"></div>
+      <div class="prio">No new tokens, no forked shapes</div>
+      <div class="link"></div>
+      <span class="pill cond">Conditional</span>
+    </div>
+    <div class="ann">
+      <h4>Take</h4>
+      <p>A session card is already buildable today with nothing new: <code>components.rs:819 card()</code> gives rounded-4 / BG_STRIP / 1px BORDER with a full-bleed divider, <code>RowDensity::Card</code> gives the row rhythm, and <code>palette_row</code>’s fixed 54px two-line shape with a 24px icon slot is almost literally the requested card. If a proposal needs a new token to look right, DESIGN.md §13 says the proposal is wrong — and I’d hold that line here. My condition is layout, not looks: the card has to hold at <code>SIDEBAR_MIN_W</code> 220, and nothing in it may reflow on hover or use colour as the only carrier of status.</p>
+      <h4>Flags</h4>
+      <p>A third view model for the same session data would be the real debt. There are already two (<code>SessionHeaderData</code>, <code>TileData</code>). Derive from <code>TileData</code> or we’ll have three places to fix the next time status semantics change.</p>
+    </div>
+  </div>
+
+  <div class="legend">
+    <div class="ico">i</div>
+    <div><b>Stance pills.</b>
+      <span style="color:var(--for);font-weight:600">For</span> — would ship this as asked.
+      <span style="color:var(--conditional);font-weight:600">Conditional</span> — supports it if a named condition holds.
+      <span style="color:var(--skeptical);font-weight:600">Skeptical</span> — argues against the shape as proposed, not necessarily against the goal.
+      Stances are independent reads, not votes; the recommendation weighs them, it doesn’t count them.</div>
+  </div>
+
+  <div class="chainrow">
+    <div class="chain">
+      <div class="who"><div class="n">Marco Feld</div><div class="r">Daily driver — runs 8–15 agents at once</div></div>
+      <div class="link"></div>
+      <div class="prio">Never lose sight of the terminal</div>
+      <div class="link"></div>
+      <span class="pill for">For — as C</span>
+    </div>
+    <div class="ann">
+      <h4>Take</h4>
+      <p>What I actually do all day: an agent pings, I scan for the “needs you” bar, I jump, I answer, I go back to whatever I was reading in the other session. Options A and B both take the terminal off screen to do that — which means the scan costs me my place. The thing I want is a rail I can flip into “just the sessions, all projects, blocked ones on top”, while the terminal I’m mid-thought in stays right where it is. The plus is nice but honestly I never struggle to start a session; there are already three ways and I use two of them.</p>
+      <h4>Flags</h4>
+      <p>If flipping the rail resets scroll position, or loses which session is focused, I will stop using it within a day.</p>
+    </div>
+  </div>
+
+  <div class="chainrow">
+    <div class="chain">
+      <div class="who"><div class="n">Nadia Behrens</div><div class="r">Release &amp; telemetry — eats the consequences</div></div>
+      <div class="link"></div>
+      <div class="prio">Surface area we can still reason about</div>
+      <div class="link"></div>
+      <span class="pill skep">Skeptical</span>
+    </div>
+    <div class="ann">
+      <h4>Take</h4>
+      <p>Count what exists before adding: three top-level shell states, a 3-state collapse ring, a grid, a launcher palette, and three session-creation paths. The proposal adds a fourth session surface and a fourth creation path to a tool used by one person. Every one of those is a state combination someone has to hold in their head when a bug report says “the sidebar was empty”. I’ll support this only if it is <em>net-neutral or negative</em> on modes — and there is an obvious donor: <code>SessionsOnly</code> in the collapse ring is a half-built version of exactly this feature. Build the good one, delete the bad one.</p>
+      <h4>Flags</h4>
+      <p>Telemetry derives the screen name from two bools. Any mode we add that isn’t reflected there becomes invisible in usage data — meaning we’ll never learn whether this was worth building.</p>
+    </div>
+  </div>
+
+  <div style="background:var(--card);border-left:3px solid var(--navy);padding:18px 22px;margin:30px 0 0">
+    <div class="sc" style="margin-bottom:6px">Unprompted convergence</div>
+    <p style="margin:0;font-size:14px">Three voices who never saw each other’s input — Priya (product), Tomás (UX) and Marco (daily driver) — independently landed on the same thing: <b>the value is in the ordering, not the card</b>. Attention-first sort across projects is the feature; cards are the container it arrives in. Separately, Wren and Nadia independently rejected widening <code>grid_view</code>, from opposite directions — one on restore-path combinatorics, one on debuggable surface area. Both convergences are treated as load-bearing in the recommendation above.</p>
+  </div>
+
+  <footer>
+    <div class="sc">Grove · decision room · session card view toggle · 2026-08-12</div>
+    <div class="sc">Cast — Raghavan · Lindqvist · Okafor · Ibarra · Feld · Behrens</div>
+  </footer>
+
+</div>
+</body>
+</html>
