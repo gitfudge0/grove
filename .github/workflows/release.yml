@@ -59,9 +59,29 @@ jobs:
         if: matrix.os == 'linux'
         run: |
           sudo apt-get update
-          # GUI (iced) + bundling prerequisites.
+          # gpui (Linux) + bundling prerequisites. Kept in lockstep with the
+          # same step in ci.yml, which is derived from this branch's actual
+          # dependency graph rather than upstream docs:
+          #   fontconfig/freetype  zed-font-kit -> yeslogic-fontconfig-sys and
+          #                        freetype-sys, both pkg-config probes that
+          #                        emit -lfontconfig / -lfreetype
+          #   xkbcommon(+x11), xcb xkbcommon 0.8 links them directly (no
+          #                        build.rs); `ldd target/release/grove` shows
+          #                        libxkbcommon, libxkbcommon-x11, libxcb
+          #   wayland              wayland-sys is used in dlopen mode, so it is
+          #                        a *runtime* need, not a link-time one; kept
+          #                        so a future non-dlopen build does not break
+          #   rsvg/ssl/pkg-config  unchanged (bundling + TLS)
+          #   dpkg                 cargo-bundle shells out to it for the .deb
+          #                        this job ships; preinstalled on ubuntu-latest
+          #                        but named explicitly so an image change can't
+          #                        silently break the Linux release artifact
+          # Vulkan is loaded at runtime by ash; this job never opens a window,
+          # so no libvulkan here.
           sudo apt-get install -y \
-            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
+            libfontconfig1-dev libfreetype-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev \
+            libwayland-dev \
             librsvg2-dev libssl-dev pkg-config dpkg
 
       - name: Add cross-compile target
