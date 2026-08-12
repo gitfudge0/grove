@@ -98,7 +98,12 @@ pub enum InputContentType {
 }
 
 impl InputContentType {
-    #[cfg(target_os = "macos")]
+    // GROVE LOCAL PATCH (re-apply on re-vendor): gate matches the sole caller,
+    // `native::set_text_content_type`, which is itself compiled out when
+    // `grove-test-support` is on. Upstream's plain `cfg(target_os = "macos")`
+    // makes this a never-used method under `cargo clippy --all-targets` on
+    // macOS, which is a hard error at `-D warnings`.
+    #[cfg(all(target_os = "macos", not(feature = "grove-test-support")))]
     pub(crate) const fn ns_text_content_type(self) -> Option<&'static str> {
         match self {
             Self::Name => Some("name"),
@@ -172,7 +177,10 @@ pub(super) fn sync_native_content_type(
     let _ = (window, content_type);
 }
 
-#[cfg(all(test, target_os = "macos"))]
+// GROVE LOCAL PATCH (re-apply on re-vendor): same gate as
+// `ns_text_content_type` above, so this module does not reference a method
+// that has been compiled out.
+#[cfg(all(test, target_os = "macos", not(feature = "grove-test-support")))]
 mod tests {
     use super::*;
 

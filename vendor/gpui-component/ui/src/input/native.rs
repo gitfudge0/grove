@@ -1,4 +1,11 @@
-#[cfg(target_os = "macos")]
+// GROVE LOCAL PATCH (re-apply on re-vendor): the cfg gates below carry the
+// extra `not(feature = "grove-test-support")` so they match the single call
+// site in `content_type::sync_native_content_type`. With the feature on
+// (which `cargo clippy --all-targets` turns on via Grove's dev-dependencies)
+// nothing calls `set_text_content_type`, and upstream's plain
+// `cfg(target_os = "macos")` left it — and its import — dead, which is a hard
+// error under `-D warnings` on the macOS CI job.
+#[cfg(all(target_os = "macos", not(feature = "grove-test-support")))]
 mod macos {
     use std::{cell::RefCell, collections::HashMap, mem, ptr, sync::Once};
 
@@ -108,5 +115,5 @@ mod macos {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(feature = "grove-test-support")))]
 pub(crate) use macos::set_text_content_type;
