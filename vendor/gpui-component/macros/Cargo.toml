@@ -2,6 +2,8 @@
 name = "gpui-component-macros"
 description = "Macros for GPUI Component."
 version = "0.5.1"
+# Vendored fork; never published. See ui/Cargo.toml.
+publish = false
 license = "Apache-2.0"
 edition = "2024"
 

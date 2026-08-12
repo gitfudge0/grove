@@ -8,6 +8,10 @@ homepage = "https://longbridge.github.io/gpui-component"
 repository = "https://github.com/longbridge/gpui-component"
 # readme removed: upstream path is outside the vendored subset
 version = "0.5.2"
+# Vendored fork of longbridge/gpui-component; we never publish it to crates.io.
+# Marking it explicitly lets cargo-deny's `wildcards` check treat its path deps
+# as workspace-internal (allow-wildcard-paths) instead of publishable wildcards.
+publish = false
 edition = "2024"
 
 [lib]

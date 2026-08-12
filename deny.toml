@@ -30,6 +30,21 @@ ignore = [
     # Same wayland-scanner build-time-only proc-macro path and reasoning
     # as RUSTSEC-2026-0194 above.
     "RUSTSEC-2026-0195",
+    # proc-macro-error2 2.0.1 is unmaintained (author confirmed; both it and
+    # the original proc-macro-error are dead). Reached only as a build-time
+    # proc-macro via stacksafe-macro -> stacksafe -> gpui, so no code from it
+    # ships in the Grove binary. RustSec states "No safe upgrade is
+    # available" and Grove cannot patch gpui's transitive tree. Drop this the
+    # moment stacksafe releases a version that moves to manyhow or
+    # proc-macro2-diagnostics (or gpui drops stacksafe).
+    "RUSTSEC-2026-0173",
+    # instant 0.1.13 is unmaintained; the author points at `web-time`. Reached
+    # via gpui-component and via notify -> notify-types. It is a thin
+    # `Instant` shim with no known vulnerability, and RustSec offers no
+    # upgrade. Drop this once gpui-component and notify both move to
+    # web-time; our vendored gpui-component fork is the lever if upstream
+    # stalls.
+    "RUSTSEC-2024-0384",
 ]
 
 [bans]
@@ -52,7 +67,13 @@ allow = [
     "ISC",
     "Zlib",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
+    # enum-iterator, enum-iterator-derive: via gpui-component. BSD Zero
+    # Clause — permissive, not even attribution required.
+    "0BSD",
+    # libbz2-rs-sys: via bzip2 -> compression-codecs -> async-compression ->
+    # gpui's http_client. The upstream bzip2 licence: BSD-style, permissive,
+    # attribution only.
+    "bzip2-1.0.6",
     # clipboard-win, error-code: via arboard (Windows targets only).
     # Permissive, no attribution required.
     "BSL-1.0",
@@ -71,3 +92,23 @@ confidence-threshold = 0.8
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# gpui is not published to crates.io, so the whole gpui stack has to come from
+# git. Every entry below is a specific repository, not a wildcard, and every
+# use of it in Cargo.lock is pinned to an exact `rev` (see Cargo.toml and
+# vendor/gpui-component/*/Cargo.toml) — a rev pin is content-addressed, so
+# these cannot silently drift the way a branch or tag could. Adding a new git
+# host here should be a deliberate, reviewed decision.
+allow-git = [
+    # gpui itself plus its in-repo sibling crates (gpui_macros, sum_tree,
+    # http_client, ...). Pinned to rev 1a246ef.
+    "https://github.com/zed-industries/zed",
+    # Zed's fork of alacritty_terminal, used by gpui's terminal support.
+    "https://github.com/zed-industries/alacritty",
+    # Zed's fork of font-kit, carrying font-loading fixes not upstreamed.
+    "https://github.com/zed-industries/font-kit",
+    # Zed's fork of xim-rs, X11 input-method support for gpui on Linux.
+    "https://github.com/zed-industries/xim-rs.git",
+    # Upstream proptest at an unreleased rev, required by gpui's test-support
+    # feature. Dev/test only.
+    "https://github.com/proptest-rs/proptest",
+]
