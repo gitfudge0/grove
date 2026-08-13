@@ -129,6 +129,7 @@ impl ModalLayer {
                     tree_paths.len(),
                     self.state.read(cx).proj_idx(),
                     self.active_run_script(cx).is_some(),
+                    self.active_diff_wt(cx).is_some(),
                 )
             }
             _ => launcher::typed_rows(
@@ -136,6 +137,7 @@ impl ModalLayer {
                 &combos,
                 &recents,
                 self.active_run_script(cx).is_some(),
+                self.active_diff_wt(cx).is_some(),
                 st.scope,
             ),
         }
@@ -155,6 +157,16 @@ impl ModalLayer {
             .and_then(|(_, p)| p.scripts.run.clone())
             .filter(|s| !s.trim().is_empty())?;
         Some((wt_path, script))
+    }
+
+    /// The focused session's worktree, for the "View diff" action row — the
+    /// same resolve-at-activation shape as [`Self::active_run_script`], minus
+    /// the project-script lookup: any session with a worktree can show a
+    /// diff, whether or not it currently has one.
+    fn active_diff_wt(&self, cx: &App) -> Option<String> {
+        let id = self.state.read(cx).active_session()?;
+        let meta = self.registry.read(cx).meta(id)?;
+        Some(meta.wt_path.clone())
     }
 
     /// The switch drill-in's display order: sessions most-recently-used first
@@ -456,6 +468,7 @@ impl ModalLayer {
             | PaletteRow::TerminalWt
             | PaletteRow::AddProject
             | PaletteRow::RunScript
+            | PaletteRow::ViewDiff
             | PaletteRow::ReloadThemes => {}
         }
         cx.notify();
@@ -573,6 +586,13 @@ impl ModalLayer {
                 };
                 self.close(cx);
                 cx.emit(ModalEvent::RunScript { wt_path, script });
+            }
+            PaletteRow::ViewDiff => {
+                let Some(wt_path) = self.active_diff_wt(cx) else {
+                    cx.notify();
+                    return;
+                };
+                self.open(Modal::DiffViewer { wt_path }, cx);
             }
             PaletteRow::Setting(s) => self.activate_setting(s, window, cx),
             PaletteRow::ReloadThemes => {
@@ -857,6 +877,9 @@ fn row_label(row: &PaletteRow, cx: &App) -> (String, String, &'static str) {
         PaletteRow::TerminalWt => ("Worktree terminal".into(), String::new(), "term"),
         PaletteRow::AddProject => ("Add project…".into(), String::new(), "plus"),
         PaletteRow::RunScript => ("Run script".into(), String::new(), "play"),
+        // Reuses the sidebar's git glyph rather than adding a new sprite — the
+        // icon vocabulary is fixed, and a diff is a git view like any other.
+        PaletteRow::ViewDiff => ("View diff".into(), String::new(), "git"),
         PaletteRow::SwitchToSession => ("Switch to session…".into(), String::new(), "restart"),
         PaletteRow::Settings => ("Settings…".into(), String::new(), "cog"),
         // The value, not the section: activating a toggle row leaves the

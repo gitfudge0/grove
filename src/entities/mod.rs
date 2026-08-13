@@ -2,6 +2,7 @@
 
 pub mod activity_store;
 pub mod animation_clock;
+pub mod diff_viewer;
 pub mod project_tree;
 pub mod session_registry;
 pub mod terminal_session;

@@ -21,6 +21,7 @@
 
 pub mod add_project;
 pub mod confirm;
+pub mod diff_viewer;
 pub mod input;
 pub mod launcher;
 pub mod project;
@@ -36,6 +37,7 @@ use gpui::{
 
 use crate::entities::activity_store::ActivityStore;
 use crate::entities::animation_clock::AnimationClock;
+use crate::entities::diff_viewer::DiffViewerState;
 use crate::entities::project_tree::ProjectTree;
 use crate::entities::session_registry::SessionRegistry;
 use crate::entities::toast::ToastState;
@@ -48,6 +50,18 @@ use crate::modal::{
 use crate::settings::SettingsState;
 
 use self::input::ModalInput;
+
+/// The diff viewer body's content width, [`diff_viewer::effective_mode`]'s
+/// input: the logical window width (the exact idiom
+/// `Sidebar::logical_window_width` uses) minus the viewer's own insets. A
+/// free function rather than a method on `ModalLayer` because it needs
+/// nothing from `self` — the same reason `diff_viewer::render` computes it
+/// inline for its own `window`/`cx`.
+fn diff_content_w(window: &Window, cx: &App) -> f32 {
+    let zoom = cx.global::<crate::zoom::ZoomState>().zoom;
+    let win_w = f32::from(window.viewport_size().width) / zoom;
+    win_w - crate::views::tokens::DIFF_PANEL_INSET * 2.0 - crate::views::tokens::DIFF_FILE_LIST_W
+}
 
 // The click vocabulary itself lives one layer down in
 // [`crate::views::dispatch`] so the app-wide component library can build
@@ -133,6 +147,10 @@ pub struct ModalLayer {
     pub(super) teardown_session: Option<Entity<crate::entities::terminal_session::TerminalSession>>,
     /// Polls the teardown script for exit; dropped when the stage advances.
     teardown_poll: Option<gpui::Task<()>>,
+    /// The diff viewer's live state, mirroring how `teardown_view` is
+    /// created on open and dropped on close: `Some` exactly while
+    /// `Modal::DiffViewer` is the open modal.
+    pub(super) diff_viewer: Option<Entity<crate::entities::diff_viewer::DiffViewerState>>,
     /// The palette result list's scroll position. It has to live on the view:
     /// a handle built per-render would hand the list a fresh, zeroed offset on
     /// every frame.
@@ -195,6 +213,7 @@ impl ModalLayer {
             teardown_view: None,
             teardown_session: None,
             teardown_poll: None,
+            diff_viewer: None,
             palette_scroll: gpui::ScrollHandle::new(),
             palette_scrolled_to: std::cell::Cell::new(None),
             list_scroll: gpui::ScrollHandle::new(),
@@ -255,6 +274,20 @@ impl ModalLayer {
         if matches!(modal.kind(), ModalKind::Settings) {
             self.detect_tools(cx);
         }
+        // The live diff-viewer entity is created fresh per open and dropped
+        // the moment anything else opens — mirroring `teardown_view`, which
+        // must not survive past the modal that owns it.
+        self.diff_viewer = if let Modal::DiffViewer { wt_path } = &modal {
+            let mode = cx
+                .global::<crate::settings::SettingsState>()
+                .store
+                .diff_mode;
+            Some(cx.new(|cx| {
+                crate::entities::diff_viewer::DiffViewerState::new(wt_path.clone(), mode, cx)
+            }))
+        } else {
+            None
+        };
         self.slot.open(modal);
         self.reset_list_scroll();
         self.fields.clear();
@@ -283,11 +316,13 @@ impl ModalLayer {
             CancelOutcome::Closed => {
                 self.fields.clear();
                 self.field_subs.clear();
+                self.diff_viewer = None;
                 cx.emit(ModalEvent::Closed);
             }
             CancelOutcome::ReturnedTo(_) => {
                 self.fields.clear();
                 self.field_subs.clear();
+                self.diff_viewer = None;
                 self.needs_focus = true;
             }
         }
@@ -300,6 +335,7 @@ impl ModalLayer {
         self.slot.close();
         self.fields.clear();
         self.field_subs.clear();
+        self.diff_viewer = None;
         cx.emit(ModalEvent::Closed);
         cx.notify();
     }
@@ -440,6 +476,19 @@ impl ModalLayer {
             Modal::Onboarding { .. } | Modal::AddProject(_) => {
                 self.wizard_dir_move(delta, cx);
             }
+            Modal::DiffViewer { .. } => {
+                if let Some(dv) = self.diff_viewer.clone() {
+                    let body_focused = dv.read(cx).body_focused;
+                    dv.update(cx, |dv, cx| {
+                        if body_focused {
+                            dv.scroll_body(delta, cx);
+                        } else {
+                            dv.move_selection(delta, cx);
+                        }
+                    });
+                }
+                cx.notify();
+            }
             _ => cx.notify(),
         }
     }
@@ -486,6 +535,32 @@ impl ModalLayer {
             ModalAction::OnboardSkip => self.onboard_skip(cx),
             ModalAction::OnboardAdvance => self.onboard_advance(window, cx),
             ModalAction::OnboardToggleFocus => self.onboard_toggle_focus(window, cx),
+            ModalAction::DiffFocusBody => {
+                if let Some(dv) = self.diff_viewer.clone() {
+                    dv.update(cx, DiffViewerState::focus_body);
+                }
+            }
+            ModalAction::DiffToggleMode => {
+                let Some(dv) = self.diff_viewer.clone() else {
+                    return;
+                };
+                let content_w = diff_content_w(window, cx);
+                let stored = cx
+                    .global::<crate::settings::SettingsState>()
+                    .store
+                    .diff_mode;
+                let (_, split_enabled) = diff_viewer::effective_mode(content_w, stored);
+                if !split_enabled {
+                    return;
+                }
+                let next = match stored {
+                    grove_core::storage::DiffMode::Unified => grove_core::storage::DiffMode::Split,
+                    grove_core::storage::DiffMode::Split => grove_core::storage::DiffMode::Unified,
+                };
+                SettingsState::update(cx, move |s| s.diff_mode = next);
+                SettingsState::flush_now(cx);
+                dv.update(cx, |dv, cx| dv.set_mode(next, cx));
+            }
         }
     }
 
@@ -562,6 +637,28 @@ impl ModalLayer {
                 SettingsState::update(cx, move |store| store.default_agent = Some(agent));
                 SettingsState::flush_now(cx);
                 cx.notify();
+            }
+            ModalClick::SelectDiffFile { path } => {
+                if let Some(dv) = self.diff_viewer.clone() {
+                    dv.update(cx, |dv, cx| dv.select(path, cx));
+                }
+            }
+            ModalClick::SetDiffMode(mode) => {
+                SettingsState::update(cx, move |s| s.diff_mode = mode);
+                SettingsState::flush_now(cx);
+                if let Some(dv) = self.diff_viewer.clone() {
+                    dv.update(cx, |dv, cx| dv.set_mode(mode, cx));
+                }
+            }
+            ModalClick::ToggleDiffListStyle => {
+                if let Some(dv) = self.diff_viewer.clone() {
+                    dv.update(cx, DiffViewerState::toggle_list_style);
+                }
+            }
+            ModalClick::ToggleDiffTreeDir { path } => {
+                if let Some(dv) = self.diff_viewer.clone() {
+                    dv.update(cx, |dv, cx| dv.toggle_dir(path, cx));
+                }
             }
             other => self.on_click_late(other, window, cx),
         }
@@ -829,6 +926,7 @@ impl Render for ModalLayer {
             | ModalKind::ScriptsEditor
             | ModalKind::Updating
             | ModalKind::Changelog => settings::render(self, &dispatch, window, cx),
+            ModalKind::DiffViewer => diff_viewer::render(self, &dispatch, window, cx),
         };
 
         let framed = if kind.is_screen_replacement() {

@@ -83,13 +83,38 @@ pub fn mono(content: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
 /// both were a hard-coded `rgba(0,0,0,.35) 0 12px 40px` here, which is the one
 /// piece of panel chrome that never tracked a theme swap (plan.md §3).
 pub fn modal_panel(width: f32, content: impl IntoElement) -> Div {
+    panel_surface(c::PANEL_SHADOW(), content).w(rpx(width))
+}
+
+/// **The** panel chrome, width-free: the hairline [`crate::theme::BORDER`], the
+/// [`RADIUS_PANEL`] corner, the `BG_RAIL` fill, the 1px inset that keeps a
+/// filled footer strip inside the border stroke, and the
+/// `PANEL_SHADOW`/`PANEL_SHADOW_*` drop shadow forked light/dark by
+/// [`crate::theme::is_dark`].
+///
+/// Declared here once because a panel's chrome is one shape with two sizings,
+/// not two shapes: [`modal_panel`] pins a `MODAL_W_*` width onto it, while a
+/// viewport-filling surface (the diff viewer, which is inset by
+/// `DIFF_PANEL_INSET` rather than sized on the `MODAL_W_*` scale) sizes it
+/// `size_full`. The diff viewer previously carried its own copy of the border,
+/// radius and `is_dark()`-forked shadow geometry — a forked shape in CLAUDE.md's
+/// sense, and the class of drift where one copy tracks a theme swap and the
+/// other does not.
+///
+/// `shadow` is the drop shadow's **colour**, passed in rather than read here,
+/// so every panel still names [`crate::theme::PANEL_SHADOW`] at its own call
+/// site: R20 (plan.md §3) exists because that colour was once a hard-coded
+/// `rgba(0,0,0,.35)` that never tracked a theme swap, and a shape shared by
+/// two panels must not be the place a panel stops declaring its own themed
+/// shadow. The *geometry* (`PANEL_SHADOW_*`, forked light/dark) is chrome and
+/// so belongs here, declared once.
+pub fn panel_surface(shadow: Hsla, content: impl IntoElement) -> Div {
     let (y, blur) = if c::is_dark() {
         (PANEL_SHADOW_Y, PANEL_SHADOW_BLUR)
     } else {
         (PANEL_SHADOW_Y_LIGHT, PANEL_SHADOW_BLUR_LIGHT)
     };
     div()
-        .w(rpx(width))
         .p(px(1.0))
         .bg(c::BG_RAIL())
         .text_color(c::FG())
@@ -97,7 +122,7 @@ pub fn modal_panel(width: f32, content: impl IntoElement) -> Div {
         .border_color(c::BORDER())
         .rounded(rpx(RADIUS_PANEL))
         .shadow(vec![gpui::BoxShadow {
-            color: c::PANEL_SHADOW(),
+            color: shadow,
             offset: gpui::point(px(0.0), px(y)),
             blur_radius: px(blur),
             spread_radius: px(0.0),
@@ -811,6 +836,13 @@ pub fn divider_h_toned(tone: Hsla) -> Div {
     div().w_full().h(px(1.0)).bg(tone)
 }
 
+/// [`divider_h`]'s axis flipped — a full-height 1px vertical rule in the soft
+/// border tone, for a modal that splits its body into side-by-side columns
+/// (the diff viewer's file-list / patch-body split).
+pub fn divider_v() -> Div {
+    div().flex_none().h_full().w(px(1.0)).bg(c::BORDER_SOFT())
+}
+
 /// A muted, indented one-liner shown under a section header or row to explain
 /// what a control does (`src/gui/view/modals/settings.rs:141-145`).
 pub fn caption(content: impl Into<SharedString>) -> Div {
@@ -1263,6 +1295,41 @@ pub fn seg_group(content: impl IntoElement) -> Div {
         .border_color(c::BORDER())
         .rounded(rpx(RADIUS_GROUP))
         .child(content)
+}
+
+/// A tiny `Render` entity holding one line of hint text, wired through
+/// [`hint_tooltip`]. gpui's `.tooltip(builder)` needs an `AnyView` built fresh
+/// per hover, not a bare element — this is the whole reason a shape exists
+/// here rather than at its one call site (a disabled diff-viewer segment):
+/// the builder closure needs *something* `Render`-able to construct, and a
+/// one-off struct per call site would be the shape this file exists to
+/// prevent (a hint bubble is shared chrome, declared once).
+struct HintTooltip {
+    text: SharedString,
+}
+
+impl Render for HintTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        div()
+            .px(rpx(SPACE_LG))
+            .py(rpx(SPACE_SM))
+            .rounded(rpx(RADIUS_CONTROL))
+            .bg(c::BG_HL())
+            .border_1()
+            .border_color(c::BORDER())
+            .child(ui(self.text.clone(), TEXT_MICRO, c::FG_DIM()))
+    }
+}
+
+/// A `.tooltip(..)` builder showing one line of `text` in the shared
+/// [`HintTooltip`] shape — for a disabled control that still owes the user an
+/// explanation (the diff viewer's Split segment when the window is too
+/// narrow).
+pub fn hint_tooltip(
+    text: impl Into<SharedString>,
+) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+    let text = text.into();
+    move |_window, cx| cx.new(|_| HintTooltip { text: text.clone() }).into()
 }
 
 /// Command palette row height — taller than the shared 28px [`ROW_H`]-style

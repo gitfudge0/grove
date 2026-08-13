@@ -237,6 +237,55 @@ pub fn RED_WASH() -> Hsla {
     theme::with_current(|t| mix(ic(t.red), ic(t.bg), 0.84)).into()
 }
 
+/// The diff viewer's added-line background: GREEN held back to a 12% wash so
+/// the row's text keeps its contrast. Derived with [`alpha`] so it tracks a
+/// theme swap exactly as GREEN does (§14.3).
+pub fn DIFF_ADD_BG() -> Hsla {
+    alpha(GREEN(), 0.12)
+}
+/// The diff viewer's removed-line background, RED's counterpart to
+/// [`DIFF_ADD_BG`].
+pub fn DIFF_DEL_BG() -> Hsla {
+    alpha(RED(), 0.12)
+}
+
+/// [`DIFF_ADD_BG`] at the stronger 26% weight used for intraline emphasis
+/// (the word-level highlight within an added line).
+pub fn DIFF_ADD_BG_STRONG() -> Hsla {
+    alpha(GREEN(), 0.26)
+}
+/// [`DIFF_DEL_BG`] at the stronger 26% weight, [`DIFF_ADD_BG_STRONG`]'s
+/// counterpart for a removed line's intraline emphasis.
+pub fn DIFF_DEL_BG_STRONG() -> Hsla {
+    alpha(RED(), 0.26)
+}
+
+// ── syntax highlighting (diff viewer) ───────────────────────────────────────
+// Seven semantic scopes syntect spans are projected onto — never syntect's
+// own theme colours.
+
+pub fn CODE_KEYWORD() -> Hsla {
+    MAGENTA()
+}
+pub fn CODE_STRING() -> Hsla {
+    GREEN()
+}
+pub fn CODE_NUMBER() -> Hsla {
+    YELLOW()
+}
+pub fn CODE_COMMENT() -> Hsla {
+    FG_MUTE()
+}
+pub fn CODE_TYPE() -> Hsla {
+    CYAN()
+}
+pub fn CODE_FUNC() -> Hsla {
+    BLUE()
+}
+pub fn CODE_PUNCT() -> Hsla {
+    FG_DIM()
+}
+
 // ── selection (focused Miller column) ──────────────────────────────────────
 // A selected row is marked with a flat cyan tint plus a cyan ring, in two
 // weights. Derived from the theme's cyan so the treatment tracks theme swaps.

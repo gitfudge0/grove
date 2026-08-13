@@ -229,6 +229,17 @@ impl Sidebar {
                     cx.notify();
                 });
             }
+            RowAction::OpenDiff(id) => {
+                let Some(wt_path) = self.registry.read(cx).meta(id).map(|m| m.wt_path.clone())
+                else {
+                    return;
+                };
+                if let Some(layer) = self.modals.clone() {
+                    layer.update(cx, |l, cx| {
+                        l.open(crate::modal::Modal::DiffViewer { wt_path }, cx);
+                    });
+                }
+            }
             RowAction::ArmKillSession(id) => self.state.update(cx, |s, cx| {
                 s.arm_kill(id);
                 cx.notify();

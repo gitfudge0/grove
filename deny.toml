@@ -45,6 +45,22 @@ ignore = [
     # web-time; our vendored gpui-component fork is the lever if upstream
     # stalls.
     "RUSTSEC-2024-0384",
+    # bincode 1.3.3 is unmaintained (team disbanded after a harassment
+    # incident; upstream says 1.3.3 itself needs no further updates).
+    # Reached via syntect's `default-fancy` feature (Phase 5 diff-viewer
+    # highlighting) — it deserialises syntect's bundled syntax-definition
+    # dump at startup. Grove never feeds it attacker-controlled data (the
+    # dump is compiled into the syntect crate itself), and no upgrade
+    # exists. Revisit if syntect moves off bincode 1.x.
+    "RUSTSEC-2025-0141",
+    # yaml-rust 0.4.5 is unmaintained (maintainer unreachable for years).
+    # Reached via syntect's `default-fancy` feature's `yaml-load`
+    # sub-feature, which exists so syntect *can* load `.sublime-syntax`
+    # files from a folder at runtime — Grove only ever calls
+    # `SyntaxSet::load_defaults_newlines` (the pre-built bundled dump), so
+    # this parser is linked but never invoked. Revisit if syntect adopts
+    # yaml-rust2.
+    "RUSTSEC-2024-0320",
 ]
 
 [bans]

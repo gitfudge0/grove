@@ -358,6 +358,16 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     norm(a) == norm(b)
 }
 
+/// The diff viewer's list layout: side-by-side columns or one interleaved
+/// column. `Unified` is the default so a first-run user sees the familiar
+/// `git diff` shape.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiffMode {
+    #[default]
+    Unified,
+    Split,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct Store {
     #[serde(default)]
@@ -437,6 +447,10 @@ pub struct Store {
     /// config files load with an empty history.
     #[serde(default)]
     pub recent_launches: Vec<RecentLaunch>,
+    /// The diff viewer's persisted mode (Unified/Split). `#[serde(default)]`
+    /// so old config files load into `DiffMode::Unified`.
+    #[serde(default)]
+    pub diff_mode: DiffMode,
 }
 
 impl Store {
@@ -715,6 +729,7 @@ pub(crate) mod tests {
                     agent: Agent::Terminal,
                 },
             ],
+            diff_mode: DiffMode::Split,
         };
 
         let json = serde_json::to_string_pretty(&original).expect("serialize");
@@ -734,6 +749,7 @@ pub(crate) mod tests {
         assert_eq!(recovered.theme_dark.as_deref(), Some("tokyonight"));
         assert_eq!(recovered.theme_light.as_deref(), Some("tokyonight-day"));
         assert!(recovered.project_themes_enabled);
+        assert_eq!(recovered.diff_mode, DiffMode::Split);
         assert_eq!(recovered.projects[1].theme.as_deref(), Some("dracula"));
         assert!(
             !recovered.projects[0].archived,

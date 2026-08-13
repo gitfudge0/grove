@@ -125,6 +125,12 @@ fn svg_for(name: &str) -> String {
         "split" => {
             r#"<rect x="1.5" y="2.5" width="13" height="11" rx="1.2"/><path d="M8 2.5v11"/>"#
         }
+        // The single-pane counterpart of `split` — same rect outline, text
+        // lines instead of the centre divider, so the pair is deliberately
+        // built on the same shape and reads as one set.
+        "unified" => {
+            r#"<rect x="1.5" y="2.5" width="13" height="11" rx="1.2"/><path d="M4.5 6h7M4.5 8h7M4.5 10h7"/>"#
+        }
         "zen" => r#"<path d="M5 2.5H2.5V5M11 2.5h2.5V5M5 13.5H2.5V11M11 13.5h2.5V11"/>"#,
         "grid" => {
             // 2×2 filled squares — the agent-view grid icon.

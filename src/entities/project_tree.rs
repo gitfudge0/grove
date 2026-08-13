@@ -282,6 +282,11 @@ impl ProjectTree {
     /// `focused` is false the interval degrades to
     /// [`GIT_POLL_INTERVAL_UNFOCUSED`] rather than stopping outright, so an
     /// unfocused window still catches up occasionally.
+    ///
+    /// Because this stamps as a side effect, callers that also need to check
+    /// something else (see [`Self::poll_decision`]) must check that other
+    /// condition **first** — calling this and discarding the result still
+    /// consumes the throttle window.
     pub fn git_poll_due(&mut self, now: Instant, focused: bool) -> bool {
         let interval = if focused {
             GIT_POLL_INTERVAL
@@ -356,6 +361,23 @@ impl ProjectTree {
         }
     }
 
+    /// Whether `maybe_poll_git_state` should actually run the poll.
+    ///
+    /// The empty-paths check **must** come before the `git_poll_due` call: on
+    /// the first frames after launch the session registry is still empty, so
+    /// `paths` is empty. `git_poll_due` stamps `last_git_poll` as a side
+    /// effect whenever it returns `true`, so if it ran first it would burn
+    /// the throttle window on a poll that does no work, and the first real
+    /// poll would then be blocked for a further `GIT_POLL_INTERVAL` (5s) —
+    /// visibly delaying the sidebar's diff chips at startup. Do not collapse
+    /// this back into one `||` expression.
+    fn poll_decision(&mut self, now: Instant, focused: bool, paths_empty: bool) -> bool {
+        if paths_empty {
+            return false;
+        }
+        self.git_poll_due(now, focused)
+    }
+
     /// The 5s poll, as its own background task rather than a tick branch
     /// (spec §4). Three behaviors, all load-bearing: the 5s throttle, the
     /// in-flight guard that **skips** rather than overlaps, and dropping —
@@ -366,7 +388,7 @@ impl ProjectTree {
         focused: bool,
         cx: &mut Context<Self>,
     ) {
-        if !self.git_poll_due(Instant::now(), focused) || paths.is_empty() {
+        if !self.poll_decision(Instant::now(), focused, paths.is_empty()) {
             return;
         }
         if self
@@ -485,6 +507,22 @@ mod tests {
             archived: false,
             worktree_dir: None,
         }
+    }
+
+    /// A poll with no paths to cover must not stamp `last_git_poll`, or it
+    /// silently consumes the 5s throttle window before there is anything to
+    /// poll — the empty-registry frames right after launch delayed the first
+    /// real `git status` by a full `GIT_POLL_INTERVAL` (spec regression: see
+    /// `poll_decision`'s doc comment).
+    #[test]
+    fn an_empty_path_poll_does_not_consume_the_throttle_window() {
+        let mut tree = ProjectTree::new();
+        let now = Instant::now();
+        assert!(!tree.poll_decision(now, true, true));
+        assert!(tree.last_git_poll.is_none());
+        // A subsequent call with real paths, at the very same instant, is
+        // still due — the empty-paths call above must not have stamped it.
+        assert!(tree.poll_decision(now, true, false));
     }
 
     /// `update/mod.rs:1185-1193` — a cache miss is empty, not a panic.

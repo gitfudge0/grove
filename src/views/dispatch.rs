@@ -83,6 +83,18 @@ pub enum ModalClick {
     OnboardBack,
     OnboardPickAgent(usize),
     OnboardPerms(bool),
+    /// Diff viewer: click a file-list row.
+    SelectDiffFile {
+        path: String,
+    },
+    /// Diff viewer: click the header's Unified/Split segment.
+    SetDiffMode(grove_core::storage::DiffMode),
+    /// Diff viewer: click the file list's Flat/Tree segment.
+    ToggleDiffListStyle,
+    /// Diff viewer: click a tree-mode directory row's disclosure chevron.
+    ToggleDiffTreeDir {
+        path: String,
+    },
 }
 
 /// The boolean settings the Settings modal flips, each persisted immediately

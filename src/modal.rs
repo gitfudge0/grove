@@ -256,6 +256,15 @@ pub enum Modal {
     Changelog {
         return_to_settings: bool,
     },
+    /// The uncommitted-diff viewer for one worktree. The file list, the
+    /// per-file patch cache and the loading flag live on the gpui side
+    /// (`views::modals::diff_viewer::DiffViewerState`) since loading a diff
+    /// runs on the background executor — this variant only names *which*
+    /// worktree is open, exactly as [`Modal::AgentPicker`] names its worktree
+    /// without owning the picker's async state.
+    DiffViewer {
+        wt_path: String,
+    },
     /// First-run onboarding wizard. Rendered full-viewport as a screen
     /// replacement, never through the scrim (`view/modals/mod.rs:107-110`).
     Onboarding {
@@ -358,12 +367,13 @@ pub enum ModalKind {
     ScriptsEditor,
     Updating,
     Changelog,
+    DiffViewer,
     Onboarding,
 }
 
 impl ModalKind {
     /// Every kind, for the table-driven tests and the drift guards.
-    pub const ALL: [ModalKind; 19] = [
+    pub const ALL: [ModalKind; 20] = [
         ModalKind::Input,
         ModalKind::Confirm,
         ModalKind::AddProject,
@@ -382,6 +392,7 @@ impl ModalKind {
         ModalKind::ScriptsEditor,
         ModalKind::Updating,
         ModalKind::Changelog,
+        ModalKind::DiffViewer,
         ModalKind::Onboarding,
     ];
 
@@ -407,6 +418,7 @@ impl ModalKind {
             ModalKind::ScriptsEditor => "ModalScriptsEditor",
             ModalKind::Updating => "ModalUpdating",
             ModalKind::Changelog => "ModalChangelog",
+            ModalKind::DiffViewer => "ModalDiffViewer",
             ModalKind::Onboarding => "ModalOnboarding",
         }
     }
@@ -460,6 +472,7 @@ impl Modal {
             Modal::ScriptsEditor(_) => ModalKind::ScriptsEditor,
             Modal::Updating => ModalKind::Updating,
             Modal::Changelog { .. } => ModalKind::Changelog,
+            Modal::DiffViewer { .. } => ModalKind::DiffViewer,
             Modal::Onboarding { .. } => ModalKind::Onboarding,
         }
     }
@@ -618,6 +631,14 @@ pub enum ModalAction {
     OnboardAdvance,
     /// `Onboarding`: Tab alternates path/name focus on the Project step.
     OnboardToggleFocus,
+    /// `DiffViewer`: Enter moves keyboard focus from the file list to the
+    /// scrolling body.
+    DiffFocusBody,
+    /// `DiffViewer`: Tab flips Unified/Split — the same commit path the
+    /// header's segmented control reaches from a click, including
+    /// persistence. A no-op when the narrow-window fallback has Split
+    /// disabled.
+    DiffToggleMode,
 }
 
 // ── the slot ─────────────────────────────────────────────────────────────
@@ -930,6 +951,18 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
         Modal::ShortcutOverlay => match key {
             K::Escape => V::Close,
             _ if ctx.is_shortcut_overlay_chord => V::Close,
+            _ => V::Ignore,
+        },
+
+        // File-list navigation and body focus are the whole keyboard surface;
+        // everything else (typing into a filter, say) has nowhere to go yet
+        // and is swallowed rather than reaching a PTY behind the modal.
+        Modal::DiffViewer { .. } => match (key, ch(key)) {
+            (K::Escape, _) => V::Close,
+            (K::Enter, _) => V::Custom(A::DiffFocusBody),
+            (K::Down, _) | (_, Some('j')) => V::Move(1),
+            (K::Up, _) | (_, Some('k')) => V::Move(-1),
+            (K::Tab, _) => V::Custom(A::DiffToggleMode),
             _ => V::Ignore,
         },
 
@@ -1633,6 +1666,9 @@ mod tests {
             ModalKind::Updating => Modal::Updating,
             ModalKind::Changelog => Modal::Changelog {
                 return_to_settings: true,
+            },
+            ModalKind::DiffViewer => Modal::DiffViewer {
+                wt_path: "/w".into(),
             },
             ModalKind::Onboarding => Modal::Onboarding {
                 step: OnboardStep::Welcome,

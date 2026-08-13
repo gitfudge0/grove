@@ -146,14 +146,14 @@ impl Focusable for Workspace {
 /// `rem_size * (v / REM_BASE)` — i.e. `v * zoom`. Logical px (viewport over
 /// zoom, `sidebar_width`) convert by the same factor. Mixing the two spaces
 /// would leave the budget correct at 100% zoom only.
-fn token_px(v: f32, window: &Window) -> f32 {
+pub(crate) fn token_px(v: f32, window: &Window) -> f32 {
     f32::from(window.rem_size()) * (v / zoom::REM_BASE)
 }
 
 /// The advance width of `text` as `components::ui`/`mono` would paint it.
 /// `WindowTextSystem::layout_line` is cached per frame, so one call per
 /// segment per tile per frame costs a hash lookup after the first.
-fn text_px(
+pub(crate) fn text_px(
     window: &Window,
     text: &str,
     family: &'static str,
@@ -989,6 +989,14 @@ impl Workspace {
                     return;
                 };
                 self.kill_session(id, window, cx);
+            }
+            ToolAction::OpenDiff => {
+                let Some(wt_path) = self.active_wt_path(cx) else {
+                    return;
+                };
+                self.modals.clone().update(cx, |l, cx| {
+                    l.open(crate::modal::Modal::DiffViewer { wt_path }, cx);
+                });
             }
         }
     }
@@ -2126,6 +2134,17 @@ impl Render for Workspace {
         self.tree.clone().update(cx, |t, cx| {
             t.maybe_poll_git_state(paths, window_focused, cx);
         });
+
+        // The diff viewer's live update rides the same frame this poll is
+        // kicked from, rather than a second timer — see
+        // `DiffViewerState::maybe_refresh_live`'s own throttle for the
+        // "every 5s" cadence.
+        if let Some(dv) = self.modals.read(cx).diff_viewer.clone() {
+            dv.update(
+                cx,
+                crate::entities::diff_viewer::DiffViewerState::maybe_refresh_live,
+            );
+        }
 
         // Window activation: `window_focused` gates the "focused session is
         // never waiting" rule, and regaining focus acknowledges the visible

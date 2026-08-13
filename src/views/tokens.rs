@@ -141,6 +141,30 @@ pub const ROW_MIN_H: f32 = CONTROL_H + ROW_PY * 2.0;
 /// be shorter, or (per-row) taller, than the multiple suggests.
 pub const MODAL_SCROLL_MAX_H: f32 = ROW_MIN_H * 12.0;
 
+/// The diff viewer's file-list column width.
+pub const DIFF_FILE_LIST_W: f32 = 240.0;
+
+/// The diff viewer's inset from the window edge. The viewer is a
+/// viewport-filling surface (the same category as Onboarding) rather than a
+/// step on the `MODAL_W_*` scale — see
+/// `views::modals::diff_viewer::render`'s doc comment.
+pub const DIFF_PANEL_INSET: f32 = SPACE_3XL;
+
+/// The diff body's line-number gutter width, right-aligned.
+pub const DIFF_GUTTER_W: f32 = 44.0;
+
+/// Below this window width, split mode is disabled and unified is forced.
+pub const DIFF_SPLIT_MIN_W: f32 = 900.0;
+
+/// A diff body line's fixed height. In split mode it keeps a filler row (a
+/// half-empty pair's inert side) and a real code row measuring the same so the
+/// two columns stay row-aligned; in unified mode the same height is what makes
+/// every row — line rows and hunk headers alike — uniform, which is what lets
+/// the body be a `uniform_list`. Same shape as [`CARD_LINE_SM_H`]: [`TEXT_SMALL`],
+/// the run it carries, plus [`SPACE_SM`] of leading so the line box is never
+/// clipped by its own text.
+pub const DIFF_BODY_LINE_H: f32 = TEXT_SMALL + SPACE_SM;
+
 /// The settings-row label column's fixed width, wide enough for the longest
 /// label ("Teardown") without wasting width on the row's dominant flex-1
 /// control. Shared by every `setting_row_field`, so the three script rows'

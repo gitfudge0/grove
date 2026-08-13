@@ -7,9 +7,12 @@
 pub mod agent;
 pub mod attention;
 pub mod claude_agents;
+pub mod diff;
 pub mod env_path;
 pub mod error;
 pub mod git;
+pub mod highlight;
+pub mod render_rows;
 pub mod session_meta;
 pub mod storage;
 pub mod theme;

@@ -31,6 +31,9 @@ pub enum ToolAction {
     /// Two-step: the first press arms, the second kills.
     RequestKill,
     Kill,
+    /// The `+N −M` diff-stat chip: open the diff viewer for the active
+    /// session's worktree.
+    OpenDiff,
 }
 
 pub type ToolDispatch = std::rc::Rc<dyn Fn(ToolAction, &mut gpui::Window, &mut gpui::App)>;
@@ -298,11 +301,32 @@ pub fn session_header(
                     crate::views::rows::diff_display(data.diff)
                         != crate::views::rows::DiffDisplay::Unknown,
                     |d| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .child(crate::views::rows::diff_chips(data.diff)),
-                        )
+                        let chips = div()
+                            .flex_none()
+                            .child(crate::views::rows::diff_chips(data.diff));
+                        // The chip pair is one click target with a hover
+                        // state, wired only when a tool cluster exists to
+                        // dispatch through — the tile-header call sites that
+                        // pass `cluster: None` keep the chip inert rather
+                        // than opening a diff viewer with no session to
+                        // resolve a worktree from.
+                        d.child(match cluster {
+                            Some(cluster) => {
+                                let dispatch = cluster.dispatch.clone();
+                                div()
+                                    .id("diff-chip-open")
+                                    .flex_none()
+                                    .rounded(rpx(RADIUS_CONTROL))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(c::BG_HOVER()))
+                                    .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                                        dispatch(ToolAction::OpenDiff, window, cx);
+                                    })
+                                    .child(chips)
+                                    .into_any_element()
+                            }
+                            None => chips.into_any_element(),
+                        })
                     },
                 )
                 .when_some(cluster, |d, cluster| {

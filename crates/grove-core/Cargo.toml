@@ -19,6 +19,14 @@ tracing.workspace = true
 fs-err.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+# Whole-file syntax highlighting for the diff viewer (Phase 5). `default-fancy`
+# swaps syntect's default Oniguruma engine (a C dependency, `onig`) for the
+# pure-Rust `fancy-regex` engine — no C toolchain requirement, at some
+# highlighting speed cost we don't need given files are highlighted once in
+# the background and cached. We use syntect only for its parser/scope stack
+# (`ParseState`, `ScopeStack`) — never its `highlighting`/theme machinery, so
+# Grove's own palette stays the only source of colour.
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

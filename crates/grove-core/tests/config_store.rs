@@ -142,6 +142,7 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
             wt_path: "/home/user/myapp".into(),
             agent: Agent::Claude,
         }],
+        diff_mode: grove_core::storage::DiffMode::Split,
     };
 
     let serialized = serde_json::to_string_pretty(&original).expect("serialize Store");
@@ -168,6 +169,7 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
     assert!(recovered.theme_follow_system);
     assert!(recovered.project_themes_enabled);
     assert_eq!(recovered.recent_launches, original.recent_launches);
+    assert_eq!(recovered.diff_mode, grove_core::storage::DiffMode::Split);
 }
 
 /// A file containing malformed JSON at the location `load()` would read from

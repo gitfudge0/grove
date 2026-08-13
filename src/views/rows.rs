@@ -673,6 +673,9 @@ pub enum RowAction {
     RunScript(usize, usize),
     DeleteWorktree(usize, usize),
     SelectSession(SessionId),
+    /// The sessions rail card's `+N −M` chip: open the diff viewer for this
+    /// session's worktree.
+    OpenDiff(SessionId),
     ArmKillSession(SessionId),
     KillSession(SessionId),
     SelectTerminal(usize),
@@ -1428,7 +1431,36 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
                 .truncate(),
             ),
         )
-        .child(div().flex().flex_none().ml_auto().child(diff_chips(*diff)));
+        .child({
+            let chips = diff_chips(*diff);
+            // Only an actual `+N -M` pair is worth opening the viewer for —
+            // a clean worktree has nothing to show, and the chip's own shell
+            // already draws nothing while the poll is unknown.
+            match diff_display(*diff) {
+                DiffDisplay::Counts(..) => {
+                    let dispatch = Rc::clone(&ctx.dispatch);
+                    div()
+                        .id(("diff-chip-open", id.raw()))
+                        .flex()
+                        .flex_none()
+                        .ml_auto()
+                        .rounded(rpx(RADIUS_CONTROL))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(c::BG_HOVER()))
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            dispatch(RowAction::OpenDiff(id), window, cx);
+                        })
+                        .child(chips)
+                        .into_any_element()
+                }
+                _ => div()
+                    .flex()
+                    .flex_none()
+                    .ml_auto()
+                    .child(chips)
+                    .into_any_element(),
+            }
+        });
 
     let dispatch = Rc::clone(&ctx.dispatch);
     let body = click_row_on(
