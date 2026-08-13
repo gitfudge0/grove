@@ -2058,7 +2058,17 @@ impl Render for Workspace {
         // focused pane's dims rather than leaving it dark forever. Counts
         // only after discovery, so anything still pending after this many
         // frames is off-screen and will not get dims of its own.
-        const TMUX_ATTACH_FALLBACK_FRAMES: u32 = 90;
+        //
+        // This is a dims-accuracy grace period, not a timeout: it exists to
+        // give the painted path (`TerminalElement::prepaint`) a few frames'
+        // head start to claim a session at its tile's real dims before the
+        // backstop grabs it at the (possibly wrong) focused-pane dims.
+        // Frames are the fast lane of the animation clock, ~60ms each, so 10
+        // frames is ~0.6s. Sessions-rail mode routinely relies on this
+        // backstop for every non-focused session, since nothing paints their
+        // terminals there — keep this short enough that those cards don't
+        // sit empty for a perceptible stretch after launch.
+        const TMUX_ATTACH_FALLBACK_FRAMES: u32 = 10;
 
         // The single zoom application point. `WithRemSize` does not exist at
         // this rev; `Window::with_rem_size` is for scoped overrides.
