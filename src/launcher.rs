@@ -634,14 +634,36 @@ pub fn root_rows(
     rows
 }
 
+/// What a palette instance is allowed to list.
+///
+/// `WorktreesOnly` is the rail's Sessions-mode `+`: the palette is a worktree
+/// picker and nothing else, so the whole non-worktree half of the row model —
+/// the action rows, the Settings opener and every direct `Setting` match — is
+/// never built. Gating at construction (rather than filtering a built list)
+/// means a row variant added later cannot leak into the scoped palette.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PaletteScope {
+    /// The full palette: recents, every combo, and the action rows.
+    #[default]
+    All,
+    /// Worktree rows only — [`PaletteRow::Recent`] / [`PaletteRow::Combo`].
+    WorktreesOnly,
+}
+
 /// The typing / browse-all list: every project x worktree combo, fuzzy-scored
 /// and ranked, plus any directly-matching settings rows, the Settings
 /// drill-in opener, and the keyword-only action rows.
+///
+/// This is the single gate for [`PaletteScope`]: at `WorktreesOnly` the
+/// function returns after the ranked combos, and the scoped palette routes its
+/// *empty*-query state here too (rather than through [`root_rows`]), so both
+/// the initial list and the typed list are built by this one path.
 pub fn typed_rows(
     query: &str,
     combos: &[(usize, String, String, Agent)],
     recency: &[(usize, String, Agent)],
     has_run_script: bool,
+    scope: PaletteScope,
 ) -> Vec<PaletteRow> {
     let mut scored: Vec<(u32, usize, PaletteRow)> = Vec::new();
     for (proj, project_name, wt_path, agent) in combos {
@@ -667,6 +689,9 @@ pub fn typed_rows(
         ));
     }
     let mut rows = rank_and_group_combos(scored);
+    if scope == PaletteScope::WorktreesOnly {
+        return rows;
+    }
     if !query.trim().is_empty() && fuzzy_match(query, "settings", "", "") {
         rows.push(PaletteRow::Settings);
     }
@@ -1058,21 +1083,21 @@ mod tests {
             ),
             (1, "other".to_string(), "/wt/x".to_string(), Agent::Claude),
         ];
-        let rows = typed_rows("feat", &combos, &[], false);
+        let rows = typed_rows("feat", &combos, &[], false, PaletteScope::All);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0], combo(0, "/wt/feat"));
     }
 
     #[test]
     fn typing_settings_surfaces_the_settings_rows() {
-        let rows = typed_rows("theme", &[], &[], false);
+        let rows = typed_rows("theme", &[], &[], false, PaletteScope::All);
         assert!(rows.contains(&PaletteRow::Setting(SettingRow::Theme)));
     }
 
     #[test]
     fn an_empty_query_surfaces_no_settings_rows() {
         // Browse-all lists combos only; a bare query must not inject settings.
-        let rows = typed_rows("", &[], &[], true);
+        let rows = typed_rows("", &[], &[], true, PaletteScope::All);
         assert!(!rows.iter().any(|r| matches!(r, PaletteRow::Setting(_))));
         assert!(!rows.contains(&PaletteRow::ReloadThemes));
         assert!(!rows.contains(&PaletteRow::AddProject));
@@ -1081,34 +1106,123 @@ mod tests {
 
     #[test]
     fn typing_add_project_surfaces_the_add_project_row() {
-        let rows = typed_rows("add project", &[], &[], false);
+        let rows = typed_rows("add project", &[], &[], false, PaletteScope::All);
         assert!(rows.contains(&PaletteRow::AddProject));
     }
 
     #[test]
     fn typing_run_script_surfaces_the_run_script_row_only_when_present() {
-        let rows = typed_rows("run script", &[], &[], true);
+        let rows = typed_rows("run script", &[], &[], true, PaletteScope::All);
         assert!(rows.contains(&PaletteRow::RunScript));
-        let rows = typed_rows("run script", &[], &[], false);
+        let rows = typed_rows("run script", &[], &[], false, PaletteScope::All);
         assert!(!rows.contains(&PaletteRow::RunScript));
     }
 
     #[test]
     fn typing_a_prefix_of_add_project_still_surfaces_it() {
-        let rows = typed_rows("add", &[], &[], false);
+        let rows = typed_rows("add", &[], &[], false, PaletteScope::All);
         assert!(rows.contains(&PaletteRow::AddProject));
     }
 
     #[test]
     fn typing_settings_surfaces_the_settings_drill_in_opener() {
-        let rows = typed_rows("settings", &[], &[], false);
+        let rows = typed_rows("settings", &[], &[], false, PaletteScope::All);
         assert!(rows.contains(&PaletteRow::Settings));
     }
 
     #[test]
     fn an_unrelated_query_does_not_surface_the_settings_drill_in_opener() {
-        let rows = typed_rows("zzz", &[], &[], false);
+        let rows = typed_rows("zzz", &[], &[], false, PaletteScope::All);
         assert!(!rows.contains(&PaletteRow::Settings));
+    }
+
+    // ── the worktrees-only scope (the rail's Sessions-mode `+`) ──────────
+
+    fn two_combos() -> Vec<(usize, String, String, Agent)> {
+        vec![
+            (
+                0,
+                "grove".to_string(),
+                "/wt/main".to_string(),
+                Agent::Claude,
+            ),
+            (
+                0,
+                "grove".to_string(),
+                "/wt/theme".to_string(),
+                Agent::Claude,
+            ),
+        ]
+    }
+
+    #[test]
+    fn the_scoped_list_is_worktree_rows_and_nothing_else() {
+        let combos = two_combos();
+        let rows = typed_rows("", &combos, &[], true, PaletteScope::WorktreesOnly);
+        assert_eq!(rows, vec![combo(0, "/wt/main"), combo(0, "/wt/theme")]);
+        assert!(rows
+            .iter()
+            .all(|r| matches!(r, PaletteRow::Combo { .. } | PaletteRow::Recent { .. })));
+    }
+
+    #[test]
+    fn the_scoped_list_never_surfaces_a_settings_or_action_row() {
+        // Every query that adds a non-worktree row at `All` scope.
+        for q in [
+            "theme",
+            "settings",
+            "add project",
+            "reload themes",
+            "run script",
+        ] {
+            let all = typed_rows(q, &[], &[], true, PaletteScope::All);
+            assert!(
+                !all.is_empty(),
+                "{q:?} must surface a non-worktree row at All scope"
+            );
+            let scoped = typed_rows(q, &[], &[], true, PaletteScope::WorktreesOnly);
+            assert!(
+                scoped.is_empty(),
+                "{q:?} leaked {scoped:?} into the worktrees-only scope"
+            );
+        }
+    }
+
+    #[test]
+    fn the_scoped_list_still_fuzzy_filters_and_ranks_worktrees() {
+        let combos = two_combos();
+        let rows = typed_rows("theme", &combos, &[], false, PaletteScope::WorktreesOnly);
+        assert_eq!(
+            rows,
+            vec![combo(0, "/wt/theme")],
+            "typing must filter worktrees exactly as it does unscoped"
+        );
+    }
+
+    #[test]
+    fn the_unscoped_list_is_unaffected_by_the_scope_gate() {
+        let combos = two_combos();
+        for q in ["", "theme", "settings", "wt"] {
+            let mut expected = rank_and_group_combos(
+                combos
+                    .iter()
+                    .filter_map(|(p, name, wt, a)| {
+                        let n = std::path::Path::new(wt).file_name()?.to_str()?;
+                        Some((
+                            fuzzy_score(q, name, n, a.label())?,
+                            usize::MAX,
+                            combo(*p, wt),
+                        ))
+                    })
+                    .collect(),
+            );
+            let scoped = typed_rows(q, &combos, &[], true, PaletteScope::WorktreesOnly);
+            assert_eq!(scoped, expected, "scoped list is the combo half verbatim");
+            let all = typed_rows(q, &combos, &[], true, PaletteScope::All);
+            // The unscoped list is the same combo prefix plus its own tail.
+            expected.extend(all[expected.len()..].iter().cloned());
+            assert_eq!(all, expected);
+        }
     }
 
     // ── the drill-ins ────────────────────────────────────────────────────

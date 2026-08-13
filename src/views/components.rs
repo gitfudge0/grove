@@ -8,7 +8,7 @@
 
 use crate::views::rpx;
 use crate::views::tokens::*;
-use gpui::{div, prelude::*, px, AnyElement, Div, Hsla, MouseButton, SharedString};
+use gpui::{div, prelude::*, px, AnyElement, App, Div, Hsla, MouseButton, SharedString, Window};
 
 use crate::fonts::{MONO_FAMILY, UI_FAMILY};
 use crate::theme as c;
@@ -124,6 +124,18 @@ pub fn keycap_filled(fill: Hsla, inner: impl IntoElement) -> Div {
         .rounded(rpx(RADIUS_CONTROL))
         .bg(fill)
         .child(inner)
+}
+
+/// A diff-stat chip — the sessions rail's `+N` / `-N` / `clean` marks
+/// (mock D11). The *same* shell as [`keycap_filled`]'s neutral metadata chip
+/// (the rows' branch and count chips already fill with `BORDER_SOFT`); only
+/// the text colour differs, so this adds a call site, not a shape.
+///
+/// Colour is never the sole carrier (§2.3): the label itself is signed —
+/// `+`, an ASCII `-`, or the word `clean` — so the three chips are still told
+/// apart in greyscale.
+pub fn diff_chip(label: impl Into<SharedString>, color: Hsla) -> Div {
+    keycap_filled(c::BORDER_SOFT(), mono(label, TEXT_MICRO, color)).flex_none()
 }
 
 /// A plain-label keycap ("⏎", "↑↓", "esc", "←→") in the given text color
@@ -572,6 +584,11 @@ impl RowDensity {
 
 /// A clickable list row, the shape every modal list shares. `density` picks
 /// how much room it gives its content — see [`RowDensity`].
+///
+/// This is [`click_row_on`] pre-wired to the modal layer's click vocabulary;
+/// the row shape itself lives there, so the sidebar (which speaks
+/// [`crate::views::rows::RowAction`], not [`ModalClick`]) can share it rather
+/// than fork a local `div()` chain.
 pub fn click_row(
     id: impl Into<gpui::ElementId>,
     selected: bool,
@@ -581,6 +598,25 @@ pub fn click_row(
     content: impl IntoElement,
 ) -> gpui::Stateful<Div> {
     let dispatch = std::rc::Rc::clone(dispatch);
+    click_row_on(
+        id,
+        selected,
+        density,
+        move |window, cx| dispatch(click.clone(), window, cx),
+        content,
+    )
+}
+
+/// [`click_row`] with the click as a plain callback rather than a
+/// [`ModalClick`]. The dispatch-typed wrapper above is the modal layer's
+/// convenience; **this** is the row.
+pub fn click_row_on(
+    id: impl Into<gpui::ElementId>,
+    selected: bool,
+    density: RowDensity,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
+    content: impl IntoElement,
+) -> gpui::Stateful<Div> {
     div()
         .id(id)
         .flex()
@@ -601,7 +637,7 @@ pub fn click_row(
         .cursor_pointer()
         .child(content)
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            dispatch(click.clone(), window, cx);
+            on_click(window, cx);
         })
 }
 

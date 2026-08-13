@@ -101,12 +101,40 @@ pub enum TreeExpand {
 
 impl TreeExpand {
     /// The mode a click advances to from `self`.
+    ///
+    /// `SessionsOnly` is no longer a stop on the ring: the rail's sessions
+    /// content mode ([`RailMode::Sessions`]) does that job properly, so the
+    /// cycle button steps `Collapsed → All → Collapsed` only. The variant
+    /// survives as the *default* presentation `sync_default_tree` derives —
+    /// it is a starting state, not a destination.
     #[must_use]
     pub fn next(self) -> Self {
         match self {
-            Self::Collapsed => Self::SessionsOnly,
-            Self::SessionsOnly => Self::All,
+            Self::Collapsed | Self::SessionsOnly => Self::All,
             Self::All => Self::Collapsed,
+        }
+    }
+}
+
+/// What the left rail's scrolling area shows. Rail-local presentation state,
+/// deliberately not a third value on `grid_view`: the body and the terminal do
+/// not move when this changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RailMode {
+    /// The project → worktree → session tree.
+    #[default]
+    Tree,
+    /// A flat, cross-project session list sorted attention-first.
+    Sessions,
+}
+
+impl RailMode {
+    /// The mode the header's content-mode button swaps to from `self`.
+    #[must_use]
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Tree => Self::Sessions,
+            Self::Sessions => Self::Tree,
         }
     }
 }
@@ -303,6 +331,8 @@ pub struct WorkspaceState {
     /// [`Self::sync_default_tree`], which otherwise re-derives the default
     /// every frame until then.
     tree_touched: bool,
+    /// Which contents the rail shows. Persisted as `Store::rail_sessions`.
+    rail_mode: RailMode,
     terminals_collapsed: bool,
     // transient row affordances
     hovered_wt: Option<(usize, usize)>,
@@ -367,6 +397,7 @@ impl Default for WorkspaceState {
             collapsed_wt: HashSet::new(),
             tree_expand: TreeExpand::default(),
             tree_touched: false,
+            rail_mode: RailMode::default(),
             terminals_collapsed: false,
             hovered_wt: None,
             open_agent_menu: None,
@@ -402,6 +433,11 @@ impl WorkspaceState {
                 store.sidebar_width.unwrap_or(RAIL_W),
                 logical_win_w,
             ),
+            rail_mode: if store.rail_sessions {
+                RailMode::Sessions
+            } else {
+                RailMode::Tree
+            },
             ..Self::default()
         }
     }
@@ -445,6 +481,9 @@ impl WorkspaceState {
     }
     pub fn terminals_collapsed(&self) -> bool {
         self.terminals_collapsed
+    }
+    pub fn rail_mode(&self) -> RailMode {
+        self.rail_mode
     }
     pub fn hovered_wt(&self) -> Option<(usize, usize)> {
         self.hovered_wt
@@ -853,6 +892,17 @@ impl WorkspaceState {
     pub fn disarm_kill(&mut self) {
         self.pending_kill = None;
         self.pending_kill_terminal = None;
+    }
+    /// Swap the rail's contents. Returns the mode now in force so the caller
+    /// can persist it. Transient row affordances are dropped: the rows they
+    /// point at are about to be replaced.
+    pub fn toggle_rail_mode(&mut self) -> RailMode {
+        self.open_agent_menu = None;
+        self.pending_kill = None;
+        self.pending_kill_terminal = None;
+        self.hovered_wt = None;
+        self.rail_mode = self.rail_mode.toggled();
+        self.rail_mode
     }
     pub fn toggle_terminals_collapsed(&mut self) {
         self.terminals_collapsed = !self.terminals_collapsed;
@@ -1649,8 +1699,42 @@ mod tests {
         w.toggle_collapse_all(&snap);
         assert_eq!(w.tree_expand(), TreeExpand::Collapsed);
         assert!(w.project_collapsed(0));
+        // `SessionsOnly` is off the ring — the cycle is two stops now.
         w.toggle_collapse_all(&snap);
-        assert_eq!(w.tree_expand(), TreeExpand::SessionsOnly);
+        assert_eq!(w.tree_expand(), TreeExpand::All);
+    }
+
+    #[test]
+    fn rail_mode_toggles_and_clears_transients() {
+        let mut w = WorkspaceState {
+            open_agent_menu: Some((0, 0)),
+            pending_kill: Some(sid(1)),
+            hovered_wt: Some((0, 0)),
+            ..WorkspaceState::default()
+        };
+        assert_eq!(w.rail_mode(), RailMode::Tree);
+        assert_eq!(w.toggle_rail_mode(), RailMode::Sessions);
+        assert_eq!(w.rail_mode(), RailMode::Sessions);
+        assert_eq!(w.open_agent_menu(), None);
+        assert_eq!(w.pending_kill(), None);
+        assert_eq!(w.hovered_wt(), None);
+        assert_eq!(w.toggle_rail_mode(), RailMode::Tree);
+    }
+
+    #[test]
+    fn rail_mode_round_trips_from_the_store() {
+        let store = Store {
+            rail_sessions: true,
+            ..Store::default()
+        };
+        assert_eq!(
+            WorkspaceState::new(&store, 1600.0).rail_mode(),
+            RailMode::Sessions
+        );
+        assert_eq!(
+            WorkspaceState::new(&Store::default(), 1600.0).rail_mode(),
+            RailMode::Tree
+        );
     }
 
     /// The startup fix: a fresh sidebar only expands what has sessions, and

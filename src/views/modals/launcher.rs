@@ -101,8 +101,13 @@ impl ModalLayer {
         let tree_paths = self.tree_paths(cx);
         let combos = combos(cx, &tree_paths);
         let recents = self.recents(cx);
+        // A worktrees-only palette has no action block to keep in view, so its
+        // empty-query state is the browse-all list rather than `root_rows` —
+        // that routes both of its states through `typed_rows`, the one place
+        // the scope is gated.
+        let scoped = st.scope == launcher::PaletteScope::WorktreesOnly;
         match st.view {
-            LauncherView::Root if st.query.trim().is_empty() => {
+            LauncherView::Root if st.query.trim().is_empty() && !scoped => {
                 let fallback: Vec<(usize, String, Agent)> = tree_paths
                     .iter()
                     .filter_map(|(i, _, wts)| {
@@ -131,6 +136,7 @@ impl ModalLayer {
                 &combos,
                 &recents,
                 self.active_run_script(cx).is_some(),
+                st.scope,
             ),
         }
     }

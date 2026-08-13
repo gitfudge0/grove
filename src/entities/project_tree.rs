@@ -16,7 +16,7 @@
 //! grove-core supplies every git call as-is (Global Constraint 3 candidate 2):
 //! `git::{is_repo, list_worktrees, worktree_git_state, git_state_suffix}`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -27,9 +27,9 @@ use grove_core::storage::Store;
 
 use crate::entities::session_registry::{SessionId, SessionRegistry};
 use crate::entities::workspace_state::{
-    SnapshotProject, SnapshotWorktree, TreeSnapshot, WorkspaceState,
+    RailMode, SnapshotProject, SnapshotWorktree, TreeSnapshot, WorkspaceState,
 };
-use crate::views::rows::path_basename;
+use crate::views::rows::{normalize_wt_path, path_basename};
 
 /// How long a memoized `git::is_repo` answer stays good
 /// (`src/gui/view/sidebar.rs:32`). A project gaining or losing its `.git` is
@@ -260,6 +260,13 @@ impl ProjectTree {
             .collect()
     }
 
+    /// The raw cached git state per worktree path, including the uncommitted
+    /// diff counts that `git_suffixes` deliberately does not render.
+    #[must_use]
+    pub fn git_states(&self) -> HashMap<String, WorktreeGitState> {
+        self.git_state.clone()
+    }
+
     /// Fold a completed poll in: fresh entries overwrite, failures **drop** the
     /// cached entry rather than leaving stale data on screen
     /// (`update/mod.rs:1288-1299`).
@@ -304,10 +311,49 @@ impl ProjectTree {
             paths.extend(
                 self.worktrees_for_project(pi, ws.proj_idx())
                     .iter()
-                    .map(|w| w.path.clone()),
+                    // Normalized, because this is the git cache's key and the
+                    // card joins on it from the registry's side
+                    // (`normalize_wt_path`).
+                    .map(|w| normalize_wt_path(&w.path).to_string()),
             );
         }
         paths
+    }
+
+    /// The paths the 5s poll must actually cover, which depends on what the
+    /// rail is rendering.
+    ///
+    /// [`Self::visible_worktree_paths`]'s "don't poll worktrees nothing
+    /// renders" rule is right for the tree, where a collapsed project shows no
+    /// worktree rows. It is wrong for [`RailMode::Sessions`]: that mode renders
+    /// **every** session across every project, collapsed or not, and each card
+    /// shows its worktree's diff — so the poll set there is the set of
+    /// worktrees backing live sessions. Polling the tree's set in sessions mode
+    /// left every card without a `git_state` entry.
+    ///
+    /// Session paths are normalized ([`normalize_wt_path`]) and de-duplicated:
+    /// several sessions commonly share one worktree, and the cache is keyed by
+    /// this exact string on both sides of the join.
+    #[must_use]
+    pub fn polled_worktree_paths(
+        &self,
+        store: &Store,
+        ws: &WorkspaceState,
+        session_wt_paths: &[String],
+    ) -> Vec<String> {
+        match ws.rail_mode() {
+            RailMode::Tree => self.visible_worktree_paths(store, ws),
+            RailMode::Sessions => {
+                let mut seen = HashSet::new();
+                session_wt_paths
+                    .iter()
+                    .map(|p| normalize_wt_path(p))
+                    .filter(|p| !p.is_empty())
+                    .filter(|p| seen.insert(*p))
+                    .map(ToString::to_string)
+                    .collect()
+            }
+        }
     }
 
     /// The 5s poll, as its own background task rather than a tick branch
@@ -535,6 +581,8 @@ mod tests {
             dirty: true,
             ahead: 0,
             behind: 0,
+            added: 0,
+            removed: 0,
         };
         let mut fresh = HashMap::new();
         fresh.insert("/a".to_string(), state);
@@ -576,6 +624,43 @@ mod tests {
         assert_eq!(
             tree.visible_worktree_paths(&store, &ws),
             vec!["/g".to_string()]
+        );
+    }
+
+    /// The sessions rail renders every session regardless of collapse state,
+    /// so a session in a **collapsed** project must still get its worktree
+    /// polled — the tree's visible-rows rule left those cards with no git
+    /// state at all, which rendered as `clean` forever.
+    #[test]
+    fn sessions_mode_polls_the_worktrees_behind_live_sessions_even_when_collapsed() {
+        let store = Store {
+            projects: vec![project("alpha", "/a"), project("gamma", "/g")],
+            ..Store::default()
+        };
+        let mut tree = ProjectTree::new();
+        tree.set_active_worktrees(vec![wt("/a", true)]);
+        tree.wt_cache.insert(1, vec![wt("/g", true)]);
+
+        let mut ws = WorkspaceState::default();
+        // Collapse alpha: in tree mode its worktree drops out of the poll…
+        ws.select_project(0);
+        let sessions = vec![
+            "/a".to_string(),
+            // A trailing slash and a duplicate: one normalized entry each.
+            "/g/".to_string(),
+            "/g".to_string(),
+        ];
+        assert_eq!(
+            tree.polled_worktree_paths(&store, &ws, &sessions),
+            vec!["/g".to_string()]
+        );
+
+        // …and in sessions mode both are polled, because both back a card.
+        ws.toggle_rail_mode();
+        assert_eq!(ws.rail_mode(), RailMode::Sessions);
+        assert_eq!(
+            tree.polled_worktree_paths(&store, &ws, &sessions),
+            vec!["/a".to_string(), "/g".to_string()]
         );
     }
 

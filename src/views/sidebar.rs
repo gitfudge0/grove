@@ -40,7 +40,7 @@ use crate::entities::activity_store::ActivityStore;
 use crate::entities::animation_clock::AnimationClock;
 use crate::entities::project_tree::ProjectTree;
 use crate::entities::session_registry::SessionRegistry;
-use crate::entities::workspace_state::{TreeExpand, WorkspaceState, RAIL_W};
+use crate::entities::workspace_state::{RailMode, TreeExpand, WorkspaceState, RAIL_W};
 use crate::settings::SettingsState;
 use crate::theme as c;
 use crate::views::components::{divider_h, divider_h_strong, icon_btn, mono, tracked};
@@ -160,7 +160,7 @@ impl Sidebar {
     /// The single place a row click becomes a state change. Actions that would
     /// open a modal log a stub naming their plan; everything that mutates
     /// selection or the registry is wired for real.
-    fn dispatch(&mut self, action: RowAction, cx: &mut Context<Self>) {
+    fn dispatch(&mut self, action: RowAction, window: &mut Window, cx: &mut Context<Self>) {
         let snap = self.snapshot(cx);
         match action {
             RowAction::SelectProject(proj) => {
@@ -264,6 +264,23 @@ impl Sidebar {
                 s.toggle_collapse_all(&snap);
                 cx.notify();
             }),
+            RowAction::ToggleRailMode => {
+                let mode = self.state.update(cx, |s, cx| {
+                    let mode = s.toggle_rail_mode();
+                    cx.notify();
+                    mode
+                });
+                // Persisted like the sidebar width: the rail's presentation
+                // has to round-trip across launches.
+                SettingsState::update(cx, |s| s.rail_sessions = mode == RailMode::Sessions);
+            }
+            // Entering/leaving the grid is a whole-workspace transition
+            // (tile order, keyboard focus) that only `Workspace` can make, so
+            // the rail asks for it exactly the way `mod+g` does rather than
+            // reaching across the view tree for a second implementation.
+            RowAction::ToggleGridView => {
+                window.dispatch_action(Box::new(crate::keymap::ToggleGrid), cx);
+            }
             RowAction::SpawnAgent(proj, wt, agent) => self.spawn_session(proj, wt, agent, cx),
             // The worktree-name prompt (`src/app/mod.rs:442`).
             RowAction::AddWorktree(proj) => {
@@ -371,6 +388,20 @@ impl Sidebar {
             // Task 4 fills the wizard; the slot opens now.
             RowAction::AddProject => {
                 self.open_modal(crate::modal::Modal::AddProject(Box::default()), cx);
+            }
+            // The existing palette, scoped: in Sessions mode the rail lists
+            // sessions, so `+` means "start one" — and the only choice that
+            // needs making is which worktree.
+            RowAction::LaunchInWorktree => {
+                self.open_modal(
+                    crate::modal::Modal::SessionLauncher(Box::new(
+                        crate::modal::LauncherSlotState {
+                            scope: crate::launcher::PaletteScope::WorktreesOnly,
+                            ..Default::default()
+                        },
+                    )),
+                    cx,
+                );
             }
         }
     }
@@ -668,10 +699,73 @@ impl Render for Sidebar {
         // possibly-empty snapshot. Deliberately no `cx.notify()` — this runs
         // inside a render pass that is already under way.
         self.state.update(cx, |s, _| s.sync_default_tree(&snap));
-        let (rows, tick, pulse, width, terminals_collapsed, open_menu, hovered_wt, next_glyph) = {
+        // The registry facts the sessions mode's cards are built from —
+        // resolved here, so `flatten_sessions`'s rows stay pre-resolved and
+        // the renderer never reaches back into an entity.
+        let session_info: std::collections::HashMap<_, _> = {
+            let registry = self.registry.read(cx);
+            registry
+                .all()
+                .iter()
+                .map(|m| {
+                    // The card's headline is the live OSC title, run through
+                    // the same `session_context` filter the tree's session row
+                    // uses — one resolver, so the two rails cannot show two
+                    // different titles for one session.
+                    let title = registry
+                        .session(m.id)
+                        .and_then(|e| e.read(cx).title())
+                        .and_then(|raw| {
+                            rows::session_context(
+                                &raw,
+                                &rows::path_basename(&m.wt_path),
+                                &m.label,
+                                m.agent.label(),
+                            )
+                        });
+                    (
+                        m.id,
+                        rows::SessionInfo {
+                            project: m.project.clone(),
+                            wt_path: m.wt_path.clone(),
+                            label: m.label.clone(),
+                            agent: m.agent,
+                            title,
+                            spawned_at: m.spawned_at,
+                        },
+                    )
+                })
+                .collect()
+        };
+        // The same poll `git_suffixes` reads, unrendered: the cards want the
+        // raw `added`/`removed` counts, not the tree's `+2/-1` suffix text.
+        let git_states = self.tree.read(cx).git_states();
+        let (
+            rows,
+            tick,
+            pulse,
+            width,
+            terminals_collapsed,
+            open_menu,
+            hovered_wt,
+            next_glyph,
+            rail_mode,
+            grid_view,
+        ) = {
             let ws = self.state.read(cx);
             let activity = self.activity.read(cx);
-            let rows = rows::flatten(&snap, ws, activity, &git_suffix, &home_running);
+            let rail_mode = ws.rail_mode();
+            let rows = match rail_mode {
+                RailMode::Tree => rows::flatten(&snap, ws, activity, &git_suffix, &home_running),
+                RailMode::Sessions => rows::flatten_sessions(
+                    &snap,
+                    ws,
+                    activity,
+                    &session_info,
+                    &git_states,
+                    &home_running,
+                ),
+            };
             let next_glyph = match ws.tree_expand().next() {
                 TreeExpand::SessionsOnly => "expand-sessions",
                 TreeExpand::All => "expand-all",
@@ -686,6 +780,8 @@ impl Render for Sidebar {
                 ws.open_agent_menu(),
                 ws.hovered_wt(),
                 next_glyph,
+                rail_mode,
+                ws.grid_view(),
             )
         };
         self.rows.clone_from(&rows);
@@ -717,7 +813,14 @@ impl Render for Sidebar {
             .pt(rpx(SPACE_LG))
             .pb(rpx(SPACE_2XL))
             .overflow_y_scroll()
-            .track_scroll(&self.scroll);
+            .track_scroll(&self.scroll)
+            // The sessions mode is a card list, not a tree: cards are inset
+            // from the rail's edges and separated by a gap, where tree rows
+            // are full-bleed and stacked (mock section C, "list gap SPACE_MD,
+            // list padding SPACE_LG").
+            .when(rail_mode == RailMode::Sessions, |d| {
+                d.px(rpx(SPACE_LG)).gap(rpx(SPACE_MD))
+            });
         for row in tree_rows {
             list = list.child(rows::render_row(row, &ctx));
         }
@@ -737,7 +840,7 @@ impl Render for Sidebar {
             .flex()
             .flex_col()
             .bg(c::BG_RAIL())
-            .child(self.header(next_glyph, &ctx))
+            .child(self.header(next_glyph, rail_mode, grid_view, &ctx))
             .child(divider_h())
             .child(tree_area);
         if !term_rows.is_empty() {
@@ -833,17 +936,67 @@ impl Sidebar {
             available: Self::available_agents(),
             session_text,
             terminal_text,
-            dispatch: Rc::new(move |action, _window, cx: &mut App| {
-                let _ = weak.update(cx, |this: &mut Self, cx| this.dispatch(action, cx));
+            dispatch: Rc::new(move |action, window, cx: &mut App| {
+                let _ = weak.update(cx, |this: &mut Self, cx| this.dispatch(action, window, cx));
             }),
         }
     }
 
-    /// The `SESSBAR_H` header: the letter-spaced `PROJECTS` label, the add
-    /// button, and the cycle button whose glyph previews the **next** action
-    /// (`src/gui/view/sidebar.rs:141-223`).
-    fn header(&self, next_glyph: &'static str, ctx: &RowCtx) -> impl IntoElement {
+    /// The `SESSBAR_H` header: the letter-spaced mode label (`PROJECTS` in
+    /// tree mode, `SESSIONS` in sessions mode), the add button, the rail's
+    /// content-mode button, and the cycle button whose glyph previews the
+    /// **next** action (`src/gui/view/sidebar.rs:141-223`).
+    ///
+    /// Cluster order is deliberate and user-chosen: `+` first, then the
+    /// grid-view toggle immediately to its right, then the rail's content-mode
+    /// button, then the cycle.
+    fn header(
+        &self,
+        next_glyph: &'static str,
+        rail_mode: RailMode,
+        grid_view: bool,
+        ctx: &RowCtx,
+    ) -> impl IntoElement {
         let dispatch = Rc::clone(&ctx.dispatch);
+        // Like the cycle button, the glyph previews what a click gives you:
+        // the flat session list from the tree, the tree from the list.
+        let mode_glyph = match rail_mode {
+            RailMode::Tree => "rail-sessions",
+            RailMode::Sessions => "rail-tree",
+        };
+        let mode_btn = {
+            let dispatch = Rc::clone(&dispatch);
+            icon_btn(
+                "rail-mode",
+                mode_glyph,
+                CONTROL_H,
+                CONTROL_H,
+                ICON_SM,
+                c::FG_MUTE(),
+                c::BG_HOVER(),
+                Some(c::FG()),
+                false,
+                move |window, cx| dispatch(RowAction::ToggleRailMode, window, cx),
+            )
+        };
+        // The grid toggle, moved here from the appbar. It is a *state* button,
+        // not a preview one: `CYAN()` — the selection colour — while the grid
+        // is up, `FG_MUTE()` like its neighbours while it is not.
+        let grid_btn = {
+            let dispatch = Rc::clone(&dispatch);
+            icon_btn(
+                "rail-grid",
+                "grid",
+                CONTROL_H,
+                CONTROL_H,
+                ICON_SM,
+                if grid_view { c::CYAN() } else { c::FG_MUTE() },
+                c::BG_HOVER(),
+                Some(if grid_view { c::CYAN() } else { c::FG() }),
+                false,
+                move |window, cx| dispatch(RowAction::ToggleGridView, window, cx),
+            )
+        };
         let toggle = {
             let dispatch = Rc::clone(&dispatch);
             icon_btn(
@@ -867,8 +1020,13 @@ impl Sidebar {
             .pl(rpx(SPACE_3XL))
             .pr(rpx(SPACE_LG))
             .child(
+                // The label *is* the mode indicator (mock frames D2/D4): the
+                // rail says what it is listing, not what it was named after.
                 mono(
-                    SharedString::from(tracked("PROJECTS")),
+                    SharedString::from(tracked(match rail_mode {
+                        RailMode::Tree => "PROJECTS",
+                        RailMode::Sessions => "SESSIONS",
+                    })),
                     TEXT_MICRO,
                     c::FG_MUTE(),
                 )
@@ -876,6 +1034,13 @@ impl Sidebar {
             )
             .child({
                 let dispatch = std::rc::Rc::clone(&dispatch);
+                // `+` means "add one of what the rail is listing": a project in
+                // Tree mode, a session (via the worktree-scoped palette) in
+                // Sessions mode.
+                let add = match rail_mode {
+                    RailMode::Tree => RowAction::AddProject,
+                    RailMode::Sessions => RowAction::LaunchInWorktree,
+                };
                 icon_btn(
                     "proj-add",
                     "plus",
@@ -886,9 +1051,11 @@ impl Sidebar {
                     c::BG_HOVER(),
                     Some(c::FG()),
                     false,
-                    move |window, cx| dispatch(RowAction::AddProject, window, cx),
+                    move |window, cx| dispatch(add, window, cx),
                 )
             })
+            .child(grid_btn)
+            .child(mode_btn)
             .child(toggle)
     }
 

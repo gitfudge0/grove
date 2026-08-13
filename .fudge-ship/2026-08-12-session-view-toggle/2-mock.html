@@ -287,8 +287,78 @@
   .card.attn { background: var(--AMBER_ROW_TINT); }
   .card.armed { background: var(--RED_WASH); border-color: var(--RED); }
   .card.focused { border-color: var(--SEL_RING); background: var(--SEL_TINT_SOFT); }
+  /* vertical counterpart of the intra-card divider — same 1px, same BORDER_SOFT */
+  .card .vrule { width: 1px; flex: none; align-self: stretch; background: var(--BORDER_SOFT); }
+  .card .endcol { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none; }
 
   .cardlist { flex: 1; overflow: hidden; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+
+  /* ---- D6–D12 card treatments — no new tokens, only card()-local shapes ---- */
+
+  /* D6 project spine: same 3px as .abar, but keyed to the project, not the state */
+  .card.spine { padding-left: 3px; }
+  .card .pspine { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; }
+  .pspine.p-grove    { background: var(--CYAN); }
+  .pspine.p-skills   { background: var(--MAGENTA); }
+  .pspine.p-dotfiles { background: var(--YELLOW); }
+  /* D6 tie-line: the spine continues across the 6px list gap for same-project neighbours */
+  .card.spine.tied::after {
+    content: ""; position: absolute; left: 0; bottom: -7px; width: 3px; height: 7px; background: inherit;
+  }
+  .card.spine.tied.t-grove::after  { background: var(--CYAN); }
+  .card.spine.tied.t-skills::after { background: var(--MAGENTA); }
+
+  /* D7 wait underline: a 2px hairline along the bottom edge, length = time waited */
+  .card .waitbar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--BORDER_SOFT); }
+  .card .waitbar .fill { display: block; height: 2px; background: var(--FG_MUTE); }
+  .waitbar .fill.amber { background: var(--AMBER); }
+  .waitbar .fill.green { background: var(--GREEN); }
+  .waitbar .fill.blue  { background: var(--BLUE); }
+  .fill.w10 { width: 10% } .fill.w28 { width: 28% } .fill.w45 { width: 45% }
+  .fill.w72 { width: 72% } .fill.w96 { width: 96% }
+
+  /* D8 status pill — replaces the status word, same TEXT_MICRO 10 */
+  .pill {
+    display: inline-flex; align-items: center; gap: 4px; flex: none;
+    padding: 2px 6px; border-radius: 999px; font-size: 10px;
+    border: 1px solid var(--BORDER_SOFT); background: var(--BG); color: var(--FG_MUTE);
+  }
+  .pill.attn { border-color: var(--AMBER); color: var(--AMBER); background: var(--AMBER_ROW_TINT); }
+  .pill.work { border-color: var(--GREEN); color: var(--GREEN); }
+  .pill.done { border-color: var(--BLUE); color: var(--BLUE); }
+
+  /* D9 terminal tail — the card's anchor is the last line of output */
+  .card .tailrow {
+    display: flex; align-items: center; gap: 6px; padding: 6px 10px; min-height: 28px;
+    background: var(--BG); border-top: 1px solid var(--BORDER_SOFT);
+  }
+  .card .tailrow .caret { flex: none; }
+
+  /* D10 glyph tile — the state icon gets its own square, so text starts on a fixed column */
+  .card .gtile {
+    width: 28px; height: 28px; flex: none; display: flex; align-items: center; justify-content: center;
+    border-radius: 4px; border: 1px solid var(--BORDER_SOFT); background: var(--BG); color: var(--FG_DIM);
+  }
+  .gtile.attn { border-color: var(--AMBER); color: var(--AMBER); background: var(--AMBER_ROW_TINT); }
+  .gtile.work { border-color: var(--BORDER); color: var(--GREEN); }
+  .gtile.done { border-color: var(--BORDER); color: var(--BLUE); }
+  .gtile.idle { color: var(--FG_MUTE); }
+
+  /* D11 diff chips — same shape as .branch-chip, tinted by sign */
+  .dchip {
+    display: inline-flex; align-items: center; gap: 2px; flex: none;
+    padding: 1px 4px; border-radius: 4px; background: var(--BORDER_SOFT);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px;
+  }
+  .dchip.add { color: var(--GREEN); }
+  .dchip.del { color: var(--RED); }
+  .dchip.neutral { color: var(--FG_MUTE); }
+
+  /* D12 quiet/loud — idle cards fall back into BG_RAIL, the waiting one gains weight */
+  .card.quiet { background: transparent; border-color: transparent; }
+  .card.quiet .crow { min-height: 30px; }
+  .card.loud { border-color: var(--AMBER); background: var(--AMBER_ROW_TINT); }
+  .card.loud .abar { width: 3px; }
 
   /* dots — filled vs hollow is a SHAPE difference */
   .dot { width: 6px; height: 6px; border-radius: 999px; flex: none; background: currentColor; }
@@ -513,7 +583,7 @@
     <div class="frame">
       <div class="frame-caption">
         <span class="frame-id">A2</span><span class="frame-name">Sessions mode — the money frame</span>
-        <p class="frame-desc">Same window, same terminal, same scroll position. Only the rail's contents changed; the header label flipped to SESSIONS and the toggle is in its active state. A <b>+</b> row closes the list (see&nbsp;J1/J2).</p>
+        <p class="frame-desc">Same window, same terminal, same scroll position. Only the rail's contents changed; the header label flipped to SESSIONS and the toggle is in its active state. A <b>+</b> row closes the list (see&nbsp;K1/K2).</p>
       </div>
       <div class="frame-card screen desktop g">
         <div class="appbar">
@@ -764,13 +834,494 @@
     the mode exists. Row 1 is the identity you click; row 2 is the answer to "which one is this and what is it doing".
   </div>
 
-  <!-- ================= SECTION D — card states ================= -->
-  <div class="section-heading"><span class="section-letter">D</span> Card states <span class="section-sub">every state pairs colour with a glyph, a word, or a pulse</span></div>
+  <!-- ================= SECTION D — card shape variants ================= -->
+  <div class="section-heading"><span class="section-letter">D</span> Card shape — pick one <span class="section-sub">all twelve at true RAIL_W 320 · usable list height in a 800px window = 800 − APPBAR 44 − SESSBAR 36 − STATUS 26 − 2×list pad 8 = 678</span></div>
+
+  <div class="frame-row" style="flex-wrap:wrap;max-width:1780px">
+
+    <!-- D1 — 1-row compact -->
+    <div class="frame">
+      <div class="frame-caption" style="max-width:320px"><span class="frame-id">D1</span><span class="frame-name">1-row compact</span>
+        <p class="frame-desc"><b>1 row · 40px</b> (ROW_MIN_H 38 + 2×1 BORDER) · <b>~14 fit</b> 678px. Glyph, branch, elapsed, close — no wrapped body row.
+        <b>Trades away:</b> the agent label and the context line, so two <span class="anno-code">claude</span> sessions on the same branch are indistinguishable and you must open one to know what it is doing.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
+          <div class="card attn"><span class="abar pulse"></span>
+            <div class="crow"><span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg mono trunc grow1">grove&nbsp;/&nbsp;main</span><span class="c-amber statuscol"><span class="dot"></span></span><span class="t-micro mute mono">2m</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-close"/></svg></span></div>
+          </div>
+          <div class="card focused">
+            <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg mono trunc grow1">skills&nbsp;/&nbsp;main</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro mute mono">14m</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-close"/></svg></span></div>
+          </div>
+          <div class="card">
+            <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg mono trunc grow1">grove&nbsp;/&nbsp;feat/rail-mode</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro mute mono">3m</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-close"/></svg></span></div>
+          </div>
+          <div class="card">
+            <div class="crow"><span class="dim" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body dim mono trunc grow1">skills&nbsp;/&nbsp;main</span><span class="mute statuscol"><span class="dot hollow"></span></span><span class="t-micro mute mono">1h</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-close"/></svg></span></div>
+          </div>
+          <div class="card">
+            <div class="crow"><span class="c-blue" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg mono trunc grow1">dotfiles&nbsp;/&nbsp;fix/kill-arm</span><span class="c-blue statuscol"><span class="dot"></span></span><span class="t-micro mute mono">22m</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-close"/></svg></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- D2 — 2-row baseline -->
+    <div class="frame">
+      <div class="frame-caption" style="max-width:320px"><span class="frame-id">D2</span><span class="frame-name">2-row — the current design (baseline)</span>
+        <p class="frame-desc"><b>2 rows · ~85px</b> (identity 38 + body 46 + divider 1) · <b>~8 fit</b> 678px. Identity row + one body row carrying provenance and context, as drawn in C1.
+        <b>Trades away:</b> half of D1's density to buy the two facts D1 cannot show — which project this is and what it is doing right now.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
+          <div class="card attn"><span class="abar pulse"></span>
+            <div class="crow"><span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 1</span><span class="c-amber statuscol"><span class="dot"></span></span><span class="t-micro c-amber">needs you</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+            <div class="crow body"><div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">Waiting for your input</span></div></div>
+          </div>
+          <div class="card focused">
+            <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 1</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+            <div class="crow body"><div class="line"><span class="t-small dim mono trunc">skills</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">Running cargo test</span></div></div>
+          </div>
+          <div class="card">
+            <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg trunc grow1">codex 1</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+            <div class="crow body"><div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">feat/rail-mode</span></div><div class="line"><span class="t-small mute trunc">Edited src/views/sidebar.rs</span></div></div>
+          </div>
+          <div class="card">
+            <div class="crow"><span class="dim" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg trunc grow1">codex 1</span><span class="mute statuscol"><span class="dot hollow"></span></span><span class="t-micro mute">idle</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+            <div class="crow body"><div class="line"><span class="t-small dim mono trunc">skills</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">$ </span></div></div>
+          </div>
+          <div class="card">
+            <div class="crow"><span class="c-blue" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 2</span><span class="c-blue statuscol"><span class="dot"></span></span><span class="t-micro c-blue">done</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+            <div class="crow body"><div class="line"><span class="t-small dim mono trunc">dotfiles</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">fix/kill-arm</span></div><div class="line"><span class="t-small mute trunc">Finished — 3 files changed</span></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- D3 — 3-row -->
+    <div class="frame">
+      <div class="frame-caption" style="max-width:320px"><span class="frame-id">D3</span><span class="frame-name">3-row — with last message</span>
+        <p class="frame-desc"><b>3 rows · ~131px</b> (38 + 46 + 45 + 2 dividers) · <b>~5 fit</b> 678px. A third row quotes the agent's last message at TEXT_SMALL 11, truncated to one line.
+        <b>Trades away:</b> the scan surface — five cards is barely more than the tree it replaces, and the quote is stale the moment the agent speaks again.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
+          <div class="card attn"><span class="abar pulse"></span>
+            <div class="crow"><span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 1</span><span class="c-amber statuscol"><span class="dot"></span></span><span class="t-micro c-amber">needs you</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+            <div class="crow body"><div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">Waiting for your input</span></div></div>
+            <div class="crow"><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-chev-right"/></svg></span><span class="t-small dim trunc grow1">Should I also update the conformance test?</span></div>
+          </div>
+          <div class="card focused">
+            <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 1</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+            <div class="crow body"><div class="line"><span class="t-small dim mono trunc">skills</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">Running cargo test</span></div></div>
+            <div class="crow"><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-chev-right"/></svg></span><span class="t-small dim trunc grow1">Rewriting the R4 colour+glyph rule now.</span></div>
+          </div>
+          <div class="card">
+            <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg trunc grow1">codex 1</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+            <div class="crow body"><div class="line"><span class="t-small dim mono trunc">grove</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">feat/rail-mode</span></div><div class="line"><span class="t-small mute trunc">Edited src/views/sidebar.rs</span></div></div>
+            <div class="crow"><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-chev-right"/></svg></span><span class="t-small dim trunc grow1">Moved the close icon into its own hit box.</span></div>
+          </div>
+          <div class="card">
+            <div class="crow"><span class="dim" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg trunc grow1">codex 1</span><span class="mute statuscol"><span class="dot hollow"></span></span><span class="t-micro mute">idle</span><span class="icon-btn sm"><svg class="ico ico-sm"><use href="#d-more"/></svg></span></div>
+            <div class="crow body"><div class="line"><span class="t-small dim mono trunc">skills</span><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-small mute mono trunc">main</span></div><div class="line"><span class="t-small mute trunc">$ </span></div></div>
+            <div class="crow"><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-chev-right"/></svg></span><span class="t-small mute trunc grow1">no output</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- D4 — status-right -->
+    <div class="frame">
+      <div class="frame-caption" style="max-width:320px"><span class="frame-id">D4</span><span class="frame-name">Status-right</span>
+        <p class="frame-desc"><b>1 row, 2 text lines · ~56px</b> (body row 8+16+6+15+8, floored by ROW_MIN_H 38) · <b>~11 fit</b> 678px. Left column is identity over provenance; a 1px BORDER_SOFT hairline fences off a right column holding the state word over the elapsed time.
+        <b>Trades away:</b> ~78px of label width to the status column, and the status word no longer sits on the title's baseline, so the two never scan as one line.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
+          <div class="card attn"><span class="abar pulse"></span>
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 1</span><span class="t-small mute mono trunc">grove · main</span></div>
+              <span class="vrule"></span>
+              <div class="endcol" style="gap:2px"><span class="t-micro c-amber">needs you</span><span class="t-micro mute mono">2m</span></div>
+            </div>
+          </div>
+          <div class="card focused">
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 1</span><span class="t-small mute mono trunc">skills · main</span></div>
+              <span class="vrule"></span>
+              <div class="endcol" style="gap:2px"><span class="t-micro c-green">working</span><span class="t-micro mute mono">14m</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">codex 1</span><span class="t-small mute mono trunc">grove · feat/rail-mode</span></div>
+              <span class="vrule"></span>
+              <div class="endcol" style="gap:2px"><span class="t-micro c-green">working</span><span class="t-micro mute mono">3m</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="dim" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span>
+              <div class="stack grow1"><span class="t-body dim trunc">codex 1</span><span class="t-small mute mono trunc">skills · main</span></div>
+              <span class="vrule"></span>
+              <div class="endcol" style="gap:2px"><span class="t-micro mute">idle</span><span class="t-micro mute mono">1h</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="c-blue" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 2</span><span class="t-small mute mono trunc">dotfiles · fix/kill-arm</span></div>
+              <span class="vrule"></span>
+              <div class="endcol" style="gap:2px"><span class="t-micro c-blue">done</span><span class="t-micro mute mono">22m</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- D5 — two-column / no close -->
+    <div class="frame">
+      <div class="frame-caption" style="max-width:320px"><span class="frame-id">D5</span><span class="frame-name">Two-column, no per-card close</span>
+        <p class="frame-desc"><b>1 row, 2 text lines · ~56px</b> · <b>~11 fit</b> 678px. Branch + project share line 1, the meta line (state word · elapsed · context) sits below. The kill affordance lives in a trailing slot that only paints on hover, so text runs ~28px wider than D4.
+        <b>Trades away:</b> discoverability of kill — it is invisible until you point at the card — and the slot must still be reserved at rest or R3 (no reflow) breaks.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
+          <div class="card attn"><span class="abar pulse"></span>
+            <div class="crow body">
+              <div class="line"><span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg mono trunc grow1">main</span><span class="t-small dim mono trunc">grove</span><span class="icon-btn sm" style="visibility:hidden"><svg class="ico ico-sm"><use href="#d-trash"/></svg></span></div>
+              <div class="line"><span class="c-amber statuscol"><span class="dot"></span></span><span class="t-micro c-amber">needs you</span><span class="t-micro mute mono">2m</span><span class="t-small mute trunc grow1">Waiting for your input</span></div>
+            </div>
+          </div>
+          <div class="card focused">
+            <div class="crow body">
+              <div class="line"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg mono trunc grow1">main</span><span class="t-small dim mono trunc">skills</span><span class="icon-btn sm" style="visibility:hidden"><svg class="ico ico-sm"><use href="#d-trash"/></svg></span></div>
+              <div class="line"><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span><span class="t-micro mute mono">14m</span><span class="t-small mute trunc grow1">Running cargo test</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body hover">
+              <div class="line"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg mono trunc grow1">feat/rail-mode</span><span class="t-small dim mono trunc">grove</span><span class="icon-btn sm hover"><svg class="ico ico-sm"><use href="#d-trash"/></svg></span></div>
+              <div class="line"><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span><span class="t-micro mute mono">3m</span><span class="t-small mute trunc grow1">Edited src/views/sidebar.rs</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body">
+              <div class="line"><span class="dim" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body dim mono trunc grow1">main</span><span class="t-small dim mono trunc">skills</span><span class="icon-btn sm" style="visibility:hidden"><svg class="ico ico-sm"><use href="#d-trash"/></svg></span></div>
+              <div class="line"><span class="mute statuscol"><span class="dot hollow"></span></span><span class="t-micro mute">idle</span><span class="t-micro mute mono">1h</span><span class="t-small mute trunc grow1">$ </span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body">
+              <div class="line"><span class="c-blue" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg mono trunc grow1">fix/kill-arm</span><span class="t-small dim mono trunc">dotfiles</span><span class="icon-btn sm" style="visibility:hidden"><svg class="ico ico-sm"><use href="#d-trash"/></svg></span></div>
+              <div class="line"><span class="c-blue statuscol"><span class="dot"></span></span><span class="t-micro c-blue">done</span><span class="t-micro mute mono">22m</span><span class="t-small mute trunc grow1">Finished — 3 files changed</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- D6 — project spine -->
+    <div class="frame">
+      <div class="frame-caption" style="max-width:320px"><span class="frame-id">D6</span><span class="frame-name">Project spine — grouped without headers</span>
+        <p class="frame-desc"><b>1 row, 2 text lines · ~56px</b> · <b>~11 fit</b> 678px. A 3px full-height leading spine (same width as ATTENTION_BAR_W) coloured per project — CYAN / MAGENTA / YELLOW, straight off the palette — and continued across the 6px list gap when two neighbours share a project, so the sorted list reads as bands with no group header rows costing height. Attention keeps its own AMBER bar, drawn <i>inside</i> the spine at the card's left text edge.
+        <b>Trades away:</b> the accent colour is now spent on identity, so state has to carry entirely on the dot, the word and the pulse; and past three projects on screen the hues stop being memorable.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
+          <div class="card spine attn tied t-grove"><span class="pspine p-grove"></span><span class="abar pulse" style="left:3px"></span>
+            <div class="crow body" style="flex-direction:row;align-items:center;padding-left:14px">
+              <span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 1</span><span class="t-small mute mono trunc">grove · main</span></div>
+              <span class="c-amber statuscol"><span class="dot"></span></span><span class="t-micro c-amber">needs you</span>
+            </div>
+          </div>
+          <div class="card spine"><span class="pspine p-grove"></span>
+            <div class="crow body" style="flex-direction:row;align-items:center;padding-left:14px">
+              <span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">codex 1</span><span class="t-small mute mono trunc">grove · feat/rail-mode</span></div>
+              <span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span>
+            </div>
+          </div>
+          <div class="card spine focused tied t-skills"><span class="pspine p-skills"></span>
+            <div class="crow body" style="flex-direction:row;align-items:center;padding-left:14px">
+              <span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 1</span><span class="t-small mute mono trunc">skills · main</span></div>
+              <span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span>
+            </div>
+          </div>
+          <div class="card spine"><span class="pspine p-skills"></span>
+            <div class="crow body" style="flex-direction:row;align-items:center;padding-left:14px">
+              <span class="dim" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span>
+              <div class="stack grow1"><span class="t-body dim trunc">codex 1</span><span class="t-small mute mono trunc">skills · main</span></div>
+              <span class="mute statuscol"><span class="dot hollow"></span></span><span class="t-micro mute">idle</span>
+            </div>
+          </div>
+          <div class="card spine"><span class="pspine p-dotfiles"></span>
+            <div class="crow body" style="flex-direction:row;align-items:center;padding-left:14px">
+              <span class="c-blue" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 2</span><span class="t-small mute mono trunc">dotfiles · fix/kill-arm</span></div>
+              <span class="c-blue statuscol"><span class="dot"></span></span><span class="t-micro c-blue">done</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- D7 — elapsed underline -->
+    <div class="frame">
+      <div class="frame-caption" style="max-width:320px"><span class="frame-id">D7</span><span class="frame-name">Elapsed underline</span>
+        <p class="frame-desc"><b>1 row, 2 text lines + 2px rule · ~58px</b> · <b>~11 fit</b> 678px. A 2px hairline runs the card's full bottom edge, unfilled in BORDER_SOFT, filled left-to-right by how long the session has held its current state — AMBER when it is waiting on you, GREEN while it works, FG_MUTE when idle. The list gains a second, purely positional channel: from across the room you read the <i>lengths</i>, not the words.
+        <b>Trades away:</b> the elapsed <i>number</i> — the bar is relative to a 30m ceiling, so "12m" and "18m" look nearly alike, and anything past the ceiling pins full.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
+          <div class="card attn"><span class="abar pulse"></span>
+            <div class="crow body" style="flex-direction:row;align-items:center;padding-bottom:10px">
+              <span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 1</span><span class="t-small mute mono trunc">grove · main</span></div>
+              <div class="endcol" style="gap:2px"><span class="t-micro c-amber">needs you</span><span class="t-micro mute mono">12m</span></div>
+            </div>
+            <span class="waitbar"><span class="fill amber w45"></span></span>
+          </div>
+          <div class="card focused">
+            <div class="crow body" style="flex-direction:row;align-items:center;padding-bottom:10px">
+              <span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 1</span><span class="t-small mute mono trunc">skills · main</span></div>
+              <div class="endcol" style="gap:2px"><span class="t-micro c-green">working</span><span class="t-micro mute mono">14m</span></div>
+            </div>
+            <span class="waitbar"><span class="fill green w72"></span></span>
+          </div>
+          <div class="card">
+            <div class="crow body" style="flex-direction:row;align-items:center;padding-bottom:10px">
+              <span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">codex 1</span><span class="t-small mute mono trunc">grove · feat/rail-mode</span></div>
+              <div class="endcol" style="gap:2px"><span class="t-micro c-green">working</span><span class="t-micro mute mono">3m</span></div>
+            </div>
+            <span class="waitbar"><span class="fill green w10"></span></span>
+          </div>
+          <div class="card">
+            <div class="crow body" style="flex-direction:row;align-items:center;padding-bottom:10px">
+              <span class="dim" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span>
+              <div class="stack grow1"><span class="t-body dim trunc">codex 1</span><span class="t-small mute mono trunc">skills · main</span></div>
+              <div class="endcol" style="gap:2px"><span class="t-micro mute">idle</span><span class="t-micro mute mono">1h</span></div>
+            </div>
+            <span class="waitbar"><span class="fill w96"></span></span>
+          </div>
+          <div class="card">
+            <div class="crow body" style="flex-direction:row;align-items:center;padding-bottom:10px">
+              <span class="c-blue" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 2</span><span class="t-small mute mono trunc">dotfiles · fix/kill-arm</span></div>
+              <div class="endcol" style="gap:2px"><span class="t-micro c-blue">done</span><span class="t-micro mute mono">22m</span></div>
+            </div>
+            <span class="waitbar"><span class="fill blue w28"></span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- D8 — status pill -->
+    <div class="frame">
+      <div class="frame-caption" style="max-width:320px"><span class="frame-id">D8</span><span class="frame-name">Status pill, right rail</span>
+        <p class="frame-desc"><b>1 row, 2 text lines · ~56px</b> · <b>~11 fit</b> 678px. The status word leaves the meta line and becomes a bordered TEXT_MICRO 10 pill hung on the right edge, dot inside it. Every pill starts at the same x, so state reads as a vertical strip you scan once instead of five words at five different offsets; the idle pill is BORDER_SOFT on BG and recedes, the waiting pill is the only filled one on screen.
+        <b>Trades away:</b> ~86px of title width to a fixed pill column, and the pill's border is a second 1px weight competing with the card's own outline at small sizes.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
+          <div class="card attn"><span class="abar pulse"></span>
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 1</span><span class="t-small mute mono trunc">grove · main · 12m</span></div>
+              <span class="pill attn"><span class="dot pulse"></span>needs you</span>
+            </div>
+          </div>
+          <div class="card focused">
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 1</span><span class="t-small mute mono trunc">skills · main · 14m</span></div>
+              <span class="pill work"><svg class="ico ico-xs spin"><use href="#d-spinner"/></svg>working</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">codex 1</span><span class="t-small mute mono trunc">grove · feat/rail-mode · 3m</span></div>
+              <span class="pill work"><svg class="ico ico-xs spin"><use href="#d-spinner"/></svg>working</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="dim" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span>
+              <div class="stack grow1"><span class="t-body dim trunc">codex 1</span><span class="t-small mute mono trunc">skills · main · 1h</span></div>
+              <span class="pill"><span class="dot hollow"></span>idle</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="c-blue" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 2</span><span class="t-small mute mono trunc">dotfiles · fix/kill-arm · 22m</span></div>
+              <span class="pill done"><svg class="ico ico-xs"><use href="#d-check"/></svg>done</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- D9 — terminal tail -->
+    <div class="frame">
+      <div class="frame-caption" style="max-width:320px"><span class="frame-id">D9</span><span class="frame-name">Terminal tail — output as the anchor</span>
+        <p class="frame-desc"><b>2 rows · ~70px</b> (identity 38 + tail 30 + divider 1) · <b>~9 fit</b> 678px. The last line of agent output is not a caption underneath the card, it <i>is</i> the card's second half: full-bleed, mono TEXT_SMALL 11, sat on BG so it reads as a recessed terminal well against the BG_STRIP card. Provenance folds up onto the identity line as a mono suffix. The eye lands on the sentence, which is the only thing on the card that changes minute to minute.
+        <b>Trades away:</b> 14px per card over D2 for a string that is stale the instant it prints, and long paths truncate in the one place truncation hurts most.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
+          <div class="card attn"><span class="abar pulse"></span>
+            <div class="crow"><span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc">claude 1</span><span class="t-small mute mono trunc grow1">grove · main</span><span class="c-amber statuscol"><span class="dot"></span></span><span class="t-micro mute mono">12m</span></div>
+            <div class="tailrow"><span class="c-amber caret" style="display:flex"><svg class="ico ico-xs"><use href="#d-chev-right"/></svg></span><span class="t-small c-amber mono trunc grow1">Should I also update the conformance test?</span></div>
+          </div>
+          <div class="card focused">
+            <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc">claude 1</span><span class="t-small mute mono trunc grow1">skills · main</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro mute mono">14m</span></div>
+            <div class="tailrow"><span class="mute caret" style="display:flex"><svg class="ico ico-xs"><use href="#d-term"/></svg></span><span class="t-small dim mono trunc grow1">test conformance::r4 ... ok</span></div>
+          </div>
+          <div class="card">
+            <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg trunc">codex 1</span><span class="t-small mute mono trunc grow1">grove · feat/rail-mode</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro mute mono">3m</span></div>
+            <div class="tailrow"><span class="mute caret" style="display:flex"><svg class="ico ico-xs"><use href="#d-term"/></svg></span><span class="t-small dim mono trunc grow1">edit src/views/sidebar.rs +18 −4</span></div>
+          </div>
+          <div class="card">
+            <div class="crow"><span class="dim" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body dim trunc">codex 1</span><span class="t-small mute mono trunc grow1">skills · main</span><span class="mute statuscol"><span class="dot hollow"></span></span><span class="t-micro mute mono">1h</span></div>
+            <div class="tailrow"><span class="mute caret" style="display:flex"><svg class="ico ico-xs"><use href="#d-term"/></svg></span><span class="t-small mute mono trunc grow1">$</span></div>
+          </div>
+          <div class="card">
+            <div class="crow"><span class="c-blue" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc">claude 2</span><span class="t-small mute mono trunc grow1">dotfiles · fix/kill-arm</span><span class="c-blue statuscol"><span class="dot"></span></span><span class="t-micro mute mono">22m</span></div>
+            <div class="tailrow"><span class="mute caret" style="display:flex"><svg class="ico ico-xs"><use href="#d-check"/></svg></span><span class="t-small dim mono trunc grow1">3 files changed, 41 insertions(+)</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- D10 — glyph tile -->
+    <div class="frame">
+      <div class="frame-caption" style="max-width:320px"><span class="frame-id">D10</span><span class="frame-name">Glyph tile</span>
+        <p class="frame-desc"><b>1 row, 2 text lines · ~51px</b> (8 + tile 28 &lt; stack 33 + 8, + 2 BORDER) · <b>~12 fit</b> 678px. The agent glyph moves into a 28×28 RADIUS_CONTROL 4 tile — the exact box ICON_BTN already uses — bordered and filled by state. That gives the card a hard left anchor, drops the loose status dot entirely, and starts every text column at the same x so titles and provenance form two clean rules down the list.
+        <b>Trades away:</b> 20px of text width to the tile, and state now lives in one place only, so a colourblind read leans entirely on the tile's glyph (dot / spinner / check) rather than on a redundant word.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
+          <div class="card attn"><span class="abar pulse"></span>
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="gtile attn pulse"><svg class="ico ico-md"><use href="#d-claude"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 1 <span class="t-micro c-amber">needs you</span></span><span class="t-small mute mono trunc">grove · main · 12m</span></div>
+            </div>
+          </div>
+          <div class="card focused">
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="gtile work"><svg class="ico ico-md spin"><use href="#d-spinner"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 1 <span class="t-micro c-green">working</span></span><span class="t-small mute mono trunc">skills · main · 14m</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="gtile work"><svg class="ico ico-md spin"><use href="#d-spinner"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">codex 1 <span class="t-micro c-green">working</span></span><span class="t-small mute mono trunc">grove · feat/rail-mode · 3m</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="gtile idle"><svg class="ico ico-md"><use href="#d-codex"/></svg></span>
+              <div class="stack grow1"><span class="t-body dim trunc">codex 1 <span class="t-micro mute">idle</span></span><span class="t-small mute mono trunc">skills · main · 1h</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body" style="flex-direction:row;align-items:center">
+              <span class="gtile done"><svg class="ico ico-md"><use href="#d-check"/></svg></span>
+              <div class="stack grow1"><span class="t-body fg trunc">claude 2 <span class="t-micro c-blue">done</span></span><span class="t-small mute mono trunc">dotfiles · fix/kill-arm · 22m</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- D11 — diff-stat -->
+    <div class="frame">
+      <div class="frame-caption" style="max-width:320px"><span class="frame-id">D11</span><span class="frame-name">Diff-stat — the work, not just the state</span>
+        <p class="frame-desc"><b>1 row, 2 text lines · ~56px</b> · <b>~11 fit</b> 678px. Two-tier type: the <b>branch</b> is the card's headline at TEXT_BODY 12 mono FG, and everything else — project, agent, elapsed — drops to TEXT_SMALL 11 FG_MUTE beneath it. The trailing slot carries +N / −N chips in the same box as <span class="anno-code">branch-chip</span>, so the card says how much has been touched, which is the fact you actually want before deciding whether to look.
+        <b>Trades away:</b> a git stat per session per repaint, and a fresh session shows a bare 0-chip pair that reads as noise until the agent writes something.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
+          <div class="card attn"><span class="abar pulse"></span>
+            <div class="crow body">
+              <div class="line"><span class="c-amber" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-body fg mono trunc grow1">main</span><span class="dchip add">+128</span><span class="dchip del">−9</span></div>
+              <div class="line"><span class="t-small mute trunc grow1">grove · claude 1 · 12m</span><span class="c-amber statuscol"><span class="dot pulse"></span></span><span class="t-micro c-amber">needs you</span></div>
+            </div>
+          </div>
+          <div class="card focused">
+            <div class="crow body">
+              <div class="line"><span class="c-green" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-body fg mono trunc grow1">main</span><span class="dchip add">+12</span><span class="dchip del">−31</span></div>
+              <div class="line"><span class="t-small mute trunc grow1">skills · claude 1 · 14m</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body">
+              <div class="line"><span class="c-green" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-body fg mono trunc grow1">feat/rail-mode</span><span class="dchip add">+18</span><span class="dchip del">−4</span></div>
+              <div class="line"><span class="t-small mute trunc grow1">grove · codex 1 · 3m</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span><span class="t-micro c-green">working</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body">
+              <div class="line"><span class="mute" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-body dim mono trunc grow1">main</span><span class="dchip neutral">clean</span></div>
+              <div class="line"><span class="t-small mute trunc grow1">skills · codex 1 · 1h</span><span class="mute statuscol"><span class="dot hollow"></span></span><span class="t-micro mute">idle</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="crow body">
+              <div class="line"><span class="c-blue" style="display:flex"><svg class="ico ico-xs"><use href="#d-git-branch"/></svg></span><span class="t-body fg mono trunc grow1">fix/kill-arm</span><span class="dchip add">+41</span><span class="dchip del">−7</span></div>
+              <div class="line"><span class="t-small mute trunc grow1">dotfiles · claude 2 · 22m</span><span class="c-blue statuscol"><span class="dot"></span></span><span class="t-micro c-blue">done</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- D12 — quiet / loud -->
+    <div class="frame">
+      <div class="frame-caption" style="max-width:320px"><span class="frame-id">D12</span><span class="frame-name">Quiet / loud — contrast at rest</span>
+        <p class="frame-desc"><b>idle 32px · live 40px · waiting ~62px</b> · <b>~15 fit</b> 678px at a realistic mix. The card is not one shape but three: an idle session loses its border and its fill entirely and sits as bare text on BG_RAIL; a working session gets the normal card; the one waiting on you keeps a full AMBER border, the tint, the pulsing bar and a second line quoting its question. The list has real figure/ground at rest, so "which one needs me" is answered by weight before you read a single word.
+        <b>Trades away:</b> a stable row height — the list reflows vertically whenever a session changes state, and R3's no-reflow rule has to be scoped to hover only for this to be legal.</p></div>
+      <div class="frame-card bare">
+        <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
+          <div class="card loud"><span class="abar pulse"></span>
+            <div class="crow body" style="padding-left:14px">
+              <div class="line"><span class="c-amber" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 1</span><span class="t-micro c-amber">needs you</span><span class="t-micro mute mono">12m</span></div>
+              <div class="line"><span class="t-small c-amber trunc grow1">Should I also update the conformance test?</span></div>
+              <div class="line"><span class="t-small mute mono trunc">grove · main</span></div>
+            </div>
+          </div>
+          <div class="card focused">
+            <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body fg trunc grow1">claude 1</span><span class="t-small mute mono trunc">skills · main</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span></div>
+          </div>
+          <div class="card">
+            <div class="crow"><span class="c-green" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body fg trunc grow1">codex 1</span><span class="t-small mute mono trunc">grove · feat/rail-mode</span><span class="c-green statuscol"><svg class="ico ico-sm spin"><use href="#d-spinner"/></svg></span></div>
+          </div>
+          <div class="card quiet">
+            <div class="crow"><span class="mute" style="display:flex"><svg class="ico ico-md"><use href="#d-codex"/></svg></span><span class="t-body mute trunc grow1">codex 1</span><span class="t-small mute mono trunc">skills · main</span><span class="mute statuscol"><span class="dot hollow"></span></span></div>
+          </div>
+          <div class="card quiet">
+            <div class="crow"><span class="mute" style="display:flex"><svg class="ico ico-md"><use href="#d-claude"/></svg></span><span class="t-body mute trunc grow1">claude 2</span><span class="t-small mute mono trunc">dotfiles · fix/kill-arm</span><span class="mute statuscol"><span class="dot hollow"></span></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sticky-note blue" style="max-width:520px">
+    <b>How to choose.</b> The list is a triage surface, so the only question is how many cards you can see before the fold and how much
+    each one tells you. D1 buys ~14 rows and answers nothing; D3 answers everything and shows 5. D2, D4 and D5 all sit in the usable
+    middle — D2 keeps the status word on the title line (fastest scan), D4 buys ~3 more cards by folding the identity and provenance
+    into one row, D5 buys the widest text at the cost of hiding kill. Every variant here is built from <span style="font-family:ui-monospace,monospace">card()</span> +
+    <span style="font-family:ui-monospace,monospace">RowDensity::Card</span> with no new token; D4's only addition is a vertical 1px BORDER_SOFT
+    hairline, the same weight as the horizontal one D2 already uses.
+  </div>
+
+  <!-- ================= SECTION E — card states ================= -->
+  <div class="section-heading"><span class="section-letter">E</span> Card states <span class="section-sub">every state pairs colour with a glyph, a word, or a pulse</span></div>
 
   <div class="frame-row" style="flex-wrap:wrap;max-width:1360px">
 
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">D1</span><span class="frame-name">Needs you</span>
+      <div class="frame-caption"><span class="frame-id">E1</span><span class="frame-name">Needs you</span>
         <p class="frame-desc">AMBER. 3px bar pulsing on alpha + AMBER_ROW_TINT fill + filled dot + the word.</p></div>
       <div class="frame-card bare"><div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px">
         <div class="card attn"><span class="abar pulse"></span>
@@ -781,7 +1332,7 @@
     </div>
 
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">D2</span><span class="frame-name">Working</span>
+      <div class="frame-caption"><span class="frame-id">E2</span><span class="frame-name">Working</span>
         <p class="frame-desc">GREEN. The 12-frame spinner replaces the dot in the same 15px column — motion, not colour, is the signal.</p></div>
       <div class="frame-card bare"><div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px">
         <div class="card">
@@ -792,7 +1343,7 @@
     </div>
 
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">D3</span><span class="frame-name">Idle</span>
+      <div class="frame-caption"><span class="frame-id">E3</span><span class="frame-name">Idle</span>
         <p class="frame-desc">No accent. Hollow dot — a <b>shape</b> difference, so present-vs-absent survives greyscale.</p></div>
       <div class="frame-card bare"><div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px">
         <div class="card">
@@ -803,7 +1354,7 @@
     </div>
 
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">D4</span><span class="frame-name">Done</span>
+      <div class="frame-caption"><span class="frame-id">E4</span><span class="frame-name">Done</span>
         <p class="frame-desc">BLUE (informational, not "running"). Filled dot + the word; context carries the outcome.</p></div>
       <div class="frame-card bare"><div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px">
         <div class="card">
@@ -814,7 +1365,7 @@
     </div>
 
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">D5</span><span class="frame-name">Exited</span>
+      <div class="frame-caption"><span class="frame-id">E5</span><span class="frame-name">Exited</span>
         <p class="frame-desc">Process gone. Glyph <b>dims</b> rather than disappears, keeping the slot; the <span class="anno-code">close</span> mark is the shape signal. Border stays 1px BORDER — never opacity on the whole card.</p></div>
       <div class="frame-card bare"><div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px">
         <div class="card">
@@ -825,7 +1376,7 @@
     </div>
 
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">D6</span><span class="frame-name">Armed for kill (two-step)</span>
+      <div class="frame-caption"><span class="frame-id">E6</span><span class="frame-name">Armed for kill (two-step)</span>
         <p class="frame-desc">Second click on the row's kill affordance. RED_WASH fill, RED border, the word <b>Kill?</b> and a Danger-weight confirm. Same two rows, same heights — arming never resizes the card.</p></div>
       <div class="frame-card bare"><div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px">
         <div class="card armed">
@@ -836,7 +1387,7 @@
     </div>
 
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">D7</span><span class="frame-name">Hover &amp; selected</span>
+      <div class="frame-caption"><span class="frame-id">E7</span><span class="frame-name">Hover &amp; selected</span>
         <p class="frame-desc">Row-level, not card-level: the hover fill is square and full-bleed to the card's inner edge because rows carry the padding and the card contributes none.</p></div>
       <div class="frame-card bare"><div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
         <div class="card">
@@ -851,12 +1402,12 @@
     </div>
   </div>
 
-  <!-- ================= SECTION E — sort order ================= -->
-  <div class="section-heading"><span class="section-letter">E</span> Sort order <span class="section-sub">attention-first: needs-you → working → idle → done (exited last)</span></div>
+  <!-- ================= SECTION F — sort order ================= -->
+  <div class="section-heading"><span class="section-letter">F</span> Sort order <span class="section-sub">attention-first: needs-you → working → idle → done (exited last)</span></div>
 
   <div class="frame-row">
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">E1</span><span class="frame-name">8 sessions across 3 projects</span>
+      <div class="frame-caption"><span class="frame-id">F1</span><span class="frame-name">8 sessions across 3 projects</span>
         <p class="frame-desc">A flat cross-project list. Ordering is by status band, then most-recent activity inside the band. Project is on every card because there is no tree to inherit it from.</p></div>
       <div class="frame-card bare">
         <div class="g" style="width:320px;height:760px;background:var(--BG_RAIL);border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;overflow:hidden">
@@ -910,12 +1461,12 @@
     </div>
   </div>
 
-  <!-- ================= SECTION F — narrow rail ================= -->
-  <div class="section-heading"><span class="section-letter">F</span> Narrow rail <span class="section-sub">SIDEBAR_MIN_W 220 — the named risk</span></div>
+  <!-- ================= SECTION G — narrow rail ================= -->
+  <div class="section-heading"><span class="section-letter">G</span> Narrow rail <span class="section-sub">SIDEBAR_MIN_W 220 — the named risk</span></div>
 
   <div class="frame-row">
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">F1</span><span class="frame-name">220px — cards survive, nothing clips</span>
+      <div class="frame-caption"><span class="frame-id">G1</span><span class="frame-name">220px — cards survive, nothing clips</span>
         <p class="frame-desc">Card is 204 wide. The status <b>word</b> drops (below 260px) — colour is still carried by the dot shape, the spinner and the attention bar, so R4 holds. Label, project and branch truncate with ellipsis; the header label still fits because tracked() text is TEXT_MICRO 10.</p></div>
       <div class="frame-card bare">
         <div class="g" style="width:220px;height:480px;background:var(--BG_RAIL);border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;overflow:hidden">
@@ -946,7 +1497,7 @@
     </div>
 
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">F2</span><span class="frame-name">Width budget, 220 → 204 card</span>
+      <div class="frame-caption"><span class="frame-id">G2</span><span class="frame-name">Width budget, 220 → 204 card</span>
         <p class="frame-desc">Row 1 arithmetic proving there is no clip. Row 2's two lines are pure truncating text and therefore always fit.</p></div>
       <div class="frame-card" style="padding:18px;background:var(--board-surface);border-color:var(--board-border)">
         <table style="font-size:12px;border-collapse:collapse;color:var(--board-muted)">
@@ -962,12 +1513,12 @@
     </div>
   </div>
 
-  <!-- ================= SECTION G — scroll ================= -->
-  <div class="section-heading"><span class="section-letter">G</span> Scale <span class="section-sub">N = 40 sessions — the scroll cost, made visible</span></div>
+  <!-- ================= SECTION H — scroll ================= -->
+  <div class="section-heading"><span class="section-letter">H</span> Scale <span class="section-sub">N = 40 sessions — the scroll cost, made visible</span></div>
 
   <div class="frame-row">
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">G1</span><span class="frame-name">40 sessions, top of list</span>
+      <div class="frame-caption"><span class="frame-id">H1</span><span class="frame-name">40 sessions, top of list</span>
         <p class="frame-desc">At ~85px + 6px gap per card, a 800px window shows roughly 8. The remaining 32 are a real scroll. The list scrolls; the SESSBAR and the <b>+</b> row are pinned so "new session" is never scrolled away.</p></div>
       <div class="frame-card bare">
         <div class="g" style="width:320px;height:730px;background:var(--BG_RAIL);border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;overflow:hidden;position:relative">
@@ -991,13 +1542,13 @@
     </div>
   </div>
 
-  <!-- ================= SECTION H — empty ================= -->
-  <div class="section-heading"><span class="section-letter">H</span> Empty state <span class="section-sub">the only place TEXT_DISPLAY tiers are allowed</span></div>
+  <!-- ================= SECTION J — empty ================= -->
+  <div class="section-heading"><span class="section-letter">J</span> Empty state <span class="section-sub">the only place TEXT_DISPLAY tiers are allowed</span></div>
 
   <div class="frame-row">
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">H1</span><span class="frame-name">Sessions mode, zero sessions</span>
-        <p class="frame-desc">ICON_DISPLAY 32 mark, TEXT_DISPLAY 20 headline, TEXT_BODY 12 support, and a Primary action that opens the same launcher as the <b>+</b> row (J2). The <b>+</b> row stays pinned below so the two paths agree.</p></div>
+      <div class="frame-caption"><span class="frame-id">J1</span><span class="frame-name">Sessions mode, zero sessions</span>
+        <p class="frame-desc">ICON_DISPLAY 32 mark, TEXT_DISPLAY 20 headline, TEXT_BODY 12 support, and a Primary action that opens the same launcher as the <b>+</b> row (K2). The <b>+</b> row stays pinned below so the two paths agree.</p></div>
       <div class="frame-card bare">
         <div class="g" style="width:320px;height:420px;background:var(--BG_RAIL);border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;overflow:hidden">
           <div class="sessbar"><span class="tracked c-cyan">S&#8202;E&#8202;S&#8202;S&#8202;I&#8202;O&#8202;N&#8202;S</span><span class="mute t-micro" style="margin-left:6px">0</span><span class="spacer"></span><div class="icon-btn active"><svg class="ico ico-md"><use href="#d-expand-sessions"/></svg></div><div class="icon-btn disabled"><svg class="ico ico-md"><use href="#d-collapse-right"/></svg></div><div class="icon-btn"><svg class="ico ico-md"><use href="#d-plus"/></svg></div></div>
@@ -1015,7 +1566,7 @@
     </div>
 
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">H2</span><span class="frame-name">Empty state in the full window</span>
+      <div class="frame-caption"><span class="frame-id">J2</span><span class="frame-name">Empty state in the full window</span>
         <p class="frame-desc">Placement check: the empty state lives inside the 320 rail only. The body keeps whatever it was showing — here, the no-session placeholder that already ships.</p></div>
       <div class="frame-card screen g" style="width:900px;height:420px">
         <div class="shell" style="height:100%">
@@ -1038,12 +1589,12 @@
     </div>
   </div>
 
-  <!-- ================= SECTION J — the + and the launcher ================= -->
-  <div class="section-heading"><span class="section-letter">J</span> The <span style="font-family:ui-monospace,monospace">+</span> affordance <span class="section-sub">it opens the EXISTING launcher palette — no new modal</span></div>
+  <!-- ================= SECTION K — the + and the launcher ================= -->
+  <div class="section-heading"><span class="section-letter">K</span> The <span style="font-family:ui-monospace,monospace">+</span> affordance <span class="section-sub">it opens the EXISTING launcher palette — no new modal</span></div>
 
   <div class="frame-row">
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">J1</span><span class="frame-name">The plus row, rest &amp; hover</span>
+      <div class="frame-caption"><span class="frame-id">K1</span><span class="frame-name">The plus row, rest &amp; hover</span>
         <p class="frame-desc">A one-row <span class="anno-code">card()</span> — same component, same 4px radius, same 1px BORDER, single row so it reads as an action rather than a session. MAGENTA glyph (agent/new). The keycap is metadata, BORDER_SOFT weight.</p></div>
       <div class="frame-card bare">
         <div class="g" style="width:320px;background:var(--BG_RAIL);padding:8px;border:1px solid var(--BORDER);border-radius:4px;display:flex;flex-direction:column;gap:6px">
@@ -1056,7 +1607,7 @@
     <div class="connector-row">→</div>
 
     <div class="frame">
-      <div class="frame-caption"><span class="frame-id">J2</span><span class="frame-name">Existing launcher palette (unchanged)</span>
+      <div class="frame-caption"><span class="frame-id">K2</span><span class="frame-name">Existing launcher palette (unchanged)</span>
         <p class="frame-desc">MODAL_W_MD 480, RADIUS_PANEL 12, panel shadow, SCRIM over the window. PALETTE_ROW_H 54 rows with the fixed 24px leading slot, RADIUS_GROUP 6, selection = SEL_TINT_SOFT + SEL_RING. This is shown only to prove the <b>+</b> lands somewhere that already exists.</p></div>
       <div class="frame-card bare">
         <div class="g" style="width:640px;height:520px;background:var(--BG);border:1px solid var(--BORDER);border-radius:10px;overflow:hidden;position:relative">
@@ -1086,8 +1637,8 @@
     </div>
   </div>
 
-  <!-- ================= SECTION K — scope + data ================= -->
-  <div class="section-heading"><span class="section-letter">K</span> Scope &amp; data notes</div>
+  <!-- ================= SECTION L — scope + data ================= -->
+  <div class="section-heading"><span class="section-letter">L</span> Scope &amp; data notes</div>
 
   <div class="frame-row">
     <div class="sticky-note" style="max-width:420px;margin-top:20px">
@@ -1107,12 +1658,12 @@
         <li>agent glyph → <span style="font-family:ui-monospace,monospace">icon_name</span> · label → <span style="font-family:ui-monospace,monospace">agent_label</span></li>
         <li>project line → <span style="font-family:ui-monospace,monospace">project</span> + <span style="font-family:ui-monospace,monospace">branch</span></li>
         <li>context line → <span style="font-family:ui-monospace,monospace">context</span></li>
-        <li>needs-you → <span style="font-family:ui-monospace,monospace">waiting</span> · working → <span style="font-family:ui-monospace,monospace">running</span> · selection ring → <span style="font-family:ui-monospace,monospace">focused</span> · D6 → <span style="font-family:ui-monospace,monospace">confirming_kill</span></li>
+        <li>needs-you → <span style="font-family:ui-monospace,monospace">waiting</span> · working → <span style="font-family:ui-monospace,monospace">running</span> · selection ring → <span style="font-family:ui-monospace,monospace">focused</span> · E6 → <span style="font-family:ui-monospace,monospace">confirming_kill</span></li>
       </ul>
       <b>Gaps to resolve before build:</b>
       <ul>
-        <li><b>done vs idle vs exited</b> are three distinct card states (D3/D4/D5) but <span style="font-family:ui-monospace,monospace">TileData</span> only carries the booleans <span style="font-family:ui-monospace,monospace">waiting</span>/<span style="font-family:ui-monospace,monospace">running</span>. Either widen it to hold the <span style="font-family:ui-monospace,monospace">ActivityState</span> enum, or accept collapsing D3/D4/D5 into one "not running" state. <b>Recommendation: carry the enum</b> — it is already computed upstream, and the sort bands need it anyway.</li>
-        <li>The header <b>count badge</b> (G1, H1) is a derived <span style="font-family:ui-monospace,monospace">len()</span>, not a field — free.</li>
+        <li><b>done vs idle vs exited</b> are three distinct card states (E3/E4/E5) but <span style="font-family:ui-monospace,monospace">TileData</span> only carries the booleans <span style="font-family:ui-monospace,monospace">waiting</span>/<span style="font-family:ui-monospace,monospace">running</span>. Either widen it to hold the <span style="font-family:ui-monospace,monospace">ActivityState</span> enum, or accept collapsing E3/E4/E5 into one "not running" state. <b>Recommendation: carry the enum</b> — it is already computed upstream, and the sort bands need it anyway.</li>
+        <li>The header <b>count badge</b> (H1, J1) is a derived <span style="font-family:ui-monospace,monospace">len()</span>, not a field — free.</li>
         <li>Nothing on the card uses <span style="font-family:ui-monospace,monospace">spawned_at</span>, <span style="font-family:ui-monospace,monospace">wt_path</span>, <span style="font-family:ui-monospace,monospace">tmux</span> or <span style="font-family:ui-monospace,monospace">tmux_name</span>. Relative age was drawn and cut: at 320px it competed with the context line, which is strictly more informative.</li>
       </ul>
     </div>
@@ -1122,7 +1673,7 @@
       <ul>
         <li><b>R1 tokens</b> — card 4 / list gap 6 / list pad 8 / row px 10 / min-h 38 / bar 3 / glyph 14 / status col 15 / btn 24 &amp; 28 — all named tokens.</li>
         <li><b>R2 borders</b> — 1px only. BORDER on the card and rail edges, BORDER_SOFT for the intra-card divider and button rings.</li>
-        <li><b>R3 no reflow</b> — the <span style="font-family:ui-monospace,monospace">more</span> button holds its 24px slot at rest; hover only paints. Arming (D6) changes fill and words, never geometry. The disabled header button (H1) drops its ring, never its box, and never uses opacity.</li>
+        <li><b>R3 no reflow</b> — the <span style="font-family:ui-monospace,monospace">more</span> button holds its 24px slot at rest; hover only paints. Arming (E6) changes fill and words, never geometry. The disabled header button (J1) drops its ring, never its box, and never uses opacity.</li>
         <li><b>R4 colour never alone</b> — dot fill-vs-hollow, spinner, close mark, the status word and the pulse each independently encode the state.</li>
         <li><b>R5 motion</b> — spinner, attention pulse, caret blink. Nothing else moves; the list does not animate on re-sort.</li>
         <li><b>R6–R8</b> — no new component, no new sprite, no new tier: card(), Card rows, icon_btn, keycap, status_dot, palette_row are all reused as-is.</li>

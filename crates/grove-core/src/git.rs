@@ -658,6 +658,13 @@ pub struct WorktreeGitState {
     pub dirty: bool,
     pub ahead: u32,
     pub behind: u32,
+    /// Lines inserted in the uncommitted diff against `HEAD`. Only populated
+    /// when `dirty` is true; a clean worktree leaves this at 0 without paying
+    /// for a second git invocation.
+    pub added: u32,
+    /// Lines deleted in the uncommitted diff against `HEAD`. Same gating as
+    /// [`WorktreeGitState::added`].
+    pub removed: u32,
 }
 
 /// Query `path`'s git status via one `git status --porcelain=v2 -b` call.
@@ -681,7 +688,64 @@ pub fn worktree_git_state(path: &str) -> Option<WorktreeGitState> {
         );
         return None;
     }
-    Some(parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout)))
+    let mut state = parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout));
+    // Only a dirty worktree can have a nonzero uncommitted diff, so a clean
+    // one skips the second command entirely — that gating is what keeps the
+    // poll cheap across many worktrees.
+    if state.dirty {
+        let (added, removed) = worktree_diff_stat(path);
+        state.added = added;
+        state.removed = removed;
+    }
+    Some(state)
+}
+
+/// Uncommitted insertion/deletion counts for `path` via one
+/// `git diff --shortstat HEAD`. Any failure yields `(0, 0)` — callers get a
+/// missing number rather than a stale or bogus one.
+fn worktree_diff_stat(path: &str) -> (u32, u32) {
+    tracing::debug!(
+        args = "diff --shortstat HEAD",
+        cwd = %path,
+        "running git command"
+    );
+    let Ok(out) = Command::new("git")
+        .args(["-C", path, "diff", "--shortstat", "HEAD"])
+        .output()
+    else {
+        return (0, 0);
+    };
+    if !out.status.success() {
+        tracing::warn!(
+            status = ?out.status,
+            stderr = %String::from_utf8_lossy(&out.stderr),
+            "git command failed"
+        );
+        return (0, 0);
+    }
+    parse_shortstat(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Parse ` 3 files changed, 128 insertions(+), 9 deletions(-)` into
+/// `(insertions, deletions)`. Either clause may be absent (a pure-insertion
+/// or pure-deletion diff), and anything unrecognised contributes 0.
+fn parse_shortstat(out: &str) -> (u32, u32) {
+    let mut added = 0;
+    let mut removed = 0;
+    for clause in out.split(',') {
+        let clause = clause.trim();
+        let mut toks = clause.split_whitespace();
+        let (Some(n), Some(word)) = (toks.next(), toks.next()) else {
+            continue;
+        };
+        let Ok(n) = n.parse::<u32>() else { continue };
+        if word.starts_with("insertion") {
+            added = n;
+        } else if word.starts_with("deletion") {
+            removed = n;
+        }
+    }
+    (added, removed)
 }
 
 /// Parse `git status --porcelain=v2 -b` output into a [`WorktreeGitState`].
@@ -811,6 +875,52 @@ mod git_state_tests {
         assert!(state.dirty);
         assert_eq!(state.ahead, 1);
         assert_eq!(git_state_suffix(&state).as_deref(), Some("* ↑1"));
+    }
+
+    // ── parse_shortstat ──────────────────────────────────────────────────
+
+    /// The common case: both an insertions and a deletions clause.
+    #[test]
+    fn shortstat_both_clauses() {
+        let out = " 3 files changed, 128 insertions(+), 9 deletions(-)\n";
+        assert_eq!(parse_shortstat(out), (128, 9));
+    }
+
+    /// A pure-insertion diff omits the deletions clause entirely.
+    #[test]
+    fn shortstat_insertions_only() {
+        let out = " 1 file changed, 5 insertions(+)\n";
+        assert_eq!(parse_shortstat(out), (5, 0));
+    }
+
+    /// A pure-deletion diff omits the insertions clause entirely.
+    #[test]
+    fn shortstat_deletions_only() {
+        let out = " 1 file changed, 7 deletions(-)\n";
+        assert_eq!(parse_shortstat(out), (0, 7));
+    }
+
+    /// Singular wording (`1 insertion(+)`) must still parse.
+    #[test]
+    fn shortstat_singular_wording() {
+        let out = " 1 file changed, 1 insertion(+), 1 deletion(-)\n";
+        assert_eq!(parse_shortstat(out), (1, 1));
+    }
+
+    /// Empty output (nothing to diff) is 0/0, not a panic.
+    #[test]
+    fn shortstat_empty() {
+        assert_eq!(parse_shortstat(""), (0, 0));
+        assert_eq!(parse_shortstat("\n"), (0, 0));
+    }
+
+    /// Garbage output degrades to 0/0.
+    #[test]
+    fn shortstat_garbage() {
+        assert_eq!(parse_shortstat("fatal: not a git repository"), (0, 0));
+        assert_eq!(parse_shortstat(",,,"), (0, 0));
+        assert_eq!(parse_shortstat("many insertions(+)"), (0, 0));
+        assert_eq!(parse_shortstat(" 99999999999999 insertions(+)"), (0, 0));
     }
 }
 
