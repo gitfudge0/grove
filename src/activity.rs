@@ -28,7 +28,7 @@ use grove_core::agent::Agent;
 
 /// Output younger than this counts as "actively producing".
 pub const WORKING_RECENT: Duration = Duration::from_secs(2);
-/// How long a non-`Working` session stays parked in `IN PROGRESS` after its
+/// How long a non-`Working` session stays parked in `WORKING` after its
 /// last genuine `Working` tick before falling back to `IDLE`. Deliberately
 /// ~15x `WORKING_RECENT`: that window is kept tight on purpose for colour
 /// responsiveness and is far too tight to also govern row position, which
@@ -145,7 +145,7 @@ pub struct Tracker {
     /// `Working` advances it (not `Idle`, `Done`, `WaitingForInput`, or
     /// `Exited`), so a `Working` <-> `Idle` flap — which re-stamps
     /// `state_since` on every transition — leaves this clock untouched. This
-    /// is the `IN PROGRESS` / `IDLE` sort key, and the `IDLE_DWELL` cutoff
+    /// is the `WORKING` / `IDLE` sort key, and the `IDLE_DWELL` cutoff
     /// between those two sections, precisely because of that: it measures
     /// "how long since this session did real work", not "how long has the
     /// current state held", so a flap can repaint a card without ever
@@ -180,7 +180,7 @@ impl Tracker {
     /// on **or** last interacted with", so the session the user just opened is
     /// the most recent thing in the rail rather than sinking below sessions the
     /// agent happened to touch more recently. The deliberate consequence: an
-    /// acknowledged `Done` session lands at the *top* of `IN PROGRESS` (fresh
+    /// acknowledged `Done` session lands at the *top* of `WORKING` (fresh
     /// `last_active`, non-`Working`, inside `IDLE_DWELL`) — correct, because
     /// the user is working in it right now.
     pub fn acknowledge(&mut self) {
