@@ -107,6 +107,9 @@ fn sample_modal(kind: ModalKind) -> Modal {
         ModalKind::Changelog => Modal::Changelog {
             return_to_settings: true,
         },
+        ModalKind::DiffViewer => Modal::DiffViewer {
+            wt_path: "/w".into(),
+        },
         ModalKind::Onboarding => Modal::Onboarding {
             step: OnboardStep::Project,
             path: String::new(),
@@ -173,6 +176,7 @@ fn dispatch_on_screen(def: &ShortcutDef, screen: Screen) -> Target {
             GlobalShortcut::NewHomeTerminal => "NewHomeTerminal",
             GlobalShortcut::ToggleTerminal => "ToggleTerminal",
             GlobalShortcut::ToggleTermPanel => "ToggleTermPanel",
+            GlobalShortcut::ToggleRailMode => "ToggleRailMode",
             GlobalShortcut::JumpToWaitingSession => "JumpToWaitingSession",
             GlobalShortcut::GridMove(..) => "GridMove",
             GlobalShortcut::GridSwap(..) => "GridSwap",

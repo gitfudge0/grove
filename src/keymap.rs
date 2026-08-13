@@ -89,6 +89,8 @@ pub enum GlobalShortcut {
     /// `is_non_mac_platform_mod_letter_row` in `keyboard_matrix.rs`). The
     /// `on_action` handler in `workspace.rs` gates on grid view itself.
     ToggleTermPanel,
+    /// Swap the sidebar rail between the project tree and the session list.
+    ToggleRailMode,
     /// Select the first session currently waiting for input, in tree order.
     JumpToWaitingSession,
     /// Move keyboard focus between grid tiles by `(dx, dy)`. Grid screen only.
@@ -311,6 +313,15 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         triggers: &["e", "E"],
         display_keys: "e",
         description: "toggle side terminal",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::ToggleRailMode),
+        triggers: &["b", "B"],
+        display_keys: "b",
+        description: "toggle sidebar tree / sessions",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -602,6 +613,7 @@ actions!(
         CloseFocusedSession,
         ToggleTerminal,
         ToggleTermPanel,
+        ToggleRailMode,
         NewHomeTerminal,
         JumpToWaitingSession,
         ScrollHalfPageUp,
@@ -833,6 +845,7 @@ fn binding_for(keystroke: &str, sc: GlobalShortcut, ctx: Option<&str>) -> Option
         S::CloseFocusedSession => KeyBinding::new(keystroke, CloseFocusedSession, ctx),
         S::ToggleTerminal => KeyBinding::new(keystroke, ToggleTerminal, ctx),
         S::ToggleTermPanel => KeyBinding::new(keystroke, ToggleTermPanel, ctx),
+        S::ToggleRailMode => KeyBinding::new(keystroke, ToggleRailMode, ctx),
         S::NewHomeTerminal => KeyBinding::new(keystroke, NewHomeTerminal, ctx),
         S::JumpToWaitingSession => KeyBinding::new(keystroke, JumpToWaitingSession, ctx),
         S::ScrollHalfPage(true) => KeyBinding::new(keystroke, ScrollHalfPageUp, ctx),

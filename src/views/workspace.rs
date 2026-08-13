@@ -20,7 +20,8 @@ use crate::entities::toast::ToastState;
 use crate::entities::upgrade::Upgrade;
 use crate::entities::upgrade_state::upgrade_available;
 use crate::entities::workspace_state::{
-    clamp_sidebar_width, term_portion_for_cursor, LiveTile, PtyPane, WorkspaceState, RAIL_W,
+    clamp_sidebar_width, term_portion_for_cursor, LiveTile, PtyPane, RailMode, WorkspaceState,
+    RAIL_W,
 };
 use crate::fonts::{MONO_FAMILY, UI_FAMILY};
 use crate::keymap;
@@ -1083,6 +1084,20 @@ impl Workspace {
         // focus stays on the agent, which is the `pty_input.rs:170-178`
         // fallback made literal.
         self.focus_panel(window, cx);
+    }
+
+    /// Swap the sidebar rail between the project tree and the session list,
+    /// persisting the choice like the sidebar width. The keyboard path for
+    /// `keymap::ToggleRailMode`; the rail button reaches the same
+    /// `WorkspaceState` toggle through `RowAction::ToggleRailMode` in
+    /// `sidebar.rs`, which owns the state entity directly.
+    fn toggle_rail_mode(&mut self, cx: &mut Context<Self>) {
+        let mode = self.state.update(cx, |s, cx| {
+            let mode = s.toggle_rail_mode();
+            cx.notify();
+            mode
+        });
+        SettingsState::update(cx, |s| s.rail_sessions = mode == RailMode::Sessions);
     }
 
     /// Move the gpui focus onto the panel's active shell, if there is one.
@@ -2346,6 +2361,9 @@ impl Render for Workspace {
                     this.toggle_term_panel(window, cx);
                 }),
             )
+            .on_action(cx.listener(|this, _: &keymap::ToggleRailMode, _, cx| {
+                this.toggle_rail_mode(cx);
+            }))
             .on_action(cx.listener(|this, _: &keymap::FocusSidePanel, window, cx| {
                 // Zen-only (Zen key context binds this); the grid never shows
                 // the panel at all, so it must fall through even though the
