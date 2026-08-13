@@ -330,6 +330,10 @@ pub struct LauncherSlotState {
     pub anchor: Option<crate::launcher::RowIdentity>,
     /// Selected agent index in the RowActions strip.
     pub agent_sel: usize,
+    /// What this palette instance is allowed to list. The rail's Sessions-mode
+    /// `+` opens it at [`crate::launcher::PaletteScope::WorktreesOnly`]; every
+    /// other entry point takes the default, `All`.
+    pub scope: crate::launcher::PaletteScope,
 }
 
 /// The slot's discriminant — what the key table, the key contexts and the

@@ -161,6 +161,45 @@ pub const ICON_BTN_W_SM: f32 = 24.0;
 /// The stepper buttons inside the App-size segmented group.
 pub const STEPPER_BTN_W: f32 = 20.0;
 
+// ── the attention accent bar ─────────────────────────────────────────────
+/// Width of the accent bar overlaid on a row (or a sessions-rail card) that
+/// needs input. Overlaid rather than a `border_l` so it never shifts the
+/// content it marks. Two call sites — the tree's session row and the rail's
+/// session card — which is why it lives on the scale rather than in `rows.rs`.
+/// (`src/views/appbar.rs` draws the same 3px bar as its own visual idea.)
+pub const ATTENTION_BAR_W: f32 = 3.0;
+
+// ── the sessions rail's card (mock D11 "diff-stat") ──────────────────────
+//
+// The card is three text lines inside one `RowDensity::Card` row. Every line
+// declares a height, because [`crate::views::rows::TreeRow::height`] is the
+// single height source for the list and it cannot measure text — a line that
+// sized itself from its content would let the two disagree.
+
+/// A session card's **headline** line: the agent glyph, the session title and
+/// the in-row kill button. It carries a control, so it is a control line and
+/// takes [`CONTROL_H`] — not a type-derived height.
+pub const CARD_LINE_H: f32 = CONTROL_H;
+/// A session card's **secondary** line height, used twice: the worktree +
+/// status line, and the `project · agent · elapsed` + diff-stat meta line.
+/// [`TEXT_SMALL`], the tallest run on either, plus [`SPACE_SM`] of leading so
+/// an 11px line box is never clipped by its own box.
+pub const CARD_LINE_SM_H: f32 = TEXT_SMALL + SPACE_SM;
+/// How many [`CARD_LINE_SM_H`] lines sit under the headline: the worktree
+/// line and the meta line. Named so the height arithmetic below stays a
+/// statement about the card's parts rather than a bare multiplier.
+pub const CARD_SM_LINES: f32 = 2.0;
+/// A session card's rendered height: [`SPACE_LG`] above and below the three
+/// lines, [`ROW_LINE_GAP`] between each pair, plus the card's own 1px hairline
+/// on the top and bottom edges. Every term is a token — this is the number
+/// `TreeRow::height` returns, so it must be arithmetic on the card's real
+/// parts rather than a measured or guessed figure.
+pub const SESSION_CARD_H: f32 = SPACE_LG * 2.0
+    + CARD_LINE_H
+    + ROW_LINE_GAP * CARD_SM_LINES
+    + CARD_LINE_SM_H * CARD_SM_LINES
+    + 1.0 * 2.0;
+
 /// The Settings cards' label indent: flush with the card's left edge plus the
 /// row's own inset. `card()`'s hairline `border_1()` (1px) plus a row's own
 /// `px(SPACE_2XL)` (12px) = 13px from the card's outer edge. Tracks the row's

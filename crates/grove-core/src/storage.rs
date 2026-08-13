@@ -375,6 +375,12 @@ pub struct Store {
     /// back to the default `RAIL_W`.
     #[serde(default)]
     pub sidebar_width: Option<f32>,
+    /// Which contents the left rail shows: `false` (the serde default) is the
+    /// project → worktree → session tree, `true` the flat cross-project
+    /// session list. Persisted next to `sidebar_width` because it is the same
+    /// kind of state — a rail presentation choice that must round-trip.
+    #[serde(default)]
+    pub rail_sessions: bool,
     /// Whether the first-run onboarding wizard has been completed or skipped.
     /// False (the serde default) means a fresh install — the wizard runs on the
     /// next launch. Set true once the user finishes or skips it, so it never
@@ -685,6 +691,7 @@ pub(crate) mod tests {
             tmux_enabled: Some(true),
             ui_zoom: Some(1.25),
             sidebar_width: Some(360.0),
+            rail_sessions: true,
             onboarded: true,
             last_update_check: None,
             skipped_version: None,

@@ -609,9 +609,14 @@ impl ModalLayer {
                     .push(ModalInput::single_line(policy, "", buffer, window, cx));
             }
             Modal::SessionLauncher(st) => {
+                // The prompt must not claim to search what the scope hides.
+                let placeholder = match st.scope {
+                    crate::launcher::PaletteScope::All => "Search projects & sessions…",
+                    crate::launcher::PaletteScope::WorktreesOnly => "Search worktrees…",
+                };
                 self.fields.push(ModalInput::single_line(
                     policy,
-                    "Search projects & sessions…",
+                    placeholder,
                     &st.query,
                     window,
                     cx,

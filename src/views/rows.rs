@@ -33,7 +33,10 @@ use crate::entities::session_registry::SessionId;
 use crate::entities::workspace_state::{TreeSnapshot, WorkspaceState};
 use crate::icons;
 use crate::theme as c;
-use crate::views::components::{icon_btn, keycap_filled, mono, status_dot, tracked, ui};
+use crate::views::components::{
+    card, click_row_on, diff_chip, icon_btn, keycap_filled, mono, status_dot, status_dot_hollow,
+    tracked, ui, RowDensity,
+};
 
 /// Sidebar row height (`src/gui/metrics.rs:7`).
 pub const ROW_H: f32 = 28.0;
@@ -65,12 +68,6 @@ const INDENT_SESSION: f32 = INDENT_WORKTREE + GLYPH_SLOT_W + SPACE_MD;
 /// any spacing notch on purpose — this is a block of prose standing in for a
 /// list, not a row in one (§9.2's sanctioned local exception).
 const EMPTY_ROW_PAD_Y: f32 = 24.0;
-
-/// Width of the amber accent bar overlaid on a row that needs input. Overlaid
-/// rather than a `border_l` so it never shifts the row's content.
-/// (`src/views/appbar.rs` draws the same 3px bar; the two are independent
-/// call sites of the same visual idea.)
-const ATTENTION_BAR_W: f32 = 3.0;
 
 // ── pure row helpers ───────────────────────────────────────────────────────
 
@@ -239,6 +236,40 @@ pub enum TreeRow {
         pending_kill: bool,
         state: ActivityState,
     },
+    /// The sessions rail's card (mock D11 "diff-stat"). Not a denser
+    /// [`TreeRow::Session`]: the tree's row identifies a session *inside* a
+    /// worktree it is already nested under, while this one is the only thing
+    /// on screen that says which worktree, which project and how much work is
+    /// sitting in it — so every one of those facts is resolved onto the row by
+    /// [`flatten_sessions`] rather than looked up while rendering.
+    SessionCard {
+        id: SessionId,
+        /// Which agent is running here — the card's leading glyph, the same
+        /// per-agent mark the tree's session row draws.
+        agent: Agent,
+        /// The card's headline: the terminal's OSC title, falling back to the
+        /// session's own label when the agent has set none. Resolved in
+        /// [`flatten_sessions`] like every other field on this row, never read
+        /// out of an entity while rendering.
+        title: String,
+        /// The worktree's name — the second line's leading run.
+        worktree: String,
+        project: String,
+        /// The session's own label (`claude 1`), not the agent's name: two
+        /// claude sessions on one branch are otherwise indistinguishable.
+        agent_label: String,
+        /// Time since `spawned_at`, already formatted ([`elapsed_short`]).
+        elapsed: String,
+        active: bool,
+        pending_kill: bool,
+        state: ActivityState,
+        /// Lines added/removed in the worktree's uncommitted diff against
+        /// `HEAD`, or `None` while the poll has no entry for this worktree.
+        /// `Some((0, 0))` is the clean worktree, which draws one neutral chip
+        /// rather than a `+0 -0` pair; `None` draws **nothing** — see
+        /// [`DiffDisplay`].
+        diff: Option<(u32, u32)>,
+    },
     Empty {
         title: &'static str,
         subtitle: &'static str,
@@ -257,8 +288,11 @@ pub enum TreeRow {
 }
 
 impl TreeRow {
-    /// This row's rendered height. Only worktrees showing a branch chip differ
-    /// (`src/gui/rows.rs:268`).
+    /// This row's rendered height. Worktrees showing a branch chip are taller
+    /// (`src/gui/rows.rs:268`); the sessions rail's card is a different shape
+    /// altogether and declares [`SESSION_CARD_H`]. Still the single height
+    /// source — the renderer sets the same token on the card's box, so the two
+    /// cannot drift.
     #[must_use]
     pub fn height(&self) -> f32 {
         match self {
@@ -268,6 +302,7 @@ impl TreeRow {
                 is_main,
                 ..
             } => row_height(worktree_shows_branch(*is_main, branch, name)),
+            Self::SessionCard { .. } => SESSION_CARD_H,
             _ => ROW_H,
         }
     }
@@ -327,7 +362,7 @@ pub fn flatten(
                 rollup: (!wt_expanded)
                     .then(|| most_urgent(w.sessions.iter().map(|&id| activity.state_of(id))))
                     .flatten(),
-                git_suffix: git_suffix.get(&w.path).cloned(),
+                git_suffix: git_suffix.get(normalize_wt_path(&w.path)).cloned(),
             });
             if !wt_expanded {
                 continue;
@@ -351,24 +386,229 @@ pub fn flatten(
         rows.push(TreeRow::Empty { title, subtitle });
     }
 
-    if !ws.terminals_collapsed() {
-        // Expanded: every terminal renders its own row below, so the header's
-        // "something is running in here" dot would be redundant — always off
-        // (`sidebar.rs:363-372`). The divider above it is the view's job.
-        rows.push(TreeRow::TerminalsHeader {
-            expanded: true,
-            count: home_running.len(),
-            activity_dot: false,
-        });
-        for (i, &running) in home_running.iter().enumerate() {
-            rows.push(TreeRow::Terminal {
-                idx: i,
-                active: ws.terminal_focused() && ws.active_terminal() == Some(i),
-                pending_kill: ws.pending_kill_terminal() == Some(i),
-                running,
-            });
-        }
+    push_terminals(&mut rows, ws, home_running);
+
+    rows
+}
+
+/// The docked TERMINALS section, appended to whichever content mode the rail
+/// is in. Shared so the two flatteners cannot drift.
+fn push_terminals(rows: &mut Vec<TreeRow>, ws: &WorkspaceState, home_running: &[bool]) {
+    if ws.terminals_collapsed() {
+        return;
     }
+    // Expanded: every terminal renders its own row below, so the header's
+    // "something is running in here" dot would be redundant — always off
+    // (`sidebar.rs:363-372`). The divider above it is the view's job.
+    rows.push(TreeRow::TerminalsHeader {
+        expanded: true,
+        count: home_running.len(),
+        activity_dot: false,
+    });
+    for (i, &running) in home_running.iter().enumerate() {
+        rows.push(TreeRow::Terminal {
+            idx: i,
+            active: ws.terminal_focused() && ws.active_terminal() == Some(i),
+            pending_kill: ws.pending_kill_terminal() == Some(i),
+            running,
+        });
+    }
+}
+
+/// Attention band of a session state, low number first. The fixed,
+/// non-configurable order the sessions rail sorts on: needs-you → working →
+/// idle → done → exited.
+fn attention_band(state: ActivityState) -> u8 {
+    match state {
+        ActivityState::WaitingForInput => 0,
+        ActivityState::Working => 1,
+        ActivityState::Idle => 2,
+        ActivityState::Done => 3,
+        ActivityState::Exited => 4,
+    }
+}
+
+/// The registry facts a session card is built from, lifted out by the view so
+/// [`flatten_sessions`] can join them without reaching into an entity (module
+/// doc, carried amendment 2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionInfo {
+    /// `Project::name` — the card's provenance, mandatory because the sessions
+    /// list is cross-project.
+    pub project: String,
+    /// Absolute worktree path: the key that joins a session to its branch and
+    /// to its git state.
+    pub wt_path: String,
+    /// `SessionMeta::label` (`claude 1`).
+    pub label: String,
+    /// Which agent runs in this session — the card's leading glyph.
+    pub agent: Agent,
+    /// The terminal's OSC title, already stripped and sanitized by
+    /// [`session_context`], or `None` when the agent has set none. The card's
+    /// headline falls back to [`Self::label`] in that case, so the two never
+    /// come from two different resolvers.
+    pub title: Option<String>,
+    pub spawned_at: std::time::Instant,
+}
+
+/// The one string form of a worktree path that both sides of the git-state
+/// join agree on.
+///
+/// The poll's cache is keyed by the path `git worktree list` printed, while a
+/// session card joins on the path the session was **spawned** in
+/// ([`SessionInfo::wt_path`]) — the same directory, but not necessarily the
+/// same string. A single trailing slash is the difference the two sources can
+/// actually produce, and it silently turned every card's diff into a cache
+/// miss. Deliberately not `canonicalize`: that stats the filesystem, and this
+/// runs per row per frame (module doc — no syscalls in a repaint).
+#[must_use]
+pub fn normalize_wt_path(path: &str) -> &str {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        path
+    } else {
+        trimmed
+    }
+}
+
+/// What a card's trailing diff cluster shows. The distinction between
+/// [`Self::Unknown`] and [`Self::Clean`] is the whole point: before the first
+/// poll lands (or for a worktree the poll does not cover) there is *no
+/// answer*, and drawing the `clean` chip there states one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffDisplay {
+    /// No cache entry — draw nothing at all.
+    Unknown,
+    /// A real entry reporting no uncommitted work.
+    Clean,
+    Counts(u32, u32),
+}
+
+/// [`DiffDisplay`] for a card's joined diff counts.
+#[must_use]
+pub fn diff_display(diff: Option<(u32, u32)>) -> DiffDisplay {
+    match diff {
+        None => DiffDisplay::Unknown,
+        Some((0, 0)) => DiffDisplay::Clean,
+        Some((added, removed)) => DiffDisplay::Counts(added, removed),
+    }
+}
+
+/// A duration as the rail's one-or-two-character age: `12s`, `12m`, `2h`,
+/// `3d`. One unit only — the card has room for an age, not for a duration.
+#[must_use]
+pub fn elapsed_short(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    match secs {
+        0..=59 => format!("{secs}s"),
+        60..=3599 => format!("{}m", secs / 60),
+        3600..=86_399 => format!("{}h", secs / 3600),
+        _ => format!("{}d", secs / 86_400),
+    }
+}
+
+/// Build the rail's **sessions** content mode: every session in every project,
+/// flat and unnested, sorted attention-first and most-recent-activity within
+/// each band, followed by the same docked TERMINALS tail [`flatten`] emits.
+///
+/// `info` is the per-session registry data the view resolved ([`SessionInfo`]);
+/// `git` is the off-thread git-state cache keyed by worktree path. Both are
+/// joined **here**, so the emitted [`TreeRow::SessionCard`]s carry every fact
+/// their renderer needs and nothing looks back into state per frame. A session
+/// with no `info` entry sorts oldest.
+#[must_use]
+pub fn flatten_sessions(
+    snap: &TreeSnapshot,
+    ws: &WorkspaceState,
+    activity: &ActivityStore,
+    info: &HashMap<SessionId, SessionInfo>,
+    git: &HashMap<String, grove_core::git::WorktreeGitState>,
+    home_running: &[bool],
+) -> Vec<TreeRow> {
+    // `SnapshotProject::sessions` is keyed by project *name*, so it covers
+    // projects whose worktree cache has never been populated — the worktree
+    // walk would silently drop those.
+    let mut sessions: Vec<(u8, SessionId, ActivityState)> = snap
+        .projects
+        .iter()
+        .flat_map(|p| p.sessions.iter().copied())
+        .map(|id| {
+            let state = activity.state_of(id);
+            (attention_band(state), id, state)
+        })
+        .collect();
+    // Most recent first inside a band. `spawned_at` is the only clock the
+    // registry keeps, so it is the recency key; ids break ties (they are
+    // monotonic, so the newer session still wins).
+    sessions.sort_by(|a, b| {
+        let (sa, sb) = (
+            info.get(&a.1).map(|i| i.spawned_at),
+            info.get(&b.1).map(|i| i.spawned_at),
+        );
+        a.0.cmp(&b.0)
+            .then_with(|| sb.cmp(&sa))
+            .then_with(|| b.1.cmp(&a.1))
+    });
+
+    // Worktree path → worktree name, built once: the card names the worktree
+    // its session lives in, and the session only knows the path it was
+    // spawned in.
+    let worktrees: HashMap<&str, &str> = snap
+        .projects
+        .iter()
+        .flat_map(|p| p.worktrees.iter())
+        .map(|w| (normalize_wt_path(&w.path), w.name.as_str()))
+        .collect();
+    let now = std::time::Instant::now();
+
+    let mut rows: Vec<TreeRow> = sessions
+        .into_iter()
+        .map(|(_, id, state)| {
+            let meta = info.get(&id);
+            let wt_path = meta.map_or("", |i| i.wt_path.as_str());
+            // A worktree the snapshot has not cached yet still has a name in
+            // its path — better than a blank run.
+            let worktree = worktrees
+                .get(normalize_wt_path(wt_path))
+                .map_or_else(|| path_basename(wt_path), |w| (*w).to_string());
+            // A **missing** entry is not a clean worktree: it is the poll not
+            // having answered yet. Both sides of the join are normalized so a
+            // trailing slash cannot manufacture a miss.
+            let diff = git
+                .get(normalize_wt_path(wt_path))
+                .map(|g| (g.added, g.removed));
+            TreeRow::SessionCard {
+                id,
+                agent: meta.map_or(Agent::Terminal, |i| i.agent),
+                // The OSC title is what the agent is *doing*; the label is
+                // only who it is. Prefer the former, fall back to the latter
+                // — an agent that never set a title still gets a headline.
+                title: meta
+                    .map(|i| i.title.clone().unwrap_or_else(|| i.label.clone()))
+                    .unwrap_or_default(),
+                worktree,
+                project: meta.map(|i| i.project.clone()).unwrap_or_default(),
+                agent_label: meta.map(|i| i.label.clone()).unwrap_or_default(),
+                elapsed: meta.map_or_else(String::new, |i| {
+                    elapsed_short(now.saturating_duration_since(i.spawned_at))
+                }),
+                // Same rule as the tree: a session must not look active while
+                // a home terminal is on screen (`sidebar.rs:338`).
+                active: !ws.terminal_focused() && ws.active_session() == Some(id),
+                pending_kill: ws.pending_kill() == Some(id),
+                state,
+                diff,
+            }
+        })
+        .collect();
+
+    if rows.is_empty() {
+        let (title, subtitle) = sidebar_empty_copy(snap.total_projects, snap.projects.len())
+            .unwrap_or(("No sessions yet", "Start one from a worktree in the tree."));
+        rows.push(TreeRow::Empty { title, subtitle });
+    }
+
+    push_terminals(&mut rows, ws, home_running);
 
     rows
 }
@@ -383,7 +623,7 @@ pub fn flatten(
 pub fn visible_session_order(rows: &[TreeRow]) -> Vec<SessionId> {
     rows.iter()
         .filter_map(|r| match r {
-            TreeRow::Session { id, .. } => Some(*id),
+            TreeRow::Session { id, .. } | TreeRow::SessionCard { id, .. } => Some(*id),
             _ => None,
         })
         .collect()
@@ -441,8 +681,18 @@ pub enum RowAction {
     NewHomeTerminal,
     ToggleTerminalsSection,
     ToggleCollapseAll,
-    /// The rail header's `+` — opens the add-project wizard (Task 4).
+    /// The rail header's content-mode button — swaps the tree for the flat
+    /// cross-project session list, and back.
+    ToggleRailMode,
+    /// The rail header's grid button — the same toggle `mod+g` performs, in
+    /// and out of the agent grid.
+    ToggleGridView,
+    /// The rail header's `+` in Tree mode — opens the add-project wizard
+    /// (Task 4).
     AddProject,
+    /// The rail header's `+` in Sessions mode — opens the command palette
+    /// scoped to worktrees, i.e. "launch a session from which worktree?".
+    LaunchInWorktree,
 }
 
 /// The one place a row's click becomes a state change.
@@ -555,6 +805,7 @@ pub fn render_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
             pending_kill,
             state,
         } => session_row(*id, *active, *pending_kill, *state, ctx),
+        TreeRow::SessionCard { .. } => session_card(row, ctx),
         TreeRow::Empty { title, subtitle } => empty_row(title, subtitle),
         TreeRow::TerminalsHeader {
             expanded,
@@ -996,6 +1247,239 @@ fn session_row(
         .into_any_element()
 }
 
+/// A state's accent colour and its **word**. Colour is never alone (§2.3):
+/// every card spells the state out beside the dot it tints.
+fn state_accent(state: ActivityState) -> (gpui::Hsla, &'static str) {
+    match state {
+        ActivityState::WaitingForInput => (c::AMBER(), "needs you"),
+        ActivityState::Working => (c::GREEN(), "working"),
+        ActivityState::Done => (c::BLUE(), "done"),
+        ActivityState::Idle => (c::FG_MUTE(), "idle"),
+        ActivityState::Exited => (c::FG_MUTE(), "exited"),
+    }
+}
+
+/// The state's mark in the [`STATUS_DOT_COL_W`] column: the spinner while
+/// working, a hollow dot where nothing is running, a filled one otherwise.
+/// Filled-versus-hollow is a *shape* difference, so present-versus-absent
+/// survives greyscale (see [`status_dot_hollow`]).
+fn card_state_mark(state: ActivityState, accent: gpui::Hsla, tick: u64) -> AnyElement {
+    let inner: AnyElement = match state {
+        ActivityState::Working => icons::spinner(ICON_SM, accent, tick).into_any_element(),
+        ActivityState::Idle | ActivityState::Exited => {
+            status_dot_hollow(DOT_SM, accent).into_any_element()
+        }
+        ActivityState::WaitingForInput | ActivityState::Done => {
+            status_dot(DOT_SM, accent).into_any_element()
+        }
+    };
+    div()
+        .w(rpx(STATUS_DOT_COL_W))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(inner)
+        .into_any_element()
+}
+
+/// The trailing diff stat: `+N` and `-N`, one neutral `clean` chip when the
+/// poll says the worktree has no uncommitted work, and **nothing at all**
+/// while it has not answered — an empty slot is honest about not knowing,
+/// where `clean` would be a claim. The delete chip's sign is an **ASCII**
+/// hyphen, not U+2212 — the bundled fonts have no minus glyph (§9.3, R7).
+fn diff_chips(diff: Option<(u32, u32)>) -> AnyElement {
+    let row = div().flex().flex_none().items_center().gap(rpx(SPACE_SM));
+    match diff_display(diff) {
+        DiffDisplay::Unknown => row.into_any_element(),
+        DiffDisplay::Clean => row
+            .child(diff_chip("clean", c::FG_MUTE()))
+            .into_any_element(),
+        DiffDisplay::Counts(added, removed) => row
+            .child(diff_chip(format!("+{added}"), c::GREEN()))
+            .child(diff_chip(format!("-{removed}"), c::RED()))
+            .into_any_element(),
+    }
+}
+
+/// The sessions rail's card (mock D11). One [`card`] holding one
+/// [`RowDensity::Card`] row of three text lines: the agent's glyph with the
+/// session title as the headline; the worktree with the state; and
+/// `project · agent · elapsed` with the diff stat underneath.
+///
+/// Every state treatment is a *fill or an overlay*, never a size: the card's
+/// box is pinned to [`SESSION_CARD_H`] (the same token [`TreeRow::height`]
+/// reports), so arming a kill or gaining the attention bar cannot reflow the
+/// list under the cursor.
+fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
+    let TreeRow::SessionCard {
+        id,
+        agent,
+        title,
+        worktree,
+        project,
+        agent_label,
+        elapsed,
+        active,
+        pending_kill,
+        state,
+        diff,
+    } = row
+    else {
+        return div().into_any_element();
+    };
+    let id = *id;
+    let (accent, word) = state_accent(*state);
+    let waiting = *state == ActivityState::WaitingForInput;
+    let title_color = match state {
+        ActivityState::Exited => c::FG_MUTE(),
+        ActivityState::Idle => c::FG_DIM(),
+        _ => c::FG(),
+    };
+
+    // Two-step confirm, exactly as the tree's row does it: the first press
+    // arms (red tick), the second kills. It holds its slot in both states, so
+    // arming never moves anything.
+    let close = if *pending_kill {
+        tool_button(
+            "card-kill",
+            id.raw(),
+            "check",
+            ICON_SM,
+            true,
+            ctx,
+            RowAction::KillSession(id),
+        )
+    } else {
+        tool_button(
+            "card-arm",
+            id.raw(),
+            "close",
+            ICON_SM,
+            false,
+            ctx,
+            RowAction::ArmKillSession(id),
+        )
+    };
+
+    // The title keeps `auto` basis and the kill button claims the right edge
+    // with `ml_auto` — see `project_row`'s name-child comment: a
+    // `.truncate()` inside a `flex_1` (basis 0%) parent never re-grows.
+    let headline = div()
+        .flex()
+        .w_full()
+        .h(rpx(CARD_LINE_H))
+        .items_center()
+        .gap(rpx(SPACE_MD))
+        .child(icons::icon(agent.icon_name(), ICON_SM, accent).flex_none())
+        .child(
+            div()
+                .flex()
+                .min_w_0()
+                .overflow_hidden()
+                .child(ui(title.clone(), TEXT_BODY, title_color).truncate()),
+        )
+        .child(div().flex().flex_none().ml_auto().child(close));
+
+    // The worktree line: what this session is working in, and what it is doing
+    // right now. The diff stat sits on the meta line below, next to the rest of
+    // the card's metadata.
+    let context_line = div()
+        .flex()
+        .w_full()
+        .h(rpx(CARD_LINE_SM_H))
+        .items_center()
+        .gap(rpx(SPACE_MD))
+        .child(
+            div()
+                .flex()
+                .min_w_0()
+                .overflow_hidden()
+                .child(mono(worktree.clone(), TEXT_SMALL, c::FG_DIM()).truncate()),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .ml_auto()
+                .items_center()
+                .gap(rpx(SPACE_SM))
+                .child(card_state_mark(*state, accent, ctx.tick))
+                .child(ui(word, TEXT_MICRO, accent)),
+        );
+
+    // The meta line carries the diff stat at its trailing edge. Its chips are
+    // `TEXT_MICRO` in a `keycap_filled` shell, shorter than the `TEXT_SMALL`
+    // run they sit beside, so the line still fits `CARD_LINE_SM_H` and the
+    // height `TreeRow::height` reports stays true.
+    let meta = div()
+        .flex()
+        .w_full()
+        .h(rpx(CARD_LINE_SM_H))
+        .items_center()
+        .gap(rpx(SPACE_MD))
+        .child(
+            div().flex().min_w_0().overflow_hidden().child(
+                ui(
+                    format!("{project} · {agent_label} · {elapsed}"),
+                    TEXT_SMALL,
+                    c::FG_MUTE(),
+                )
+                .truncate(),
+            ),
+        )
+        .child(div().flex().flex_none().ml_auto().child(diff_chips(*diff)));
+
+    let dispatch = Rc::clone(&ctx.dispatch);
+    let body = click_row_on(
+        SharedString::from(format!("card-{}", id.raw())),
+        *active,
+        RowDensity::Card,
+        move |window, cx| dispatch(RowAction::SelectSession(id), window, cx),
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .py(rpx(SPACE_LG))
+            .gap(rpx(ROW_LINE_GAP))
+            .child(headline)
+            .child(context_line)
+            .child(meta),
+    )
+    .h_full();
+
+    card(vec![body.into_any_element()])
+        .h(rpx(SESSION_CARD_H))
+        .flex_none()
+        .relative()
+        .overflow_hidden()
+        // Fills stack from least to most urgent, so the last one wins: an
+        // armed kill outranks the selection, which outranks the attention
+        // tint. None of them changes the box.
+        .when(waiting, |d| d.bg(c::AMBER_ROW_TINT()))
+        .when(*active, |d| {
+            d.bg(c::SEL_TINT_SOFT()).border_color(c::SEL_RING())
+        })
+        .when(*pending_kill, |d| {
+            d.bg(c::RED_WASH()).border_color(c::RED())
+        })
+        // Overlaid rather than a `border_l` so the amber accent never shifts
+        // the card's content (`src/gui/rows.rs:539-566`).
+        .when(waiting, |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .top(px(0.0))
+                    .left(px(0.0))
+                    .bottom(px(0.0))
+                    .w(rpx(ATTENTION_BAR_W))
+                    .bg(c::alpha(c::AMBER(), 1.0 - 0.45 * ctx.pulse)),
+            )
+        })
+        .into_any_element()
+}
+
 fn empty_row(title: &'static str, subtitle: &'static str) -> AnyElement {
     div()
         .w_full()
@@ -1286,6 +1770,17 @@ mod tests {
         }
     }
 
+    fn info(project: &str, wt_path: &str, spawned_at: std::time::Instant) -> SessionInfo {
+        SessionInfo {
+            project: project.into(),
+            wt_path: wt_path.into(),
+            label: "claude 1".into(),
+            agent: Agent::Claude,
+            title: None,
+            spawned_at,
+        }
+    }
+
     fn rows_of(snap: &TreeSnapshot, ws: &WorkspaceState, homes: usize) -> Vec<TreeRow> {
         flatten(
             snap,
@@ -1303,6 +1798,7 @@ mod tests {
                 TreeRow::Project { idx, name, .. } => format!("P{idx}:{name}"),
                 TreeRow::Worktree { proj, wt, name, .. } => format!("W{proj}.{wt}:{name}"),
                 TreeRow::Session { id, .. } => format!("S{}", id.raw()),
+                TreeRow::SessionCard { id, .. } => format!("C{}", id.raw()),
                 TreeRow::Empty { title, .. } => format!("E:{title}"),
                 TreeRow::TerminalsHeader { count, .. } => format!("TH{count}"),
                 TreeRow::Terminal { idx, .. } => format!("T{idx}"),
@@ -1330,6 +1826,254 @@ mod tests {
                 "S3",
             ]
         );
+    }
+
+    /// The sessions content mode: every session, flat, attention band first
+    /// and most-recent `spawned_at` inside a band.
+    #[test]
+    fn the_sessions_mode_is_flat_and_sorted_attention_first() {
+        let snap = fixture();
+        let mut activity = ActivityStore::new();
+        // s1 idle (default), s2 needs-you, s3 working.
+        activity.set_state_for_test(sid(2), ActivityState::WaitingForInput);
+        activity.set_state_for_test(sid(3), ActivityState::Working);
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let rows = flatten_sessions(&snap, &ws, &activity, &HashMap::new(), &HashMap::new(), &[]);
+        assert_eq!(shape(&rows), vec!["C2", "C3", "C1"]);
+    }
+
+    #[test]
+    fn the_sessions_mode_puts_the_newest_first_inside_a_band() {
+        let snap = fixture();
+        let base = std::time::Instant::now();
+        let spawned = HashMap::from([
+            (sid(1), info("alpha", "/a", base)),
+            (
+                sid(2),
+                info("alpha", "/a", base + std::time::Duration::from_secs(2)),
+            ),
+            (
+                sid(3),
+                info("gamma", "/g", base + std::time::Duration::from_secs(1)),
+            ),
+        ]);
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        // All three are Idle, so recency alone decides.
+        let rows = flatten_sessions(
+            &snap,
+            &ws,
+            &ActivityStore::new(),
+            &spawned,
+            &HashMap::new(),
+            &[],
+        );
+        assert_eq!(shape(&rows), vec!["C2", "C3", "C1"]);
+    }
+
+    #[test]
+    fn the_sessions_mode_keeps_the_terminals_tail_and_shows_an_empty_state() {
+        let mut snap = fixture();
+        for p in &mut snap.projects {
+            p.sessions.clear();
+            for w in &mut p.worktrees {
+                w.sessions.clear();
+            }
+        }
+        let ws = WorkspaceState::default();
+        let rows = flatten_sessions(
+            &snap,
+            &ws,
+            &ActivityStore::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &[false],
+        );
+        assert_eq!(shape(&rows), vec!["E:No sessions yet", "TH1", "T0"]);
+    }
+
+    /// The card's join: `wt_path` → the snapshot's worktree name, and → the
+    /// git poll's uncommitted diff counts.
+    #[test]
+    fn a_session_card_joins_its_worktree_and_its_diff_stat_by_worktree_path() {
+        let snap = fixture();
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let now = std::time::Instant::now();
+        let session_info = HashMap::from([
+            (sid(1), info("alpha", "/a", now)),
+            (sid(2), info("alpha", "/a", now)),
+            (sid(3), info("gamma", "/g", now)),
+        ]);
+        let git = HashMap::from([(
+            "/a".to_string(),
+            grove_core::git::WorktreeGitState {
+                dirty: true,
+                ahead: 0,
+                behind: 0,
+                added: 128,
+                removed: 9,
+            },
+        )]);
+        let found: Vec<String> =
+            flatten_sessions(&snap, &ws, &ActivityStore::new(), &session_info, &git, &[])
+                .iter()
+                .filter_map(|r| match r {
+                    TreeRow::SessionCard {
+                        worktree,
+                        project,
+                        diff,
+                        ..
+                    } => Some(format!("{project}/{worktree} {:?}", diff_display(*diff))),
+                    _ => None,
+                })
+                .collect();
+        assert_eq!(
+            found,
+            vec![
+                // `/g` has no entry — unknown, *not* clean.
+                "gamma/gamma Unknown".to_string(),
+                "alpha/alpha Counts(128, 9)".to_string(),
+                "alpha/alpha Counts(128, 9)".to_string(),
+            ]
+        );
+    }
+
+    /// The bug the sessions rail shipped with: a cache miss and a genuinely
+    /// clean worktree both rendered the neutral `clean` chip, so a rail that
+    /// was never polled looked like a repo with no work in it.
+    #[test]
+    fn a_missing_git_entry_shows_no_chip_while_a_zero_entry_shows_clean() {
+        assert_eq!(diff_display(None), DiffDisplay::Unknown);
+        assert_eq!(diff_display(Some((0, 0))), DiffDisplay::Clean);
+        assert_eq!(diff_display(Some((3, 1))), DiffDisplay::Counts(3, 1));
+    }
+
+    /// Both sides of the git join agree on one string form, so a trailing
+    /// slash on either cannot manufacture a miss.
+    #[test]
+    fn the_git_join_normalizes_a_trailing_slash_on_the_worktree_path() {
+        let snap = fixture();
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let now = std::time::Instant::now();
+        // The registry spawned this session with a trailing slash…
+        let session_info = HashMap::from([(sid(3), info("gamma", "/g/", now))]);
+        // …while the poll keyed its answer without one.
+        let git = HashMap::from([(
+            "/g".to_string(),
+            grove_core::git::WorktreeGitState {
+                dirty: true,
+                ahead: 0,
+                behind: 0,
+                added: 5,
+                removed: 2,
+            },
+        )]);
+        let diffs: Vec<Option<(u32, u32)>> =
+            flatten_sessions(&snap, &ws, &ActivityStore::new(), &session_info, &git, &[])
+                .iter()
+                .filter_map(|r| match r {
+                    TreeRow::SessionCard { diff, .. } => Some(*diff),
+                    _ => None,
+                })
+                .collect();
+        assert!(diffs.contains(&Some((5, 2))));
+    }
+
+    /// The card is a fixed box, and `height()` is the only place that says so.
+    #[test]
+    fn a_session_card_declares_the_cards_height_not_the_row_height() {
+        let card = TreeRow::SessionCard {
+            id: sid(1),
+            agent: Agent::Claude,
+            title: "reviewing the rail".into(),
+            worktree: "alpha".into(),
+            project: "alpha".into(),
+            agent_label: "claude 1".into(),
+            elapsed: "2m".into(),
+            active: false,
+            pending_kill: false,
+            state: ActivityState::Idle,
+            diff: Some((0, 0)),
+        };
+        assert!((card.height() - SESSION_CARD_H).abs() < f32::EPSILON);
+        assert!(card.height() > ROW_H, "a card is taller than a tree row");
+        // Arming a kill is a fill, never a size (§2.4).
+        let mut armed = card.clone();
+        if let TreeRow::SessionCard { pending_kill, .. } = &mut armed {
+            *pending_kill = true;
+        }
+        assert!((armed.height() - card.height()).abs() < f32::EPSILON);
+    }
+
+    /// The headline is the agent's OSC title; a session whose agent never set
+    /// one falls back to its own label rather than showing an empty line.
+    #[test]
+    fn a_cards_headline_is_the_osc_title_and_falls_back_to_the_label() {
+        let snap = fixture();
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let now = std::time::Instant::now();
+        let mut titled = info("alpha", "/a", now);
+        titled.title = Some("refactoring the rail".into());
+        let session_info = HashMap::from([
+            (sid(1), titled),
+            // No OSC title — this one must fall back to `label`.
+            (sid(2), info("alpha", "/a", now)),
+        ]);
+        let found: Vec<(u64, String, Agent)> = flatten_sessions(
+            &snap,
+            &ws,
+            &ActivityStore::new(),
+            &session_info,
+            &HashMap::new(),
+            &[],
+        )
+        .iter()
+        .filter_map(|r| match r {
+            TreeRow::SessionCard {
+                id, title, agent, ..
+            } => Some((id.raw(), title.clone(), *agent)),
+            _ => None,
+        })
+        .collect();
+        assert!(found.contains(&(1, "refactoring the rail".to_string(), Agent::Claude)));
+        assert!(found.contains(&(2, "claude 1".to_string(), Agent::Claude)));
+        // A session the registry has no entry for still gets a glyph.
+        assert!(found.contains(&(3, String::new(), Agent::Terminal)));
+    }
+
+    #[test]
+    fn elapsed_short_shows_exactly_one_unit() {
+        use std::time::Duration;
+        assert_eq!(elapsed_short(Duration::from_secs(0)), "0s");
+        assert_eq!(elapsed_short(Duration::from_secs(59)), "59s");
+        assert_eq!(elapsed_short(Duration::from_mins(1)), "1m");
+        assert_eq!(elapsed_short(Duration::from_secs(12 * 60 + 30)), "12m");
+        assert_eq!(elapsed_short(Duration::from_secs(3599)), "59m");
+        assert_eq!(elapsed_short(Duration::from_hours(1)), "1h");
+        assert_eq!(elapsed_short(Duration::from_secs(86_399)), "23h");
+        assert_eq!(elapsed_short(Duration::from_hours(24)), "1d");
+    }
+
+    /// The cards are the sessions mode's `mod+1..9` index space, so the
+    /// visible order must see them exactly as it sees the tree's rows.
+    #[test]
+    fn the_visible_order_counts_cards_as_sessions() {
+        let snap = fixture();
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let rows = flatten_sessions(
+            &snap,
+            &ws,
+            &ActivityStore::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+        );
+        assert_eq!(visible_session_order(&rows).len(), 3);
     }
 
     /// `sidebar.rs:269-271`.

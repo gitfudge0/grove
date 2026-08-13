@@ -125,6 +125,7 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
         tmux_enabled: Some(false),
         ui_zoom: Some(1.1),
         sidebar_width: Some(280.0),
+        rail_sessions: true,
         onboarded: true,
         last_update_check: Some(1_700_000_000),
         skipped_version: Some("v0.9.0".into()),

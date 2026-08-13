@@ -257,7 +257,7 @@ blur at this rev, so this is a flat theme-derived wash.
 | `RED()` | `theme.red` | **Destructive or error.** `ModalBtn::Danger`, `note_text`, danger segments |
 | `CYAN()` | `theme.cyan` | **Selection.** Selection tints and ring, palette cue chips, active grid segment |
 | `BLUE()` | `theme.blue` | **Navigation / informational** |
-| `MAGENTA()` | `theme.magenta` | **Agent / category.** The appbar `+` new-session glyph |
+| `MAGENTA()` | `theme.magenta` | **Agent / category.** The `grove` brand mark, the launcher's new-session rows |
 
 `amber_sits_between_yellow_and_red` (`src/theme.rs`, test module) asserts AMBER stays
 inside the yellow→red interval and nearer yellow.
@@ -515,8 +515,8 @@ sets the rem size once per frame.
 ### 6.3 The three exclusions — where `rpx` is wrong
 
 1. **1px hairlines.** A hairline is a hairline at every zoom. Use `px(1.0)`:
-   `divider_h` and `vline` (`src/views/components.rs`), the appbar segment
-   divider, the inter-tile gap (`src/views/grid.rs` — `grid`), and
+   `divider_h` and `vline` (`src/views/components.rs`), the inter-tile gap
+   (`src/views/grid.rs` — `grid`), and
    `modal_panel`'s 1px content
    inset.
 2. **Physical window / viewport math.** Mouse positions, window bounds,
@@ -879,8 +879,8 @@ It is consumed by `appbar`, `sidebar`, `rows`, `statusbar`, `grid`,
 
 `Accent`'s rest alpha is the named constant `ACCENT_BORDER_REST_ALPHA` (0.45,
 `src/views/components.rs`): the accent is present at rest but held back, so the
-full-strength hover border reads as a *change*. It shares the appbar `+`'s
-accent role — the button that starts something new.
+full-strength hover border reads as a *change*. It shares `MAGENTA`'s accent
+role — the button that starts something new.
 
 Active segment fill is `BG_HL`, or `RED_WASH` when `danger`
 (`src/views/components.rs` — `seg_button_content`).
@@ -1415,9 +1415,9 @@ Four cases, and only four:
 2. **Derived geometry** — a value computed *from* a token, expressed as a named
    constant: `FOOTER_RADIUS = RADIUS_PANEL - 1` (§7.3).
 3. **Optical corrections** — the modal panel's shadow, the palette scrim's 80px
-   top drop, the appbar's 14px-tall segment divider and its 26px glyph boxes
-   (a full-height divider would stretch the combo taller than the lone toggle
-   it replaces). Each one carries a comment saying *why*.
+   top drop, the appbar cog's 28px box and 15px glyph (at `CONTROL_H` its hover
+   target clips against the window edge). Each one carries a comment saying
+   *why*.
 4. **Physical device-space math** — window bounds, mouse positions, PTY cell
    metrics.
 

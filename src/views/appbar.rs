@@ -1,5 +1,6 @@
-//! The appbar: brand mark, agent-view control, attention pill, cog — plus the
-//! anchored attention dropdown that the pill toggles.
+//! The appbar: brand mark, attention pill, cog — plus the anchored attention
+//! dropdown that the pill toggles. The grid-view toggle lives in the rail
+//! header's button cluster (`src/views/sidebar.rs` — `header`), beside the `+`.
 //!
 //! Port of `src/gui/view/appbar.rs:20-237` (the bar) and `:310-437` (the
 //! dropdown). `zen_attention_pill` (`:244-305`) is Plan 07.
@@ -23,9 +24,7 @@ use crate::entities::session_registry::SessionId;
 use crate::icons::icon;
 use crate::keymap::{platform_mod_label, GlobalShortcut, SHORTCUTS};
 use crate::theme as c;
-use crate::views::components::{
-    divider_h_strong, icon_btn, mono, seg_button_content, seg_group, status_dot, ui, SegSide,
-};
+use crate::views::components::{divider_h_strong, icon_btn, mono, status_dot, ui};
 use crate::views::rows::{path_basename, state_glyph};
 
 /// App bar height (`src/gui/metrics.rs:15`).
@@ -53,9 +52,6 @@ const COG_ICON: f32 = 15.0;
 /// positional geometry in the module that owns the surface.
 const ACCENT_BAR_W: f32 = 3.0;
 
-/// One glyph segment's box in the `+` │ `grid` combo — see its use site.
-const GLYPH_SEG_W: f32 = 26.0;
-
 /// What a click on the window chrome asks the workspace to do. The chrome
 /// never reaches into state itself (same contract as `rows::RowAction`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,9 +62,7 @@ pub enum ChromeAction {
     SelectWaiting(SessionId),
     /// The zen pill: straight to the first waiting session, no dropdown.
     JumpToWaiting,
-    /// The grid/agent view.
-    ToggleGridView,
-    /// Plan 08 — the session launcher (the `+` segment and the `palette` chip).
+    /// Plan 08 — the session launcher (the statusbar's `palette` chip).
     OpenSessionLauncher,
     /// Plan 08 — Settings, behind the cog.
     OpenSettings,
@@ -108,9 +102,6 @@ pub struct AppbarCtx {
     /// and shared with the dropdown (`view/mod.rs:58-61` — the iced build had
     /// three call sites recomputing it).
     pub waiting: Vec<WaitingRow>,
-    /// Plan 07 stub field; the combo's *appearance* is conditional on it
-    /// (`appbar.rs:46`) and only the `false` shape is reachable this phase.
-    pub grid_view: bool,
     /// Whether a release is on offer — `upgrade_state::upgrade_available`,
     /// which is `matches!(state, Available(_))` and nothing else.
     pub upgrade_available: bool,
@@ -143,12 +134,14 @@ pub fn appbar(ctx: &AppbarCtx) -> AnyElement {
         .px(rpx(SPACE_3XL))
         .child(ui("grove", TEXT_TITLE, c::MAGENTA()).font_weight(gpui::FontWeight::BOLD));
 
+    // The cog is the cluster's only always-present control, so the cluster's
+    // own right padding is what holds it off the window edge; the `gap` only
+    // ever separates it from the attention pill.
     let mut right = div()
         .flex()
         .items_center()
         .gap(rpx(SPACE_SM))
-        .px(rpx(SPACE_3XL))
-        .child(view_control(ctx));
+        .px(rpx(SPACE_3XL));
     if !ctx.waiting.is_empty() {
         right = right.child(attention_pill(ctx));
     }
@@ -171,76 +164,6 @@ pub fn appbar(ctx: &AppbarCtx) -> AnyElement {
         )
         .child(divider_h_strong())
         .into_any_element()
-}
-
-/// Non-grid: a lone 22×22 muted icon button (`appbar.rs:124-149`). Grid: the
-/// segmented `+` │ hairline │ `grid` combo (`:46-123`). Both segments dispatch
-/// to logged stubs (carried amendment 7).
-fn view_control(ctx: &AppbarCtx) -> AnyElement {
-    if !ctx.grid_view {
-        let dispatch = Rc::clone(&ctx.dispatch);
-        return icon_btn(
-            "appbar-grid",
-            "grid",
-            CONTROL_H,
-            CONTROL_H,
-            ICON_SM,
-            c::FG_MUTE(),
-            c::BG_HOVER(),
-            None,
-            false,
-            move |window, cx| dispatch(ChromeAction::ToggleGridView, window, cx),
-        )
-        .into_any_element();
-    }
-    // A fixed-size glyph box per segment: the shared `seg_button` padding is
-    // sized for a text label, and this combo must stay exactly as tall as the
-    // lone toggle it replaces (`appbar.rs:103-111`).
-    let glyph = |name: &'static str, color| {
-        div()
-            // 26, not CONTROL_H: a square box would make the two-segment combo
-            // narrower than the lone toggle it replaces (§14 case 3).
-            .w(rpx(GLYPH_SEG_W))
-            .h(rpx(CONTROL_H))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(icon(name, ICON_SM, color))
-    };
-    let d_plus = Rc::clone(&ctx.dispatch);
-    let plus = seg_button_content(
-        "appbar-plus",
-        glyph("plus", c::MAGENTA()),
-        false,
-        SegSide::Left,
-        false,
-        Some(Box::new(move |window, cx| {
-            d_plus(ChromeAction::OpenSessionLauncher, window, cx);
-        })),
-    );
-    // A short, fixed-height hairline: a full-height one would stretch the combo
-    // taller than the lone toggle (`appbar.rs:103-111`).
-    let seg_divider = div().w(px(1.0)).h(rpx(14.0)).bg(c::BORDER());
-    let d_grid = Rc::clone(&ctx.dispatch);
-    let grid_seg = seg_button_content(
-        "appbar-grid-seg",
-        glyph("grid", c::CYAN()),
-        true,
-        SegSide::Right,
-        false,
-        Some(Box::new(move |window, cx| {
-            d_grid(ChromeAction::ToggleGridView, window, cx);
-        })),
-    );
-    seg_group(
-        div()
-            .flex()
-            .items_center()
-            .child(plus)
-            .child(seg_divider)
-            .child(grid_seg),
-    )
-    .into_any_element()
 }
 
 /// Cog → Settings, with the `GREEN()` upgrade dot overlaid top-right only

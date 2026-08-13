@@ -852,7 +852,7 @@ impl Workspace {
 
     /// The single place an appbar/statusbar click becomes a state change.
     /// Everything Plan 07/08 owns logs a stub naming its plan.
-    fn chrome(&mut self, action: ChromeAction, window: &mut Window, cx: &mut Context<Self>) {
+    fn chrome(&mut self, action: ChromeAction, _window: &mut Window, cx: &mut Context<Self>) {
         match action {
             ChromeAction::ToggleAttentionQueue => self.state.update(cx, |s, cx| {
                 s.toggle_attention_queue();
@@ -866,7 +866,6 @@ impl Workspace {
             // The zen pill is not a dropdown: it jumps straight to the first
             // waiting session (`appbar.rs:277`).
             ChromeAction::JumpToWaiting => self.jump_to_waiting(cx),
-            ChromeAction::ToggleGridView => self.toggle_grid(window, cx),
             ChromeAction::OpenSessionLauncher => self.open_launcher(cx),
             ChromeAction::OpenSettings => self.open_settings(cx),
             ChromeAction::OpenShortcutOverlay => {
@@ -2066,10 +2065,23 @@ impl Render for Workspace {
         }
 
         // The 5s git-state poll, kicked from the frame but running off-thread.
+        // In sessions mode the rail's cards are what needs git state, and they
+        // span every project regardless of collapse — so the poll set has to
+        // come from the live sessions, not from the tree's visible rows
+        // (`ProjectTree::polled_worktree_paths`).
+        let session_wt_paths: Vec<String> = self
+            .registry
+            .read(cx)
+            .all()
+            .iter()
+            .map(|m| m.wt_path.clone())
+            .collect();
         let paths = {
             let ws = self.state.read(cx);
             let store = &cx.global::<SettingsState>().store;
-            self.tree.read(cx).visible_worktree_paths(store, ws)
+            self.tree
+                .read(cx)
+                .polled_worktree_paths(store, ws, &session_wt_paths)
         };
         let window_focused = window.is_window_active();
         self.tree.clone().update(cx, |t, cx| {
@@ -2425,7 +2437,6 @@ impl Render for Workspace {
             pulse: self.activity.read(cx).pulse(),
             // Resolved once, handed to the pill and the dropdown alike.
             waiting: self.waiting_rows(cx),
-            grid_view: self.state.read(cx).grid_view(),
             // `matches!(state, Available(_))` and nothing else
             // (`src/gui/view/appbar.rs:29`).
             upgrade_available: upgrade_available(self.upgrade.read(cx).state()),
