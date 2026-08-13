@@ -92,7 +92,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    div, prelude::*, px, uniform_list, AnyElement, App, Hsla, ListHorizontalSizingBehavior, Window,
+    div, prelude::*, px, uniform_list, AnyElement, App, CursorStyle, Hsla,
+    ListHorizontalSizingBehavior, MouseButton, Window,
 };
 use grove_core::diff::{FileChange, Line, LineKind, Patch, Run, Status, TreeNode};
 use grove_core::highlight::{CodeScope, Span};
@@ -100,7 +101,7 @@ use grove_core::render_rows::{SplitCell, SplitRenderRow, UnifiedRenderRow};
 use grove_core::storage::DiffMode;
 
 use crate::entities::diff_viewer::{DiffViewerState, FileListStyle};
-use crate::fonts::MONO_FAMILY;
+use crate::fonts::{MONO_FAMILY, UI_FAMILY};
 use crate::icons;
 use crate::theme as c;
 use crate::views::components::{
@@ -172,8 +173,14 @@ fn file_row_content(file: &FileChange, selected: bool, depth: usize) -> gpui::Di
     }
     path_line = path_line.child(ui(name.to_string(), TEXT_SMALL, c::FG()));
 
+    // `w_full`: `click_row_on`'s wrapper already spans the column at `Card`
+    // density, but this inner div is the one carrying the selection tint and
+    // ring, and a flex child does not grow along the main axis on its own — so
+    // without it the highlight stops where the text stops rather than reaching
+    // both edges of the file list.
     div()
         .flex()
+        .w_full()
         .items_center()
         .gap(rpx(SPACE_SM))
         .pl(rpx(SPACE_2XL + tree_indent(depth)))
@@ -261,6 +268,132 @@ fn dir_row(
     .into_any_element()
 }
 
+/// [`file_row_content`]'s natural width in **device** pixels: the same
+/// `pl`/`pr`/`gap` geometry that function lays out, plus the real painted
+/// width of its four children ([`status_glyph`]'s letter, the optional dir
+/// prefix, the name, and the `+N`/`-N` counts), measured by
+/// [`crate::views::workspace::text_px`] rather than assumed — a file list is
+/// exactly the place a fixed-width guess would be wrong, since paths vary
+/// wildly in length.
+fn file_row_w(file: &FileChange, depth: usize, window: &Window) -> f32 {
+    let (letter, _) = status_glyph(&file.status);
+    let (dir, name) = split_dir_prefix(&file.path);
+    let weight = gpui::FontWeight::default();
+
+    let mut w = token_px(SPACE_2XL + tree_indent(depth), window)
+        + token_px(SPACE_2XL, window)
+        + text_px(window, letter, MONO_FAMILY, TEXT_SMALL, weight)
+        + text_px(
+            window,
+            &format!("+{}", file.added),
+            MONO_FAMILY,
+            TEXT_MICRO,
+            weight,
+        )
+        + text_px(
+            window,
+            &format!("-{}", file.removed),
+            MONO_FAMILY,
+            TEXT_MICRO,
+            weight,
+        )
+        + token_px(SPACE_SM, window) * 3.0;
+    if let Some(dir) = dir {
+        w += text_px(window, dir, UI_FAMILY, TEXT_SMALL, weight);
+    }
+    w += text_px(window, name, UI_FAMILY, TEXT_SMALL, weight);
+    w
+}
+
+/// [`dir_row`]'s natural width in **device** pixels: its `pl`/`pr`/`gap`
+/// geometry, the fixed [`SPACE_3XL`] chevron slot (an icon, not measured
+/// text), and the directory name's real painted width.
+fn dir_row_w(name: &str, depth: usize, window: &Window) -> f32 {
+    token_px(SPACE_2XL + tree_indent(depth), window)
+        + token_px(SPACE_2XL, window)
+        + token_px(SPACE_3XL, window)
+        + token_px(SPACE_SM, window)
+        + text_px(
+            window,
+            name,
+            UI_FAMILY,
+            TEXT_SMALL,
+            gpui::FontWeight::default(),
+        )
+}
+
+/// The pure clamp arithmetic behind [`file_list_w`], unit-testable without a
+/// `Window`: the measured natural width, floored at [`DIFF_FILE_LIST_W`] and
+/// ceilinged at [`DIFF_FILE_LIST_MAX_FRAC`] of the window's logical width.
+/// `.max`/`.min` rather than [`f32::clamp`] so a pathological window narrower
+/// than the floor (`win_w_logical * DIFF_FILE_LIST_MAX_FRAC < DIFF_FILE_LIST_W`)
+/// degrades to the ceiling instead of panicking on an inverted clamp range.
+pub(crate) fn clamp_file_list_w(measured_natural_logical: f32, win_w_logical: f32) -> f32 {
+    let ceiling = win_w_logical * DIFF_FILE_LIST_MAX_FRAC;
+    measured_natural_logical.max(DIFF_FILE_LIST_W).min(ceiling)
+}
+
+/// The diff viewer's file-list column width: as wide as its longest visible
+/// row needs, clamped between the floor [`DIFF_FILE_LIST_W`] and
+/// [`DIFF_FILE_LIST_MAX_FRAC`] of the window's logical width (see that
+/// constant's doc for why the ceiling exists). All three of this module's
+/// consumers that need the column's width — [`file_list`] itself,
+/// [`render`]'s `content_w`, and [`super::ModalLayer`]'s
+/// `diff_content_w` — call this one function so they can never disagree.
+///
+/// Measures only the rows [`file_list`] actually renders for
+/// `state.list_style` (flat files at depth 0, or tree dirs/files at their
+/// real depths from [`grove_core::diff::flatten_file_tree`]), and only when
+/// there is real content: `file_list`'s two placeholder branches (loading or
+/// empty) render placeholder text this function does not measure, so an
+/// empty `state.files` falls back to the floor rather than measuring that
+/// text.
+///
+/// Zoom and the window's logical width are both derived from `window` alone
+/// (`window.rem_size()` already encodes `REM_BASE * zoom`, the same identity
+/// [`token_px`] relies on), so no `cx` is needed here.
+///
+/// `override_w`, when `Some`, is a hand-dragged width
+/// (`ModalLayer::file_list_w_override`) that wins over the measured natural
+/// width — still passed through [`clamp_file_list_w`] so a stale override
+/// left over from a wider window stays legal after a resize.
+#[must_use]
+pub(crate) fn file_list_w(
+    state: &DiffViewerState,
+    window: &Window,
+    override_w: Option<f32>,
+) -> f32 {
+    let zoom = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
+    let win_w_logical = f32::from(window.viewport_size().width) / zoom;
+
+    if let Some(w) = override_w {
+        return clamp_file_list_w(w, win_w_logical);
+    }
+
+    if state.files.is_empty() {
+        return DIFF_FILE_LIST_W;
+    }
+
+    let measured_device = match state.list_style {
+        FileListStyle::Flat => state
+            .files
+            .iter()
+            .map(|file| file_row_w(file, 0, window))
+            .fold(0.0_f32, f32::max),
+        FileListStyle::Tree => {
+            grove_core::diff::flatten_file_tree(&state.files, &state.tree_expanded)
+                .into_iter()
+                .map(|node| match node {
+                    TreeNode::Dir { name, depth, .. } => dir_row_w(&name, depth, window),
+                    TreeNode::File { file, depth } => file_row_w(&file, depth, window),
+                })
+                .fold(0.0_f32, f32::max)
+        }
+    };
+
+    clamp_file_list_w(measured_device / zoom, win_w_logical)
+}
+
 /// One icon-only segment: [`seg_button_content`]'s shell around a single
 /// glyph sized [`ICON_XS`] and tinted by [`crate::views::components::seg_text_color`]
 /// (or `glyph_color`, when a segment needs a colour that rule can't express —
@@ -343,11 +476,16 @@ fn list_style_seg(style: FileListStyle, dispatch: &ModalDispatch) -> AnyElement 
         .into_any_element()
 }
 
-fn file_list(state: &DiffViewerState, dispatch: &ModalDispatch) -> impl IntoElement {
+fn file_list(
+    state: &DiffViewerState,
+    dispatch: &ModalDispatch,
+    window: &Window,
+    override_w: Option<f32>,
+) -> impl IntoElement {
     let mut list = div()
         .id("diff-file-list")
         .flex_none()
-        .w(rpx(DIFF_FILE_LIST_W))
+        .w(rpx(file_list_w(state, window, override_w)))
         .h_full()
         .flex()
         .flex_col();
@@ -418,6 +556,29 @@ fn file_list(state: &DiffViewerState, dispatch: &ModalDispatch) -> impl IntoElem
     }
 
     list.child(body)
+}
+
+/// The drag handle between the file list and the diff body: [`divider_v`]'s
+/// 1px rule, widened to [`DIVIDER_DRAG_HIT_W`]'s hit zone and given a
+/// horizontal-resize cursor and a mouse-down that dispatches
+/// [`ModalClick::DiffFileListDividerPress`] — the same shape as
+/// `sidebar::divider`, adapted to route through [`ModalDispatch`] since this
+/// module has no entity handle of its own to update directly.
+fn file_list_divider(dispatch: &ModalDispatch) -> AnyElement {
+    let dispatch = std::rc::Rc::clone(dispatch);
+    div()
+        .id("diff-file-list-divider")
+        .w(rpx(DIVIDER_DRAG_HIT_W))
+        .h_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor(CursorStyle::ResizeLeftRight)
+        .child(divider_v())
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            dispatch(ModalClick::DiffFileListDividerPress, window, cx);
+        })
+        .into_any_element()
 }
 
 /// A [`CodeScope`] resolved to its theme colour — the *only* place syntax
@@ -1090,7 +1251,8 @@ pub fn render(
 
     let zoom = cx.global::<crate::zoom::ZoomState>().zoom;
     let win_w = f32::from(window.viewport_size().width) / zoom;
-    let content_w = win_w - DIFF_PANEL_INSET * 2.0 - DIFF_FILE_LIST_W;
+    let override_w = layer.file_list_w_override;
+    let content_w = win_w - DIFF_PANEL_INSET * 2.0 - file_list_w(state, window, override_w);
     let (mode, split_enabled) = effective_mode(content_w, state.mode);
     // Device pixels, from the same `content_w` the fallback above gates on —
     // never from element bounds (see [`split_half_w`]).
@@ -1109,8 +1271,8 @@ pub fn render(
         .flex()
         .flex_1()
         .min_h(px(0.0))
-        .child(file_list(state, dispatch))
-        .child(divider_v())
+        .child(file_list(state, dispatch, window, override_w))
+        .child(file_list_divider(dispatch))
         .child(
             div()
                 .flex_1()
@@ -1137,6 +1299,87 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn measured_below_the_floor_clamps_up_to_it() {
+        assert_eq!(clamp_file_list_w(100.0, 2000.0), DIFF_FILE_LIST_W);
+    }
+
+    #[test]
+    fn measured_above_the_ceiling_clamps_down_to_it() {
+        let win_w = 1000.0;
+        assert_eq!(
+            clamp_file_list_w(600.0, win_w),
+            win_w * DIFF_FILE_LIST_MAX_FRAC
+        );
+    }
+
+    #[test]
+    fn measured_between_the_floor_and_ceiling_passes_through() {
+        let win_w = 1000.0;
+        let measured = 300.0;
+        assert!(measured > DIFF_FILE_LIST_W && measured < win_w * DIFF_FILE_LIST_MAX_FRAC);
+        assert_eq!(clamp_file_list_w(measured, win_w), measured);
+    }
+
+    #[test]
+    fn the_ceiling_is_forty_percent_of_the_window_width() {
+        let win_w = 1234.5;
+        assert_eq!(
+            clamp_file_list_w(f32::MAX, win_w),
+            win_w * DIFF_FILE_LIST_MAX_FRAC
+        );
+        assert_eq!(win_w * DIFF_FILE_LIST_MAX_FRAC, win_w * 0.4);
+    }
+
+    // The divider drag's override is clamped through `clamp_file_list_w` —
+    // the same pure function `file_list_w` calls on its override path — so
+    // these exercise that path directly rather than needing a real `Window`
+    // (mirrors how the pre-existing floor/ceiling tests above avoid one).
+    #[test]
+    fn a_too_small_override_clamps_up_to_the_floor() {
+        assert_eq!(clamp_file_list_w(10.0, 2000.0), DIFF_FILE_LIST_W);
+    }
+
+    #[test]
+    fn a_too_large_override_clamps_down_to_the_ceiling() {
+        let win_w = 1000.0;
+        assert_eq!(
+            clamp_file_list_w(f32::MAX, win_w),
+            win_w * DIFF_FILE_LIST_MAX_FRAC
+        );
+    }
+
+    // Double-click detection: the literal condition `on_diff_divider_press`
+    // (`ModalLayer`, `mod.rs`) uses, tested against synthetic durations
+    // rather than a real `Instant::now()` pair, exactly as `sidebar.rs`'s own
+    // equivalent test avoids sleeping.
+    #[test]
+    fn two_presses_inside_the_double_click_window_register_as_one() {
+        let gap = std::time::Duration::from_millis(200);
+        assert!(gap < crate::views::components::DOUBLE_CLICK);
+    }
+
+    #[test]
+    fn two_presses_further_apart_than_the_window_do_not_register() {
+        let gap = std::time::Duration::from_millis(400);
+        assert!(gap >= crate::views::components::DOUBLE_CLICK);
+    }
+
+    // `DRAG_EPSILON`: the threshold `on_root_mouse_up`/`on_diff_divider_mouse_up`
+    // would gate a persist on, tested as the same `>=` comparison those call
+    // sites use.
+    #[test]
+    fn a_delta_just_under_the_epsilon_is_not_a_real_drag() {
+        let delta: f32 = crate::views::components::DRAG_EPSILON - 0.1;
+        assert!(delta.abs() < crate::views::components::DRAG_EPSILON);
+    }
+
+    #[test]
+    fn a_delta_at_or_over_the_epsilon_is_a_real_drag() {
+        let delta: f32 = crate::views::components::DRAG_EPSILON;
+        assert!(delta.abs() >= crate::views::components::DRAG_EPSILON);
+    }
 
     #[test]
     fn split_available_only_at_or_above_the_min_width() {

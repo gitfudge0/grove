@@ -141,8 +141,30 @@ pub const ROW_MIN_H: f32 = CONTROL_H + ROW_PY * 2.0;
 /// be shorter, or (per-row) taller, than the multiple suggests.
 pub const MODAL_SCROLL_MAX_H: f32 = ROW_MIN_H * 12.0;
 
-/// The diff viewer's file-list column width.
+/// The diff viewer's file-list column floor width. The column itself is no
+/// longer fixed at this value — see
+/// [`crate::views::modals::diff_viewer::file_list_w`], which sizes it to its
+/// widest visible row, clamped between this floor and
+/// [`DIFF_FILE_LIST_MAX_FRAC`] of the window's width — but a column shorter
+/// than this would feel cramped even when every row is narrow, so it stays
+/// the minimum.
 pub const DIFF_FILE_LIST_W: f32 = 240.0;
+
+/// A draggable divider's hit-zone width — wider than the 1px rule it draws so
+/// the resize cursor has room to land. Shared by the sidebar/workspace
+/// divider and the diff viewer's file-list divider
+/// (`src/gui/metrics.rs:20`).
+pub const DIVIDER_DRAG_HIT_W: f32 = 6.0;
+
+/// Ceiling on the diff viewer's file-list column, as a fraction of the
+/// window's logical width. The column's width feeds
+/// [`crate::views::modals::diff_viewer::render`]'s body `content_w`, which
+/// [`crate::views::modals::diff_viewer::effective_mode`] gates
+/// [`DIFF_SPLIT_MIN_W`] on — without a ceiling, a long path in a deep tree
+/// could grow the file list wide enough to silently force unified mode by
+/// starving the body of width. See
+/// [`crate::views::modals::diff_viewer::file_list_w`].
+pub const DIFF_FILE_LIST_MAX_FRAC: f32 = 0.4;
 
 /// The diff viewer's inset from the window edge. The viewer is a
 /// viewport-filling surface (the same category as Onboarding) rather than a

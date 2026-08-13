@@ -27,7 +27,7 @@
 use crate::views::rpx;
 use crate::views::tokens::*;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use gpui::prelude::*;
 use gpui::{
@@ -43,27 +43,11 @@ use crate::entities::session_registry::SessionRegistry;
 use crate::entities::workspace_state::{RailMode, TreeExpand, WorkspaceState, RAIL_W};
 use crate::settings::SettingsState;
 use crate::theme as c;
-use crate::views::components::{divider_h, divider_h_strong, icon_btn, mono, tracked};
+use crate::views::components::{
+    divider_h, divider_h_strong, icon_btn, mono, tracked, DividerDrag, DOUBLE_CLICK, DRAG_EPSILON,
+};
 use crate::views::rows::{self, RowAction, RowCtx, TreeRow};
 use crate::views::session_header::SESSBAR_H;
-
-/// Divider hit zone between sidebar and workspace (`src/gui/metrics.rs:20`).
-pub const SIDEBAR_DIVIDER_W: f32 = 6.0;
-/// Two presses inside this window are a double-click and reset the width
-/// (`src/gui/update/layout.rs:107-110`).
-const DOUBLE_CLICK: Duration = Duration::from_millis(350);
-/// Below this the release is a plain click, not a drag: no persist, no resize
-/// (`src/gui/update/layout.rs:159`).
-const DRAG_EPSILON: f32 = 0.5;
-
-/// An in-progress divider drag (`src/gui/state.rs`'s `SidebarDrag`).
-#[derive(Clone, Copy, Debug)]
-struct DividerDrag {
-    /// Captured on the **first move**, not on the press: an off-edge grab must
-    /// not make the width jump (`layout.rs:137-147`).
-    grab_offset: Option<f32>,
-    start_width: f32,
-}
 
 pub struct Sidebar {
     /// The single modal slot; row actions that open a modal go through it.
@@ -1184,7 +1168,7 @@ impl Sidebar {
         let weak = cx.entity().downgrade();
         div()
             .id("sidebar-divider")
-            .w(rpx(SIDEBAR_DIVIDER_W))
+            .w(rpx(DIVIDER_DRAG_HIT_W))
             .h_full()
             .flex()
             .items_center()

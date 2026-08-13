@@ -18,7 +18,6 @@ use crate::theme as c;
 use crate::views::components::{divider_h, flat_icon_btn, icon_btn, status_dot, ui};
 use crate::views::grid::empty_state;
 use crate::views::session_header::SESSBAR_H;
-use crate::views::sidebar::SIDEBAR_DIVIDER_W;
 use crate::views::terminal_view::TerminalView;
 
 /// What a click in the panel asks the workspace to do.
@@ -219,12 +218,12 @@ fn shell_tab(idx: usize, tab: &ShellTab, ctx: &PanelCtx) -> AnyElement {
     el.into_any_element()
 }
 
-/// The `SIDEBAR_DIVIDER_W` grab zone around a `BORDER()` hairline, full height,
+/// The `DIVIDER_DRAG_HIT_W` grab zone around a `BORDER()` hairline, full height,
 /// with a horizontal-resize cursor (`terminal.rs:78-87`).
 pub fn divider(dispatch: &PanelDispatch) -> AnyElement {
     div()
         .id("term-panel-divider")
-        .w(rpx(SIDEBAR_DIVIDER_W))
+        .w(rpx(DIVIDER_DRAG_HIT_W))
         .h_full()
         .flex()
         .items_center()
@@ -244,7 +243,7 @@ mod tests {
         term_portion_for_cursor, TERM_PANEL_PORTION, TERM_PANEL_PORTION_MAX, TERM_PANEL_PORTION_MIN,
     };
     use crate::fonts::CELL_W;
-    use crate::views::sidebar::SIDEBAR_DIVIDER_W;
+    use crate::views::tokens::DIVIDER_DRAG_HIT_W;
 
     /// `pty_cols_for_fraction` (`src/gui/metrics.rs:302-321`), reimplemented
     /// **here** as the oracle — never exported from production code
@@ -259,11 +258,11 @@ mod tests {
         let zoom = zoom.max(0.1);
         let logical_w = win_w / zoom;
         let visible_w = if chrome_visible {
-            sidebar_w + SIDEBAR_DIVIDER_W
+            sidebar_w + DIVIDER_DRAG_HIT_W
         } else {
             0.0
         };
-        let work_w = logical_w - visible_w - SIDEBAR_DIVIDER_W;
+        let work_w = logical_w - visible_w - DIVIDER_DRAG_HIT_W;
         // `PTY_PAD_W` is `pty()`'s own 16×2 (`metrics.rs:53-54`).
         let region_w = work_w * fraction - 32.0;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -278,7 +277,7 @@ mod tests {
     fn gpui_panel_cols(win_w: f32, zoom: f32, sidebar_w: f32, portion: u16) -> u16 {
         let z = crate::zoom::ZoomState::new(zoom);
         let logical_w = win_w / zoom;
-        let work_w = logical_w - (sidebar_w + SIDEBAR_DIVIDER_W) - SIDEBAR_DIVIDER_W;
+        let work_w = logical_w - (sidebar_w + DIVIDER_DRAG_HIT_W) - DIVIDER_DRAG_HIT_W;
         let region_w = work_w * (f32::from(portion) / 100.0) - 32.0;
         z.pty_dims(region_w * zoom, 100.0).1
     }

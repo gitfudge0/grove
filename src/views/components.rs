@@ -9,11 +9,30 @@
 use crate::views::rpx;
 use crate::views::tokens::*;
 use gpui::{div, prelude::*, px, AnyElement, App, Div, Hsla, MouseButton, SharedString, Window};
+use std::time::Duration;
 
 use crate::fonts::{MONO_FAMILY, UI_FAMILY};
 use crate::theme as c;
 
 use super::dispatch::{ModalClick, ModalDispatch};
+
+/// Two presses inside this window are a double-click and reset a draggable
+/// divider's width to its default (`src/gui/update/layout.rs:107-110`).
+pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(350);
+/// Below this a divider release is a plain click, not a drag: no persist, no
+/// resize (`src/gui/update/layout.rs:159`).
+pub(crate) const DRAG_EPSILON: f32 = 0.5;
+
+/// An in-progress divider drag (`src/gui/state.rs`'s `SidebarDrag`). Shared by
+/// every draggable divider — the sidebar/workspace split and the diff
+/// viewer's file-list split — so the state machine can't drift between them.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DividerDrag {
+    /// Captured on the **first move**, not on the press: an off-edge grab must
+    /// not make the width jump (`layout.rs:137-147`).
+    pub(crate) grab_offset: Option<f32>,
+    pub(crate) start_width: f32,
+}
 
 /// The focus ring's width, drawn as a zero-blur outer shadow spread around a
 /// focused [`field_box`] (plan.md §1). Single-consumer geometry, so per

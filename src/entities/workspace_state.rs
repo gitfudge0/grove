@@ -154,7 +154,7 @@ pub const TERM_PANEL_PORTION_STEP: u16 = 5;
 /// Port of `src/gui/metrics.rs:257-263`.
 #[must_use]
 pub fn term_portion_for_cursor(cursor_x: f32, logical_win_w: f32, sidebar_w: f32) -> u16 {
-    let work_left = sidebar_w + crate::views::sidebar::SIDEBAR_DIVIDER_W;
+    let work_left = sidebar_w + crate::views::tokens::DIVIDER_DRAG_HIT_W;
     let work_w = (logical_win_w - work_left).max(1.0);
     let frac = ((logical_win_w - cursor_x) / work_w).clamp(0.0, 1.0);
     #[allow(clippy::cast_possible_truncation)]
@@ -2379,7 +2379,7 @@ mod tests {
     fn term_portion_for_cursor_maps_and_clamps() {
         let win = 1280.0;
         let sidebar = RAIL_W;
-        let work_left = sidebar + crate::views::sidebar::SIDEBAR_DIVIDER_W;
+        let work_left = sidebar + crate::views::tokens::DIVIDER_DRAG_HIT_W;
         let work_w = win - work_left;
         let mid = work_left + work_w * 0.5;
         assert_eq!(term_portion_for_cursor(mid, win, sidebar), 50);

@@ -51,18 +51,6 @@ use crate::settings::SettingsState;
 
 use self::input::ModalInput;
 
-/// The diff viewer body's content width, [`diff_viewer::effective_mode`]'s
-/// input: the logical window width (the exact idiom
-/// `Sidebar::logical_window_width` uses) minus the viewer's own insets. A
-/// free function rather than a method on `ModalLayer` because it needs
-/// nothing from `self` — the same reason `diff_viewer::render` computes it
-/// inline for its own `window`/`cx`.
-fn diff_content_w(window: &Window, cx: &App) -> f32 {
-    let zoom = cx.global::<crate::zoom::ZoomState>().zoom;
-    let win_w = f32::from(window.viewport_size().width) / zoom;
-    win_w - crate::views::tokens::DIFF_PANEL_INSET * 2.0 - crate::views::tokens::DIFF_FILE_LIST_W
-}
-
 // The click vocabulary itself lives one layer down in
 // [`crate::views::dispatch`] so the app-wide component library can build
 // clickable chrome without depending on this module; re-exported here
@@ -151,6 +139,18 @@ pub struct ModalLayer {
     /// created on open and dropped on close: `Some` exactly while
     /// `Modal::DiffViewer` is the open modal.
     pub(super) diff_viewer: Option<Entity<crate::entities::diff_viewer::DiffViewerState>>,
+    /// A hand-dragged diff file-list width (logical px), overriding the
+    /// measured auto-fit width. Lives here rather than on `DiffViewerState`
+    /// because that entity is dropped and recreated on every
+    /// close/reopen of the diff viewer (`open`/`cancel`/`close` below) while
+    /// this override is meant to survive the session. `None` means auto-fit.
+    pub(crate) file_list_w_override: Option<f32>,
+    /// The diff file-list divider's in-progress drag, mirroring
+    /// `Sidebar`'s `drag` field.
+    diff_divider_drag: Option<crate::views::components::DividerDrag>,
+    /// The diff file-list divider's last press instant, for double-click
+    /// detection, mirroring `Sidebar`'s `last_divider_press`.
+    last_diff_divider_press: Option<std::time::Instant>,
     /// The palette result list's scroll position. It has to live on the view:
     /// a handle built per-render would hand the list a fresh, zeroed offset on
     /// every frame.
@@ -214,6 +214,9 @@ impl ModalLayer {
             teardown_session: None,
             teardown_poll: None,
             diff_viewer: None,
+            file_list_w_override: None,
+            diff_divider_drag: None,
+            last_diff_divider_press: None,
             palette_scroll: gpui::ScrollHandle::new(),
             palette_scrolled_to: std::cell::Cell::new(None),
             list_scroll: gpui::ScrollHandle::new(),
@@ -232,6 +235,107 @@ impl ModalLayer {
 
     pub fn is_open(&self) -> bool {
         self.slot.is_open()
+    }
+
+    /// The diff viewer body's content width, [`diff_viewer::effective_mode`]'s
+    /// input: the logical window width minus the viewer's own insets and its
+    /// file-list column — the same `content_w` [`diff_viewer::render`]
+    /// computes for itself, kept in agreement because both call
+    /// [`diff_viewer::file_list_w`] with the same [`DiffViewerState`]. A
+    /// method rather than a free function (unlike the original) because it
+    /// needs `self.diff_viewer` to measure the file-list column's width; when
+    /// no diff viewer entity exists yet, the column falls back to its floor.
+    pub(crate) fn diff_content_w(&self, window: &Window, cx: &App) -> f32 {
+        let zoom = cx.global::<crate::zoom::ZoomState>().zoom;
+        let win_w = f32::from(window.viewport_size().width) / zoom;
+        let file_list_w = self
+            .diff_viewer
+            .as_ref()
+            .map_or(crate::views::tokens::DIFF_FILE_LIST_W, |dv| {
+                diff_viewer::file_list_w(dv.read(cx), window, self.file_list_w_override)
+            });
+        win_w - crate::views::tokens::DIFF_PANEL_INSET * 2.0 - file_list_w
+    }
+
+    fn logical_window_width(window: &Window, cx: &App) -> f32 {
+        let zoom = cx.global::<crate::zoom::ZoomState>().zoom;
+        f32::from(window.viewport_size().width) / zoom
+    }
+
+    // ── diff file-list divider ─────────────────────────────────────────
+
+    /// Mirrors `Sidebar::on_divider_press`: a double-click within
+    /// `DOUBLE_CLICK` releases the override back to auto-fit; otherwise it
+    /// starts a drag from the file list's current effective width.
+    fn on_diff_divider_press(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let Some(dv) = self.diff_viewer.clone() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        let double = self
+            .last_diff_divider_press
+            .is_some_and(|t| now.duration_since(t) < crate::views::components::DOUBLE_CLICK);
+        if double {
+            self.diff_divider_drag = None;
+            self.last_diff_divider_press = None;
+            self.file_list_w_override = None;
+            cx.notify();
+        } else {
+            self.last_diff_divider_press = Some(now);
+            let start_width =
+                diff_viewer::file_list_w(dv.read(cx), window, self.file_list_w_override);
+            self.diff_divider_drag = Some(crate::views::components::DividerDrag {
+                grab_offset: None,
+                start_width,
+            });
+        }
+    }
+
+    /// Mirrors `Sidebar::on_root_mouse_move`, attached to the `modal-layer`
+    /// root div — the only element guaranteed to keep receiving moves once
+    /// the cursor leaves the divider's narrow hit zone.
+    pub(crate) fn on_diff_divider_mouse_move(
+        &mut self,
+        cursor_x: f32,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(drag) = self.diff_divider_drag else {
+            return;
+        };
+        let offset = match drag.grab_offset {
+            Some(o) => o,
+            None => {
+                let o = drag.start_width - cursor_x;
+                self.diff_divider_drag = Some(crate::views::components::DividerDrag {
+                    grab_offset: Some(o),
+                    ..drag
+                });
+                o
+            }
+        };
+        let win_w = Self::logical_window_width(window, cx);
+        let clamped = diff_viewer::clamp_file_list_w(cursor_x + offset, win_w);
+        // Unlike the sidebar, there is no settings write on mouse-up to gate
+        // with `DRAG_EPSILON` — the override *is* the side effect, and it is
+        // written here, on every move. So the epsilon has to live here too:
+        // without it, a plain click with a pixel of hand jitter would pin an
+        // override and silently kill auto-fit for the rest of the session.
+        if (clamped - drag.start_width).abs() < crate::views::components::DRAG_EPSILON {
+            return;
+        }
+        self.file_list_w_override = Some(clamped);
+        cx.notify();
+    }
+
+    /// Mirrors `Sidebar::on_root_mouse_up`. No persistence step: the override
+    /// is session-only by design (carried decision 2). Unlike the sidebar,
+    /// the epsilon guard is not here — the gated side effect there is a
+    /// debounced settings write on release, but here the side effect
+    /// (`file_list_w_override`) is written continuously as the drag moves,
+    /// so the guard lives in `on_diff_divider_mouse_move` instead.
+    pub(crate) fn on_diff_divider_mouse_up(&mut self, _cx: &mut Context<Self>) {
+        self.diff_divider_drag = None;
     }
 
     // Exercised only by this module's `#[cfg(test)]` assertions, which read the
@@ -544,7 +648,7 @@ impl ModalLayer {
                 let Some(dv) = self.diff_viewer.clone() else {
                     return;
                 };
-                let content_w = diff_content_w(window, cx);
+                let content_w = self.diff_content_w(window, cx);
                 let stored = cx
                     .global::<crate::settings::SettingsState>()
                     .store
@@ -660,6 +764,7 @@ impl ModalLayer {
                     dv.update(cx, |dv, cx| dv.toggle_dir(path, cx));
                 }
             }
+            ModalClick::DiffFileListDividerPress => self.on_diff_divider_press(window, cx),
             other => self.on_click_late(other, window, cx),
         }
     }
@@ -1011,6 +1116,24 @@ impl Render for ModalLayer {
             .top_0()
             .left_0()
             .size_full()
+            // The diff file-list divider's drag stream: wired here rather
+            // than on `diff_viewer::render`'s own returned element because
+            // that element is not guaranteed to still cover the cursor once
+            // dragging starts (mirrors `sidebar::root_drag_listeners` being
+            // wired at `workspace.rs`, not inside `Sidebar::render`'s own
+            // divider hit-zone). Unconditional: both handlers no-op when
+            // `diff_divider_drag` is `None`.
+            .on_mouse_move(cx.listener(|this, e: &gpui::MouseMoveEvent, window, cx| {
+                let zoom = cx.global::<crate::zoom::ZoomState>().zoom.max(0.1);
+                let x = f32::from(e.position.x) / zoom;
+                this.on_diff_divider_mouse_move(x, window, cx);
+            }))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &gpui::MouseUpEvent, _window, cx| {
+                    this.on_diff_divider_mouse_up(cx);
+                }),
+            )
             .child(framed)
             .into_any_element()
     }
@@ -1631,4 +1754,77 @@ mod tests {
     // through a live network `check()`. Driving it hermetically would need a
     // production-code test hook, which is out of scope for a test-only
     // change.
+
+    /// A sub-`DRAG_EPSILON` move must not pin an override: a plain click on
+    /// the divider, with a pixel of hand jitter, has to leave the file-list
+    /// column on auto-fit rather than silently killing it for the session.
+    /// Only once the drag has actually travelled past the epsilon does
+    /// `file_list_w_override` get written.
+    #[gpui::test]
+    fn a_sub_epsilon_move_leaves_the_override_unset_and_a_real_drag_sets_it(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(boot_globals);
+        let keys = Rc::new(RefCell::new(Vec::new()));
+        let (root, vcx) = cx.add_window_view(|_, cx| build_root(cx, keys.clone()));
+        vcx.run_until_parked();
+        let modals = root.read_with(vcx, |r, _| r.modals.clone());
+
+        modals.update(vcx, |l, cx| {
+            l.open(
+                Modal::DiffViewer {
+                    wt_path: "/nonexistent-wt".into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+
+        root.update_in(vcx, |_, window, cx| {
+            modals.update(cx, |l, cx| {
+                l.on_diff_divider_press(window, cx);
+            });
+        });
+        assert!(
+            modals.read_with(vcx, |l, _| l.diff_divider_drag.is_some()),
+            "press must start a drag"
+        );
+        let start_width = modals.read_with(vcx, |l, _| {
+            let Some(drag) = l.diff_divider_drag else {
+                panic!("press must have started a drag");
+            };
+            drag.start_width
+        });
+
+        // First move: well under `DRAG_EPSILON` from the start width. Because
+        // `grab_offset` is captured on this first move (matching the press
+        // position exactly, offset 0), the resulting clamped width equals
+        // `start_width` — a delta of 0.
+        root.update_in(vcx, |_, window, cx| {
+            modals.update(cx, |l, cx| {
+                l.on_diff_divider_mouse_move(start_width, window, cx);
+            });
+        });
+        assert_eq!(
+            modals.read_with(vcx, |l, _| l.file_list_w_override),
+            None,
+            "a sub-epsilon move must leave the override unset"
+        );
+
+        // Second move: past the epsilon.
+        let jump = start_width + crate::views::components::DRAG_EPSILON + 5.0;
+        let win_w = root.update_in(vcx, |_, window, cx| {
+            ModalLayer::logical_window_width(window, cx)
+        });
+        root.update_in(vcx, |_, window, cx| {
+            modals.update(cx, |l, cx| {
+                l.on_diff_divider_mouse_move(jump, window, cx);
+            });
+        });
+        assert_eq!(
+            modals.read_with(vcx, |l, _| l.file_list_w_override),
+            Some(diff_viewer::clamp_file_list_w(jump, win_w)),
+            "a move past the epsilon must set a clamped override"
+        );
+    }
 }

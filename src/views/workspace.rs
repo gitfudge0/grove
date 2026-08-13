@@ -2832,7 +2832,7 @@ mod tests {
         assert!((appbar::APPBAR_H - 44.0).abs() < f32::EPSILON);
         assert!((statusbar::STATUS_H - 26.0).abs() < f32::EPSILON);
         assert!((session_header::SESSBAR_H - 36.0).abs() < f32::EPSILON);
-        assert!((sidebar::SIDEBAR_DIVIDER_W - 6.0).abs() < f32::EPSILON);
+        assert!((crate::views::tokens::DIVIDER_DRAG_HIT_W - 6.0).abs() < f32::EPSILON);
     }
 
     // ── single-session PTY padding parity (Plan 10 Task 1) ───────────────
@@ -2904,7 +2904,7 @@ mod tests {
         // pixels; the 1px hairlines stay 1 real pixel by design.
         let z = zoom.max(0.1);
         let chrome_w = if chrome_visible {
-            (sidebar_w + sidebar::SIDEBAR_DIVIDER_W) * z
+            (sidebar_w + crate::views::tokens::DIVIDER_DRAG_HIT_W) * z
         } else {
             0.0
         };

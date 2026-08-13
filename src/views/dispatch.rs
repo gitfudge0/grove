@@ -95,6 +95,9 @@ pub enum ModalClick {
     ToggleDiffTreeDir {
         path: String,
     },
+    /// Diff viewer: mouse-down on the file-list/body divider — starts (or, on
+    /// a double-click, releases) a width drag on [`crate::views::modals::ModalLayer`].
+    DiffFileListDividerPress,
 }
 
 /// The boolean settings the Settings modal flips, each persisted immediately
