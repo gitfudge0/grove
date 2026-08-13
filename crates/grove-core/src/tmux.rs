@@ -1,6 +1,8 @@
 use crate::agent::Agent;
 use crate::session_meta;
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 /// Everything the tmux layer can fail with. Mirrors `git::GitError` and
@@ -67,8 +69,42 @@ fn run_silent(mut cmd: Command) -> std::io::Result<std::process::ExitStatus> {
     status
 }
 
-/// True if `tmux` is on PATH and runnable.
+/// How long a cached [`available`] result stays valid. Short enough that a
+/// user who installs tmux (or a setting toggle that depends on it) is picked
+/// up without restarting the app; long enough that a render path calling
+/// `available()` every frame doesn't fork a `tmux -V` process 15-20 times a
+/// second.
+const AVAILABLE_CACHE_TTL: Duration = Duration::from_secs(5);
+
+/// Cached `(when it was checked, what it found)`, guarded by a mutex since
+/// `available()` can be called from any thread (it is polled from a render
+/// path).
+static AVAILABLE_CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+
+/// True if `now` is still within `AVAILABLE_CACHE_TTL` of `checked_at`. Pulled
+/// out of [`available`] so the freshness rule can be unit-tested without
+/// spawning a process.
+fn cache_is_fresh(checked_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(checked_at) < AVAILABLE_CACHE_TTL
+}
+
+/// True if `tmux` is on PATH and runnable. Cached for [`AVAILABLE_CACHE_TTL`]
+/// so hot call sites (this is polled from a render path) don't fork a
+/// `tmux -V` process every call; a cache hit logs nothing; only an actual
+/// spawn does.
 pub fn available() -> bool {
+    let now = Instant::now();
+    {
+        let cache = AVAILABLE_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((checked_at, result)) = *cache {
+            if cache_is_fresh(checked_at, now) {
+                return result;
+            }
+        }
+    }
+
     tracing::debug!(args = "-V", "running tmux command");
     let status = Command::new("tmux")
         .arg("-V")
@@ -81,7 +117,13 @@ pub fn available() -> bool {
             tracing::warn!(status = ?s, "tmux command failed");
         }
     }
-    status.is_ok_and(|s| s.success())
+    let result = status.is_ok_and(|s| s.success());
+
+    let mut cache = AVAILABLE_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *cache = Some((now, result));
+    result
 }
 
 pub fn has_session(name: &str) -> bool {
@@ -385,6 +427,38 @@ mod tests {
 
     use super::*;
     use crate::agent::Agent;
+
+    // ── available caching ────────────────────────────────────────────────────
+
+    /// A cache entry younger than the TTL is fresh; one at or past the TTL is
+    /// not. This is the pure decision `available()` makes before deciding
+    /// whether to spawn `tmux -V` again.
+    #[test]
+    fn cache_is_fresh_respects_ttl_boundary() {
+        let checked_at = Instant::now();
+        assert!(
+            cache_is_fresh(checked_at, checked_at),
+            "an entry checked just now must be fresh"
+        );
+        assert!(
+            cache_is_fresh(
+                checked_at,
+                checked_at + AVAILABLE_CACHE_TTL - Duration::from_millis(1)
+            ),
+            "an entry just under the TTL must still be fresh"
+        );
+        assert!(
+            !cache_is_fresh(checked_at, checked_at + AVAILABLE_CACHE_TTL),
+            "an entry exactly at the TTL must be stale"
+        );
+        assert!(
+            !cache_is_fresh(
+                checked_at,
+                checked_at + AVAILABLE_CACHE_TTL + Duration::from_secs(1)
+            ),
+            "an entry past the TTL must be stale"
+        );
+    }
 
     // ── short_hash ───────────────────────────────────────────────────────────
 
