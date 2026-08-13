@@ -22,12 +22,19 @@
 // readability lint would obscure exactly the relationship that matters.
 #![allow(clippy::duration_suboptimal_units)]
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use grove_core::agent::Agent;
 
 /// Output younger than this counts as "actively producing".
 pub const WORKING_RECENT: Duration = Duration::from_secs(2);
+/// How long a non-`Working` session stays parked in `IN PROGRESS` after its
+/// last genuine `Working` tick before falling back to `IDLE`. Deliberately
+/// ~15x `WORKING_RECENT`: that window is kept tight on purpose for colour
+/// responsiveness and is far too tight to also govern row position, which
+/// should not flap on every brief output pause. Read against `WORKING_RECENT`
+/// (see the module-level `duration_suboptimal_units` allow above).
+pub const IDLE_DWELL: Duration = Duration::from_secs(30);
 /// A working title older than this (by output age) is distrusted: a real
 /// working turn always produces output well within this window, so a quiet
 /// PTY plus an animated title means the agent is hung with a stale title.
@@ -70,12 +77,29 @@ pub fn most_urgent(states: impl Iterator<Item = ActivityState>) -> Option<Activi
     best
 }
 
+/// The single total order every attention-sorting call site shares: lower
+/// sorts first (more urgent). `WaitingForInput` outranks `Done`, which
+/// outranks `Working`, which outranks `Idle`, which outranks `Exited`.
+///
+/// This one table is the fix for the rail sort and the collapsed-parent
+/// roll-up disagreeing on `Done` vs `Idle`: both now read from here, so they
+/// cannot drift apart again. It also deliberately makes `Done` outrank
+/// `Working` for the collapsed-row roll-up too — a finished agent needs the
+/// user's attention, a working one does not.
+pub fn attention_rank(s: ActivityState) -> u8 {
+    match s {
+        ActivityState::WaitingForInput => 0,
+        ActivityState::Done => 1,
+        ActivityState::Working => 2,
+        ActivityState::Idle => 3,
+        ActivityState::Exited => 4,
+    }
+}
+
 fn urgency_rank(s: ActivityState) -> Option<u8> {
     match s {
-        ActivityState::WaitingForInput => Some(3),
-        ActivityState::Working => Some(2),
-        ActivityState::Done => Some(1),
         ActivityState::Idle | ActivityState::Exited => None,
+        _ => Some(4 - attention_rank(s)),
     }
 }
 
@@ -109,6 +133,24 @@ pub struct Signals {
 /// Per-session bookkeeping kept between classification ticks.
 pub struct Tracker {
     pub state: ActivityState,
+    /// When `state` last actually changed — the rail's activity clock. Stamped
+    /// only on a real transition, never every tick, so it measures "how long
+    /// has this state held" rather than "how long has this tracker existed".
+    pub state_since: Instant,
+    /// The rail's last-active clock: stamped on every classification tick
+    /// where the session is genuinely `Working`, regardless of whether the
+    /// state actually changed, plus once when the user acknowledges the
+    /// session ([`Tracker::acknowledge`]) — "last worked on **or** last
+    /// interacted with". Unlike `state_since` no classified state other than
+    /// `Working` advances it (not `Idle`, `Done`, `WaitingForInput`, or
+    /// `Exited`), so a `Working` <-> `Idle` flap — which re-stamps
+    /// `state_since` on every transition — leaves this clock untouched. This
+    /// is the `IN PROGRESS` / `IDLE` sort key, and the `IDLE_DWELL` cutoff
+    /// between those two sections, precisely because of that: it measures
+    /// "how long since this session did real work", not "how long has the
+    /// current state held", so a flap can repaint a card without ever
+    /// moving its row.
+    pub last_active: Instant,
     /// Sticky "was Working since last acknowledgment" flag.
     pub was_working: bool,
     /// The terminal's bell count we've already consumed.
@@ -121,6 +163,8 @@ impl Default for Tracker {
     fn default() -> Self {
         Self {
             state: ActivityState::Idle,
+            state_since: Instant::now(),
+            last_active: Instant::now(),
             was_working: false,
             bell_seen: 0,
             bell_pending: false,
@@ -131,7 +175,16 @@ impl Default for Tracker {
 impl Tracker {
     /// Acknowledge pending attention: called when the user focuses the
     /// session. Bell clears, working-history resets, urgent states downgrade.
+    ///
+    /// Acknowledgment also stamps `last_active`: that clock means "last worked
+    /// on **or** last interacted with", so the session the user just opened is
+    /// the most recent thing in the rail rather than sinking below sessions the
+    /// agent happened to touch more recently. The deliberate consequence: an
+    /// acknowledged `Done` session lands at the *top* of `IN PROGRESS` (fresh
+    /// `last_active`, non-`Working`, inside `IDLE_DWELL`) — correct, because
+    /// the user is working in it right now.
     pub fn acknowledge(&mut self) {
+        self.last_active = Instant::now();
         self.bell_pending = false;
         self.was_working = false;
         if matches!(
@@ -593,6 +646,8 @@ mod tests {
     fn acknowledge_clears_bell_and_downgrades() {
         let mut t = Tracker {
             state: ActivityState::WaitingForInput,
+            state_since: Instant::now(),
+            last_active: Instant::now(),
             was_working: true,
             bell_seen: 3,
             bell_pending: true,
@@ -607,6 +662,8 @@ mod tests {
     fn acknowledge_leaves_working_alone() {
         let mut t = Tracker {
             state: ActivityState::Working,
+            state_since: Instant::now(),
+            last_active: Instant::now(),
             was_working: true,
             bell_seen: 0,
             bell_pending: true,
@@ -616,16 +673,41 @@ mod tests {
         assert!(!t.bell_pending);
     }
 
+    /// Acknowledgment counts as activity: `last_active` advances, so the
+    /// session the user just opened sorts as the most recent one.
+    #[test]
+    fn acknowledge_advances_last_active() {
+        // Fallback is *now* on a clock too young to subtract from, which makes
+        // the assertions below fail loudly rather than pass by accident.
+        let old = Instant::now()
+            .checked_sub(Duration::from_secs(600))
+            .unwrap_or_else(Instant::now);
+        let mut t = Tracker {
+            state: ActivityState::Done,
+            state_since: old,
+            last_active: old,
+            was_working: true,
+            bell_seen: 0,
+            bell_pending: true,
+        };
+        t.acknowledge();
+        assert!(t.last_active > old);
+        assert!(t.last_active.elapsed() < Duration::from_millis(100));
+    }
+
     // ── most_urgent roll-up (Plan 05) ───────────────────────────────────────
 
     #[test]
-    fn waiting_outranks_working_outranks_done() {
+    fn waiting_outranks_done_outranks_working() {
+        // The single `attention_rank` table intentionally makes `Done`
+        // outrank `Working` here too: a finished agent needs the user, a
+        // working one does not.
         use ActivityState::{Done, WaitingForInput, Working};
         assert_eq!(
             most_urgent([Done, Working, WaitingForInput].into_iter()),
             Some(WaitingForInput)
         );
-        assert_eq!(most_urgent([Done, Working].into_iter()), Some(Working));
+        assert_eq!(most_urgent([Done, Working].into_iter()), Some(Done));
         assert_eq!(most_urgent([Done].into_iter()), Some(Done));
     }
 

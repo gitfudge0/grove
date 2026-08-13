@@ -199,6 +199,35 @@ impl ActivityStore {
         self.trackers.entry(id).or_default().state = state;
     }
 
+    /// When a session's classified state last actually changed — the rail's
+    /// activity clock. `None` for a session with no tracker yet.
+    #[must_use]
+    pub fn since_of(&self, id: SessionId) -> Option<Instant> {
+        self.trackers.get(&id).map(|t| t.state_since)
+    }
+
+    /// Force a session's `state_since`. Test-only, alongside
+    /// [`Self::set_state_for_test`].
+    #[cfg(test)]
+    pub fn set_state_since_for_test(&mut self, id: SessionId, since: Instant) {
+        self.trackers.entry(id).or_default().state_since = since;
+    }
+
+    /// When a session last did genuine work — advances only on ticks where
+    /// the session classifies as `Working`, regardless of state transitions.
+    /// `None` for a session with no tracker yet.
+    #[must_use]
+    pub fn active_of(&self, id: SessionId) -> Option<Instant> {
+        self.trackers.get(&id).map(|t| t.last_active)
+    }
+
+    /// Force a session's `last_active`. Test-only, alongside
+    /// [`Self::set_state_since_for_test`].
+    #[cfg(test)]
+    pub fn set_last_active_for_test(&mut self, id: SessionId, at: Instant) {
+        self.trackers.entry(id).or_default().last_active = at;
+    }
+
     /// Needs-attention pulse phase in `[0, 1]` (0 = fully opaque, 1 = maximum
     /// dim), so callers interpolate unconditionally.
     #[must_use]
@@ -429,6 +458,11 @@ impl ActivityStore {
             let tracker = self.trackers.entry(*id).or_default();
             if new_state == ActivityState::Working {
                 tracker.was_working = true;
+                // Unconditional — outside the changed-guard below — so a
+                // session that stays Working tick after tick keeps advancing
+                // its last-active clock, not just on the transition into
+                // Working. Never stamped for any other state.
+                tracker.last_active = Instant::now();
             }
             if !alive {
                 tracker.was_working = false;
@@ -446,6 +480,7 @@ impl ActivityStore {
             if tracker.state != new_state {
                 changed = true;
                 tracker.state = new_state;
+                tracker.state_since = Instant::now();
             }
         }
 

@@ -255,10 +255,17 @@ pub enum TreeRow {
         /// The worktree's name — the second line's leading run.
         worktree: String,
         project: String,
-        /// The session's own label (`claude 1`), not the agent's name: two
-        /// claude sessions on one branch are otherwise indistinguishable.
-        agent_label: String,
-        /// Time since `spawned_at`, already formatted ([`elapsed_short`]).
+        /// The worktree's branch, shown on the meta line in place of the
+        /// session label — suppressed (empty display) when it duplicates
+        /// [`Self::SessionCard::worktree`] ([`worktree_shows_branch`]), same
+        /// rule as the tree's branch chip. Falls back to `""` when the
+        /// worktree isn't in the snapshot's cache yet.
+        branch: String,
+        /// Time since the session's activity state last changed
+        /// ([`ActivityStore::since_of`]), already formatted
+        /// ([`elapsed_short`]) — falls back to time since `spawned_at` only
+        /// for a session `since_of` doesn't know about yet. Shown on the
+        /// second line, trailing the state word.
         elapsed: String,
         active: bool,
         pending_kill: bool,
@@ -274,6 +281,10 @@ pub enum TreeRow {
         title: &'static str,
         subtitle: &'static str,
     },
+    /// A static, non-collapsible section label above one of the sessions
+    /// rail's four sections (`NEEDS YOU`, `REVIEW`, `WORKING`, `IDLE`). No chevron, no toggle, no activity dot — unlike
+    /// [`Self::TerminalsHeader`] it never responds to a click.
+    SectionHeader { label: &'static str },
     TerminalsHeader {
         expanded: bool,
         count: usize,
@@ -415,19 +426,6 @@ fn push_terminals(rows: &mut Vec<TreeRow>, ws: &WorkspaceState, home_running: &[
     }
 }
 
-/// Attention band of a session state, low number first. The fixed,
-/// non-configurable order the sessions rail sorts on: needs-you → working →
-/// idle → done → exited.
-fn attention_band(state: ActivityState) -> u8 {
-    match state {
-        ActivityState::WaitingForInput => 0,
-        ActivityState::Working => 1,
-        ActivityState::Idle => 2,
-        ActivityState::Done => 3,
-        ActivityState::Exited => 4,
-    }
-}
-
 /// The registry facts a session card is built from, lifted out by the view so
 /// [`flatten_sessions`] can join them without reaching into an entity (module
 /// doc, carried amendment 2).
@@ -507,15 +505,75 @@ pub fn elapsed_short(d: std::time::Duration) -> String {
     }
 }
 
-/// Build the rail's **sessions** content mode: every session in every project,
-/// flat and unnested, sorted attention-first and most-recent-activity within
-/// each band, followed by the same docked TERMINALS tail [`flatten`] emits.
+/// One session as [`flatten_sessions`] resolves it before sorting: its id, its
+/// state, its `since_of` (last state transition) and its `active_of` (last
+/// genuine `Working` tick). The last two are kept apart because the sections
+/// key off different clocks.
+type SessionRow = (
+    SessionId,
+    ActivityState,
+    Option<std::time::Instant>,
+    Option<std::time::Instant>,
+);
+
+/// Build the rail's **sessions** content mode: every session in every
+/// project, flat and unnested, split into four labelled sections, followed by
+/// the same docked TERMINALS tail [`flatten`] emits. Each section is preceded
+/// by its own header, emitted only when that section is non-empty.
+///
+/// **`NEEDS YOU`** (`WaitingForInput` only) and **`REVIEW`** (`Done` only) are
+/// deliberately separate sections rather than one merged "needs attention"
+/// pile, even though both once lived in a single `NEEDS YOU` band ranked by
+/// [`crate::activity::attention_rank`]. `WaitingForInput` is an agent stuck mid-task: transient
+/// and self-clearing, one keystroke frees it. `Done` is a finished turn nobody
+/// has read yet: sticky, and it accumulates the longer it goes unacknowledged.
+/// Merging them turned the needs-you group into a review pile — a handful of
+/// `Done` cards sitting on top of, or crowding out, the one agent that is
+/// actually blocked waiting on the user. Splitting them means a single
+/// `WaitingForInput` session can never be buried under a stack of `Done`
+/// cards: it always has its own section, always first.
+///
+/// Both of these sections sort by [`ActivityStore::since_of`] ascending —
+/// longest-blocked / longest-unread first — then id ascending, so a session
+/// that has been waiting (or sitting unread) the longest stays on top and new
+/// arrivals append at the bottom rather than shoving it down. Neither
+/// comparator needs [`crate::activity::attention_rank`] any more: every card within a section
+/// already shares that section's single state, so the rank would be a
+/// constant. [`crate::activity::attention_rank`] itself stays in `src/activity.rs` — it still
+/// backs `urgency_rank`/[`most_urgent`] for the collapsed-row roll-up.
+///
+/// Everything else splits into **`WORKING`** and **`IDLE`** by
+/// [`ActivityStore::active_of`] against [`crate::activity::IDLE_DWELL`]:
+/// `Working` is always `WORKING`, and a non-`Waiting`/non-`Done` live session
+/// stays in `WORKING` while its last genuine `Working` tick is younger than
+/// the dwell. `IDLE` is everything left over: a session quiet past the dwell,
+/// and `Exited` unconditionally — the process is gone, no clock can argue it
+/// back into flight, regardless of how fresh `last_active` looks. The dwell
+/// governs **position only** — the card's colour, glyph and state word stay
+/// instantly responsive to the real state.
+///
+/// Both `WORKING` and `IDLE` sort by [`ActivityStore::active_of`] descending —
+/// most-recently-*working* first — and that key deliberately excludes both
+/// [`ActivityState`] and [`ActivityStore::since_of`]. `since_of`/`state_since`
+/// re-stamps on every state transition, including a routine `Working` -\>
+/// `Idle` flap, so sorting by it would just move the churn from band-jumping
+/// to top-of-list-jumping — the exact defect this split exists to kill.
+/// `active_of`/`last_active` only advances while a session is genuinely
+/// `Working` (or when the user acknowledges it), so a state transition alone —
+/// a flap — can repaint a card without ever moving its row, and the dwell
+/// keeps that flap from bouncing the row between the two sections either.
+/// Within `IDLE`, `Exited` sorts after every `Idle` card regardless of clock —
+/// a dead process is definitionally the least-recently-active thing on the
+/// rail, not something whose stale `last_active` should let it outrank a live
+/// one.
 ///
 /// `info` is the per-session registry data the view resolved ([`SessionInfo`]);
 /// `git` is the off-thread git-state cache keyed by worktree path. Both are
 /// joined **here**, so the emitted [`TreeRow::SessionCard`]s carry every fact
 /// their renderer needs and nothing looks back into state per frame. A session
-/// with no `info` entry sorts oldest.
+/// with no [`ActivityStore::since_of`] (`NEEDS YOU` / `REVIEW`) or
+/// [`ActivityStore::active_of`] (`WORKING` / `IDLE`) entry sorts as oldest; a
+/// clockless non-`Working` session is `IDLE`, having no evidence of work.
 #[must_use]
 pub fn flatten_sessions(
     snap: &TreeSnapshot,
@@ -528,79 +586,174 @@ pub fn flatten_sessions(
     // `SnapshotProject::sessions` is keyed by project *name*, so it covers
     // projects whose worktree cache has never been populated — the worktree
     // walk would silently drop those.
-    let mut sessions: Vec<(u8, SessionId, ActivityState)> = snap
+    // The fourth field is `active_of` (last genuine `Working` tick), kept
+    // separate from `since_of` (third field, last state transition) because
+    // the sections deliberately key off different clocks below.
+    let now = std::time::Instant::now();
+    let all: Vec<SessionRow> = snap
         .projects
         .iter()
         .flat_map(|p| p.sessions.iter().copied())
         .map(|id| {
-            let state = activity.state_of(id);
-            (attention_band(state), id, state)
+            (
+                id,
+                activity.state_of(id),
+                activity.since_of(id),
+                activity.active_of(id),
+            )
         })
         .collect();
-    // Most recent first inside a band. `spawned_at` is the only clock the
-    // registry keeps, so it is the recency key; ids break ties (they are
-    // monotonic, so the newer session still wins).
-    sessions.sort_by(|a, b| {
-        let (sa, sb) = (
-            info.get(&a.1).map(|i| i.spawned_at),
-            info.get(&b.1).map(|i| i.spawned_at),
-        );
-        a.0.cmp(&b.0)
-            .then_with(|| sb.cmp(&sa))
-            .then_with(|| b.1.cmp(&a.1))
+
+    // `NEEDS YOU` and `REVIEW` are split by state alone: `WaitingForInput` is
+    // transient and self-clearing (one keystroke frees it), `Done` is sticky
+    // and accumulates until acknowledged. Merging them buries the one truly
+    // blocked agent under a pile of finished-but-unread turns.
+    let needs_you_state = |s: ActivityState| matches!(s, ActivityState::WaitingForInput);
+    let review_state = |s: ActivityState| matches!(s, ActivityState::Done);
+
+    let mut needs_you: Vec<_> = all
+        .iter()
+        .filter(|(_, s, ..)| needs_you_state(*s))
+        .collect();
+    let mut review: Vec<_> = all.iter().filter(|(_, s, ..)| review_state(*s)).collect();
+
+    // Position-only dwell: `Exited` is always `IDLE` (the process is gone, so
+    // no clock can put it back in flight), `Working` is always `WORKING`, and
+    // any other live session (i.e. `Idle` — `Waiting`/`Done` are already
+    // carved out above) holds its `WORKING` slot while its last genuine
+    // `Working` tick is younger than `IDLE_DWELL`. A session with no
+    // `active_of` at all has never been seen working: `IDLE`.
+    let working_state = |s: ActivityState, active: Option<std::time::Instant>| match s {
+        ActivityState::Exited => false,
+        ActivityState::Working => true,
+        _ => active.is_some_and(|a| now.saturating_duration_since(a) < crate::activity::IDLE_DWELL),
+    };
+
+    let rest = |(_, s, ..): &&SessionRow| !needs_you_state(*s) && !review_state(*s);
+    let mut working: Vec<_> = all
+        .iter()
+        .filter(|row @ (_, s, _, a)| rest(row) && working_state(*s, *a))
+        .collect();
+    let mut idle: Vec<_> = all
+        .iter()
+        .filter(|row @ (_, s, _, a)| rest(row) && !working_state(*s, *a))
+        .collect();
+
+    // Longest-blocked / longest-unread first: `since` ascending, `None` (no
+    // clock yet) sorts as oldest via `Option`'s derived order (`None` <
+    // `Some(_)`). id breaks exact ties deterministically so `sort_by` never
+    // sees a non-transitive comparator. `attention_rank` is deliberately not
+    // part of this comparator: every card in one of these sections already
+    // shares that section's single state, so the rank would be constant.
+    let by_since_asc = |a: &&SessionRow, b: &&SessionRow| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0));
+    needs_you.sort_by(by_since_asc);
+    review.sort_by(by_since_asc);
+
+    // Most-recently-*working* first, in both sections: `active_of` (field 3,
+    // `last_active`) descending, `None` sorting as oldest (last here) via the
+    // same derived `Option` order, reversed. Deliberately NOT
+    // `since_of`/`state_since` (field 2): that clock re-stamps on every state
+    // transition, including a routine `Working` -\> `Idle` flap, so keying
+    // these sections on it would just relocate the churn the split exists to
+    // kill — from band-jumping to top-of-list-jumping. `active_of` only
+    // advances on a genuine `Working` tick (or an acknowledgment), so a state
+    // transition alone can never move a row.
+    let by_active_desc =
+        |a: &&SessionRow, b: &&SessionRow| b.3.cmp(&a.3).then_with(|| b.0.cmp(&a.0));
+    working.sort_by(by_active_desc);
+    // Inside IDLE, `Exited` sorts after every `Idle` card regardless of
+    // clock: a leading `matches!(.., Exited)` bool key (`false < true`, so
+    // `Exited` sorts last) takes priority over `active_of`, which is only a
+    // tiebreak among the non-Exited cards and among the Exited ones.
+    idle.sort_by(|a, b| {
+        matches!(a.1, ActivityState::Exited)
+            .cmp(&matches!(b.1, ActivityState::Exited))
+            .then_with(|| by_active_desc(a, b))
     });
+
+    let mut ordered: Vec<(&'static str, Vec<(SessionId, ActivityState)>)> = Vec::with_capacity(4);
+    for (label, section) in [
+        ("NEEDS YOU", &needs_you),
+        ("REVIEW", &review),
+        ("WORKING", &working),
+        ("IDLE", &idle),
+    ] {
+        if !section.is_empty() {
+            ordered.push((label, section.iter().map(|(id, s, ..)| (*id, *s)).collect()));
+        }
+    }
 
     // Worktree path → worktree name, built once: the card names the worktree
     // its session lives in, and the session only knows the path it was
     // spawned in.
-    let worktrees: HashMap<&str, &str> = snap
+    let worktrees: HashMap<&str, (&str, &str)> = snap
         .projects
         .iter()
         .flat_map(|p| p.worktrees.iter())
-        .map(|w| (normalize_wt_path(&w.path), w.name.as_str()))
-        .collect();
-    let now = std::time::Instant::now();
-
-    let mut rows: Vec<TreeRow> = sessions
-        .into_iter()
-        .map(|(_, id, state)| {
-            let meta = info.get(&id);
-            let wt_path = meta.map_or("", |i| i.wt_path.as_str());
-            // A worktree the snapshot has not cached yet still has a name in
-            // its path — better than a blank run.
-            let worktree = worktrees
-                .get(normalize_wt_path(wt_path))
-                .map_or_else(|| path_basename(wt_path), |w| (*w).to_string());
-            // A **missing** entry is not a clean worktree: it is the poll not
-            // having answered yet. Both sides of the join are normalized so a
-            // trailing slash cannot manufacture a miss.
-            let diff = git
-                .get(normalize_wt_path(wt_path))
-                .map(|g| (g.added, g.removed));
-            TreeRow::SessionCard {
-                id,
-                agent: meta.map_or(Agent::Terminal, |i| i.agent),
-                // The OSC title is what the agent is *doing*; the label is
-                // only who it is. Prefer the former, fall back to the latter
-                // — an agent that never set a title still gets a headline.
-                title: meta
-                    .map(|i| i.title.clone().unwrap_or_else(|| i.label.clone()))
-                    .unwrap_or_default(),
-                worktree,
-                project: meta.map(|i| i.project.clone()).unwrap_or_default(),
-                agent_label: meta.map(|i| i.label.clone()).unwrap_or_default(),
-                elapsed: meta.map_or_else(String::new, |i| {
-                    elapsed_short(now.saturating_duration_since(i.spawned_at))
-                }),
-                // Same rule as the tree: a session must not look active while
-                // a home terminal is on screen (`sidebar.rs:338`).
-                active: !ws.terminal_focused() && ws.active_session() == Some(id),
-                pending_kill: ws.pending_kill() == Some(id),
-                state,
-                diff,
-            }
+        .map(|w| {
+            (
+                normalize_wt_path(&w.path),
+                (w.name.as_str(), w.branch.as_str()),
+            )
         })
         .collect();
+
+    let mut rows: Vec<TreeRow> = Vec::with_capacity(all.len() + ordered.len());
+    let card = |(id, state): (SessionId, ActivityState)| {
+        let meta = info.get(&id);
+        let wt_path = meta.map_or("", |i| i.wt_path.as_str());
+        // A worktree the snapshot has not cached yet still has a name in
+        // its path — better than a blank run.
+        let worktree = worktrees
+            .get(normalize_wt_path(wt_path))
+            .map_or_else(|| path_basename(wt_path), |(name, _)| (*name).to_string());
+        // Same fallback degradation as the worktree name above: a worktree
+        // the snapshot hasn't cached yet has no known branch either.
+        let branch = worktrees
+            .get(normalize_wt_path(wt_path))
+            .map_or_else(String::new, |(_, b)| (*b).to_string());
+        // A **missing** entry is not a clean worktree: it is the poll not
+        // having answered yet. Both sides of the join are normalized so a
+        // trailing slash cannot manufacture a miss.
+        let diff = git
+            .get(normalize_wt_path(wt_path))
+            .map(|g| (g.added, g.removed));
+        // Age is time since the state last changed — last activity — not
+        // since the session spawned; only a session `since_of` doesn't know
+        // about yet falls back to the spawn-time clock.
+        let elapsed = activity.since_of(id).map_or_else(
+            || {
+                meta.map_or_else(String::new, |i| {
+                    elapsed_short(now.saturating_duration_since(i.spawned_at))
+                })
+            },
+            |since| elapsed_short(now.saturating_duration_since(since)),
+        );
+        TreeRow::SessionCard {
+            id,
+            agent: meta.map_or(Agent::Terminal, |i| i.agent),
+            // The OSC title is what the agent is *doing*; the label is
+            // only who it is. Prefer the former, fall back to the latter
+            // — an agent that never set a title still gets a headline.
+            title: meta
+                .map(|i| i.title.clone().unwrap_or_else(|| i.label.clone()))
+                .unwrap_or_default(),
+            worktree,
+            project: meta.map(|i| i.project.clone()).unwrap_or_default(),
+            branch,
+            elapsed,
+            // Same rule as the tree: a session must not look active while
+            // a home terminal is on screen (`sidebar.rs:338`).
+            active: !ws.terminal_focused() && ws.active_session() == Some(id),
+            pending_kill: ws.pending_kill() == Some(id),
+            state,
+            diff,
+        }
+    };
+    for (label, section) in ordered {
+        rows.push(TreeRow::SectionHeader { label });
+        rows.extend(section.into_iter().map(card));
+    }
 
     if rows.is_empty() {
         let (title, subtitle) = sidebar_empty_copy(snap.total_projects, snap.projects.len())
@@ -810,6 +963,7 @@ pub fn render_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         } => session_row(*id, *active, *pending_kill, *state, ctx),
         TreeRow::SessionCard { .. } => session_card(row, ctx),
         TreeRow::Empty { title, subtitle } => empty_row(title, subtitle),
+        TreeRow::SectionHeader { label } => section_header(label),
         TreeRow::TerminalsHeader {
             expanded,
             count,
@@ -1307,8 +1461,8 @@ pub fn diff_chips(diff: Option<(u32, u32)>) -> AnyElement {
 
 /// The sessions rail's card (mock D11). One [`card`] holding one
 /// [`RowDensity::Card`] row of three text lines: the agent's glyph with the
-/// session title as the headline; the worktree with the state; and
-/// `project · agent · elapsed` with the diff stat underneath.
+/// session title as the headline; the worktree with the state and age; and
+/// `project · branch` with the diff stat underneath.
 ///
 /// Every state treatment is a *fill or an overlay*, never a size: the card's
 /// box is pinned to [`SESSION_CARD_H`] (the same token [`TreeRow::height`]
@@ -1321,7 +1475,7 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         title,
         worktree,
         project,
-        agent_label,
+        branch,
         elapsed,
         active,
         pending_kill,
@@ -1384,9 +1538,9 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         )
         .child(div().flex().flex_none().ml_auto().child(close));
 
-    // The worktree line: what this session is working in, and what it is doing
-    // right now. The diff stat sits on the meta line below, next to the rest of
-    // the card's metadata.
+    // The worktree line: what this session is working in, what it is doing
+    // right now, and how long it has been in that state. The diff stat sits on
+    // the meta line below, next to the rest of the card's metadata.
     let context_line = div()
         .flex()
         .w_full()
@@ -1408,13 +1562,17 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
                 .items_center()
                 .gap(rpx(SPACE_SM))
                 .child(card_state_mark(*state, accent, ctx.tick))
-                .child(ui(word, TEXT_MICRO, accent)),
+                .child(ui(word, TEXT_MICRO, accent))
+                .child(ui(elapsed.clone(), TEXT_MICRO, c::FG_MUTE())),
         );
 
-    // The meta line carries the diff stat at its trailing edge. Its chips are
-    // `TEXT_MICRO` in a `keycap_filled` shell, shorter than the `TEXT_SMALL`
-    // run they sit beside, so the line still fits `CARD_LINE_SM_H` and the
-    // height `TreeRow::height` reports stays true.
+    // The meta line: `project · branch` — the branch is suppressed
+    // (`worktree_shows_branch`) when it duplicates the worktree name already
+    // shown on the line above, same rule as the tree's branch chip. The diff
+    // stat sits at its trailing edge; its chips are `TEXT_MICRO` in a
+    // `keycap_filled` shell, shorter than the `TEXT_SMALL` run they sit
+    // beside, so the line still fits `CARD_LINE_SM_H` and the height
+    // `TreeRow::height` reports stays true.
     let meta = div()
         .flex()
         .w_full()
@@ -1424,7 +1582,11 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         .child(
             div().flex().min_w_0().overflow_hidden().child(
                 ui(
-                    format!("{project} · {agent_label} · {elapsed}"),
+                    if worktree_shows_branch(false, branch, worktree) {
+                        format!("{project} · {branch}")
+                    } else {
+                        project.clone()
+                    },
                     TEXT_SMALL,
                     c::FG_MUTE(),
                 )
@@ -1522,6 +1684,28 @@ fn empty_row(title: &'static str, subtitle: &'static str) -> AnyElement {
         .gap(rpx(SPACE_MD))
         .child(ui(title, TEXT_TITLE, c::FG_DIM()))
         .child(ui(subtitle, TEXT_BODY, c::FG_MUTE()))
+        .into_any_element()
+}
+
+/// A static, non-collapsible section label above one of the sessions rail's
+/// four sections (`NEEDS YOU`, `REVIEW`, `WORKING`, `IDLE`). Same typography/colour as [`terminals_header`]'s label
+/// (mono, [`TEXT_MICRO`], [`c::FG_MUTE`]) but with no chevron, no toggle
+/// action and no activity dot — it never collapses.
+fn section_header(label: &'static str) -> AnyElement {
+    div()
+        .id("sessions-section-header")
+        .h(rpx(ROW_H))
+        .w_full()
+        .flex()
+        .items_center()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(rpx(SPACE_MD))
+                .pl(rpx(SPACE_2XL))
+                .child(mono(tracked(label), TEXT_MICRO, c::FG_MUTE())),
+        )
         .into_any_element()
 }
 
@@ -1824,6 +2008,17 @@ mod tests {
     }
 
     /// A compact shape description, so order assertions read as the tree.
+    /// An instant `d` in the past. `Instant` has no past literal, and a bare
+    /// `now - d` is an unchecked subtraction the lint rejects. On a monotonic
+    /// clock too young to subtract from, the fallback is *now* — which makes
+    /// every "this is stale" assertion below fail loudly rather than pass by
+    /// accident.
+    fn ago(d: std::time::Duration) -> std::time::Instant {
+        std::time::Instant::now()
+            .checked_sub(d)
+            .unwrap_or_else(std::time::Instant::now)
+    }
+
     fn shape(rows: &[TreeRow]) -> Vec<String> {
         rows.iter()
             .map(|r| match r {
@@ -1832,6 +2027,7 @@ mod tests {
                 TreeRow::Session { id, .. } => format!("S{}", id.raw()),
                 TreeRow::SessionCard { id, .. } => format!("C{}", id.raw()),
                 TreeRow::Empty { title, .. } => format!("E:{title}"),
+                TreeRow::SectionHeader { label } => format!("H:{label}"),
                 TreeRow::TerminalsHeader { count, .. } => format!("TH{count}"),
                 TreeRow::Terminal { idx, .. } => format!("T{idx}"),
             })
@@ -1860,48 +2056,275 @@ mod tests {
         );
     }
 
-    /// The sessions content mode: every session, flat, attention band first
-    /// and most-recent `spawned_at` inside a band.
+    /// The sessions content mode: labelled sections, each headed and each in
+    /// its own order. The fixture only has three sessions, so this exercises
+    /// three of the four sections (`NEEDS YOU`, `WORKING`, `IDLE`); `REVIEW`
+    /// is covered by the dedicated tests below.
     #[test]
-    fn the_sessions_mode_is_flat_and_sorted_attention_first() {
+    fn the_sessions_mode_splits_into_headed_sections() {
         let snap = fixture();
         let mut activity = ActivityStore::new();
-        // s1 idle (default), s2 needs-you, s3 working.
+        // s1 idle (default, no tracker at all — clockless, so IDLE), s2
+        // needs-you, s3 working (always WORKING).
         activity.set_state_for_test(sid(2), ActivityState::WaitingForInput);
         activity.set_state_for_test(sid(3), ActivityState::Working);
+        activity.set_state_since_for_test(sid(3), std::time::Instant::now());
         let mut ws = WorkspaceState::default();
         ws.toggle_terminals_collapsed();
         let rows = flatten_sessions(&snap, &ws, &activity, &HashMap::new(), &HashMap::new(), &[]);
-        assert_eq!(shape(&rows), vec!["C2", "C3", "C1"]);
+        assert_eq!(
+            shape(&rows),
+            vec!["H:NEEDS YOU", "C2", "H:WORKING", "C3", "H:IDLE", "C1"]
+        );
     }
 
+    /// `WaitingForInput` and `Done` land in NEEDS YOU and REVIEW
+    /// respectively, and never in each other's section.
     #[test]
-    fn the_sessions_mode_puts_the_newest_first_inside_a_band() {
+    fn a_waiting_card_and_a_done_card_land_in_separate_sections() {
         let snap = fixture();
-        let base = std::time::Instant::now();
-        let spawned = HashMap::from([
-            (sid(1), info("alpha", "/a", base)),
-            (
-                sid(2),
-                info("alpha", "/a", base + std::time::Duration::from_secs(2)),
-            ),
-            (
-                sid(3),
-                info("gamma", "/g", base + std::time::Duration::from_secs(1)),
-            ),
-        ]);
+        let mut activity = ActivityStore::new();
+        activity.set_state_for_test(sid(1), ActivityState::WaitingForInput);
+        activity.set_state_for_test(sid(2), ActivityState::Done);
         let mut ws = WorkspaceState::default();
         ws.toggle_terminals_collapsed();
-        // All three are Idle, so recency alone decides.
-        let rows = flatten_sessions(
+        let rows = flatten_sessions(&snap, &ws, &activity, &HashMap::new(), &HashMap::new(), &[]);
+        // s3 has no tracker at all (clockless), so it falls to IDLE.
+        assert_eq!(
+            shape(&rows),
+            vec!["H:NEEDS YOU", "C1", "H:REVIEW", "C2", "H:IDLE", "C3"]
+        );
+    }
+
+    /// The regression this split exists to fix: a single blocked
+    /// `WaitingForInput` session must never get buried under a pile of
+    /// `Done` reviews, no matter how much longer those reviews have been
+    /// sitting unread. `NEEDS YOU` is a whole section ahead of `REVIEW`, not
+    /// merely a higher rank within one shared section.
+    #[test]
+    fn a_waiting_session_never_gets_buried_under_done_reviews() {
+        let snap = fixture();
+        let mut activity = ActivityStore::new();
+        let base = std::time::Instant::now();
+        // s1, s3: Done, unread far longer than s2's wait.
+        activity.set_state_for_test(sid(1), ActivityState::Done);
+        activity.set_state_since_for_test(sid(1), base);
+        activity.set_state_for_test(sid(3), ActivityState::Done);
+        activity.set_state_since_for_test(sid(3), base + std::time::Duration::from_secs(5));
+        // s2: WaitingForInput, but only just started waiting.
+        activity.set_state_for_test(sid(2), ActivityState::WaitingForInput);
+        activity.set_state_since_for_test(sid(2), base + std::time::Duration::from_secs(100));
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let rows = flatten_sessions(&snap, &ws, &activity, &HashMap::new(), &HashMap::new(), &[]);
+        assert_eq!(
+            shape(&rows),
+            vec!["H:NEEDS YOU", "C2", "H:REVIEW", "C1", "C3"]
+        );
+    }
+
+    /// REVIEW orders longest-unread first, same rule as NEEDS YOU: `since_of`
+    /// ascending.
+    #[test]
+    fn the_review_zone_sorts_longest_unread_first() {
+        let snap = fixture();
+        let mut activity = ActivityStore::new();
+        let base = std::time::Instant::now();
+        activity.set_state_for_test(sid(1), ActivityState::Done);
+        activity.set_state_since_for_test(sid(1), base);
+        activity.set_state_for_test(sid(3), ActivityState::Done);
+        activity.set_state_since_for_test(sid(3), base + std::time::Duration::from_secs(10));
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let rows = flatten_sessions(&snap, &ws, &activity, &HashMap::new(), &HashMap::new(), &[]);
+        // s2 has no tracker at all (clockless), so it falls to IDLE.
+        assert_eq!(shape(&rows), vec!["H:REVIEW", "C1", "C3", "H:IDLE", "C2"]);
+    }
+
+    /// No `NEEDS YOU` header — not even an empty one — when nothing is
+    /// waiting: only the sections that actually have rows are headed.
+    #[test]
+    fn the_needs_you_header_is_absent_when_that_section_is_empty() {
+        let snap = fixture();
+        let mut activity = ActivityStore::new();
+        activity.set_state_for_test(sid(2), ActivityState::Working);
+        activity.set_state_for_test(sid(3), ActivityState::Idle);
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let rows = flatten_sessions(&snap, &ws, &activity, &HashMap::new(), &HashMap::new(), &[]);
+        let shape = shape(&rows);
+        assert!(!shape.contains(&"H:NEEDS YOU".to_string()));
+        // s2 (Working) and s3 (Idle, but `set_state_for_test` gives it a
+        // fresh `last_active` inside the dwell) are WORKING; s1 has no
+        // tracker at all, so it is clockless and IDLE.
+        assert_eq!(shape, vec!["H:WORKING", "C3", "C2", "H:IDLE", "C1"]);
+    }
+
+    /// No `REVIEW` header when nothing is `Done`.
+    #[test]
+    fn the_review_header_is_absent_when_that_section_is_empty() {
+        let snap = fixture();
+        let mut activity = ActivityStore::new();
+        activity.set_state_for_test(sid(2), ActivityState::WaitingForInput);
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let rows = flatten_sessions(&snap, &ws, &activity, &HashMap::new(), &HashMap::new(), &[]);
+        assert!(!shape(&rows).contains(&"H:REVIEW".to_string()));
+    }
+
+    /// No `IDLE` header when every live session is in flight, and no
+    /// `WORKING` header when none of them is.
+    #[test]
+    fn the_working_and_idle_headers_are_each_absent_when_their_section_is_empty() {
+        let snap = fixture();
+        let now = std::time::Instant::now();
+        // Everything Working: WORKING only.
+        let mut activity = ActivityStore::new();
+        for n in 1..=3 {
+            activity.set_state_for_test(sid(n), ActivityState::Working);
+            activity.set_last_active_for_test(sid(n), now);
+        }
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let rows = flatten_sessions(&snap, &ws, &activity, &HashMap::new(), &HashMap::new(), &[]);
+        let shape_working = shape(&rows);
+        assert!(!shape_working.contains(&"H:IDLE".to_string()));
+        assert_eq!(shape_working[0], "H:WORKING");
+
+        // Everything long-quiet: IDLE only.
+        let mut activity = ActivityStore::new();
+        let stale = ago(crate::activity::IDLE_DWELL + std::time::Duration::from_secs(1));
+        for n in 1..=3 {
+            activity.set_state_for_test(sid(n), ActivityState::Idle);
+            activity.set_last_active_for_test(sid(n), stale);
+        }
+        let rows = flatten_sessions(&snap, &ws, &activity, &HashMap::new(), &HashMap::new(), &[]);
+        let shape_idle = shape(&rows);
+        assert!(!shape_idle.contains(&"H:WORKING".to_string()));
+        assert_eq!(shape_idle[0], "H:IDLE");
+    }
+
+    /// `Exited` is IDLE unconditionally: the process is gone, so even a
+    /// last_active from a moment ago must not park it in WORKING.
+    #[test]
+    fn an_exited_session_is_idle_even_with_a_fresh_last_active() {
+        let snap = fixture();
+        let now = std::time::Instant::now();
+        let mut activity = ActivityStore::new();
+        activity.set_state_for_test(sid(1), ActivityState::Exited);
+        activity.set_last_active_for_test(sid(1), now);
+        activity.set_state_for_test(sid(2), ActivityState::Working);
+        activity.set_last_active_for_test(sid(2), now);
+        activity.set_state_for_test(sid(3), ActivityState::Exited);
+        activity.set_last_active_for_test(sid(3), now);
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let rows = flatten_sessions(&snap, &ws, &activity, &HashMap::new(), &HashMap::new(), &[]);
+        assert_eq!(shape(&rows), vec!["H:WORKING", "C2", "H:IDLE", "C3", "C1"]);
+    }
+
+    /// Inside IDLE, `Exited` sorts after every `Idle` card regardless of
+    /// clock: a dead process (fresh `last_active`) must not outrank a still
+    /// merely-quiet-past-the-dwell live session.
+    #[test]
+    fn exited_sorts_below_idle_inside_the_idle_section() {
+        let snap = fixture();
+        let now = std::time::Instant::now();
+        let mut activity = ActivityStore::new();
+        // s1: Idle, past the dwell — a genuinely stale live session.
+        activity.set_state_for_test(sid(1), ActivityState::Idle);
+        activity.set_last_active_for_test(
+            sid(1),
+            ago(crate::activity::IDLE_DWELL + std::time::Duration::from_secs(1)),
+        );
+        // s2: Working, so it lands in WORKING rather than muddying IDLE.
+        activity.set_state_for_test(sid(2), ActivityState::Working);
+        activity.set_last_active_for_test(sid(2), now);
+        // s3: Exited with a *fresh* last_active — must still sort below s1.
+        activity.set_state_for_test(sid(3), ActivityState::Exited);
+        activity.set_last_active_for_test(sid(3), now);
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let rows = flatten_sessions(&snap, &ws, &activity, &HashMap::new(), &HashMap::new(), &[]);
+        assert_eq!(shape(&rows), vec!["H:WORKING", "C2", "H:IDLE", "C1", "C3"]);
+    }
+
+    /// The invariant that matters most: WORKING / IDLE placement and ordering
+    /// key on `active_of`/`last_active`, never on the raw state or on
+    /// `since_of`/`state_since`. A `Working` -\> `Idle` flap re-stamps
+    /// `state_since` on every real tick but never touches `last_active`, so it
+    /// must neither reorder a row nor move it to another section — the card
+    /// repaints in place. `IDLE_DWELL` is what buys the second half of that:
+    /// with placement keyed on `state == Working` alone, the flapped session
+    /// (fresh `last_active`, state now `Idle`) would drop straight into IDLE
+    /// and the row index below would change.
+    #[test]
+    fn a_working_to_idle_flap_with_a_fresh_last_active_never_moves_a_row() {
+        let snap = fixture();
+        let mut activity = ActivityStore::new();
+        let base = std::time::Instant::now();
+        activity.set_state_for_test(sid(1), ActivityState::Working);
+        activity.set_state_since_for_test(sid(1), base);
+        activity.set_last_active_for_test(sid(1), base);
+        activity.set_state_for_test(sid(2), ActivityState::Idle);
+        activity.set_state_since_for_test(sid(2), base + std::time::Duration::from_secs(1));
+        activity.set_last_active_for_test(sid(2), base + std::time::Duration::from_secs(1));
+        activity.set_state_for_test(sid(3), ActivityState::Working);
+        activity.set_state_since_for_test(sid(3), base + std::time::Duration::from_secs(2));
+        activity.set_last_active_for_test(sid(3), base + std::time::Duration::from_secs(2));
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let before = shape(&flatten_sessions(
             &snap,
             &ws,
-            &ActivityStore::new(),
-            &spawned,
+            &activity,
+            &HashMap::new(),
             &HashMap::new(),
             &[],
+        ));
+        // All three are inside `IDLE_DWELL`, so the whole rail is WORKING.
+        assert_eq!(before, vec!["H:WORKING", "C3", "C2", "C1"]);
+
+        // Flip s1 Working -> Idle exactly as the real classification tick
+        // does: `state_since` re-stamps to a later instant (later than s2's
+        // and s3's) since the state actually changed, but `last_active` is
+        // left untouched — Idle never advances it.
+        activity.set_state_for_test(sid(1), ActivityState::Idle);
+        activity.set_state_since_for_test(sid(1), base + std::time::Duration::from_secs(3));
+        let after = shape(&flatten_sessions(
+            &snap,
+            &ws,
+            &activity,
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+        ));
+        assert_eq!(before, after);
+    }
+
+    /// The other side of the dwell: once `last_active` is older than
+    /// `IDLE_DWELL`, a non-`Working` session does fall through to IDLE.
+    #[test]
+    fn a_stale_last_active_falls_through_to_idle() {
+        let snap = fixture();
+        let now = std::time::Instant::now();
+        let mut activity = ActivityStore::new();
+        // s1: Idle but worked on a moment ago — still WORKING.
+        activity.set_state_for_test(sid(1), ActivityState::Idle);
+        activity.set_last_active_for_test(sid(1), now);
+        // s2: Idle and quiet for longer than the dwell — IDLE.
+        activity.set_state_for_test(sid(2), ActivityState::Idle);
+        activity.set_last_active_for_test(
+            sid(2),
+            ago(crate::activity::IDLE_DWELL + std::time::Duration::from_secs(1)),
         );
-        assert_eq!(shape(&rows), vec!["C2", "C3", "C1"]);
+        // s3: Idle and quiet for far longer — IDLE, below s2 (older clock).
+        activity.set_state_for_test(sid(3), ActivityState::Idle);
+        activity.set_last_active_for_test(sid(3), ago(crate::activity::IDLE_DWELL * 20));
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let rows = flatten_sessions(&snap, &ws, &activity, &HashMap::new(), &HashMap::new(), &[]);
+        assert_eq!(shape(&rows), vec!["H:WORKING", "C1", "H:IDLE", "C2", "C3"]);
     }
 
     #[test]
@@ -2023,7 +2446,7 @@ mod tests {
             title: "reviewing the rail".into(),
             worktree: "alpha".into(),
             project: "alpha".into(),
-            agent_label: "claude 1".into(),
+            branch: "main".into(),
             elapsed: "2m".into(),
             active: false,
             pending_kill: false,
