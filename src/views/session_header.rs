@@ -156,6 +156,10 @@ pub struct SessionHeaderData {
     pub icon_name: &'static str,
     /// Whether the session's process is still alive.
     pub running: bool,
+    /// The worktree's uncommitted diff against `HEAD`: `(added, removed)`
+    /// lines. `None` before the first poll lands (or for a branchless
+    /// session with no worktree to poll) — see [`rows::diff_chips`].
+    pub diff: Option<(u32, u32)>,
 }
 
 /// `common.rs:192-195` — case-insensitive, all three spellings.
@@ -285,10 +289,22 @@ pub fn session_header(
                 .w_full()
                 .flex()
                 .items_center()
+                .gap(rpx(SPACE_2XL))
                 .px(rpx(SPACE_3XL))
                 .bg(c::BG_STRIP())
                 .overflow_hidden()
                 .child(div().flex_1().overflow_hidden().child(identity))
+                .when(
+                    crate::views::rows::diff_display(data.diff)
+                        != crate::views::rows::DiffDisplay::Unknown,
+                    |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .child(crate::views::rows::diff_chips(data.diff)),
+                        )
+                    },
+                )
                 .when_some(cluster, |d, cluster| {
                     d.child(crate::views::components::vline())
                         .child(tools(cluster))
@@ -345,6 +361,30 @@ mod tests {
             ..SessionHeaderData::default()
         };
         assert!(data.branch.trim().is_empty());
+    }
+
+    /// [`SessionHeaderData::diff`] draws nothing before the first poll lands,
+    /// distinguishing an unknown diff from a *known* clean one — the same
+    /// rule [`rows::diff_chips`] enforces for the card.
+    #[test]
+    fn an_unknown_header_diff_is_distinguished_from_a_known_clean_one() {
+        assert_eq!(
+            crate::views::rows::diff_display(None),
+            crate::views::rows::DiffDisplay::Unknown
+        );
+        assert_eq!(
+            crate::views::rows::diff_display(Some((0, 0))),
+            crate::views::rows::DiffDisplay::Clean
+        );
+        let unknown = SessionHeaderData {
+            diff: None,
+            ..SessionHeaderData::default()
+        };
+        let clean = SessionHeaderData {
+            diff: Some((0, 0)),
+            ..SessionHeaderData::default()
+        };
+        assert_ne!(unknown.diff, clean.diff);
     }
 
     /// The 3-dot walk replaces the title only while the session is *running*

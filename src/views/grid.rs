@@ -120,6 +120,13 @@ pub struct TileData {
     /// (`Workspace::segment_widths`) — not from a width threshold, because
     /// `grove` and `GLOBUS-PORTAL` do not cost the same.
     pub fit: HeaderFit,
+    /// The worktree's uncommitted diff against `HEAD`: `(added, removed)`
+    /// lines. `None` if unknown (no first poll yet, or no matching
+    /// worktree) draws nothing — the same rule the card and the session bar
+    /// follow for [`crate::views::rows::diff_chips`]. Does not participate
+    /// in [`HeaderFit`]/[`fit_segments`]: it sits past the `flex_1` title
+    /// zone, which absorbs the squeeze on its own.
+    pub diff: Option<(u32, u32)>,
     /// The **same** entity the single-session body would use.
     pub view: Entity<TerminalView>,
 }
@@ -516,6 +523,16 @@ fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
         .overflow_hidden()
         .child(identity)
         .child(title_zone)
+        .when(
+            crate::views::rows::diff_display(data.diff) != crate::views::rows::DiffDisplay::Unknown,
+            |d| {
+                d.child(
+                    div()
+                        .flex_shrink_0()
+                        .child(crate::views::rows::diff_chips(data.diff)),
+                )
+            },
+        )
         .child(
             div()
                 .flex()
@@ -760,6 +777,26 @@ mod tests {
         let fit = cold(60.0 + MIN_TITLE_PX, 50.0, 50.0, 80.0);
         assert!(fit.project);
         assert!(!fit.branch);
+    }
+
+    /// [`TileData::diff`] draws nothing before the first poll lands,
+    /// distinguishing an unknown diff from a *known* clean one — same rule
+    /// [`crate::views::rows::diff_chips`] enforces for the card and the
+    /// session bar.
+    #[test]
+    fn an_unknown_tile_diff_is_distinguished_from_a_known_clean_one() {
+        assert_eq!(
+            crate::views::rows::diff_display(None),
+            crate::views::rows::DiffDisplay::Unknown
+        );
+        assert_eq!(
+            crate::views::rows::diff_display(Some((0, 0))),
+            crate::views::rows::DiffDisplay::Clean
+        );
+        assert_ne!(
+            crate::views::rows::diff_display(None),
+            crate::views::rows::diff_display(Some((0, 0)))
+        );
     }
 
     #[test]

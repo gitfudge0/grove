@@ -1288,7 +1288,7 @@ fn card_state_mark(state: ActivityState, accent: gpui::Hsla, tick: u64) -> AnyEl
 /// while it has not answered — an empty slot is honest about not knowing,
 /// where `clean` would be a claim. The delete chip's sign is an **ASCII**
 /// hyphen, not U+2212 — the bundled fonts have no minus glyph (§9.3, R7).
-fn diff_chips(diff: Option<(u32, u32)>) -> AnyElement {
+pub fn diff_chips(diff: Option<(u32, u32)>) -> AnyElement {
     let row = div().flex().flex_none().items_center().gap(rpx(SPACE_SM));
     match diff_display(diff) {
         DiffDisplay::Unknown => row.into_any_element(),

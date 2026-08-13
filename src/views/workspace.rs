@@ -1396,12 +1396,19 @@ impl Workspace {
             .find(|w| w.path == meta.wt_path)
             .map_or_else(String::new, |w| w.branch.clone());
         let state = self.activity.read(cx).state_of(meta.id);
+        // Same join `rows::flatten_sessions` does: both sides normalized so a
+        // trailing slash cannot manufacture a miss (`rows.rs:~577`).
+        let git = self.tree.read(cx).git_states();
+        let diff = git
+            .get(rows::normalize_wt_path(&meta.wt_path))
+            .map(|g| (g.added, g.removed));
         Some(SessionHeaderData {
             label: header_label,
             branch,
             context,
             icon_name: meta.agent.icon_name(),
             running: state != ActivityState::Exited,
+            diff,
         })
     }
 
@@ -1743,6 +1750,9 @@ impl Workspace {
         };
         // A render-time memo, so it must not accumulate dead sessions.
         self.header_fits.retain(|id, _| order.contains(id));
+        // Read once per frame, not once per tile — same join `header_data`
+        // does, hoisted out of the loop below (`rows.rs:~577`).
+        let git = self.tree.read(cx).git_states();
         let mut out = Vec::with_capacity(order.len());
         for (tile_idx, id) in order.into_iter().enumerate() {
             let Some(meta) = self.registry.read(cx).meta(id).cloned() else {
@@ -1780,6 +1790,9 @@ impl Workspace {
             let budget = header_budget_px(window, tile_w_px, tile_idx, waiting, agent_label);
             let fit = grid::fit_segments(budget, &seg, self.header_fits.get(&id).copied());
             self.header_fits.insert(id, fit);
+            let diff = git
+                .get(rows::normalize_wt_path(&meta.wt_path))
+                .map(|g| (g.added, g.removed));
             out.push(TileData {
                 id,
                 agent_label,
@@ -1791,6 +1804,7 @@ impl Workspace {
                 confirming_kill: pending_kill == Some(id),
                 context,
                 running: self.activity.read(cx).state_of(id) != ActivityState::Exited,
+                diff,
                 view,
                 fit,
             });
