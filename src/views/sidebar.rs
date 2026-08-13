@@ -1056,7 +1056,9 @@ impl Sidebar {
             })
             .child(grid_btn)
             .child(mode_btn)
-            .child(toggle)
+            // The cycle button collapses/expands tree nesting; the sessions
+            // list is flat, so in that mode there is nothing to cycle.
+            .when(rail_mode == RailMode::Tree, |d| d.child(toggle))
     }
 
     /// The absolutely-positioned agent menu over the list
