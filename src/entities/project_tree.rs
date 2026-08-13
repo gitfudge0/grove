@@ -49,6 +49,15 @@ const GIT_POLL_INTERVAL_UNFOCUSED: Duration = Duration::from_mins(1);
 pub struct ProjectTree {
     /// The **active** project's worktrees (`App::worktrees`).
     worktrees: Vec<Worktree>,
+    /// Which TRUE project index `worktrees` actually belongs to, written
+    /// atomically with every write of `worktrees`. `None` only before the
+    /// first seed. Every reader (`worktrees_for_project`, `snapshot`) must
+    /// check this before treating `worktrees` as `active_proj`'s list —
+    /// without it, a writer of `WorkspaceState::proj_idx` that skips the
+    /// hand-off (`sync_default_tree`, a bad startup seed, an index shift from
+    /// removing a project) makes one project's worktrees render under
+    /// another's header.
+    active_idx: Option<usize>,
     /// Every other project's worktrees, keyed by TRUE project index.
     wt_cache: HashMap<usize, Vec<Worktree>>,
     /// Bumped by every change to the project list's *shape*. A sweep stamped
@@ -90,15 +99,19 @@ impl ProjectTree {
     /// sweep lands.
     #[must_use]
     pub fn worktrees_for_project(&self, proj: usize, active_proj: usize) -> &[Worktree] {
-        if proj == active_proj {
+        if proj == active_proj && self.active_idx == Some(proj) {
             &self.worktrees
         } else {
             self.wt_cache.get(&proj).map_or(&[][..], Vec::as_slice)
         }
     }
 
-    pub fn set_active_worktrees(&mut self, worktrees: Vec<Worktree>) {
+    /// Seed `worktrees` for `proj`, recording it as the list's owner. Every
+    /// writer of `worktrees` must go through here (or `switch_active_project`)
+    /// so `active_idx` can never drift from what the list actually holds.
+    pub fn set_active_worktrees(&mut self, proj: usize, worktrees: Vec<Worktree>) {
         self.worktrees = worktrees;
+        self.active_idx = Some(proj);
     }
 
     /// `switch_active_project`'s cache hand-off (`update/mod.rs:1121-1130`):
@@ -114,6 +127,42 @@ impl ProjectTree {
         self.wt_cache.insert(old, outgoing);
         self.wt_cache.remove(&new);
         self.worktrees = git::list_worktrees(new_path);
+        self.active_idx = Some(new);
+    }
+
+    /// Heal a stale `active_idx` before it can be read this frame.
+    ///
+    /// The invariant that `worktrees` belongs to `active_idx` is meant to be
+    /// maintained by every writer of `WorkspaceState::proj_idx` calling
+    /// [`Self::switch_active_project`] — but some paths legitimately move
+    /// `proj_idx` without that hand-off (`sync_default_tree`'s default-tree
+    /// derivation, a removal that shifts every TRUE index down). Rather than
+    /// chase every such writer, [`Self::snapshot`] calls this first: if the
+    /// list on hand does not belong to `active_proj`, perform the same
+    /// park-then-reload `switch_active_project` does, using the store to find
+    /// `active_proj`'s path.
+    ///
+    /// `active_proj` out of range (e.g. the project list just shrank) is
+    /// handled by parking an **empty** list under it and stamping
+    /// `active_idx` anyway, rather than leaving it unset — leaving it unset
+    /// would make this method re-run (and re-shell out to `git`) on every
+    /// subsequent frame until a real project lands on that index, which is
+    /// exactly the repaint-time `git` call the module doc forbids.
+    pub fn ensure_active(&mut self, active_proj: usize, store: &Store) {
+        if self.active_idx == Some(active_proj) {
+            return;
+        }
+        if let Some(old) = self.active_idx {
+            let outgoing = std::mem::take(&mut self.worktrees);
+            self.wt_cache.insert(old, outgoing);
+        }
+        self.wt_cache.remove(&active_proj);
+        self.worktrees = store
+            .projects
+            .get(active_proj)
+            .map(|p| git::list_worktrees(&p.path))
+            .unwrap_or_default();
+        self.active_idx = Some(active_proj);
     }
 
     /// [`Self::switch_active_project`] for a *session* rather than a row:
@@ -439,6 +488,7 @@ impl ProjectTree {
         registry: &SessionRegistry,
         active_proj: usize,
     ) -> TreeSnapshot {
+        self.ensure_active(active_proj, store);
         let now = Instant::now();
         let mut projects = Vec::new();
         for (pi, p) in store.active_projects() {
@@ -529,11 +579,28 @@ mod tests {
     #[test]
     fn worktrees_for_project_reads_the_active_list_then_the_cache() {
         let mut tree = ProjectTree::new();
-        tree.set_active_worktrees(vec![wt("/a", true)]);
+        tree.set_active_worktrees(0, vec![wt("/a", true)]);
         tree.wt_cache.insert(2, vec![wt("/g", true)]);
         assert_eq!(tree.worktrees_for_project(0, 0).len(), 1);
         assert_eq!(tree.worktrees_for_project(2, 0)[0].path, "/g");
         assert!(tree.worktrees_for_project(7, 0).is_empty());
+    }
+
+    /// A `worktrees` list that belongs to project 0 must never be served for
+    /// project 1, even by the wrong-index path — this is the mis-attribution
+    /// the `active_idx` invariant exists to make unrepresentable.
+    #[test]
+    fn a_list_seeded_for_one_project_is_never_served_for_another() {
+        let mut tree = ProjectTree::new();
+        tree.set_active_worktrees(0, vec![wt("/a", true)]);
+        // Queried as project 1's active list: must NOT return project 0's
+        // worktrees, because `active_idx` is `Some(0)`, not `Some(1)`.
+        assert!(tree.worktrees_for_project(1, 1).is_empty());
+        // Querying project 0 with a *different* claimed active_proj must also
+        // not hand back the list under the wrong identity.
+        assert!(tree.worktrees_for_project(0, 1).is_empty());
+        // Only the correct (proj, active_proj) pair sees it.
+        assert_eq!(tree.worktrees_for_project(0, 0).len(), 1);
     }
 
     /// `update/mod.rs:1351-1365` + `:1341-1350`.
@@ -559,7 +626,7 @@ mod tests {
     #[test]
     fn switching_the_active_project_hands_its_worktrees_to_the_cache() {
         let mut tree = ProjectTree::new();
-        tree.set_active_worktrees(vec![wt("/a", true), wt("/a-x", false)]);
+        tree.set_active_worktrees(0, vec![wt("/a", true), wt("/a-x", false)]);
         // A stale entry for the incoming project must be dropped in favour of
         // the fresh inline read (`update/mod.rs:1128`).
         tree.wt_cache.insert(2, vec![wt("/stale", true)]);
@@ -573,7 +640,7 @@ mod tests {
     #[test]
     fn switching_to_the_same_project_is_a_no_op() {
         let mut tree = ProjectTree::new();
-        tree.set_active_worktrees(vec![wt("/a", true)]);
+        tree.set_active_worktrees(1, vec![wt("/a", true)]);
         tree.switch_active_project(1, 1, "/nope");
         assert_eq!(tree.worktrees_for_project(1, 1).len(), 1);
     }
@@ -645,7 +712,7 @@ mod tests {
         store.projects[1].archived = true;
 
         let mut tree = ProjectTree::new();
-        tree.set_active_worktrees(vec![wt("/a", true)]);
+        tree.set_active_worktrees(0, vec![wt("/a", true)]);
         tree.wt_cache.insert(1, vec![wt("/h", true)]);
         tree.wt_cache.insert(2, vec![wt("/g", true)]);
 
@@ -676,7 +743,7 @@ mod tests {
             ..Store::default()
         };
         let mut tree = ProjectTree::new();
-        tree.set_active_worktrees(vec![wt("/a", true)]);
+        tree.set_active_worktrees(0, vec![wt("/a", true)]);
         tree.wt_cache.insert(1, vec![wt("/g", true)]);
 
         let mut ws = WorkspaceState::default();
@@ -716,7 +783,7 @@ mod tests {
         );
 
         let mut tree = ProjectTree::new();
-        tree.set_active_worktrees(vec![wt("/a", true), wt("/a/wt/feature", false)]);
+        tree.set_active_worktrees(0, vec![wt("/a", true), wt("/a/wt/feature", false)]);
 
         let snap = tree.snapshot(&store, &registry, 0);
         assert_eq!(snap.total_projects, 1);
@@ -730,6 +797,114 @@ mod tests {
         assert_eq!(names, vec!["alpha", "feature"]);
         assert_eq!(snap.projects[0].worktrees[0].sessions, vec![id]);
         assert!(snap.projects[0].worktrees[1].sessions.is_empty());
+    }
+
+    /// The headline regression, at the `snapshot` level: `sync_default_tree`
+    /// moves `proj_idx` to a new project with no `switch_active_project`
+    /// hand-off, and `ensure_active` is the only thing standing between that
+    /// and one project's worktrees rendering under another's header.
+    ///
+    /// `git::list_worktrees` on a non-repo (or nonexistent) path never
+    /// returns an *empty* list — it falls back to a single synthetic root
+    /// worktree named after the path itself (`grove-core/src/git.rs:69-81`).
+    /// So the correct assertion here is not "empty", it's "not project 0's
+    /// list": project 1 must get its own (synthetic) worktree, never `/a` or
+    /// `/a-x`, and project 0's real list must survive intact in the cache
+    /// rather than being lost.
+    #[test]
+    fn ensure_active_heals_a_snapshot_that_skipped_the_hand_off() {
+        let store = Store {
+            projects: vec![
+                project("p0", "/grove-test-p0-does-not-exist"),
+                project("p1", "/grove-test-p1-does-not-exist"),
+            ],
+            ..Store::default()
+        };
+        let mut tree = ProjectTree::new();
+        tree.set_active_worktrees(0, vec![wt("/a", true), wt("/a-x", false)]);
+
+        // proj_idx moved to 1 with no hand-off — exactly what
+        // `sync_default_tree` does.
+        let snap = tree.snapshot(&store, &SessionRegistry::new(), 1);
+
+        let Some(p1) = snap.projects.iter().find(|p| p.idx == 1) else {
+            panic!("snapshot must still include project 1");
+        };
+        // Must NOT have inherited project 0's worktrees.
+        assert!(!p1.worktrees.iter().any(|w| w.path == "/a"));
+        assert!(!p1.worktrees.iter().any(|w| w.path == "/a-x"));
+        // It gets its own (synthetic root, since the path isn't a real repo)
+        // worktree instead.
+        assert_eq!(p1.worktrees.len(), 1);
+        assert_eq!(p1.worktrees[0].path, "/grove-test-p1-does-not-exist");
+
+        // Project 0's two worktrees were parked into `wt_cache`, not lost.
+        let Some(p0) = snap.projects.iter().find(|p| p.idx == 0) else {
+            panic!("snapshot must still include project 0");
+        };
+        let p0_paths: Vec<&str> = p0.worktrees.iter().map(|w| w.path.as_str()).collect();
+        assert_eq!(p0_paths, vec!["/a", "/a-x"]);
+    }
+
+    /// Once `ensure_active` has healed `active_idx` to a given project, a
+    /// second call with the same index must be a no-op — the guard at the
+    /// top of the method exists specifically so `snapshot` doesn't re-shell
+    /// out to `git` every frame once it's caught up.
+    #[test]
+    fn ensure_active_is_a_no_op_once_healed() {
+        let store = Store {
+            projects: vec![
+                project("p0", "/grove-test-p0-does-not-exist"),
+                project("p1", "/grove-test-p1-does-not-exist"),
+            ],
+            ..Store::default()
+        };
+        let mut tree = ProjectTree::new();
+        tree.set_active_worktrees(0, vec![wt("/a", true)]);
+
+        tree.ensure_active(1, &store);
+        let healed: Vec<String> = tree.worktrees.iter().map(|w| w.path.clone()).collect();
+        let cached_0: Option<Vec<String>> = tree
+            .wt_cache
+            .get(&0)
+            .map(|wts| wts.iter().map(|w| w.path.clone()).collect());
+
+        // Same active_proj again: the `active_idx == Some(active_proj)` guard
+        // must return immediately, leaving everything untouched.
+        tree.ensure_active(1, &store);
+        let after: Vec<String> = tree.worktrees.iter().map(|w| w.path.clone()).collect();
+        let cached_0_after: Option<Vec<String>> = tree
+            .wt_cache
+            .get(&0)
+            .map(|wts| wts.iter().map(|w| w.path.clone()).collect());
+        assert_eq!(after, healed);
+        assert_eq!(cached_0_after, cached_0);
+    }
+
+    /// An out-of-range `active_proj` (the project list just shrank) must
+    /// stamp `active_idx` with an *empty* list rather than leaving it unset —
+    /// leaving it unset would make `ensure_active` retry (and re-shell out to
+    /// `git`) on every subsequent frame, which is exactly the repaint-time
+    /// `git` call the module forbids.
+    #[test]
+    fn ensure_active_stamps_an_out_of_range_index_instead_of_retrying() {
+        let store = Store {
+            projects: vec![project("p0", "/grove-test-p0-does-not-exist")],
+            ..Store::default()
+        };
+        let mut tree = ProjectTree::new();
+        tree.set_active_worktrees(0, vec![wt("/a", true)]);
+
+        tree.ensure_active(5, &store);
+        // Stamped, even though there's no project at index 5 — the private
+        // field is readable here because this test lives inside the module.
+        assert_eq!(tree.active_idx, Some(5));
+        assert!(tree.worktrees.is_empty());
+
+        // A second call must be a no-op: no fresh `git` call, no change.
+        tree.ensure_active(5, &store);
+        assert_eq!(tree.active_idx, Some(5));
+        assert!(tree.worktrees.is_empty());
     }
 
     #[test]

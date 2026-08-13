@@ -168,6 +168,10 @@ impl ModalLayer {
             }
         });
         SettingsState::flush_now(cx);
+        self.state.update(cx, |s, cx| {
+            s.on_project_removed(idx);
+            cx.notify();
+        });
         self.toast
             .update(cx, |t, cx| t.set_toast(format!("removed {name}"), cx));
         self.close(cx);
@@ -319,6 +323,10 @@ impl ModalLayer {
             }
         });
         SettingsState::flush_now(cx);
+        self.state.update(cx, |s, cx| {
+            s.on_project_removed(idx);
+            cx.notify();
+        });
         cx.emit(ModalEvent::TreeInvalidated);
         cx.notify();
     }

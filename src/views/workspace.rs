@@ -290,15 +290,15 @@ impl Workspace {
 
         // Seed the active project's worktrees so the rail has something to draw
         // on the first frame (`App::refresh_worktrees`).
-        let active_path = cx
+        let active_project = cx
             .global::<SettingsState>()
             .store
             .active_projects()
             .next()
-            .map(|(_, p)| p.path.clone());
-        if let Some(path) = active_path {
+            .map(|(i, p)| (i, p.path.clone()));
+        if let Some((idx, path)) = active_project {
             tree.update(cx, |t, _| {
-                t.set_active_worktrees(grove_core::git::list_worktrees(&path));
+                t.set_active_worktrees(idx, grove_core::git::list_worktrees(&path));
             });
         }
 
@@ -1712,15 +1712,17 @@ impl Workspace {
                 self.spawn_wt_script(wt_path, script, cx);
             }
             ModalEvent::WorktreeAdded | ModalEvent::TreeInvalidated => {
-                let active = {
-                    let store = &cx.global::<SettingsState>().store;
-                    let idx = self.state.read(cx).proj_idx();
-                    store.projects.get(idx).map(|p| p.path.clone())
-                };
+                let idx = self.state.read(cx).proj_idx();
+                let active = cx
+                    .global::<SettingsState>()
+                    .store
+                    .projects
+                    .get(idx)
+                    .map(|p| p.path.clone());
                 self.tree.clone().update(cx, |t, cx| {
                     t.rebuild_wt_cache();
                     if let Some(path) = active {
-                        t.set_active_worktrees(grove_core::git::list_worktrees(&path));
+                        t.set_active_worktrees(idx, grove_core::git::list_worktrees(&path));
                     }
                     cx.notify();
                 });

@@ -438,6 +438,13 @@ impl WorkspaceState {
             } else {
                 RailMode::Tree
             },
+            // The TRUE index of the first *active* project, not bare `0` —
+            // `store.projects[0]` may be archived, and `Workspace::new` seeds
+            // `ProjectTree`'s worktree list from this same
+            // `active_projects().next()` project. Disagreeing here made
+            // `proj_idx` and the seeded list name different projects from
+            // frame one (see `ProjectTree::active_idx`'s doc).
+            proj_idx: store.active_projects().next().map_or(0, |(i, _)| i),
             ..Self::default()
         }
     }
@@ -851,6 +858,38 @@ impl WorkspaceState {
         // Otherwise `id`'s open/closed membership would sit in the set
         // forever, keyed to a session that can never become active again.
         self.panel_open_sessions.remove(&id);
+    }
+
+    /// `store.projects.remove(idx)` shifts every TRUE index above `idx` down
+    /// by one. `proj_idx`, `collapsed`, `collapsed_wt` and `hovered_wt` are
+    /// all keyed on TRUE index, so the removal's caller (`finalize_remove_project`,
+    /// `delete_archived`) must call this — after the store mutation, before
+    /// or alongside `TreeInvalidated` — or those keys go on pointing at
+    /// whatever project now sits at the old index.
+    pub fn on_project_removed(&mut self, idx: usize) {
+        let shift = |i: usize| if i > idx { i - 1 } else { i };
+        self.proj_idx = match self.proj_idx {
+            i if i > idx => i - 1,
+            i if i == idx => 0,
+            i => i,
+        };
+        self.collapsed = self
+            .collapsed
+            .iter()
+            .filter(|&&i| i != idx)
+            .map(|&i| shift(i))
+            .collect();
+        self.collapsed_wt = self
+            .collapsed_wt
+            .iter()
+            .filter(|&&(p, _)| p != idx)
+            .map(|&(p, w)| (shift(p), w))
+            .collect();
+        self.hovered_wt = match self.hovered_wt {
+            Some((p, _)) if p == idx => None,
+            Some((p, w)) => Some((shift(p), w)),
+            None => None,
+        };
     }
 
     // ── transient affordances ───────────────────────────────────────────
@@ -1721,6 +1760,30 @@ mod tests {
         assert_eq!(w.toggle_rail_mode(), RailMode::Tree);
     }
 
+    /// Startup with `store.projects[0]` archived: `proj_idx` must be the
+    /// first *active* project's TRUE index, not bare `0` — `Workspace::new`
+    /// seeds `ProjectTree`'s list from the same `active_projects().next()`
+    /// project, and disagreeing here is exactly what let one project's
+    /// worktrees render under another's header (see
+    /// `ProjectTree::active_idx`'s doc).
+    #[test]
+    fn new_skips_an_archived_first_project_when_seeding_proj_idx() {
+        use grove_core::storage::Project;
+        let project = |name: &str, path: &str, archived: bool| Project {
+            name: name.to_string(),
+            path: path.to_string(),
+            scripts: grove_core::storage::ProjectScripts::default(),
+            theme: None,
+            archived,
+            worktree_dir: None,
+        };
+        let store = Store {
+            projects: vec![project("alpha", "/a", true), project("beta", "/b", false)],
+            ..Store::default()
+        };
+        assert_eq!(WorkspaceState::new(&store, 1280.0).proj_idx(), 1);
+    }
+
     #[test]
     fn rail_mode_round_trips_from_the_store() {
         let store = Store {
@@ -1773,6 +1836,55 @@ mod tests {
         assert_eq!(w.active_session(), Some(sid(2)));
         w.on_session_removed(sid(2));
         assert_eq!(w.active_session(), None);
+    }
+
+    /// `store.projects.remove(idx)` shifts every TRUE index above `idx` down
+    /// by one; `on_project_removed` must shift `proj_idx`, `collapsed`,
+    /// `collapsed_wt` and `hovered_wt` to match, covering removal below, at,
+    /// and above the current index.
+    #[test]
+    fn on_project_removed_shifts_every_true_index() {
+        // Removing below the current index: 2 becomes 1.
+        let mut w = WorkspaceState {
+            proj_idx: 2,
+            collapsed: [0, 2, 3].into_iter().collect(),
+            collapsed_wt: [(0, 0), (2, 1), (3, 0)].into_iter().collect(),
+            hovered_wt: Some((3, 0)),
+            ..WorkspaceState::default()
+        };
+        w.on_project_removed(0);
+        assert_eq!(w.proj_idx(), 1);
+        assert!(!w.project_collapsed(0));
+        assert!(w.project_collapsed(1)); // was 2
+        assert!(w.project_collapsed(2)); // was 3
+        assert!(w.worktree_collapsed(1, 1)); // was (2, 1)
+        assert!(w.worktree_collapsed(2, 0)); // was (3, 0)
+        assert_eq!(w.hovered_wt(), Some((2, 0))); // was (3, 0)
+
+        // Removing exactly at the current index clamps rather than
+        // underflowing, and drops that project's own collapse/hover state.
+        let mut w = WorkspaceState {
+            proj_idx: 1,
+            collapsed: [1].into_iter().collect(),
+            collapsed_wt: [(1, 0)].into_iter().collect(),
+            hovered_wt: Some((1, 0)),
+            ..WorkspaceState::default()
+        };
+        w.on_project_removed(1);
+        assert_eq!(w.proj_idx(), 0);
+        assert!(!w.project_collapsed(1));
+        assert!(!w.worktree_collapsed(1, 0));
+        assert_eq!(w.hovered_wt(), None);
+
+        // Removing above the current index leaves it untouched.
+        let mut w = WorkspaceState {
+            proj_idx: 0,
+            collapsed: [0].into_iter().collect(),
+            ..WorkspaceState::default()
+        };
+        w.on_project_removed(2);
+        assert_eq!(w.proj_idx(), 0);
+        assert!(w.project_collapsed(0));
     }
 
     /// Spec §4's negative: selection flows one way. Selecting a session sets
