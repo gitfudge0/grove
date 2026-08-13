@@ -39,24 +39,50 @@
 //! is [`DIFF_BODY_LINE_H`] tall, line or hunk header alike — so that
 //! objection does not apply.
 //!
-//! `uniform_list` gives unified mode horizontal scrolling for free via
+//! `uniform_list` gives **unified** mode horizontal scrolling for free via
 //! [`ListHorizontalSizingBehavior::Unconstrained`], which sets
 //! `overflow.x = Scroll` and takes the content width from the one measured
-//! item (`uniform_list.rs:354-364`, `:636-650`). The split body's
-//! `uniform_list` call site in [`diff_body`] uses the same mechanism: it is
-//! a `uniform_list` of paired rows, one item per
+//! item (`uniform_list.rs:354-364`, `:636-650`). Unified still works exactly
+//! that way.
+//!
+//! # Split mode: two fixed halves, each panning inside itself
+//!
+//! Split mode does **not** use `Unconstrained`. Its body is a `uniform_list`
+//! of paired rows, one item per
 //! [`grove_core::render_rows::SplitRenderRow`], rendered by [`split_row`] as
-//! [left cell | `divider_v()` | right cell]. This is a deliberate behaviour
-//! change, approved up front: split's two columns now share **one**
-//! horizontal scroll for the whole body, exactly like unified, instead of
-//! the old per-hunk, per-side `overflow_x_scroll` containers — there is no
-//! more independent per-side or per-block horizontal scrolling.
-//! [`split_col_w`] gives each side a definite pixel width (the widest line
-//! on that side, measured for real via the window's text system) rather
-//! than `flex_1` + `min_w(0)`, because under `Unconstrained` sizing the
-//! content width is not bounded by the viewport, so a flex child would not
-//! have a stable width to divide by — and a stable width is exactly what
-//! keeps the divider landing at the same x on every row.
+//! [left half | `divider_v()` | right half] — but the geometry is a fixed
+//! 50/50 split, not content-sized columns:
+//!
+//! - Each half is a **fixed pixel width** ([`split_half_w`]: the body's own
+//!   `content_w`, less the divider's [`DIVIDER_W`] hairline, halved) applied
+//!   as `.w(px(half_w)).flex_none()`. Deliberately not `flex_1`: a half is a
+//!   viewport, not a flex child, and `left + divider + right` is arranged to
+//!   fill the body exactly. `half_w` comes from the *same* `content_w`
+//!   arithmetic that gates split availability in [`effective_mode`], never
+//!   from element bounds — bounds are a frame late and would disagree with
+//!   the modal's own layout.
+//! - Each half is `.overflow_hidden()` and holds one `flex_none` content row
+//!   at its natural text width ([`split_content_w`], floored at `half_w` so a
+//!   short file still fills its half), offset by `.ml(px(-pan_x))`. **The
+//!   half never moves; only its content slides inside it.** The outer
+//!   two-column strip therefore has no horizontal extent of its own and can
+//!   never translate — that is the whole difference from the old model, where
+//!   one shared viewport slid the entire strip sideways and pushed the right
+//!   column off screen.
+//! - `pan_x` is a **single shared offset**
+//!   ([`crate::entities::diff_viewer::DiffViewerState::pan_x`]) that both
+//!   halves read, so they pan in lockstep and a line stays beside its
+//!   counterpart. Its travel is
+//!   [`grove_core::render_rows::split_pan_extent`] — the *wider* side governs
+//!   (the narrower one would strand the wider side short of its right edge),
+//!   floored at 0 — and it is clamped on every read, so it survives a file
+//!   switch and collapses by itself when the new content fits.
+//! - Input: an `on_scroll_wheel` on the split body folds `delta.x` (and a
+//!   shift-modified `delta.y`) into `pan_x`, while unmodified `delta.y` keeps
+//!   driving the list's own vertical scroll.
+//!
+//! There is no word wrap, and row heights stay uniform, so `uniform_list`
+//! remains valid in both modes.
 //!
 //! Both bodies share [`crate::entities::diff_viewer::DiffViewerState::body_scroll`],
 //! a single [`gpui::UniformListScrollHandle`] — there is no more separate
@@ -551,15 +577,11 @@ fn diff_line_row(line: &Line, spans: &[Span]) -> gpui::Div {
 /// (empty when nothing is cached yet) and drives [`code_row`] when `runs` is
 /// `None`.
 ///
-/// `min_w_full()`, not `w_full()`: this cell is wrapped by [`split_row`] in a
-/// `flex_none` column of a *fixed* pixel width, and under `Unconstrained`
-/// horizontal sizing `uniform_list` hands the whole item
-/// `available_width = viewport + scroll_offset.x.abs()`
-/// (`uniform_list.rs:498-501`), not the full scrollable content width —
-/// same reasoning as [`diff_line_row`]/[`hunk_header_row`]. `min_w_full()`
-/// fills the column's fixed width (the common case, since that width is
-/// derived from this exact side's widest line) and would only be exceeded by
-/// a line wider than the one that set the column's width in the first place.
+/// `min_w_full()`, not `w_full()`: [`split_half`] wraps this cell in a
+/// `flex_none` content row whose width is this side's natural content width
+/// (floored at the half's own width), so `min_w_full()` makes the row's tint
+/// reach that full content width — the whole pannable strip, not just the
+/// visible part — while still letting a line that somehow exceeds it grow.
 fn split_line_cell(
     line: Option<&Line>,
     is_old: bool,
@@ -632,14 +654,32 @@ fn sign_glyph_w(window: &Window) -> f32 {
     )
 }
 
-/// One split-mode column's fixed pixel width: the gutter, the sign box, and
+/// [`divider_v`]'s hairline width in device pixels. A hairline is `px(1.0)` at
+/// every zoom and is not on any scale (DESIGN.md §13 rule 1), so this is not a
+/// missing token — it is the same literal `divider_v` itself paints, named here
+/// because [`split_half_w`] has to subtract it before halving.
+const DIVIDER_W: f32 = 1.0;
+
+/// One split half's fixed pixel width: the body's available width less the
+/// divider hairline, halved, so `left + divider + right` fills the body
+/// exactly. `content_w_device` is [`render`]'s own `content_w` converted to
+/// device pixels — the same value [`effective_mode`] gates split availability
+/// on, deliberately *not* an element's measured bounds, which lag a frame and
+/// can disagree with this arithmetic.
+fn split_half_w(content_w_device: f32) -> f32 {
+    ((content_w_device - DIVIDER_W) / 2.0).max(0.0)
+}
+
+/// One split side's *natural content* width: the gutter, the sign box, and
 /// `widest_text`'s real painted width — the same three children
-/// [`split_line_cell`] actually lays out, so the column is exactly as wide
-/// as its widest real row and no wider. `widest_text` is
-/// [`grove_core::render_rows::widest_split_side_text`]'s result for this
-/// side, baked once per patch load; only the pixel measurement happens here,
-/// because that needs a live `Window`.
-fn split_col_w(window: &Window, widest_text: &str, sign_w: f32) -> f32 {
+/// [`split_line_cell`] actually lays out. This is no longer a column size (a
+/// half's width is [`split_half_w`]'s, fixed); it is how wide that half's
+/// inner content row is, and hence — via
+/// [`grove_core::render_rows::split_pan_extent`] — how far it can pan.
+/// `widest_text` is [`grove_core::render_rows::widest_split_side_text`]'s
+/// result for this side, baked once per patch load; only the pixel
+/// measurement happens here, because that needs a live `Window`.
+fn split_content_w(window: &Window, widest_text: &str, sign_w: f32) -> f32 {
     token_px(DIFF_GUTTER_W, window)
         + token_px(SPACE_SM, window) * 2.0
         + sign_w
@@ -652,15 +692,43 @@ fn split_col_w(window: &Window, widest_text: &str, sign_w: f32) -> f32 {
         )
 }
 
+/// One half of a split row: a fixed-`half_w`, clipped viewport holding `cell`
+/// in a `flex_none` content row of its side's natural width (floored at
+/// `half_w`, so a short file still fills its half rather than leaving a gap),
+/// shifted left by the shared `pan_x`. The viewport itself is `flex_none` at a
+/// fixed width and never translates — panning is entirely this inner
+/// negative-margin offset, which is what keeps the outer strip, and so the
+/// divider's x, absolutely still (see this module's doc).
+fn split_half(cell: gpui::Div, half_w: f32, content_w: f32, pan_x: f32) -> gpui::Div {
+    div()
+        .flex_none()
+        .w(px(half_w))
+        .h_full()
+        .overflow_hidden()
+        .child(
+            div()
+                .flex_none()
+                .w(px(content_w.max(half_w)))
+                .ml(px(-pan_x))
+                .child(cell),
+        )
+}
+
 /// One split-mode row: a hunk header spans the full row exactly like
 /// unified's, or a [`SplitRenderRow::Lines`] pair renders as
-/// [left cell | `divider_v()` | right cell], each cell wrapped in a
-/// `flex_none` column of `left_w`/`right_w` — a *fixed* width, not `flex_1`,
-/// so the divider lands at the same x on every row regardless of that row's
-/// own content (see this module's doc). Spans and intraline runs are read
-/// straight off each [`SplitCell`] — baked once per patch load by
+/// [left half | `divider_v()` | right half], each half built by
+/// [`split_half`] at the *same* fixed `half_w` — a 50/50 split, never
+/// `flex_1` and never content-sized, so the divider lands at the same x on
+/// every row regardless of that row's own content. Spans and intraline runs
+/// are read straight off each [`SplitCell`] — baked once per patch load by
 /// `grove_core::render_rows`, never derived here.
-fn split_row(row: &SplitRenderRow, left_w: f32, right_w: f32) -> gpui::Div {
+fn split_row(
+    row: &SplitRenderRow,
+    half_w: f32,
+    left_content_w: f32,
+    right_content_w: f32,
+    pan_x: f32,
+) -> gpui::Div {
     match row {
         SplitRenderRow::HunkHeader(h) => hunk_header_row(h),
         SplitRenderRow::Lines { old, new } => div()
@@ -669,19 +737,19 @@ fn split_row(row: &SplitRenderRow, left_w: f32, right_w: f32) -> gpui::Div {
             .flex_none()
             .flex()
             .items_center()
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(left_w))
-                    .child(split_cell_from(old.as_ref(), true)),
-            )
+            .child(split_half(
+                split_cell_from(old.as_ref(), true),
+                half_w,
+                left_content_w,
+                pan_x,
+            ))
             .child(divider_v())
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(right_w))
-                    .child(split_cell_from(new.as_ref(), false)),
-            ),
+            .child(split_half(
+                split_cell_from(new.as_ref(), false),
+                half_w,
+                right_content_w,
+                pan_x,
+            )),
     }
 }
 
@@ -737,7 +805,16 @@ fn file_sub_header(state: &DiffViewerState) -> Option<gpui::Div> {
 /// The selected file's diff body, in `mode`. Shared plumbing (selection,
 /// loading, "no longer changed", Binary/TooLarge stubs) is mode-independent;
 /// only the hunk rows differ.
-fn diff_body(state: &DiffViewerState, mode: DiffMode, window: &Window) -> AnyElement {
+///
+/// `half_w` is [`split_half_w`]'s fixed half width (device px) and `dv` the
+/// entity the split body's wheel handler pans; unified mode uses neither.
+fn diff_body(
+    state: &DiffViewerState,
+    mode: DiffMode,
+    window: &Window,
+    half_w: f32,
+    dv: &gpui::Entity<DiffViewerState>,
+) -> AnyElement {
     let Some(path) = state.selected_path.as_deref() else {
         return stub("No changes");
     };
@@ -823,34 +900,79 @@ fn diff_body(state: &DiffViewerState, mode: DiffMode, window: &Window) -> AnyEle
                     // "widest" was already reduced to one string per side at
                     // load time.
                     let sign_w = sign_glyph_w(window);
-                    let left_w = split_col_w(window, old_widest_text, sign_w);
-                    let right_w = split_col_w(window, new_widest_text, sign_w);
+                    let left_content_w = split_content_w(window, old_widest_text, sign_w);
+                    let right_content_w = split_content_w(window, new_widest_text, sign_w);
+                    // Clamped on read, never on write: a pan carried over
+                    // from another file collapses to whatever this layout can
+                    // actually show.
+                    let pan_x = state.split_pan(left_content_w, right_content_w, half_w);
 
                     let rows = Rc::clone(rows);
                     let row_count = rows.len();
-                    // The first `Lines` row (falling back to 0), never a
-                    // hunk header: a header's natural width can be far
-                    // narrower than the two fixed-width columns combined, so
-                    // measuring one would understate the list's real
-                    // horizontal scroll extent. Every `Lines` row measures
-                    // identically now (both cells are fixed-width), so any
-                    // one of them is an equally valid reference row.
-                    let widest = rows
-                        .iter()
-                        .position(|row| matches!(row, SplitRenderRow::Lines { .. }))
-                        .unwrap_or(0);
-                    uniform_list("diff-split-body", row_count, move |range, _window, _cx| {
-                        range
-                            .filter_map(|ix| rows.get(ix))
-                            .map(|row| split_row(row, left_w, right_w))
-                            .collect::<Vec<_>>()
-                    })
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .track_scroll(&state.body_scroll)
-                    .with_width_from_item(Some(widest))
-                    .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
-                    .into_any_element()
+                    let list =
+                        uniform_list("diff-split-body", row_count, move |range, _window, _cx| {
+                            range
+                                .filter_map(|ix| rows.get(ix))
+                                .map(|row| {
+                                    split_row(row, half_w, left_content_w, right_content_w, pan_x)
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .track_scroll(&state.body_scroll);
+                    // Neither `Unconstrained` nor `with_width_from_item`: the
+                    // split body has NO horizontal extent of its own — the
+                    // halves are fixed and pan internally, so the outer strip
+                    // must never translate.
+                    //
+                    // But default (`FitList`) sizing leaves
+                    // `overflow.x = Visible`, and `div.rs:3097-3112` then
+                    // re-routes a horizontal-only wheel delta onto the
+                    // *vertical* axis (`delta_y = delta.x` when `overflow.y`
+                    // is Scroll, `delta.y` is zero and `overflow.x` is not
+                    // Scroll) — a sideways trackpad swipe would scroll the
+                    // diff up and down instead of panning. Setting
+                    // `overflow.x = Scroll` purely absorbs `delta.x`: under
+                    // `FitList` the content width is the padded viewport
+                    // width (`uniform_list.rs:355-361`), so the extent is
+                    // zero and nothing actually moves. It has to go through
+                    // `Styled::style()` because `overflow_x_scroll()` lives on
+                    // `StatefulInteractiveElement`, which `UniformList` does
+                    // not implement.
+                    let mut list = list;
+                    list.style().overflow.x = Some(gpui::Overflow::Scroll);
+
+                    // The pan input surface. `delta.y` is left alone so the
+                    // list's own vertical scroll keeps working; only `delta.x`
+                    // (trackpad swipe, and the OS's own shift+wheel
+                    // translation on macOS) and an explicitly shift-modified
+                    // `delta.y` (platforms that do not translate it) pan.
+                    let dv = dv.clone();
+                    let line_h = token_px(DIFF_BODY_LINE_H, window);
+                    div()
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .flex()
+                        .flex_col()
+                        .on_scroll_wheel(move |ev, _window, cx| {
+                            let d = ev.delta.pixel_delta(px(line_h));
+                            let mut dx = f32::from(d.x);
+                            if ev.modifiers.shift && dx == 0.0 {
+                                dx = f32::from(d.y);
+                            }
+                            if dx == 0.0 {
+                                return;
+                            }
+                            // gpui's scroll offset grows negative as content
+                            // moves left; `pan_x` grows positive for the same
+                            // motion, hence the sign flip.
+                            dv.update(cx, |state, cx| {
+                                state.pan_split(-dx, left_content_w, right_content_w, half_w, cx);
+                            });
+                        })
+                        .child(list)
+                        .into_any_element()
                 }
             };
             let mut col = div().flex().flex_col().size_full();
@@ -970,6 +1092,9 @@ pub fn render(
     let win_w = f32::from(window.viewport_size().width) / zoom;
     let content_w = win_w - DIFF_PANEL_INSET * 2.0 - DIFF_FILE_LIST_W;
     let (mode, split_enabled) = effective_mode(content_w, state.mode);
+    // Device pixels, from the same `content_w` the fallback above gates on —
+    // never from element bounds (see [`split_half_w`]).
+    let half_w = split_half_w(content_w * zoom);
 
     let header = modal_header_slotted(
         Some("diff-viewer-close"),
@@ -991,7 +1116,7 @@ pub fn render(
                 .flex_1()
                 .h_full()
                 .overflow_hidden()
-                .child(diff_body(state, mode, window)),
+                .child(diff_body(state, mode, window, half_w, dv)),
         );
 
     div()

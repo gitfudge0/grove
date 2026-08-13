@@ -106,15 +106,44 @@ pub fn split_render_rows(
         .collect()
 }
 
+/// How far the split body's shared pan offset may travel, in pixels: the
+/// wider of the two sides' content widths minus one half's viewport width,
+/// floored at `0`. The wider side governs because both halves pan off **one**
+/// shared offset — if the narrower side capped the extent, the wider side
+/// could never reach its own right edge. `0` means neither side overflows and
+/// panning is a no-op. NaN-safe: any non-finite input yields `0`.
+pub fn split_pan_extent(left_content_w: f32, right_content_w: f32, half_w: f32) -> f32 {
+    let widest = left_content_w.max(right_content_w);
+    let extent = widest - half_w;
+    if extent.is_finite() && extent > 0.0 {
+        extent
+    } else {
+        0.0
+    }
+}
+
+/// Clamp a stored pan offset into `0..=split_pan_extent(..)`. Called on every
+/// read rather than on every write, so a pan carried across a file switch (or
+/// a window resize) collapses to whatever the new layout can actually show
+/// instead of leaving a half scrolled into empty space. NaN-safe: a
+/// non-finite `pan_x` clamps to `0`.
+pub fn clamp_split_pan(pan_x: f32, left_content_w: f32, right_content_w: f32, half_w: f32) -> f32 {
+    let extent = split_pan_extent(left_content_w, right_content_w, half_w);
+    if pan_x.is_finite() {
+        pan_x.clamp(0.0, extent)
+    } else {
+        0.0
+    }
+}
+
 /// The widest line of text on one side (`is_old` selects old/new) across
 /// every [`SplitRenderRow::Lines`] row — `""` if `rows` has no such row on
-/// that side. The split body renders as a `uniform_list` of paired rows with
-/// a *shared* horizontal scroll (both columns move together), so the two
-/// columns need a stable, definite width to stay aligned across every row
-/// rather than each row sizing its own cells to its own content. The view
-/// measures this text's real painted width (it needs a `Window`, so it can't
-/// happen in this UI-framework-free crate) and uses that as the column's
-/// fixed width — see `views::modals::diff_viewer::split_body`.
+/// that side. Each half of the split body is a fixed-width, clipped viewport
+/// whose inner content row sits at its own natural text width and slides
+/// inside it; this text's real painted width (measured in the view, which
+/// needs a `Window`, so it can't happen in this UI-framework-free crate) is
+/// what sets that natural width — and hence the pan extent, via
+/// [`split_pan_extent`]. See `views::modals::diff_viewer::split_content_w`.
 pub fn widest_split_side_text(rows: &[SplitRenderRow], is_old: bool) -> &str {
     rows.iter()
         .filter_map(|row| match row {
@@ -361,5 +390,43 @@ mod tests {
             assert!(unified_render_rows(&patch, &[], &[]).is_empty());
             assert!(split_render_rows(&patch, &[], &[]).is_empty());
         }
+    }
+
+    #[test]
+    fn pan_extent_is_governed_by_the_wider_side() {
+        assert_eq!(split_pan_extent(900.0, 500.0, 400.0), 500.0);
+        assert_eq!(split_pan_extent(500.0, 900.0, 400.0), 500.0);
+    }
+
+    #[test]
+    fn pan_extent_is_zero_when_both_sides_fit() {
+        assert_eq!(split_pan_extent(300.0, 200.0, 400.0), 0.0);
+        assert_eq!(split_pan_extent(400.0, 400.0, 400.0), 0.0);
+    }
+
+    #[test]
+    fn pan_extent_never_negative_on_a_degenerate_layout() {
+        // A zero-width (or NaN) half is what a first frame / collapsed
+        // window hands us; it must not produce a negative extent.
+        assert_eq!(split_pan_extent(0.0, 0.0, 0.0), 0.0);
+        assert_eq!(split_pan_extent(100.0, 100.0, f32::NAN), 0.0);
+        assert_eq!(split_pan_extent(f32::NAN, 0.0, 400.0), 0.0);
+    }
+
+    #[test]
+    fn clamp_pins_the_pan_inside_the_extent() {
+        assert_eq!(clamp_split_pan(-50.0, 900.0, 500.0, 400.0), 0.0);
+        assert_eq!(clamp_split_pan(120.0, 900.0, 500.0, 400.0), 120.0);
+        assert_eq!(clamp_split_pan(9_000.0, 900.0, 500.0, 400.0), 500.0);
+        assert_eq!(clamp_split_pan(f32::NAN, 900.0, 500.0, 400.0), 0.0);
+    }
+
+    #[test]
+    fn a_stored_pan_collapses_once_content_no_longer_overflows() {
+        // Switching to a narrow file (or widening the window) keeps the
+        // stored offset, but reading it re-clamps to a zero extent.
+        let stored = 480.0;
+        assert_eq!(clamp_split_pan(stored, 900.0, 500.0, 400.0), 480.0);
+        assert_eq!(clamp_split_pan(stored, 300.0, 200.0, 400.0), 0.0);
     }
 }

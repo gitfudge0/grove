@@ -120,6 +120,17 @@ pub struct DiffViewerState {
     /// split are both `uniform_list`s now, so there is only one scroll
     /// target — see [`Self::scroll_body`].
     pub body_scroll: gpui::UniformListScrollHandle,
+    /// Split mode's **shared** horizontal pan offset, in device pixels, always
+    /// `>= 0`. One value for both halves is the whole point: the two sides pan
+    /// in lockstep, so a line and its counterpart stay column-aligned. Each
+    /// half is a fixed-width clipped viewport whose inner content row is
+    /// offset by `-pan_x`; the outer two-column strip never moves. Stored raw
+    /// and clamped on *read* (`grove_core::render_rows::clamp_split_pan`), so
+    /// it survives a file switch — reading two files at the same column keeps
+    /// the offset — and collapses by itself when the new content fits.
+    /// Unified mode ignores it entirely (it keeps `Unconstrained` scroll), and
+    /// vertical scrolling stays with [`Self::body_scroll`] in both modes.
+    pub pan_x: f32,
 }
 
 impl DiffViewerState {
@@ -142,6 +153,7 @@ impl DiffViewerState {
             live_refresh_inflight: false,
             body_focused: false,
             body_scroll: gpui::UniformListScrollHandle::new(),
+            pan_x: 0.0,
         };
         this.load_files(cx);
         this
@@ -480,6 +492,45 @@ impl DiffViewerState {
             .max(-base.max_offset().y)
             .min(gpui::px(0.0));
         base.set_offset(offset);
+        cx.notify();
+    }
+
+    /// Split mode's shared pan offset, clamped to what the current layout can
+    /// actually show — the only way the view should read [`Self::pan_x`].
+    /// `left_content_w`/`right_content_w` are the two sides' natural content
+    /// widths and `half_w` one half's fixed viewport width, all in device px.
+    pub fn split_pan(&self, left_content_w: f32, right_content_w: f32, half_w: f32) -> f32 {
+        render_rows::clamp_split_pan(self.pan_x, left_content_w, right_content_w, half_w)
+    }
+    /// **The** pan entry point: fold `delta_x` device pixels into the shared
+    /// split pan offset, re-clamped against the layout it was measured in.
+    /// Positive `delta_x` moves the content left (reveals text further right).
+    ///
+    /// Only the split body's `on_scroll_wheel` calls this — trackpad
+    /// horizontal swipe and shift+wheel. The keyboard branch (Left/Right
+    /// while the body is focused) is **deliberately unwired**: routing it
+    /// would mean touching the keymap and the modal verdict plumbing outside
+    /// this change's permitted file set, and those files carry other work.
+    /// Wiring it later is purely a matter of calling this method with a
+    /// `DIFF_BODY_LINE_H`-ish step from that verdict arm; no state changes.
+    pub fn pan_split(
+        &mut self,
+        delta_x: f32,
+        left_content_w: f32,
+        right_content_w: f32,
+        half_w: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let next = render_rows::clamp_split_pan(
+            self.split_pan(left_content_w, right_content_w, half_w) + delta_x,
+            left_content_w,
+            right_content_w,
+            half_w,
+        );
+        if next == self.pan_x {
+            return;
+        }
+        self.pan_x = next;
         cx.notify();
     }
 
