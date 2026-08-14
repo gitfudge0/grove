@@ -7,9 +7,8 @@ use gpui::{
 
 use crate::{Selectable, button::Button, menu::PopupMenu, popover::Popover};
 
-/// A dropdown menu trait for buttons and other interactive elements
 pub trait DropdownMenu: Styled + Selectable + InteractiveElement + IntoElement + 'static {
-    /// Create a dropdown menu with the given items, anchored to the TopLeft corner
+    /// Anchored to the TopLeft corner.
     fn dropdown_menu(
         self,
         f: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
@@ -17,7 +16,6 @@ pub trait DropdownMenu: Styled + Selectable + InteractiveElement + IntoElement +
         self.dropdown_menu_with_anchor(Anchor::TopLeft, f)
     }
 
-    /// Create a dropdown menu with the given items, anchored to the given corner
     fn dropdown_menu_with_anchor(
         mut self,
         anchor: impl Into<Anchor>,
@@ -60,13 +58,11 @@ where
         }
     }
 
-    /// Set the anchor corner for the dropdown menu popover.
     pub fn anchor(mut self, anchor: impl Into<Anchor>) -> Self {
         self.anchor = anchor.into();
         self
     }
 
-    /// Set the style refinement for the dropdown menu trigger.
     fn trigger_style(mut self, style: StyleRefinement) -> Self {
         self.style = style;
         self
@@ -94,12 +90,7 @@ where
             .trigger_style(self.style)
             .anchor(self.anchor)
             .content(move |_, window, cx| {
-                // Here is special logic to only create the PopupMenu once and reuse it.
-                // Because this `content` will called in every time render, so we need to store the menu
-                // in state to avoid recreating at every render.
-                //
-                // And we also need to rebuild the menu when it is dismissed, to rebuild menu items
-                // dynamically for support `dropdown_menu` method, so we listen for DismissEvent below.
+                // Reuses the PopupMenu across renders via state, rebuilding it only after dismiss (so dropdown_menu's dynamic items stay fresh).
                 let menu = match menu_state.read(cx).menu.clone() {
                     Some(menu) => menu,
                     None => {
@@ -112,7 +103,6 @@ where
                         });
                         menu.focus_handle(cx).focus(window, cx);
 
-                        // Listen for dismiss events from the PopupMenu to close the popover.
                         let popover_state = cx.entity();
                         window
                             .subscribe(&menu, cx, {

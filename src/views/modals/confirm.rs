@@ -1,10 +1,4 @@
 //! Confirm (including Quit), Message, Input, TmuxChoice and AgentPicker.
-//!
-//! Ports of `src/gui/view/modals/confirm.rs:18-133,446-472` and
-//! `src/gui/view/modals/settings.rs:30-129`, with the behavior halves from
-//! `src/gui/update/modals.rs` (`submit_modal_input` :541-557,
-//! `confirm_modal_response` :558-576, `submit_modal_confirm` :577-604,
-//! `choose_tmux` :535-540) and `src/app/mod.rs:563-658`.
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -23,8 +17,6 @@ use crate::views::components::{
     RowDensity,
 };
 
-/// The agent order the picker lists (`src/app/mod.rs:168`); availability is
-/// resolved at render time, `Terminal` is always present.
 pub const AVAILABLE_AGENTS: [Agent; 4] = Agent::ALL;
 
 /// Agents found on PATH, always including `Terminal`.
@@ -41,12 +33,7 @@ pub fn available_agents() -> Vec<Agent> {
 }
 
 impl ModalLayer {
-    // ── Input (the single-field prompt) ─────────────────────────────────
-
-    /// Enter on the worktree-name prompt. Port of `App::submit_input`
-    /// (`src/app/mod.rs:563-594`): an empty value is a no-op, an invalid name
-    /// raises a `Message`, a non-repo project routes through the
-    /// init-and-add confirm, and only then is the worktree created.
+    /// Empty value is a no-op; invalid name raises a `Message`; non-repo project routes through init-and-add confirm first.
     pub(super) fn submit_input(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(Modal::Input { .. }) = self.slot().get() else {
             return;
@@ -62,9 +49,7 @@ impl ModalLayer {
             return;
         }
         if !git::valid_worktree_name(&value) {
-            // The inline red note, cleared on the next edit
-            // (`src/app/mod.rs:572-576` raises a Message; the note is the
-            // in-place equivalent the same prompt already carries).
+            // Inline red note, cleared on the next edit.
             if let Some(Modal::Input { note, .. }) = self.slot_mut().get_mut() {
                 *note = Some("Invalid name: use letters, digits, '-', '_' or '.'".into());
             }
@@ -94,7 +79,6 @@ impl ModalLayer {
         self.close(cx);
     }
 
-    /// The project the sidebar currently has selected.
     pub(super) fn selected_project(&self, cx: &App) -> Option<storage::Project> {
         let idx = self.state.read(cx).proj_idx();
         cx.global::<SettingsState>()
@@ -110,8 +94,7 @@ impl ModalLayer {
         name: &str,
         cx: &mut Context<Self>,
     ) {
-        // The pinned directory key, not the display name: renaming a project
-        // must not scatter its worktrees across two directories.
+        // Pinned directory key, not the display name — renaming a project must not scatter worktrees across directories.
         match git::add_worktree(&project.path, project.worktree_dir(), name) {
             Ok(path) => {
                 if let Err(e) = git::copy_worktree_includes(&project.path, &path) {
@@ -129,11 +112,7 @@ impl ModalLayer {
         }
     }
 
-    // ── Confirm ─────────────────────────────────────────────────────────
-
-    /// Port of `confirm_modal_response` + `App::submit_confirm`. `Quit` is
-    /// resolved here because it needs the window, exactly as iced resolves it
-    /// at the GUI layer rather than in `App`.
+    /// `Quit` is resolved here because it needs the window.
     pub(super) fn resolve_confirm(
         &mut self,
         yes: bool,
@@ -147,9 +126,6 @@ impl ModalLayer {
         if matches!(kind, ConfirmKind::Quit) {
             self.close(cx);
             if yes {
-                // The flush itself is `Workspace::shutdown`, run by the
-                // workspace's `ModalEvent::Quit` arm right before `cx.quit()`
-                // — one flush, three callers (carried decision 7).
                 cx.emit(ModalEvent::Quit);
             }
             return;
@@ -175,16 +151,11 @@ impl ModalLayer {
                 }
                 self.create_worktree(&p, &name, cx);
             }
-            // Resolved above; never reaches here.
             ConfirmKind::Quit => {}
         }
     }
 
-    // ── TmuxChoice ──────────────────────────────────────────────────────
-
-    /// Only an explicit pick records a backend — Escape deliberately persists
-    /// nothing, so the choice is re-asked on the next launch
-    /// (`modals.rs:258-269`, `App::set_tmux_enabled` :282-296).
+    /// Only an explicit pick records a backend — Escape persists nothing, so the choice is re-asked next launch.
     pub(super) fn choose_tmux(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if enabled && !grove_core::tmux::available() {
             self.toast.update(cx, |t, cx| {
@@ -206,9 +177,6 @@ impl ModalLayer {
         self.close(cx);
     }
 
-    // ── AgentPicker ─────────────────────────────────────────────────────
-
-    /// Space toggles "make this the default agent" (`modals.rs:230-241`).
     pub(super) fn toggle_default_agent(&mut self, cx: &mut Context<Self>) {
         let Some(Modal::AgentPicker { sel, .. }) = self.slot().get() else {
             return;
@@ -226,8 +194,7 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// Enter spawns through the registry — via `Sidebar::spawn_session`, so
-    /// the "failed to start session" toast producer covers it exactly once.
+    /// Spawns through `Sidebar::spawn_session`, so the "failed to start" toast producer covers it exactly once.
     pub(super) fn submit_agent_picker(&mut self, cx: &mut Context<Self>) {
         let Some(Modal::AgentPicker {
             project,
@@ -250,8 +217,6 @@ impl ModalLayer {
         cx.emit(ev);
     }
 }
-
-// ── the views ────────────────────────────────────────────────────────────
 
 pub fn render(
     layer: &ModalLayer,
@@ -280,11 +245,6 @@ pub fn render(
     }
 }
 
-/// The generic single-field prompt (`view/modals/confirm.rs:18-69`): title,
-/// the field, and an inline red note cleared on the next edit. Rebuilt onto
-/// the shared four-child modal grammar (§9.1.1) — header / divider / body /
-/// footer — with the same leading `git-branch` icon in the field row
-/// (`confirm.rs:33-40`).
 fn input_modal(
     layer: &ModalLayer,
     title: &str,
@@ -355,9 +315,6 @@ fn input_modal(
     .into_any_element()
 }
 
-/// `confirm_modal` (`view/modals/confirm.rs:70-133`) with its destructive
-/// styling, rebuilt onto the shared four-child modal grammar (§9.1.1).
-/// Escape = no, Enter = yes, `y`/`n`.
 fn confirm_modal(
     title: &str,
     prompt: &str,
@@ -416,8 +373,6 @@ fn confirm_modal(
     .into_any_element()
 }
 
-/// `message_modal` (`view/modals/confirm.rs:446-472`): text and one dismiss,
-/// rebuilt onto the shared four-child modal grammar (§9.1.1).
 fn message_modal(text: &str, dispatch: &ModalDispatch) -> AnyElement {
     modal_panel(
         MODAL_W_MD,
@@ -445,9 +400,7 @@ fn message_modal(text: &str, dispatch: &ModalDispatch) -> AnyElement {
     .into_any_element()
 }
 
-/// `tmux_choice_modal` (`view/modals/settings.rs:30-57`), rebuilt onto the
-/// shared four-child modal grammar (§9.1.1). Escape deliberately persists
-/// nothing, so the footer does not offer it as a choice.
+/// Escape persists nothing, so the footer does not offer it as a choice.
 fn tmux_choice_modal(dispatch: &ModalDispatch) -> AnyElement {
     modal_panel(
         MODAL_W_MD,
@@ -488,10 +441,6 @@ fn tmux_choice_modal(dispatch: &ModalDispatch) -> AnyElement {
     .into_any_element()
 }
 
-/// `agent_picker_modal` (`view/modals/settings.rs:58-129`): the available
-/// agents with a selection cursor, Space toggling the default. Rebuilt onto
-/// the shared four-child modal grammar (§9.1.1); the agent list moves from
-/// `palette_row` to the `card`/`click_row` selection-list shape (§9.1.1).
 fn agent_picker_modal(
     project: &str,
     wt_path: &str,
@@ -612,8 +561,6 @@ mod tests {
         );
     }
 
-    /// The four `ConfirmKind`s the modal set actually raises
-    /// (`src/app/modal.rs:177-186`).
     #[test]
     fn destructive_kinds_render_with_the_red_accent() {
         for (kind, destructive) in [
@@ -622,8 +569,7 @@ mod tests {
             (ConfirmKind::InitAndAddWorktree { name: "x".into() }, false),
             (ConfirmKind::Quit, true),
         ] {
-            // A compile-time reminder that every kind is accounted for; the
-            // accent itself is asserted by the manual sweep (Task 7 row 2).
+            // Compile-time reminder that every kind is accounted for.
             let _ = (&kind, destructive);
         }
     }

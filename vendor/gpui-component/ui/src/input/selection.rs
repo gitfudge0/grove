@@ -7,9 +7,7 @@ use sum_tree::Bias;
 use crate::{RopeExt as _, input::InputState, text::selection::word_range_from_chars};
 
 impl InputState {
-    /// Select the word at the given offset on double-click.
-    ///
-    /// The offset is the UTF-8 offset.
+    /// `offset` is a UTF-8 offset; called on double-click.
     pub(super) fn select_word(&mut self, offset: usize, _: &mut Window, cx: &mut Context<Self>) {
         let Some(range) = TextSelector::word_range(&self.text, offset) else {
             return;
@@ -20,9 +18,7 @@ impl InputState {
         cx.notify()
     }
 
-    /// Select the line at the given offset on triple-click.
-    ///
-    /// The offset is the UTF-8 offset.
+    /// `offset` is a UTF-8 offset; called on triple-click.
     pub(super) fn select_line(&mut self, offset: usize, _: &mut Window, cx: &mut Context<Self>) {
         let range = TextSelector::line_range(&self.text, offset);
         self.selected_range = (range.start..range.end).into();
@@ -33,11 +29,6 @@ impl InputState {
 
 struct TextSelector;
 impl TextSelector {
-    /// Select a line in the given text at the specified offset.
-    ///
-    /// The offset is the UTF-8 offset.
-    ///
-    /// Returns the start and end offsets of the selected line.
     pub fn line_range(text: &Rope, offset: usize) -> Range<usize> {
         let offset = text.clip_offset(offset, Bias::Left);
         let row = text.offset_to_point(offset).row;
@@ -47,11 +38,6 @@ impl TextSelector {
         start..end
     }
 
-    /// Select a word in the given text at the specified offset.
-    ///
-    /// The offset is the UTF-8 offset.
-    ///
-    /// Returns the start and end offsets of the selected word.
     pub fn word_range(text: &Rope, offset: usize) -> Option<Range<usize>> {
         let offset = text.clip_offset(offset, Bias::Left);
         let Some(char) = text.char_at(offset) else {

@@ -9,12 +9,8 @@ use gpui::{
     prelude::FluentBuilder,
 };
 
-/// A trait for elements that can be made scrollable with scrollbars.
-///
-/// The wrapped element is the scroll area itself, rather than being inserted as
-/// a child of a new scroll area.
+/// The wrapped element is the scroll area itself, not a child of a new one.
 pub trait ScrollableElement: InteractiveElement + Styled + ParentElement + Element {
-    /// Adds a scrollbar to the element.
     #[track_caller]
     fn scrollbar<H: ScrollbarHandle + Clone>(
         self,
@@ -28,41 +24,32 @@ pub trait ScrollableElement: InteractiveElement + Styled + ParentElement + Eleme
         })
     }
 
-    /// Adds a vertical scrollbar to the element.
     #[track_caller]
     fn vertical_scrollbar<H: ScrollbarHandle + Clone>(self, scroll_handle: &H) -> Self {
         self.scrollbar(scroll_handle, ScrollbarAxis::Vertical)
     }
 
-    /// Adds a horizontal scrollbar to the element.
     #[track_caller]
     fn horizontal_scrollbar<H: ScrollbarHandle + Clone>(self, scroll_handle: &H) -> Self {
         self.scrollbar(scroll_handle, ScrollbarAxis::Horizontal)
     }
 
-    /// Almost equivalent to [`StatefulInteractiveElement::overflow_scroll`], but adds scrollbars.
-    /// Preserves the source element as the scrollable container.
     #[track_caller]
     fn overflow_scrollbar(self) -> Scrollable<Self> {
         Scrollable::new(self, ScrollbarAxis::Both)
     }
 
-    /// Almost equivalent to [`StatefulInteractiveElement::overflow_x_scroll`], but adds Horizontal scrollbar.
-    /// Preserves the source element as the scrollable container.
     #[track_caller]
     fn overflow_x_scrollbar(self) -> Scrollable<Self> {
         Scrollable::new(self, ScrollbarAxis::Horizontal)
     }
 
-    /// Almost equivalent to [`StatefulInteractiveElement::overflow_y_scroll`], but adds Vertical scrollbar.
-    /// Preserves the source element as the scrollable container.
     #[track_caller]
     fn overflow_y_scrollbar(self) -> Scrollable<Self> {
         Scrollable::new(self, ScrollbarAxis::Vertical)
     }
 }
 
-/// A scrollable element wrapper that renders the original element as the scroll area and overlays scrollbars.
 #[derive(IntoElement)]
 pub struct Scrollable<E: InteractiveElement + Styled + ParentElement + Element> {
     id: ElementId,
@@ -118,8 +105,7 @@ where
     fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let scroll_handle = scroll_handle_for(&self.id, window, cx);
 
-        // Preserve the caller-requested size on the wrapper, while keeping the
-        // caller's element as the actual scroll-tracked layout container.
+        // Wrapper keeps the caller-requested size; the caller's element is the actual scroll-tracked container.
         let root_style = root_style_from(&mut self.element);
 
         let root_id = self.id.clone();
@@ -137,10 +123,7 @@ where
                 ScrollbarAxis::Both => this.size_auto().min_size_full(),
             });
 
-        // Keep the scroll area in the normal flow: its content size must
-        // propagate to auto-sized ancestors (e.g. a Dialog that grows with
-        // its content). An absolutely positioned scroll area would collapse
-        // such ancestors to zero height.
+        // Kept in normal flow so content size propagates to auto-sized ancestors (e.g. a growing Dialog); absolute positioning would collapse them to zero height.
         let scroll_area = div()
             .id(area_id)
             .size_full()
@@ -207,8 +190,7 @@ fn scroll_handle_for(id: &ElementId, window: &mut Window, cx: &mut App) -> Scrol
         .clone()
 }
 
-/// Copies the outer layout styles from the element, so the wrapper can
-/// participate in the parent's layout the same way the source element would.
+/// So the wrapper participates in the parent's layout the same way the source element would.
 #[inline]
 fn root_style_from<E>(element: &mut E) -> StyleRefinement
 where
@@ -235,8 +217,7 @@ fn render_scrollbar<H: ScrollbarHandle + Clone>(
     window: &mut Window,
     cx: &mut App,
 ) -> Div {
-    // Do not render scrollbar when inspector is picking elements,
-    // to allow us to pick the background elements.
+    // Hide the scrollbar while the inspector is picking, so background elements are pickable.
     let is_inspector_picking = window.is_inspector_picking(cx);
     if is_inspector_picking {
         return div();
@@ -322,11 +303,7 @@ mod tests {
 
     impl Render for AutoHeightParentTest {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            // Mimics Dialog: the panel height is auto (content-driven), the
-            // body is flex_1 + overflow_hidden, and the scrollable content
-            // should give the panel its intrinsic height.
-            // GPUI window roots with auto dimensions stretch to the viewport,
-            // so keep the auto-height panel below an explicit viewport root.
+            // Mimics Dialog (auto height, flex_1 + overflow_hidden body); wrapped in an explicit viewport root since GPUI auto-dimension roots stretch to the viewport.
             div().size_full().child(
                 crate::v_flex()
                     .w(px(200.))
@@ -350,8 +327,7 @@ mod tests {
 
     impl Render for MaxHeightParentTest {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            // Mimics a Dialog with `max_h`: the panel grows with content up
-            // to the max height, then the body starts scrolling.
+            // Mimics a Dialog with max_h: grows with content, then scrolls.
             crate::v_flex()
                 .w(px(200.))
                 .max_h(px(100.))
@@ -378,7 +354,6 @@ mod tests {
         let cx: &mut VisualTestContext = cx;
         draw(cx);
 
-        // The two 50px rows should push the footer down to y = 100.
         let footer = cx.debug_bounds("auto-height-footer").unwrap();
         assert_eq!(footer.top(), px(100.));
     }
@@ -390,8 +365,6 @@ mod tests {
         let cx: &mut VisualTestContext = cx;
         draw(cx);
 
-        // Content (150) + footer (10) exceeds max_h(100): the footer is
-        // pinned at the bottom and the body gets the remaining 90px viewport.
         let footer = cx.debug_bounds("max-height-footer").unwrap();
         assert_eq!(footer.top(), px(90.));
 

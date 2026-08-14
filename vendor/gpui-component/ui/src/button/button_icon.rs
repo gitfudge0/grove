@@ -1,7 +1,6 @@
 use crate::{Icon, Sizable, Size, progress::ProgressCircle, spinner::Spinner};
 use gpui::{App, IntoElement, RenderOnce, Window, prelude::FluentBuilder};
 
-/// Button icon which can be an Icon, Spinner, or Progress use for `icon` method of Button.
 #[doc(hidden)]
 #[derive(IntoElement)]
 pub struct ButtonIcon {
@@ -21,7 +20,6 @@ where
 }
 
 impl ButtonIcon {
-    /// Creates a new ButtonIcon with the given icon.
     pub fn new(icon: impl Into<ButtonIconVariant>) -> Self {
         Self {
             icon: icon.into(),
@@ -49,7 +47,6 @@ impl Sizable for ButtonIcon {
     }
 }
 
-/// Button icon which can be an Icon, Spinner, Progress, or ProgressCircle use for `icon` method of Button.
 #[doc(hidden)]
 #[derive(IntoElement)]
 pub enum ButtonIconVariant {
@@ -80,13 +77,11 @@ impl From<ProgressCircle> for ButtonIconVariant {
 }
 
 impl ButtonIconVariant {
-    /// Returns true if the ButtonIconKind is an Icon.
     #[inline]
     pub(crate) fn is_spinner(&self) -> bool {
         matches!(self, Self::Spinner(_))
     }
 
-    /// Returns true if the ButtonIconKind is a Progress or ProgressCircle.
     #[inline]
     pub(crate) fn is_progress(&self) -> bool {
         matches!(self, Self::Progress(_))
@@ -150,17 +145,14 @@ mod tests {
 
     #[gpui::test]
     fn test_button_icon_variant_types(_cx: &mut gpui::TestAppContext) {
-        // Test Icon variant
         let icon_variant = ButtonIconVariant::Icon(Icon::new(IconName::Plus));
         assert!(!icon_variant.is_spinner());
         assert!(!icon_variant.is_progress());
 
-        // Test Spinner variant
         let spinner_variant = ButtonIconVariant::Spinner(Spinner::new());
         assert!(spinner_variant.is_spinner());
         assert!(!spinner_variant.is_progress());
 
-        // Test Progress variant
         let progress_variant = ButtonIconVariant::Progress(ProgressCircle::new(75));
         assert!(!progress_variant.is_spinner());
         assert!(progress_variant.is_progress());

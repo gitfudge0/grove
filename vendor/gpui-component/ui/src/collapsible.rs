@@ -15,7 +15,6 @@ impl CollapsibleChild {
     }
 }
 
-/// An interactive element which expands/collapses.
 #[derive(IntoElement)]
 pub struct Collapsible {
     style: StyleRefinement,
@@ -24,7 +23,6 @@ pub struct Collapsible {
 }
 
 impl Collapsible {
-    /// Creates a new `Collapsible` instance.
     pub fn new() -> Self {
         Self {
             style: StyleRefinement::default(),
@@ -33,15 +31,12 @@ impl Collapsible {
         }
     }
 
-    /// Sets whether the collapsible is open. default is false.
     pub fn open(mut self, open: bool) -> Self {
         self.open = open;
         self
     }
 
-    /// Sets the content of the collapsible.
-    ///
-    /// If `open` is false, content will be hidden.
+    /// Hidden when `open` is false.
     pub fn content(mut self, content: impl IntoElement) -> Self {
         self.children
             .push(CollapsibleChild::Content(content.into_any_element()));

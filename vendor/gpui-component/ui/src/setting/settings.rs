@@ -17,10 +17,6 @@ use rust_i18n::t;
 
 const STACKED_LAYOUT_MAX_WIDTH: Pixels = px(480.);
 
-/// The settings structure containing multiple pages for app settings.
-///
-/// The hierarchy of settings is as follows:
-///
 /// ```ignore
 /// Settings
 ///   SettingPage     <- The single active page displayed
@@ -43,7 +39,6 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Create a new settings with the given ID.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -58,51 +53,44 @@ impl Settings {
         }
     }
 
-    /// Set the width of the sidebar, default is `250px`.
+    /// Defaults to `250px`.
     pub fn sidebar_width(mut self, width: impl Into<Pixels>) -> Self {
         self.sidebar_width = width.into();
         self
     }
 
-    /// Set the resize range of the sidebar, default is `160px..360px`.
+    /// Defaults to `160px..360px`.
     pub fn sidebar_size_range(mut self, range: impl Into<Range<Pixels>>) -> Self {
         self.sidebar_size_range = range.into();
         self
     }
 
-    /// Add a page to the settings.
     pub fn page(mut self, page: SettingPage) -> Self {
         self.pages.push(page);
         self
     }
 
-    /// Add pages to the settings.
     pub fn pages(mut self, pages: impl IntoIterator<Item = SettingPage>) -> Self {
         self.pages.extend(pages);
         self
     }
 
-    /// Set the default variant for all setting groups.
-    ///
-    /// All setting groups will use this variant unless overridden individually.
+    /// Individual groups can still override this.
     pub fn with_group_variant(mut self, variant: GroupBoxVariant) -> Self {
         self.group_variant = variant;
         self
     }
 
-    /// Set the style refinement for the sidebar.
     pub fn sidebar_style(mut self, style: &StyleRefinement) -> Self {
         self.sidebar_style = style.clone();
         self
     }
 
-    /// Set the default index of the page to be selected.
     pub fn default_selected_index(mut self, index: SelectIndex) -> Self {
         self.default_selected_index = index;
         self
     }
 
-    /// Set the style refinement for the header.
     pub fn header_style(mut self, style: &StyleRefinement) -> Self {
         self.header_style = style.clone();
         self
@@ -246,12 +234,10 @@ impl Sizable for Settings {
 
 pub(super) struct SettingsState {
     pub(super) selected_index: SelectIndex,
-    /// If set, defer scrolling to this group index after rendering.
     pub(super) deferred_scroll_group_ix: Option<usize>,
     pub(super) search_input: Entity<InputState>,
 }
 
-/// Options for rendering setting item.
 #[derive(Clone, Copy)]
 pub struct RenderOptions {
     pub page_ix: usize,

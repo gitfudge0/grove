@@ -1,28 +1,9 @@
 //! The left rail: header, the scrolling project → worktree → session tree, the
 //! agent-menu overlay, the docked TERMINALS header, and the draggable divider.
 //!
-//! # `uniform_list` vs a plain column (carried amendment 2 — DECIDED)
-//!
-//! **A plain scrollable `div` column.** `uniform_list` at ZED_REV `1a246ef` is
-//! not merely optimized for uniform heights, it *requires* them: it "simply
-//! measures the first element and then lays out all remaining elements in a
-//! line based on that measurement"
-//! (`crates/gpui/src/elements/uniform_list.rs:1-5`), with a single
-//! `item_to_measure_index`. There is no per-row height hook at this rev. Grove's
-//! rows are genuinely non-uniform — a worktree showing a branch chip is
-//! `ROW_H + 14` (`src/gui/rows.rs:268`) — so feeding it `ROW_H` would clip every
-//! branch chip and desynchronize the agent-menu overlay from the list.
-//!
-//! The cost is that all rows are built per frame rather than just the visible
-//! window. That is the same cost the iced build already pays, and
-//! [`crate::views::rows::flatten`] made each row O(1) to build, so the
-//! per-frame work is now linear in rows with no nested rescans. If a tree ever
-//! grows large enough to matter, the fix is `gpui::list` (which supports
-//! variable heights), not `uniform_list`.
-//!
-//! [`crate::views::rows::row_height`] stays the single height source: the
-//! column, [`TreeRow::height`](crate::views::rows::TreeRow::height) and
-//! [`crate::views::rows::agent_menu_top`] all go through it.
+//! Uses a plain scrollable `div` column rather than `uniform_list`: Grove's
+//! rows are genuinely non-uniform (a branch chip makes a worktree row taller),
+//! and `uniform_list` at this gpui rev requires uniform heights.
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -50,10 +31,7 @@ use crate::views::rows::{self, RowAction, RowCtx, TreeRow};
 use crate::views::session_header::SESSBAR_H;
 
 pub struct Sidebar {
-    /// The single modal slot; row actions that open a modal go through it.
-    /// Set by `Workspace::new` right after both entities exist.
     modals: Option<Entity<crate::views::modals::ModalLayer>>,
-    /// The statusbar toast slot, for the spawn-failure producer.
     toast: Option<Entity<crate::entities::toast::ToastState>>,
 
     pub state: Entity<WorkspaceState>,
@@ -65,9 +43,7 @@ pub struct Sidebar {
     term_scroll: ScrollHandle,
     drag: Option<DividerDrag>,
     last_divider_press: Option<Instant>,
-    /// Rebuilt every frame by `render`; read by the divider handlers and by
-    /// [`Self::visible_session_order`] so keyboard selection and the sidebar
-    /// agree by construction.
+    /// Rebuilt every frame by `render`; read by the divider handlers and [`Self::visible_session_order`].
     rows: Vec<TreeRow>,
     _observers: Vec<gpui::Subscription>,
 }
@@ -85,7 +61,6 @@ impl Sidebar {
             cx.observe(&state, |_, _, cx| cx.notify()),
             cx.observe(&tree, |_, _, cx| cx.notify()),
             cx.observe(&registry, |_, _, cx| cx.notify()),
-            // The clock drives the Working spinner and the attention pulse.
             cx.observe(&clock, |_, _, cx| cx.notify()),
         ];
         Self {
@@ -105,8 +80,6 @@ impl Sidebar {
         }
     }
 
-    /// Hand the sidebar the modal slot. Called by `Workspace::new`; both
-    /// entities have to exist first, so it cannot be a constructor argument.
     pub fn set_modals(
         &mut self,
         modals: Entity<crate::views::modals::ModalLayer>,
@@ -116,20 +89,16 @@ impl Sidebar {
         self.toast = Some(toast);
     }
 
-    /// Open a modal from a row action, if the slot has been handed over.
     fn open_modal(&mut self, modal: crate::modal::Modal, cx: &mut Context<Self>) {
         if let Some(layer) = self.modals.clone() {
             layer.update(cx, |l, cx| l.open(modal, cx));
         }
     }
 
-    /// `mod+1..9`'s index space and the attention queue's order, straight off
-    /// the rows the rail last laid out.
     pub fn visible_session_order(&self) -> Vec<crate::entities::session_registry::SessionId> {
         rows::visible_session_order(&self.rows)
     }
 
-    /// Agents found on PATH, always including `Terminal` (`src/app/mod.rs:168`).
     fn available_agents() -> Vec<Agent> {
         let found: Vec<Agent> = Agent::ALL.into_iter().filter(|a| a.available()).collect();
         if found.is_empty() {
@@ -139,11 +108,6 @@ impl Sidebar {
         }
     }
 
-    // ── row dispatch ────────────────────────────────────────────────────
-
-    /// The single place a row click becomes a state change. Actions that would
-    /// open a modal log a stub naming their plan; everything that mutates
-    /// selection or the registry is wired for real.
     fn dispatch(&mut self, action: RowAction, window: &mut Window, cx: &mut Context<Self>) {
         let snap = self.snapshot(cx);
         match action {
@@ -199,12 +163,7 @@ impl Sidebar {
                 s.set_open_agent_menu(open);
                 cx.notify();
             }),
-            // `select_session` moves `proj_idx` to the clicked session's
-            // project, so the project hand-off `SelectWorktree` does has to
-            // happen here too. Without it `ProjectTree::worktrees` still holds
-            // the OLD project's worktrees while `snapshot` hands them to the
-            // new `active_proj` — the tree then renders one project's worktrees
-            // under another's header and selection lands on the wrong session.
+            // select_session moves proj_idx, so the ProjectTree hand-off SelectWorktree does must happen here too.
             RowAction::SelectSession(id) => {
                 let old = self.state.read(cx).proj_idx();
                 ProjectTree::adopt_session_project(&self.tree.clone(), &snap, id, old, cx);
@@ -265,19 +224,13 @@ impl Sidebar {
                     cx.notify();
                     mode
                 });
-                // Persisted like the sidebar width: the rail's presentation
-                // has to round-trip across launches.
                 SettingsState::update(cx, |s| s.rail_sessions = mode == RailMode::Sessions);
             }
-            // Entering/leaving the grid is a whole-workspace transition
-            // (tile order, keyboard focus) that only `Workspace` can make, so
-            // the rail asks for it exactly the way `mod+g` does rather than
-            // reaching across the view tree for a second implementation.
+            // Only Workspace can make this whole-workspace transition, so ask for it the way mod+g does.
             RowAction::ToggleGridView => {
                 window.dispatch_action(Box::new(crate::keymap::ToggleGrid), cx);
             }
             RowAction::SpawnAgent(proj, wt, agent) => self.spawn_session(proj, wt, agent, cx),
-            // The worktree-name prompt (`src/app/mod.rs:442`).
             RowAction::AddWorktree(proj) => {
                 self.state.update(cx, |s, cx| {
                     s.select_project(proj);
@@ -292,7 +245,6 @@ impl Sidebar {
                     cx,
                 );
             }
-            // Confirm first; accepting starts the teardown (`app/mod.rs:487`).
             RowAction::DeleteWorktree(proj, wt) => {
                 let Some(path) = snap
                     .projects
@@ -318,8 +270,6 @@ impl Sidebar {
                     layer.update(cx, |l, cx| l.open_remove_project(idx, cx));
                 }
             }
-            // Task 6 fills the editor view; the slot opens now, seeded from
-            // the project's persisted scripts.
             RowAction::ProjectScripts(idx) => {
                 let state = {
                     let store = &cx.global::<crate::settings::SettingsState>().store;
@@ -339,11 +289,6 @@ impl Sidebar {
                     self.open_modal(crate::modal::Modal::ScriptsEditor(Box::new(state)), cx);
                 }
             }
-            // `on_run_script` (`src/gui/update/sessions.rs:147-177`): selects
-            // the row's worktree, opens the terminal panel if it's closed,
-            // then spawns the project's `run` script in it via the shared
-            // `views::scripts::spawn_wt_script` — the same path the header
-            // ▶ / palette (`Workspace::spawn_wt_script`) uses.
             RowAction::RunScript(proj, wt) => {
                 self.state.update(cx, |s, cx| {
                     s.select_worktree(proj, wt, &snap);
@@ -380,13 +325,9 @@ impl Sidebar {
                     cx,
                 );
             }
-            // Task 4 fills the wizard; the slot opens now.
             RowAction::AddProject => {
                 self.open_modal(crate::modal::Modal::AddProject(Box::default()), cx);
             }
-            // The existing palette, scoped: in Sessions mode the rail lists
-            // sessions, so `+` means "start one" — and the only choice that
-            // needs making is which worktree.
             RowAction::LaunchInWorktree => {
                 self.open_modal(
                     crate::modal::Modal::SessionLauncher(Box::new(
@@ -401,8 +342,6 @@ impl Sidebar {
         }
     }
 
-    // ── registry mutation ───────────────────────────────────────────────
-
     pub fn spawn_session(&mut self, proj: usize, wt: usize, agent: Agent, cx: &mut Context<Self>) {
         let snap = self.snapshot(cx);
         let Some(project) = snap.projects.iter().find(|p| p.idx == proj) else {
@@ -415,9 +354,7 @@ impl Sidebar {
         self.spawn_session_in(name, cwd, agent, cx);
     }
 
-    /// Spawn by concrete project name + worktree path. The palette launches
-    /// through here: its target may live in a project whose worktree cache is
-    /// cold, so there is no snapshot position to resolve it against.
+    /// Spawn by concrete project name + worktree path; the palette's target may live in a project with no cached snapshot position.
     pub fn spawn_session_in(
         &mut self,
         name: String,
@@ -429,8 +366,6 @@ impl Sidebar {
             s.set_open_agent_menu(None);
             cx.notify();
         });
-        // Where iced builds them (`src/app/spawn.rs:26-32`): the agent's own
-        // flags, from the persisted Permissions / Claude-in-Chrome settings.
         let args = {
             let store = &cx.global::<SettingsState>().store;
             agent.launch_args(
@@ -472,9 +407,6 @@ impl Sidebar {
         };
         let tmux_backed = tmux_name.is_some();
         let spawn_error = session.read(cx).spawn_error().map(str::to_string);
-        // Recorded ambiguity 7 (`src/gui/update/sessions.rs:482`): a PTY that
-        // never came up is reported here, the one place every spawn path —
-        // the rail strip, the agent picker and the launcher — funnels through.
         if let Some(e) = spawn_error.as_deref() {
             crate::telemetry::track("error", vec![("kind", "spawn_failed".into())]);
             let msg = format!("failed to start session: {e}");
@@ -487,8 +419,6 @@ impl Sidebar {
             cx.notify();
         });
         if spawn_error.is_none() {
-            // `src/gui/update/sessions.rs:463-472` — the counts are read after
-            // the attach, so the new session is included exactly as iced's are.
             let (open, open_tmux) = {
                 let r = self.registry.read(cx);
                 (
@@ -516,10 +446,7 @@ impl Sidebar {
         });
     }
 
-    /// `mod+alt+t` from anywhere, including the grid: leaves the grid first
-    /// (a terminal spawned behind the tiles would be invisible) then spawns
-    /// exactly as [`Self::spawn_home_terminal`] does
-    /// (`update/mod.rs:1008-1022`).
+    /// Leaves the grid first, or a terminal spawned behind the tiles would be invisible.
     pub fn new_home_terminal(&mut self, cx: &mut Context<Self>) {
         self.state.update(cx, |s, cx| {
             s.exit_grid_for_terminal();
@@ -528,7 +455,6 @@ impl Sidebar {
         self.spawn_home_terminal(cx);
     }
 
-    /// Lazily spawn the pinned section's shell, and focus it.
     pub fn spawn_home_terminal(&mut self, cx: &mut Context<Self>) {
         let (label, target) = self.registry.update(cx, |r, _| {
             let label = r.next_home_label();
@@ -537,8 +463,6 @@ impl Sidebar {
                 crate::entities::session_registry::SpawnTarget::home(label),
             )
         });
-        // Home terminals are `Agent::Terminal`: `attention::prepare` returns
-        // `None` for them, so there is nothing to thread down.
         let session = cx.new(|cx| {
             crate::entities::terminal_session::TerminalSession::spawn(&target, &[], None, cx)
         });
@@ -553,7 +477,6 @@ impl Sidebar {
                     label,
                     spawned_at: Instant::now(),
                     attention: None,
-                    // Home terminals and panel shells are always native.
                     tmux: false,
                     tmux_name: None,
                 },
@@ -568,8 +491,7 @@ impl Sidebar {
         });
     }
 
-    /// Spec's "always ≥1 home terminal": closing the last one immediately
-    /// respawns a fresh shell (`src/app/terminals.rs:21-30`).
+    /// Always ≥1 home terminal: closing the last one immediately respawns a fresh shell.
     pub(crate) fn close_home_terminal(&mut self, i: usize, cx: &mut Context<Self>) {
         let remaining = self.registry.update(cx, |r, cx| {
             r.close_home(i);
@@ -585,11 +507,6 @@ impl Sidebar {
         }
     }
 
-    // ── snapshot ────────────────────────────────────────────────────────
-
-    /// The snapshot every pure helper reads. `Context<ProjectTree>` derefs to
-    /// `App`, so the store Global and the registry entity are both readable
-    /// inside the `update` without cloning either.
     fn snapshot(&self, cx: &mut App) -> crate::entities::workspace_state::TreeSnapshot {
         let active_proj = self.state.read(cx).proj_idx();
         let registry = self.registry.clone();
@@ -598,8 +515,6 @@ impl Sidebar {
             tree.snapshot(store, registry.read(cx), active_proj)
         })
     }
-
-    // ── divider ─────────────────────────────────────────────────────────
 
     fn on_divider_press(&mut self, window: &Window, cx: &mut Context<Self>) {
         let now = Instant::now();
@@ -624,15 +539,12 @@ impl Sidebar {
         }
     }
 
-    /// Called from the workspace root, which is the only element wide enough to
-    /// keep receiving moves once the cursor leaves the 6px hit zone.
     pub fn on_root_mouse_move(&mut self, cursor_x: f32, window: &Window, cx: &mut Context<Self>) {
         let Some(drag) = self.drag else { return };
         let offset = match drag.grab_offset {
             Some(o) => o,
             None => {
-                // Captured on the first move so an off-edge press does not make
-                // the width jump (`layout.rs:137-147`).
+                // Captured on first move so an off-edge press does not make the width jump.
                 let o = self.state.read(cx).sidebar_width() - cursor_x;
                 self.drag = Some(DividerDrag {
                     grab_offset: Some(o),
@@ -650,9 +562,7 @@ impl Sidebar {
 
     pub fn on_root_mouse_up(&mut self, cx: &mut Context<Self>) {
         let Some(drag) = self.drag.take() else { return };
-        // A plain click must not write to disk (`layout.rs:157-162`). The PTY
-        // needs no explicit re-dimensioning: the element derives its dims from
-        // its own bounds in `prepaint` (Plan 04 amendment 7).
+        // A plain click must not write to disk.
         if (self.state.read(cx).sidebar_width() - drag.start_width).abs() >= DRAG_EPSILON {
             self.persist_width(cx);
         }
@@ -660,7 +570,6 @@ impl Sidebar {
 
     fn persist_width(&self, cx: &mut Context<Self>) {
         let width = self.state.read(cx).sidebar_width();
-        // The 250ms `SettingsState` debounce replaces the iced tick-debounce.
         SettingsState::update(cx, |s| s.sidebar_width = Some(width));
     }
 
@@ -674,9 +583,6 @@ impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snap = self.snapshot(cx);
         let git_suffix = self.tree.read(cx).git_suffixes();
-        // Whether each home shell is actually running, not merely present —
-        // the docked TERMINALS header's activity dot lights only when one is
-        // (`src/gui/view/sidebar.rs:61-70,114-119`).
         let home_running: Vec<bool> = {
             let home_count = self.registry.read(cx).home_terminal_count();
             let entities: Vec<_> = (0..home_count)
@@ -688,25 +594,14 @@ impl Render for Sidebar {
                 .collect()
         };
         let home_count = home_running.len();
-        // Every frame until the user touches the tree manually, so
-        // late-arriving sessions (restored asynchronously) still land the
-        // default expansion/highlight rather than freezing on the first,
-        // possibly-empty snapshot. Deliberately no `cx.notify()` — this runs
-        // inside a render pass that is already under way.
+        // Runs every frame until the user touches the tree manually, so late-arriving sessions still get the default expansion.
         self.state.update(cx, |s, _| s.sync_default_tree(&snap));
-        // The registry facts the sessions mode's cards are built from —
-        // resolved here, so `flatten_sessions`'s rows stay pre-resolved and
-        // the renderer never reaches back into an entity.
         let session_info: std::collections::HashMap<_, _> = {
             let registry = self.registry.read(cx);
             registry
                 .all()
                 .iter()
                 .map(|m| {
-                    // The card's headline is the live OSC title, run through
-                    // the same `session_context` filter the tree's session row
-                    // uses — one resolver, so the two rails cannot show two
-                    // different titles for one session.
                     let title = registry
                         .session(m.id)
                         .and_then(|e| e.read(cx).title())
@@ -732,8 +627,6 @@ impl Render for Sidebar {
                 })
                 .collect()
         };
-        // The same poll `git_suffixes` reads, unrendered: the cards want the
-        // raw `added`/`removed` counts, not the tree's `+2/-1` suffix text.
         let git_states = self.tree.read(cx).git_states();
         let (
             rows,
@@ -780,20 +673,13 @@ impl Render for Sidebar {
             )
         };
         self.rows.clone_from(&rows);
-        // Publish the flattened order so the attention queue resolves in tree
-        // order without the `ActivityStore` reaching into a view. Deliberately
-        // without `cx.notify()`: this is derived data that changed *because* a
-        // repaint was already under way.
         let order = self.visible_session_order();
         self.state.update(cx, |s, _| s.set_visible_order(order));
 
         let ctx = self.row_ctx(&rows, tick, pulse, hovered_wt, cx);
         let menu_top = open_menu.and_then(|open| rows::agent_menu_top(&rows, open));
 
-        // The expanded TERMINALS section (header + terminal rows) is emitted
-        // by `rows::flatten` at the tail of the row list, but it belongs
-        // docked at the bottom of the rail rather than inside the scrolling
-        // tree — split it off here instead of touching `flatten`.
+        // TERMINALS section belongs docked at the bottom, not in the scrolling tree — split it off here.
         let split = rows
             .iter()
             .position(|r| matches!(r, TreeRow::TerminalsHeader { .. }))
@@ -809,10 +695,7 @@ impl Render for Sidebar {
             .pb(rpx(SPACE_2XL))
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            // The sessions mode is a card list, not a tree: cards are inset
-            // from the rail's edges and separated by a gap, where tree rows
-            // are full-bleed and stacked (mock section C, "list gap SPACE_MD,
-            // list padding SPACE_LG").
+            // Sessions mode is an inset card list; tree rows are full-bleed.
             .when(rail_mode == RailMode::Sessions, |d| {
                 d.px(rpx(SPACE_LG)).gap(rpx(SPACE_MD))
             });
@@ -822,9 +705,7 @@ impl Render for Sidebar {
 
         let mut tree_area = div().relative().flex_1().w_full().child(list);
         if let Some((proj, wt, top, is_main)) = menu_top {
-            // The row offset is authored in design px (so it zooms), but the
-            // scroll offset is real window pixels — resolve the rem to pixels
-            // and add them in that one space.
+            // Row offset is design px (zooms); scroll offset is real window pixels — resolve both to pixels before adding.
             let top = rpx(top).to_pixels(window.rem_size()) + self.scroll.offset().y;
             tree_area = tree_area.child(self.agent_menu(proj, wt, top, is_main, &ctx));
         }
@@ -839,9 +720,7 @@ impl Render for Sidebar {
             .child(divider_h())
             .child(tree_area);
         if !term_rows.is_empty() {
-            // Docked at the bottom of the rail, separated by a divider and
-            // capped at 20% of the rail height so a long terminal list
-            // scrolls internally rather than pushing the tree off-screen.
+            // Capped at 20% of the rail height so a long list scrolls internally instead of pushing the tree off-screen.
             let mut term_list = div()
                 .id("sidebar-terminals")
                 .flex()
@@ -857,8 +736,6 @@ impl Render for Sidebar {
             rail = rail.child(divider_h()).child(term_list);
         }
         if terminals_collapsed {
-            // Docked outside the scroll area so it is always reachable; the dot
-            // is on iff a shell is running (`sidebar.rs:114-129`, `:61-70`).
             rail = rail.child(divider_h()).child(rows::terminals_header(
                 false,
                 home_count,
@@ -886,16 +763,7 @@ impl Sidebar {
         hovered_wt: Option<(usize, usize)>,
         cx: &mut Context<Self>,
     ) -> RowCtx {
-        // Live OSC titles (Plan 05 deviation 5 closes here). `session_context`
-        // strips the worktree name, the internal label and the agent label,
-        // then `sanitize_ui_text` drops the emoji/box-drawing the UI font
-        // cannot render — the header applies the same filter
-        // (`common.rs:179-190`).
-        //
-        // The iced `cached_context` memo (`rows.rs:748`) exists because the
-        // sanitize ran per frame per row inside `view()`. It is **not** ported:
-        // no profile showed it mattering here, and the same omission was
-        // recorded for Plan 05's PTY-theme memo. Revisit only with a profile.
+        // No per-row sanitize cache ported — no profile has shown it mattering here.
         let registry = self.registry.read(cx);
         let mut session_text = std::collections::HashMap::new();
         for row in rows {
@@ -937,14 +805,6 @@ impl Sidebar {
         }
     }
 
-    /// The `SESSBAR_H` header: the letter-spaced mode label (`PROJECTS` in
-    /// tree mode, `SESSIONS` in sessions mode), the add button, the rail's
-    /// content-mode button, and the cycle button whose glyph previews the
-    /// **next** action (`src/gui/view/sidebar.rs:141-223`).
-    ///
-    /// Cluster order is deliberate and user-chosen: `+` first, then the
-    /// grid-view toggle immediately to its right, then the rail's content-mode
-    /// button, then the cycle.
     fn header(
         &self,
         next_glyph: &'static str,
@@ -953,8 +813,6 @@ impl Sidebar {
         ctx: &RowCtx,
     ) -> impl IntoElement {
         let dispatch = Rc::clone(&ctx.dispatch);
-        // Like the cycle button, the glyph previews what a click gives you:
-        // the flat session list from the tree, the tree from the list.
         let mode_glyph = match rail_mode {
             RailMode::Tree => "rail-sessions",
             RailMode::Sessions => "rail-tree",
@@ -974,9 +832,7 @@ impl Sidebar {
                 move |window, cx| dispatch(RowAction::ToggleRailMode, window, cx),
             )
         };
-        // The grid toggle, moved here from the appbar. It is a *state* button,
-        // not a preview one: `CYAN()` — the selection colour — while the grid
-        // is up, `FG_MUTE()` like its neighbours while it is not.
+        // State button, not a preview one: CYAN while the grid is up.
         let grid_btn = {
             let dispatch = Rc::clone(&dispatch);
             icon_btn(
@@ -1015,8 +871,6 @@ impl Sidebar {
             .pl(rpx(SPACE_3XL))
             .pr(rpx(SPACE_LG))
             .child(
-                // The label *is* the mode indicator (mock frames D2/D4): the
-                // rail says what it is listing, not what it was named after.
                 mono(
                     SharedString::from(tracked(match rail_mode {
                         RailMode::Tree => "PROJECTS",
@@ -1029,9 +883,6 @@ impl Sidebar {
             )
             .child({
                 let dispatch = std::rc::Rc::clone(&dispatch);
-                // `+` means "add one of what the rail is listing": a project in
-                // Tree mode, a session (via the worktree-scoped palette) in
-                // Sessions mode.
                 let add = match rail_mode {
                     RailMode::Tree => RowAction::AddProject,
                     RailMode::Sessions => RowAction::LaunchInWorktree,
@@ -1051,15 +902,11 @@ impl Sidebar {
             })
             .child(grid_btn)
             .child(mode_btn)
-            // The cycle button collapses/expands tree nesting; the sessions
-            // list is flat, so in that mode there is nothing to cycle.
+            // Nothing to cycle in the flat sessions list.
             .when(rail_mode == RailMode::Tree, |d| d.child(toggle))
     }
 
-    /// The absolutely-positioned agent menu over the list
-    /// (`src/gui/view/sidebar.rs:99-109`), anchored by
-    /// [`rows::agent_menu_top`] so it tracks the row at any scroll position
-    /// and collapse state.
+    /// Anchored by [`rows::agent_menu_top`] so it tracks the row at any scroll position/collapse state.
     fn agent_menu(
         &self,
         proj: usize,
@@ -1068,8 +915,7 @@ impl Sidebar {
         is_main: bool,
         ctx: &RowCtx,
     ) -> impl IntoElement {
-        // Click-away backdrop: a full-bleed transparent layer beneath the menu
-        // that dismisses it (`src/gui/widgets/primitives.rs:74-110`).
+        // Click-away backdrop: full-bleed transparent layer beneath the menu that dismisses it.
         let backdrop = div()
             .absolute()
             .top(px(0.0))
@@ -1105,8 +951,7 @@ impl Sidebar {
                 row = row.child(crate::icons::icon(glyph, ICON_SM, fg));
             }
             row.child(
-                // Deliberately *not* `components::ui`: the item's hover recolor
-                // lives on the row, so this label must inherit its color.
+                // Not components::ui — the hover recolor lives on the row, so this label must inherit it.
                 div()
                     .font(gpui::font(crate::fonts::UI_FAMILY))
                     .text_size(rpx(TEXT_BODY))
@@ -1128,9 +973,6 @@ impl Sidebar {
             .bg(c::BG_STRIP())
             .border_1()
             .border_color(c::BORDER());
-        // Same availability gate as the inline spawn chips, and the same
-        // agent subset as the iced menu — only Codex/OpenCode
-        // (`src/gui/widgets/primitives.rs:74-165`).
         for agent in [Agent::Codex, Agent::OpenCode] {
             if !ctx.available.contains(&agent) {
                 continue;
@@ -1162,8 +1004,6 @@ impl Sidebar {
             .child(menu)
     }
 
-    /// A 1px `BORDER()` line centred in a 6px hit zone with a horizontal-resize
-    /// cursor (`src/gui/view/sidebar.rs:72-86`).
     fn divider(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let weak = cx.entity().downgrade();
         div()
@@ -1185,17 +1025,13 @@ impl Sidebar {
     }
 }
 
-/// Wire the workspace root's pointer stream into an in-progress divider drag.
-/// The root is the only element that keeps receiving moves once the cursor
-/// leaves the 6px hit zone.
+/// Wires the workspace root's pointer stream into an in-progress divider drag — the root keeps receiving moves once the cursor leaves the hit zone.
 pub fn root_drag_listeners(sidebar: &Entity<Sidebar>, element: gpui::Div) -> gpui::Div {
     let move_target = sidebar.downgrade();
     let up_target = sidebar.downgrade();
     element
         .on_mouse_move(move |e: &MouseMoveEvent, window: &mut Window, cx| {
-            // The stored sidebar width is a *logical* (design-px) value that
-            // renders through `rpx`, so the cursor has to be divided back out
-            // of zoom before it can be compared against it.
+            // Sidebar width is logical (design-px); divide the cursor back out of zoom first.
             let zoom = cx.global::<crate::zoom::ZoomState>().zoom.max(0.1);
             let x = f32::from(e.position.x) / zoom;
             let _ = move_target.update(cx, |this: &mut Sidebar, cx| {

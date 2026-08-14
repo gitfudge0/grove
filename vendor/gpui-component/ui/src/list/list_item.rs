@@ -60,25 +60,23 @@ impl ListItem {
         }
     }
 
-    /// Set this list item to as a separator, it not able to be selected.
+    /// A separator cannot be selected.
     pub fn separator(mut self) -> Self {
         self.mode = ListItemMode::Separator;
         self
     }
 
-    /// Set to show check icon, default is None.
     pub fn check_icon(mut self, icon: impl Into<Icon>) -> Self {
         self.check_icon = Some(icon.into());
         self
     }
 
-    /// Set ListItem as the selected item style.
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
         self
     }
 
-    /// Set ListItem as the confirmed item style, it will show a check icon.
+    /// Shows a check icon.
     pub fn confirmed(mut self, confirmed: bool) -> Self {
         self.confirmed = confirmed;
         self
@@ -89,7 +87,6 @@ impl ListItem {
         self
     }
 
-    /// Set the suffix element of the input field, for example a clear button.
     pub fn suffix<F, E>(mut self, builder: F) -> Self
     where
         F: Fn(&mut Window, &mut App) -> E + 'static,

@@ -1,17 +1,6 @@
-//! The appbar: brand mark, attention pill, cog — plus the anchored attention
-//! dropdown that the pill toggles. The grid-view toggle lives in the rail
-//! header's button cluster (`src/views/sidebar.rs` — `header`), beside the `+`.
-//!
-//! Port of `src/gui/view/appbar.rs:20-237` (the bar) and `:310-437` (the
-//! dropdown). `zen_attention_pill` (`:244-305`) is Plan 07.
-//!
-//! **Deviation from the plan's "Produces: `Appbar`".** These are free render
-//! functions, not a `Render` entity, exactly like [`crate::views::rows`]: the
-//! bar owns no state — every input is already an entity the
-//! [`crate::views::workspace::Workspace`] holds and observes — so an entity
-//! here would add a second observer graph over the same data with nothing to
-//! store in it. Clicks travel back out through [`ChromeAction`], the same
-//! `Rc<dyn Fn>` dispatch idiom `rows::RowCtx` uses.
+//! The appbar: brand mark, attention pill, cog, and the anchored attention
+//! dropdown. Free render functions, not a `Render` entity — the bar owns no
+//! state, every input is already an entity `Workspace` holds and observes.
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -27,53 +16,29 @@ use crate::theme as c;
 use crate::views::components::{divider_h_strong, icon_btn, mono, status_dot, ui};
 use crate::views::rows::{path_basename, state_glyph};
 
-/// App bar height (`src/gui/metrics.rs:15`).
 pub const APPBAR_H: f32 = 44.0;
-
-/// The attention dropdown panel's width. Per DESIGN.md §8.4 this is positional,
-/// singular geometry — *the dropdown's* width — so it is a named const here
-/// rather than a notch on a shared scale.
 pub const ATTENTION_PANEL_W: f32 = 280.0;
 
-/// The cog's box. One notch above [`CONTROL_H`] because the cog is the bar's
-/// only always-present control and sits hard against the window's right edge:
-/// at [`CONTROL_H`] its hover target clips against that edge, and the upgrade
-/// dot it carries top-right would overhang the box. An optical/target
-/// correction (§14 case 3), not a second control height.
+/// One notch above [`CONTROL_H`] — the cog sits hard against the window edge, so its hover target/upgrade dot need the extra room.
 const COG_BOX: f32 = 28.0;
-
-/// The cog's glyph, sized to keep the same glyph-to-box ratio inside
-/// [`COG_BOX`] that [`ICON_MD`] has inside [`CONTROL_H`]. Between [`ICON_MD`]
-/// and [`ICON_LG`], for the same reason [`COG_BOX`] is off the control scale.
 const COG_ICON: f32 = 15.0;
-
-/// The waiting row's left accent bar. `rows.rs` draws the same 3px bar on its
-/// own waiting rows; the two are independent local constants because §8.4 keeps
-/// positional geometry in the module that owns the surface.
 const ACCENT_BAR_W: f32 = 3.0;
 
-/// What a click on the window chrome asks the workspace to do. The chrome
-/// never reaches into state itself (same contract as `rows::RowAction`).
+/// The chrome never reaches into state itself (same contract as `rows::RowAction`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChromeAction {
     ToggleAttentionQueue,
     CloseAttentionQueue,
-    /// A dropdown row: jump to that session (and close the dropdown).
     SelectWaiting(SessionId),
-    /// The zen pill: straight to the first waiting session, no dropdown.
+    /// Straight to the first waiting session, no dropdown.
     JumpToWaiting,
-    /// Plan 08 — the session launcher (the statusbar's `palette` chip).
     OpenSessionLauncher,
-    /// Plan 08 — Settings, behind the cog.
     OpenSettings,
-    /// Plan 08 — the shortcut overlay.
     OpenShortcutOverlay,
 }
 
 pub type Dispatch = Rc<dyn Fn(ChromeAction, &mut Window, &mut App)>;
 
-/// Bind a chrome action to a mouse-down handler. Shared with
-/// [`crate::views::statusbar`].
 pub fn on_chrome(
     dispatch: &Dispatch,
     action: ChromeAction,
@@ -82,8 +47,6 @@ pub fn on_chrome(
     move |_, window, cx| dispatch(action, window, cx)
 }
 
-/// One waiting session as the dropdown draws it, resolved once by the
-/// workspace so the row renderer never touches an entity.
 #[derive(Clone, Debug)]
 pub struct WaitingRow {
     pub id: SessionId,
@@ -93,22 +56,16 @@ pub struct WaitingRow {
     pub state: ActivityState,
 }
 
-/// Everything the bar draws, resolved once per frame.
 pub struct AppbarCtx {
     pub sidebar_width: f32,
     pub tick: u64,
     pub pulse: f32,
-    /// The attention queue in tree order, resolved **once** by the workspace
-    /// and shared with the dropdown (`view/mod.rs:58-61` — the iced build had
-    /// three call sites recomputing it).
+    /// Resolved once by the workspace and shared with the dropdown.
     pub waiting: Vec<WaitingRow>,
-    /// Whether a release is on offer — `upgrade_state::upgrade_available`,
-    /// which is `matches!(state, Available(_))` and nothing else.
     pub upgrade_available: bool,
     pub dispatch: Dispatch,
 }
 
-/// `"1 needs you"` / `"{n} need you"` (`appbar.rs:162-166`). Exact copy.
 #[must_use]
 pub fn pill_label(waiting: usize) -> String {
     if waiting == 1 {
@@ -118,8 +75,7 @@ pub fn pill_label(waiting: usize) -> String {
     }
 }
 
-/// The pill dot's alpha (`appbar.rs:155`): never fully transparent, so the
-/// layout cannot shift as it pulses.
+/// Never fully transparent, so layout cannot shift as it pulses.
 #[must_use]
 pub fn pill_dot_alpha(pulse: f32) -> f32 {
     0.4f32.mul_add(-pulse, 1.0)
@@ -134,9 +90,6 @@ pub fn appbar(ctx: &AppbarCtx) -> AnyElement {
         .px(rpx(SPACE_3XL))
         .child(ui("grove", TEXT_TITLE, c::MAGENTA()).font_weight(gpui::FontWeight::BOLD));
 
-    // The cog is the cluster's only always-present control, so the cluster's
-    // own right padding is what holds it off the window edge; the `gap` only
-    // ever separates it from the attention pill.
     let mut right = div()
         .flex()
         .items_center()
@@ -166,8 +119,6 @@ pub fn appbar(ctx: &AppbarCtx) -> AnyElement {
         .into_any_element()
 }
 
-/// Cog → Settings, with the `GREEN()` upgrade dot overlaid top-right only
-/// while an upgrade is available (`src/gui/view/appbar.rs:29`).
 fn cog(ctx: &AppbarCtx) -> AnyElement {
     let dispatch = Rc::clone(&ctx.dispatch);
     icon_btn(
@@ -194,7 +145,6 @@ fn cog(ctx: &AppbarCtx) -> AnyElement {
     .into_any_element()
 }
 
-/// Rendered **only** while something waits (`appbar.rs:151-208`).
 fn attention_pill(ctx: &AppbarCtx) -> AnyElement {
     let dot_color = c::alpha(c::AMBER(), pill_dot_alpha(ctx.pulse));
     let bg = c::alpha(c::AMBER(), 0.08);
@@ -221,10 +171,7 @@ fn attention_pill(ctx: &AppbarCtx) -> AnyElement {
         .into_any_element()
 }
 
-/// The floating zen pill (`src/gui/view/appbar.rs:244-305`) — the Plan 06
-/// deferral. Top-right over the terminal, 12px from each edge; it is **not** a
-/// dropdown, so there is no backdrop and nothing to dismiss: clicking jumps
-/// straight to the first waiting session.
+/// Not a dropdown — no backdrop, nothing to dismiss. Clicking jumps straight to the first waiting session.
 pub fn zen_attention_pill(ctx: &AppbarCtx) -> AnyElement {
     let dot_color = c::alpha(c::AMBER(), pill_dot_alpha(ctx.pulse));
     let bg = c::alpha(c::AMBER(), 0.08);
@@ -243,7 +190,6 @@ pub fn zen_attention_pill(ctx: &AppbarCtx) -> AnyElement {
         .hover(move |s| s.bg(bg_hover))
         .cursor_pointer()
         .child(status_dot(DOT_SM, dot_color))
-        // The bare count, not the appbar pill's "{n} need you" copy.
         .child(ui(ctx.waiting.len().to_string(), TEXT_SMALL, c::AMBER()))
         .on_mouse_down(
             MouseButton::Left,
@@ -258,11 +204,6 @@ pub fn zen_attention_pill(ctx: &AppbarCtx) -> AnyElement {
         .into_any_element()
 }
 
-// ── the dropdown ─────────────────────────────────────────────────────────
-
-/// The full-window layer: a transparent backdrop that dismisses on click, with
-/// the 280px panel anchored under the appbar's right edge
-/// (`appbar.rs:310-437`).
 pub fn attention_dropdown(ctx: &AppbarCtx) -> AnyElement {
     let mut rows = div().flex().flex_col();
     for row in &ctx.waiting {
@@ -298,9 +239,7 @@ pub fn attention_dropdown(ctx: &AppbarCtx) -> AnyElement {
         .on_mouse_down(MouseButton::Left, {
             let dispatch = Rc::clone(&ctx.dispatch);
             move |_, window, cx| {
-                // This layer covers the whole terminal body; without stopping
-                // here every click on it (rows included, they bubble through)
-                // would also land in the pty underneath.
+                // Without this, clicks bubbling through would also land in the pty underneath.
                 cx.stop_propagation();
                 dispatch(ChromeAction::CloseAttentionQueue, window, cx);
             }
@@ -308,9 +247,7 @@ pub fn attention_dropdown(ctx: &AppbarCtx) -> AnyElement {
         .child(
             div()
                 .absolute()
-                // The bar's height zooms; the hairline under it does not
-                // (§6.3), so the two are applied in their own units rather
-                // than folded into one rems value.
+                // Bar height zooms; the hairline under it does not, so applied in separate units.
                 .top(rpx(APPBAR_H))
                 .mt(px(1.0))
                 .right(rpx(SPACE_3XL))
@@ -345,8 +282,6 @@ fn dropdown_row(row: &WaitingRow, ctx: &AppbarCtx) -> AnyElement {
                 .child(ui(row.agent_label, TEXT_SMALL, c::FG()))
                 .child(mono(subtitle, TEXT_MICRO, c::FG_MUTE())),
         )
-        // 3px amber left accent bar, stacked over the row — same idiom as the
-        // waiting sidebar row.
         .child(
             div()
                 .absolute()
@@ -363,8 +298,7 @@ fn dropdown_row(row: &WaitingRow, ctx: &AppbarCtx) -> AnyElement {
         .into_any_element()
 }
 
-/// The `mod+'` jump hint, per platform. The key comes from the `SHORTCUTS`
-/// registry row for `JumpToWaitingSession` — **never** a literal.
+/// Key comes from the `SHORTCUTS` registry, never a literal.
 fn footer_hint() -> AnyElement {
     let key = shortcut_key(GlobalShortcut::JumpToWaitingSession, "'");
     if cfg!(target_os = "macos") {
@@ -385,8 +319,6 @@ fn footer_hint() -> AnyElement {
     .into_any_element()
 }
 
-/// The display key the registry records for an action, never a literal
-/// (`statusbar.rs:150-158`, `appbar.rs:377-395`).
 #[must_use]
 pub fn shortcut_key(action: GlobalShortcut, fallback: &'static str) -> &'static str {
     SHORTCUTS
@@ -399,18 +331,14 @@ pub fn shortcut_key(action: GlobalShortcut, fallback: &'static str) -> &'static 
 mod tests {
     use super::*;
 
-    /// `appbar.rs:162-166` — exact copy, singular and plural.
     #[test]
     fn the_pill_label_switches_on_exactly_one() {
         assert_eq!(pill_label(1), "1 needs you");
         assert_eq!(pill_label(2), "2 need you");
         assert_eq!(pill_label(7), "7 need you");
-        // Never rendered at zero (the pill is omitted), but it must not lie.
         assert_eq!(pill_label(0), "0 need you");
     }
 
-    /// `appbar.rs:155` — the dot dims to 0.6 but never vanishes, so the pill
-    /// cannot change size as it pulses.
     #[test]
     fn the_pill_dot_dims_without_disappearing() {
         assert!((pill_dot_alpha(0.0) - 1.0).abs() < 1e-6);
@@ -422,7 +350,6 @@ mod tests {
         }
     }
 
-    /// The registry is the single source of the displayed keys.
     #[test]
     fn the_hint_keys_come_from_the_shortcut_registry() {
         assert_eq!(shortcut_key(GlobalShortcut::JumpToWaitingSession, "?"), "'");

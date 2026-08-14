@@ -33,7 +33,6 @@ pub struct DropdownButton {
 }
 
 impl DropdownButton {
-    /// Create a new DropdownButton.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -53,19 +52,16 @@ impl DropdownButton {
         }
     }
 
-    /// Set tooltip text for the dropdown button.
     pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
         self.tooltip.text = Some((tooltip.into(), None));
         self
     }
 
-    /// Set the left button of the dropdown button.
     pub fn button(mut self, button: Button) -> Self {
         self.button = Some(button);
         self
     }
 
-    /// Set the dropdown menu of the button.
     pub fn dropdown_menu(
         mut self,
         menu: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
@@ -74,7 +70,6 @@ impl DropdownButton {
         self
     }
 
-    /// Set the dropdown menu of the button with anchor corner.
     pub fn dropdown_menu_with_anchor(
         mut self,
         anchor: impl Into<Anchor>,
@@ -85,29 +80,23 @@ impl DropdownButton {
         self
     }
 
-    /// Set the rounded style of the button.
     pub fn rounded(mut self, rounded: impl Into<ButtonRounded>) -> Self {
         self.rounded = rounded.into();
         self
     }
 
-    /// Set the button to compact style.
-    ///
     /// See also: [`Button::compact`]
     pub fn compact(mut self) -> Self {
         self.compact = true;
         self
     }
 
-    /// Set the button to outline style.
-    ///
     /// See also: [`Button::outline`]
     pub fn outline(mut self) -> Self {
         self.outline = true;
         self
     }
 
-    /// Set the button to loading state.
     pub fn loading(mut self, loading: bool) -> Self {
         self.loading = loading;
         self

@@ -5,25 +5,17 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Returns a `Div` as horizontal flex layout.
 #[inline(always)]
 pub fn h_flex() -> Div {
     div().h_flex()
 }
 
-/// Returns a `Div` as vertical flex layout.
 #[inline(always)]
 pub fn v_flex() -> Div {
     div().v_flex()
 }
 
-/// Create a [`BoxShadow`] like CSS.
-///
-/// e.g:
-///
-/// If CSS is `box-shadow: 0 0 10px 0 rgba(0, 0, 0, 0.1);`
-///
-/// Then the equivalent in Rust is `box_shadow(0., 0., 10., 0., hsla(0., 0., 0., 0.1))`
+/// Like CSS `box-shadow: x y blur spread color`.
 #[inline(always)]
 pub fn box_shadow(
     x: impl Into<Pixels>,
@@ -43,7 +35,6 @@ pub fn box_shadow(
 
 macro_rules! font_weight {
     ($fn:ident, $const:ident) => {
-        /// [docs](https://tailwindcss.com/docs/font-weight)
         #[inline]
         fn $fn(self) -> Self {
             self.font_weight(gpui::FontWeight::$const)
@@ -57,25 +48,21 @@ macro_rules! font_weight {
     gpui_macros::derive_inspector_reflection
 )]
 pub trait StyledExt: Styled + Sized {
-    /// Refine the style of this element, applying the given style refinement.
     fn refine_style(mut self, style: &StyleRefinement) -> Self {
         self.style().refine(style);
         self
     }
 
-    /// Apply self into a horizontal flex layout.
     #[inline(always)]
     fn h_flex(self) -> Self {
         self.flex().flex_row().items_center()
     }
 
-    /// Apply self into a vertical flex layout.
     #[inline(always)]
     fn v_flex(self) -> Self {
         self.flex().flex_col()
     }
 
-    /// Apply paddings to the element.
     fn paddings<L>(self, paddings: impl Into<Edges<L>>) -> Self
     where
         L: Into<DefiniteLength> + Clone + Default + std::fmt::Debug + PartialEq,
@@ -87,7 +74,6 @@ pub trait StyledExt: Styled + Sized {
             .pr(paddings.right.into())
     }
 
-    /// Apply margins to the element.
     fn margins<L>(self, margins: impl Into<Edges<L>>) -> Self
     where
         L: Into<DefiniteLength> + Clone + Default + std::fmt::Debug + PartialEq,
@@ -99,7 +85,6 @@ pub trait StyledExt: Styled + Sized {
             .mr(margins.right.into())
     }
 
-    /// Render a border with a width of 1px, color red
     fn debug_red(self) -> Self {
         if cfg!(debug_assertions) {
             self.border_1().border_color(crate::red_500())
@@ -108,7 +93,6 @@ pub trait StyledExt: Styled + Sized {
         }
     }
 
-    /// Render a border with a width of 1px, color blue
     fn debug_blue(self) -> Self {
         if cfg!(debug_assertions) {
             self.border_1().border_color(crate::blue_500())
@@ -117,7 +101,6 @@ pub trait StyledExt: Styled + Sized {
         }
     }
 
-    /// Render a border with a width of 1px, color yellow
     fn debug_yellow(self) -> Self {
         if cfg!(debug_assertions) {
             self.border_1().border_color(crate::yellow_500())
@@ -126,7 +109,6 @@ pub trait StyledExt: Styled + Sized {
         }
     }
 
-    /// Render a border with a width of 1px, color green
     fn debug_green(self) -> Self {
         if cfg!(debug_assertions) {
             self.border_1().border_color(crate::green_500())
@@ -135,7 +117,6 @@ pub trait StyledExt: Styled + Sized {
         }
     }
 
-    /// Render a border with a width of 1px, color pink
     fn debug_pink(self) -> Self {
         if cfg!(debug_assertions) {
             self.border_1().border_color(crate::pink_500())
@@ -144,7 +125,6 @@ pub trait StyledExt: Styled + Sized {
         }
     }
 
-    /// Render a 1px blue border, when if the element is focused
     fn debug_focused(self, focus_handle: &FocusHandle, window: &Window, cx: &App) -> Self {
         if cfg!(debug_assertions) {
             if focus_handle.contains_focused(window, cx) {
@@ -157,7 +137,6 @@ pub trait StyledExt: Styled + Sized {
         }
     }
 
-    /// Render a border with a width of 1px, color ring color
     #[inline]
     fn focused_border(self, cx: &App) -> Self {
         self.border_1().border_color(cx.theme().ring)
@@ -173,7 +152,6 @@ pub trait StyledExt: Styled + Sized {
     font_weight!(font_extrabold, EXTRA_BOLD);
     font_weight!(font_black, BLACK);
 
-    /// Set as Popover style
     #[inline]
     fn popover_style(self, cx: &App) -> Self {
         self.bg(cx.theme().tokens.popover)
@@ -184,7 +162,6 @@ pub trait StyledExt: Styled + Sized {
             .rounded(cx.theme().radius)
     }
 
-    /// Set corner radii for the element.
     fn corner_radii(self, radius: Corners<Pixels>) -> Self {
         self.rounded_tl(radius.top_left)
             .rounded_tr(radius.top_right)
@@ -195,7 +172,6 @@ pub trait StyledExt: Styled + Sized {
 
 impl<E: Styled> StyledExt for E {}
 
-/// A size for elements.
 #[derive(Clone, Default, Copy, PartialEq, Eq, Debug, Deserialize, Serialize)]
 pub enum Size {
     Size(Pixels),
@@ -217,7 +193,6 @@ impl Size {
         }
     }
 
-    /// Returns the size as a static string.
     pub fn as_str(&self) -> &'static str {
         match self {
             Size::XSmall => "xs",
@@ -228,14 +203,7 @@ impl Size {
         }
     }
 
-    /// Create a Size from a static string.
-    ///
-    /// - "xs" or "xsmall"
-    /// - "sm" or "small"
-    /// - "md" or "medium"
-    /// - "lg" or "large"
-    ///
-    /// Any other value will return Size::Medium.
+    /// Unrecognized values return `Size::Medium`.
     pub fn from_str(size: &str) -> Self {
         match size.to_lowercase().as_str() {
             "xs" | "xsmall" => Size::XSmall,
@@ -246,7 +214,6 @@ impl Size {
         }
     }
 
-    /// Returns the height for table row.
     #[inline]
     pub fn table_row_height(&self) -> Pixels {
         match self {
@@ -258,7 +225,6 @@ impl Size {
         }
     }
 
-    /// Returns the padding for a table cell.
     #[inline]
     pub fn table_cell_padding(&self) -> Edges<Pixels> {
         match self {
@@ -289,7 +255,6 @@ impl Size {
         }
     }
 
-    /// Returns a smaller size.
     pub fn smaller(&self) -> Self {
         match self {
             Size::XSmall => Size::XSmall,
@@ -300,7 +265,6 @@ impl Size {
         }
     }
 
-    /// Returns a larger size.
     pub fn larger(&self) -> Self {
         match self {
             Size::XSmall => Size::Small,
@@ -311,9 +275,7 @@ impl Size {
         }
     }
 
-    /// Return the max size between two sizes.
-    ///
-    /// e.g. `Size::XSmall.max(Size::Small)` will return `Size::XSmall`.
+    /// Confusingly named: returns the *smaller* of the two (e.g. `XSmall.max(Small)` -> `XSmall`).
     pub fn max(&self, other: Self) -> Self {
         match (self, other) {
             (Size::Size(a), Size::Size(b)) => Size::Size(px(a.as_f32().min(b.as_f32()))),
@@ -324,9 +286,7 @@ impl Size {
         }
     }
 
-    /// Return the min size between two sizes.
-    ///
-    /// e.g. `Size::XSmall.min(Size::Small)` will return `Size::Small`.
+    /// Confusingly named: returns the *larger* of the two.
     pub fn min(&self, other: Self) -> Self {
         match (self, other) {
             (Size::Size(a), Size::Size(b)) => Size::Size(px(a.as_f32().max(b.as_f32()))),
@@ -337,7 +297,6 @@ impl Size {
         }
     }
 
-    /// Returns the horizontal input padding.
     pub fn input_px(&self) -> Pixels {
         match self {
             Self::Large => px(12.),
@@ -348,7 +307,6 @@ impl Size {
         }
     }
 
-    /// Returns the vertical input padding.
     pub fn input_py(&self) -> Pixels {
         match self {
             Size::Large => px(10.),
@@ -366,51 +324,36 @@ impl From<Pixels> for Size {
     }
 }
 
-/// A trait for defining element that can be selected.
 #[allow(patterns_in_fns_without_body)]
 pub trait Selectable: Sized {
-    /// Set the selected state of the element.
     fn selected(mut self, selected: bool) -> Self;
-
-    /// Returns true if the element is selected.
     fn is_selected(&self) -> bool;
 
-    /// Set is the element mouse right clicked, default do nothing.
     fn secondary_selected(self, _: bool) -> Self {
         self
     }
 }
 
-/// A trait for defining element that can be disabled.
 #[allow(patterns_in_fns_without_body)]
 pub trait Disableable {
-    /// Set the disabled state of the element.
     fn disabled(mut self, disabled: bool) -> Self;
 }
 
-/// A trait for setting the size of an element.
-/// Size::Medium is use by default.
+/// `Size::Medium` is the default.
 #[allow(patterns_in_fns_without_body)]
 pub trait Sizable: Sized {
-    /// Set the ui::Size of this element.
-    ///
-    /// Also can receive a `ButtonSize` to convert to `IconSize`,
-    /// Or a `Pixels` to set a custom size: `px(30.)`
     fn with_size(mut self, size: impl Into<Size>) -> Self;
 
-    /// Set to Size::XSmall
     #[inline(always)]
     fn xsmall(self) -> Self {
         self.with_size(Size::XSmall)
     }
 
-    /// Set to Size::Small
     #[inline(always)]
     fn small(self) -> Self {
         self.with_size(Size::Small)
     }
 
-    /// Set to Size::Large
     #[inline(always)]
     fn large(self) -> Self {
         self.with_size(Size::Large)
@@ -429,9 +372,7 @@ pub trait StyleSized<T: Styled> {
     fn list_size(self, size: Size) -> Self;
     fn list_px(self, size: Size) -> Self;
     fn list_py(self, size: Size) -> Self;
-    /// Apply size with the given `Size`.
     fn size_with(self, size: Size) -> Self;
-    /// Apply the table cell size (Font size, padding) with the given `Size`.
     fn table_cell_size(self, size: Size) -> Self;
     fn button_text_size(self, size: Size) -> Self;
 }
@@ -542,7 +483,6 @@ impl<T: Styled> StyleSized<T> for T {
 }
 
 pub(crate) trait FocusableExt<T: ParentElement + Styled + Sized> {
-    /// Add focus ring to the element.
     fn focus_ring(self, is_focused: bool, margins: Pixels, window: &Window, cx: &App) -> Self;
 }
 
@@ -579,7 +519,6 @@ impl<T: ParentElement + Styled + Sized> FocusableExt<T> for T {
                 .unwrap_or_default(),
         };
 
-        // Update the radius based on element's corner radii and the ring border width.
         let radius = Corners::<Pixels> {
             top_left: style
                 .corner_radii
@@ -627,7 +566,6 @@ impl<T: ParentElement + Styled + Sized> FocusableExt<T> for T {
     }
 }
 
-/// A trait for defining element that can be collapsed.
 pub trait Collapsible {
     fn collapsed(self, collapsed: bool) -> Self;
     fn is_collapsed(&self) -> bool;
@@ -652,7 +590,6 @@ mod tests {
             Size::Size(px(20.))
         );
 
-        // Min
         assert_eq!(Size::Small.max(Size::XSmall), Size::XSmall);
         assert_eq!(Size::XSmall.max(Size::Small), Size::XSmall);
         assert_eq!(Size::Small.max(Size::Medium), Size::Small);
@@ -695,7 +632,6 @@ mod tests {
         assert_eq!(Size::from_str("large"), Size::Large);
         assert_eq!(Size::from_str("unknown"), Size::Medium);
 
-        // Case insensitive
         assert_eq!(Size::from_str("XS"), Size::XSmall);
         assert_eq!(Size::from_str("SMALL"), Size::Small);
         assert_eq!(Size::from_str("Md"), Size::Medium);
