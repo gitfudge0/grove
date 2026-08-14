@@ -70,33 +70,29 @@ where
         }
     }
 
-    /// Enable an interactive hover tooltip (crosshair + category/value); `id`
-    /// must be unique among siblings, or the chart stays non-interactive.
+    /// Enables an interactive hover tooltip. `id` must be unique among sibling elements, or the chart stays non-interactive.
     pub fn id(mut self, id: impl Into<ElementId>) -> Self {
         self.id = Some(id.into());
         self
     }
 
-    /// Set the series name shown in the hover tooltip row (e.g. "Desktop").
     pub fn name(mut self, name: impl Into<SharedString>) -> Self {
         self.name = Some(name.into());
         self
     }
 
-    /// Map each datum to its band-axis value (the categorical/ordinal axis).
     pub fn band(mut self, band: impl Fn(&T) -> B + 'static) -> Self {
         self.band = Some(Rc::new(band));
         self
     }
 
-    /// Map each datum to its numeric value along the value axis.
     pub fn value(mut self, value: impl Fn(&T) -> V + 'static) -> Self {
         self.value = Some(Rc::new(value));
         self
     }
 
-    /// Set a per-datum verbatim fill. The closure receives the datum, the
-    /// bar's bounds and the chart's bounds (both pixel-space, same coordinate system so callers can implement chart-aware backgrounds), and the bar's [`BarAlignment`]. Clears [`BarChart::fill_gradient`].
+    /// Closure receives the datum, the bar's bounds, the chart's bounds (both pixel-space, same
+    /// coordinate system), and the bar's alignment. Clears any previously set [`BarChart::fill_gradient`].
     pub fn fill<Bg>(
         mut self,
         fill: impl Fn(&T, Bounds<f32>, Bounds<f32>, BarAlignment) -> Bg + 'static,
@@ -111,26 +107,8 @@ where
         self
     }
 
-    /// Set a per-datum auto-oriented linear gradient fill.
-    ///
-    /// The closure receives the datum, the chart's full data range
-    /// (`chart_range`, derived from all data values), and a `chart_to_bar`
-    /// remap helper that maps a chart-value coordinate to a bar-local
-    /// gradient position (where `0.0` is the bar's base and `1.0` is its tip).
-    ///
-    /// Use bar-local positions directly for per-bar gradients (every bar
-    /// looks the same regardless of its value):
-    ///
-    /// ```ignore
-    /// .fill_gradient(|_, _, _| [
-    ///     linear_color_stop(c.opacity(0.3), 0.0),
-    ///     linear_color_stop(c, 1.0),
-    /// ])
-    /// ```
-    ///
-    /// Or use `chart_to_bar` to position stops at chart-relative values, so
-    /// each bar shows the slice of a chart-wide gradient corresponding to
-    /// its own `[base, value]` span:
+    /// Closure receives the datum, the chart's data range, and a `chart_to_bar` remap helper
+    /// mapping a chart-value coordinate to a bar-local gradient position (0.0 = base, 1.0 = tip).
     ///
     /// ```ignore
     /// .fill_gradient(|_, chart_range, chart_to_bar| [
@@ -139,13 +117,8 @@ where
     /// ])
     /// ```
     ///
-    /// Stop positions returned outside `[0, 1]` are clipped to the bar; the
-    /// library interpolates colors at the clip points so the on-bar gradient
-    /// still matches the chart-wide one.
-    ///
-    /// The gradient angle is derived from [`BarAlignment`] so stop-0 is at the
-    /// base and stop-1 at the tip. Setting this clears any previously set
-    /// [`BarChart::fill`].
+    /// Stops outside `[0, 1]` are clipped to the bar with interpolated colors. Clears any
+    /// previously set [`BarChart::fill`].
     pub fn fill_gradient(
         mut self,
         fill: impl Fn(&T, RangeInclusive<f32>, &dyn Fn(f32) -> f32) -> [LinearColorStop; 2] + 'static,
@@ -168,7 +141,7 @@ where
         self
     }
 
-    /// Show or hide the band-axis line and labels. Default is true.
+    /// Default is true.
     pub fn label_axis(mut self, label_axis: bool) -> Self {
         self.label_axis = label_axis;
         self
@@ -179,21 +152,18 @@ where
         self
     }
 
-    /// Set the bar alignment. Default is [`BarAlignment::Bottom`].
+    /// Default is [`BarAlignment::Bottom`].
     pub fn alignment(mut self, alignment: BarAlignment) -> Self {
         self.alignment = alignment;
         self
     }
 
-    /// Set the corner radii applied to every bar rectangle; use [`Corners::all`]
-    /// for uniform rounding or construct [`Corners`] manually for specific corners.
     pub fn corner_radii(mut self, corner_radii: impl Into<Corners<Pixels>>) -> Self {
         self.corner_radii = corner_radii.into();
         self
     }
 
-    /// The band scale (matching `paint`): spans the height for horizontal bars, the width
-    /// otherwise. Shared by `tooltip_state` and `tooltip`.
+    /// Spans height for horizontal bars, width otherwise. Shared by `tooltip_state` and `tooltip`.
     fn band_scale(&self, bounds: Bounds<Pixels>) -> Option<ScaleBand<B>> {
         let band_fn = self.band.as_ref()?;
         let band_extent = if self.alignment.is_horizontal() {
@@ -211,8 +181,7 @@ where
         )
     }
 
-    /// Label gaps `(band_side, value_end_side)` reserved along the value axis
-    /// for horizontal bars. Shared by `paint` and the tooltip so the crosshair lines up with the bar region.
+    /// `(band_side, value_end_side)` gaps measured from actual label text; shared by `paint` and the tooltip.
     fn horizontal_gaps(&self, window: &mut Window) -> (f32, f32) {
         let Some(band_fn) = self.band.as_ref() else {
             return (0., 0.);
@@ -259,8 +228,6 @@ where
         let alignment = self.alignment;
         let is_horizontal = alignment.is_horizontal();
 
-        // Band scale spans the full extent perpendicular to the value axis. Shared with the
-        // tooltip via `band_scale()` so the bars and the hover crosshair stay aligned.
         let Some(band_scale) = self.band_scale(bounds) else {
             return;
         };
@@ -271,8 +238,7 @@ where
         } else {
             total_height
         };
-        // Horizontal band labels can be arbitrarily wide, so measure the actual
-        // max label width instead of a fixed constant; same for value labels.
+        // Horizontal charts measure actual label width (can be arbitrarily wide) instead of a fixed constant.
         let (band_gap, value_end_gap) = if is_horizontal {
             self.horizontal_gaps(window)
         } else {
@@ -305,7 +271,6 @@ where
             range,
         );
 
-        // Draw band axis (with categorical labels).
         let mut axis = PlotAxis::new().stroke(cx.theme().border);
         if self.label_axis {
             let labels = build_band_labels(
@@ -333,7 +298,7 @@ where
         }
         axis.paint(&bounds, window, cx);
 
-        // Far edge of the value axis in pixel space (opposite the baseline).
+        // Far edge of the value axis, opposite the baseline.
         let far = match alignment {
             BarAlignment::Bottom => 10.,
             BarAlignment::Top => value_dim - 10.,
@@ -341,8 +306,6 @@ where
             BarAlignment::Right => value_end_gap,
         };
 
-        // Draw grid: lines perpendicular to the value axis, evenly spaced
-        // across the value range and excluding the line at the baseline.
         if self.grid {
             let grid_steps: Vec<f32> = (0..4)
                 .map(|i| far + (baseline - far) * i as f32 / 4.0)
@@ -358,7 +321,6 @@ where
             grid.paint(&bounds, window);
         }
 
-        // Draw bars.
         let band_fn_cloned = band_fn.clone();
         let value_fn_cloned = value_fn.clone();
         let default_fill: Background = cx.theme().chart_2.into();
@@ -366,14 +328,13 @@ where
         let fill_gradient = self.fill_gradient.clone();
         let label_color = cx.theme().foreground;
 
-        // Chart bounds, origin (0,0), passed to user `fill` closures so they
-        // can position chart-wide backgrounds.
+        // Passed to user fill closures so they can position chart-wide backgrounds.
         let chart_bounds: Bounds<f32> = Bounds {
             origin: Point::new(0., 0.),
             size: Size::new(total_width, total_height),
         };
 
-        // Chart data range in f32, passed to `fill_gradient` callers and the `chart_to_bar` remap helper.
+        // Passed to fill_gradient callers and used by the chart_to_bar remap helper.
         let chart_range = {
             let mut lo = 0.0_f32;
             let mut hi = 0.0_f32;
@@ -444,8 +405,6 @@ where
         let band_fn = self.band.as_ref()?;
         self.value.as_ref()?;
 
-        // Only the band scale is needed to hit-test which bar is hovered, so no text
-        // measurement (and thus no `window`) is required.
         let is_horizontal = self.alignment.is_horizontal();
         let band_scale = self.band_scale(bounds)?;
         let band_width = band_scale.band_width();
@@ -459,8 +418,6 @@ where
         let d = self.data.get(index)?;
         let center = band_scale.tick(&band_fn(d))? + band_width / 2.;
 
-        // Vertical bars: vertical crosshair at the bar's x. Horizontal bars: horizontal
-        // crosshair at the bar's y. The box tracks the cursor either way.
         let cross_line = if is_horizontal {
             point(position.x, px(center))
         } else {
@@ -484,8 +441,6 @@ where
         let value = value_fn(d).to_f64()?;
         let name = self.name.clone().unwrap_or_default();
 
-        // Highlight the hovered bar with a translucent band the width of the bar, instead
-        // of a hairline. Confined to the plot area so it doesn't cover the axis labels.
         let band_width = self.band_scale(bounds)?.band_width();
         let cross_line = if self.alignment.is_horizontal() {
             let (band_gap, value_end_gap) = self.horizontal_gaps(window);
@@ -495,7 +450,6 @@ where
             } else {
                 value_end_gap
             };
-            // Skip the tooltip when the cursor is over the value-axis labels, not a bar.
             if cursor.x.as_f32() < start || cursor.x.as_f32() > start + length {
                 return None;
             }
@@ -511,7 +465,6 @@ where
             } else {
                 0.
             };
-            // Skip the tooltip when the cursor is over the band-axis labels, not a bar.
             if cursor.y.as_f32() < start || cursor.y.as_f32() > start + length {
                 return None;
             }
@@ -521,7 +474,6 @@ where
         };
 
         Some(
-            // Follow the cursor; the highlight band stays snapped to the bar.
             Tooltip::new(cursor, bounds.size)
                 .gap(px(8.))
                 .cross_line(cross_line)
@@ -532,8 +484,8 @@ where
     }
 }
 
-/// Clip a two-stop gradient to bar-local `[0, 1]`, interpolating colors at the
-/// clip points (instead of letting gpui clamp the position, which would lose the gradient effect) so the on-bar gradient matches the caller's broader one.
+/// gpui's renderer would clamp an out-of-range stop and lose the gradient effect; this instead
+/// replaces it with the color sampled at 0.0/1.0 along the line through both stops.
 fn clip_stops_to_bar(stops: [LinearColorStop; 2]) -> [LinearColorStop; 2] {
     let [a, b] = stops;
     let p0 = a.percentage;

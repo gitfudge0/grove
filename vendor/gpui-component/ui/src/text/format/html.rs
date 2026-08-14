@@ -52,7 +52,6 @@ const BLOCK_ELEMENTS: [&str; 35] = [
     "script",
 ];
 
-/// Parse HTML into AST Node.
 pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument, SharedString> {
     let opts = ParseOpts {
         ..Default::default()
@@ -60,15 +59,12 @@ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument
 
     let bytes = cleanup_html(&source);
     let mut cursor = std::io::Cursor::new(bytes);
-    // Ref
-    // https://github.com/servo/html5ever/blob/main/rcdom/examples/print-rcdom.rs
     let dom = parse_document(RcDom::default(), opts)
         .from_utf8()
         .read_from(&mut cursor)
         .map_err(|e| SharedString::from(format!("{:?}", e)))?;
 
     let mut paragraph = Paragraph::default();
-    // NOTE: The outer paragraph is not used.
     let node: BlockNode =
         parse_node(&dom.document, &mut paragraph, cx).unwrap_or(BlockNode::Unknown);
     let node = node.compact();
@@ -101,11 +97,7 @@ fn attr_value(attrs: &RefCell<Vec<html5ever::Attribute>>, name: LocalName) -> Op
     })
 }
 
-/// Get the highlight background color for a `<mark>` element.
-///
-/// Reads the `color` attribute first, then the `background-color` declaration
-/// from the `style` attribute. Color values are parsed by [`crate::try_parse_color`],
-/// supporting hex (`#3366ff`) and Tailwind expressions (`blue`, `blue-200`, `blue/30`).
+/// Reads the `color` attribute first, then the `background-color` style declaration.
 fn mark_color(attrs: &RefCell<Vec<html5ever::Attribute>>) -> Option<Hsla> {
     let color_attr = attrs.borrow().iter().find_map(|attr| {
         if &*attr.name.local == "color" {
@@ -126,8 +118,7 @@ fn mark_color(attrs: &RefCell<Vec<html5ever::Attribute>>) -> Option<Hsla> {
         .and_then(|v| crate::try_parse_color(v.trim()).ok())
 }
 
-/// Get style properties to HashMap
-/// TODO: Use cssparser to parse style attribute.
+// TODO: Use cssparser to parse style attribute.
 fn style_attrs(attrs: &RefCell<Vec<html5ever::Attribute>>) -> HashMap<String, String> {
     let mut styles = HashMap::new();
     let Some(css_text) = attr_value(attrs, local_name!("style")) else {
@@ -147,10 +138,7 @@ fn style_attrs(attrs: &RefCell<Vec<html5ever::Attribute>>) -> HashMap<String, St
     styles
 }
 
-/// Parse length value from style attribute.
-///
-/// When is percentage, it will be converted to relative length.
-/// Else, it will be converted to pixels.
+/// Percentages become relative length; otherwise pixels.
 fn value_to_length(value: &str) -> Option<DefiniteLength> {
     if value.ends_with("%") {
         value
@@ -167,7 +155,6 @@ fn value_to_length(value: &str) -> Option<DefiniteLength> {
     }
 }
 
-/// Get width, height from attributes or parse them from style attribute.
 fn attr_width_height(
     attrs: &RefCell<Vec<html5ever::Attribute>>,
 ) -> (Option<DefiniteLength>, Option<DefiniteLength>) {
@@ -238,10 +225,7 @@ fn parse_table_cell(
     row.children.push(table_cell);
 }
 
-/// Trim text but leave at least one space.
-///
-/// - Before: " \r\n Hello world \t "
-/// - After: " Hello world "
+/// Collapses whitespace but leaves at least one space, e.g. " \r\n Hello world \t " -> " Hello world ".
 #[allow(dead_code)]
 fn trim_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -516,7 +500,6 @@ fn parse_node(
                         children.push(child_node);
                     }
                     if child_paragraph.text_len() > 0 {
-                        // If last child is paragraph, merge child
                         if let Some(last_child) = children.last_mut() {
                             if let BlockNode::Paragraph(last_paragraph) = last_child {
                                 last_paragraph.merge(child_paragraph);
@@ -582,14 +565,8 @@ fn parse_node(
                 if BLOCK_ELEMENTS.contains(&name.local.trim()) {
                     let mut children: Vec<BlockNode> = vec![];
 
-                    // Case:
-                    //
-                    // Hello <p>Inner text of block element</p> World
-
-                    // Insert before text as a node -- The "Hello"
                     consume_paragraph(&mut children, paragraph);
 
-                    // Inner of the block element -- The "Inner text of block element"
                     for child in node.children.borrow().iter() {
                         if let Some(child_node) = parse_node(child, paragraph, cx) {
                             children.push(child_node);
@@ -606,7 +583,6 @@ fn parse_node(
                         })
                     }
                 } else {
-                    // Others to as Inline
                     parse_paragraph(paragraph, node);
 
                     if paragraph.is_image() {

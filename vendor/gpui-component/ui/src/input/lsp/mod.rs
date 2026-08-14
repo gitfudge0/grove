@@ -19,44 +19,24 @@ pub use document_colors::*;
 pub use hover::*;
 pub use semantic_tokens::*;
 
-/// Host hook to show a document when following an LSP location
-/// (Go to Definition), modeled after the `window/showDocument` request.
-///
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#window_showDocument
-///
-/// Called before the built-in behavior. Return `true` if the host has shown
-/// the document (e.g. opened a docs window for a virtual/external URI);
-/// return `false` to fall through to the default handling (`external` URIs
-/// open in the browser, anything else jumps within the current document).
+/// Modeled after the `window/showDocument` request. Called before the built-in behavior;
+/// return `true` if the host has shown the document, `false` to fall through to default handling.
 pub type ShowDocumentHandler =
     Rc<dyn Fn(&lsp_types::ShowDocumentParams, &mut Window, &mut App) -> bool>;
 
-/// LSP ServerCapabilities
-///
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#serverCapabilities
+/// LSP ServerCapabilities.
 pub struct Lsp {
-    /// The completion provider.
     pub completion_provider: Option<Rc<dyn CompletionProvider>>,
-    /// The code action providers.
     pub code_action_providers: Vec<Rc<dyn CodeActionProvider>>,
-    /// The hover provider.
     pub hover_provider: Option<Rc<dyn HoverProvider>>,
-    /// The definition provider.
     pub definition_provider: Option<Rc<dyn DefinitionProvider>>,
-    /// The document color provider.
     pub document_color_provider: Option<Rc<dyn DocumentColorProvider>>,
-    /// The range semantic tokens provider.
     pub semantic_tokens_provider: Option<Rc<dyn DocumentRangeSemanticTokensProvider>>,
-    /// Optional host hook to show documents for Go to Definition locations,
-    /// following the `window/showDocument` request (see [`ShowDocumentHandler`]).
-    ///
-    /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#window_showDocument
+    /// For Go to Definition locations (see [`ShowDocumentHandler`]).
     pub show_document: Option<ShowDocumentHandler>,
 
     document_colors: Vec<(lsp_types::Range, Hsla)>,
-    /// Cached semantic tokens as absolute position ranges + theme token-type
-    /// names. Color is resolved from the name at paint time so theme switches
-    /// take effect without a refetch.
+    /// Color is resolved from the token-type name at paint time so theme switches don't need a refetch.
     semantic_tokens: Vec<(lsp_types::Range, SharedString)>,
     _hover_task: Task<Result<()>>,
     _document_color_task: Task<()>,
@@ -83,7 +63,6 @@ impl Default for Lsp {
 }
 
 impl Lsp {
-    /// Update the LSP when the text changes.
     pub(crate) fn update(
         &mut self,
         text: &Rope,
@@ -94,7 +73,6 @@ impl Lsp {
         self.update_semantic_tokens(text, window, cx);
     }
 
-    /// Reset all LSP states.
     pub(crate) fn reset(&mut self) {
         self.document_colors.clear();
         self.semantic_tokens.clear();
@@ -119,9 +97,6 @@ impl InputState {
         menu.is_open(cx)
     }
 
-    /// Handles an action for the completion menu, if it exists.
-    ///
-    /// Return true if the action was handled, otherwise false.
     pub fn handle_action_for_context_menu(
         &mut self,
         action: Box<dyn gpui::Action>,
@@ -150,7 +125,6 @@ impl InputState {
         handled
     }
 
-    /// Apply a list of [`lsp_types::TextEdit`] to mutate the text.
     pub fn apply_lsp_edits(
         &mut self,
         text_edits: &Vec<lsp_types::TextEdit>,
