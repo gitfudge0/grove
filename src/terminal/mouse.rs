@@ -1,60 +1,33 @@
-//! Pointer geometry: scroll accumulation, cell hit-testing, absolute
-//! (scrollback-stable) selection coordinates, the selection overlay's rects,
-//! and mouse-report encoding.
-//!
-//! Ports `src/gui/pty.rs:110-201` (accumulator + drag state machine),
-//! `:332-380` (overlay geometry + `normalize_selection`),
-//! `src/gui/update/pty_input.rs:235-295` (`pixel_to_abs`, autoscroll), and
-//! `crates/grove-core/src/session.rs:990-1039` (`scroll_notch_count`,
-//! `encode_mouse`).
+//! Pointer geometry: scroll accumulation, cell hit-testing, absolute (scrollback-stable) selection coordinates, the selection overlay's rects, and mouse-report encoding. Ports `src/gui/pty.rs:110-201` (accumulator + drag state machine), `:332-380` (overlay geometry + `normalize_selection`), `src/gui/update/pty_input.rs:235-295` (`pixel_to_abs`, autoscroll), and `crates/grove-core/src/session.rs:990-1039` (`scroll_notch_count`, `encode_mouse`).
 
 use grove_terminal::MouseEncoding;
 
-/// Lines moved per wheel notch when scrolling the terminal's own view
-/// (`crates/grove-core/src/session.rs:55-56`).
+/// Lines moved per wheel notch when scrolling the terminal's own view (`crates/grove-core/src/session.rs:55-56`).
 pub const SCROLL_STEP: usize = 3;
 
 /// Max scrollback retained per session (`session.rs:57-58`).
 pub const SCROLLBACK_LINES: usize = 5000;
 
-/// The selection overlay wash. **Hardcoded, not a theme token** — spec
-/// Appendix A pins this exact constant (`src/gui/pty.rs:341-346`), so it stays
-/// identical across all ~40 themes.
+/// The selection overlay wash. **Hardcoded, not a theme token** — spec Appendix A pins this exact constant (`src/gui/pty.rs:341-346`), so it stays identical across all ~40 themes.
 pub const SELECTION_RGBA: (f32, f32, f32, f32) = (0.40, 0.50, 0.78, 0.35);
 
-/// A cell in absolute, scrollback-stable coordinates.
-///
-/// `a_row` counts upward into history: **larger `a_row` is older**
-/// (`pty_input.rs:244-256`), derived as `scrollback + (h - 1 - viewport_row)`.
-/// That is precisely what lets a selection stay on the same text while the view
-/// scrolls underneath it.
+/// A cell in absolute, scrollback-stable coordinates. `a_row` counts upward into history: **larger `a_row` is older** (`pty_input.rs:244-256`), derived as `scrollback + (h - 1 - viewport_row)`. That is precisely what lets a selection stay on the same text while the view scrolls underneath it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AbsCell {
     pub a_row: usize,
     pub col: usize,
 }
 
-/// Pixel-delta accumulator for trackpad smooth scrolling.
-///
-/// Trackpads deliver sub-cell pixel deltas; forwarding each one would flood
-/// tmux (and any inner app with mouse reporting) with hundreds of notches per
-/// gesture. Travel is banked here and released a whole cell at a time.
+/// Pixel-delta accumulator for trackpad smooth scrolling. Trackpads deliver sub-cell pixel deltas; forwarding each one would flood tmux (and any inner app with mouse reporting) with hundreds of notches per gesture. Travel is banked here and released a whole cell at a time.
 #[derive(Debug, Default)]
 pub struct ScrollAccum {
     accum: f32,
 }
 
 impl ScrollAccum {
-    /// Bank a pixel delta; returns `(up, notches)` once at least one whole cell
-    /// of travel has accumulated.
-    ///
-    /// `cell_h` is the **zoom-scaled** cell height (`ZoomState::cell_h()`), not
-    /// the bare 17.0 the spike used — at zoom 2.0 the same gesture is worth
-    /// half as many notches (findings amendment 6).
+    /// Bank a pixel delta; returns `(up, notches)` once at least one whole cell of travel has accumulated. `cell_h` is the **zoom-scaled** cell height (`ZoomState::cell_h()`), not the bare 17.0 the spike used — at zoom 2.0 the same gesture is worth half as many notches (findings amendment 6).
     pub fn feed_pixels(&mut self, dy: f32, cell_h: f32) -> Option<(bool, usize)> {
-        // `pty.rs:180-183` — a direction reversal drops the banked travel so
-        // the gesture responds immediately instead of first paying off the
-        // opposite direction.
+        // `pty.rs:180-183` — a direction reversal drops the banked travel so the gesture responds immediately instead of first paying off the opposite direction.
         if (self.accum > 0.0) != (dy > 0.0) {
             self.accum = 0.0;
         }
@@ -68,20 +41,12 @@ impl ScrollAccum {
             return None;
         }
         let up = self.accum > 0.0;
-        // `pty.rs:188-189` — subtract with `copysign` and KEEP the remainder,
-        // so no travel is silently dropped. iced released one notch per event
-        // and carried the rest to the next one; releasing every whole notch
-        // now is the same total travel with no lag on a fast flick.
+        // `pty.rs:188-189` — subtract with `copysign` and KEEP the remainder, so no travel is silently dropped. iced released one notch per event and carried the rest to the next one; releasing every whole notch now is the same total travel with no lag on a fast flick.
         self.accum -= (notches * cell_h).copysign(self.accum);
         Some((up, notches as usize))
     }
 
-    /// A discrete line delta (mouse wheel).
-    ///
-    /// Resets the pixel bank so switching devices mid-gesture cannot leak a
-    /// partial line, and returns `None` for `|dy| < 1.0`
-    /// (`pty.rs:167-171`) — the spike's pass-through of tiny line deltas is
-    /// **rejected**.
+    /// A discrete line delta (mouse wheel). Resets the pixel bank so switching devices mid-gesture cannot leak a partial line, and returns `None` for `|dy| < 1.0` (`pty.rs:167-171`) — the spike's pass-through of tiny line deltas is **rejected**.
     pub fn feed_lines(&mut self, dy: f32) -> Option<bool> {
         self.accum = 0.0;
         if dy.abs() < 1.0 {
@@ -91,8 +56,7 @@ impl ScrollAccum {
     }
 }
 
-/// Element-local pixels → viewport cell, clamped at the origin
-/// (`pty_input.rs:290-295`, `pixel_to_cell`).
+/// Element-local pixels → viewport cell, clamped at the origin (`pty_input.rs:290-295`, `pixel_to_cell`).
 pub fn cell_at(x: f32, y: f32, cell_w: f32, cell_h: f32) -> (u16, u16) {
     let axis = |v: f32, cell: f32| -> u16 {
         if !cell.is_finite() || cell <= 0.0 {
@@ -110,11 +74,7 @@ pub fn cell_at(x: f32, y: f32, cell_w: f32, cell_h: f32) -> (u16, u16) {
     (axis(x, cell_w), axis(y, cell_h))
 }
 
-/// Element-local pixels → an absolute selection cell, clamping the row into the
-/// currently-visible window `[sb, sb + h - 1]` (`pty_input.rs:242-256`).
-///
-/// `h` is the viewport height in rows and `sb` the current scrollback offset.
-/// Returns `None` for a zero-height grid.
+/// Element-local pixels → an absolute selection cell, clamping the row into the currently-visible window `[sb, sb + h - 1]` (`pty_input.rs:242-256`). `h` is the viewport height in rows and `sb` the current scrollback offset. Returns `None` for a zero-height grid.
 pub fn pixel_to_abs(
     x: f32,
     y: f32,
@@ -134,8 +94,7 @@ pub fn pixel_to_abs(
     })
 }
 
-/// Order two selection endpoints as `(r1, c1, r2, c2)` (`pty.rs:374-380`).
-/// The compare is on the `(row, col)` tuple, with a swap when reversed.
+/// Order two selection endpoints as `(r1, c1, r2, c2)` (`pty.rs:374-380`). The compare is on the `(row, col)` tuple, with a swap when reversed.
 pub fn normalize_selection(a: AbsCell, b: AbsCell) -> (usize, usize, usize, usize) {
     if (a.a_row, a.col) <= (b.a_row, b.col) {
         (a.a_row, a.col, b.a_row, b.col)
@@ -147,15 +106,7 @@ pub fn normalize_selection(a: AbsCell, b: AbsCell) -> (usize, usize, usize, usiz
 /// A selection-overlay rectangle in element-local pixels: `(x, y, w, h)`.
 pub type Rect = (f32, f32, f32, f32);
 
-/// The overlay's rects for a selection, in element-local pixels
-/// (`pty.rs:332-372`).
-///
-/// One rect for a single-row selection (minimum one cell wide so a zero-width
-/// selection is still visible), otherwise up to three: first row to
-/// end-of-line, the full middle block, and the last row from beginning-of-line.
-///
-/// **Note the coordinates are the *same* `(row, col)` space the iced painter
-/// used** — the caller converts absolute rows to viewport rows before calling.
+/// The overlay's rects for a selection, in element-local pixels (`pty.rs:332-372`). One rect for a single-row selection (minimum one cell wide so a zero-width selection is still visible), otherwise up to three: first row to end-of-line, the full middle block, and the last row from beginning-of-line. **Note the coordinates are the *same* `(row, col)` space the iced painter used** — the caller converts absolute rows to viewport rows before calling.
 pub fn selection_rects(
     a: AbsCell,
     head: AbsCell,
@@ -196,9 +147,7 @@ pub fn selection_rects(
     out
 }
 
-/// Encode one mouse report at a 0-based, pane-relative cell
-/// (`session.rs:1003-1039`). `cb` is the button/wheel code; `press` picks the
-/// press vs release form.
+/// Encode one mouse report at a 0-based, pane-relative cell (`session.rs:1003-1039`). `cb` is the button/wheel code; `press` picks the press vs release form.
 pub fn encode_mouse(encoding: MouseEncoding, cb: u32, col: u16, row: u16, press: bool) -> Vec<u8> {
     match encoding {
         MouseEncoding::Sgr => format!(
@@ -209,10 +158,7 @@ pub fn encode_mouse(encoding: MouseEncoding, cb: u32, col: u16, row: u16, press:
             if press { 'M' } else { 'm' }
         )
         .into_bytes(),
-        // Default / Utf8: the classic X10 packet, one printable byte each.
-        // The protocol tops out at coordinate 223 (byte 255); past that the
-        // position cannot be represented, so emit **nothing** rather than a
-        // wrong position. That limit is parity behavior, not a bug.
+        // Default / Utf8: the classic X10 packet, one printable byte each. The protocol tops out at coordinate 223 (byte 255); past that the position cannot be represented, so emit **nothing** rather than a wrong position. That limit is parity behavior, not a bug.
         _ => {
             if col >= 223 || row >= 223 {
                 return Vec::new();
@@ -231,17 +177,12 @@ pub fn encode_mouse(encoding: MouseEncoding, cb: u32, col: u16, row: u16, press:
     }
 }
 
-/// Wheel notches to forward for a `scroll_lines` request of `lines` terminal
-/// lines when the inner app has mouse reporting on (`session.rs:995-997`):
-/// one notch per [`SCROLL_STEP`] lines, **capped at 200** as a flood guard —
-/// which is what keeps the Shift+Home/End full-scrollback jump from hanging.
+/// Wheel notches to forward for a `scroll_lines` request of `lines` terminal lines when the inner app has mouse reporting on (`session.rs:995-997`): one notch per [`SCROLL_STEP`] lines, **capped at 200** as a flood guard — which is what keeps the Shift+Home/End full-scrollback jump from hanging.
 pub fn scroll_notch_count(lines: usize) -> usize {
     lines.div_ceil(SCROLL_STEP).min(200)
 }
 
-/// Page size for Shift+PageUp/PageDown: the viewport height minus one line of
-/// overlap, falling back to 20 for a degenerate viewport
-/// (`session.rs:743-749`).
+/// Page size for Shift+PageUp/PageDown: the viewport height minus one line of overlap, falling back to 20 for a degenerate viewport (`session.rs:743-749`).
 pub fn scroll_page_lines(rows: u16) -> usize {
     if rows > 1 {
         usize::from(rows - 1)
@@ -274,8 +215,7 @@ mod tests {
 
     #[test]
     fn crossing_the_threshold_keeps_the_remainder() {
-        // pty.rs:188-189 — feeding 2.5 cells in one event must not drop 1.5
-        // cells of travel.
+        // pty.rs:188-189 — feeding 2.5 cells in one event must not drop 1.5 cells of travel.
         let mut a = ScrollAccum::default();
         assert_eq!(a.feed_pixels(CELL_H * 2.5, CELL_H), Some((true, 2)));
         // 0.5 cells remain banked: another 0.5 completes the third notch.
@@ -291,12 +231,10 @@ mod tests {
 
     #[test]
     fn a_direction_reversal_resets_the_bank() {
-        // pty.rs:180-183 — reversing must respond immediately, not first pay
-        // off the opposite direction.
+        // pty.rs:180-183 — reversing must respond immediately, not first pay off the opposite direction.
         let mut a = ScrollAccum::default();
         assert_eq!(a.feed_pixels(CELL_H * 0.9, CELL_H), None);
-        // Without the reset this -0.9 would net to 0 and emit nothing; with it
-        // the bank restarts at -0.9 and still emits nothing…
+        // Without the reset this -0.9 would net to 0 and emit nothing; with it the bank restarts at -0.9 and still emits nothing…
         assert_eq!(a.feed_pixels(-CELL_H * 0.9, CELL_H), None);
         // …but only 0.1 more cell is needed, proving the 0.9 up was discarded.
         assert_eq!(a.feed_pixels(-CELL_H * 0.2, CELL_H), Some((false, 1)));
@@ -322,8 +260,7 @@ mod tests {
 
     #[test]
     fn the_threshold_is_zoom_scaled() {
-        // findings amendment 6: at zoom 2.0 the same gesture is worth half the
-        // notches, because the threshold is `ZoomState::cell_h()`.
+        // findings amendment 6: at zoom 2.0 the same gesture is worth half the notches, because the threshold is `ZoomState::cell_h()`.
         let gesture = CELL_H * 4.0;
         let mut at_1x = ScrollAccum::default();
         let mut at_2x = ScrollAccum::default();
@@ -342,15 +279,13 @@ mod tests {
 
     #[test]
     fn abs_rows_count_upward_into_history() {
-        // pty_input.rs:244-256: a_row = sb + (h - 1 - viewport_row).
-        // Bottom row of a 24-row viewport with no scrollback is a_row 0.
+        // pty_input.rs:244-256: a_row = sb + (h - 1 - viewport_row). Bottom row of a 24-row viewport with no scrollback is a_row 0.
         let bottom = pixel_to_abs(0.0, CELL_H * 23.0, CELL_W, CELL_H, 24, 0);
         assert_eq!(bottom, Some(AbsCell { a_row: 0, col: 0 }));
         // Top row of the same viewport is the oldest visible row.
         let top = pixel_to_abs(0.0, 0.0, CELL_W, CELL_H, 24, 0);
         assert_eq!(top, Some(AbsCell { a_row: 23, col: 0 }));
-        // Scrolled back 10 lines, the same pixel is 10 rows older — which is
-        // exactly what keeps a selection on its text while the view moves.
+        // Scrolled back 10 lines, the same pixel is 10 rows older — which is exactly what keeps a selection on its text while the view moves.
         let scrolled = pixel_to_abs(0.0, 0.0, CELL_W, CELL_H, 24, 10);
         assert_eq!(scrolled, Some(AbsCell { a_row: 33, col: 0 }));
     }

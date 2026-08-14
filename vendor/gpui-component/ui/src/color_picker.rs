@@ -264,8 +264,7 @@ impl ColorPickerState {
         self.needs_slider_sync = false;
         self.value = value;
         self.hovered_color = value;
-        // Suppress the InputEvent::Change that set_value will trigger, to avoid
-        // the Hsla→hex→Hsla precision loss from feeding back into sync_sliders.
+        // Suppress the InputEvent::Change that set_value will trigger, to avoid the Hsla→hex→Hsla precision loss from feeding back into sync_sliders.
         self.suppress_input_change = true;
         self.state.update(cx, |view, cx| {
             if let Some(value) = value {
@@ -274,8 +273,7 @@ impl ColorPickerState {
                 view.set_value("", window, cx);
             }
         });
-        // Sync sliders directly with the full-precision value instead of relying
-        // on the InputEvent::Change → parse_hex round-trip.
+        // Sync sliders directly with the full-precision value instead of relying on the InputEvent::Change → parse_hex round-trip.
         self.sync_sliders(value, window, cx);
         if emit {
             cx.emit(ColorPickerEvent::Change(value));
@@ -293,8 +291,7 @@ impl ColorPickerState {
         self.needs_slider_sync = false;
         self.value = Some(value);
         self.hovered_color = Some(value);
-        // Keep the hex input in sync with the slider, but suppress the resulting
-        // InputEvent::Change to avoid the Hsla→hex→Hsla precision loss loop.
+        // Keep the hex input in sync with the slider, but suppress the resulting InputEvent::Change to avoid the Hsla→hex→Hsla precision loss loop.
         self.suppress_input_change = true;
         self.state.update(cx, |view, cx| {
             view.set_value(value.to_hex(), window, cx);
@@ -354,35 +351,25 @@ impl ColorPicker {
         }
     }
 
-    /// Set the featured colors to be displayed in the color picker.
-    ///
-    /// This is used to display a set of colors that the user can quickly select from,
-    /// for example provided user's last used colors.
+    /// Set the featured colors to be displayed in the color picker. This is used to display a set of colors that the user can quickly select from, for example provided user's last used colors.
     pub fn featured_colors(mut self, colors: Vec<Hsla>) -> Self {
         self.featured_colors = Some(colors);
         self
     }
 
-    /// Set the icon to the color picker button.
-    ///
-    /// If this is set the color picker button will display the icon.
-    /// Else it will display the square color of the current value.
+    /// Set the icon to the color picker button. If this is set the color picker button will display the icon. Else it will display the square color of the current value.
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.icon = Some(icon.into());
         self
     }
 
-    /// Set the label to be displayed above the color picker.
-    ///
-    /// Default is `None`.
+    /// Set the label to be displayed above the color picker. Default is `None`.
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
         self.label = Some(label.into());
         self
     }
 
-    /// Set the anchor corner of the color picker.
-    ///
-    /// Default is `Anchor::TopLeft`.
+    /// Set the anchor corner of the color picker. Default is `Anchor::TopLeft`.
     pub fn anchor(mut self, anchor: Anchor) -> Self {
         self.anchor = anchor;
         self

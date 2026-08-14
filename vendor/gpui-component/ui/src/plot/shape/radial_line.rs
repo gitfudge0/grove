@@ -9,20 +9,7 @@ use gpui::{
 
 const HALF_PI: f32 = PI / 2.;
 
-/// A radial line generator, like `d3.lineRadial`.
-///
-/// Points are placed around the center of the plot bounds. The `angle`
-/// accessor returns the angle in radians, with 0 at 12 o'clock and positive
-/// angles proceeding clockwise. The `radius` accessor returns the distance
-/// (in pixels) from the center.
-///
-/// Call [`RadialLine::closed`] to connect the last point back to the first
-/// (like `d3.curveLinearClosed`), and [`RadialLine::fill`] to fill the
-/// enclosed polygon, e.g. for radar charts.
-///
-/// Unlike [`Line`](super::Line), the accessors also receive the datum index,
-/// matching d3's `(d, i)` accessor form, since radial charts typically derive
-/// the angle from the index (e.g. `i * TAU / n`).
+/// A radial line generator, like `d3.lineRadial`. Points are placed around the center of the plot bounds. The `angle` accessor returns the angle in radians, with 0 at 12 o'clock and positive angles proceeding clockwise. The `radius` accessor returns the distance (in pixels) from the center. Call [`RadialLine::closed`] to connect the last point back to the first (like `d3.curveLinearClosed`), and [`RadialLine::fill`] to fill the enclosed polygon, e.g. for radar charts. Unlike [`Line`](super::Line), the accessors also receive the datum index, matching d3's `(d, i)` accessor form, since radial charts typically derive the angle from the index (e.g. `i * TAU / n`).
 #[allow(clippy::type_complexity)]
 pub struct RadialLine<T> {
     data: Vec<T>,
@@ -70,11 +57,7 @@ impl<T> RadialLine<T> {
         self
     }
 
-    /// Set the angle accessor of the RadialLine.
-    ///
-    /// The accessor is called with the datum and its index, and returns the
-    /// angle in radians, with 0 at 12 o'clock and positive angles proceeding
-    /// clockwise.
+    /// Set the angle accessor of the RadialLine. The accessor is called with the datum and its index, and returns the angle in radians, with 0 at 12 o'clock and positive angles proceeding clockwise.
     pub fn angle<F>(mut self, angle: F) -> Self
     where
         F: Fn(&T, usize) -> Option<f32> + 'static,
@@ -83,10 +66,7 @@ impl<T> RadialLine<T> {
         self
     }
 
-    /// Set the radius accessor of the RadialLine.
-    ///
-    /// The accessor is called with the datum and its index, and returns the
-    /// distance (in pixels) from the center.
+    /// Set the radius accessor of the RadialLine. The accessor is called with the datum and its index, and returns the distance (in pixels) from the center.
     pub fn radius<F>(mut self, radius: F) -> Self
     where
         F: Fn(&T, usize) -> Option<f32> + 'static,
@@ -101,9 +81,7 @@ impl<T> RadialLine<T> {
         self
     }
 
-    /// Set the fill color of the polygon enclosed by the RadialLine.
-    ///
-    /// The fill path is always closed, regardless of [`RadialLine::closed`].
+    /// Set the fill color of the polygon enclosed by the RadialLine. The fill path is always closed, regardless of [`RadialLine::closed`].
     pub fn fill(mut self, fill: impl Into<Background>) -> Self {
         self.fill = Some(fill.into());
         self

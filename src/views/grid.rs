@@ -1,26 +1,4 @@
-//! The tile grid (Plan 07 Task 4). Port of `src/gui/view/terminal.rs:90-179`
-//! (`grid_workspace`) and `:811-1175` (`grid_tile`).
-//!
-//! **Free render functions, not a `Render` entity** — the same deviation
-//! [`crate::views::appbar`] records: every input is already an entity the
-//! [`crate::views::workspace::Workspace`] holds and observes, and clicks travel
-//! back out through [`GridAction`].
-//!
-//! **Supersession (carried amendment 7).** iced routes keyboard, scroll,
-//! selection and copy through `focused_session`/`selection_pane`
-//! (`terminal.rs:1180-1198`), which branch on `grid_view`/`grid_focused`
-//! because iced has no focus system. In gpui every tile hosts the **same**
-//! `TerminalView` entity the single-session view would (one per `SessionId`,
-//! memoized by `Workspace`), each owning a `FocusHandle`, and all four follow
-//! gpui focus. `grid_focused` and the focused handle are kept in lockstep by
-//! [`crate::views::workspace::Workspace`]: focusing a tile focuses its view.
-//! Those two iced functions are therefore **not ported**.
-//!
-//! **The slide is paint-time (carried amendment 6).** iced needed
-//! `src/gui/slide.rs`, a whole custom `Widget`, to translate drawing without
-//! perturbing layout. gpui gets it from CSS-relative positioning: an `inset` on
-//! a normally-positioned (relative) element offsets where it is drawn and
-//! leaves every sibling's layout untouched.
+//! The tile grid (Plan 07 Task 4). Port of `src/gui/view/terminal.rs:90-179` (`grid_workspace`) and `:811-1175` (`grid_tile`). **Free render functions, not a `Render` entity** — the same deviation [`crate::views::appbar`] records: every input is already an entity the [`crate::views::workspace::Workspace`] holds and observes, and clicks travel back out through [`GridAction`]. **Supersession (carried amendment 7).** iced routes keyboard, scroll, selection and copy through `focused_session`/`selection_pane` (`terminal.rs:1180-1198`), which branch on `grid_view`/`grid_focused` because iced has no focus system. In gpui every tile hosts the **same** `TerminalView` entity the single-session view would (one per `SessionId`, memoized by `Workspace`), each owning a `FocusHandle`, and all four follow gpui focus. `grid_focused` and the focused handle are kept in lockstep by [`crate::views::workspace::Workspace`]: focusing a tile focuses its view. Those two iced functions are therefore **not ported**. **The slide is paint-time (carried amendment 6).** iced needed `src/gui/slide.rs`, a whole custom `Widget`, to translate drawing without perturbing layout. gpui gets it from CSS-relative positioning: an `inset` on a normally-positioned (relative) element offsets where it is drawn and leaves every sibling's layout untouched.
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -42,50 +20,26 @@ use crate::views::terminal_view::TerminalView;
 
 /// Height of the tile header bar (`src/gui/metrics.rs:51`).
 pub const TILE_HEAD_H: f32 = 22.0;
-/// The square hit box of a tile-header icon button. Deliberately below
-/// [`CONTROL_H`] (22): the button has to sit *inside* a
-/// [`TILE_HEAD_H`]-tall bar, so it cannot be the chrome control height.
+/// The square hit box of a tile-header icon button. Deliberately below [`CONTROL_H`] (22): the button has to sit *inside* a [`TILE_HEAD_H`]-tall bar, so it cannot be the chrome control height.
 pub const TILE_BTN_BOX: f32 = 18.0;
-/// Horizontal padding inside each tile's PTY container — `pty()`'s own 16×2
-/// (`src/gui/metrics.rs:53-54`).
+/// Horizontal padding inside each tile's PTY container — `pty()`'s own 16×2 (`src/gui/metrics.rs:53-54`).
 pub const TILE_PTY_PAD_W: f32 = 32.0;
-/// Vertical padding inside each tile's PTY container — `pty()`'s 12×2
-/// (`src/gui/metrics.rs:55-56`).
+/// Vertical padding inside each tile's PTY container — `pty()`'s 12×2 (`src/gui/metrics.rs:55-56`).
 pub const TILE_PTY_PAD_H: f32 = 24.0;
 
-/// Horizontal padding inside the **single-session** / terminal-tab PTY
-/// container. `src/gui/metrics.rs:21-22` defines `PTY_PAD_W = 36.0` /
-/// `PTY_PAD_H = 28.0` and `compute_pty_dims` (`metrics.rs:265-295`) subtracts
-/// them from the viewport to derive `(rows, cols)`. Those two numbers are a
-/// **fudge constant, not a container padding**: iced's `pty()` container is
-/// padded `[12, 16]` (`src/gui/view/terminal.rs:790`) — i.e. 32×24, the same
-/// as `TILE_PTY_PAD_*` — so the extra 4px per axis is slack that keeps the
-/// iced scrollable from ever showing a scrollbar.
-///
-/// grove-gpui's terminal element derives its grid from its own post-layout
-/// bounds, so reproducing iced's *result* means padding the container by the
-/// full fudge constant, half per side. Cited here because `src/gui/metrics.rs`
-/// is deleted in this plan's Phase C and this comment is the only record that
-/// survives.
+/// Horizontal padding inside the **single-session** / terminal-tab PTY container. `src/gui/metrics.rs:21-22` defines `PTY_PAD_W = 36.0` / `PTY_PAD_H = 28.0` and `compute_pty_dims` (`metrics.rs:265-295`) subtracts them from the viewport to derive `(rows, cols)`. Those two numbers are a **fudge constant, not a container padding**: iced's `pty()` container is padded `[12, 16]` (`src/gui/view/terminal.rs:790`) — i.e. 32×24, the same as `TILE_PTY_PAD_*` — so the extra 4px per axis is slack that keeps the iced scrollable from ever showing a scrollbar. grove-gpui's terminal element derives its grid from its own post-layout bounds, so reproducing iced's *result* means padding the container by the full fudge constant, half per side. Cited here because `src/gui/metrics.rs` is deleted in this plan's Phase C and this comment is the only record that survives.
 pub const PTY_PAD_W: f32 = 36.0;
 /// Vertical half of the same fudge constant (`src/gui/metrics.rs:22`).
 pub const PTY_PAD_H: f32 = 28.0;
 
-/// What a click inside the grid asks the workspace to do. Tiles never reach
-/// into state themselves (the `rows::RowAction` contract).
+/// What a click inside the grid asks the workspace to do. Tiles never reach into state themselves (the `rows::RowAction` contract).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GridAction {
-    /// A press on a tile's header or scrim: focus + acknowledge + arm a drag
-    /// (`layout.rs:308-321`).
+    /// A press on a tile's header or scrim: focus + acknowledge + arm a drag (`layout.rs:308-321`).
     Press(usize),
-    /// A press on the tile's PTY body: focus + acknowledge only, no drag
-    /// armed (a body press must not start a tile drag; that is the header's
-    /// job).
+    /// A press on the tile's PTY body: focus + acknowledge only, no drag armed (a body press must not start a tile drag; that is the header's job).
     Focus(usize),
-    /// The pointer entered a tile; a no-op unless a drag is armed. The
-    /// release edge is not a `GridAction`: it is listened for at the root
-    /// (`Workspace::on_root_mouse_up`), because a pointer released outside
-    /// the tile it started on must still commit (`layout.rs:323-342`).
+    /// The pointer entered a tile; a no-op unless a drag is armed. The release edge is not a `GridAction`: it is listened for at the root (`Workspace::on_root_mouse_up`), because a pointer released outside the tile it started on must still commit (`layout.rs:323-342`).
     Hover(usize),
     /// The tile's own zen button (`layout.rs:344-356`).
     TileZen(SessionId),
@@ -107,25 +61,13 @@ pub struct TileData {
     pub waiting: bool,
     pub focused: bool,
     pub confirming_kill: bool,
-    /// The OSC context title, already sanitized — the **same** string
-    /// [`crate::views::workspace::Workspace::header_data`] derives for the
-    /// session bar via `rows::session_context`, so a tile and the bar never
-    /// disagree about what a session is doing.
+    /// The OSC context title, already sanitized — the **same** string [`crate::views::workspace::Workspace::header_data`] derives for the session bar via `rows::session_context`, so a tile and the bar never disagree about what a session is doing.
     pub context: Option<String>,
-    /// Whether the session's process is alive, gating the in-progress dots
-    /// (a dead session's stale "in progress" title must not animate).
+    /// Whether the session's process is alive, gating the in-progress dots (a dead session's stale "in progress" title must not animate).
     pub running: bool,
-    /// Which optional header segments survive, decided by [`fit_segments`]
-    /// from widths this session's *own* strings actually measure to
-    /// (`Workspace::segment_widths`) — not from a width threshold, because
-    /// `grove` and `GLOBUS-PORTAL` do not cost the same.
+    /// Which optional header segments survive, decided by [`fit_segments`] from widths this session's *own* strings actually measure to (`Workspace::segment_widths`) — not from a width threshold, because `grove` and `GLOBUS-PORTAL` do not cost the same.
     pub fit: HeaderFit,
-    /// The worktree's uncommitted diff against `HEAD`: `(added, removed)`
-    /// lines. `None` if unknown (no first poll yet, or no matching
-    /// worktree) draws nothing — the same rule the card and the session bar
-    /// follow for [`crate::views::rows::diff_chips`]. Does not participate
-    /// in [`HeaderFit`]/[`fit_segments`]: it sits past the `flex_1` title
-    /// zone, which absorbs the squeeze on its own.
+    /// The worktree's uncommitted diff against `HEAD`: `(added, removed)` lines. `None` if unknown (no first poll yet, or no matching worktree) draws nothing — the same rule the card and the session bar follow for [`crate::views::rows::diff_chips`]. Does not participate in [`HeaderFit`]/[`fit_segments`]: it sits past the `flex_1` title zone, which absorbs the squeeze on its own.
     pub diff: Option<(u32, u32)>,
     /// The **same** entity the single-session body would use.
     pub view: Entity<TerminalView>,
@@ -135,26 +77,18 @@ pub struct GridCtx {
     pub tiles: Vec<TileData>,
     /// The 480ms attention pulse, for the respond chip.
     pub pulse: f32,
-    /// The 40-tick triangle wave the scrim breathes on —
-    /// [`crate::entities::animation_clock::toast_pulse`]'s first consumer.
+    /// The 40-tick triangle wave the scrim breathes on — [`crate::entities::animation_clock::toast_pulse`]'s first consumer.
     pub scrim_pulse: f32,
-    /// The clock's raw tick, for the title zone's in-progress dot walk
-    /// (`session_header::in_progress_phase`). `pulse`/`scrim_pulse` are both
-    /// already-derived waves and cannot recover it.
+    /// The clock's raw tick, for the title zone's in-progress dot walk (`session_header::in_progress_phase`). `pulse`/`scrim_pulse` are both already-derived waves and cannot recover it.
     pub tick: u64,
     pub drag: Option<GridDrag>,
     pub slide: Option<GridSlide>,
-    /// Nominal tile size in logical px, for the slide's draw offset. Comes
-    /// from `grid_tile_size`, which ignores the sidebar — kept unchanged
-    /// because the slide's draw offset must match that geometry exactly.
+    /// Nominal tile size in logical px, for the slide's draw offset. Comes from `grid_tile_size`, which ignores the sidebar — kept unchanged because the slide's draw offset must match that geometry exactly.
     pub tile_size: (f32, f32),
     pub dispatch: GridDispatch,
 }
 
-/// Which identity segments survive in one tile's header. Each surviving
-/// segment stays whole — a truncated `"GLOB…"` project name is noise, so
-/// segments are dropped whole rather than shrunk. Only the title ever
-/// truncates.
+/// Which identity segments survive in one tile's header. Each surviving segment stays whole — a truncated `"GLOB…"` project name is noise, so segments are dropped whole rather than shrunk. Only the title ever truncates.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HeaderFit {
     pub project: bool,
@@ -162,45 +96,26 @@ pub struct HeaderFit {
     pub title: bool,
 }
 
-/// Measured widths of each optional segment, in **device pixels**, including
-/// the leading `·` separator and the two flex gaps each one carries.
-///
-/// A segment whose text is blank — a branchless session, `context: None` —
-/// records `0.0` and is never kept at any budget, which is what keeps the
-/// header from showing a trailing `·` with nothing after it.
+/// Measured widths of each optional segment, in **device pixels**, including the leading `·` separator and the two flex gaps each one carries. A segment whose text is blank — a branchless session, `context: None` — records `0.0` and is never kept at any budget, which is what keeps the header from showing a trailing `·` with nothing after it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SegmentWidths {
     pub project: f32,
     pub branch: f32,
-    /// Only ever consulted for blankness: the title zone is `flex_1` and
-    /// truncates, so what it *would* measure does not decide its fate.
+    /// Only ever consulted for blankness: the title zone is `flex_1` and truncates, so what it *would* measure does not decide its fate.
     pub title: f32,
 }
 
-/// Below this much leftover budget the title is dropped rather than shown.
-/// Device px at the default 16px rem; roughly four glyphs of [`TEXT_MICRO`]
-/// plus the ellipsis — a 12px sliver reading `"m…"` costs the header a `·`
-/// and a truncation mark to say nothing at all, so none is better.
+/// Below this much leftover budget the title is dropped rather than shown. Device px at the default 16px rem; roughly four glyphs of [`TEXT_MICRO`] plus the ellipsis — a 12px sliver reading `"m…"` costs the header a `·` and a truncation mark to say nothing at all, so none is better.
 const MIN_TITLE_PX: f32 = 48.0;
 
-/// The re-add margin that makes the drop and re-add thresholds differ, in
-/// device px. A segment drops the moment it overflows but is only brought
-/// back once it fits with this much to spare, so a tile width jittering
-/// around one segment's exact cost cannot oscillate it in and out.
+/// The re-add margin that makes the drop and re-add thresholds differ, in device px. A segment drops the moment it overflows but is only brought back once it fits with this much to spare, so a tile width jittering around one segment's exact cost cannot oscillate it in and out.
 const HYSTERESIS_PX: f32 = 10.0;
 
-/// Greedily fit optional segments into `budget` device px by priority:
-/// project, then branch — branch is the first thing sacrificed because two
-/// tiles of one project are told apart by their branch far less often than
-/// two projects are told apart by their name. `prev` is last frame's
-/// decision for this session and supplies the hysteresis (see
-/// [`HYSTERESIS_PX`]); `None` on a session's first frame, which starts
-/// pessimistic and adds segments in.
+/// Greedily fit optional segments into `budget` device px by priority: project, then branch — branch is the first thing sacrificed because two tiles of one project are told apart by their branch far less often than two projects are told apart by their name. `prev` is last frame's decision for this session and supplies the hysteresis (see [`HYSTERESIS_PX`]); `None` on a session's first frame, which starts pessimistic and adds segments in.
 #[must_use]
 pub fn fit_segments(budget: f32, seg: &SegmentWidths, prev: Option<HeaderFit>) -> HeaderFit {
     let prev = prev.unwrap_or_default();
-    // A shown segment's drop threshold is its bare width; a hidden one's
-    // re-add threshold is that plus the margin.
+    // A shown segment's drop threshold is its bare width; a hidden one's re-add threshold is that plus the margin.
     let keep = |w: f32, shown: bool, remaining: f32| {
         w > 0.0 && remaining >= if shown { w } else { w + HYSTERESIS_PX }
     };
@@ -214,8 +129,7 @@ pub fn fit_segments(budget: f32, seg: &SegmentWidths, prev: Option<HeaderFit>) -
     if branch {
         remaining -= seg.branch;
     }
-    // The title's threshold is a floor on the space left for it rather than
-    // its own width, since it truncates instead of dropping whole.
+    // The title's threshold is a floor on the space left for it rather than its own width, since it truncates instead of dropping whole.
     let title_floor = if prev.title {
         MIN_TITLE_PX
     } else {
@@ -251,13 +165,7 @@ fn on_grid(
     move |_, window, cx| dispatch(action, window, cx)
 }
 
-/// The columns-of-tiles workspace (`terminal.rs:90-179`).
-///
-/// `grid_layout(n)` gives `(cols, rows)`; the render walks **columns**, and each
-/// column stacks only the tiles whose row-major index `row * cols + col` is
-/// `< n`. That is why a 3-session grid puts one full-height tile beside a
-/// 2-stack — and why per-tile PTY dims fall out for free (carried amendment 1):
-/// each `TerminalElement` sizes itself from its own post-layout bounds.
+/// The columns-of-tiles workspace (`terminal.rs:90-179`). `grid_layout(n)` gives `(cols, rows)`; the render walks **columns**, and each column stacks only the tiles whose row-major index `row * cols + col` is `< n`. That is why a 3-session grid puts one full-height tile beside a 2-stack — and why per-tile PTY dims fall out for free (carried amendment 1): each `TerminalElement` sizes itself from its own post-layout bounds.
 pub fn grid(ctx: &GridCtx) -> AnyElement {
     let n = ctx.tiles.len();
     if n == 0 {
@@ -272,8 +180,7 @@ pub fn grid(ctx: &GridCtx) -> AnyElement {
         .flex()
         .flex_row()
         .size_full()
-        // 1px of the container's BORDER_SOFT background shows through as the
-        // inter-tile gap (`terminal.rs:165-173`).
+        // 1px of the container's BORDER_SOFT background shows through as the inter-tile gap (`terminal.rs:165-173`).
         .gap(px(1.0))
         .bg(c::BORDER_SOFT());
 
@@ -297,8 +204,7 @@ pub fn grid(ctx: &GridCtx) -> AnyElement {
     columns.into_any_element()
 }
 
-/// The draw-only offset for a tile mid-slide, in logical px, or `None` once the
-/// animation has settled. Port of `terminal.rs:127-158`.
+/// The draw-only offset for a tile mid-slide, in logical px, or `None` once the animation has settled. Port of `terminal.rs:127-158`.
 fn slide_offset(tile_idx: usize, ctx: &GridCtx) -> Option<(f32, f32)> {
     let slide = ctx.slide?;
     let &(_, d_col, d_row) = slide.tiles.iter().find(|(idx, ..)| *idx == tile_idx)?;
@@ -321,8 +227,7 @@ fn tile(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
         .is_some_and(|d| d.hover_idx == tile_idx && d.source_idx != tile_idx);
 
     let (border_color, border_w) = if data.waiting {
-        // §7.2: exactly one border weight — the hairline. A waiting tile is
-        // called out by the amber *tone*, never by a heavier stroke.
+        // §7.2: exactly one border weight — the hairline. A waiting tile is called out by the amber *tone*, never by a heavier stroke.
         (c::AMBER(), 1.0)
     } else {
         (gpui::transparent_black(), 0.0)
@@ -335,9 +240,7 @@ fn tile(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
         .child(tile_header(tile_idx, data, ctx))
         .child(divider_h())
         .child(
-            // The tile's PTY, padded exactly as iced's `pty()` is
-            // (`metrics.rs:53-56`) so a tile's cell grid matches the iced
-            // build's; the element derives its own dims from these bounds.
+            // The tile's PTY, padded exactly as iced's `pty()` is (`metrics.rs:53-56`) so a tile's cell grid matches the iced build's; the element derives its own dims from these bounds.
             div()
                 .flex()
                 .flex_1()
@@ -364,8 +267,7 @@ fn tile(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
         .bg(c::BG())
         .border(px(border_w))
         .border_color(border_color)
-        // `on_enter` fires even while a button is held; the handler ignores it
-        // when no drag is armed (`layout.rs:323-328`).
+        // `on_enter` fires even while a button is held; the handler ignores it when no drag is armed (`layout.rs:323-328`).
         .on_hover(move |hovered, window, cx| {
             if *hovered {
                 dispatch(GridAction::Hover(tile_idx), window, cx);
@@ -400,15 +302,11 @@ fn overlay() -> gpui::Div {
     div().absolute().top(px(0.0)).left(px(0.0)).size_full()
 }
 
-/// `terminal.rs:988-1018`. A denser variant of the session bar's identity row —
-/// see [`crate::views::session_header`], which Plan 06 built parameterized by
-/// session for exactly this.
+/// `terminal.rs:988-1018`. A denser variant of the session bar's identity row — see [`crate::views::session_header`], which Plan 06 built parameterized by session for exactly this.
 fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
     let fit = data.fit;
 
-    // Identity zone: icon + agent label always survive; project/branch are
-    // dropped whole (never truncated) as the tile narrows. `.flex_shrink_0()`
-    // — identity never truncates, the title zone below absorbs the squeeze.
+    // Identity zone: icon + agent label always survive; project/branch are dropped whole (never truncated) as the tile narrows. `.flex_shrink_0()` — identity never truncates, the title zone below absorbs the squeeze.
     let mut identity = div()
         .flex()
         .flex_shrink_0()
@@ -426,8 +324,7 @@ fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
             c::FG_MUTE(),
         ));
     }
-    // Branchless sessions skip the segment entirely — otherwise the header
-    // shows a trailing dot with nothing after it.
+    // Branchless sessions skip the segment entirely — otherwise the header shows a trailing dot with nothing after it.
     if fit.branch && !data.branch.trim().is_empty() {
         identity = identity.child(ui("·", TEXT_MICRO, c::FG_MUTE())).child(ui(
             data.branch.clone(),
@@ -436,9 +333,7 @@ fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
         ));
     }
 
-    // Title zone: `flex_1()` + `min_w_0()` replaces the old bare spacer — the
-    // context title takes the space a spacer used to waste. Only this
-    // element ever truncates.
+    // Title zone: `flex_1()` + `min_w_0()` replaces the old bare spacer — the context title takes the space a spacer used to waste. Only this element ever truncates.
     let title_zone = if fit.title && data.context.is_some() {
         let title = data.context.as_deref().unwrap_or_default();
         let show_progress = data.running && session_header::is_in_progress_title(title);
@@ -450,8 +345,7 @@ fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
                     if i == phase { c::GREEN() } else { c::FG_MUTE() },
                 )
             };
-            // A partially drawn 3-dot cluster is meaningless — it never
-            // shrinks or truncates.
+            // A partially drawn 3-dot cluster is meaningless — it never shrinks or truncates.
             div()
                 .flex()
                 .flex_shrink_0()
@@ -486,11 +380,7 @@ fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
         div().flex_1().into_any_element()
     };
 
-    // Arming the kill changes the *glyph* as well as the colour (§2.3, §12):
-    // red-vs-muted on an identical trash can is a colour-only signal. `question`
-    // is the "are you sure?" shape already used for needs-you, and it renders in
-    // the same ICON_XS box inside the same TILE_BTN_BOX, so nothing reflows
-    // (§2.4).
+    // Arming the kill changes the *glyph* as well as the colour (§2.3, §12): red-vs-muted on an identical trash can is a colour-only signal. `question` is the "are you sure?" shape already used for needs-you, and it renders in the same ICON_XS box inside the same TILE_BTN_BOX, so nothing reflows (§2.4).
     let (kill_icon, kill_color) = if data.confirming_kill {
         ("question", c::RED())
     } else {
@@ -516,10 +406,7 @@ fn tile_header(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
         } else {
             c::BG_STRIP()
         })
-        // `overflow_hidden` is now a backstop, not the mechanism: the
-        // controls cluster below is `flex_shrink_0` so a long title can
-        // never push it out of the tile — the title zone's `min_w_0()` is
-        // what actually absorbs the squeeze.
+        // `overflow_hidden` is now a backstop, not the mechanism: the controls cluster below is `flex_shrink_0` so a long title can never push it out of the tile — the title zone's `min_w_0()` is what actually absorbs the squeeze.
         .overflow_hidden()
         .child(identity)
         .child(title_zone)
@@ -587,8 +474,7 @@ fn tile_btn(
     .into_any_element()
 }
 
-/// `"{mod}+{n}"` for the first nine tiles, as the **registry** spells the
-/// modifier — never a literal (`terminal.rs:934-974`).
+/// `"{mod}+{n}"` for the first nine tiles, as the **registry** spells the modifier — never a literal (`terminal.rs:934-974`).
 #[must_use]
 pub fn num_hint_label(tile_idx: usize) -> Option<String> {
     (tile_idx < 9).then(|| format!("{}+{}", platform_mod_label(), tile_idx + 1))
@@ -624,8 +510,7 @@ pub fn respond_alpha(pulse: f32) -> f32 {
     0.35f32.mul_add(-pulse, 1.0)
 }
 
-/// `"respond · "` for the first nine tiles (the chord follows), a bare
-/// `"respond"` beyond them (`terminal.rs:888-911`).
+/// `"respond · "` for the first nine tiles (the chord follows), a bare `"respond"` beyond them (`terminal.rs:888-911`).
 #[must_use]
 pub fn respond_label(tile_idx: usize) -> &'static str {
     if tile_idx < 9 {
@@ -655,15 +540,13 @@ fn respond_chip(tile_idx: usize, pulse: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// The scrim's text alpha: a 0.7..1.0 breathe off the 40-tick triangle wave
-/// (`terminal.rs:1097-1100`).
+/// The scrim's text alpha: a 0.7..1.0 breathe off the 40-tick triangle wave (`terminal.rs:1097-1100`).
 #[must_use]
 pub fn scrim_alpha(scrim_pulse: f32) -> f32 {
     0.3f32.mul_add(scrim_pulse, 0.7)
 }
 
-/// `"click to respond · {mod}+{n}"` for the first nine tiles, else the bare
-/// instruction (`terminal.rs:1106-1115`).
+/// `"click to respond · {mod}+{n}"` for the first nine tiles, else the bare instruction (`terminal.rs:1106-1115`).
 #[must_use]
 pub fn scrim_sub_line(tile_idx: usize) -> String {
     num_hint_label(tile_idx).map_or_else(
@@ -672,14 +555,7 @@ pub fn scrim_sub_line(tile_idx: usize) -> String {
     )
 }
 
-/// The full-tile "needs attention" overlay (`terminal.rs:1092-1155`). The
-/// wash is the theme's deepest surface at 0.92 rather than a blur, which
-/// neither toolkit has.
-///
-/// The headline is a **mono, letter-tracked** label at [`TEXT_TITLE`]: an
-/// overlay on a tile is chrome, and §5.3's display tiers are never chrome.
-/// Tracking comes from [`crate::views::rows::tracked`] (U+2009 thin spaces),
-/// not from typing spaces into the literal (§5.4).
+/// The full-tile "needs attention" overlay (`terminal.rs:1092-1155`). The wash is the theme's deepest surface at 0.92 rather than a blur, which neither toolkit has. The headline is a **mono, letter-tracked** label at [`TEXT_TITLE`]: an overlay on a tile is chrome, and §5.3's display tiers are never chrome. Tracking comes from [`crate::views::rows::tracked`] (U+2009 thin spaces), not from typing spaces into the literal (§5.4).
 fn scrim(tile_idx: usize, ctx: &GridCtx) -> AnyElement {
     let amber = c::alpha(c::AMBER(), scrim_alpha(ctx.scrim_pulse));
     overlay()
@@ -696,15 +572,11 @@ fn scrim(tile_idx: usize, ctx: &GridCtx) -> AnyElement {
                 .font_weight(gpui::FontWeight::SEMIBOLD),
         )
         .child(mono(scrim_sub_line(tile_idx), TEXT_MICRO, c::FG_MUTE()))
-        // Clicking the scrim focuses/acknowledges the tile, exactly like
-        // clicking its header.
+        // Clicking the scrim focuses/acknowledges the tile, exactly like clicking its header.
         .on_mouse_down(MouseButton::Left, {
             let dispatch = Rc::clone(&ctx.dispatch);
             move |_, window, cx| {
-                // The scrim sits over the tile's TerminalView and `Press` focuses
-                // that view; without this the release below would post a mouse
-                // click into the pty and answer the prompt the scrim is asking
-                // about.
+                // The scrim sits over the tile's TerminalView and `Press` focuses that view; without this the release below would post a mouse click into the pty and answer the prompt the scrim is asking about.
                 cx.stop_propagation();
                 dispatch(GridAction::Press(tile_idx), window, cx);
             }
@@ -738,8 +610,7 @@ mod tests {
         assert!((scrim_alpha(0.5) - 0.85).abs() < 1e-6);
     }
 
-    /// `terminal.rs:888-911,1106-1115` — the tenth tile and beyond lose the
-    /// chord, never render `mod+10`.
+    /// `terminal.rs:888-911,1106-1115` — the tenth tile and beyond lose the chord, never render `mod+10`.
     #[test]
     fn only_the_first_nine_tiles_advertise_a_chord() {
         assert_eq!(respond_label(0), "respond · ");
@@ -756,8 +627,7 @@ mod tests {
         assert_eq!(scrim_sub_line(0), format!("click to respond · {first}"));
     }
 
-    /// A cold-start fit (no previous frame) for a session whose three
-    /// segments cost the given device px.
+    /// A cold-start fit (no previous frame) for a session whose three segments cost the given device px.
     fn cold(budget: f32, project: f32, branch: f32, title: f32) -> HeaderFit {
         fit_segments(
             budget,
@@ -770,8 +640,7 @@ mod tests {
         )
     }
 
-    /// Branch is the first sacrifice: a budget that fits exactly one of the
-    /// two spends it on the project name.
+    /// Branch is the first sacrifice: a budget that fits exactly one of the two spends it on the project name.
     #[test]
     fn fit_segments_drops_branch_before_project() {
         let fit = cold(60.0 + MIN_TITLE_PX, 50.0, 50.0, 80.0);
@@ -779,10 +648,7 @@ mod tests {
         assert!(!fit.branch);
     }
 
-    /// [`TileData::diff`] draws nothing before the first poll lands,
-    /// distinguishing an unknown diff from a *known* clean one — same rule
-    /// [`crate::views::rows::diff_chips`] enforces for the card and the
-    /// session bar.
+    /// [`TileData::diff`] draws nothing before the first poll lands, distinguishing an unknown diff from a *known* clean one — same rule [`crate::views::rows::diff_chips`] enforces for the card and the session bar.
     #[test]
     fn an_unknown_tile_diff_is_distinguished_from_a_known_clean_one() {
         assert_eq!(
@@ -813,8 +679,7 @@ mod tests {
         assert_eq!(cold(0.0, 50.0, 40.0, 80.0), HeaderFit::default());
     }
 
-    /// The whole point of measuring instead of thresholding: at one fixed
-    /// tile width a short project name survives where a long one cannot.
+    /// The whole point of measuring instead of thresholding: at one fixed tile width a short project name survives where a long one cannot.
     #[test]
     fn a_short_project_name_survives_a_budget_a_long_one_does_not() {
         // `grove` vs `GLOBUS-PORTAL` at TEXT_MICRO, roughly, in one tile.
@@ -823,8 +688,7 @@ mod tests {
         assert!(!cold(budget, 95.0, 0.0, 80.0).project);
     }
 
-    /// Asymmetric thresholds: `B` is the re-add threshold, so a segment
-    /// already shown survives below it while a hidden one waits for it.
+    /// Asymmetric thresholds: `B` is the re-add threshold, so a segment already shown survives below it while a hidden one waits for it.
     #[test]
     fn hysteresis_separates_the_drop_and_re_add_thresholds() {
         let seg = SegmentWidths {
@@ -845,8 +709,7 @@ mod tests {
         assert!(!fit_segments(seg.project - 0.1, &seg, shown).project);
     }
 
-    /// A branchless tile must not render an orphan `·` at any budget, and
-    /// `context: None` must not reserve title space.
+    /// A branchless tile must not render an orphan `·` at any budget, and `context: None` must not reserve title space.
     #[test]
     fn a_branchless_tile_renders_no_orphan_dot_at_any_fit_level() {
         let shown = Some(HeaderFit {
@@ -884,9 +747,7 @@ mod tests {
         assert!(!fit_segments(MIN_TITLE_PX - 0.1, &seg, shown).title);
     }
 
-    /// Mirrors `session_header`'s
-    /// `a_dead_session_does_not_animate_its_stale_in_progress_title`: a dead
-    /// tile with a frozen "in progress" title must show the text, not dots.
+    /// Mirrors `session_header`'s `a_dead_session_does_not_animate_its_stale_in_progress_title`: a dead tile with a frozen "in progress" title must show the text, not dots.
     #[test]
     fn a_dead_tile_does_not_animate_its_stale_in_progress_title() {
         let title = "migration in progress";
@@ -898,8 +759,7 @@ mod tests {
 
     // ── carried amendment 2: the grid parity assertion ───────────────────
 
-    /// `grid_tile_cols` (`src/gui/metrics.rs:336-344`), reimplemented **here**
-    /// as the oracle — never exported from production code (amendment 1).
+    /// `grid_tile_cols` (`src/gui/metrics.rs:336-344`), reimplemented **here** as the oracle — never exported from production code (amendment 1).
     fn oracle_tile_cols(win_w: f32, zoom: f32, n: usize) -> u16 {
         let (grid_cols, _) = grid_layout(n);
         let zoom = zoom.max(0.1);
@@ -919,10 +779,7 @@ mod tests {
         (pty_h / CELL_H).max(4.0) as u16
     }
 
-    /// What the **gpui** layout actually hands the element: the same nominal
-    /// window, walked through this module's own constants and
-    /// [`crate::zoom::ZoomState::pty_dims`], which is what every
-    /// `TerminalElement` uses on its post-layout bounds.
+    /// What the **gpui** layout actually hands the element: the same nominal window, walked through this module's own constants and [`crate::zoom::ZoomState::pty_dims`], which is what every `TerminalElement` uses on its post-layout bounds.
     fn gpui_tile_dims(
         win_w: f32,
         win_h: f32,
@@ -942,9 +799,7 @@ mod tests {
         z.pty_dims(pty_w * zoom, pty_h * zoom)
     }
 
-    /// Carried amendment 2: a nominal 1280×800 window at zoom 1.0 must land
-    /// within **±1 cell** of the iced oracle for a 2-, 3- and 5-tile grid. A
-    /// larger divergence is a real layout bug, not a tolerance to widen.
+    /// Carried amendment 2: a nominal 1280×800 window at zoom 1.0 must land within **±1 cell** of the iced oracle for a 2-, 3- and 5-tile grid. A larger divergence is a real layout bug, not a tolerance to widen.
     #[test]
     fn grid_tile_dims_match_the_iced_oracle_within_one_cell() {
         for (n, tiles_in_col) in [(2usize, 1usize), (3, 2), (3, 1), (5, 2), (5, 1)] {
@@ -962,9 +817,7 @@ mod tests {
         }
     }
 
-    /// The ragged-grid promise the columns-of-tiles layout exists for: with 3
-    /// sessions the lone right-hand tile gets roughly twice the rows of the
-    /// stacked pair (`metrics.rs:589-604`).
+    /// The ragged-grid promise the columns-of-tiles layout exists for: with 3 sessions the lone right-hand tile gets roughly twice the rows of the stacked pair (`metrics.rs:589-604`).
     #[test]
     fn a_short_column_gets_a_taller_pty() {
         let (full, _) = gpui_tile_dims(1280.0, 800.0, 1.0, 3, 1);

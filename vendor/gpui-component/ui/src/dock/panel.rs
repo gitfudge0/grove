@@ -52,15 +52,10 @@ impl PanelControl {
 /// The Panel trait used to define the panel.
 #[allow(unused_variables)]
 pub trait Panel: EventEmitter<PanelEvent> + Render + Focusable {
-    /// The name of the panel used to serialize, deserialize and identify the panel.
-    ///
-    /// This is used to identify the panel when deserializing the panel.
-    /// Once you have defined a panel name, this must not be changed.
+    /// The name of the panel used to serialize, deserialize and identify the panel. This is used to identify the panel when deserializing the panel. Once you have defined a panel name, this must not be changed.
     fn panel_name(&self) -> &'static str;
 
-    /// The name of the tab of the panel, default is `None`.
-    ///
-    /// Used to display in the already collapsed tab panel.
+    /// The name of the tab of the panel, default is `None`. Used to display in the already collapsed tab panel.
     fn tab_name(&self, cx: &App) -> Option<SharedString> {
         None
     }
@@ -75,9 +70,7 @@ pub trait Panel: EventEmitter<PanelEvent> + Render + Focusable {
         None
     }
 
-    /// The suffix of the panel title, default is `None`.
-    ///
-    /// This is used to add a suffix element to the panel title.
+    /// The suffix of the panel title, default is `None`. This is used to add a suffix element to the panel title.
     fn title_suffix(
         &mut self,
         window: &mut Window,
@@ -86,39 +79,25 @@ pub trait Panel: EventEmitter<PanelEvent> + Render + Focusable {
         None::<gpui::Div>
     }
 
-    /// Whether the panel can be closed, default is `true`.
-    ///
-    /// This method called in Panel render, we should make sure it is fast.
+    /// Whether the panel can be closed, default is `true`. This method called in Panel render, we should make sure it is fast.
     fn closable(&self, cx: &App) -> bool {
         true
     }
 
-    /// Return `PanelControl` if the panel is zoomable, default is `PanelControl::Menu`.
-    ///
-    /// This method called in Panel render, we should make sure it is fast.
+    /// Return `PanelControl` if the panel is zoomable, default is `PanelControl::Menu`. This method called in Panel render, we should make sure it is fast.
     fn zoomable(&self, cx: &App) -> Option<PanelControl> {
         Some(PanelControl::Menu)
     }
 
-    /// Return false to hide panel, true to show panel, default is `true`.
-    ///
-    /// This method called in Panel render, we should make sure it is fast.
+    /// Return false to hide panel, true to show panel, default is `true`. This method called in Panel render, we should make sure it is fast.
     fn visible(&self, cx: &App) -> bool {
         true
     }
 
-    /// Set active state of the panel.
-    ///
-    /// This method will be called when the panel is active or inactive.
-    ///
-    /// The last_active_panel and current_active_panel will be touched when the panel is active.
+    /// Set active state of the panel. This method will be called when the panel is active or inactive. The last_active_panel and current_active_panel will be touched when the panel is active.
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {}
 
-    /// Set zoomed state of the panel.
-    ///
-    /// This method will be called when the panel is zoomed or unzoomed.
-    ///
-    /// Only current Panel will touch this method.
+    /// Set zoomed state of the panel. This method will be called when the panel is zoomed or unzoomed. Only current Panel will touch this method.
     fn set_zoomed(&mut self, zoomed: bool, window: &mut Window, cx: &mut Context<Self>) {}
 
     /// When this Panel is added to a TabPanel, this will be called.
@@ -326,9 +305,7 @@ impl PanelRegistry {
         cx.global_mut::<PanelRegistry>()
     }
 
-    /// Build a panel by name.
-    ///
-    /// If not registered, return InvalidPanel.
+    /// Build a panel by name. If not registered, return InvalidPanel.
     pub fn build_panel(
         panel_name: &str,
         dock_area: WeakEntity<DockArea>,

@@ -44,9 +44,7 @@ impl Clipboard {
         self
     }
 
-    /// Set the value of the clipboard to the result of the given function. Default is None.
-    ///
-    /// When used this, the copy value will use the result of the function.
+    /// Set the value of the clipboard to the result of the given function. Default is None. When used this, the copy value will use the result of the function.
     pub fn value_fn(
         mut self,
         value: impl Fn(&mut Window, &mut App) -> SharedString + 'static,

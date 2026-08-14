@@ -27,8 +27,7 @@ impl Agent {
         }
     }
 
-    /// Name of the inline SVG sprite (see `gui::icons`) representing this
-    /// agent. `Terminal` reuses the generic terminal glyph.
+    /// Name of the inline SVG sprite (see `gui::icons`) representing this agent. `Terminal` reuses the generic terminal glyph.
     pub fn icon_name(self) -> &'static str {
         match self {
             Agent::Claude => "claude",
@@ -46,8 +45,7 @@ impl Agent {
         }
     }
 
-    /// Executable name to look up on `$PATH`. `Terminal` has no static name
-    /// (resolved at runtime via `$SHELL`) so callers must guard against it.
+    /// Executable name to look up on `$PATH`. `Terminal` has no static name (resolved at runtime via `$SHELL`) so callers must guard against it.
     fn binary_name(self) -> &'static str {
         match self {
             Agent::Claude => "claude",
@@ -57,9 +55,7 @@ impl Agent {
         }
     }
 
-    /// Flags accumulate, so enabling both toggles yields both flags; order is
-    /// deterministic (skip-permissions first, then `--chrome`). Only Claude
-    /// supports `--chrome` (the Claude in Chrome integration).
+    /// Flags accumulate, so enabling both toggles yields both flags; order is deterministic (skip-permissions first, then `--chrome`). Only Claude supports `--chrome` (the Claude in Chrome integration).
     pub fn launch_args(self, skip_permissions: bool, chrome: bool) -> Vec<String> {
         let mut args: Vec<String> = Vec::new();
         match self {
@@ -81,15 +77,7 @@ impl Agent {
         args
     }
 
-    /// How to actually invoke this agent's CLI, as a `(program, prefix_args)`
-    /// pair. Callers append their own args after `prefix_args`.
-    ///
-    /// On Unix (and `Terminal` everywhere) this is just `(binary_name, [])` —
-    /// the OS execs it directly. On Windows, npm-installed CLIs like `claude`
-    /// typically install as a `claude.cmd` shim, which `CreateProcess` can't
-    /// execute directly (it isn't a PE binary); when `resolve_on_path` finds a
-    /// `.cmd`/`.bat` match, this wraps it as `cmd.exe /C <resolved-path>`.
-    /// `.exe` matches are run directly, matching Unix behavior.
+    /// How to actually invoke this agent's CLI, as a `(program, prefix_args)` pair. Callers append their own args after `prefix_args`. On Unix (and `Terminal` everywhere) this is just `(binary_name, [])` — the OS execs it directly. On Windows, npm-installed CLIs like `claude` typically install as a `claude.cmd` shim, which `CreateProcess` can't execute directly (it isn't a PE binary); when `resolve_on_path` finds a `.cmd`/`.bat` match, this wraps it as `cmd.exe /C <resolved-path>`. `.exe` matches are run directly, matching Unix behavior.
     pub fn invocation(self) -> (String, Vec<String>) {
         match self {
             Agent::Terminal => (self.program(), vec![]),
@@ -121,26 +109,9 @@ impl Agent {
         }
     }
 
-    /// Returns true if the binary for this agent can be found on `$PATH` and
-    /// has at least one execute bit set. `Terminal` is always available (it
-    /// resolves via `$SHELL`). Returns `false` — never panics — when `$PATH`
-    /// is unset.
-    ///
-    /// The result is cached for the lifetime of the process: `$PATH` and
-    /// what's installed on it don't change while Grove is running, and this
-    /// is called from `view()`'s render path (via the onboarding screen), so
-    /// re-scanning `$PATH` every frame is a syscall storm.
-    ///
-    // ponytail: this means if the user installs a CLI (e.g. `npm i -g
-    // @anthropic-ai/claude-code`) while Grove is open, the onboarding screen
-    // won't notice until restart. If that ever matters, add a manual
-    // re-detect action that clears the cache instead of re-scanning per frame.
-    ///
-    /// # Platform
-    /// Unix checks the execute bit via `std::os::unix::fs::PermissionsExt`.
-    /// Windows uses `resolve_on_path`, which applies a `%PATHEXT%`-aware
-    /// search since Windows has no execute-bit concept and CLIs there are
-    /// often extensionless-looking `.cmd` shims.
+    /// Returns true if the binary for this agent can be found on `$PATH` and has at least one execute bit set. `Terminal` is always available (it resolves via `$SHELL`). Returns `false` — never panics — when `$PATH` is unset. The result is cached for the lifetime of the process: `$PATH` and what's installed on it don't change while Grove is running, and this is called from `view()`'s render path (via the onboarding screen), so re-scanning `$PATH` every frame is a syscall storm.
+    // ponytail: this means if the user installs a CLI (e.g. `npm i -g @anthropic-ai/claude-code`) while Grove is open, the onboarding screen won't notice until restart. If that ever matters, add a manual re-detect action that clears the cache instead of re-scanning per frame.
+    /// # Platform Unix checks the execute bit via `std::os::unix::fs::PermissionsExt`. Windows uses `resolve_on_path`, which applies a `%PATHEXT%`-aware search since Windows has no execute-bit concept and CLIs there are often extensionless-looking `.cmd` shims.
     pub fn available(self) -> bool {
         match self {
             Agent::Terminal => true,
@@ -159,8 +130,7 @@ impl Agent {
         }
     }
 
-    /// Uncached `$PATH` scan for one agent's binary. Only called once per
-    /// variant, from inside `available()`'s `OnceLock`.
+    /// Uncached `$PATH` scan for one agent's binary. Only called once per variant, from inside `available()`'s `OnceLock`.
     fn detect(self) -> bool {
         let name = self.binary_name();
         #[cfg(windows)]
@@ -175,12 +145,7 @@ impl Agent {
         }
     }
 
-    /// Runs `<program> --version` and returns the trimmed first non-empty line
-    /// of stdout — robust across the three CLIs' differing formats. Returns
-    /// `None` if the agent has no static binary (`Terminal`), the command fails
-    /// to spawn or run, or it yields no usable output; callers then fall back to
-    /// displaying "installed". This shells out, so callers should run it off the
-    /// UI thread.
+    /// Runs `<program> --version` and returns the trimmed first non-empty line of stdout — robust across the three CLIs' differing formats. Returns `None` if the agent has no static binary (`Terminal`), the command fails to spawn or run, or it yields no usable output; callers then fall back to displaying "installed". This shells out, so callers should run it off the UI thread.
     pub fn version(self) -> Option<String> {
         if matches!(self, Agent::Terminal) {
             return None;
@@ -206,8 +171,7 @@ impl Agent {
     }
 }
 
-/// Returns true if `path` is a regular file with at least one execute bit set.
-/// Falls back to `is_file()` on non-Unix targets.
+/// Returns true if `path` is a regular file with at least one execute bit set. Falls back to `is_file()` on non-Unix targets.
 #[cfg(not(windows))]
 fn is_executable(path: std::path::PathBuf) -> bool {
     #[cfg(unix)]
@@ -221,10 +185,7 @@ fn is_executable(path: std::path::PathBuf) -> bool {
     }
 }
 
-/// Windows-only: search every `$PATH` directory for `<name><ext>` across each
-/// extension in `%PATHEXT%` (falling back to the standard `.COM;.EXE;.BAT;.CMD`
-/// list if `PATHEXT` is unset), in `PATHEXT` order. Returns the first match,
-/// mirroring how `cmd.exe`/Explorer resolve a bare command name.
+/// Windows-only: search every `$PATH` directory for `<name><ext>` across each extension in `%PATHEXT%` (falling back to the standard `.COM;.EXE;.BAT;.CMD` list if `PATHEXT` is unset), in `PATHEXT` order. Returns the first match, mirroring how `cmd.exe`/Explorer resolve a bare command name.
 #[cfg(windows)]
 fn resolve_on_path(name: &str) -> Option<std::path::PathBuf> {
     let paths = std::env::var_os("PATH")?;
@@ -256,8 +217,7 @@ mod tests {
         assert_eq!(Agent::Claude.launch_args(false, true), vec!["--chrome"]);
     }
 
-    /// U2: both toggles accumulate — neither flag swallows the other — and
-    /// the order is skip-permissions first, then `--chrome`.
+    /// U2: both toggles accumulate — neither flag swallows the other — and the order is skip-permissions first, then `--chrome`.
     #[test]
     fn claude_both_flags_accumulate_in_order() {
         let args = Agent::Claude.launch_args(true, true);
@@ -340,9 +300,7 @@ mod tests {
 
     #[test]
     fn invocation_is_plain_binary_name_on_non_windows_or_when_unresolved() {
-        // On non-Windows this is the only branch. On Windows, when nothing on
-        // PATH matches, invocation() falls back to the bare name so the
-        // existing "not found" UX (Agent::available() == false) is preserved.
+        // On non-Windows this is the only branch. On Windows, when nothing on PATH matches, invocation() falls back to the bare name so the existing "not found" UX (Agent::available() == false) is preserved.
         let (program, prefix_args) = Agent::Claude.invocation();
         assert!(prefix_args.is_empty() || cfg!(windows));
         #[cfg(not(windows))]

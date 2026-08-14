@@ -3,12 +3,9 @@ use std::time::Duration;
 
 use gpui::{AsyncApp, Bounds, Context, Pixels, Point, Task, WeakEntity, px};
 
-/// Manages timer-based auto-scrolling during drag-selection.
-///
-/// Delta convention: positive = towards bottom, negative = towards top.
+/// Manages timer-based auto-scrolling during drag-selection. Delta convention: positive = towards bottom, negative = towards top.
 pub struct AutoScroll {
-    /// Shared between the main thread and the background task.
-    /// Writing `None` is the stop signal; the task exits on its next tick.
+    /// Shared between the main thread and the background task. Writing `None` is the stop signal; the task exits on its next tick.
     shared: Arc<Mutex<Option<Pixels>>>,
     task: Option<Task<()>>,
     /// Last drag position, used to re-extend selection after each scroll step.
@@ -31,17 +28,13 @@ impl AutoScroll {
         *self.shared.lock().unwrap()
     }
 
-    /// Compute the scroll delta for a mouse Y position within the given viewport bounds.
-    /// Returns positive when near the bottom edge, negative near the top, `None` in the dead zone.
+    /// Compute the scroll delta for a mouse Y position within the given viewport bounds. Returns positive when near the bottom edge, negative near the top, `None` in the dead zone.
     pub fn compute_delta(y: Pixels, bounds: Bounds<Pixels>) -> Option<Pixels> {
         const MIN_SPEED: f32 = 12.0;
         const MAX_SPEED: f32 = 64.0;
-        // Trigger starts this far inside the bounds so scrolling works even in
-        // full-screen where the mouse can't travel far outside the element.
+        // Trigger starts this far inside the bounds so scrolling works even in full-screen where the mouse can't travel far outside the element.
         const INNER_ZONE: f32 = 16.0;
-        // Distance from the bounds edge to reach MAX_SPEED.
-        // Total ramp = INNER_ZONE + OUTER_RAMP, giving a single smooth curve
-        // with no flat sections or discontinuities.
+        // Distance from the bounds edge to reach MAX_SPEED. Total ramp = INNER_ZONE + OUTER_RAMP, giving a single smooth curve with no flat sections or discontinuities.
         const OUTER_RAMP: f32 = 80.0;
 
         let bottom_trigger = bounds.bottom() - px(INNER_ZONE);
@@ -58,10 +51,7 @@ impl AutoScroll {
         }
     }
 
-    /// Update the scroll delta and (re)start the background task if needed.
-    ///
-    /// `tick` is called each frame (~60 fps) with the current delta.
-    /// It should perform the actual scroll action for this entity.
+    /// Update the scroll delta and (re)start the background task if needed. `tick` is called each frame (~60 fps) with the current delta. It should perform the actual scroll action for this entity.
     pub fn set<T, F>(&mut self, delta: Option<Pixels>, cx: &mut Context<T>, tick: F)
     where
         T: 'static,

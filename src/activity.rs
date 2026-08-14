@@ -1,25 +1,6 @@
-//! Per-session activity state as the sidebar sees it, plus the per-agent
-//! screen classifiers.
-//!
-//! [`ActivityState`] (`src/gui/activity.rs:30-36`) and [`most_urgent`] /
-//! `urgency_rank` (`:201-222`) were ported in Plan 05. Plan 06 completes the
-//! port: the four timing constants, [`Signals`], [`Tracker`], [`classify`] and
-//! the three private pattern predicates all come across verbatim from
-//! `src/gui/activity.rs:11-197`, with their tests.
-//!
-//! All agent UI pattern strings live here so agent-UI drift is a one-file fix.
-//! Classification is best-effort and cosmetic: states drive only sidebar
-//! visuals and the macOS dock badge, never behavior.
-//!
-//! The live [`crate::entities::activity_store::ActivityStore`] — the 480ms
-//! task, the hook state file, the native poller and the amber pulse — lives
-//! next door in `entities/activity_store.rs`; this module stays pure and
-//! gpui-free so every rule above is testable without an `App`.
+//! Per-session activity state as the sidebar sees it, plus the per-agent screen classifiers. [`ActivityState`] (`src/gui/activity.rs:30-36`) and [`most_urgent`] / `urgency_rank` (`:201-222`) were ported in Plan 05. Plan 06 completes the port: the four timing constants, [`Signals`], [`Tracker`], [`classify`] and the three private pattern predicates all come across verbatim from `src/gui/activity.rs:11-197`, with their tests. All agent UI pattern strings live here so agent-UI drift is a one-file fix. Classification is best-effort and cosmetic: states drive only sidebar visuals and the macOS dock badge, never behavior. The live [`crate::entities::activity_store::ActivityStore`] — the 480ms task, the hook state file, the native poller and the amber pulse — lives next door in `entities/activity_store.rs`; this module stays pure and gpui-free so every rule above is testable without an `App`.
 
-// The four timing constants are ported verbatim from `src/gui/activity.rs`,
-// units included — they are read against each other (`INPUT_QUIET` tracks
-// `WORKING_RECENT` on purpose), so rewriting one as `from_mins` to satisfy a
-// readability lint would obscure exactly the relationship that matters.
+// The four timing constants are ported verbatim from `src/gui/activity.rs`, units included — they are read against each other (`INPUT_QUIET` tracks `WORKING_RECENT` on purpose), so rewriting one as `from_mins` to satisfy a readability lint would obscure exactly the relationship that matters.
 #![allow(clippy::duration_suboptimal_units)]
 
 use std::time::Duration;
@@ -28,21 +9,11 @@ use grove_core::agent::Agent;
 
 /// Output younger than this counts as "actively producing".
 pub const WORKING_RECENT: Duration = Duration::from_secs(2);
-/// A working title older than this (by output age) is distrusted: a real
-/// working turn always produces output well within this window, so a quiet
-/// PTY plus an animated title means the agent is hung with a stale title.
+/// A working title older than this (by output age) is distrusted: a real working turn always produces output well within this window, so a quiet PTY plus an animated title means the agent is hung with a stale title.
 pub const TITLE_STALE: Duration = Duration::from_secs(60);
-/// A scroll within this window discounts output recency: scrolling redraws
-/// the PTY, which otherwise reads as fresh agent output.
+/// A scroll within this window discounts output recency: scrolling redraws the PTY, which otherwise reads as fresh agent output.
 pub const SCROLL_QUIET: Duration = Duration::from_secs(3);
-/// A keystroke or resize within this window discounts output recency: the
-/// inner app's echo / SIGWINCH repaint flows back through the PTY reader and
-/// otherwise reads as fresh agent output. Tracks `WORKING_RECENT` intentionally
-/// (the discount should exactly cancel the recency window it guards). Genuine
-/// work is still caught by the title marker and `matches_working`, so this only
-/// suppresses self-induced redraws — note that for agents without a working
-/// marker (plain Terminal, and Codex/OpenCode until their on-screen marker
-/// first paints) a freshly typed command shows non-working for up to this long.
+/// A keystroke or resize within this window discounts output recency: the inner app's echo / SIGWINCH repaint flows back through the PTY reader and otherwise reads as fresh agent output. Tracks `WORKING_RECENT` intentionally (the discount should exactly cancel the recency window it guards). Genuine work is still caught by the title marker and `matches_working`, so this only suppresses self-induced redraws — note that for agents without a working marker (plain Terminal, and Codex/OpenCode until their on-screen marker first paints) a freshly typed command shows non-working for up to this long.
 pub const INPUT_QUIET: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,8 +25,7 @@ pub enum ActivityState {
     Exited,
 }
 
-/// Roll-up urgency for collapsed parent rows: waiting > working > done;
-/// idle/exited contribute nothing (`src/gui/activity.rs:201-215`).
+/// Roll-up urgency for collapsed parent rows: waiting > working > done; idle/exited contribute nothing (`src/gui/activity.rs:201-215`).
 pub fn most_urgent(states: impl Iterator<Item = ActivityState>) -> Option<ActivityState> {
     let mut best: Option<ActivityState> = None;
     for s in states {
@@ -91,18 +61,11 @@ pub struct Signals {
     pub was_working: bool,
     /// This session is the focused/visible one right now.
     pub focused: bool,
-    /// The user scrolled within the last `SCROLL_QUIET` window. The redraw
-    /// that scrolling causes must not count as the agent producing output;
-    /// a genuinely working agent is still caught by its working marker.
+    /// The user scrolled within the last `SCROLL_QUIET` window. The redraw that scrolling causes must not count as the agent producing output; a genuinely working agent is still caught by its working marker.
     pub scrolling: bool,
-    /// The user typed into or resized this session within the last
-    /// `INPUT_QUIET` window. The keystroke echo / SIGWINCH repaint this causes
-    /// must not count as the agent producing output; a genuinely working agent
-    /// is still caught by its working marker.
+    /// The user typed into or resized this session within the last `INPUT_QUIET` window. The keystroke echo / SIGWINCH repaint this causes must not count as the agent producing output; a genuinely working agent is still caught by its working marker.
     pub interacting: bool,
-    /// The OSC 0/1/2 window title the inner app last emitted, if any.
-    /// Structured (the agent sets it deliberately), so it outranks the
-    /// screen-pattern scrape when it yields a definite answer.
+    /// The OSC 0/1/2 window title the inner app last emitted, if any. Structured (the agent sets it deliberately), so it outranks the screen-pattern scrape when it yields a definite answer.
     pub title: Option<String>,
 }
 
@@ -129,8 +92,7 @@ impl Default for Tracker {
 }
 
 impl Tracker {
-    /// Acknowledge pending attention: called when the user focuses the
-    /// session. Bell clears, working-history resets, urgent states downgrade.
+    /// Acknowledge pending attention: called when the user focuses the session. Bell clears, working-history resets, urgent states downgrade.
     pub fn acknowledge(&mut self) {
         self.bell_pending = false;
         self.was_working = false;
@@ -143,22 +105,13 @@ impl Tracker {
     }
 }
 
-/// Classify one session from its signals + the bottom rows of its screen.
-/// `tail` is the last ~15 rows of the parsed grid, newline-joined.
+/// Classify one session from its signals + the bottom rows of its screen. `tail` is the last ~15 rows of the parsed grid, newline-joined.
 #[must_use]
 pub fn classify(agent: Agent, tail: &str, sig: &Signals) -> ActivityState {
     if !sig.alive {
         return ActivityState::Exited;
     }
-    // Waiting evidence: a visible permission prompt or a pending bell. The
-    // title is a coarse whole-turn status signal, so this more specific
-    // evidence must outrank it — letting a working title mask
-    // WaitingForInput (the highest-urgency state, the one that drives the
-    // dock badge) would be the worst possible failure. The title may only
-    // assert Working when there is no waiting evidence. The staleness belt:
-    // a working title on a long-quiet PTY means a hard-hung agent whose
-    // animated title froze, not real work, so the title alone never asserts
-    // Working past TITLE_STALE.
+    // Waiting evidence: a visible permission prompt or a pending bell. The title is a coarse whole-turn status signal, so this more specific evidence must outrank it — letting a working title mask WaitingForInput (the highest-urgency state, the one that drives the dock badge) would be the worst possible failure. The title may only assert Working when there is no waiting evidence. The staleness belt: a working title on a long-quiet PTY means a hard-hung agent whose animated title froze, not real work, so the title alone never asserts Working past TITLE_STALE.
     let waiting = !sig.focused && (sig.bell_pending || matches_waiting(agent, tail));
     let title = sig.title.as_deref();
     if !waiting && sig.output_age < TITLE_STALE && title.is_some_and(|t| title_working(agent, t)) {
@@ -172,26 +125,14 @@ pub fn classify(agent: Agent, tail: &str, sig: &Signals) -> ActivityState {
     if waiting {
         return ActivityState::WaitingForInput;
     }
-    // Plain terminals never reach Done: their "work" signal is just typing
-    // echo, and a green ✓ on a shell where nothing ran reads as noise.
+    // Plain terminals never reach Done: their "work" signal is just typing echo, and a green ✓ on a shell where nothing ran reads as noise.
     if sig.was_working && agent != Agent::Terminal {
         return ActivityState::Done;
     }
     ActivityState::Idle
 }
 
-/// Title shows the agent's "actively working" marker.
-///
-/// Claude Code titles its window `"{prefix} {task}"`. While a turn runs the
-/// prefix animates through `["\u{2802}", "\u{2810}"]` (braille ⠂/⠐, 960ms
-/// cycle); at rest it is the static `✳` (verified against the shipped
-/// 2.1.173 binary: `Vg4=["⠂","⠐"]`, `hg4="✳"`). Only the current frames are
-/// encoded; an unrecognized prefix falls through harmlessly to the screen
-/// patterns. `✳` is deliberately NOT a signal either way: it is both the
-/// at-rest prefix and one historical spinner frame, so it proves nothing.
-///
-/// Codex does not emit OSC titles (openai/codex#21958) and we could not
-/// substantiate any for OpenCode — both stay on the screen-pattern fallback.
+/// Title shows the agent's "actively working" marker. Claude Code titles its window `"{prefix} {task}"`. While a turn runs the prefix animates through `["\u{2802}", "\u{2810}"]` (braille ⠂/⠐, 960ms cycle); at rest it is the static `✳` (verified against the shipped 2.1.173 binary: `Vg4=["⠂","⠐"]`, `hg4="✳"`). Only the current frames are encoded; an unrecognized prefix falls through harmlessly to the screen patterns. `✳` is deliberately NOT a signal either way: it is both the at-rest prefix and one historical spinner frame, so it proves nothing. Codex does not emit OSC titles (openai/codex#21958) and we could not substantiate any for OpenCode — both stay on the screen-pattern fallback.
 fn title_working(agent: Agent, title: &str) -> bool {
     let prefixes: &[&str] = match agent {
         Agent::Claude => &[
@@ -203,8 +144,7 @@ fn title_working(agent: Agent, title: &str) -> bool {
     prefixes.iter().any(|p| title.starts_with(p))
 }
 
-/// Screen shows the agent's active-work marker. Generic agents (plain
-/// terminals) have none — recency alone decides for them.
+/// Screen shows the agent's active-work marker. Generic agents (plain terminals) have none — recency alone decides for them.
 fn matches_working(agent: Agent, tail: &str) -> bool {
     let patterns: &[&str] = match agent {
         Agent::Claude => &["esc to interrupt"],
@@ -215,12 +155,7 @@ fn matches_working(agent: Agent, tail: &str) -> bool {
     patterns.iter().any(|p| tail.contains(p))
 }
 
-/// Screen bottom shows a pending question / permission prompt.
-///
-/// Question phrases like "Do you want" routinely appear in agent *response
-/// text* too, so a bare phrase match would false-positive (spurious dock
-/// bounces). Each phrase must co-occur with menu structure — a selection
-/// caret or numbered options — which response prose doesn't have.
+/// Screen bottom shows a pending question / permission prompt. Question phrases like "Do you want" routinely appear in agent *response text* too, so a bare phrase match would false-positive (spurious dock bounces). Each phrase must co-occur with menu structure — a selection caret or numbered options — which response prose doesn't have.
 fn matches_waiting(agent: Agent, tail: &str) -> bool {
     match agent {
         Agent::Claude => {
@@ -299,8 +234,7 @@ mod tests {
 
     // ── scroll suppression ──────────────────────────────────────────────────
 
-    /// Scrolling a Done session redraws the PTY (fresh output), but must not
-    /// flip it to Working — the redraw is user-caused, not agent activity.
+    /// Scrolling a Done session redraws the PTY (fresh output), but must not flip it to Working — the redraw is user-caused, not agent activity.
     #[test]
     fn scroll_redraw_does_not_resurrect_working() {
         let mut signals = sig(true, 0, false, true, true);
@@ -308,8 +242,7 @@ mod tests {
         assert_eq!(classify(Agent::Claude, "❯ ", &signals), ActivityState::Done);
     }
 
-    /// While scrolling, a genuinely working agent is still caught by its
-    /// on-screen working marker.
+    /// While scrolling, a genuinely working agent is still caught by its on-screen working marker.
     #[test]
     fn scroll_keeps_working_when_marker_visible() {
         let mut signals = sig(true, 0, false, true, true);
@@ -320,9 +253,7 @@ mod tests {
         );
     }
 
-    /// Typing into or resizing a session redraws the PTY (keystroke echo /
-    /// SIGWINCH repaint), but that self-induced output must not read as the
-    /// agent working.
+    /// Typing into or resizing a session redraws the PTY (keystroke echo / SIGWINCH repaint), but that self-induced output must not read as the agent working.
     #[test]
     fn interaction_redraw_is_not_working() {
         let mut signals = sig(true, 0, false, false, true);
@@ -341,8 +272,7 @@ mod tests {
         assert_eq!(classify(Agent::Claude, "❯ ", &signals), ActivityState::Done);
     }
 
-    /// While interacting, a genuinely working Claude is still caught by its
-    /// animated title marker.
+    /// While interacting, a genuinely working Claude is still caught by its animated title marker.
     #[test]
     fn interaction_keeps_working_when_title_marker_present() {
         let mut signals = sig(true, 0, false, false, true);
@@ -354,8 +284,7 @@ mod tests {
         );
     }
 
-    /// While interacting, a genuinely working agent is still caught by its
-    /// on-screen working marker (Codex/OpenCode have no title signal).
+    /// While interacting, a genuinely working agent is still caught by its on-screen working marker (Codex/OpenCode have no title signal).
     #[test]
     fn interaction_keeps_working_when_marker_visible() {
         let mut signals = sig(true, 0, false, false, true);
@@ -366,8 +295,7 @@ mod tests {
         );
     }
 
-    /// Interaction must never mask the highest-urgency waiting state: a
-    /// permission prompt that appears as the user types still wins.
+    /// Interaction must never mask the highest-urgency waiting state: a permission prompt that appears as the user types still wins.
     #[test]
     fn interaction_does_not_mask_waiting() {
         let mut signals = sig(true, 0, false, false, false);
@@ -485,8 +413,7 @@ mod tests {
         );
     }
 
-    /// Question phrases inside agent response *prose* (no menu structure)
-    /// must not flag waiting — that caused spurious dock bounces.
+    /// Question phrases inside agent response *prose* (no menu structure) must not flag waiting — that caused spurious dock bounces.
     #[test]
     fn claude_prose_question_is_not_waiting() {
         let tail = "Do you want me to also update the docs? I can do that\n\
@@ -508,8 +435,7 @@ mod tests {
 
     // ── structured title signal ─────────────────────────────────────────────
 
-    /// Claude's animated braille title prefix means a turn is running, even
-    /// when output is quiet and no screen marker is visible.
+    /// Claude's animated braille title prefix means a turn is running, even when output is quiet and no screen marker is visible.
     #[test]
     fn claude_braille_title_is_working() {
         for t in ["\u{2802} Fix the login bug", "\u{2810} Fix the login bug"] {
@@ -518,10 +444,7 @@ mod tests {
         }
     }
 
-    /// A visible permission menu is specific evidence the agent is blocked
-    /// on the user; the title is only a coarse turn-status signal. Waiting
-    /// must win — masking WaitingForInput (the state that drives the dock
-    /// badge) behind a working title would be the worst possible failure.
+    /// A visible permission menu is specific evidence the agent is blocked on the user; the title is only a coarse turn-status signal. Waiting must win — masking WaitingForInput (the state that drives the dock badge) behind a working title would be the worst possible failure.
     #[test]
     fn screen_waiting_beats_working_title() {
         let tail = "│ Do you want to make this edit?  │\n│ ❯ 1. Yes  │";
@@ -532,9 +455,7 @@ mod tests {
         );
     }
 
-    /// A working title on a long-quiet PTY is a hard-hung agent with a
-    /// frozen animated title, not real work: past TITLE_STALE the title
-    /// alone must not assert Working (with working history it reads Done).
+    /// A working title on a long-quiet PTY is a hard-hung agent with a frozen animated title, not real work: past TITLE_STALE the title alone must not assert Working (with working history it reads Done).
     #[test]
     fn stale_working_title_does_not_assert_working() {
         let s = with_title(
@@ -544,8 +465,7 @@ mod tests {
         assert_eq!(classify(Agent::Claude, "", &s), ActivityState::Done);
     }
 
-    /// The static ✳ prefix is the at-rest glyph (and a legacy spinner
-    /// frame): ambiguous, so it must NOT count as working — fall through.
+    /// The static ✳ prefix is the at-rest glyph (and a legacy spinner frame): ambiguous, so it must NOT count as working — fall through.
     #[test]
     fn claude_static_asterisk_title_is_no_answer() {
         let s = with_title(sig(true, 60, false, false, false), "✳ Fix the login bug");
@@ -570,8 +490,7 @@ mod tests {
         );
     }
 
-    /// The braille glyphs only mean "working" for Claude; other agents'
-    /// titles are not interpreted.
+    /// The braille glyphs only mean "working" for Claude; other agents' titles are not interpreted.
     #[test]
     fn title_patterns_are_per_agent() {
         let s = with_title(sig(true, 60, false, false, false), "\u{2802} doing stuff");

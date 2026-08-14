@@ -1,35 +1,21 @@
-//! The `blink_tick` replacement: one monotonic counter, one adaptive timer.
-//!
-//! Every blink phase in the app derives from this **single** counter, so the
-//! phase relationships between the cursor, the dots and the spinner match the
-//! iced app exactly, and an idle window costs one wakeup per second.
-//!
-//! Not everything animated is clock-derived: the attention amber pulse (1s
-//! auto-reverse EaseInOut) and the onboarding entrance map to gpui's
-//! `with_animation` instead (spec §4). Do **not** wire them to this tick.
+//! The `blink_tick` replacement: one monotonic counter, one adaptive timer. Every blink phase in the app derives from this **single** counter, so the phase relationships between the cursor, the dots and the spinner match the iced app exactly, and an idle window costs one wakeup per second. Not everything animated is clock-derived: the attention amber pulse (1s auto-reverse EaseInOut) and the onboarding entrance map to gpui's `with_animation` instead (spec §4). Do **not** wire them to this tick.
 
 use std::time::Duration;
 
 use gpui::{Context, Task};
 
-/// Fast lane: the 60ms cadence the iced app uses whenever anything is moving
-/// (`src/gui/update/mod.rs:368-390`).
+/// Fast lane: the 60ms cadence the iced app uses whenever anything is moving (`src/gui/update/mod.rs:368-390`).
 pub const FAST: Duration = Duration::from_millis(60);
-/// Slow lane: 1s. An idle window still ticks so time-based labels stay fresh,
-/// but at 1/16th the wakeups.
+/// Slow lane: 1s. An idle window still ticks so time-based labels stay fresh, but at 1/16th the wakeups.
 pub const SLOW: Duration = Duration::from_secs(1);
 
-/// The gating predicate, verbatim from `src/gui/update/mod.rs:420-435`:
-/// 60ms when `busy || (has_ptys && (focused || animating || dirty))`,
-/// else 1s. Getting this wrong is an idle-power regression — the spikes
-/// measured release idle at 1.23% against Grove's ~3.7%.
+/// The gating predicate, verbatim from `src/gui/update/mod.rs:420-435`: 60ms when `busy || (has_ptys && (focused || animating || dirty))`, else 1s. Getting this wrong is an idle-power regression — the spikes measured release idle at 1.23% against Grove's ~3.7%.
 pub fn is_fast(busy: bool, has_ptys: bool, focused: bool, animating: bool, dirty: bool) -> bool {
     busy || (has_ptys && (focused || animating || dirty))
 }
 
 /// The timer period implied by the gating inputs.
-// Exercised only by this module's `#[cfg(test)]` cadence table; the live clock
-// calls `is_fast` directly and stores the period it derived.
+// Exercised only by this module's `#[cfg(test)]` cadence table; the live clock calls `is_fast` directly and stores the period it derived.
 #[allow(dead_code)]
 pub fn cadence(
     busy: bool,
@@ -47,10 +33,7 @@ pub fn cadence(
 
 // ── derived phases (pure functions of the counter) ───────────────────────
 
-/// Cursor blink. At 60ms/beat this is a 960ms period, 480ms on / 480ms off.
-/// The *formula* is the parity contract with the iced app
-/// (`src/gui/view/terminal.rs:665`) — never re-derive it from the 533ms
-/// figure quoted in `src/gui/state.rs:296`.
+/// Cursor blink. At 60ms/beat this is a 960ms period, 480ms on / 480ms off. The *formula* is the parity contract with the iced app (`src/gui/view/terminal.rs:665`) — never re-derive it from the 533ms figure quoted in `src/gui/state.rs:296`.
 pub fn cursor_visible(tick: u64) -> bool {
     tick % 16 < 8
 }
@@ -68,8 +51,7 @@ pub fn toast_pulse(tick: u64) -> u64 {
 /// Number of pre-rotated spinner frames (`src/gui/icons.rs:48`).
 pub const SPINNER_FRAMES: u64 = 12;
 
-/// Working/loading spinner: one of `SPINNER_FRAMES` fixed steps every 3 ticks
-/// (`src/gui/icons.rs:70`).
+/// Working/loading spinner: one of `SPINNER_FRAMES` fixed steps every 3 ticks (`src/gui/icons.rs:70`).
 pub fn spinner_frame(tick: u64) -> u64 {
     (tick / 3) % SPINNER_FRAMES
 }
@@ -97,9 +79,7 @@ impl AnimationClock {
         self.tick
     }
 
-    /// Recomputes the cadence from the gating inputs; restarts the timer only
-    /// when the cadence actually changes (restarting every frame would defeat
-    /// the whole point of the slow lane).
+    /// Recomputes the cadence from the gating inputs; restarts the timer only when the cadence actually changes (restarting every frame would defeat the whole point of the slow lane).
     pub fn set_busy_inputs(
         &mut self,
         busy: bool,
@@ -121,8 +101,7 @@ impl AnimationClock {
         let period = if fast { FAST } else { SLOW };
         cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| loop {
             cx.background_executor().timer(period).await;
-            // Every observer repaints off `cx.notify()`; nothing polls the
-            // counter. An `Err` here means the entity is gone — stop.
+            // Every observer repaints off `cx.notify()`; nothing polls the counter. An `Err` here means the entity is gone — stop.
             if this
                 .update(cx, |this: &mut Self, cx| {
                     this.tick = this.tick.wrapping_add(1);
@@ -164,9 +143,7 @@ mod tests {
         }
     }
 
-    /// The two phases share one counter, so their relationship repeats on
-    /// `lcm(16, 15) = 240` ticks — the property that would break the instant
-    /// someone gave a phase its own timer.
+    /// The two phases share one counter, so their relationship repeats on `lcm(16, 15) = 240` ticks — the property that would break the instant someone gave a phase its own timer.
     #[test]
     fn cursor_and_dots_keep_their_phase_relationship() {
         for t in 0..240u64 {

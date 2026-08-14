@@ -1,7 +1,4 @@
-//! WASM stub implementation for highlighter module.
-//! Provides empty/no-op implementations since tree-sitter is not available in WASM.
-//!
-//! Note: diagnostics.rs is available in WASM, only syntax highlighting requires stubs.
+//! WASM stub implementation for highlighter module. Provides empty/no-op implementations since tree-sitter is not available in WASM. Note: diagnostics.rs is available in WASM, only syntax highlighting requires stubs.
 
 use gpui::{HighlightStyle, SharedString};
 use std::ops::Range;
@@ -95,8 +92,7 @@ impl LanguageConfig {
     }
 }
 
-// Re-export theme types from registry module (which will be conditionally compiled)
-// For WASM, we create minimal stubs here
+// Re-export theme types from registry module (which will be conditionally compiled) For WASM, we create minimal stubs here
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};

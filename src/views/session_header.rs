@@ -1,14 +1,4 @@
-//! The `SESSBAR_H` session bar above the terminal body: label, branch, the OSC
-//! context title, and the 3-dot in-progress animation.
-//!
-//! Port of `src/gui/view/terminal.rs:487-560` (+ `:480-485` for the hairline).
-//!
-//! **Built here, not in Plan 07** (recorded ambiguity 1): Appendix A's
-//! *Attention/activity* row "3-dot `(tick/5)%3`" is an exit-gate row for this
-//! phase, and the only place that animation exists is this bar's in-progress
-//! context; the bar also carries this phase's OSC deliverable. It is written
-//! **parameterized by session**, not by "the active session", so Plan 07 can
-//! reuse the same renderer for grid tile headers.
+//! The `SESSBAR_H` session bar above the terminal body: label, branch, the OSC context title, and the 3-dot in-progress animation. Port of `src/gui/view/terminal.rs:487-560` (+ `:480-485` for the hairline). **Built here, not in Plan 07** (recorded ambiguity 1): Appendix A's *Attention/activity* row "3-dot `(tick/5)%3`" is an exit-gate row for this phase, and the only place that animation exists is this bar's in-progress context; the bar also carries this phase's OSC deliverable. It is written **parameterized by session**, not by "the active session", so Plan 07 can reuse the same renderer for grid tile headers.
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -20,8 +10,7 @@ use crate::theme as c;
 /// Session bar height (`src/gui/metrics.rs:17`).
 pub const SESSBAR_H: f32 = 36.0;
 
-/// What the session bar's right-hand tool cluster asks the workspace to do
-/// (Plan 07 Task 5 Step 4, recorded ambiguity 2 — `terminal.rs:592-620`).
+/// What the session bar's right-hand tool cluster asks the workspace to do (Plan 07 Task 5 Step 4, recorded ambiguity 2 — `terminal.rs:592-620`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolAction {
     /// Plan 08 stub, shown only when the project has a run script configured.
@@ -31,8 +20,7 @@ pub enum ToolAction {
     /// Two-step: the first press arms, the second kills.
     RequestKill,
     Kill,
-    /// The `+N −M` diff-stat chip: open the diff viewer for the active
-    /// session's worktree.
+    /// The `+N −M` diff-stat chip: open the diff viewer for the active session's worktree.
     OpenDiff,
 }
 
@@ -41,8 +29,7 @@ pub type ToolDispatch = std::rc::Rc<dyn Fn(ToolAction, &mut gpui::Window, &mut g
 /// The right-hand tool cluster's inputs, resolved by the caller.
 #[derive(Clone)]
 pub struct ToolCluster {
-    /// `terminal.rs:560-590` — the button exists only for a project with a
-    /// non-blank run script.
+    /// `terminal.rs:560-590` — the button exists only for a project with a non-blank run script.
     pub has_run_script: bool,
     /// Drives the `term` button's *toggle* styling.
     pub term_panel_open: bool,
@@ -53,9 +40,7 @@ pub struct ToolCluster {
     pub dispatch: ToolDispatch,
 }
 
-/// A labelled tool button (`src/gui/widgets/buttons.rs:340-410`'s
-/// `tool_btn`/`tool_btn_toggle`). `active` renders the cyan "on" state the
-/// `term` toggle uses; `danger` turns the hover red.
+/// A labelled tool button (`src/gui/widgets/buttons.rs:340-410`'s `tool_btn`/`tool_btn_toggle`). `active` renders the cyan "on" state the `term` toggle uses; `danger` turns the hover red.
 pub fn tool_btn(
     id: &'static str,
     icon_name: &'static str,
@@ -144,14 +129,12 @@ fn tools(cluster: &ToolCluster) -> AnyElement {
     .into_any_element()
 }
 
-/// One session as the header draws it. Everything is resolved by the caller,
-/// so the renderer touches no entity and Plan 07 can build one per tile.
+/// One session as the header draws it. Everything is resolved by the caller, so the renderer touches no entity and Plan 07 can build one per tile.
 #[derive(Clone, Debug, Default)]
 pub struct SessionHeaderData {
     /// Session/project label — the strongest element (13px, weight 600).
     pub label: String,
-    /// Empty for branchless sessions (home terminals), which skip the segment
-    /// entirely rather than show two dots with nothing between.
+    /// Empty for branchless sessions (home terminals), which skip the segment entirely rather than show two dots with nothing between.
     pub branch: String,
     /// The OSC context title, already sanitized (`common.rs:179-190`).
     pub context: Option<String>,
@@ -159,9 +142,7 @@ pub struct SessionHeaderData {
     pub icon_name: &'static str,
     /// Whether the session's process is still alive.
     pub running: bool,
-    /// The worktree's uncommitted diff against `HEAD`: `(added, removed)`
-    /// lines. `None` before the first poll lands (or for a branchless
-    /// session with no worktree to poll) — see [`rows::diff_chips`].
+    /// The worktree's uncommitted diff against `HEAD`: `(added, removed)` lines. `None` before the first poll lands (or for a branchless session with no worktree to poll) — see [`rows::diff_chips`].
     pub diff: Option<(u32, u32)>,
 }
 
@@ -172,8 +153,7 @@ pub fn is_in_progress_title(title: &str) -> bool {
     lower.contains("in progress") || lower.contains("in-progress") || lower.contains("in_progress")
 }
 
-/// Shorten `s` to at most `max` chars by collapsing the middle with `…`
-/// (`src/gui/widgets/primitives.rs:12-26`).
+/// Shorten `s` to at most `max` chars by collapsing the middle with `…` (`src/gui/widgets/primitives.rs:12-26`).
 #[must_use]
 pub fn truncate_middle(s: &str, max: usize) -> String {
     let len = s.chars().count();
@@ -188,16 +168,13 @@ pub fn truncate_middle(s: &str, max: usize) -> String {
     format!("{prefix}…{suffix}")
 }
 
-/// Which of the three dots is lit (`terminal.rs:540` — `(tick/5)%3`). Shares
-/// the single animation counter with the cursor and the spinner, so the phases
-/// stay in the same relationship the iced build has.
+/// Which of the three dots is lit (`terminal.rs:540` — `(tick/5)%3`). Shares the single animation counter with the cursor and the spinner, so the phases stay in the same relationship the iced build has.
 #[must_use]
 pub fn in_progress_phase(tick: u64) -> u64 {
     dots(tick)
 }
 
-/// [`crate::views::components::ui`] plus the bar's optional semibold
-/// weight, which the shared helper has no parameter for.
+/// [`crate::views::components::ui`] plus the bar's optional semibold weight, which the shared helper has no parameter for.
 fn label_text(content: impl Into<gpui::SharedString>, size: f32, color: Hsla, bold: bool) -> Div {
     let d = crate::views::components::ui(content, size, color);
     if bold {
@@ -207,8 +184,7 @@ fn label_text(content: impl Into<gpui::SharedString>, size: f32, color: Hsla, bo
     }
 }
 
-/// The bar plus its `BORDER_SOFT()` hairline beneath. `cluster` is `None` for
-/// bars with no tools (Plan 06's call sites); Plan 07's session bar passes one.
+/// The bar plus its `BORDER_SOFT()` hairline beneath. `cluster` is `None` for bars with no tools (Plan 06's call sites); Plan 07's session bar passes one.
 pub fn session_header(
     data: &SessionHeaderData,
     tick: u64,
@@ -304,12 +280,7 @@ pub fn session_header(
                         let chips = div()
                             .flex_none()
                             .child(crate::views::rows::diff_chips(data.diff));
-                        // The chip pair is one click target with a hover
-                        // state, wired only when a tool cluster exists to
-                        // dispatch through — the tile-header call sites that
-                        // pass `cluster: None` keep the chip inert rather
-                        // than opening a diff viewer with no session to
-                        // resolve a worktree from.
+                        // The chip pair is one click target with a hover state, wired only when a tool cluster exists to dispatch through — the tile-header call sites that pass `cluster: None` keep the chip inert rather than opening a diff viewer with no session to resolve a worktree from.
                         d.child(match cluster {
                             Some(cluster) => {
                                 let dispatch = cluster.dispatch.clone();
@@ -387,9 +358,7 @@ mod tests {
         assert!(data.branch.trim().is_empty());
     }
 
-    /// [`SessionHeaderData::diff`] draws nothing before the first poll lands,
-    /// distinguishing an unknown diff from a *known* clean one — the same
-    /// rule [`rows::diff_chips`] enforces for the card.
+    /// [`SessionHeaderData::diff`] draws nothing before the first poll lands, distinguishing an unknown diff from a *known* clean one — the same rule [`rows::diff_chips`] enforces for the card.
     #[test]
     fn an_unknown_header_diff_is_distinguished_from_a_known_clean_one() {
         assert_eq!(
@@ -411,9 +380,7 @@ mod tests {
         assert_ne!(unknown.diff, clean.diff);
     }
 
-    /// The 3-dot walk replaces the title only while the session is *running*
-    /// (`terminal.rs:494`): a dead agent with a frozen "in progress" title
-    /// shows the text, not a live animation.
+    /// The 3-dot walk replaces the title only while the session is *running* (`terminal.rs:494`): a dead agent with a frozen "in progress" title shows the text, not a live animation.
     #[test]
     fn a_dead_session_does_not_animate_its_stale_in_progress_title() {
         let title = "migration in progress";

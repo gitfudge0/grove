@@ -78,8 +78,7 @@ impl Arc {
         let end_angle = arc.end_angle - HALF_PI;
         let da = end_angle - start_angle;
         let pad_angle = if da >= PI {
-            // Leave some pad angle for full circle.
-            // If not, the path start and end will be the same point.
+            // Leave some pad angle for full circle. If not, the path start and end will be the same point.
             0.0001
         } else {
             arc.pad_angle

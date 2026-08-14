@@ -1,51 +1,23 @@
-//! gpui `Keystroke` → PTY bytes, plus the chord predicates that decide which
-//! keys never reach the PTY at all.
-//!
-//! Port of `src/gui/keys.rs:5-45` (bytes) and
-//! `src/gui/update/pty_input.rs:400-449` (predicates). **The iced table is the
-//! oracle**; where the gpui spike disagreed, parity wins:
-//!
-//! - **Modified arrows.** The spike emitted the CSI-modifier form
-//!   `\x1b[1;{mods}{A-D}`. `keys.rs` does not: arrows are always the plain
-//!   `\x1b[A..D`, ESC-prefixed when Alt is held, with Shift and Ctrl ignored
-//!   entirely. The spike's richer form was **rejected for parity**.
-//! - **App-cursor (DECCKM)** does not affect keypresses at all — `keys.rs` is
-//!   DECCKM-unaware. It only selects the SS3 prefix in [`arrow_moves`], the
-//!   click-to-move-caret synthesis (`session.rs:1046-1060`).
+//! gpui `Keystroke` → PTY bytes, plus the chord predicates that decide which keys never reach the PTY at all. Port of `src/gui/keys.rs:5-45` (bytes) and `src/gui/update/pty_input.rs:400-449` (predicates). **The iced table is the oracle**; where the gpui spike disagreed, parity wins: - **Modified arrows.** The spike emitted the CSI-modifier form `\x1b[1;{mods}{A-D}`. `keys.rs` does not: arrows are always the plain `\x1b[A..D`, ESC-prefixed when Alt is held, with Shift and Ctrl ignored entirely. The spike's richer form was **rejected for parity**. - **App-cursor (DECCKM)** does not affect keypresses at all — `keys.rs` is DECCKM-unaware. It only selects the SS3 prefix in [`arrow_moves`], the click-to-move-caret synthesis (`session.rs:1046-1060`).
 
 use gpui::Keystroke;
 
-/// `src/gui/keys.rs:5-45`, adapted to gpui's `(key, key_char, modifiers)`
-/// shape. Returns `None` when the key produces no PTY bytes.
+/// `src/gui/keys.rs:5-45`, adapted to gpui's `(key, key_char, modifiers)` shape. Returns `None` when the key produces no PTY bytes.
 pub fn key_to_bytes(keystroke: &Keystroke, _app_cursor: bool) -> Option<Vec<u8>> {
-    // `modifiers.platform` is Super on Linux / Cmd on macOS: app chords never
-    // reach the PTY (findings §S1 Step 4). iced had no equivalent because its
-    // `should_forward` filter stripped them upstream.
+    // `modifiers.platform` is Super on Linux / Cmd on macOS: app chords never reach the PTY (findings §S1 Step 4). iced had no equivalent because its `should_forward` filter stripped them upstream.
     if keystroke.modifiers.platform || keystroke.modifiers.function {
         return None;
     }
 
     let mut out = Vec::new();
-    // `keys.rs:7-9` — Alt is an ESC prefix on whatever follows, which is what
-    // makes Alt+Escape arrive as ESC ESC.
+    // `keys.rs:7-9` — Alt is an ESC prefix on whatever follows, which is what makes Alt+Escape arrive as ESC ESC.
     if keystroke.modifiers.alt {
         out.push(0x1b);
     }
 
-    // Ctrl runs first, but only over keys iced would have delivered as
-    // `Key::Character` — i.e. a single printable char. gpui *names* the space
-    // bar "space" where iced delivered `Key::Character(" ")` for the Ctrl
-    // path, so it is spelled out here; without it the named table would shadow
-    // the arithmetic and Ctrl+Space would emit a space instead of NUL.
-    // Every other named key (Ctrl+Enter, Ctrl+Up …) falls through to the named
-    // table, exactly as iced's `Key::Named` arm ignores Ctrl.
+    // Ctrl runs first, but only over keys iced would have delivered as `Key::Character` — i.e. a single printable char. gpui *names* the space bar "space" where iced delivered `Key::Character(" ")` for the Ctrl path, so it is spelled out here; without it the named table would shadow the arithmetic and Ctrl+Space would emit a space instead of NUL. Every other named key (Ctrl+Enter, Ctrl+Up …) falls through to the named table, exactly as iced's `Key::Named` arm ignores Ctrl.
     if keystroke.modifiers.control {
-        // Ctrl+Shift is the app's global-shortcut modifier on non-mac
-        // (keymap.rs `platform_mod_prefix`), so ctrl-shift-letter chords
-        // never reach the PTY even when unbound in the current context —
-        // iced parity with `should_forward`. Without this, e.g. ctrl-shift-j
-        // (unbound outside the Grid context) would fall through to the
-        // arithmetic below and emit 0x0a into agent TUIs.
+        // Ctrl+Shift is the app's global-shortcut modifier on non-mac (keymap.rs `platform_mod_prefix`), so ctrl-shift-letter chords never reach the PTY even when unbound in the current context — iced parity with `should_forward`. Without this, e.g. ctrl-shift-j (unbound outside the Grid context) would fall through to the arithmetic below and emit 0x0a into agent TUIs.
         if cfg!(not(target_os = "macos"))
             && keystroke.modifiers.shift
             && keystroke.key.chars().count() == 1
@@ -65,13 +37,7 @@ pub fn key_to_bytes(keystroke: &Keystroke, _app_cursor: bool) -> Option<Vec<u8>>
             None
         };
         if let Some(ch) = ctrl_char {
-            // `keys.rs:14-17` — Ctrl arithmetic is only meaningful for ASCII;
-            // anything else emits nothing rather than garbage bytes.
-            //
-            // It runs on `key`, never `key_char`: on Linux a Ctrl+V arrives
-            // with `key_char = "\u{16}"` (the control char itself), which would
-            // fold to garbage. `src/gui/update/mod.rs:804-806` documents the
-            // same hazard on the iced side.
+            // `keys.rs:14-17` — Ctrl arithmetic is only meaningful for ASCII; anything else emits nothing rather than garbage bytes. It runs on `key`, never `key_char`: on Linux a Ctrl+V arrives with `key_char = "\u{16}"` (the control char itself), which would fold to garbage. `src/gui/update/mod.rs:804-806` documents the same hazard on the iced side.
             if !ch.is_ascii() {
                 return None;
             }
@@ -86,14 +52,12 @@ pub fn key_to_bytes(keystroke: &Keystroke, _app_cursor: bool) -> Option<Vec<u8>>
         return Some(out);
     }
 
-    // Plain text emission prefers `key_char` — it carries the layout's actual
-    // output (option-s → "ß"), which `key` deliberately does not.
+    // Plain text emission prefers `key_char` — it carries the layout's actual output (option-s → "ß"), which `key` deliberately does not.
     let text = keystroke.key_char.as_deref().unwrap_or(&keystroke.key);
     if text.is_empty() {
         return None;
     }
-    // A multi-char `key` with no `key_char` is an unnamed special key
-    // (`keys.rs:40` — the `_ => return None` arm).
+    // A multi-char `key` with no `key_char` is an unnamed special key (`keys.rs:40` — the `_ => return None` arm).
     if keystroke.key_char.is_none() && keystroke.key.chars().count() != 1 {
         return None;
     }
@@ -123,13 +87,7 @@ fn named_key_bytes(key: &str) -> Option<&'static [u8]> {
     })
 }
 
-/// Synthesize arrow bytes moving the caret from `cur_col` to `t_col`
-/// (`crates/grove-core/src/session.rs:1041-1060`).
-///
-/// **Horizontal only.** Up/Down are deliberately never synthesized: at a shell
-/// prompt they recall history rather than move the caret. This is also the one
-/// place DECCKM matters — `app_cursor` selects the SS3 `\x1bO` prefix an app
-/// gets after enabling it, vs. the default CSI `\x1b[`.
+/// Synthesize arrow bytes moving the caret from `cur_col` to `t_col` (`crates/grove-core/src/session.rs:1041-1060`). **Horizontal only.** Up/Down are deliberately never synthesized: at a shell prompt they recall history rather than move the caret. This is also the one place DECCKM matters — `app_cursor` selects the SS3 `\x1bO` prefix an app gets after enabling it, vs. the default CSI `\x1b[`.
 pub fn arrow_moves(cur_col: u16, t_col: u16, app_cursor: bool) -> Vec<u8> {
     let prefix: &[u8] = if app_cursor { b"\x1bO" } else { b"\x1b[" };
     let mut out = Vec::new();
@@ -154,10 +112,7 @@ pub enum ScrollAmount {
     All,
 }
 
-/// `pty_input.rs:400-411`. `Some((up, amount))` for the classic terminal
-/// scroll chords, `None` otherwise — including when Ctrl/Alt/Super is also held
-/// (so TUI chords like Ctrl+Shift+PageUp aren't stolen) and when Shift is
-/// absent (so plain PageUp/PageDown/Home/End keep reaching the PTY).
+/// `pty_input.rs:400-411`. `Some((up, amount))` for the classic terminal scroll chords, `None` otherwise — including when Ctrl/Alt/Super is also held (so TUI chords like Ctrl+Shift+PageUp aren't stolen) and when Shift is absent (so plain PageUp/PageDown/Home/End keep reaching the PTY).
 pub fn keyboard_scroll_intent(keystroke: &Keystroke) -> Option<(bool, ScrollAmount)> {
     let m = keystroke.modifiers;
     if !m.shift || m.control || m.platform || m.alt {
@@ -177,9 +132,7 @@ pub fn is_copy_shortcut(keystroke: &Keystroke) -> bool {
     chord(keystroke, "c")
 }
 
-/// `pty_input.rs:439-449`. macOS: Cmd+V without Ctrl. Elsewhere: Ctrl+Shift+V —
-/// plain Ctrl+V is deliberately left for the PTY (literal insert in
-/// vim/readline).
+/// `pty_input.rs:439-449`. macOS: Cmd+V without Ctrl. Elsewhere: Ctrl+Shift+V — plain Ctrl+V is deliberately left for the PTY (literal insert in vim/readline).
 pub fn is_paste_shortcut(keystroke: &Keystroke) -> bool {
     chord(keystroke, "v")
 }
@@ -212,8 +165,7 @@ mod tests {
         }
     }
 
-    /// A printable key as the platform delivers it: `key` is the layout key,
-    /// `key_char` the character actually typed.
+    /// A printable key as the platform delivers it: `key` is the layout key, `key_char` the character actually typed.
     fn typed(key: &str, modifiers: Modifiers) -> Keystroke {
         Keystroke {
             modifiers,
@@ -320,13 +272,10 @@ mod tests {
     /// `keys.rs:18-19` arithmetic over `' '`: (0x20 - 0x40) & 0x1f == 0.
     #[test]
     fn ctrl_space_is_nul() {
-        // gpui names the space bar "space", so the named table would claim it
-        // first. Ctrl+Space must still be NUL — the table must not shadow the
-        // Ctrl arithmetic.
+        // gpui names the space bar "space", so the named table would claim it first. Ctrl+Space must still be NUL — the table must not shadow the Ctrl arithmetic.
         assert_eq!(bytes("space", ctrl()), Some(vec![0x00]));
         assert_eq!(bytes(" ", ctrl()), Some(vec![0x00]));
-        // …and Ctrl over a *named* key that is not the space bar still takes
-        // the named arm, exactly as iced's `Key::Named` match does.
+        // …and Ctrl over a *named* key that is not the space bar still takes the named arm, exactly as iced's `Key::Named` match does.
         assert_eq!(bytes("enter", ctrl()).as_deref(), Some(&b"\r"[..]));
         assert_eq!(bytes("up", ctrl()).as_deref(), Some(&b"\x1b[A"[..]));
     }
@@ -337,8 +286,7 @@ mod tests {
         assert_eq!(bytes("é", ctrl()), None);
     }
 
-    /// `keys.rs:7-9`, iced test `:96` — Alt prefixes ESC onto the unmodified
-    /// sequence.
+    /// `keys.rs:7-9`, iced test `:96` — Alt prefixes ESC onto the unmodified sequence.
     #[test]
     fn alt_prefixes_esc() {
         assert_eq!(bytes("up", alt()).as_deref(), Some(&b"\x1b\x1b[A"[..]));
@@ -350,8 +298,7 @@ mod tests {
         assert_eq!(bytes("escape", alt()).as_deref(), Some(&b"\x1b\x1b"[..]));
     }
 
-    /// Super/Cmd chords are app chords and never reach the PTY (findings §S1
-    /// Step 4). iced never saw them; gpui does, so the filter lives here.
+    /// Super/Cmd chords are app chords and never reach the PTY (findings §S1 Step 4). iced never saw them; gpui does, so the filter lives here.
     #[test]
     fn platform_chords_never_reach_the_pty() {
         let sup = Modifiers {
@@ -362,12 +309,7 @@ mod tests {
         assert_eq!(bytes("enter", sup), None);
     }
 
-    /// Ctrl+Shift is the app's global-shortcut modifier on non-mac
-    /// (`keymap.rs` `platform_mod_prefix`); an unbound ctrl-shift-letter
-    /// chord (e.g. grid nav pressed outside the Grid context) must never
-    /// fall through to the Ctrl arithmetic and emit a C0 byte into the PTY.
-    /// Named TUI chords (Enter, PageUp, …) are unaffected — only single
-    /// ASCII letters are swallowed.
+    /// Ctrl+Shift is the app's global-shortcut modifier on non-mac (`keymap.rs` `platform_mod_prefix`); an unbound ctrl-shift-letter chord (e.g. grid nav pressed outside the Grid context) must never fall through to the Ctrl arithmetic and emit a C0 byte into the PTY. Named TUI chords (Enter, PageUp, …) are unaffected — only single ASCII letters are swallowed.
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn ctrl_shift_letters_are_swallowed_on_non_mac() {
@@ -389,8 +331,7 @@ mod tests {
 
     // ── the parity decision against the spike ────────────────────────────
 
-    /// DECCKM must NOT change keypress encoding: `keys.rs` is app-cursor
-    /// unaware. This row is load-bearing — it pins the parity decision.
+    /// DECCKM must NOT change keypress encoding: `keys.rs` is app-cursor unaware. This row is load-bearing — it pins the parity decision.
     #[test]
     fn app_cursor_does_not_change_keypresses() {
         for app_cursor in [false, true] {
@@ -402,8 +343,7 @@ mod tests {
         }
     }
 
-    /// The negative row: no CSI-modifier form. The spike emitted
-    /// `\x1b[1;2A` for Shift+Up and `\x1b[1;5A` for Ctrl+Up; iced does not.
+    /// The negative row: no CSI-modifier form. The spike emitted `\x1b[1;2A` for Shift+Up and `\x1b[1;5A` for Ctrl+Up; iced does not.
     #[test]
     fn modified_arrows_stay_plain() {
         assert_eq!(bytes("up", shift()).as_deref(), Some(&b"\x1b[A"[..]));

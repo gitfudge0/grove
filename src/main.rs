@@ -1,7 +1,5 @@
-//! Grove's gpui shell. Bootstrap is `gpui_platform::application()` — `gpui`
-//! alone has no `Platform` constructor at this rev (spike findings §S1).
-// `deny`, not `forbid`: `platform::dock` needs one audited `allow` for the
-// Objective-C runtime on macOS. Everywhere else this is still a hard stop.
+//! Grove's gpui shell. Bootstrap is `gpui_platform::application()` — `gpui` alone has no `Platform` constructor at this rev (spike findings §S1).
+// `deny`, not `forbid`: `platform::dock` needs one audited `allow` for the Objective-C runtime on macOS. Everywhere else this is still a hard stop.
 #![deny(unsafe_code)]
 
 mod activity;
@@ -32,9 +30,7 @@ use gpui::{prelude::*, px, size, Bounds, TitlebarOptions, WindowBounds, WindowOp
 use assets::Assets;
 use views::workspace::Workspace;
 
-/// When set to `1`, the shell runs the startup metric assertion, prints one
-/// machine-checkable line, and exits **before** opening a window, so the exit
-/// gate is verifiable without a human eyeballing a desktop.
+/// When set to `1`, the shell runs the startup metric assertion, prints one machine-checkable line, and exits **before** opening a window, so the exit gate is verifiable without a human eyeballing a desktop.
 const SELFTEST_ENV: &str = "GROVE_GPUI_SELFTEST";
 
 /// Matches `src/gui/mod.rs:85` — `.window_size(Size::new(1280.0, 800.0))`.
@@ -43,19 +39,15 @@ const WINDOW_H: f32 = 800.0;
 
 fn main() {
     logging::init();
-    // Before `app::boot`, so a panic inside boot is still reported. The panic
-    // *message* stays on this machine; only the scrubbed location is sent
-    // (`src/main.rs:11-30`).
+    // Before `app::boot`, so a panic inside boot is still reported. The panic *message* stays on this machine; only the scrubbed location is sent (`src/main.rs:11-30`).
     telemetry::install_panic_hook();
     gpui_platform::application()
         .with_assets(Assets)
         .run(|cx: &mut gpui::App| {
-            // Startup sequence first (Plan 03 Task 7 Step 1: `boot` precedes
-            // font registration, which precedes `open_window`).
+            // Startup sequence first (Plan 03 Task 7 Step 1: `boot` precedes font registration, which precedes `open_window`).
             app::boot(cx);
 
-            // Fonts are registered and measured before any window exists: a
-            // wrong advance must abort the process, not paint a drifting grid.
+            // Fonts are registered and measured before any window exists: a wrong advance must abort the process, not paint a drifting grid.
             let cell_w = fonts::register_and_assert_or_exit(cx);
 
             if std::env::var(SELFTEST_ENV).as_deref() == Ok("1") {
@@ -77,13 +69,7 @@ fn main() {
                 }),
                 ..Default::default()
             };
-            // The close-request interception is registered by `Workspace` on
-            // its first render, not here: `Window::on_window_should_close`
-            // needs the `Workspace` entity to count running native sessions
-            // and to run `shutdown`, and the first render is the one place
-            // that has both a `&mut Window` and `&mut Context<Workspace>`
-            // (the same reason `observe_window_activation` is registered
-            // there). See `views::workspace::Workspace::register_close_hook`.
+            // The close-request interception is registered by `Workspace` on its first render, not here: `Window::on_window_should_close` needs the `Workspace` entity to count running native sessions and to run `shutdown`, and the first render is the one place that has both a `&mut Window` and `&mut Context<Workspace>` (the same reason `observe_window_activation` is registered there). See `views::workspace::Workspace::register_close_hook`.
             let window = match cx.open_window(opts, |_window, cx| cx.new(Workspace::new)) {
                 Ok(w) => w,
                 Err(e) => {
@@ -92,10 +78,7 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            // Focus the root so the global key bindings have a dispatch path,
-            // and seed the OS appearance so follow-system resolves on the
-            // first frame rather than after the first OS notification
-            // (`src/gui/mod.rs:63-68`).
+            // Focus the root so the global key bindings have a dispatch path, and seed the OS appearance so follow-system resolves on the first frame rather than after the first OS notification (`src/gui/mod.rs:63-68`).
             let _ = window.update(cx, |view, window, cx| {
                 let handle = gpui::Focusable::focus_handle(view, cx);
                 window.focus(&handle, cx);

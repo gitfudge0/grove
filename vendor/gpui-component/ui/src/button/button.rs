@@ -225,8 +225,7 @@ impl Button {
 
         Self {
             id: id.clone(),
-            // ID must be set after div is created;
-            // `dropdown_menu` uses this id to create the popup menu.
+            // ID must be set after div is created; `dropdown_menu` uses this id to create the popup menu.
             base: div().flex_shrink_0().id(id),
             style: StyleRefinement::default(),
             icon: None,
@@ -344,25 +343,19 @@ impl Button {
         self
     }
 
-    /// Set the loading icon of the button, it will be used when loading is true.
-    ///
-    /// Default is a spinner icon.
+    /// Set the loading icon of the button, it will be used when loading is true. Default is a spinner icon.
     pub fn loading_icon(mut self, icon: impl Into<Icon>) -> Self {
         self.loading_icon = Some(icon.into());
         self
     }
 
-    /// Set the tab index of the button, it will be used to focus the button by tab key.
-    ///
-    /// Default is 0.
+    /// Set the tab index of the button, it will be used to focus the button by tab key. Default is 0.
     pub fn tab_index(mut self, tab_index: isize) -> Self {
         self.tab_index = tab_index;
         self
     }
 
-    /// Set the tab stop of the button, if true, the button will be focusable by tab key.
-    ///
-    /// Default is true.
+    /// Set the tab stop of the button, if true, the button will be focusable by tab key. Default is true.
     pub fn tab_stop(mut self, tab_stop: bool) -> Self {
         self.tab_stop = tab_stop;
         self
@@ -572,8 +565,7 @@ impl RenderOnce for Button {
             })
             .refine_style(&self.style)
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                // Stop handle any click event when disabled.
-                // To avoid handle dropdown menu open when button is disabled.
+                // Stop handle any click event when disabled. To avoid handle dropdown menu open when button is disabled.
                 if is_disabled {
                     cx.stop_propagation();
                     return;
@@ -587,8 +579,7 @@ impl RenderOnce for Button {
             })
             .when_some(self.on_click, |this, on_click| {
                 this.on_click(move |event, window, cx| {
-                    // Stop handle any click event when disabled.
-                    // To avoid handle dropdown menu open when button is disabled.
+                    // Stop handle any click event when disabled. To avoid handle dropdown menu open when button is disabled.
                     if !clickable {
                         cx.stop_propagation();
                         return;

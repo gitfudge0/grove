@@ -1,9 +1,4 @@
-/// WrapMap: Soft-wrapping layer (Buffer → Wrap rows).
-///
-/// This module wraps the existing TextWrapper and provides:
-/// - BufferPoint ↔ WrapPoint mapping
-/// - Efficient buffer_line → wrap_row queries via prefix sum cache
-/// - Incremental updates when text or layout changes
+/// WrapMap: Soft-wrapping layer (Buffer → Wrap rows). This module wraps the existing TextWrapper and provides: - BufferPoint ↔ WrapPoint mapping - Efficient buffer_line → wrap_row queries via prefix sum cache - Incremental updates when text or layout changes
 use std::ops::Range;
 
 use gpui::{App, Font, Pixels};
@@ -14,9 +9,7 @@ use super::text_wrapper::{LineItem, TextWrapper, WrapDisplayPoint};
 use super::{BufferPoint, WrapPoint};
 use crate::input::rope_ext::RopeExt;
 
-/// WrapMap manages soft-wrapping and provides buffer ↔ wrap coordinate mapping.
-///
-/// Buffer line ↔ wrap row mapping is backed by the [`TextWrapper`]'s `SumTree`.
+/// WrapMap manages soft-wrapping and provides buffer ↔ wrap coordinate mapping. Buffer line ↔ wrap row mapping is backed by the [`TextWrapper`]'s `SumTree`.
 pub struct WrapMap {
     /// The underlying text wrapper (reuses existing implementation)
     wrapper: TextWrapper,

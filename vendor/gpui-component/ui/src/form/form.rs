@@ -66,9 +66,7 @@ impl Form {
         self
     }
 
-    /// Set the column count for the form.
-    ///
-    /// Default is 1.
+    /// Set the column count for the form. Default is 1.
     pub fn columns(mut self, columns: usize) -> Self {
         self.props.columns = columns;
         self
