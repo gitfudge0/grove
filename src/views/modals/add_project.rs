@@ -1,12 +1,4 @@
-//! The two-step add-project wizard and the full-viewport onboarding wizard.
-//!
-//! The pure half lives in [`crate::add_project`] and is tested there against a
-//! temp tree. This module is the view plus the click/keyboard glue.
-//!
-//! Ports `src/gui/add_project.rs:439+` (the view), `modals.rs:117-136` (the
-//! two cancel carve-outs), `src/gui/onboarding.rs` and
-//! `src/gui/update/onboarding.rs` (incl. the `Modal::TmuxChoice` handoff at
-//! :97).
+//! The two-step add-project wizard and the full-viewport onboarding wizard. The pure half lives in [`crate::add_project`]; this module is the view plus click/keyboard glue.
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -25,8 +17,6 @@ use crate::views::components::{
 };
 
 impl ModalLayer {
-    /// The wizard's clicks, plus every click Tasks 5-6's modals raise that is
-    /// not already handled in [`ModalLayer::on_click`].
     pub(super) fn on_wizard_click(
         &mut self,
         click: ModalClick,
@@ -77,8 +67,7 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// The OS folder picker. One dialog at a time — a second click while the
-    /// picker is up must not spawn another (`modals.rs:490-534`).
+    /// One dialog at a time — a second click while it's open must not spawn another.
     fn wizard_browse(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.picker_open {
             return;
@@ -109,7 +98,6 @@ impl ModalLayer {
         .detach();
     }
 
-    /// The single funnel every folder source ends in.
     fn wizard_choose(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
         let mut outcome = None;
         if let Some(Modal::AddProject(st)) = self.slot.get_mut() {
@@ -129,8 +117,7 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// ↑↓ on either wizard walk the **directory match list**, not the caret —
-    /// this is a `wants_arrows` modal (carried decision 2).
+    /// ↑↓ walk the directory match list, not the caret.
     pub(super) fn wizard_dir_move(&mut self, delta: i32, cx: &mut Context<Self>) {
         self.sync_wizard_buffers(cx);
         match self.slot.get_mut() {
@@ -144,8 +131,7 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// Tab alternates path/name focus on the onboarding project step
-    /// (`modals.rs:296-308`). Single-line fields, so `wants_tab` applies.
+    /// Tab alternates path/name focus on the onboarding project step (`modals.rs:296-308`).
     pub(super) fn onboard_toggle_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_wizard_buffers(cx);
         let focused_name = match self.slot.get_mut() {
@@ -160,16 +146,14 @@ impl ModalLayer {
                 f.focus_at_end(window, cx);
             }
         } else {
-            // Tab on the path field also picks the highlighted directory, then
-            // returns focus to the path input with the caret at the end.
+            // Tab on the path field also picks the highlighted directory.
             self.wizard_pick_dir(cx);
             self.rebuild_fields(window, cx);
         }
         cx.notify();
     }
 
-    /// The wizard's own keyboard, for the keys the shared verdict table falls
-    /// through on (`add_project::handle_key`).
+    /// Keys the shared verdict table falls through on (`add_project::handle_key`).
     pub(super) fn wizard_key(
         &mut self,
         key: crate::modal::ModalKey,
@@ -197,9 +181,7 @@ impl ModalLayer {
                 true
             }
             K::Escape => {
-                // Escape from the DETAILS step goes back a step rather than
-                // cancelling (`add_project::handle_key`); the pick-source
-                // step's Escape is already `Close` in the shared table.
+                // Escape from DETAILS goes back a step rather than cancelling; pick-source's Escape is already `Close`.
                 self.with_wizard(cx, add_project::change_source);
                 self.rebuild_fields(window, cx);
                 true
@@ -224,10 +206,7 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// Step-1 Enter / "Next": the choose funnel, then the details step's
-    /// validation and the actual registration.
     pub(super) fn wizard_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Pull the live buffers back out of the fields before deciding.
         self.sync_wizard_buffers(cx);
         let step = match self.slot.get() {
             Some(Modal::AddProject(st)) => st.step,
@@ -288,8 +267,7 @@ impl ModalLayer {
         self.register_project(name, path, cx);
     }
 
-    /// Persist a new project and select it (`App::register_project`,
-    /// `src/app/mod.rs:600-620`).
+    /// Persist a new project and select it (`App::register_project`, `src/app/mod.rs:600-620`).
     pub(super) fn register_project(
         &mut self,
         name: String,
@@ -314,7 +292,6 @@ impl ModalLayer {
                 scripts: grove_core::storage::ProjectScripts::default(),
                 theme: None,
                 archived: false,
-                // New project: the worktree dir is its name until a rename pins it.
                 worktree_dir: None,
             });
         });
@@ -326,11 +303,7 @@ impl ModalLayer {
         Some(idx)
     }
 
-    // ── onboarding ──────────────────────────────────────────────────────
-
-    /// "Back": step regression only (`app/onboarding.rs:127-135`). No
-    /// unwinding of a project already registered on the way forward — the
-    /// iced original doesn't either.
+    /// Step regression only, no unwinding a project already registered (`app/onboarding.rs:127-135`).
     pub(super) fn onboard_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_wizard_buffers(cx);
         let prev = match self.slot.get() {
@@ -345,16 +318,13 @@ impl ModalLayer {
         }
     }
 
-    /// Escape or "Skip": mark onboarding done and get out of the way.
     pub(super) fn onboard_skip(&mut self, cx: &mut Context<Self>) {
         SettingsState::update(cx, |store| store.onboarded = true);
         SettingsState::flush_now(cx);
         self.close(cx);
     }
 
-    /// Enter / "Continue" (`src/gui/update/onboarding.rs`). The last step
-    /// persists the permissions choice and hands off to `Modal::TmuxChoice`
-    /// (`update/onboarding.rs:97`).
+    /// Last step persists the permissions choice and hands off to `Modal::TmuxChoice` (`update/onboarding.rs:97`).
     pub(super) fn onboard_advance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_wizard_buffers(cx);
         let Some(Modal::Onboarding { step, .. }) = self.slot.get() else {
@@ -409,7 +379,6 @@ impl ModalLayer {
                                 scripts: grove_core::storage::ProjectScripts::default(),
                                 theme: None,
                                 archived: false,
-                                // New project: the worktree dir is its name until a rename pins it.
                                 worktree_dir: None,
                             });
                         });
@@ -438,8 +407,6 @@ impl ModalLayer {
                 };
                 let agents = super::confirm::available_agents();
                 let agent = agents.get(agent_sel).copied();
-                // An explicit store value, not an inferred one
-                // (`Modal::Onboarding::perms_skip`).
                 SettingsState::update(cx, move |store| {
                     store.dangerously_skip_permissions_enabled = Some(perms_skip);
                     store.onboarded = true;
@@ -449,8 +416,6 @@ impl ModalLayer {
                 });
                 SettingsState::flush_now(cx);
                 let _ = added_proj;
-                // The wizard hands straight off to the tmux choice
-                // (`update/onboarding.rs:97`).
                 self.open(Modal::TmuxChoice, cx);
                 return;
             }
@@ -458,8 +423,6 @@ impl ModalLayer {
         self.rebuild_fields(window, cx);
     }
 }
-
-// ── the views ────────────────────────────────────────────────────────────
 
 pub fn render(
     layer: &ModalLayer,
@@ -477,10 +440,7 @@ pub fn render(
     }
 }
 
-/// The step-1 directory match list, driven by the typed path. Every match
-/// renders; the shared `MODAL_SCROLL_MAX_H` cap scrolls the overflow, and
-/// `layer.list_scroll` keeps the arrowed-to row in view — retiring the old
-/// `DIR_ROWS` window and its "↑N more" / "↓N more" indicators.
+/// Every match renders; the shared scroll cap handles overflow, and `layer.list_scroll` keeps the arrowed-to row in view.
 fn dir_list(
     layer: &ModalLayer,
     path: &str,
@@ -506,7 +466,6 @@ fn dir_list(
                 RowDensity::Card,
                 dispatch,
                 ModalClick::WizardPickDir(i),
-                // A directory name is a token, not language (§5.2).
                 mono(
                     name,
                     TEXT_BODY,
@@ -519,9 +478,7 @@ fn dir_list(
             .into_any_element(),
         );
     }
-    // The card *is* the scroll container: `scroll_to_item` addresses the
-    // tracked element's direct children, and `card` interleaves a divider
-    // after every row but the last, so row `k` sits at child `2k`.
+    // `card` interleaves a divider after every row but the last, so row `k` sits at child `2k`.
     if sel < entries.len() {
         layer.scroll_list_to(0, sel, sel * 2);
     }
@@ -534,11 +491,7 @@ fn dir_list(
     )
 }
 
-/// A [`field_box`]-wrapped `Input` bound to `layer.fields[idx]`, or
-/// `None` if that field doesn't exist (§9.1.1 rule 6). Every wizard/onboarding
-/// single-line text field goes through this one helper so the `Input`'s own
-/// insets stay zeroed per `field_box`'s doc comment — the five chained
-/// calls there are a contract, not a style choice.
+/// `None` if `layer.fields[idx]` doesn't exist. Every text field goes through this so `Input`'s insets stay zeroed per `field_box`'s contract.
 fn field_row(layer: &ModalLayer, idx: usize, window: &Window, cx: &App) -> Option<Div> {
     layer.fields.get(idx).map(|f| {
         let focused = f.state().read(cx).focus_handle(cx).is_focused(window);
@@ -553,17 +506,12 @@ fn field_row(layer: &ModalLayer, idx: usize, window: &Window, cx: &App) -> Optio
     })
 }
 
-/// The wizard's shared header: a title in `c::MAGENTA()`, a right-aligned
-/// "Step {n} of 2" in the header's `meta` slot, and a close X dispatching
-/// [`ModalClick::Cancel`] (`src/gui/add_project.rs`'s `view` header row).
-/// `close_id` must be unique within the modal (gpui bleeds hover state
-/// between duplicate ids, §9.1).
+/// `close_id` must be unique within the modal (gpui bleeds hover state between duplicate ids).
 fn wizard_header(step_no: u8, close_id: &'static str, dispatch: &ModalDispatch) -> Div {
     modal_header_slotted(
         Some(close_id),
         "Add project",
         c::MAGENTA(),
-        // A step counter is a count, so mono (§5.2).
         Some(mono(format!("Step {step_no} of 2"), TEXT_SMALL, c::FG_MUTE()).into_any_element()),
         None,
         Some(dispatch),
@@ -582,8 +530,6 @@ fn pick_source(
     } else {
         "Browse for folder…"
     };
-    // No bordered buttons inside bodies (plan.md §3) — the hero button becomes
-    // a flat magenta-tinted body action, still wired to the same dispatch.
     let browse = body_action(
         "ap-browse-hero",
         browse_label,
@@ -644,8 +590,7 @@ fn pick_source(
                     ("esc", "cancel"),
                 ],
                 vec![click_action(
-                    // Distinct from the details step's Cancel: gpui bleeds
-                    // hover state between duplicate ids (§9.1).
+                    // Distinct from the details step's Cancel: gpui bleeds hover state between duplicate ids.
                     "ap-cancel-src",
                     "Cancel",
                     ModalBtn::Plain,
@@ -677,7 +622,6 @@ fn details(
         .border_1()
         .border_color(c::BORDER())
         .child(crate::icons::icon("folder", ICON_MD, c::FG_DIM()))
-        // A filesystem path is a token (§5.2).
         .child(
             mono(st.path.clone(), TEXT_BODY, c::FG())
                 .flex_1()
@@ -697,9 +641,6 @@ fn details(
             .items_center()
             .gap(rpx(SPACE_MD))
             .child(crate::icons::icon("git", ICON_MD, c::GREEN()))
-            // A sentence about the folder, not a token — sans (§5.2), and the
-            // same family as the "Not a git repository" arm below, which fills
-            // this exact slot.
             .child(ui(
                 format!("Git repository · branch {branch}"),
                 TEXT_BODY,
@@ -719,7 +660,6 @@ fn details(
         .flex()
         .flex_col()
         .gap(rpx(SPACE_2XL))
-        // Section labels are section_header (§5.2, §9.1.1 rule 7).
         .child(section_header("FOLDER", SPACE_2XL, SPACE_SM, 0.0))
         .child(chip)
         .child(badge)
@@ -729,7 +669,6 @@ fn details(
                 .items_center()
                 .child(section_header("NAME", SPACE_2XL, SPACE_SM, 0.0))
                 .child(div().flex_1())
-                // Quotes a directory name, so mono (§5.2).
                 .child(mono(
                     format!("Empty uses '{default_name}'"),
                     TEXT_SMALL,
@@ -770,8 +709,7 @@ fn details(
                 &[("⏎", "add"), ("esc", "back")],
                 vec![
                     click_action(
-                        // See the pick-source step's Cancel — ids must be
-                        // unique per view (§9.1).
+                        // See the pick-source step's Cancel — ids must be unique per view.
                         "ap-cancel-name",
                         "Cancel",
                         ModalBtn::Plain,
@@ -793,8 +731,7 @@ fn details(
     .into_any_element()
 }
 
-/// Whether `git` resolves on `PATH` (`git show main:src/gui/view/common.rs`'s
-/// `git_on_path`, ported verbatim — no gpui equivalent exists yet).
+/// Ported verbatim from `src/gui/view/common.rs`'s `git_on_path` — no gpui equivalent exists yet.
 fn git_on_path() -> bool {
     static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHE.get_or_init(|| {
@@ -805,8 +742,7 @@ fn git_on_path() -> bool {
     })
 }
 
-/// One bulleted value-prop line on the welcome step: a magenta mark, a bold
-/// lead, and a muted explanation (iced `onboard_point`, onboarding.rs:387-409).
+/// One bulleted value-prop line on the welcome step (iced `onboard_point`, onboarding.rs:387-409).
 fn onboard_point(lead: &'static str, body: &'static str) -> Div {
     div()
         .flex()
@@ -826,9 +762,7 @@ fn onboard_point(lead: &'static str, body: &'static str) -> Div {
         )
 }
 
-/// One detected-tool row on the environment step: a status dot, the tool
-/// name, a muted description, and a right-aligned Found/Missing/Optional tag
-/// (iced `onboard_env_row`, onboarding.rs:413-449).
+/// One detected-tool row on the environment step (iced `onboard_env_row`, onboarding.rs:413-449).
 fn onboard_env_row(found: bool, optional: bool, name: &'static str, meta: &'static str) -> Div {
     let (dotc, tag, tagc) = if found {
         (c::GREEN(), "Found", c::GREEN())
@@ -849,17 +783,13 @@ fn onboard_env_row(found: bool, optional: bool, name: &'static str, meta: &'stat
         .border_color(c::BORDER())
         .bg(c::BG_STRIP())
         .child(status_dot(DOT_SM, dotc))
-        // The tool name is an executable on PATH and the tag is a status label,
-        // so both are tokens; the description between them is language (§5.2).
         .child(mono(name, TEXT_TITLE, c::FG()))
         .child(ui(meta, TEXT_BODY, c::FG_MUTE()))
         .child(div().flex_1())
         .child(mono(tag, TEXT_SMALL, tagc))
 }
 
-/// The first-run wizard. Full-viewport with no sidebar, statusbar or scrim —
-/// the layer already renders it as a screen replacement (recorded ambiguity 1)
-/// and the entrance animation is applied there.
+/// Full-viewport with no sidebar, statusbar or scrim — the layer renders it as a screen replacement.
 fn onboarding(
     layer: &ModalLayer,
     dispatch: &ModalDispatch,
@@ -881,8 +811,7 @@ fn onboarding(
         return div().into_any_element();
     };
 
-    // ── progress rail: per-step label, magenta done/current/pending tri-state
-    // (iced onboarding.rs:60-81). ────────────────────────────────────────────
+    // Per-step label, magenta done/current/pending tri-state (iced onboarding.rs:60-81).
     let mut rail = div().flex().items_center().gap(rpx(SPACE_XL));
     for s in OnboardStep::flow() {
         let s = *s;
@@ -899,17 +828,14 @@ fn onboarding(
                 .items_center()
                 .gap(rpx(SPACE_SM))
                 .child(status_dot(DOT_SM, dotc))
-                // Progress-rail step labels read as section labels (§5.2).
                 .child(mono(s.label(), TEXT_MICRO, txtc)),
         );
     }
 
-    // ── step body ────────────────────────────────────────────────────────
     let body: AnyElement = match step {
         OnboardStep::Welcome => div()
             .flex()
             .flex_col()
-            // Carries the rhythm the deleted 20px spacer used to add (§6.1).
             .gap(rpx(SPACE_2XL))
             .child(
                 div()
@@ -996,8 +922,6 @@ fn onboarding(
                 .child(body_text(
                     "Point Grove at a Git repository, or any plain folder for ad-hoc sessions.",
                 ))
-                // Tracking is faked with U+2009 inside `section_header`, never
-                // hand-spaced with literal U+0020 (§5.4).
                 .child(section_header("REPOSITORY OR FOLDER", SPACE_2XL, SPACE_SM, 0.0));
             let mut path_row = div().flex().items_center().gap(rpx(SPACE_LG));
             if let Some(f) = field_row(layer, 0, window, cx) {
@@ -1028,7 +952,6 @@ fn onboarding(
             if let Some(note) = note {
                 d = d.child(note_text(note.clone()));
             }
-            // A sentence of instructions, not a keycap run — sans (§5.2).
             d.child(ui(
                 "Tab to complete · ↑↓ to select · Enter to continue · Or skip setup",
                 TEXT_SMALL,
@@ -1131,7 +1054,6 @@ fn onboarding(
         }
     };
 
-    // ── footer ────────────────────────────────────────────────────────────
     let next_label = match step {
         OnboardStep::Welcome => "Get started",
         OnboardStep::Session => "Launch session",
@@ -1142,7 +1064,6 @@ fn onboarding(
         .flex()
         .items_center()
         .gap(rpx(SPACE_LG))
-        // A step count, so mono (§5.2).
         .child(mono(count, TEXT_BODY, c::FG_MUTE()))
         .child(div().flex_1())
         .child(click_action(
@@ -1169,8 +1090,7 @@ fn onboarding(
         ModalClick::OnboardAdvance,
     ));
 
-    // Small top-left wordmark — the wizard's only persistent chrome, distinct
-    // from the larger centered wordmark the Welcome step's body renders.
+    // Small top-left wordmark, distinct from the larger centered one the Welcome step renders.
     let brand = div()
         .flex()
         .items_center()

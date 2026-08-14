@@ -1,10 +1,6 @@
-//! ANSI → theme-token color resolution: the **only** place a `TermColor`
-//! becomes a paintable color.
-//!
-//! Line-for-line port of `src/gui/pty.rs:374-421` (`vt_color_opt` / `ansi_idx`)
-//! plus the inverse-swap rule at `src/gui/pty.rs:44-52`. Keeping the mapping in
-//! one function is what lets a theme swap re-color live terminal content on the
-//! next frame with no invalidation bookkeeping.
+//! ANSI → theme-token color resolution: the only place a `TermColor` becomes
+//! a paintable color, so a theme swap re-colors live content with no
+//! invalidation bookkeeping.
 
 use gpui::Hsla;
 use grove_core::theme::{self, Theme};
@@ -12,36 +8,16 @@ use grove_terminal::TermColor;
 
 use crate::theme as c;
 
-/// Resolve one terminal color against `theme`.
-///
-/// `None` means "the terminal's default": for a background that is *paint no
-/// quad at all*, for a foreground it is the caller's cue to use the default fg
-/// token (see [`resolve_pair`]).
+/// `None` means "the terminal's default": paint-no-quad for a background, the caller's cue to use the default fg token for a foreground.
 pub fn resolve(color: TermColor, theme: &Theme) -> Option<Hsla> {
     match color {
-        // `src/gui/pty.rs:376` — Default stays unresolved.
         TermColor::Default => None,
         TermColor::Ansi(i) => Some(ansi_idx(i, theme)),
-        // `:378` — a 24-bit color bypasses the theme entirely.
         TermColor::Rgb(r, g, b) => Some(rgb8(r, g, b)),
     }
 }
 
-/// Resolve a cell's `(fg, bg)` pair, applying the inverse swap.
-///
-/// **This is the one and only inverse swap in the pipeline.**
-/// `GroveTerm::snapshot()` does *not* pre-apply it — `Cell` carries `inverse:
-/// bool` unswapped (`crates/grove-terminal/src/cell.rs:20`,
-/// `term.rs:193`), because the golden harness applies the swap in its own
-/// shared helper so the model and the vt100 oracle cannot drift. So the
-/// painting layer owns it, exactly as `src/gui/pty.rs:44-52` does.
-///
-/// After the swap, a `None` fg becomes the theme's background and a `None` bg
-/// becomes the theme's foreground: that "theme-default fill" is what makes an
-/// inverse-video cell readable instead of transparent.
-///
-/// Returns `(fg, bg)` where the fg is always concrete and `bg == None` means
-/// "emit no quad".
+/// The one and only inverse swap in the pipeline — `Cell` carries `inverse` unswapped, so the painting layer owns it. Returns `(fg, bg)` where fg is always concrete and `bg == None` means "emit no quad".
 pub fn resolve_pair(
     fg: TermColor,
     bg: TermColor,
@@ -62,7 +38,6 @@ pub fn resolve_pair(
     (fg.unwrap_or_else(|| c::fg_of(theme).into()), bg)
 }
 
-/// `src/gui/pty.rs:390-421`, index for index.
 fn ansi_idx(i: u8, theme: &Theme) -> Hsla {
     match i {
         0 => c::bg_strip_of(theme).into(),
@@ -75,7 +50,7 @@ fn ansi_idx(i: u8, theme: &Theme) -> Hsla {
         7 | 15 => c::fg_of(theme).into(),
         8 => c::fg_mute_of(theme).into(),
         16..=231 => {
-            // 6×6×6 cube (`:401-415`).
+            // 6x6x6 cube.
             let n = i - 16;
             let r = n / 36;
             let g = (n % 36) / 6;
@@ -83,7 +58,7 @@ fn ansi_idx(i: u8, theme: &Theme) -> Hsla {
             rgb8(cube(r), cube(g), cube(b))
         }
         232..=255 => {
-            // 24-step grayscale ramp (`:416-419`).
+            // 24-step grayscale ramp.
             let v = 8 + 10 * (i - 232);
             rgb8(v, v, v)
         }
@@ -98,8 +73,7 @@ fn cube(x: u8) -> u8 {
     }
 }
 
-/// 8-bit sRGB → `Hsla` through Plan 03's `ic()` conversion path, so a direct
-/// color and a themed one land in the same color space (no HSL arithmetic).
+/// Through `ic()` so a direct color and a themed one land in the same color space.
 fn rgb8(r: u8, g: u8, b: u8) -> Hsla {
     c::ic(theme::Color::Rgb(r, g, b)).into()
 }
@@ -112,8 +86,6 @@ mod tests {
         theme::with_current(Clone::clone)
     }
 
-    /// Independent restatement of the table in the plan, so the test does not
-    /// simply mirror the implementation's `match` arm order.
     fn expected(i: u8, t: &Theme) -> Hsla {
         match i {
             0 => c::bg_strip_of(t).into(),
@@ -155,10 +127,8 @@ mod tests {
     #[test]
     fn cube_and_gray_boundaries() {
         let t = theme();
-        // 16 is the cube's black corner, 231 its white corner (`pty.rs:401`).
         assert_eq!(resolve(TermColor::Ansi(16), &t), Some(rgb8(0, 0, 0)));
         assert_eq!(resolve(TermColor::Ansi(231), &t), Some(rgb8(255, 255, 255)));
-        // 232 is the darkest gray, 255 the lightest (`:416-419`).
         assert_eq!(resolve(TermColor::Ansi(232), &t), Some(rgb8(8, 8, 8)));
         assert_eq!(resolve(TermColor::Ansi(255), &t), Some(rgb8(238, 238, 238)));
     }
@@ -198,9 +168,6 @@ mod tests {
     #[test]
     fn inverse_swaps_exactly_once() {
         let t = theme();
-        // The pipeline must swap once and only once: a red-on-default cell
-        // rendered inverse is default-bg text on a red field, NOT red-on-default
-        // again (which is what a second swap would give).
         let (fg, bg) = resolve_pair(TermColor::Ansi(1), TermColor::Default, true, &t);
         assert_eq!(
             fg,
@@ -216,8 +183,6 @@ mod tests {
     #[test]
     fn inverse_of_a_default_pair_fills_with_theme_defaults() {
         let t = theme();
-        // `pty.rs:46-51`: after the swap both sides are still None, so fg
-        // becomes bg_of and bg becomes fg_of — the readable fill.
         let (fg, bg) = resolve_pair(TermColor::Default, TermColor::Default, true, &t);
         assert_eq!(fg, c::bg_of(&t).into());
         assert_eq!(bg, Some(c::fg_of(&t).into()));

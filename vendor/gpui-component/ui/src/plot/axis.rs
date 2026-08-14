@@ -71,21 +71,17 @@ impl PlotAxis {
         }
     }
 
-    /// Set the x-axis of the Axis.
     pub fn x(mut self, x: impl Into<Pixels>) -> Self {
         self.x = Some(x.into());
         self
     }
 
-    /// Show or hide the x-axis of the Axis.
-    ///
     /// Default is true.
     pub fn x_axis(mut self, x_axis: bool) -> Self {
         self.x_axis = x_axis;
         self
     }
 
-    /// Set the x-label of the Axis.
     pub fn x_label(mut self, label: impl IntoIterator<Item = AxisText>) -> Self {
         if let Some(x) = self.x {
             let side = self.x_label_side;
@@ -110,27 +106,22 @@ impl PlotAxis {
         self
     }
 
-    /// Set which side of the x-axis line tick labels render on.
     pub fn x_label_side(mut self, side: AxisLabelSide) -> Self {
         self.x_label_side = side;
         self
     }
 
-    /// Set the y-axis of the Axis.
     pub fn y(mut self, y: impl Into<Pixels>) -> Self {
         self.y = Some(y.into());
         self
     }
 
-    /// Show or hide the y-axis of the Axis.
-    ///
     /// Default is true.
     pub fn y_axis(mut self, y_axis: bool) -> Self {
         self.y_axis = y_axis;
         self
     }
 
-    /// Set the y-label of the Axis.
     pub fn y_label(mut self, label: impl IntoIterator<Item = AxisText>) -> Self {
         if let Some(y) = self.y {
             let side = self.y_label_side;
@@ -155,13 +146,11 @@ impl PlotAxis {
         self
     }
 
-    /// Set which side of the y-axis line tick labels render on.
     pub fn y_label_side(mut self, side: AxisLabelSide) -> Self {
         self.y_label_side = side;
         self
     }
 
-    /// Set the stroke color of the Axis.
     pub fn stroke(mut self, stroke: impl Into<Hsla>) -> Self {
         self.stroke = stroke.into();
         self
@@ -176,11 +165,9 @@ impl PlotAxis {
         }
     }
 
-    /// Paint the Axis.
     pub fn paint(&self, bounds: &Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         let origin = bounds.origin;
 
-        // X axis
         if let Some(x) = self.x {
             if self.x_axis {
                 self.draw_axis(
@@ -192,7 +179,6 @@ impl PlotAxis {
         }
         self.x_label.paint(bounds, window, cx);
 
-        // Y axis
         if let Some(y) = self.y {
             if self.y_axis {
                 self.draw_axis(

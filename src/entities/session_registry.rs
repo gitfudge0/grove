@@ -1,21 +1,7 @@
 //! Many [`TerminalSession`]s under one owner, keyed by a stable [`SessionId`].
-//!
-//! The iced build keeps sessions in a `Vec<Session>` and refers to them by
-//! index, which forces an index-shifting dance on every removal
-//! (`src/gui/update/sessions.rs:270-280`, `:109-113`). Here the key is a
-//! monotonic id that is never reused, so removing a session moves nothing.
-//!
-//! **Home terminals live outside the map**, mirroring `App::home_terminals`
-//! (`src/app/mod.rs:85-101`, whose comment is the contract): they must never
-//! appear as tree rows, activity rows, or in the session-cycling / kill
-//! machinery. Their row order *is* their identity, so they keep a positional
-//! index (`src/app/terminals.rs:61-84`).
-//!
-//! **Deviation from the plan's `IndexMap`:** the plan's "Tech stack additions:
-//! none" clause outranks its `IndexMap` sketch, and `indexmap` is not a
-//! workspace dependency. Insertion order is kept by a `Vec<SessionMeta>`
-//! (`order`) beside a `HashMap` of the live entities, which also lets every
-//! pure bookkeeping rule below be unit-tested without spawning a PTY.
+//! Unlike iced's index-based `Vec<Session>` (`src/gui/update/sessions.rs:270-280,109-113`), the id is monotonic and never reused, so removal moves nothing.
+//! Home terminals live outside the map (`src/app/mod.rs:85-101`) and never appear as tree/activity rows or in cycling/kill machinery; they keep a positional index instead (`src/app/terminals.rs:61-84`).
+//! Deviates from the plan's `IndexMap` sketch since `indexmap` isn't a workspace dependency; uses a `Vec<SessionMeta>` (`order`) beside a `HashMap` of live entities instead.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -33,8 +19,7 @@ use crate::entities::terminal_session::TerminalSession;
 pub struct SessionId(u64);
 
 impl SessionId {
-    /// Test/fixture constructor. Production ids only come from
-    /// [`SessionRegistry::next_id`], so only `#[cfg(test)]` code calls this.
+    /// Production ids only come from [`SessionRegistry::next_id`]; this is a test/fixture constructor.
     #[allow(dead_code)]
     #[must_use]
     pub const fn from_raw(raw: u64) -> Self {
@@ -48,78 +33,46 @@ impl SessionId {
 }
 
 /// What the sidebar needs to know about a session without touching its PTY.
-/// Constraint 3 candidate 3: if the sidebar wants something grove-core's
-/// `Agent` does not provide, it goes **here**, not into grove-core.
 #[derive(Clone, Debug)]
 pub struct SessionMeta {
     pub id: SessionId,
-    /// `Project::name` — the tree groups by name, not by index, because
-    /// indices move when a project is added or archived.
+    /// `Project::name`, not index — indices move when a project is added or archived.
     pub project: String,
-    /// Absolute worktree path: the session's stable placement in the tree.
     pub wt_path: String,
     pub agent: Agent,
-    /// Internal label (`claude 1`, `terminal 2`, …). Not displayed; stripped
-    /// out of the OSC title to make the context text (`src/gui/rows.rs:778`).
+    /// Internal label (`claude 1`, …); stripped from the OSC title to make the context text (`src/gui/rows.rs:778`).
     pub label: String,
     pub spawned_at: Instant,
-    /// The zero-setup attention hook files this session was spawned with, if
-    /// its agent/platform supports them (`attention::prepare` returns `None`
-    /// for OpenCode, Terminal and Windows).
-    ///
-    /// **Keyed on grove-gpui's [`SessionId`], not grove-core's
-    /// `NEXT_SESSION_ID`** — grove-gpui never constructs a
-    /// `grove_core::session::Session`. The resulting file name is
-    /// `{our pid}-{our SessionId}.state`, which is exactly the invariant the
-    /// startup GC and the cross-run collision argument rely on
-    /// (`crates/grove-core/src/attention.rs:110-121`): the **pid prefix** is
-    /// what makes it safe, not the id's provenance.
+    /// File name is `{our pid}-{our SessionId}.state`; the pid prefix, not the id, is what makes cross-run collision safe (`crates/grove-core/src/attention.rs:110-121`).
     pub attention: Option<AttentionFiles>,
-    /// Whether the live PTY ended up tmux-backed. Recorded by [`SessionRegistry::attach`]
-    /// (the backend is decided by the spawn, not by the metadata) so
-    /// `session_ended` telemetry can report it without reading the entity.
+    /// Recorded by [`SessionRegistry::attach`], since the spawn (not the metadata) decides the backend.
     pub tmux: bool,
-    /// The tmux session name, for tmux-backed sessions. The reconciliation in
-    /// [`crate::reattach`] dedupes on it, which is what makes the startup scan
-    /// and the tmux-toggle re-scan the same call.
+    /// [`crate::reattach`]'s dedup key, shared by the startup scan and the tmux-toggle re-scan.
     pub tmux_name: Option<String>,
 }
 
-/// Where a new session opens. Replaces [`TerminalSession::spawn`]'s hardcoded
-/// single target.
+/// Where a new session opens. Replaces [`TerminalSession::spawn`]'s hardcoded single target.
 #[derive(Clone, Debug)]
 pub struct SpawnTarget {
     pub cwd: String,
     pub agent: Agent,
-    /// Project name stamped into the tmux sidecar metadata; empty for home
-    /// terminals, which belong to no project.
+    /// Empty for home terminals, which belong to no project.
     pub project: String,
     pub label: String,
-    /// The agent's own launch flags —
-    /// `Agent::launch_args(skip_permissions, chrome)` — built by the caller
-    /// exactly where iced builds them (`src/app/spawn.rs:26-32`). They are
-    /// chained **before** the attention `extra_args` on both backends
-    /// (`crates/grove-core/src/session.rs:190,254-259`); without this field
-    /// the Permissions and Claude-in-Chrome settings are inert.
+    /// Built the same way iced does (`src/app/spawn.rs:26-32`); chained before the attention `extra_args` on both backends (`crates/grove-core/src/session.rs:190,254-259`).
     pub args: Vec<String>,
-    /// Whether this session should try tmux at all. Home terminals and panel
-    /// shells are convenience PTYs that must never be tmux-backed, or the
-    /// next launch's tmux discovery reimports them as agent sessions
-    /// (`crates/grove-core/src/session.rs:149-175`).
+    /// Home terminals and panel shells must never be tmux-backed, or the next launch's discovery reimports them as agent sessions (`crates/grove-core/src/session.rs:149-175`).
     pub use_tmux: bool,
 }
 
 impl SpawnTarget {
-    /// The home-terminal target: a native shell at `~`
-    /// (`src/app/terminals.rs:7-10,86-95`).
+    /// A native shell at `~` (`src/app/terminals.rs:7-10,86-95`).
     #[must_use]
     pub fn home(label: String) -> Self {
         Self {
             cwd: home_dir(),
             agent: Agent::Terminal,
             project: String::new(),
-            // `Agent::Terminal` has no flags; `launch_args` returns empty for
-            // it either way, and saying so here keeps the home path honest.
             label,
             args: Vec::new(),
             use_tmux: false,
@@ -127,10 +80,7 @@ impl SpawnTarget {
     }
 }
 
-/// Absolute path of the home directory, falling back to `/`
-/// (`src/app/terminals.rs:7-10`). Read from `$HOME` rather than through the
-/// `dirs` crate: "Tech stack additions: none" — grove-gpui does not depend on
-/// `dirs`, and on the platforms grove ships `$HOME` is what `dirs` reads too.
+/// Falls back to `/`, mirroring `src/app/terminals.rs:7-10`.
 #[must_use]
 pub fn home_dir() -> String {
     std::env::var("HOME")
@@ -141,23 +91,18 @@ pub fn home_dir() -> String {
 
 #[derive(Default)]
 pub struct SessionRegistry {
-    /// Insertion order — the id space and the tree's within-worktree order.
+    /// Insertion order is the tree's within-worktree order.
     order: Vec<SessionMeta>,
     terms: HashMap<SessionId, Entity<TerminalSession>>,
-    /// Pinned TERMINALS section. Positional identity, parallel vectors.
     home: Vec<SessionMeta>,
     home_terms: Vec<Entity<TerminalSession>>,
-    /// Per-worktree panel shells, keyed by absolute worktree path, with an
-    /// active index per path (Plan 07 Task 6 Step 1).
+    /// Keyed by absolute worktree path, with an active index per path.
     wt: HashMap<String, Vec<SessionMeta>>,
     wt_terms: HashMap<SessionId, Entity<TerminalSession>>,
     wt_active: HashMap<String, usize>,
-    /// Extra CLI args `attention::prepare` produced, awaiting the spawn call
-    /// that consumes them ([`Self::take_attention_args`]).
+    /// Awaiting the spawn call that consumes them ([`Self::take_attention_args`]).
     attention_args: HashMap<SessionId, Vec<String>>,
     next_id: u64,
-    /// Monotonic counter behind each terminal's internal label
-    /// (`src/app/mod.rs:96-101`).
     home_terminal_seq: usize,
 }
 
@@ -167,27 +112,17 @@ impl SessionRegistry {
         Self::default()
     }
 
-    /// Mint the next id. Monotonic and never reused, including across
-    /// removals — that is what makes [`SessionId`] a safe map key.
+    /// Never reused, including across removals — this is what makes [`SessionId`] a safe map key.
     fn next_id(&mut self) -> SessionId {
         self.next_id += 1;
         SessionId(self.next_id)
     }
 
-    // ── bookkeeping (pure — no PTY, no gpui App) ────────────────────────
-
-    /// Record a session's metadata and hand back its id. The live entity is
-    /// attached separately by [`Self::attach`], so the ordering rules stay
-    /// testable without spawning anything.
+    /// The live entity is attached separately by [`Self::attach`], so ordering stays testable without spawning anything.
     pub fn insert_meta(&mut self, project: String, wt_path: String, agent: Agent) -> SessionId {
         let id = self.next_id();
         let label = self.next_agent_label(agent);
-        // Before the PTY exists, mirroring `session.rs:155-175`: the state file
-        // must be keyed to the id the hooks will write under, so the id is
-        // allocated first and `prepare` runs before anything is spawned.
-        // `prepare` writes a real settings file under the user's config dir;
-        // the pure bookkeeping tests below must not litter it (they never
-        // spawn, so nothing would ever read what they wrote).
+        // Skipped under test: `prepare` writes a real file under the user's config dir, which pure bookkeeping tests must not litter.
         let prepared = if cfg!(test) {
             None
         } else {
@@ -212,12 +147,7 @@ impl SessionRegistry {
         id
     }
 
-    /// Record a **reattached** tmux session's metadata at `at`, the index
-    /// [`crate::reattach::plan`] computed. No `attention::prepare`: the agent
-    /// process was spawned by a previous grove run and its hook files are keyed
-    /// to that run's pid, so this session has no attention state at all and the
-    /// classifier falls through to the poller and the screen-scrape
-    /// (`crates/grove-core/src/session.rs:344`; recorded ambiguity 8).
+    /// No `attention::prepare`: the process predates this run and its hook files are keyed to the prior pid, so the classifier falls through to the screen-scrape (`crates/grove-core/src/session.rs:344`).
     pub fn insert_reattached(&mut self, at: usize, d: &tmux::DiscoveredSession) -> SessionId {
         let id = self.next_id();
         let at = at.min(self.order.len());
@@ -238,22 +168,18 @@ impl SessionRegistry {
         id
     }
 
-    /// The extra agent CLI args (`--settings …` / `-c notify=…`) for a session
-    /// whose PTY has not been spawned yet. Taken, not borrowed: they are used
-    /// exactly once, by the spawn that follows [`Self::insert_meta`].
+    /// Taken, not borrowed: used exactly once, by the spawn that follows [`Self::insert_meta`].
     pub fn take_attention_args(&mut self, id: SessionId) -> Vec<String> {
         self.attention_args.remove(&id).unwrap_or_default()
     }
 
-    /// `agent N`, N counting that agent kind's sessions ever recorded — the
-    /// same shape as the home terminals' `terminal N`.
+    /// Same shape as the home terminals' `terminal N`.
     fn next_agent_label(&self, agent: Agent) -> String {
         let n = self.order.iter().filter(|m| m.agent == agent).count() + 1;
         format!("{} {n}", agent.label().to_lowercase())
     }
 
-    /// `tmux_name` is the spawned session's actual backend — the requested one
-    /// can differ (tmux missing from `$PATH` falls back to native).
+    /// `tmux_name` is the actual backend; the requested one can differ (missing `$PATH` falls back to native).
     pub fn attach(
         &mut self,
         id: SessionId,
@@ -267,16 +193,13 @@ impl SessionRegistry {
         }
     }
 
-    /// Removes a session and cleans up its attention files
-    /// (`session.rs:530-535` — a killed session must not leave a `.state`
-    /// behind for the next run's GC to guess at).
+    /// Also cleans up attention files, so a killed session leaves no `.state` for the next GC to guess at (`session.rs:530-535`).
     pub fn remove(&mut self, id: SessionId) -> Option<SessionMeta> {
         self.terms.remove(&id);
         self.attention_args.remove(&id);
         let pos = self.order.iter().position(|m| m.id == id)?;
         let meta = self.order.remove(pos);
-        // `src/gui/update/sessions.rs:261-269` — reported from the one place
-        // every removal funnels through, so no kill path can miss it.
+        // Reported here so no kill path can miss it (`src/gui/update/sessions.rs:261-269`).
         crate::telemetry::track(
             "session_ended",
             vec![
@@ -291,11 +214,7 @@ impl SessionRegistry {
         if let Some(files) = meta.attention.as_ref() {
             attention::cleanup(files);
         }
-        // A removal is the user's destructive confirm, not a detach: without this
-        // the tmux session outlives grove and `discover_tmux_sessions` reattaches
-        // it on the next launch. Port of `Session::kill`'s tmux arm
-        // (`crates/grove-core/src/session.rs:522-534`, pre-cutover).
-        // ponytail: tmux only — iced also killpg'd native children; revisit if orphaned jobs show up.
+        // Without this the tmux session outlives grove and gets reattached on the next launch (`crates/grove-core/src/session.rs:522-534`); unlike iced, native children are not killpg'd here.
         if let Some(name) = meta.tmux_name.as_deref() {
             tmux::kill_session(name);
             session_meta::delete(name);
@@ -334,8 +253,7 @@ impl SessionRegistry {
         self.order.is_empty()
     }
 
-    /// Sessions living in `path`, in insertion order — the order the tree
-    /// renders them in (`src/gui/view/sidebar.rs:338-355`).
+    /// In insertion order, matching how the tree renders them (`src/gui/view/sidebar.rs:338-355`).
     #[must_use]
     pub fn sessions_in_worktree(&self, path: &str) -> Vec<SessionId> {
         self.order
@@ -345,8 +263,7 @@ impl SessionRegistry {
             .collect()
     }
 
-    /// Sessions belonging to a project, by name — the project row's count and
-    /// roll-up input (`sidebar.rs:243-248`).
+    /// The project row's count/roll-up input (`sidebar.rs:243-248`).
     #[must_use]
     pub fn by_project(&self, name: &str) -> Vec<SessionId> {
         self.order
@@ -356,17 +273,7 @@ impl SessionRegistry {
             .collect()
     }
 
-    /// Rename a project in every live session's in-memory metadata. The
-    /// on-disk sidecar rename is `grove_core::session_meta::rename_project`
-    /// (a separate call, since this registry never touches disk); this is
-    /// the LIVE half — without it a running app keeps showing the old name
-    /// in the tree/rail until restart, even though the settings store and
-    /// the sidecars were already fixed.
-    ///
-    /// Home terminals and per-worktree panel shells never carry a project
-    /// name (always `String::new()`, see `SpawnTarget::home` and the
-    /// `push_wt_meta`/`push_home_meta` test seams), so only `order` is
-    /// touched. Returns the number of sessions updated.
+    /// The live half of a rename; the on-disk sidecar rename is a separate call (`grove_core::session_meta::rename_project`). Returns sessions updated.
     pub fn rename_project(&mut self, from: &str, to: &str) -> usize {
         if from == to {
             return 0;
@@ -380,8 +287,6 @@ impl SessionRegistry {
         }
         count
     }
-
-    // ── home terminals ──────────────────────────────────────────────────
 
     #[must_use]
     pub fn home_terminals(&self) -> &[SessionMeta] {
@@ -398,15 +303,13 @@ impl SessionRegistry {
         self.home_terms.get(i)
     }
 
-    /// The next `terminal N` label (`src/app/terminals.rs:78-81`). Advancing
-    /// the sequence is the caller's commitment to spawn.
+    /// Advancing the sequence is the caller's commitment to spawn (`src/app/terminals.rs:78-81`).
     pub fn next_home_label(&mut self) -> String {
         self.home_terminal_seq += 1;
         format!("terminal {}", self.home_terminal_seq)
     }
 
-    /// Mint an id for a home terminal. They live outside the map, but the id
-    /// space is shared so nothing can ever collide.
+    /// The id space is shared with `order` so nothing can ever collide.
     pub fn next_home_id(&mut self) -> SessionId {
         self.next_id()
     }
@@ -416,10 +319,7 @@ impl SessionRegistry {
         self.home_terms.push(term);
     }
 
-    /// Swap a fresh shell into slot `i`, keeping its metadata (and so its
-    /// label) — the restart path (`src/app/terminals.rs:38-53`). Returns the
-    /// old entity so the caller can drop it. The caller must only reach here
-    /// **after** the replacement spawned successfully.
+    /// The restart path (`src/app/terminals.rs:38-53`); caller must only call this after the replacement spawned successfully.
     pub fn replace_home(
         &mut self,
         i: usize,
@@ -431,64 +331,44 @@ impl SessionRegistry {
         Some(std::mem::replace(&mut self.home_terms[i], term))
     }
 
-    /// Bookkeeping half of a home-terminal close. Returns the removed entity so
-    /// the caller can kill it. The **respawn** of a last-terminal close is the
-    /// caller's job (it needs a `Context` to spawn) — see
-    /// [`Self::home_terminals_need_spawn`].
+    /// Respawn on a last-terminal close is the caller's job — see [`Self::home_terminals_need_spawn`].
     pub fn close_home(&mut self, i: usize) -> Option<Entity<TerminalSession>> {
         if i >= self.home.len() {
             return None;
         }
         self.home.remove(i);
-        // `home_terms` is parallel to `home` in production; the pure tests
-        // record metadata only, so a missing entity is not an error here.
+        // Pure tests record metadata only, so a missing entity here is not an error.
         (i < self.home_terms.len()).then(|| self.home_terms.remove(i))
     }
 
-    /// Spec's "pinned TERMINALS section (always ≥1 home terminal)": true both
-    /// for the lazy first spawn and immediately after the last one is closed
-    /// (`src/app/terminals.rs:21-30`).
     #[must_use]
     pub fn home_terminals_need_spawn(&self) -> bool {
         self.home.is_empty()
     }
 
-    // ── per-worktree panel shells (Plan 07 Task 6 Step 1) ───────────────
-    //
-    // The third collection beside `order` and `home`, ported in *shape* from
-    // `App::wt_terminals`/`wt_active_terminal` (`src/app/terminals.rs:110-176`)
-    // — the iced types themselves are app-owned and off limits. Shells are
-    // `Agent::Terminal` at the worktree root and **native, not tmux**: they are
-    // convenience shells, not agents that must survive a restart, so
-    // `attention::prepare` returns `None` and there is nothing to thread down
-    // (the same argument as `sidebar.rs:297-301` makes for home terminals).
+    // Shells are ported in shape from `App::wt_terminals`/`wt_active_terminal` (`src/app/terminals.rs:110-176`); native, not tmux, like home terminals (`sidebar.rs:297-301`).
 
-    /// The shells of the panel for `wt_path` (empty if none spawned yet).
     #[must_use]
     pub fn wt_shells(&self, wt_path: &str) -> &[SessionMeta] {
         self.wt.get(wt_path).map_or(&[][..], Vec::as_slice)
     }
 
-    /// Active shell index within the panel for `wt_path`.
     #[must_use]
     pub fn active_wt_shell_idx(&self, wt_path: &str) -> Option<usize> {
         self.wt_active.get(wt_path).copied()
     }
 
-    /// The entity of the shell at `idx`, for the view's per-shell cache.
     #[must_use]
     pub fn wt_shell(&self, wt_path: &str, idx: usize) -> Option<&Entity<TerminalSession>> {
         let id = self.wt.get(wt_path)?.get(idx)?.id;
         self.wt_terms.get(&id)
     }
 
-    /// The next `terminal N` label — panel shells share the home terminals'
-    /// sequence, exactly as `App::next_terminal_label` does for both.
+    /// Panel shells share the home terminals' label sequence.
     pub fn next_wt_label(&mut self) -> String {
         self.next_home_label()
     }
 
-    /// Record a spawned panel shell and select it (`spawn_wt_terminal`).
     pub fn push_wt_shell(
         &mut self,
         wt_path: &str,
@@ -505,27 +385,20 @@ impl SessionRegistry {
         self.wt_active.insert(wt_path.to_string(), idx);
     }
 
-    /// Whether the panel for `wt_path` still needs its first shell
-    /// (`ensure_wt_terminal`, `src/app/terminals.rs:133-149`). The spawn itself
-    /// needs a `Context`, so it stays the caller's job.
+    /// The spawn itself needs a `Context`, so it stays the caller's job (`src/app/terminals.rs:133-149`).
     #[must_use]
     pub fn wt_shells_need_spawn(&self, wt_path: &str) -> bool {
         self.wt_shells(wt_path).is_empty()
     }
 
-    /// Focus the panel shell at `idx` (`select_wt_terminal`). Out of range is a
-    /// no-op, never a clamp.
+    /// Out of range is a no-op, never a clamp.
     pub fn select_wt_shell(&mut self, wt_path: &str, idx: usize) {
         if idx < self.wt_shells(wt_path).len() {
             self.wt_active.insert(wt_path.to_string(), idx);
         }
     }
 
-    /// Close the panel shell at `idx` and shift the active index the way
-    /// [`Self::close_home`]'s caller does (`close_wt_terminal`,
-    /// `src/app/terminals.rs:172-201`). Unlike the home terminal this does
-    /// **not** respawn when the last one closes — an empty panel is a valid
-    /// state. Returns the removed entity so the caller can kill it.
+    /// Unlike the home terminal, does not respawn when the last shell closes — an empty panel is valid (`src/app/terminals.rs:172-201`).
     pub fn close_wt_shell(&mut self, wt_path: &str, idx: usize) -> Option<Entity<TerminalSession>> {
         let shells = self.wt.get_mut(wt_path)?;
         if idx >= shells.len() {
@@ -550,7 +423,6 @@ impl SessionRegistry {
         removed
     }
 
-    /// Test seam: record a panel shell's metadata without an entity.
     #[cfg(test)]
     fn push_wt_meta(&mut self, wt_path: &str) {
         let id = self.next_id();
@@ -565,7 +437,6 @@ impl SessionRegistry {
                 label,
                 spawned_at: Instant::now(),
                 attention: None,
-                // Home terminals and panel shells are always native.
                 tmux: false,
                 tmux_name: None,
             },
@@ -573,7 +444,6 @@ impl SessionRegistry {
         );
     }
 
-    /// Test seam: record a home terminal's metadata without an entity.
     #[cfg(test)]
     fn push_home_meta(&mut self, label: String) {
         let id = self.next_id();
@@ -585,7 +455,6 @@ impl SessionRegistry {
             label,
             spawned_at: Instant::now(),
             attention: None,
-            // Home terminals and panel shells are always native.
             tmux: false,
             tmux_name: None,
         });
@@ -641,8 +510,6 @@ mod tests {
         assert_eq!(r.by_project("nope"), Vec::<SessionId>::new());
     }
 
-    /// A rename relabels every live session of that project and leaves
-    /// others (and the id/order) alone.
     #[test]
     fn rename_project_relabels_matching_sessions_only() {
         let mut r = SessionRegistry::new();
@@ -657,7 +524,6 @@ mod tests {
         assert_eq!(r.meta(g).map(|m| m.project.as_str()), Some("gamma"));
     }
 
-    /// Same name in and out is a no-op — no spurious rewrite, no false count.
     #[test]
     fn rename_project_is_a_noop_when_names_match() {
         let mut r = SessionRegistry::new();
@@ -665,8 +531,7 @@ mod tests {
         assert_eq!(r.rename_project("alpha", "alpha"), 0);
     }
 
-    /// `src/app/terminals.rs:78-81` — the label sequence never rewinds, so a
-    /// closed terminal's number is not handed to its replacement.
+    /// The label sequence never rewinds (`src/app/terminals.rs:78-81`).
     #[test]
     fn home_terminal_labels_are_sequential_and_never_reused() {
         let mut r = SessionRegistry::new();
@@ -707,10 +572,7 @@ mod tests {
         assert_eq!(label(c).as_deref(), Some("claude 2"));
     }
 
-    // ── panel shells (Plan 07 Task 6 Step 1) ────────────────────────────
-
-    /// `ensure_wt_terminal` (`src/app/terminals.rs:133-149`): the first shell
-    /// is spawned on demand and something is always selected afterwards.
+    /// The first shell is spawned on demand, and something is always selected afterward (`src/app/terminals.rs:133-149`).
     #[test]
     fn a_worktree_starts_with_no_shell_and_selects_the_first_one_added() {
         let mut r = SessionRegistry::new();
@@ -723,8 +585,6 @@ mod tests {
         assert_eq!(r.active_wt_shell_idx("/a"), Some(0));
     }
 
-    /// Adding focuses the new shell; selecting is bounds-checked, never a
-    /// clamp (`select_wt_terminal`).
     #[test]
     fn adding_a_shell_focuses_it_and_selection_is_bounds_checked() {
         let mut r = SessionRegistry::new();
@@ -738,8 +598,6 @@ mod tests {
         assert_eq!(r.active_wt_shell_idx("/a"), Some(0));
     }
 
-    /// `close_wt_terminal` (`src/app/terminals.rs:172-201`) — the same index
-    /// shift `close_home` does, and the collection may reach zero.
     #[test]
     fn closing_shells_shifts_the_active_index_and_may_empty_the_panel() {
         let mut r = SessionRegistry::new();
@@ -767,8 +625,6 @@ mod tests {
         assert!(r.close_wt_shell("/nope", 0).is_none());
     }
 
-    /// Closing the *last* shell of a stack refocuses the new last slot, not a
-    /// hole past the end.
     #[test]
     fn closing_the_last_shell_clamps_the_focus_back() {
         let mut r = SessionRegistry::new();

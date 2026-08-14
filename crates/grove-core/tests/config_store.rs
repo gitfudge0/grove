@@ -1,28 +1,9 @@
-//! Exercises `grove_core::storage`'s real on-disk write path against genuine
-//! temp files. Unit tests inside `src/storage.rs` already cover
-//! `write_atomic` and `resolve_config_dir` against tempdir-scoped paths (see
-//! commit 3d5d086) using `std::env::temp_dir()` directly, but they run
-//! in-process against paths the test itself controls end to end; this file
-//! instead treats `grove_core::storage` purely as an external library
-//! consumed through `tempfile::TempDir` fixtures, matching how the rest of
-//! the crate (and the GUI) actually calls it.
+//! Exercises `grove_core::storage`'s real on-disk write path through `tempfile::TempDir` fixtures, as an external
+//! library consumer rather than the in-process unit tests in `src/storage.rs`.
 //!
-//! `save()`/`load()` route through `config_path()` -> `config_dir()` -> the
-//! private `resolve_config_dir(dirs::config_dir())`, which used to be
-//! hardwired to the real user config directory with no caller-injectable
-//! base path — calling them from a test would have read or clobbered the
-//! developer's actual `~/.config/grove/projects.json`. `config_dir()` now
-//! honours the `GROVE_CONFIG_DIR` env var as a highest-precedence override
-//! (see `storage::CONFIG_DIR_ENV`), which makes `save`/`load` safely testable
-//! against a `tempfile::TempDir` — see `save_then_load_round_trips_through_real_paths`
-//! below. `GROVE_CONFIG_DIR` is process-global and `cargo test` runs the
-//! tests in this binary concurrently, so that test is serialized behind
+//! `save`/`load` normally resolve through the real `~/.config/grove`; `GROVE_CONFIG_DIR` (`storage::CONFIG_DIR_ENV`)
+//! overrides that so they're safely testable, but it's process-global, so tests using it serialize on
 //! `CONFIG_DIR_ENV_TEST_LOCK`.
-//!
-//! The rest of this file still limits itself to what the public API exposes
-//! with a caller-supplied path directly: `write_atomic`, plus `Store`'s own
-//! `serde_json` contract (which is what `save`/`load` are thin wrappers
-//! around).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -30,15 +11,10 @@ use fs_err as fs;
 use grove_core::agent::Agent;
 use grove_core::storage::{self, write_atomic, Project, RecentLaunch, Store};
 
-/// Serializes every test in this binary that sets `GROVE_CONFIG_DIR`, since
-/// `std::env::set_var` mutates process-global state and `cargo test` runs
-/// tests in a binary concurrently by default. Mirrors `theme.rs`'s
-/// `CUSTOM_TEST_LOCK` pattern.
+/// Serializes tests that set `GROVE_CONFIG_DIR`, since `cargo test` runs a binary's tests concurrently by default.
 static CONFIG_DIR_ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// `write_atomic` must genuinely replace pre-existing content at the
-/// destination — not append to it or leave the old bytes visible in any way
-/// — and must leave no `.json.tmp` sibling behind once the rename completes.
+/// Must genuinely replace, not append, and must leave no `.json.tmp` sibling once the rename completes.
 #[test]
 fn write_atomic_replaces_existing_content_and_leaves_no_tmp_residue() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -63,7 +39,6 @@ fn write_atomic_replaces_existing_content_and_leaves_no_tmp_residue() {
         ".json.tmp sibling must not survive a completed write_atomic"
     );
 
-    // No stray files of any name left behind in the directory either.
     let entries: Vec<_> = fs::read_dir(dir.path())
         .expect("read_dir")
         .filter_map(Result::ok)
@@ -76,9 +51,7 @@ fn write_atomic_replaces_existing_content_and_leaves_no_tmp_residue() {
     );
 }
 
-/// Writing into a path whose parent directory does not exist on disk must
-/// surface as an `Err` from `write_atomic`, not a panic — `write_atomic`
-/// does not create parent directories on the caller's behalf.
+/// Must surface as `Err`, not a panic — `write_atomic` doesn't create parent directories on the caller's behalf.
 #[test]
 fn write_atomic_with_missing_parent_directory_returns_err() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -92,10 +65,7 @@ fn write_atomic_with_missing_parent_directory_returns_err() {
     );
 }
 
-/// A `Store` populated with every field, including nested `Project` and
-/// `RecentLaunch` entries, must round-trip exactly through the same
-/// serialize -> write_atomic -> read -> deserialize pipeline `save()`/`load()`
-/// use internally, when driven against a caller-supplied tempdir path.
+/// Must round-trip exactly through the same serialize -> write_atomic -> read -> deserialize pipeline `save`/`load` use.
 #[test]
 fn store_round_trips_through_write_atomic_and_manual_read() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -148,8 +118,6 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
     let serialized = serde_json::to_string_pretty(&original).expect("serialize Store");
     write_atomic(&dest, serialized.as_bytes()).expect("write_atomic Store");
 
-    // Mirrors `load()`'s own read + parse steps exactly, just against a
-    // caller-supplied path instead of the hardwired real config path.
     let read_back = fs::read_to_string(&dest).expect("read back Store json");
     let recovered: Store = serde_json::from_str(&read_back).expect("deserialize Store");
 
@@ -172,14 +140,7 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
     assert_eq!(recovered.diff_mode, grove_core::storage::DiffMode::Split);
 }
 
-/// A file containing malformed JSON at the location `load()` would read from
-/// must fail to parse as a `Store` — the same `serde_json::from_str` call
-/// `load()` makes internally before it backs up the corrupt file and returns
-/// `Err`. This exercises the parse failure against bytes that actually went
-/// through a real `write_atomic` + `fs_err::read_to_string` round trip
-/// (rather than a string literal handed straight to `serde_json`, as the
-/// existing unit test does), so it also proves `write_atomic` faithfully
-/// preserves arbitrary — including invalid — byte content.
+/// Exercises the parse failure against bytes that went through a real `write_atomic` round trip, not a string literal.
 #[test]
 fn malformed_json_on_disk_fails_to_parse_as_store() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -196,11 +157,7 @@ fn malformed_json_on_disk_fails_to_parse_as_store() {
     );
 }
 
-/// End-to-end `storage::save` -> `storage::load` round trip against a
-/// `tempfile::TempDir`, made possible by the `GROVE_CONFIG_DIR` override.
-/// Previously impossible from an integration test: without the override,
-/// both functions resolve through the real `~/.config/grove`, so exercising
-/// them here would have read or clobbered the developer's actual config.
+/// End-to-end `save` -> `load` round trip, made possible by the `GROVE_CONFIG_DIR` override.
 #[test]
 fn save_then_load_round_trips_through_real_paths() {
     let _lock = CONFIG_DIR_ENV_TEST_LOCK
@@ -232,8 +189,6 @@ fn save_then_load_round_trips_through_real_paths() {
 
     storage::save(&original).expect("save");
 
-    // The config file must land inside the override directory, not the real
-    // config dir.
     let config_path = storage::config_path().expect("config_path");
     assert!(config_path.starts_with(dir.path()));
     assert!(config_path.exists());

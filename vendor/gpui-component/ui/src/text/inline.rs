@@ -17,9 +17,7 @@ use crate::{
     text::TextViewMultiClickKind, text::node::LinkMark, text::selection::word_range_at,
 };
 
-/// A inline element used to render a inline text and support selectable.
-///
-/// All text in TextView (including the CodeBlock) used this for text rendering.
+/// All text in TextView (including the CodeBlock) uses this for text rendering.
 pub(super) struct Inline {
     id: ElementId,
     text: SharedString,
@@ -30,17 +28,15 @@ pub(super) struct Inline {
     state: Arc<Mutex<InlineState>>,
 }
 
-/// The inline text state, used RefCell to keep the selection state.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct InlineState {
     hovered_index: Option<usize>,
-    /// The text that actually rendering, matched with selection.
+    /// The text actually rendered, matched against selection ranges.
     pub(super) text: SharedString,
     pub(super) selection: Option<Selection>,
 }
 
 impl InlineState {
-    /// Save actually rendered text for selected text to use.
     pub(crate) fn set_text(&mut self, text: SharedString) {
         self.text = text;
     }
@@ -68,7 +64,6 @@ impl Inline {
         }
     }
 
-    /// Get link at given mouse position.
     fn link_for_position(
         layout: &TextLayout,
         links: &Vec<(Range<usize>, LinkMark)>,
@@ -84,7 +79,6 @@ impl Inline {
         None
     }
 
-    /// Paint selected bounds for debug.
     #[allow(unused)]
     fn paint_selected_bounds(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         window.paint_quad(gpui::PaintQuad {
@@ -236,7 +230,6 @@ impl Inline {
         line_bounds
     }
 
-    /// Paint the selection background.
     fn paint_selection(
         selection: &Selection,
         text_layout: &TextLayout,
@@ -499,7 +492,6 @@ impl Element for Inline {
         });
 
         if !is_selection {
-            // click to open link
             window.on_mouse_event({
                 let links = self.links.clone();
                 let text_layout = text_layout.clone();
@@ -545,9 +537,7 @@ fn selection_for_multi_click(
 
     match kind {
         TextViewMultiClickKind::Word => word_range_at(text, offset),
-        // Known limitation: a paragraph maps to a single Inline run here. When a
-        // paragraph embeds an inline image it is split into multiple Inline runs,
-        // so triple-click only selects the run on the clicked side of the image.
+        // Known limitation: a paragraph with an inline image splits into multiple runs; triple-click only selects one side of it.
         TextViewMultiClickKind::Paragraph => (!text.is_empty()).then_some(0..text.len()),
     }
 }
@@ -570,8 +560,7 @@ fn point_in_text_selection(
         return false;
     }
 
-    // Treat the selection as single-line when both drag points fall within the
-    // same rendered line, even if their y coordinates differ inside that line.
+    // Treat the selection as single-line when both drag points fall within the same rendered line, even if their y coordinates differ inside that line.
     if point_in_line(selection_start) && point_in_line(selection_end) {
         let left = selection_start.x.min(selection_end.x);
         let right = selection_start.x.max(selection_end.x);
@@ -607,10 +596,7 @@ mod tests {
         let start = point(px(50.), px(50.));
         let end = point(px(150.), px(150.));
 
-        // First line but haft line height, true
-        // | p --------|
-        // | selection |
-        // |-----------|
+        // First line but half line height, true.
         assert!(point_in_text_selection(
             point(px(50.), px(40.)),
             char_width,
@@ -619,10 +605,7 @@ mod tests {
             line_height
         ));
 
-        // First line in selection, true
-        // | p --------|
-        // | selection |
-        // |-----------|
+        // First line in selection, true.
         assert!(point_in_text_selection(
             point(px(50.), px(50.)),
             char_width,
@@ -630,10 +613,7 @@ mod tests {
             end,
             line_height
         ));
-        // First line, but left out of selection, false
-        // p |-----------|
-        //   | selection |
-        //   |-----------|
+        // First line, but left out of selection, false.
         assert!(!point_in_text_selection(
             point(px(40.), px(50.)),
             char_width,
@@ -641,10 +621,7 @@ mod tests {
             end,
             line_height
         ));
-        // First line but right out of selection, true
-        // |-----------| p
-        // | selection |
-        // |-----------|
+        // First line but right out of selection, true.
         assert!(point_in_text_selection(
             point(px(160.), px(50.)),
             char_width,
@@ -653,10 +630,7 @@ mod tests {
             line_height
         ));
 
-        // Middle line in selection, true
-        // |-----------|
-        // |     p     |
-        // |-----------|
+        // Middle line in selection, true.
         assert!(point_in_text_selection(
             point(px(100.), px(70.)),
             char_width,
@@ -664,10 +638,7 @@ mod tests {
             end,
             line_height
         ));
-        // Middle line, but left out of selection, true
-        //   |-----------|
-        // p | selection |
-        //   |-----------|
+        // Middle line, but left out of selection, true.
         assert!(point_in_text_selection(
             point(px(40.), px(70.)),
             char_width,
@@ -675,10 +646,7 @@ mod tests {
             end,
             line_height
         ));
-        // Middle line, but right out of selection, true
-        // |-----------|
-        // | selection | p
-        // |-----------|
+        // Middle line, but right out of selection, true.
         assert!(point_in_text_selection(
             point(px(160.), px(70.)),
             char_width,
@@ -687,10 +655,7 @@ mod tests {
             line_height
         ));
 
-        // Last line in selection, true
-        // |-----------|
-        // | selection |
-        // |------- p -|
+        // Last line in selection, true |-----------| | selection | |------- p -|
         assert!(point_in_text_selection(
             point(px(100.), px(140.)),
             char_width,
@@ -698,11 +663,7 @@ mod tests {
             end,
             line_height
         ));
-        // Last line, but left out of selection, true
-        //
-        //   |-----------|
-        //   | selection |
-        // p |-----------|
+        // Last line, but left out of selection, true.
         assert!(point_in_text_selection(
             point(px(40.), px(140.)),
             char_width,
@@ -710,10 +671,7 @@ mod tests {
             end,
             line_height
         ));
-        // Last line, but right out of selection, false
-        // |-----------|
-        // | selection |
-        // |-----------| p
+        // Last line, but right out of selection, false.
         assert!(!point_in_text_selection(
             point(px(160.), px(140.)),
             char_width,
@@ -722,11 +680,7 @@ mod tests {
             line_height
         ));
 
-        // Out of vertical bounds (top), false
-        //       p
-        // |-----------|
-        // | selection |
-        // |-----------|
+        // Out of vertical bounds (top), false p |-----------| | selection | |-----------|
         assert!(!point_in_text_selection(
             point(px(100.), px(20.)),
             char_width,
@@ -734,11 +688,7 @@ mod tests {
             end,
             line_height
         ));
-        // Out of vertical bounds (bottom), false
-        // |-----------|
-        // | selection |
-        // |-----------|
-        //       p
+        // Out of vertical bounds (bottom), false |-----------| | selection | |-----------| p
         assert!(!point_in_text_selection(
             point(px(100.), px(160.)),
             char_width,
@@ -753,8 +703,7 @@ mod tests {
         let line_height = px(20.);
         let char_width = px(10.);
 
-        // Mouse down on lower line then drag upward to x=150.
-        // Top line should follow current mouse x, bottom line should keep anchor x.
+        // Mouse down on lower line then drag upward to x=150. Top line should follow current mouse x, bottom line should keep anchor x.
         let start = point(px(80.), px(150.));
         let end = point(px(150.), px(50.));
 

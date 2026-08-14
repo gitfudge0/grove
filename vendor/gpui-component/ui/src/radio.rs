@@ -10,9 +10,7 @@ use gpui::{
     div, prelude::FluentBuilder, px, relative, rems,
 };
 
-/// A Radio element.
-///
-/// This is not included the Radio group implementation, you can manage the group by yourself.
+/// Does not include Radio group implementation — manage the group yourself.
 #[derive(IntoElement)]
 pub struct Radio {
     base: Div,
@@ -32,7 +30,6 @@ pub struct Radio {
 }
 
 impl Radio {
-    /// Create a new Radio element with the given id.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -52,45 +49,37 @@ impl Radio {
         }
     }
 
-    /// Set tooltip text for the radio.
     pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
         self.tooltip.text = Some((tooltip.into(), None));
         self
     }
 
-    /// Set the label of the Radio element.
     pub fn label(mut self, label: impl Into<Text>) -> Self {
         self.label = Some(label.into());
         self
     }
 
-    /// Set the checked state of the Radio element, default is `false`.
     pub fn checked(mut self, checked: bool) -> Self {
         self.checked = checked;
         self
     }
 
-    /// Set the disabled state of the Radio element, default is `false`.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
-    /// Set the tab index for the Radio element, default is `0`.
     pub fn tab_index(mut self, tab_index: isize) -> Self {
         self.tab_index = tab_index;
         self
     }
 
-    /// Set the tab stop for the Radio element, default is `true`.
     pub fn tab_stop(mut self, tab_stop: bool) -> Self {
         self.tab_stop = tab_stop;
         self
     }
 
-    /// Add on_click handler when the Radio is clicked.
-    ///
-    /// The `&bool` parameter is the **new checked state**.
+    /// `&bool` is the new checked state.
     pub fn on_click(mut self, handler: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Rc::new(handler));
         self
@@ -235,7 +224,6 @@ impl RenderOnce for Radio {
                 )
             })
             .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
-                // Avoid focus on mouse down.
                 window.prevent_default();
             })
             .when(!self.disabled, |this| {
@@ -251,7 +239,6 @@ impl RenderOnce for Radio {
     }
 }
 
-/// A Radio group element.
 #[derive(IntoElement)]
 pub struct RadioGroup {
     id: ElementId,
@@ -276,49 +263,40 @@ impl RadioGroup {
         }
     }
 
-    /// Create a new Radio group with default Vertical layout.
     pub fn vertical(id: impl Into<ElementId>) -> Self {
         Self::new(id)
     }
 
-    /// Create a new Radio group with Horizontal layout.
     pub fn horizontal(id: impl Into<ElementId>) -> Self {
         Self::new(id).layout(Axis::Horizontal)
     }
 
-    /// Set the layout of the Radio group. Default is `Axis::Vertical`.
     pub fn layout(mut self, layout: Axis) -> Self {
         self.layout = layout;
         self
     }
 
-    // Add on_click handler when selected index changes.
-    //
-    // The `&usize` parameter is the selected index.
+    /// `&usize` is the selected index.
     pub fn on_click(mut self, handler: impl Fn(&usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Rc::new(handler));
         self
     }
 
-    /// Set the selected index.
     pub fn selected_index(mut self, index: Option<usize>) -> Self {
         self.selected_index = index;
         self
     }
 
-    /// Set the disabled state.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
-    /// Add a child Radio element.
     pub fn child(mut self, child: impl Into<Radio>) -> Self {
         self.radios.push(child.into());
         self
     }
 
-    /// Add multiple child Radio elements.
     pub fn children(mut self, children: impl IntoIterator<Item = impl Into<Radio>>) -> Self {
         self.radios.extend(children.into_iter().map(Into::into));
         self

@@ -13,14 +13,10 @@ pub struct Tree;
 /// Minimum line span for a node to be considered foldable.
 const MIN_FOLD_LINES: usize = 2;
 
-/// A fold range representing a foldable code region.
-///
-/// The fold range spans from start_line to end_line (inclusive).
+/// Spans from start_line to end_line, both inclusive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FoldRange {
-    /// Start line (inclusive)
     pub start_line: usize,
-    /// End line (inclusive)
     pub end_line: usize,
 }
 
@@ -37,15 +33,8 @@ impl FoldRange {
     }
 }
 
-// ==================== Native Implementation (with tree-sitter) ====================
-
 #[cfg(feature = "tree-sitter")]
-/// Check if a named node qualifies as a fold candidate.
-///
-/// Uses a structural heuristic: any **named** node spanning ≥ MIN_FOLD_LINES
-/// is foldable. tree-sitter already parses code into semantic units (functions,
-/// classes, blocks, etc.), so named nodes naturally correspond to meaningful
-/// foldable regions across all languages without a per-language node-type list.
+/// Any named node spanning ≥ MIN_FOLD_LINES is foldable — no per-language node-type list needed.
 fn is_foldable_node(node: &Node) -> bool {
     let start = node.start_position().row;
     let end = node.end_position().row;
@@ -53,12 +42,10 @@ fn is_foldable_node(node: &Node) -> bool {
 }
 
 #[cfg(feature = "tree-sitter")]
-/// Extract fold ranges from a tree-sitter syntax tree (full traversal).
 pub fn extract_fold_ranges(tree: &Tree) -> Vec<FoldRange> {
     let mut ranges = Vec::new();
     let root = tree.root_node();
     let mut cursor = root.walk();
-    // Skip the root, it's not foldable. Use named_children to skip literal tokens.
     for child in root.named_children(&mut cursor) {
         collect_foldable_nodes(child, &mut ranges);
     }
@@ -69,15 +56,11 @@ pub fn extract_fold_ranges(tree: &Tree) -> Vec<FoldRange> {
 }
 
 #[cfg(feature = "tree-sitter")]
-/// Extract fold ranges only within a byte range (for incremental updates after edits).
-///
-/// Skips subtrees entirely outside the range, making it O(nodes in range)
-/// instead of O(all nodes in tree).
+/// Skips subtrees entirely outside the range: O(nodes in range), not O(all nodes).
 pub fn extract_fold_ranges_in_range(tree: &Tree, byte_range: Range<usize>) -> Vec<FoldRange> {
     let mut ranges = Vec::new();
     let root = tree.root_node();
     let mut cursor = root.walk();
-    // Skip the root, it's not foldable. Use named_children to skip literal tokens.
     for child in root.named_children(&mut cursor) {
         collect_foldable_nodes_in_range(child, &byte_range, &mut ranges);
     }
@@ -88,7 +71,6 @@ pub fn extract_fold_ranges_in_range(tree: &Tree, byte_range: Range<usize>) -> Ve
 }
 
 #[cfg(feature = "tree-sitter")]
-/// Recursively collect foldable nodes, skipping subtrees outside byte_range.
 fn collect_foldable_nodes_in_range(
     node: Node,
     byte_range: &Range<usize>,
@@ -114,7 +96,6 @@ fn collect_foldable_nodes_in_range(
 }
 
 #[cfg(feature = "tree-sitter")]
-/// Recursively collect foldable nodes from the syntax tree (full traversal).
 fn collect_foldable_nodes(node: Node, ranges: &mut Vec<FoldRange>) {
     if !is_foldable_node(&node) {
         return;
@@ -131,16 +112,12 @@ fn collect_foldable_nodes(node: Node, ranges: &mut Vec<FoldRange>) {
     }
 }
 
-// ==================== WASM Stub Implementation ====================
-
 #[cfg(not(feature = "tree-sitter"))]
-/// Extract fold ranges - WASM stub (returns empty, no tree-sitter).
 pub fn extract_fold_ranges(_tree: &Tree) -> Vec<FoldRange> {
     Vec::new()
 }
 
 #[cfg(not(feature = "tree-sitter"))]
-/// Extract fold ranges in range - WASM stub (returns empty, no tree-sitter).
 pub fn extract_fold_ranges_in_range(_tree: &Tree, _byte_range: Range<usize>) -> Vec<FoldRange> {
     Vec::new()
 }

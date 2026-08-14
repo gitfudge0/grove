@@ -64,10 +64,10 @@ impl RowEntry {
 
 #[derive(Default, Clone)]
 pub(crate) struct RowsCache {
-    /// Only have section's that have rows.
+    /// Only sections that have rows.
     pub(crate) entities: Rc<Vec<RowEntry>>,
     pub(crate) items_count: usize,
-    /// The sections, the item is number of rows in each section.
+    /// Number of rows in each section.
     pub(crate) sections: Rc<Vec<usize>>,
     pub(crate) entries_sizes: Rc<Vec<Size<Pixels>>>,
     measured_size: MeasuredEntrySize,
@@ -78,32 +78,27 @@ impl RowsCache {
         self.entities.get(flatten_ix).cloned()
     }
 
-    /// Returns the number of flattened rows (Includes header, item, footer).
+    /// Flattened row count (includes headers/footers).
     pub(crate) fn len(&self) -> usize {
         self.entities.len()
     }
 
-    /// Return the number of items in the cache.
     pub(crate) fn items_count(&self) -> usize {
         self.items_count
     }
 
-    /// Returns the index of the  Entry with given path in the flattened rows.
     pub(crate) fn position_of(&self, path: &IndexPath) -> Option<usize> {
         self.entities
             .iter()
             .position(|p| p.is_entry() && p.eq_index_path(path))
     }
 
-    /// Returns the flattened position of the first item row, skipping section
-    /// headers and footers.
+    /// Skips section headers/footers.
     pub(crate) fn first_entry_position(&self) -> Option<usize> {
         self.entities.iter().position(RowEntry::is_entry)
     }
 
-    /// Return prev row, if the row is the first in the first section, goes to the last row.
-    ///
-    /// Empty rows section are skipped.
+    /// Wraps to the last row from the first; empty sections are skipped.
     pub(crate) fn prev(&self, path: Option<IndexPath>) -> IndexPath {
         let path = path.unwrap_or_default();
         let Some(pos) = self.position_of(&path) else {
@@ -133,9 +128,7 @@ impl RowsCache {
         }
     }
 
-    /// Returns the next row, if the row is the last in the last section, goes to the first row.
-    ///
-    /// Empty rows section are skipped.
+    /// Wraps to the first row from the last; empty sections are skipped.
     pub(crate) fn next(&self, path: Option<IndexPath>) -> IndexPath {
         let Some(mut path) = path else {
             return IndexPath::default();
@@ -270,18 +263,6 @@ mod tests {
     #[test]
     fn test_prev_next() {
         let mut row_cache = RowsCache::default();
-        // section 0
-        //  row 0
-        //  row 1
-        // section 1
-        //  row 0
-        //  row 1
-        //  row 2
-        //  row 3
-        // section 2
-        //  row 0
-        //  row 1
-        //  row 2
         row_cache.sections = Rc::new(vec![2, 4, 3]);
         row_cache.entities = Rc::new(build_entities(&[2, 4, 3]));
 
@@ -343,22 +324,16 @@ mod tests {
     #[test]
     fn test_prev_next_with_empty_sections() {
         let mut row_cache = RowsCache::default();
-        // section 0: 2 items
-        // section 1: 0 items (empty, should be skipped)
-        // section 2: 3 items
-        // section 3: 0 items (empty, should be skipped)
-        // section 4: 1 item
         row_cache.sections = Rc::new(vec![2, 0, 3, 0, 1]);
         row_cache.entities = Rc::new(build_entities(&[2, 0, 3, 0, 1]));
 
-        // Test next: should skip empty sections
         assert_eq!(
             row_cache.next(Some(IndexPath::new(0).section(0))),
             IndexPath::new(1).section(0)
         );
         assert_eq!(
             row_cache.next(Some(IndexPath::new(1).section(0))),
-            IndexPath::new(0).section(2) // Skip section 1 (empty)
+            IndexPath::new(0).section(2)
         );
         assert_eq!(
             row_cache.next(Some(IndexPath::new(0).section(2))),
@@ -366,25 +341,24 @@ mod tests {
         );
         assert_eq!(
             row_cache.next(Some(IndexPath::new(2).section(2))),
-            IndexPath::new(0).section(4) // Skip section 3 (empty)
+            IndexPath::new(0).section(4)
         );
         assert_eq!(
             row_cache.next(Some(IndexPath::new(0).section(4))),
-            IndexPath::new(0).section(0) // Wrap around to first item
+            IndexPath::new(0).section(0)
         );
 
-        // Test prev: should skip empty sections
         assert_eq!(
             row_cache.prev(Some(IndexPath::new(0).section(0))),
-            IndexPath::new(0).section(4) // Wrap around to last item, skip empty sections
+            IndexPath::new(0).section(4)
         );
         assert_eq!(
             row_cache.prev(Some(IndexPath::new(0).section(2))),
-            IndexPath::new(1).section(0) // Skip section 1 (empty)
+            IndexPath::new(1).section(0)
         );
         assert_eq!(
             row_cache.prev(Some(IndexPath::new(0).section(4))),
-            IndexPath::new(2).section(2) // Skip section 3 (empty)
+            IndexPath::new(2).section(2)
         );
         assert_eq!(
             row_cache.prev(Some(IndexPath::new(1).section(2))),

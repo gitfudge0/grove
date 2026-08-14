@@ -1,20 +1,7 @@
 //! Worktrees, the per-project worktree cache, and the two background git jobs
-//! the sidebar depends on.
-//!
-//! Everything here is `git`-shaped and therefore slow: `git worktree list` and
-//! `git status` are subprocesses, and `is_repo` stats the filesystem. None of
-//! it may happen during a repaint. The iced build learned this the hard way
-//! (`src/gui/state.rs:39-42`, `src/gui/view/sidebar.rs:26-31`) and this is the
-//! port of the machinery it grew:
-//!
-//! * `worktrees_for_project` / `ensure_wt_cached` / `rebuild_wt_cache` +
-//!   the **generation guard** (`update/mod.rs:1185`, `:1326`, `:1351`),
-//! * the 5s `is_repo` memo (`view/sidebar.rs:26-54`),
-//! * the 5s git-state poll with its in-flight guard (`update/mod.rs:1251`) and
-//!   `visible_worktree_paths` (`:1308`).
-//!
-//! grove-core supplies every git call as-is (Global Constraint 3 candidate 2):
-//! `git::{is_repo, list_worktrees, worktree_git_state, git_state_suffix}`.
+//! the sidebar depends on. Everything here is `git`-shaped and therefore
+//! slow — none of it may happen during a repaint (ported from
+//! `src/gui/state.rs:39-42`, `src/gui/view/sidebar.rs:26-31`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,52 +18,28 @@ use crate::entities::workspace_state::{
 };
 use crate::views::rows::{normalize_wt_path, path_basename};
 
-/// How long a memoized `git::is_repo` answer stays good
-/// (`src/gui/view/sidebar.rs:32`). A project gaining or losing its `.git` is
-/// rare and not something the app drives.
 const IS_REPO_TTL: Duration = Duration::from_secs(5);
 
-/// Throttle window for the git-state poll (`update/mod.rs:1254`).
 const GIT_POLL_INTERVAL: Duration = Duration::from_secs(5);
-/// Degraded cadence while the window is unfocused — still catches up
-/// eventually rather than stopping outright. Twelve times
-/// [`GIT_POLL_INTERVAL`]; spelled in minutes only because
-/// `clippy::duration_suboptimal_units` insists, so the ratio is stated here
-/// rather than left to be read off two different units.
+/// Twelve times [`GIT_POLL_INTERVAL`] while unfocused; spelled in minutes because `clippy::duration_suboptimal_units` insists.
 const GIT_POLL_INTERVAL_UNFOCUSED: Duration = Duration::from_mins(1);
 
 #[derive(Default)]
 pub struct ProjectTree {
-    /// The **active** project's worktrees (`App::worktrees`).
     worktrees: Vec<Worktree>,
-    /// Which TRUE project index `worktrees` actually belongs to, written
-    /// atomically with every write of `worktrees`. `None` only before the
-    /// first seed. Every reader (`worktrees_for_project`, `snapshot`) must
-    /// check this before treating `worktrees` as `active_proj`'s list —
-    /// without it, a writer of `WorkspaceState::proj_idx` that skips the
-    /// hand-off (`sync_default_tree`, a bad startup seed, an index shift from
-    /// removing a project) makes one project's worktrees render under
-    /// another's header.
+    /// Which TRUE project index `worktrees` belongs to; check before treating it as `active_proj`'s list.
     active_idx: Option<usize>,
     /// Every other project's worktrees, keyed by TRUE project index.
     wt_cache: HashMap<usize, Vec<Worktree>>,
-    /// Bumped by every change to the project list's *shape*. A sweep stamped
-    /// with an older generation is discarded wholesale: a sweep launched
-    /// before an add/remove/archive describes an index space that no longer
-    /// exists, and folding it in would attach one project's worktrees to
-    /// another (`update/mod.rs:1341-1350`).
+    /// Bumped by every project-list shape change; a sweep stamped with an older generation is discarded wholesale.
     generation: u64,
     is_repo_memo: HashMap<String, (bool, Instant)>,
     git_state: HashMap<String, WorktreeGitState>,
     last_git_poll: Option<Instant>,
-    /// Shared with the running poll so a slow `git status` sweep is *skipped*
-    /// rather than overlapped (`update/mod.rs:1266-1278`).
+    /// Shared with the running poll so a slow `git status` sweep is skipped rather than overlapped.
     git_poll_inflight: Arc<AtomicBool>,
-    /// Dropping a `Task` cancels it, so these fields *are* the running jobs;
-    /// overwriting one supersedes the previous run.
     git_poll: Option<Task<()>>,
-    // Never *read* — written to keep the spawned sweep alive. Dropping a `Task`
-    // cancels it, so removing this field would silently cancel every sweep.
+    // Never read — dropping a Task cancels it, so this field just keeps the sweep alive.
     #[allow(dead_code)]
     sweep: Option<Task<()>>,
 }
@@ -87,16 +50,13 @@ impl ProjectTree {
         Self::default()
     }
 
-    // Exercised only by this module's `#[cfg(test)]` generation-guard assertions.
     #[allow(dead_code)]
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
-    /// `update/mod.rs:1185-1193`. A cache miss is an empty slice, never a
-    /// panic: the tree simply renders that project with no worktrees until the
-    /// sweep lands.
+    /// A cache miss is an empty slice, never a panic.
     #[must_use]
     pub fn worktrees_for_project(&self, proj: usize, active_proj: usize) -> &[Worktree] {
         if proj == active_proj && self.active_idx == Some(proj) {
@@ -106,19 +66,13 @@ impl ProjectTree {
         }
     }
 
-    /// Seed `worktrees` for `proj`, recording it as the list's owner. Every
-    /// writer of `worktrees` must go through here (or `switch_active_project`)
-    /// so `active_idx` can never drift from what the list actually holds.
+    /// Every writer of `worktrees` must go through here (or `switch_active_project`), or `active_idx` drifts.
     pub fn set_active_worktrees(&mut self, proj: usize, worktrees: Vec<Worktree>) {
         self.worktrees = worktrees;
         self.active_idx = Some(proj);
     }
 
-    /// `switch_active_project`'s cache hand-off (`update/mod.rs:1121-1130`):
-    /// the outgoing project's list moves into the cache so the tree can still
-    /// render its children, and the incoming project's stale entry is dropped
-    /// in favour of a fresh inline read. Selection itself belongs to
-    /// [`WorkspaceState::select_project`].
+    /// Outgoing project's list moves into the cache; incoming's stale entry is dropped for a fresh inline read.
     pub fn switch_active_project(&mut self, old: usize, new: usize, new_path: &str) {
         if old == new {
             return;
@@ -130,24 +84,7 @@ impl ProjectTree {
         self.active_idx = Some(new);
     }
 
-    /// Heal a stale `active_idx` before it can be read this frame.
-    ///
-    /// The invariant that `worktrees` belongs to `active_idx` is meant to be
-    /// maintained by every writer of `WorkspaceState::proj_idx` calling
-    /// [`Self::switch_active_project`] — but some paths legitimately move
-    /// `proj_idx` without that hand-off (`sync_default_tree`'s default-tree
-    /// derivation, a removal that shifts every TRUE index down). Rather than
-    /// chase every such writer, [`Self::snapshot`] calls this first: if the
-    /// list on hand does not belong to `active_proj`, perform the same
-    /// park-then-reload `switch_active_project` does, using the store to find
-    /// `active_proj`'s path.
-    ///
-    /// `active_proj` out of range (e.g. the project list just shrank) is
-    /// handled by parking an **empty** list under it and stamping
-    /// `active_idx` anyway, rather than leaving it unset — leaving it unset
-    /// would make this method re-run (and re-shell out to `git`) on every
-    /// subsequent frame until a real project lands on that index, which is
-    /// exactly the repaint-time `git` call the module doc forbids.
+    /// Heals a stale `active_idx`; out-of-range still gets stamped (empty list) or this re-shells `git` every frame.
     pub fn ensure_active(&mut self, active_proj: usize, store: &Store) {
         if self.active_idx == Some(active_proj) {
             return;
@@ -165,14 +102,7 @@ impl ProjectTree {
         self.active_idx = Some(active_proj);
     }
 
-    /// [`Self::switch_active_project`] for a *session* rather than a row:
-    /// `WorkspaceState::select_session` moves `proj_idx` to the project owning
-    /// `id`, and [`Self::snapshot`] keys the live worktree list off that index,
-    /// so every selection that can cross a project boundary owes the tree this
-    /// hand-off. Skipping it renders one project's worktrees under another's
-    /// header and lands the selection on the wrong session. A no-op when `id`
-    /// is already in the active project, or when its project has no cached
-    /// worktrees to locate it in.
+    /// Same hand-off as [`Self::switch_active_project`], for a session crossing project boundaries.
     pub fn adopt_session_project(
         tree: &gpui::Entity<Self>,
         snap: &TreeSnapshot,
@@ -203,9 +133,7 @@ impl ProjectTree {
         }
     }
 
-    /// `update/mod.rs:1326-1334`.
-    // TODO(unwired): built and complete, but no caller ever pre-warms the
-    // worktree cache — see `sweep_wt_cache` below.
+    // TODO(unwired): no caller pre-warms the worktree cache — see `sweep_wt_cache` below.
     #[allow(dead_code)]
     pub fn ensure_wt_cached(&mut self, proj: usize, active_proj: usize, store: &Store) {
         if proj == active_proj || self.wt_cache.contains_key(&proj) {
@@ -217,20 +145,13 @@ impl ProjectTree {
         }
     }
 
-    /// The single invalidation point for the cache (`update/mod.rs:1351-1365`).
-    /// Every path that changes the project list's shape — add, remove, archive,
-    /// restore, onboarding — calls this, so any sweep already in flight is now
-    /// stale.
+    /// Called by every add/remove/archive/restore, so any sweep in flight is now stale.
     pub fn rebuild_wt_cache(&mut self) {
         self.wt_cache.clear();
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Fold in an off-thread sweep, unless the generation moved while it ran.
-    /// Returns whether the result was applied — the discard is the whole point
-    /// of the guard, so it is observable.
-    // Reached in production only from `sweep_wt_cache`, which is itself unwired;
-    // `#[cfg(test)]` code is what currently exercises the discard guard.
+    /// Discards the sweep if the generation moved while it ran (reached in production only from unwired `sweep_wt_cache`).
     #[allow(dead_code)]
     pub fn apply_sweep(&mut self, generation: u64, swept: HashMap<usize, Vec<Worktree>>) -> bool {
         if generation != self.generation {
@@ -240,12 +161,7 @@ impl ProjectTree {
         true
     }
 
-    /// Sweep every non-active project's worktrees off the UI thread. Until the
-    /// result lands, inactive projects render with no worktrees — exactly as
-    /// they already do on a cold cache.
-    // TODO(unwired): a complete, generation-guarded background pre-warm of the
-    // worktree cache with a passing discard test — nothing calls it, so inactive
-    // projects only ever get worktrees via `switch_active_project`'s hand-off.
+    // TODO(unwired): nothing calls this yet.
     #[allow(dead_code)]
     pub fn sweep_wt_cache(&mut self, store: &Store, active_proj: usize, cx: &mut Context<Self>) {
         let generation = self.generation;
@@ -275,10 +191,7 @@ impl ProjectTree {
         }));
     }
 
-    // ── is_repo memo ────────────────────────────────────────────────────
-
-    /// `git::is_repo` memoized for [`IS_REPO_TTL`] (`view/sidebar.rs:40-54`).
-    /// `now` is injected so the expiry is testable without sleeping.
+    /// `git::is_repo` memoized for [`IS_REPO_TTL`]; `now` is injected so expiry is testable without sleeping.
     pub fn is_repo_cached(&mut self, path: &str, now: Instant) -> bool {
         if let Some((answer, at)) = self.is_repo_memo.get(path) {
             if now.duration_since(*at) < IS_REPO_TTL {
@@ -290,17 +203,12 @@ impl ProjectTree {
         answer
     }
 
-    /// Test seam: seed the memo without touching the filesystem.
     #[cfg(test)]
     fn seed_is_repo(&mut self, path: &str, answer: bool, at: Instant) {
         self.is_repo_memo.insert(path.to_string(), (answer, at));
     }
 
-    // ── the 5s git-state poll ───────────────────────────────────────────
-
-    /// Rendered dirty/ahead/behind text per worktree path, for the flattened
-    /// worktree rows. `git_state_suffix` returning `None` means "nothing worth
-    /// showing", so that worktree simply has no suffix.
+    /// `None` from `git_state_suffix` means "nothing worth showing", so that worktree has no suffix.
     #[must_use]
     pub fn git_suffixes(&self) -> HashMap<String, String> {
         self.git_state
@@ -309,16 +217,13 @@ impl ProjectTree {
             .collect()
     }
 
-    /// The raw cached git state per worktree path, including the uncommitted
-    /// diff counts that `git_suffixes` deliberately does not render.
+    /// Includes the uncommitted diff counts that `git_suffixes` deliberately does not render.
     #[must_use]
     pub fn git_states(&self) -> HashMap<String, WorktreeGitState> {
         self.git_state.clone()
     }
 
-    /// Fold a completed poll in: fresh entries overwrite, failures **drop** the
-    /// cached entry rather than leaving stale data on screen
-    /// (`update/mod.rs:1288-1299`).
+    /// Failures drop the cached entry rather than leaving stale data on screen.
     pub fn apply_git_poll(&mut self, fresh: HashMap<String, WorktreeGitState>, stale: &[String]) {
         self.git_state.extend(fresh);
         for path in stale {
@@ -326,16 +231,7 @@ impl ProjectTree {
         }
     }
 
-    /// Whether the throttle window has elapsed (`update/mod.rs:1252-1259`).
-    /// Stamps `last_git_poll` when it returns true, like the original. When
-    /// `focused` is false the interval degrades to
-    /// [`GIT_POLL_INTERVAL_UNFOCUSED`] rather than stopping outright, so an
-    /// unfocused window still catches up occasionally.
-    ///
-    /// Because this stamps as a side effect, callers that also need to check
-    /// something else (see [`Self::poll_decision`]) must check that other
-    /// condition **first** — calling this and discarding the result still
-    /// consumes the throttle window.
+    /// Stamps `last_git_poll` as a side effect when true — a caller must not call and discard, that still burns the window.
     pub fn git_poll_due(&mut self, now: Instant, focused: bool) -> bool {
         let interval = if focused {
             GIT_POLL_INTERVAL
@@ -351,10 +247,7 @@ impl ProjectTree {
         due
     }
 
-    /// Paths of every worktree currently rendered in the tree — every worktree
-    /// of a non-collapsed **active** project (`update/mod.rs:1308-1324`).
-    /// Archived projects are skipped here too, or `git status` keeps polling
-    /// worktrees nothing renders.
+    /// Skips archived/collapsed projects, or `git status` keeps polling worktrees nothing renders.
     #[must_use]
     pub fn visible_worktree_paths(&self, store: &Store, ws: &WorkspaceState) -> Vec<String> {
         let mut paths = Vec::new();
@@ -365,29 +258,13 @@ impl ProjectTree {
             paths.extend(
                 self.worktrees_for_project(pi, ws.proj_idx())
                     .iter()
-                    // Normalized, because this is the git cache's key and the
-                    // card joins on it from the registry's side
-                    // (`normalize_wt_path`).
                     .map(|w| normalize_wt_path(&w.path).to_string()),
             );
         }
         paths
     }
 
-    /// The paths the 5s poll must actually cover, which depends on what the
-    /// rail is rendering.
-    ///
-    /// [`Self::visible_worktree_paths`]'s "don't poll worktrees nothing
-    /// renders" rule is right for the tree, where a collapsed project shows no
-    /// worktree rows. It is wrong for [`RailMode::Sessions`]: that mode renders
-    /// **every** session across every project, collapsed or not, and each card
-    /// shows its worktree's diff — so the poll set there is the set of
-    /// worktrees backing live sessions. Polling the tree's set in sessions mode
-    /// left every card without a `git_state` entry.
-    ///
-    /// Session paths are normalized ([`normalize_wt_path`]) and de-duplicated:
-    /// several sessions commonly share one worktree, and the cache is keyed by
-    /// this exact string on both sides of the join.
+    /// `Sessions` mode polls the set backing live sessions instead of [`Self::visible_worktree_paths`]'s tree-visible set.
     #[must_use]
     pub fn polled_worktree_paths(
         &self,
@@ -410,16 +287,7 @@ impl ProjectTree {
         }
     }
 
-    /// Whether `maybe_poll_git_state` should actually run the poll.
-    ///
-    /// The empty-paths check **must** come before the `git_poll_due` call: on
-    /// the first frames after launch the session registry is still empty, so
-    /// `paths` is empty. `git_poll_due` stamps `last_git_poll` as a side
-    /// effect whenever it returns `true`, so if it ran first it would burn
-    /// the throttle window on a poll that does no work, and the first real
-    /// poll would then be blocked for a further `GIT_POLL_INTERVAL` (5s) —
-    /// visibly delaying the sidebar's diff chips at startup. Do not collapse
-    /// this back into one `||` expression.
+    /// Empty check must come before `git_poll_due`, or its side-effect stamp burns the window before there's anything to poll.
     fn poll_decision(&mut self, now: Instant, focused: bool, paths_empty: bool) -> bool {
         if paths_empty {
             return false;
@@ -427,10 +295,6 @@ impl ProjectTree {
         self.git_poll_due(now, focused)
     }
 
-    /// The 5s poll, as its own background task rather than a tick branch
-    /// (spec §4). Three behaviors, all load-bearing: the 5s throttle, the
-    /// in-flight guard that **skips** rather than overlaps, and dropping —
-    /// never staling — an entry whose `git` call failed.
     pub fn maybe_poll_git_state(
         &mut self,
         paths: Vec<String>,
@@ -460,8 +324,6 @@ impl ProjectTree {
                             Some(state) => {
                                 fresh.insert(path, state);
                             }
-                            // Any failure (no repo, no upstream, git missing)
-                            // degrades to "no signal".
                             None => stale.push(path),
                         }
                     }
@@ -476,11 +338,7 @@ impl ProjectTree {
         }));
     }
 
-    // ── the snapshot the pure logic reads ───────────────────────────────
-
-    /// Materialize the [`TreeSnapshot`] that [`WorkspaceState`]'s transitions
-    /// and `views::rows::flatten` both read. One pass over the registry up
-    /// front, so no row rescans the session list (`view/sidebar.rs:227-237`).
+    /// One pass over the registry up front, so no row rescans the session list.
     #[must_use]
     pub fn snapshot(
         &mut self,
@@ -505,8 +363,7 @@ impl ProjectTree {
             }
             .iter()
             .map(|w| SnapshotWorktree {
-                // The main worktree shows the project name; every other one
-                // shows its directory basename (`view/sidebar.rs:285-289`).
+                // Main worktree shows the project name; others show their basename.
                 name: if w.is_main {
                     p.name.clone()
                 } else {
@@ -559,23 +416,15 @@ mod tests {
         }
     }
 
-    /// A poll with no paths to cover must not stamp `last_git_poll`, or it
-    /// silently consumes the 5s throttle window before there is anything to
-    /// poll — the empty-registry frames right after launch delayed the first
-    /// real `git status` by a full `GIT_POLL_INTERVAL` (spec regression: see
-    /// `poll_decision`'s doc comment).
     #[test]
     fn an_empty_path_poll_does_not_consume_the_throttle_window() {
         let mut tree = ProjectTree::new();
         let now = Instant::now();
         assert!(!tree.poll_decision(now, true, true));
         assert!(tree.last_git_poll.is_none());
-        // A subsequent call with real paths, at the very same instant, is
-        // still due — the empty-paths call above must not have stamped it.
         assert!(tree.poll_decision(now, true, false));
     }
 
-    /// `update/mod.rs:1185-1193` — a cache miss is empty, not a panic.
     #[test]
     fn worktrees_for_project_reads_the_active_list_then_the_cache() {
         let mut tree = ProjectTree::new();
@@ -586,24 +435,15 @@ mod tests {
         assert!(tree.worktrees_for_project(7, 0).is_empty());
     }
 
-    /// A `worktrees` list that belongs to project 0 must never be served for
-    /// project 1, even by the wrong-index path — this is the mis-attribution
-    /// the `active_idx` invariant exists to make unrepresentable.
     #[test]
     fn a_list_seeded_for_one_project_is_never_served_for_another() {
         let mut tree = ProjectTree::new();
         tree.set_active_worktrees(0, vec![wt("/a", true)]);
-        // Queried as project 1's active list: must NOT return project 0's
-        // worktrees, because `active_idx` is `Some(0)`, not `Some(1)`.
         assert!(tree.worktrees_for_project(1, 1).is_empty());
-        // Querying project 0 with a *different* claimed active_proj must also
-        // not hand back the list under the wrong identity.
         assert!(tree.worktrees_for_project(0, 1).is_empty());
-        // Only the correct (proj, active_proj) pair sees it.
         assert_eq!(tree.worktrees_for_project(0, 0).len(), 1);
     }
 
-    /// `update/mod.rs:1351-1365` + `:1341-1350`.
     #[test]
     fn a_sweep_from_before_a_rebuild_is_discarded_wholesale() {
         let mut tree = ProjectTree::new();
@@ -611,11 +451,9 @@ mod tests {
         let mut swept = HashMap::new();
         swept.insert(1, vec![wt("/one", true)]);
 
-        // Same generation: folded in.
         assert!(tree.apply_sweep(generation, swept.clone()));
         assert_eq!(tree.worktrees_for_project(1, 0).len(), 1);
 
-        // The project list changed shape while a second sweep was running.
         tree.rebuild_wt_cache();
         assert_ne!(tree.generation(), generation);
         assert!(tree.worktrees_for_project(1, 0).is_empty());
@@ -627,13 +465,9 @@ mod tests {
     fn switching_the_active_project_hands_its_worktrees_to_the_cache() {
         let mut tree = ProjectTree::new();
         tree.set_active_worktrees(0, vec![wt("/a", true), wt("/a-x", false)]);
-        // A stale entry for the incoming project must be dropped in favour of
-        // the fresh inline read (`update/mod.rs:1128`).
         tree.wt_cache.insert(2, vec![wt("/stale", true)]);
         tree.switch_active_project(0, 2, "/nope");
-        // The outgoing project's list is now readable from the cache…
         assert_eq!(tree.worktrees_for_project(0, 2).len(), 2);
-        // …and the incoming project's stale cache entry is gone.
         assert!(!tree.wt_cache.contains_key(&2));
     }
 
@@ -645,19 +479,15 @@ mod tests {
         assert_eq!(tree.worktrees_for_project(1, 1).len(), 1);
     }
 
-    /// `view/sidebar.rs:40-54`.
     #[test]
     fn the_is_repo_answer_is_memoized_for_five_seconds() {
         let mut tree = ProjectTree::new();
         let t0 = Instant::now();
         tree.seed_is_repo("/definitely-not-a-repo", true, t0);
-        // Inside the TTL the (deliberately wrong) memo is returned…
         assert!(tree.is_repo_cached("/definitely-not-a-repo", t0 + Duration::from_secs(4)));
-        // …and past it the real answer replaces it.
         assert!(!tree.is_repo_cached("/definitely-not-a-repo", t0 + Duration::from_secs(6)));
     }
 
-    /// `update/mod.rs:1252-1259`.
     #[test]
     fn the_git_poll_is_throttled_to_one_run_per_five_seconds() {
         let mut tree = ProjectTree::new();
@@ -667,7 +497,6 @@ mod tests {
         assert!(tree.git_poll_due(t0 + Duration::from_secs(5), true));
     }
 
-    /// Unfocused windows still catch up, just on a slower cadence.
     #[test]
     fn the_git_poll_degrades_to_sixty_seconds_when_unfocused() {
         let mut tree = ProjectTree::new();
@@ -678,7 +507,6 @@ mod tests {
         assert!(tree.git_poll_due(t0 + Duration::from_mins(1), false));
     }
 
-    /// `update/mod.rs:1288-1299` — failure drops, it does not stale.
     #[test]
     fn a_failed_git_call_drops_the_cached_state_instead_of_showing_stale_data() {
         let mut tree = ProjectTree::new();
@@ -698,7 +526,6 @@ mod tests {
         assert!(tree.git_suffixes().is_empty());
     }
 
-    /// `update/mod.rs:1308-1324` — collapsed and archived projects are skipped.
     #[test]
     fn only_visible_worktrees_of_active_projects_are_polled() {
         let mut store = Store {
@@ -722,9 +549,6 @@ mod tests {
             vec!["/a".to_string(), "/g".to_string()]
         );
 
-        // Collapsing a project removes its worktrees from the poll set.
-        // (`select_project(0)` keeps `proj_idx` at 0, so the active list stays
-        // where this fixture put it.)
         ws.select_project(0);
         assert_eq!(
             tree.visible_worktree_paths(&store, &ws),
@@ -732,10 +556,6 @@ mod tests {
         );
     }
 
-    /// The sessions rail renders every session regardless of collapse state,
-    /// so a session in a **collapsed** project must still get its worktree
-    /// polled — the tree's visible-rows rule left those cards with no git
-    /// state at all, which rendered as `clean` forever.
     #[test]
     fn sessions_mode_polls_the_worktrees_behind_live_sessions_even_when_collapsed() {
         let store = Store {
@@ -747,20 +567,13 @@ mod tests {
         tree.wt_cache.insert(1, vec![wt("/g", true)]);
 
         let mut ws = WorkspaceState::default();
-        // Collapse alpha: in tree mode its worktree drops out of the poll…
         ws.select_project(0);
-        let sessions = vec![
-            "/a".to_string(),
-            // A trailing slash and a duplicate: one normalized entry each.
-            "/g/".to_string(),
-            "/g".to_string(),
-        ];
+        let sessions = vec!["/a".to_string(), "/g/".to_string(), "/g".to_string()];
         assert_eq!(
             tree.polled_worktree_paths(&store, &ws, &sessions),
             vec!["/g".to_string()]
         );
 
-        // …and in sessions mode both are polled, because both back a card.
         ws.toggle_rail_mode();
         assert_eq!(ws.rail_mode(), RailMode::Sessions);
         assert_eq!(
@@ -799,18 +612,7 @@ mod tests {
         assert!(snap.projects[0].worktrees[1].sessions.is_empty());
     }
 
-    /// The headline regression, at the `snapshot` level: `sync_default_tree`
-    /// moves `proj_idx` to a new project with no `switch_active_project`
-    /// hand-off, and `ensure_active` is the only thing standing between that
-    /// and one project's worktrees rendering under another's header.
-    ///
-    /// `git::list_worktrees` on a non-repo (or nonexistent) path never
-    /// returns an *empty* list — it falls back to a single synthetic root
-    /// worktree named after the path itself (`grove-core/src/git.rs:69-81`).
-    /// So the correct assertion here is not "empty", it's "not project 0's
-    /// list": project 1 must get its own (synthetic) worktree, never `/a` or
-    /// `/a-x`, and project 0's real list must survive intact in the cache
-    /// rather than being lost.
+    /// `git::list_worktrees` on a non-repo path falls back to a synthetic root worktree, never an empty list.
     #[test]
     fn ensure_active_heals_a_snapshot_that_skipped_the_hand_off() {
         let store = Store {
@@ -823,22 +625,16 @@ mod tests {
         let mut tree = ProjectTree::new();
         tree.set_active_worktrees(0, vec![wt("/a", true), wt("/a-x", false)]);
 
-        // proj_idx moved to 1 with no hand-off — exactly what
-        // `sync_default_tree` does.
         let snap = tree.snapshot(&store, &SessionRegistry::new(), 1);
 
         let Some(p1) = snap.projects.iter().find(|p| p.idx == 1) else {
             panic!("snapshot must still include project 1");
         };
-        // Must NOT have inherited project 0's worktrees.
         assert!(!p1.worktrees.iter().any(|w| w.path == "/a"));
         assert!(!p1.worktrees.iter().any(|w| w.path == "/a-x"));
-        // It gets its own (synthetic root, since the path isn't a real repo)
-        // worktree instead.
         assert_eq!(p1.worktrees.len(), 1);
         assert_eq!(p1.worktrees[0].path, "/grove-test-p1-does-not-exist");
 
-        // Project 0's two worktrees were parked into `wt_cache`, not lost.
         let Some(p0) = snap.projects.iter().find(|p| p.idx == 0) else {
             panic!("snapshot must still include project 0");
         };
@@ -846,10 +642,6 @@ mod tests {
         assert_eq!(p0_paths, vec!["/a", "/a-x"]);
     }
 
-    /// Once `ensure_active` has healed `active_idx` to a given project, a
-    /// second call with the same index must be a no-op — the guard at the
-    /// top of the method exists specifically so `snapshot` doesn't re-shell
-    /// out to `git` every frame once it's caught up.
     #[test]
     fn ensure_active_is_a_no_op_once_healed() {
         let store = Store {
@@ -869,8 +661,6 @@ mod tests {
             .get(&0)
             .map(|wts| wts.iter().map(|w| w.path.clone()).collect());
 
-        // Same active_proj again: the `active_idx == Some(active_proj)` guard
-        // must return immediately, leaving everything untouched.
         tree.ensure_active(1, &store);
         let after: Vec<String> = tree.worktrees.iter().map(|w| w.path.clone()).collect();
         let cached_0_after: Option<Vec<String>> = tree
@@ -881,11 +671,6 @@ mod tests {
         assert_eq!(cached_0_after, cached_0);
     }
 
-    /// An out-of-range `active_proj` (the project list just shrank) must
-    /// stamp `active_idx` with an *empty* list rather than leaving it unset —
-    /// leaving it unset would make `ensure_active` retry (and re-shell out to
-    /// `git`) on every subsequent frame, which is exactly the repaint-time
-    /// `git` call the module forbids.
     #[test]
     fn ensure_active_stamps_an_out_of_range_index_instead_of_retrying() {
         let store = Store {
@@ -896,12 +681,9 @@ mod tests {
         tree.set_active_worktrees(0, vec![wt("/a", true)]);
 
         tree.ensure_active(5, &store);
-        // Stamped, even though there's no project at index 5 — the private
-        // field is readable here because this test lives inside the module.
         assert_eq!(tree.active_idx, Some(5));
         assert!(tree.worktrees.is_empty());
 
-        // A second call must be a no-op: no fresh `git` call, no change.
         tree.ensure_active(5, &store);
         assert_eq!(tree.active_idx, Some(5));
         assert!(tree.worktrees.is_empty());

@@ -21,7 +21,6 @@ const RESIZE_HIT_SIZE: Pixels = px(4.0);
 /// corners, so keep the generic window wrapper square until rounded content masks exist.
 pub(crate) const BORDER_RADIUS: Pixels = px(0.0);
 
-/// Create a new window border.
 pub fn window_border() -> WindowBorder {
     WindowBorder::new()
 }
@@ -84,7 +83,6 @@ fn client_frame_insets(shadow_size: Pixels, tiling: &Tiling) -> Edges<Pixels> {
     insets
 }
 
-/// Get the window paddings.
 pub fn window_paddings(window: &Window) -> Edges<Pixels> {
     let shadow_size = window.client_inset().unwrap_or(SHADOW_SIZE);
     match window.window_decorations() {

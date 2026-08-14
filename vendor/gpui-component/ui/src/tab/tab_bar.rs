@@ -33,7 +33,6 @@ impl TabIndicatorBounds {
     }
 }
 
-/// A TabBar element that contains multiple [`Tab`] items.
 #[derive(IntoElement)]
 pub struct TabBar {
     id: ElementId,
@@ -52,7 +51,6 @@ pub struct TabBar {
 }
 
 impl TabBar {
-    /// Create a new TabBar.
     pub fn new(id: impl Into<ElementId>) -> Self {
         let id = id.into();
         Self {
@@ -72,31 +70,27 @@ impl TabBar {
         }
     }
 
-    /// Set the Tab variant, all children will inherit the variant.
+    /// All children inherit whatever variant is set here.
     pub fn with_variant(mut self, variant: TabVariant) -> Self {
         self.variant = variant;
         self
     }
 
-    /// Set the Tab variant to Pill, all children will inherit the variant.
     pub fn pill(mut self) -> Self {
         self.variant = TabVariant::Pill;
         self
     }
 
-    /// Set the Tab variant to Outline, all children will inherit the variant.
     pub fn outline(mut self) -> Self {
         self.variant = TabVariant::Outline;
         self
     }
 
-    /// Set the Tab variant to Segmented, all children will inherit the variant.
     pub fn segmented(mut self) -> Self {
         self.variant = TabVariant::Segmented;
         self
     }
 
-    /// Set the Tab variant to Underline, all children will inherit the variant.
     pub fn underline(mut self) -> Self {
         self.variant = TabVariant::Underline;
         self
@@ -108,43 +102,36 @@ impl TabBar {
         self
     }
 
-    /// Track the scroll of the TabBar.
     pub fn track_scroll(mut self, scroll_handle: &ScrollHandle) -> Self {
         self.scroll_handle = Some(scroll_handle.clone());
         self
     }
 
-    /// Set the prefix element of the TabBar
     pub fn prefix(mut self, prefix: impl IntoElement) -> Self {
         self.prefix = Some(prefix.into_any_element());
         self
     }
 
-    /// Set the suffix element of the TabBar
     pub fn suffix(mut self, suffix: impl IntoElement) -> Self {
         self.suffix = Some(suffix.into_any_element());
         self
     }
 
-    /// Add children of the TabBar, all children will inherit the variant.
     pub fn children(mut self, children: impl IntoIterator<Item = impl Into<Tab>>) -> Self {
         self.children.extend(children.into_iter().map(Into::into));
         self
     }
 
-    /// Add child of the TabBar, tab will inherit the variant.
     pub fn child(mut self, child: impl Into<Tab>) -> Self {
         self.children.push(child.into());
         self
     }
 
-    /// Set the selected index of the TabBar.
     pub fn selected_index(mut self, index: usize) -> Self {
         self.selected_index = Some(index);
         self
     }
 
-    /// Set the last empty space element of the TabBar.
     pub fn last_empty_space(mut self, last_empty_space: impl IntoElement) -> Self {
         self.last_empty_space = last_empty_space.into_any_element();
         self
@@ -254,7 +241,6 @@ impl TabBar {
         Some((indicator.into_any_element(), epoch))
     }
 
-    /// Update animation parameters based on current and previous selection.
     fn update_anim_params(
         &self,
         selected_ix: usize,

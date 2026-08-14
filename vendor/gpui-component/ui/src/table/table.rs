@@ -8,12 +8,7 @@ use crate::{ActiveTheme as _, AnyChildElement, ChildElement, Sizable, Size, Styl
 
 const MIN_CELL_WIDTH: Pixels = px(100.);
 
-/// A basic table component for directly rendering tabular data.
-///
-/// Unlike [`DataTable`], this is a simple, stateless, composable table
-/// without virtual scrolling or column management.
-///
-/// Size set via [`Sizable`] is automatically propagated to all children.
+/// Unlike [`DataTable`], a simple, stateless, composable table without virtual scrolling or column management.
 ///
 /// # Example
 ///
@@ -104,7 +99,6 @@ impl RenderOnce for Table {
     }
 }
 
-/// The header section of a [`Table`], wrapping header rows.
 #[derive(IntoElement)]
 pub struct TableHeader {
     ix: usize,
@@ -178,7 +172,6 @@ impl RenderOnce for TableHeader {
     }
 }
 
-/// The body section of a [`Table`], wrapping data rows.
 #[derive(IntoElement)]
 pub struct TableBody {
     ix: usize,
@@ -248,7 +241,6 @@ impl RenderOnce for TableBody {
     }
 }
 
-/// The footer section of a [`Table`], wrapping footer rows.
 #[derive(IntoElement)]
 pub struct TableFooter {
     ix: usize,
@@ -321,7 +313,6 @@ impl RenderOnce for TableFooter {
     }
 }
 
-/// A row in a [`Table`].
 #[derive(IntoElement)]
 pub struct TableRow {
     ix: usize,
@@ -396,7 +387,6 @@ impl RenderOnce for TableRow {
     }
 }
 
-/// A header cell in a [`TableRow`].
 #[derive(IntoElement)]
 pub struct TableHead {
     ix: usize,
@@ -419,19 +409,16 @@ impl TableHead {
         }
     }
 
-    /// Set the column span of this header cell.
     pub fn col_span(mut self, span: usize) -> Self {
         self.col_span = span.max(1);
         self
     }
 
-    /// Set text alignment to center.
     pub fn text_center(mut self) -> Self {
         self.align = TextAlign::Center;
         self
     }
 
-    /// Set text alignment to right.
     pub fn text_right(mut self) -> Self {
         self.align = TextAlign::Right;
         self
@@ -490,7 +477,6 @@ impl RenderOnce for TableHead {
     }
 }
 
-/// A data cell in a [`TableRow`].
 #[derive(IntoElement)]
 pub struct TableCell {
     ix: usize,
@@ -513,19 +499,16 @@ impl TableCell {
         }
     }
 
-    /// Set the column span of this cell.
     pub fn col_span(mut self, span: usize) -> Self {
         self.col_span = span.max(1);
         self
     }
 
-    /// Set text alignment to center.
     pub fn text_center(mut self) -> Self {
         self.align = TextAlign::Center;
         self
     }
 
-    /// Set text alignment to right.
     pub fn text_right(mut self) -> Self {
         self.align = TextAlign::Right;
         self
@@ -584,7 +567,6 @@ impl RenderOnce for TableCell {
     }
 }
 
-/// A caption displayed below the [`Table`].
 #[derive(IntoElement)]
 pub struct TableCaption {
     ix: usize,

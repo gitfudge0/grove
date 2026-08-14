@@ -1,37 +1,23 @@
 //! The live activity source: the 480ms classification pass, the attention
 //! pulse, the dock badge/bounce and the waiting queue.
 //!
-//! This is the port of `src/gui/update/tick.rs:104-287` (`refresh_activity`),
-//! the one function that *is* this phase. The pure rules it consumes —
-//! `classify`, `Tracker`, the four timing constants — live in
-//! [`crate::activity`]; everything gpui-shaped lives here.
+//! Port of `src/gui/update/tick.rs:104-287` (`refresh_activity`). Pure rules
+//! (`classify`, `Tracker`, timing constants) live in [`crate::activity`].
 //!
-//! **Why 480ms and not "every 8th tick".** The iced build derives its
-//! classification cadence as `tick % 8 == 0` on a single 60ms timer
-//! (`tick.rs:44-47`) because it has exactly one timer for the whole app. gpui
-//! gives each concern its own task (spec §4, "Tick decomposition"), so this is
-//! a plain `Timer::after(480ms)` loop, deliberately **not** coupled to
-//! [`crate::entities::animation_clock::AnimationClock`]. A reader grepping for
-//! `% 8` should find this paragraph. The observable cadence is identical, and
-//! it no longer changes when the frame clock drops to its 1s idle lane.
+//! Runs as a plain `Timer::after(480ms)` loop, deliberately not coupled to
+//! [`crate::entities::animation_clock::AnimationClock`] — gpui gives each
+//! concern its own task, unlike iced's single `tick % 8 == 0` timer.
 //!
-//! **Why the pass runs on the foreground executor** (carried amendment 1): it
-//! reads and writes entities and calls `cx.notify()`, all of which require the
-//! foreground. The blocking work it triggers is already off-thread inside
-//! grove-core — `claude_agents::Poller` owns its own polling thread, and
-//! `attention::read_state` is a `stat` plus, only when the file changed, a
-//! 4 KiB tail read. Moving `read_state` to a background task would reorder
-//! signals against the snapshot they were captured with, and spec §4 pins
-//! those snapshot semantics.
+//! Runs on the foreground executor (reads/writes entities, calls
+//! `cx.notify()`); the blocking work is already off-thread in grove-core, and
+//! moving it to a background task would reorder signals against the snapshot
+//! they were captured with.
 //!
-//! **The pulse is `with_animation`-free** (carried amendment 4). Spec §4 maps
-//! the amber pulse to gpui's `with_animation`, but that helper animates *an
-//! element being rendered*, and this pulse is a scalar read by six call sites
-//! across two views. [`pulse_at`] reproduces `attention_animation`'s
-//! observable output (`update/mod.rs:246-252`) as a triangle wave over
-//! `Instant`: 1000ms half-period, `EaseInOut`, auto-reverse, repeat-forever —
-//! and a constant `0.0` while nothing waits, so call sites interpolate
-//! unconditionally.
+//! The pulse is `with_animation`-free: that helper animates an element being
+//! rendered, but this is a scalar read by six call sites. [`pulse_at`]
+//! reproduces `attention_animation`'s output (`update/mod.rs:246-252`) as a
+//! triangle wave: 1000ms half-period, `EaseInOut`, auto-reverse, forever, and
+//! a constant `0.0` while nothing waits.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -46,23 +32,17 @@ use crate::entities::session_registry::{SessionId, SessionRegistry};
 use crate::entities::workspace_state::WorkspaceState;
 use crate::platform::dock;
 
-/// One classification pass every 480ms — a period, not a tick multiple. See
-/// the module docs.
+/// A period, not a tick multiple. See the module docs.
 pub const CLASSIFY_PERIOD: Duration = Duration::from_millis(480);
 
 /// How many rows of the screen the scrape looks at (`tick.rs:157`).
 const TAIL_ROWS: usize = 15;
 
-/// Half-period of the attention pulse: 1000ms up, 1000ms back down
-/// (`update/mod.rs:246-252`). Spelled in millis to read against
-/// [`CLASSIFY_PERIOD`] and the iced animation it reproduces.
+/// Half-period of the attention pulse: 1000ms up, 1000ms back down (`update/mod.rs:246-252`).
 #[allow(clippy::duration_suboptimal_units)]
 const PULSE_HALF: Duration = Duration::from_millis(1000);
 
-// ── pure rules (unit-testable without a gpui App) ────────────────────────
-
-/// `EaseInOut` over `t ∈ [0, 1]`. The classic cubic pair, whose defining
-/// property here is `ease(0.5) == 0.5` — the midpoint the pulse test pins.
+/// The classic cubic pair; `ease(0.5) == 0.5` is the midpoint the pulse test pins.
 fn ease_in_out(t: f32) -> f32 {
     if t < 0.5 {
         4.0 * t * t * t
@@ -72,12 +52,7 @@ fn ease_in_out(t: f32) -> f32 {
     }
 }
 
-/// Needs-attention pulse phase in `[0, 1]`.
-///
-/// `since` is the phase origin — `Some(t)` for as long as at least one session
-/// waits, `None` otherwise. With nothing waiting the value is a **constant
-/// 0.0**, exactly as `update/mod.rs:719-726` guarantees, so every call site can
-/// interpolate without branching.
+/// Needs-attention pulse phase in `[0, 1]`; a constant 0.0 while `since` is `None` (`update/mod.rs:719-726`).
 #[must_use]
 pub fn pulse_at(since: Option<Instant>, now: Instant) -> f32 {
     let Some(since) = since else { return 0.0 };
@@ -93,22 +68,17 @@ pub fn pulse_at(since: Option<Instant>, now: Instant) -> f32 {
     ease_in_out(linear.clamp(0.0, 1.0))
 }
 
-/// The dock badge is pushed only when the waiting count actually changes
-/// (`tick.rs:272-275`).
+/// The dock badge is pushed only when the waiting count actually changes (`tick.rs:272-275`).
 #[must_use]
 pub fn badge_transition(prev: usize, next: usize) -> Option<usize> {
     (prev != next).then_some(next)
 }
 
-/// One bounce per session *entering* `WaitingForInput` while the window is
-/// unfocused (`tick.rs:256-260,284-286`) — never for a session that was
-/// already waiting, never while focused.
+/// One bounce per session *entering* `WaitingForInput` while unfocused (`tick.rs:256-260,284-286`).
 #[must_use]
 pub const fn should_bounce(newly_waiting: bool, window_focused: bool) -> bool {
     newly_waiting && !window_focused
 }
-
-// ── the entity ───────────────────────────────────────────────────────────
 
 pub struct ActivityStore {
     trackers: HashMap<SessionId, Tracker>,
@@ -138,8 +108,7 @@ impl Default for ActivityStore {
 }
 
 impl ActivityStore {
-    /// An inert store: no poller thread, no timer, everything `Idle`. This is
-    /// what the pure row-layout tests construct.
+    /// An inert store: no poller thread, no timer, everything `Idle`.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -155,17 +124,12 @@ impl ActivityStore {
         }
     }
 
-    /// The production constructor: starts the `claude agents --json` poller,
-    /// the 480ms pass, and the acknowledgment observer.
     pub fn start(
         state: Entity<WorkspaceState>,
         registry: Entity<SessionRegistry>,
         cx: &mut Context<Self>,
     ) -> Self {
-        // Acknowledgment is *not* on the 480ms clock. `WorkspaceState` records
-        // the id (it owns no entities, so it cannot truncate a file or reach a
-        // tracker itself) and notifies; every acknowledge call site already
-        // notifies in the same update, so this lands in the same frame.
+        // Acknowledgment is *not* on the 480ms clock: `WorkspaceState` only records the id and notifies.
         let observer = cx.observe(&state, |this: &mut Self, _, cx| this.drain_acks(cx));
         Self {
             trackers: HashMap::new(),
@@ -180,11 +144,7 @@ impl ActivityStore {
         }
     }
 
-    // ── readout (the Plan 05 signature set — unchanged) ─────────────────
-
-    /// The classified state of a session. Unknown sessions render `Idle`, the
-    /// same as the iced build before its first classification tick
-    /// (`update/mod.rs:710-716`).
+    /// Unknown sessions render `Idle`, same as the iced build before its first classification tick (`update/mod.rs:710-716`).
     #[must_use]
     pub fn state_of(&self, id: SessionId) -> ActivityState {
         self.trackers
@@ -192,52 +152,39 @@ impl ActivityStore {
             .map_or(ActivityState::Idle, |t| t.state)
     }
 
-    /// Force a session's classified state. Test-only: the pure row-layout
-    /// tests need a non-`Idle` store without running a classification pass.
     #[cfg(test)]
     pub fn set_state_for_test(&mut self, id: SessionId, state: ActivityState) {
         self.trackers.entry(id).or_default().state = state;
     }
 
-    /// When a session's classified state last actually changed — the rail's
-    /// activity clock. `None` for a session with no tracker yet.
+    /// When a session's classified state last actually changed — the rail's activity clock.
     #[must_use]
     pub fn since_of(&self, id: SessionId) -> Option<Instant> {
         self.trackers.get(&id).map(|t| t.state_since)
     }
 
-    /// Force a session's `state_since`. Test-only, alongside
-    /// [`Self::set_state_for_test`].
     #[cfg(test)]
     pub fn set_state_since_for_test(&mut self, id: SessionId, since: Instant) {
         self.trackers.entry(id).or_default().state_since = since;
     }
 
-    /// When a session last did genuine work — advances only on ticks where
-    /// the session classifies as `Working`, regardless of state transitions.
-    /// `None` for a session with no tracker yet.
+    /// Advances only on ticks where the session classifies as `Working`, regardless of state transitions.
     #[must_use]
     pub fn active_of(&self, id: SessionId) -> Option<Instant> {
         self.trackers.get(&id).map(|t| t.last_active)
     }
 
-    /// Force a session's `last_active`. Test-only, alongside
-    /// [`Self::set_state_since_for_test`].
     #[cfg(test)]
     pub fn set_last_active_for_test(&mut self, id: SessionId, at: Instant) {
         self.trackers.entry(id).or_default().last_active = at;
     }
 
-    /// Needs-attention pulse phase in `[0, 1]` (0 = fully opaque, 1 = maximum
-    /// dim), so callers interpolate unconditionally.
     #[must_use]
     pub fn pulse(&self) -> f32 {
         pulse_at(self.pulse_since, Instant::now())
     }
 
-    /// The waiting queue in **tree order**, shared by the appbar pill, the
-    /// dropdown and `mod+'` (`update/mod.rs:728-740`). Resolved once per pass
-    /// and handed down, never recomputed per call site.
+    /// Tree order, resolved once per pass and shared by the appbar pill, dropdown and `mod+'` (`update/mod.rs:728-740`).
     #[must_use]
     pub fn waiting_sessions(&self) -> &[SessionId] {
         &self.waiting
@@ -248,11 +195,7 @@ impl ActivityStore {
         self.waiting.len()
     }
 
-    // ── window focus ────────────────────────────────────────────────────
-
-    /// Window activation changed. Regaining focus acknowledges the visible
-    /// session immediately (`layout.rs:34-49`) — spec §4's "attention is never
-    /// event-driven" governs *classification*, not acknowledgment.
+    /// Regaining focus acknowledges the visible session immediately (`layout.rs:34-49`) — governs acknowledgment, not classification.
     pub fn set_window_focused(&mut self, focused: bool, cx: &mut Context<Self>) {
         let regained = focused && !self.window_focused;
         self.window_focused = focused;
@@ -268,13 +211,7 @@ impl ActivityStore {
         cx.notify();
     }
 
-    // ── acknowledgment (both halves, always) ────────────────────────────
-
-    /// Acknowledge a session: the tracker half (`Tracker::acknowledge`) **and**
-    /// the file half (`attention::acknowledge`, which truncates rather than
-    /// deletes so the hooks keep appending). Both, always — a stale `needs-you`
-    /// left in the file would resurface the moment the user looked away
-    /// (`update/mod.rs:697-707`).
+    /// Both the tracker and the file (truncated, not deleted, so hooks keep appending) — always, or a stale `needs-you` resurfaces (`update/mod.rs:697-707`).
     pub fn acknowledge(&mut self, id: SessionId, cx: &mut Context<Self>) {
         if let Some(t) = self.trackers.get_mut(&id) {
             t.acknowledge();
@@ -307,8 +244,6 @@ impl ActivityStore {
         cx.notify();
     }
 
-    // ── the 480ms loop ──────────────────────────────────────────────────
-
     fn spawn_pass(cx: &mut Context<Self>) -> Task<()> {
         cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| loop {
             cx.background_executor().timer(CLASSIFY_PERIOD).await;
@@ -328,7 +263,6 @@ impl ActivityStore {
         };
         let (state, registry) = (wiring.state.clone(), wiring.registry.clone());
 
-        // 1. Synchronously captured snapshot (spec §4).
         let active_session = state.read(cx).active_session();
         let window_focused = self.window_focused;
         let sessions: Vec<(SessionId, Agent, String, Option<_>)> = registry
@@ -349,8 +283,7 @@ impl ActivityStore {
             .filter_map(|(id, ..)| registry.read(cx).session(*id).map(|e| (*id, e.clone())))
             .collect();
 
-        // 2. Only worth polling `claude agents --json` while a live Claude
-        //    session exists to inform (`tick.rs:120-124`).
+        // Only worth polling while a live Claude session exists to inform (`tick.rs:120-124`).
         if let Some(poller) = self.poller.as_ref() {
             let any_claude = sessions
                 .iter()
@@ -367,7 +300,6 @@ impl ActivityStore {
             };
             let focused = active_session == Some(*id) && window_focused;
 
-            // Everything the classifier needs except the tail, in one borrow.
             let (alive, bells, output_age, title, scroll_age, input_age, root_pid) =
                 entity.update(cx, |s, _| {
                     let alive = s.alive();
@@ -383,8 +315,7 @@ impl ActivityStore {
                 });
 
             let tracker = self.trackers.entry(*id).or_default();
-            // 3. Bell diff. A counter that went *backwards* means the parser
-            //    was reset — resync rather than go silent forever.
+            // A counter that went backwards means the parser was reset — resync rather than go silent forever.
             if bells < tracker.bell_seen {
                 tracker.bell_seen = bells;
             } else if bells > tracker.bell_seen {
@@ -405,9 +336,7 @@ impl ActivityStore {
                 title,
             };
 
-            // The tail scrape takes the term lock and copies 15 rows out of the
-            // grid, and the two higher-precedence signals discard it for most
-            // sessions — so it stays lazy (`tick.rs:155-161`).
+            // Takes the term lock and copies 15 rows; higher-precedence signals discard it for most sessions, so lazy.
             let mut scrape = || {
                 if alive {
                     entity.update(cx, |s, _| s.tail_contents(TAIL_ROWS))
@@ -416,7 +345,7 @@ impl ActivityStore {
                 }
             };
 
-            // 4. Precedence: native poll > hook state file > screen scrape.
+            // Precedence: native poll > hook state file > screen scrape.
             let native = if alive && *agent == Agent::Claude {
                 self.poller
                     .as_ref()
@@ -427,17 +356,14 @@ impl ActivityStore {
             let new_state = if let Some(status) = native {
                 match status {
                     NativeStatus::Busy => ActivityState::Working,
-                    // `Waiting` while focused is treated as already seen,
-                    // mirroring the `NeedsYou` downgrade below.
+                    // `Waiting` while focused is treated as already seen, mirroring the `NeedsYou` downgrade below.
                     NativeStatus::Waiting if !focused => ActivityState::WaitingForInput,
                     NativeStatus::Waiting => ActivityState::Working,
                     NativeStatus::Idle if sig.was_working => ActivityState::Done,
                     NativeStatus::Idle => ActivityState::Idle,
                 }
             } else {
-                // A dead process short-circuits to `classify` *before* the hook
-                // file is consulted, so a stale `working` left behind by a
-                // killed agent still reads `Exited` (`tick.rs:228-243`).
+                // A dead process short-circuits to `classify` before the hook file, so a stale `working` reads `Exited`.
                 let hook = if alive {
                     state_file.as_deref().and_then(attention::read_state)
                 } else {
@@ -458,10 +384,7 @@ impl ActivityStore {
             let tracker = self.trackers.entry(*id).or_default();
             if new_state == ActivityState::Working {
                 tracker.was_working = true;
-                // Unconditional — outside the changed-guard below — so a
-                // session that stays Working tick after tick keeps advancing
-                // its last-active clock, not just on the transition into
-                // Working. Never stamped for any other state.
+                // Unconditional, so a session that stays Working every tick keeps advancing last-active, not just on entry.
                 tracker.last_active = Instant::now();
             }
             if !alive {
@@ -469,7 +392,6 @@ impl ActivityStore {
                 tracker.bell_pending = false;
             }
             if focused {
-                // Watching it = continuously acknowledged.
                 tracker.bell_pending = false;
             }
             if new_state == ActivityState::WaitingForInput
@@ -484,18 +406,13 @@ impl ActivityStore {
             }
         }
 
-        // 5. Prune trackers to live ids (carried amendment 3): a killed
-        //    session's tracker must not keep its `WaitingForInput` in the
-        //    badge count.
+        // Prune trackers to live ids: a killed session's tracker must not keep its `WaitingForInput` in the badge count.
         let before = self.trackers.len();
         self.trackers
             .retain(|id, _| sessions.iter().any(|(live, ..)| live == id));
         changed |= self.trackers.len() != before;
 
-        // 6. Recount in **tree order**, then badge / pulse / bounce.
-        // Tree order, not HashMap order (`update/mod.rs:728-740`). The rail
-        // publishes it; before the first rail paint it is empty, and registry
-        // insertion order is the right stand-in.
+        // Tree order, not HashMap order (`update/mod.rs:728-740`); before the first rail paint it's empty, so fall back.
         let order = state.read(cx).visible_session_order().to_vec();
         let order = if order.is_empty() {
             sessions.iter().map(|(id, ..)| *id).collect::<Vec<_>>()
@@ -522,9 +439,7 @@ impl ActivityStore {
             dock::request_attention();
         }
 
-        // 7. Repaint only when something observable moved: an all-`Idle` pass
-        //    on a quiet app must not cost a frame. An active pulse always
-        //    repaints — that *is* the animation.
+        // An all-`Idle` pass on a quiet app must not cost a frame; an active pulse always repaints — that's the animation.
         if changed || self.pulse_since.is_some() {
             cx.notify();
         }
@@ -546,8 +461,7 @@ mod tests {
         approx(pulse_at(None, now + Duration::from_millis(700)), 0.0);
     }
 
-    /// `update/mod.rs:246-252`: 1000ms, `EaseInOut`, auto-reverse,
-    /// repeat-forever — a ~2s round trip.
+    /// `update/mod.rs:246-252`: 1000ms, `EaseInOut`, auto-reverse — a ~2s round trip.
     #[test]
     fn the_pulse_is_an_ease_in_out_triangle_wave() {
         let t0 = Instant::now();
@@ -610,8 +524,7 @@ mod tests {
         assert!(store.waiting_sessions().is_empty());
     }
 
-    /// Carried amendment 5's idle-power contract: nothing waiting, window
-    /// unfocused, no dirty PTYs ⇒ the frame clock stays in its 1s lane.
+    /// Nothing waiting, window unfocused, no dirty PTYs => the frame clock stays in its 1s lane.
     #[test]
     fn an_idle_app_with_nothing_waiting_stays_on_the_slow_clock() {
         use crate::entities::animation_clock::is_fast;

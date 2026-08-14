@@ -13,7 +13,6 @@ use gpui::{
 };
 use std::rc::Rc;
 
-/// Menu for the [`super::Sidebar`]
 #[derive(Clone)]
 pub struct SidebarMenu {
     style: StyleRefinement,
@@ -22,7 +21,6 @@ pub struct SidebarMenu {
 }
 
 impl SidebarMenu {
-    /// Create a new SidebarMenu
     pub fn new() -> Self {
         Self {
             style: StyleRefinement::default(),
@@ -31,15 +29,12 @@ impl SidebarMenu {
         }
     }
 
-    /// Add a [`SidebarMenuItem`] child menu item to the sidebar menu.
-    ///
     /// See also [`SidebarMenu::children`].
     pub fn child(mut self, child: impl Into<SidebarMenuItem>) -> Self {
         self.items.push(child.into());
         self
     }
 
-    /// Add multiple [`SidebarMenuItem`] child menu items to the sidebar menu.
     pub fn children(
         mut self,
         children: impl IntoIterator<Item = impl Into<SidebarMenuItem>>,
@@ -87,7 +82,6 @@ impl Styled for SidebarMenu {
     }
 }
 
-/// Menu item for the [`SidebarMenu`]
 #[derive(Clone)]
 pub struct SidebarMenuItem {
     icon: Option<Icon>,
@@ -105,7 +99,6 @@ pub struct SidebarMenuItem {
 }
 
 impl SidebarMenuItem {
-    /// Create a new [`SidebarMenuItem`] with a label.
     pub fn new(label: impl Into<SharedString>) -> Self {
         Self {
             icon: None,
@@ -123,19 +116,16 @@ impl SidebarMenuItem {
         }
     }
 
-    /// Set the icon for the menu item
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.icon = Some(icon.into());
         self
     }
 
-    /// Set the active state of the menu item
     pub fn active(mut self, active: bool) -> Self {
         self.active = active;
         self
     }
 
-    /// Add a click handler to the menu item
     pub fn on_click(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -144,7 +134,6 @@ impl SidebarMenuItem {
         self
     }
 
-    /// Set the collapsed state of the menu item
     pub fn collapsed(mut self, collapsed: bool) -> Self {
         self.collapsed = collapsed;
         self
@@ -183,7 +172,6 @@ impl SidebarMenuItem {
         self
     }
 
-    /// Set the suffix for the menu item.
     pub fn suffix<F, E>(mut self, builder: F) -> Self
     where
         F: Fn(&mut Window, &mut App) -> E + 'static,
@@ -195,7 +183,6 @@ impl SidebarMenuItem {
         self
     }
 
-    /// Set disabled flat for menu item.
     pub fn disable(mut self, disable: bool) -> Self {
         self.disabled = disable;
         self
@@ -205,7 +192,6 @@ impl SidebarMenuItem {
         self.children.len() > 0
     }
 
-    /// Set the context menu for the menu item.
     pub fn context_menu(
         mut self,
         f: impl Fn(PopupMenu, &mut Window, &mut App) -> PopupMenu + 'static,

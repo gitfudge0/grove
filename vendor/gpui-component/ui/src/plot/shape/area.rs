@@ -34,7 +34,6 @@ impl<T> Area<T> {
         Self::default()
     }
 
-    /// Set the data of the Area.
     pub fn data<I>(mut self, data: I) -> Self
     where
         I: IntoIterator<Item = T>,
@@ -43,7 +42,6 @@ impl<T> Area<T> {
         self
     }
 
-    /// Set the x of the Area.
     pub fn x<F>(mut self, x: F) -> Self
     where
         F: Fn(&T) -> Option<f32> + 'static,
@@ -52,13 +50,11 @@ impl<T> Area<T> {
         self
     }
 
-    /// Set the y0 of the Area.
     pub fn y0(mut self, y0: f32) -> Self {
         self.y0 = Some(y0);
         self
     }
 
-    /// Set the y1 of the Area.
     pub fn y1<F>(mut self, y1: F) -> Self
     where
         F: Fn(&T) -> Option<f32> + 'static,
@@ -67,19 +63,16 @@ impl<T> Area<T> {
         self
     }
 
-    /// Set the fill color of the Area.
     pub fn fill(mut self, fill: impl Into<Background>) -> Self {
         self.fill = fill.into();
         self
     }
 
-    /// Set the stroke color of the Area.
     pub fn stroke(mut self, stroke: impl Into<Background>) -> Self {
         self.stroke = stroke.into();
         self
     }
 
-    /// Set the stroke style of the Area.
     pub fn stroke_style(mut self, stroke_style: StrokeStyle) -> Self {
         self.stroke_style = stroke_style;
         self
@@ -136,7 +129,6 @@ impl<T> Area<T> {
                         points[n - 1]
                     };
 
-                    // Catmull-Rom to Bezier
                     let c1 = Point::new(p1.x + (p2.x - p0.x) / 6.0, p1.y + (p2.y - p0.y) / 6.0);
                     let c2 = Point::new(p2.x - (p3.x - p1.x) / 6.0, p2.y - (p3.y - p1.y) / 6.0);
 
@@ -158,7 +150,6 @@ impl<T> Area<T> {
                 for (i, p) in points.windows(2).enumerate() {
                     area_builder.line_to(Point::new(p[1].x, p[0].y));
                     line_builder.line_to(Point::new(p[1].x, p[0].y));
-                    // Don't draw the vertical line for the last point
                     if i < points.len() - 2 {
                         area_builder.line_to(p[1]);
                         line_builder.line_to(p[1]);
@@ -167,7 +158,6 @@ impl<T> Area<T> {
             }
         }
 
-        // Close path
         if let (Some(first), Some(last), Some(y)) = (first_x_tick, last_x_tick, self.y0) {
             area_builder.line_to(origin_point(px(last), px(y), bounds.origin));
             area_builder.line_to(origin_point(px(first), px(y), bounds.origin));
@@ -177,7 +167,6 @@ impl<T> Area<T> {
         (area_builder.build().ok(), line_builder.build().ok())
     }
 
-    /// Paint the Area.
     pub fn paint(&self, bounds: &Bounds<Pixels>, window: &mut Window) {
         let (area, line) = self.path(bounds);
 

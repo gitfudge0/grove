@@ -1,20 +1,4 @@
-//! The sidebar's row model: the pure helpers each row renders from, and the
-//! **flattening** that turns the project → worktree → session tree into the
-//! single `Vec<TreeRow>` the view scrolls.
-//!
-//! # Flattening decision (carried amendment 2)
-//!
-//! Rows are emitted **pre-resolved**: every field a renderer needs is on the
-//! row. Nothing looks back into `WorkspaceState` / the registry per row, which
-//! is what made the iced version O(projects × worktrees × sessions) per frame
-//! (`src/gui/view/sidebar.rs:227-237`).
-//!
-//! Rows are *not* uniformly tall in the iced build — a worktree showing a
-//! branch chip is `ROW_H + 14` (`src/gui/rows.rs:268`). [`row_height`] is the
-//! single height function; **`uniform_list` is therefore not usable as-is** and
-//! the decision belongs to Task 5, which renders. Whatever it picks, it and the
-//! agent-menu overlay walk must both call [`row_height`], or the overlay lands
-//! on the wrong row.
+//! Rows are emitted pre-resolved to avoid per-frame O(projects × worktrees × sessions) lookups; [`row_height`] is the single height function the renderer and the agent-menu overlay must both call.
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -41,45 +25,27 @@ use crate::views::components::{
 /// Sidebar row height (`src/gui/metrics.rs:7`).
 pub const ROW_H: f32 = 28.0;
 
-/// The extra height a worktree row gains when it shows a branch chip: the
-/// chip's own line. [`row_height`] and the renderer must both use this — the
-/// agent-menu overlay is positioned from [`row_height`], so a renderer that
-/// disagreed would misplace the menu (§8.1).
+/// Extra height a worktree row gains for its branch-chip line; [`row_height`] and the agent-menu overlay both depend on this to agree.
 const BRANCH_LINE_H: f32 = 14.0;
 
-/// The fixed-width slot every row's leading glyph (twisty, state glyph) sits
-/// in. It is a *reserved* width: the glyph inside changes with state, and §2.4
-/// forbids the row reflowing when it does. All three call sites share this one
-/// constant so the columns line up down the tree.
+/// Reserved width for every row's leading glyph slot, shared so columns stay aligned as the glyph changes with state.
 const GLYPH_SLOT_W: f32 = 14.0;
 
-/// Worktree-row indent: one glyph slot in from the project row's own
-/// [`SPACE_2XL`] gutter, so a worktree's twisty sits under the project's
-/// label rather than under its twisty. `12 + 14 = 26`.
+/// Worktree-row indent: one glyph slot in from the project row's `SPACE_2XL` gutter. `12 + 14 = 26`.
 const INDENT_WORKTREE: f32 = SPACE_2XL + GLYPH_SLOT_W;
-/// Session-row indent: the same step again, taken from the worktree row's
-/// geometry — its glyph slot plus the `SPACE_MD` gap that follows it — so a
-/// session's state glyph starts exactly where its worktree's *name* does.
-/// `26 + 14 + 6 = 46`. The two rungs are derived from one another; neither is
-/// an independent number.
+/// Session-row indent, derived from `INDENT_WORKTREE` so the two rungs cannot drift independently. `26 + 14 + 6 = 46`.
 const INDENT_SESSION: f32 = INDENT_WORKTREE + GLYPH_SLOT_W + SPACE_MD;
 
-/// Vertical breathing room around the sidebar's inline empty rows. Taller than
-/// any spacing notch on purpose — this is a block of prose standing in for a
-/// list, not a row in one (§9.2's sanctioned local exception).
+/// Taller than any spacing notch on purpose: this pads a block of prose standing in for a list, not a row in one.
 const EMPTY_ROW_PAD_Y: f32 = 24.0;
 
-// ── pure row helpers ───────────────────────────────────────────────────────
-
-/// Only show a branch chip for non-default worktrees: the main worktree's
-/// branch is redundant with the project name (`src/gui/rows.rs:249`).
+/// Only show a branch chip for non-default worktrees: the main worktree's branch is redundant with the project name (`src/gui/rows.rs:249`).
 #[must_use]
 pub fn worktree_shows_branch(is_main: bool, branch: &str, name: &str) -> bool {
     !is_main && branch != name && !branch.is_empty()
 }
 
-/// Rendered height of a worktree row (`src/gui/rows.rs:268`). The agent-menu
-/// overlay position is computed from this, so the renderer must agree with it.
+/// Rendered height of a worktree row (`src/gui/rows.rs:268`); the agent-menu overlay position is computed from this.
 #[must_use]
 pub fn row_height(show_branch: bool) -> f32 {
     if show_branch {
@@ -89,11 +55,7 @@ pub fn row_height(show_branch: bool) -> f32 {
     }
 }
 
-/// Basename of a path, falling back to the whole string.
-///
-/// Reimplemented rather than moved out of `crate::app::path_basename`
-/// (`src/app/util.rs:23-29`) per Global Constraint 3 candidate 1 — it is three
-/// lines of path arithmetic, and grove-core/the iced app stay read-only.
+/// Reimplemented rather than moved out of `crate::app::path_basename` (`src/app/util.rs:23-29`) — grove-core/the iced app stay read-only.
 #[must_use]
 pub fn path_basename(p: &str) -> String {
     std::path::Path::new(p)
@@ -103,9 +65,7 @@ pub fn path_basename(p: &str) -> String {
         .to_string()
 }
 
-/// Strip characters the UI font cannot render — emoji, box drawing,
-/// private-use — and collapse the resulting whitespace
-/// (`src/gui/rows.rs:809-834`). `None` when nothing useful is left.
+/// Strip characters the UI font cannot render and collapse whitespace (`src/gui/rows.rs:809-834`). `None` when nothing useful is left.
 #[must_use]
 pub fn sanitize_ui_text(raw: &str) -> Option<String> {
     let cleaned: String = raw
@@ -130,8 +90,7 @@ pub fn sanitize_ui_text(raw: &str) -> Option<String> {
     }
 }
 
-/// Remove every case-insensitive occurrence of `needle` from `hay`, UTF-8-safe
-/// (`src/gui/rows.rs:895-920`).
+/// Remove every case-insensitive occurrence of `needle` from `hay`, UTF-8-safe (`src/gui/rows.rs:895-920`).
 #[must_use]
 pub fn remove_all_ci(hay: &str, needle: &str) -> String {
     if needle.is_empty() {
@@ -150,20 +109,14 @@ pub fn remove_all_ci(hay: &str, needle: &str) -> String {
     out
 }
 
-/// Contextual title for a home terminal: its OSC title with the internal
-/// `terminal N` label stripped (`src/gui/rows.rs:776-782`).
-///
-/// The iced build memoizes this per session (`cached_context`, `:748`) because
-/// `view()` runs every 33ms tick; the gpui rows are built once per repaint from
-/// an already-materialized title, so **the cache is deliberately not ported**.
+/// Contextual title for a home terminal: its OSC title with the internal `terminal N` label stripped (`src/gui/rows.rs:776-782`).
+/// The iced build memoized this per session; not ported here since gpui rows are built once per repaint from an already-materialized title.
 #[must_use]
 pub fn terminal_context(raw_title: &str, label: &str) -> Option<String> {
     sanitize_ui_text(&remove_all_ci(raw_title, label))
 }
 
-/// The short context string next to the agent name: the OSC title with the
-/// worktree name, the session label and the agent label stripped out, so what
-/// is left is the actual task (`src/gui/rows.rs:784-806`).
+/// OSC title with the worktree name, session label and agent label stripped, leaving the actual task (`src/gui/rows.rs:784-806`).
 #[must_use]
 pub fn session_context(
     raw_title: &str,
@@ -181,13 +134,8 @@ pub fn session_context(
     sanitize_ui_text(&out)
 }
 
-/// Title/subtitle for the sidebar project-tree empty state, or `None` when the
-/// tree has rows (`src/gui/widgets/primitives.rs:195-220`).
-///
-/// The two states must never share copy: each has a different fix, and one
-/// message would send the user to the wrong place. This pair is also how this
-/// phase satisfies Appendix A's "archived-projects row" — the archived *list*
-/// is a Settings modal (Plan 08); the tree only ever shows `active_projects`.
+/// Title/subtitle for the sidebar project-tree empty state, or `None` when the tree has rows (`src/gui/widgets/primitives.rs:195-220`).
+/// The two states must never share copy: each has a different fix, and one message would send the user to the wrong place.
 #[must_use]
 pub fn sidebar_empty_copy(
     total_projects: usize,
@@ -202,8 +150,6 @@ pub fn sidebar_empty_copy(
         )),
     }
 }
-
-// ── the flattened tree ─────────────────────────────────────────────────────
 
 /// One row of the sidebar, carrying everything its renderer needs.
 #[derive(Clone, Debug, PartialEq)]
@@ -236,54 +182,29 @@ pub enum TreeRow {
         pending_kill: bool,
         state: ActivityState,
     },
-    /// The sessions rail's card (mock D11 "diff-stat"). Not a denser
-    /// [`TreeRow::Session`]: the tree's row identifies a session *inside* a
-    /// worktree it is already nested under, while this one is the only thing
-    /// on screen that says which worktree, which project and how much work is
-    /// sitting in it — so every one of those facts is resolved onto the row by
-    /// [`flatten_sessions`] rather than looked up while rendering.
+    /// The sessions rail's card: unlike [`TreeRow::Session`], it also carries which worktree/project it belongs to and how much work is in it, resolved by [`flatten_sessions`] rather than looked up while rendering.
     SessionCard {
         id: SessionId,
-        /// Which agent is running here — the card's leading glyph, the same
-        /// per-agent mark the tree's session row draws.
         agent: Agent,
-        /// The card's headline: the terminal's OSC title, falling back to the
-        /// session's own label when the agent has set none. Resolved in
-        /// [`flatten_sessions`] like every other field on this row, never read
-        /// out of an entity while rendering.
+        /// OSC title, falling back to the session's own label when the agent has set none.
         title: String,
-        /// The worktree's name — the second line's leading run.
         worktree: String,
         project: String,
-        /// The worktree's branch, shown on the meta line in place of the
-        /// session label — suppressed (empty display) when it duplicates
-        /// [`Self::SessionCard::worktree`] ([`worktree_shows_branch`]), same
-        /// rule as the tree's branch chip. Falls back to `""` when the
-        /// worktree isn't in the snapshot's cache yet.
+        /// Suppressed (empty) when it duplicates [`Self::SessionCard::worktree`] ([`worktree_shows_branch`]); falls back to `""` when the worktree isn't cached yet.
         branch: String,
-        /// Time since the session's activity state last changed
-        /// ([`ActivityStore::since_of`]), already formatted
-        /// ([`elapsed_short`]) — falls back to time since `spawned_at` only
-        /// for a session `since_of` doesn't know about yet. Shown on the
-        /// second line, trailing the state word.
+        /// Time since the last activity-state change, or since `spawned_at` when `since_of` has no entry yet.
         elapsed: String,
         active: bool,
         pending_kill: bool,
         state: ActivityState,
-        /// Lines added/removed in the worktree's uncommitted diff against
-        /// `HEAD`, or `None` while the poll has no entry for this worktree.
-        /// `Some((0, 0))` is the clean worktree, which draws one neutral chip
-        /// rather than a `+0 -0` pair; `None` draws **nothing** — see
-        /// [`DiffDisplay`].
+        /// `None` while the poll has no entry; `Some((0, 0))` is a clean worktree — see [`DiffDisplay`].
         diff: Option<(u32, u32)>,
     },
     Empty {
         title: &'static str,
         subtitle: &'static str,
     },
-    /// A static, non-collapsible section label above one of the sessions
-    /// rail's four sections (`NEEDS YOU`, `REVIEW`, `WORKING`, `IDLE`). No chevron, no toggle, no activity dot — unlike
-    /// [`Self::TerminalsHeader`] it never responds to a click.
+    /// A static, non-collapsible section label above one of the sessions rail's four sections. Unlike [`Self::TerminalsHeader`] it never responds to a click.
     SectionHeader { label: &'static str },
     TerminalsHeader {
         expanded: bool,
@@ -299,11 +220,7 @@ pub enum TreeRow {
 }
 
 impl TreeRow {
-    /// This row's rendered height. Worktrees showing a branch chip are taller
-    /// (`src/gui/rows.rs:268`); the sessions rail's card is a different shape
-    /// altogether and declares [`SESSION_CARD_H`]. Still the single height
-    /// source — the renderer sets the same token on the card's box, so the two
-    /// cannot drift.
+    /// This row's rendered height; the renderer must read the same value so the two cannot drift.
     #[must_use]
     pub fn height(&self) -> f32 {
         match self {
@@ -319,11 +236,7 @@ impl TreeRow {
     }
 }
 
-/// Build the sidebar's rows, in exactly the order `tree_view` pushes them
-/// (`src/gui/view/sidebar.rs:225-381`).
-///
-/// `git_suffix` is the off-thread git-state map, already rendered to text by
-/// `grove_core::git::git_state_suffix`.
+/// Build the sidebar's rows, in exactly the order `tree_view` pushes them (`src/gui/view/sidebar.rs:225-381`).
 #[must_use]
 pub fn flatten(
     snap: &TreeSnapshot,
@@ -338,8 +251,7 @@ pub fn flatten(
     for p in &snap.projects {
         any_active = true;
         let expanded = !ws.project_collapsed(p.idx);
-        // Counted by project name, so non-active projects (whose worktree
-        // cache is empty until visited) still show their true session count.
+        // Counted by project name so a non-active project (empty worktree cache) still shows its true session count.
         let sessions = &p.sessions;
         rows.push(TreeRow::Project {
             idx: p.idx,
@@ -347,8 +259,7 @@ pub fn flatten(
             count: sessions.len(),
             expanded,
             is_git: p.is_git,
-            // Collapsed parents surface the most urgent descendant state;
-            // expanded parents show nothing extra (`sidebar.rs:251-257`).
+            // Collapsed parents surface the most urgent descendant state (`sidebar.rs:251-257`).
             rollup: (!expanded)
                 .then(|| most_urgent(sessions.iter().map(|&id| activity.state_of(id))))
                 .flatten(),
@@ -381,8 +292,7 @@ pub fn flatten(
             for &id in &w.sessions {
                 rows.push(TreeRow::Session {
                     id,
-                    // A session must not look active while a home terminal is
-                    // on screen (`sidebar.rs:338`).
+                    // A session must not look active while a home terminal is on screen (`sidebar.rs:338`).
                     active: !ws.terminal_focused() && ws.active_session() == Some(id),
                     pending_kill: ws.pending_kill() == Some(id),
                     state: activity.state_of(id),
@@ -408,9 +318,7 @@ fn push_terminals(rows: &mut Vec<TreeRow>, ws: &WorkspaceState, home_running: &[
     if ws.terminals_collapsed() {
         return;
     }
-    // Expanded: every terminal renders its own row below, so the header's
-    // "something is running in here" dot would be redundant — always off
-    // (`sidebar.rs:363-372`). The divider above it is the view's job.
+    // Expanded, the activity dot would be redundant with the terminal rows below — always off (`sidebar.rs:363-372`).
     rows.push(TreeRow::TerminalsHeader {
         expanded: true,
         count: home_running.len(),
@@ -426,39 +334,21 @@ fn push_terminals(rows: &mut Vec<TreeRow>, ws: &WorkspaceState, home_running: &[
     }
 }
 
-/// The registry facts a session card is built from, lifted out by the view so
-/// [`flatten_sessions`] can join them without reaching into an entity (module
-/// doc, carried amendment 2).
+/// The registry facts a session card is built from, lifted out so [`flatten_sessions`] can join them without reaching into an entity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionInfo {
-    /// `Project::name` — the card's provenance, mandatory because the sessions
-    /// list is cross-project.
+    /// Mandatory because the sessions list is cross-project.
     pub project: String,
-    /// Absolute worktree path: the key that joins a session to its branch and
-    /// to its git state.
+    /// Absolute worktree path: the key that joins a session to its branch and to its git state.
     pub wt_path: String,
-    /// `SessionMeta::label` (`claude 1`).
     pub label: String,
-    /// Which agent runs in this session — the card's leading glyph.
     pub agent: Agent,
-    /// The terminal's OSC title, already stripped and sanitized by
-    /// [`session_context`], or `None` when the agent has set none. The card's
-    /// headline falls back to [`Self::label`] in that case, so the two never
-    /// come from two different resolvers.
+    /// Stripped/sanitized OSC title, or `None` when unset — the card falls back to [`Self::label`].
     pub title: Option<String>,
     pub spawned_at: std::time::Instant,
 }
 
-/// The one string form of a worktree path that both sides of the git-state
-/// join agree on.
-///
-/// The poll's cache is keyed by the path `git worktree list` printed, while a
-/// session card joins on the path the session was **spawned** in
-/// ([`SessionInfo::wt_path`]) — the same directory, but not necessarily the
-/// same string. A single trailing slash is the difference the two sources can
-/// actually produce, and it silently turned every card's diff into a cache
-/// miss. Deliberately not `canonicalize`: that stats the filesystem, and this
-/// runs per row per frame (module doc — no syscalls in a repaint).
+/// The one string form of a worktree path both sides of the git-state join agree on: a trailing slash otherwise silently turns a card's diff into a cache miss. Deliberately not `canonicalize` — this runs per row per frame and must not touch the filesystem.
 #[must_use]
 pub fn normalize_wt_path(path: &str) -> &str {
     let trimmed = path.trim_end_matches('/');
@@ -469,20 +359,14 @@ pub fn normalize_wt_path(path: &str) -> &str {
     }
 }
 
-/// What a card's trailing diff cluster shows. The distinction between
-/// [`Self::Unknown`] and [`Self::Clean`] is the whole point: before the first
-/// poll lands (or for a worktree the poll does not cover) there is *no
-/// answer*, and drawing the `clean` chip there states one.
+/// What a card's trailing diff cluster shows. `Unknown` vs `Clean` matters: before the first poll lands there is no answer, and drawing the `clean` chip there would state one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiffDisplay {
-    /// No cache entry — draw nothing at all.
     Unknown,
-    /// A real entry reporting no uncommitted work.
     Clean,
     Counts(u32, u32),
 }
 
-/// [`DiffDisplay`] for a card's joined diff counts.
 #[must_use]
 pub fn diff_display(diff: Option<(u32, u32)>) -> DiffDisplay {
     match diff {
@@ -492,8 +376,7 @@ pub fn diff_display(diff: Option<(u32, u32)>) -> DiffDisplay {
     }
 }
 
-/// A duration as the rail's one-or-two-character age: `12s`, `12m`, `2h`,
-/// `3d`. One unit only — the card has room for an age, not for a duration.
+/// A duration as the rail's one-unit age (`12s`, `12m`, `2h`, `3d`) — the card has room for an age, not a duration.
 #[must_use]
 pub fn elapsed_short(d: std::time::Duration) -> String {
     let secs = d.as_secs();
@@ -505,10 +388,7 @@ pub fn elapsed_short(d: std::time::Duration) -> String {
     }
 }
 
-/// One session as [`flatten_sessions`] resolves it before sorting: its id, its
-/// state, its `since_of` (last state transition) and its `active_of` (last
-/// genuine `Working` tick). The last two are kept apart because the sections
-/// key off different clocks.
+/// id, state, `since_of` (last state transition), `active_of` (last genuine `Working` tick) — kept apart because sections below key off different clocks.
 type SessionRow = (
     SessionId,
     ActivityState,
@@ -516,64 +396,11 @@ type SessionRow = (
     Option<std::time::Instant>,
 );
 
-/// Build the rail's **sessions** content mode: every session in every
-/// project, flat and unnested, split into four labelled sections, followed by
-/// the same docked TERMINALS tail [`flatten`] emits. Each section is preceded
-/// by its own header, emitted only when that section is non-empty.
+/// Build the rail's **sessions** content mode: every session flat and unnested, split into four labelled sections (each header emitted only when non-empty), followed by the TERMINALS tail [`flatten`] also emits.
 ///
-/// **`NEEDS YOU`** (`WaitingForInput` only) and **`REVIEW`** (`Done` only) are
-/// deliberately separate sections rather than one merged "needs attention"
-/// pile, even though both once lived in a single `NEEDS YOU` band ranked by
-/// [`crate::activity::attention_rank`]. `WaitingForInput` is an agent stuck mid-task: transient
-/// and self-clearing, one keystroke frees it. `Done` is a finished turn nobody
-/// has read yet: sticky, and it accumulates the longer it goes unacknowledged.
-/// Merging them turned the needs-you group into a review pile — a handful of
-/// `Done` cards sitting on top of, or crowding out, the one agent that is
-/// actually blocked waiting on the user. Splitting them means a single
-/// `WaitingForInput` session can never be buried under a stack of `Done`
-/// cards: it always has its own section, always first.
+/// `NEEDS YOU` (`WaitingForInput`) and `REVIEW` (`Done`) are deliberately separate, not one merged pile — merging previously let a stack of unread `Done` cards bury the one agent actually blocked waiting on the user.
 ///
-/// Both of these sections sort by [`ActivityStore::since_of`] ascending —
-/// longest-blocked / longest-unread first — then id ascending, so a session
-/// that has been waiting (or sitting unread) the longest stays on top and new
-/// arrivals append at the bottom rather than shoving it down. Neither
-/// comparator needs [`crate::activity::attention_rank`] any more: every card within a section
-/// already shares that section's single state, so the rank would be a
-/// constant. [`crate::activity::attention_rank`] itself stays in `src/activity.rs` — it still
-/// backs `urgency_rank`/[`most_urgent`] for the collapsed-row roll-up.
-///
-/// Everything else splits into **`WORKING`** and **`IDLE`** by
-/// [`ActivityStore::active_of`] against [`crate::activity::IDLE_DWELL`]:
-/// `Working` is always `WORKING`, and a non-`Waiting`/non-`Done` live session
-/// stays in `WORKING` while its last genuine `Working` tick is younger than
-/// the dwell. `IDLE` is everything left over: a session quiet past the dwell,
-/// and `Exited` unconditionally — the process is gone, no clock can argue it
-/// back into flight, regardless of how fresh `last_active` looks. The dwell
-/// governs **position only** — the card's colour, glyph and state word stay
-/// instantly responsive to the real state.
-///
-/// Both `WORKING` and `IDLE` sort by [`ActivityStore::active_of`] descending —
-/// most-recently-*working* first — and that key deliberately excludes both
-/// [`ActivityState`] and [`ActivityStore::since_of`]. `since_of`/`state_since`
-/// re-stamps on every state transition, including a routine `Working` -\>
-/// `Idle` flap, so sorting by it would just move the churn from band-jumping
-/// to top-of-list-jumping — the exact defect this split exists to kill.
-/// `active_of`/`last_active` only advances while a session is genuinely
-/// `Working` (or when the user acknowledges it), so a state transition alone —
-/// a flap — can repaint a card without ever moving its row, and the dwell
-/// keeps that flap from bouncing the row between the two sections either.
-/// Within `IDLE`, `Exited` sorts after every `Idle` card regardless of clock —
-/// a dead process is definitionally the least-recently-active thing on the
-/// rail, not something whose stale `last_active` should let it outrank a live
-/// one.
-///
-/// `info` is the per-session registry data the view resolved ([`SessionInfo`]);
-/// `git` is the off-thread git-state cache keyed by worktree path. Both are
-/// joined **here**, so the emitted [`TreeRow::SessionCard`]s carry every fact
-/// their renderer needs and nothing looks back into state per frame. A session
-/// with no [`ActivityStore::since_of`] (`NEEDS YOU` / `REVIEW`) or
-/// [`ActivityStore::active_of`] (`WORKING` / `IDLE`) entry sorts as oldest; a
-/// clockless non-`Working` session is `IDLE`, having no evidence of work.
+/// `WORKING`/`IDLE` split by [`ActivityStore::active_of`] against [`crate::activity::IDLE_DWELL`], not by raw state, so a routine `Working` -\> `Idle` flap repaints a card in place instead of moving its row; `Exited` is always `IDLE` regardless of how fresh `last_active` looks.
 #[must_use]
 pub fn flatten_sessions(
     snap: &TreeSnapshot,
@@ -583,12 +410,7 @@ pub fn flatten_sessions(
     git: &HashMap<String, grove_core::git::WorktreeGitState>,
     home_running: &[bool],
 ) -> Vec<TreeRow> {
-    // `SnapshotProject::sessions` is keyed by project *name*, so it covers
-    // projects whose worktree cache has never been populated — the worktree
-    // walk would silently drop those.
-    // The fourth field is `active_of` (last genuine `Working` tick), kept
-    // separate from `since_of` (third field, last state transition) because
-    // the sections deliberately key off different clocks below.
+    // `SnapshotProject::sessions` is keyed by project name, so it covers projects whose worktree cache is empty — a worktree walk would silently drop those.
     let now = std::time::Instant::now();
     let all: Vec<SessionRow> = snap
         .projects
@@ -604,10 +426,6 @@ pub fn flatten_sessions(
         })
         .collect();
 
-    // `NEEDS YOU` and `REVIEW` are split by state alone: `WaitingForInput` is
-    // transient and self-clearing (one keystroke frees it), `Done` is sticky
-    // and accumulates until acknowledged. Merging them buries the one truly
-    // blocked agent under a pile of finished-but-unread turns.
     let needs_you_state = |s: ActivityState| matches!(s, ActivityState::WaitingForInput);
     let review_state = |s: ActivityState| matches!(s, ActivityState::Done);
 
@@ -617,12 +435,7 @@ pub fn flatten_sessions(
         .collect();
     let mut review: Vec<_> = all.iter().filter(|(_, s, ..)| review_state(*s)).collect();
 
-    // Position-only dwell: `Exited` is always `IDLE` (the process is gone, so
-    // no clock can put it back in flight), `Working` is always `WORKING`, and
-    // any other live session (i.e. `Idle` — `Waiting`/`Done` are already
-    // carved out above) holds its `WORKING` slot while its last genuine
-    // `Working` tick is younger than `IDLE_DWELL`. A session with no
-    // `active_of` at all has never been seen working: `IDLE`.
+    // `Exited` is always IDLE regardless of clock; an `Idle` session holds its WORKING slot until `IDLE_DWELL` elapses since its last genuine `Working` tick.
     let working_state = |s: ActivityState, active: Option<std::time::Instant>| match s {
         ActivityState::Exited => false,
         ActivityState::Working => true,
@@ -639,32 +452,16 @@ pub fn flatten_sessions(
         .filter(|row @ (_, s, _, a)| rest(row) && !working_state(*s, *a))
         .collect();
 
-    // Longest-blocked / longest-unread first: `since` ascending, `None` (no
-    // clock yet) sorts as oldest via `Option`'s derived order (`None` <
-    // `Some(_)`). id breaks exact ties deterministically so `sort_by` never
-    // sees a non-transitive comparator. `attention_rank` is deliberately not
-    // part of this comparator: every card in one of these sections already
-    // shares that section's single state, so the rank would be constant.
+    // Longest-blocked/unread first; id breaks ties so `sort_by` never sees a non-transitive comparator.
     let by_since_asc = |a: &&SessionRow, b: &&SessionRow| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0));
     needs_you.sort_by(by_since_asc);
     review.sort_by(by_since_asc);
 
-    // Most-recently-*working* first, in both sections: `active_of` (field 3,
-    // `last_active`) descending, `None` sorting as oldest (last here) via the
-    // same derived `Option` order, reversed. Deliberately NOT
-    // `since_of`/`state_since` (field 2): that clock re-stamps on every state
-    // transition, including a routine `Working` -\> `Idle` flap, so keying
-    // these sections on it would just relocate the churn the split exists to
-    // kill — from band-jumping to top-of-list-jumping. `active_of` only
-    // advances on a genuine `Working` tick (or an acknowledgment), so a state
-    // transition alone can never move a row.
+    // Most-recently-*working* first: deliberately `active_of`, not `since_of` — the latter re-stamps on every state flap and would relocate the churn this split exists to kill.
     let by_active_desc =
         |a: &&SessionRow, b: &&SessionRow| b.3.cmp(&a.3).then_with(|| b.0.cmp(&a.0));
     working.sort_by(by_active_desc);
-    // Inside IDLE, `Exited` sorts after every `Idle` card regardless of
-    // clock: a leading `matches!(.., Exited)` bool key (`false < true`, so
-    // `Exited` sorts last) takes priority over `active_of`, which is only a
-    // tiebreak among the non-Exited cards and among the Exited ones.
+    // `Exited` sorts after every `Idle` card regardless of clock.
     idle.sort_by(|a, b| {
         matches!(a.1, ActivityState::Exited)
             .cmp(&matches!(b.1, ActivityState::Exited))
@@ -683,9 +480,7 @@ pub fn flatten_sessions(
         }
     }
 
-    // Worktree path → worktree name, built once: the card names the worktree
-    // its session lives in, and the session only knows the path it was
-    // spawned in.
+    // Worktree path -> worktree name, built once: a card names the worktree, but a session only knows the path it spawned in.
     let worktrees: HashMap<&str, (&str, &str)> = snap
         .projects
         .iter()
@@ -702,25 +497,17 @@ pub fn flatten_sessions(
     let card = |(id, state): (SessionId, ActivityState)| {
         let meta = info.get(&id);
         let wt_path = meta.map_or("", |i| i.wt_path.as_str());
-        // A worktree the snapshot has not cached yet still has a name in
-        // its path — better than a blank run.
+        // Uncached worktree: fall back to the path's basename rather than a blank run.
         let worktree = worktrees
             .get(normalize_wt_path(wt_path))
             .map_or_else(|| path_basename(wt_path), |(name, _)| (*name).to_string());
-        // Same fallback degradation as the worktree name above: a worktree
-        // the snapshot hasn't cached yet has no known branch either.
         let branch = worktrees
             .get(normalize_wt_path(wt_path))
             .map_or_else(String::new, |(_, b)| (*b).to_string());
-        // A **missing** entry is not a clean worktree: it is the poll not
-        // having answered yet. Both sides of the join are normalized so a
-        // trailing slash cannot manufacture a miss.
+        // A missing entry means the poll hasn't answered yet, not a clean worktree.
         let diff = git
             .get(normalize_wt_path(wt_path))
             .map(|g| (g.added, g.removed));
-        // Age is time since the state last changed — last activity — not
-        // since the session spawned; only a session `since_of` doesn't know
-        // about yet falls back to the spawn-time clock.
         let elapsed = activity.since_of(id).map_or_else(
             || {
                 meta.map_or_else(String::new, |i| {
@@ -732,9 +519,7 @@ pub fn flatten_sessions(
         TreeRow::SessionCard {
             id,
             agent: meta.map_or(Agent::Terminal, |i| i.agent),
-            // The OSC title is what the agent is *doing*; the label is
-            // only who it is. Prefer the former, fall back to the latter
-            // — an agent that never set a title still gets a headline.
+            // OSC title over label — an agent that never set one still gets a headline.
             title: meta
                 .map(|i| i.title.clone().unwrap_or_else(|| i.label.clone()))
                 .unwrap_or_default(),
@@ -742,8 +527,7 @@ pub fn flatten_sessions(
             project: meta.map(|i| i.project.clone()).unwrap_or_default(),
             branch,
             elapsed,
-            // Same rule as the tree: a session must not look active while
-            // a home terminal is on screen (`sidebar.rs:338`).
+            // Same rule as the tree (`sidebar.rs:338`).
             active: !ws.terminal_focused() && ws.active_session() == Some(id),
             pending_kill: ws.pending_kill() == Some(id),
             state,
@@ -766,12 +550,7 @@ pub fn flatten_sessions(
     rows
 }
 
-/// Session ids in the order the tree renders them, honoring both collapse sets
-/// (`src/gui/view/sidebar.rs:386-417`).
-///
-/// Derived from [`flatten`]'s output rather than walking the tree a second
-/// time: this is `mod+1..9`'s index space **and** the attention queue's order
-/// (`update/mod.rs:728-739`), and two walks would be two chances to drift.
+/// Session ids in render order (`src/gui/view/sidebar.rs:386-417`). Derived from [`flatten`]'s output, not a second tree walk, since this is also `mod+1..9`'s index space (`update/mod.rs:728-739`) and two walks would be two chances to drift.
 #[must_use]
 pub fn visible_session_order(rows: &[TreeRow]) -> Vec<SessionId> {
     rows.iter()
@@ -782,15 +561,7 @@ pub fn visible_session_order(rows: &[TreeRow]) -> Vec<SessionId> {
         .collect()
 }
 
-// ── the agent-menu overlay walk ────────────────────────────────────────────
-
-/// Y-offset of the agent menu for the worktree it is open on, walking the
-/// **same** rows the list lays out (`src/gui/view/sidebar.rs:421-470`).
-///
-/// Carried amendment 2: this and the list share [`row_height`] through
-/// [`TreeRow::height`], so the overlay cannot land on the wrong row. Returns
-/// `(proj, wt, top, is_main)`; the `6.0` is the tree area's top padding minus
-/// the menu's own 2px lift (`sidebar.rs:449`).
+/// Y-offset of the agent menu, walking the same rows the list lays out (`src/gui/view/sidebar.rs:421-470`) via [`TreeRow::height`] so it cannot land on the wrong row. `6.0` is the tree area's top padding minus the menu's 2px lift (`sidebar.rs:449`).
 #[must_use]
 pub fn agent_menu_top(rows: &[TreeRow], open: (usize, usize)) -> Option<(usize, usize, f32, bool)> {
     let mut acc_y = 0.0_f32;
@@ -808,11 +579,7 @@ pub fn agent_menu_top(rows: &[TreeRow], open: (usize, usize)) -> Option<(usize, 
     None
 }
 
-// ── renderers ──────────────────────────────────────────────────────────────
-
-/// What a row click asks the [`crate::views::sidebar::Sidebar`] to do. Rows
-/// never reach into state themselves: they emit one of these and the view is
-/// the single place that decides what it means.
+/// What a row click asks the [`crate::views::sidebar::Sidebar`] to do. Rows never reach into state themselves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowAction {
     SelectProject(usize),
@@ -826,8 +593,7 @@ pub enum RowAction {
     RunScript(usize, usize),
     DeleteWorktree(usize, usize),
     SelectSession(SessionId),
-    /// The sessions rail card's `+N −M` chip: open the diff viewer for this
-    /// session's worktree.
+    /// The sessions rail card's `+N -M` chip.
     OpenDiff(SessionId),
     ArmKillSession(SessionId),
     KillSession(SessionId),
@@ -837,36 +603,28 @@ pub enum RowAction {
     NewHomeTerminal,
     ToggleTerminalsSection,
     ToggleCollapseAll,
-    /// The rail header's content-mode button — swaps the tree for the flat
-    /// cross-project session list, and back.
+    /// Swaps the tree for the flat cross-project session list, and back.
     ToggleRailMode,
-    /// The rail header's grid button — the same toggle `mod+g` performs, in
-    /// and out of the agent grid.
+    /// The same toggle `mod+g` performs, in and out of the agent grid.
     ToggleGridView,
-    /// The rail header's `+` in Tree mode — opens the add-project wizard
-    /// (Task 4).
+    /// Tree mode's `+` — opens the add-project wizard.
     AddProject,
-    /// The rail header's `+` in Sessions mode — opens the command palette
-    /// scoped to worktrees, i.e. "launch a session from which worktree?".
+    /// Sessions mode's `+` — opens the command palette scoped to worktrees.
     LaunchInWorktree,
 }
 
-/// The one place a row's click becomes a state change.
 pub type Dispatch = Rc<dyn Fn(RowAction, &mut Window, &mut App)>;
 
 /// Everything a renderer needs beyond the row itself.
 pub struct RowCtx {
-    /// Animation clock, driving the Working spinner.
     pub tick: u64,
-    /// Attention pulse in `[0, 1]` (0 = opaque, 1 = max dim).
+    /// `[0, 1]` (0 = opaque, 1 = max dim).
     pub pulse: f32,
-    /// Worktree under the mouse — drives the action strip.
     pub hovered_wt: Option<(usize, usize)>,
     /// Agents found on PATH, for the spawn strip (`src/app/mod.rs:168`).
     pub available: Vec<Agent>,
-    /// Per-session display text: `(agent, context)`, resolved by the view.
     pub session_text: HashMap<SessionId, (Agent, Option<String>)>,
-    /// Per-home-terminal context text, positional like the rows themselves.
+    /// Positional like the rows themselves.
     pub terminal_text: Vec<Option<String>>,
     pub dispatch: Dispatch,
 }
@@ -878,9 +636,7 @@ impl RowCtx {
     }
 }
 
-/// Status glyph in a fixed 14px slot (`src/gui/rows.rs:870-892`). Working spins
-/// on the clock tick; WaitingForInput **dims** rather than hides, so the row
-/// layout never moves.
+/// Status glyph in a fixed 14px slot (`src/gui/rows.rs:870-892`). WaitingForInput dims rather than hides, so the row layout never moves.
 pub fn state_glyph(state: ActivityState, tick: u64, pulse: f32) -> AnyElement {
     let inner = match state {
         ActivityState::Working => icons::spinner(ICON_SM, c::GREEN(), tick),
@@ -903,8 +659,7 @@ pub fn state_glyph(state: ActivityState, tick: u64, pulse: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// A 22px square icon button: transparent + `FG_MUTE` at rest, `BG_HOVER` +
-/// `FG` on hover (`src/gui/view/sidebar.rs:165-172`).
+/// A 22px square icon button: transparent + `FG_MUTE` at rest, `BG_HOVER` + `FG` on hover (`src/gui/view/sidebar.rs:165-172`).
 fn tool_button(
     id: &'static str,
     key: impl std::fmt::Display,
@@ -936,14 +691,12 @@ fn tool_button(
     .into_any_element()
 }
 
-/// The `main` tag (`src/gui/rows.rs:253-265`). Shares its slot with the hover
-/// icons so the two never compete for width.
+/// Shares its slot with the hover icons so the two never compete for width (`src/gui/rows.rs:253-265`).
 fn main_tag() -> AnyElement {
     ui("main", TEXT_MICRO, c::GREEN()).into_any_element()
 }
 
-/// One row, fully resolved. Reads only from `row` and `ctx` — never back into
-/// the tree (`src/gui/view/sidebar.rs:227-237`).
+/// Reads only from `row` and `ctx` — never back into the tree (`src/gui/view/sidebar.rs:227-237`).
 pub fn render_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
     match row {
         TreeRow::Project {
@@ -998,7 +751,6 @@ fn project_row(
             d.child(state_glyph(st, ctx.tick, ctx.pulse))
         });
     if is_git {
-        // Worktrees are git-only.
         right = right.child(tool_button(
             "wt-add",
             idx,
@@ -1036,9 +788,6 @@ fn project_row(
         ctx,
         RowAction::RemoveProject(idx),
     ));
-    // Fixed chrome never shrinks — see the comment at the cluster div for
-    // why it can't be `flex_1`. The blank middle is claimed by the filler
-    // div below instead of an auto margin here.
     right = right.flex_shrink_0();
 
     div()
@@ -1063,16 +812,7 @@ fn project_row(
                     ICON_XS,
                     c::FG_MUTE(),
                 )))
-                // No `flex_1` here on purpose: `.truncate()` (`overflow_hidden`
-                // + `text_ellipsis`) makes gpui decide the ellipsis at MEASURE
-                // time (`gpui/src/elements/text.rs:659-672,739-751`) — whatever
-                // width the text measures at becomes its flex-basis, and a
-                // `flex_1` parent (basis 0%) never re-grows it afterward. By
-                // leaving this cluster's basis at `auto` (its own content size)
-                // and letting the filler below absorb the leftover space, the
-                // cluster only receives a *shrunk* definite width — and
-                // therefore only truncates — once the row is genuinely too
-                // narrow for everything.
+                // No `flex_1` here: `.truncate()` fixes its ellipsis at gpui's measure time (`gpui/src/elements/text.rs:659-672,739-751`), and a `flex_1` (basis 0%) parent never re-grows it after. The filler below absorbs leftover space instead.
                 .child(
                     ui(name.to_uppercase(), TEXT_BODY, c::FG())
                         .font_weight(FontWeight::BOLD)
@@ -1088,11 +828,7 @@ fn project_row(
                         .child(mono(format!("{count}"), TEXT_SMALL, count_color)),
                 ),
         )
-        // Clickable filler: the name cluster above can't be `flex_1` (see its
-        // comment), so the row's click target would otherwise only cover the
-        // cluster's content width, leaving the blank middle dead to clicks.
-        // This absorbs the leftover space (basis 0% + grow, so it never
-        // steals width from the name) and carries the same action.
+        // Clickable filler: absorbs the blank middle so the row's click target isn't just the name cluster's content width.
         .child(
             div()
                 .flex_1()
@@ -1127,8 +863,6 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
     let twist = if *expanded { "chev-down" } else { "chev-right" };
     let hovered = ctx.hovered_wt == Some((proj, wt));
 
-    // Non-git project root: flag it so the user knows sessions run directly in
-    // the project path with no branch isolation / worktrees.
     let no_git = *is_main && !*is_git;
 
     let mut label = if no_git {
@@ -1150,9 +884,7 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
             .child(ui(name.clone(), TEXT_TITLE, c::FG_DIM()).truncate())
     };
     if show_branch {
-        // Branch chip: a soft-bordered pill under the name.
-        // The chip must shrink with the sidebar, not wrap: the row's height is
-        // fixed at `row_height`, so a wrapped chip spills over its neighbours.
+        // Must shrink, not wrap: the row's height is fixed at `row_height`, so a wrapped chip spills over its neighbours.
         label = label.child(
             div()
                 .min_w_0()
@@ -1165,9 +897,7 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         );
     }
 
-    // The `main` tag and the hover action strip share one fixed right-hand
-    // slot, so they never render at once and never shift the layout
-    // (`src/gui/rows.rs:253-265,396-420`).
+    // `main` tag and hover action strip share one fixed slot so they never shift the layout (`src/gui/rows.rs:253-265,396-420`).
     let actions: AnyElement = if hovered {
         let mut strip = div()
             .flex()
@@ -1239,13 +969,7 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
             }
         })
         .child(
-            // No `flex_1` on this cluster — see the comment at `project_row`'s
-            // name child (`rows.rs`): `.truncate()` measures and fixes its
-            // ellipsis point at measure time, so a `flex_1` (basis 0%) parent
-            // would strand the name at whatever width it first ellipsized to.
-            // Leaving basis at `auto`, with the filler below absorbing the
-            // leftover space, means this cluster keeps its content width until
-            // the row is actually too narrow for both.
+            // No `flex_1` — see `project_row`'s name-child comment.
             div()
                 .flex()
                 .min_w_0()
@@ -1266,10 +990,7 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
                 )))
                 .child(label),
         )
-        // Clickable filler: absorbs the row's blank middle so clicking it
-        // selects the worktree, same as clicking the name cluster — see the
-        // comment at `project_row`'s filler for why the cluster can't just
-        // be `flex_1` itself.
+        // Clickable filler — see `project_row`'s filler comment.
         .child(
             div()
                 .flex_1()
@@ -1281,10 +1002,7 @@ fn worktree_row(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
                 ),
         )
         .child(
-            // The git-suffix, roll-up glyph and tool chrome are fixed-width
-            // and pinned to the row's right edge: `flex_shrink_0` so shrink
-            // pressure lands on the name cluster above; the filler above
-            // claims only the space the name cluster doesn't need.
+            // Fixed-width and pinned right so shrink pressure lands on the name cluster above.
             div()
                 .flex()
                 .items_center()
@@ -1321,11 +1039,7 @@ fn session_row(
             ActivityState::Exited => c::FG_MUTE(),
         }
     };
-    // No `flex_1` here — see `project_row`'s name-child comment (`rows.rs`):
-    // `.truncate()` on the context text below fixes its ellipsis at measure
-    // time, so a `flex_1` (basis 0%) parent would never let it re-grow. The
-    // close button claims the right edge via `ml_auto()` instead, so this
-    // cluster keeps its own content width until the row truly runs out.
+    // No `flex_1` — see `project_row`'s name-child comment; close button claims the right edge via `ml_auto()` instead.
     let mut meta = div()
         .flex()
         .min_w_0()
@@ -1340,8 +1054,7 @@ fn session_row(
             .child(ui(ctx_text, TEXT_SMALL, c::FG_MUTE()).truncate());
     }
 
-    // Two-step confirm: the first press arms (red tick), the second kills
-    // (`src/gui/rows.rs:519-524`).
+    // Two-step confirm: first press arms (red tick), second kills (`src/gui/rows.rs:519-524`).
     let close = if pending_kill {
         tool_button(
             "sess-kill",
@@ -1363,9 +1076,7 @@ fn session_row(
             RowAction::ArmKillSession(id),
         )
     };
-    // `AnyElement` isn't `Styled`, so the auto margin that pins it to the row's
-    // right edge (freeing the name cluster above to keep its content width)
-    // has to go on a thin wrapper div.
+    // `AnyElement` isn't `Styled`, so the pinning auto margin needs a wrapper div.
     let close = div().flex_none().ml_auto().child(close);
 
     div()
@@ -1388,8 +1099,7 @@ fn session_row(
         .child(state_glyph(state, ctx.tick, ctx.pulse))
         .child(meta)
         .child(close)
-        // Overlaid rather than a `border_l` so the amber accent never shifts
-        // the row content (`src/gui/rows.rs:539-566`).
+        // Overlaid rather than `border_l` so the amber accent never shifts row content (`src/gui/rows.rs:539-566`).
         .when(state == ActivityState::WaitingForInput, |d| {
             d.child(
                 div()
@@ -1416,10 +1126,7 @@ fn state_accent(state: ActivityState) -> (gpui::Hsla, &'static str) {
     }
 }
 
-/// The state's mark in the [`STATUS_DOT_COL_W`] column: the spinner while
-/// working, a hollow dot where nothing is running, a filled one otherwise.
-/// Filled-versus-hollow is a *shape* difference, so present-versus-absent
-/// survives greyscale (see [`status_dot_hollow`]).
+/// Filled-versus-hollow is a *shape* difference, so present-versus-absent survives greyscale (see [`status_dot_hollow`]).
 fn card_state_mark(state: ActivityState, accent: gpui::Hsla, tick: u64) -> AnyElement {
     let inner: AnyElement = match state {
         ActivityState::Working => icons::spinner(ICON_SM, accent, tick).into_any_element(),
@@ -1440,11 +1147,7 @@ fn card_state_mark(state: ActivityState, accent: gpui::Hsla, tick: u64) -> AnyEl
         .into_any_element()
 }
 
-/// The trailing diff stat: `+N` and `-N`, one neutral `clean` chip when the
-/// poll says the worktree has no uncommitted work, and **nothing at all**
-/// while it has not answered — an empty slot is honest about not knowing,
-/// where `clean` would be a claim. The delete chip's sign is an **ASCII**
-/// hyphen, not U+2212 — the bundled fonts have no minus glyph (§9.3, R7).
+/// Nothing at all while the poll hasn't answered — an empty slot is honest, where `clean` would be a claim. The delete chip's sign is ASCII hyphen, not U+2212 — the bundled fonts have no minus glyph.
 pub fn diff_chips(diff: Option<(u32, u32)>) -> AnyElement {
     let row = div().flex().flex_none().items_center().gap(rpx(SPACE_SM));
     match diff_display(diff) {
@@ -1459,15 +1162,7 @@ pub fn diff_chips(diff: Option<(u32, u32)>) -> AnyElement {
     }
 }
 
-/// The sessions rail's card (mock D11). One [`card`] holding one
-/// [`RowDensity::Card`] row of three text lines: the agent's glyph with the
-/// session title as the headline; the worktree with the state and age; and
-/// `project · branch` with the diff stat underneath.
-///
-/// Every state treatment is a *fill or an overlay*, never a size: the card's
-/// box is pinned to [`SESSION_CARD_H`] (the same token [`TreeRow::height`]
-/// reports), so arming a kill or gaining the attention bar cannot reflow the
-/// list under the cursor.
+/// Every state treatment is a fill or overlay, never a size: the card's box is pinned to [`SESSION_CARD_H`] (the token [`TreeRow::height`] reports), so arming a kill cannot reflow the list under the cursor.
 fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
     let TreeRow::SessionCard {
         id,
@@ -1494,9 +1189,7 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         _ => c::FG(),
     };
 
-    // Two-step confirm, exactly as the tree's row does it: the first press
-    // arms (red tick), the second kills. It holds its slot in both states, so
-    // arming never moves anything.
+    // Two-step confirm, same as the tree's row; holds its slot in both states so arming never moves anything.
     let close = if *pending_kill {
         tool_button(
             "card-kill",
@@ -1519,9 +1212,7 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         )
     };
 
-    // The title keeps `auto` basis and the kill button claims the right edge
-    // with `ml_auto` — see `project_row`'s name-child comment: a
-    // `.truncate()` inside a `flex_1` (basis 0%) parent never re-grows.
+    // Title keeps `auto` basis, kill button claims the right edge via `ml_auto` — see `project_row`'s name-child comment.
     let headline = div()
         .flex()
         .w_full()
@@ -1538,9 +1229,6 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         )
         .child(div().flex().flex_none().ml_auto().child(close));
 
-    // The worktree line: what this session is working in, what it is doing
-    // right now, and how long it has been in that state. The diff stat sits on
-    // the meta line below, next to the rest of the card's metadata.
     let context_line = div()
         .flex()
         .w_full()
@@ -1566,13 +1254,7 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
                 .child(ui(elapsed.clone(), TEXT_MICRO, c::FG_MUTE())),
         );
 
-    // The meta line: `project · branch` — the branch is suppressed
-    // (`worktree_shows_branch`) when it duplicates the worktree name already
-    // shown on the line above, same rule as the tree's branch chip. The diff
-    // stat sits at its trailing edge; its chips are `TEXT_MICRO` in a
-    // `keycap_filled` shell, shorter than the `TEXT_SMALL` run they sit
-    // beside, so the line still fits `CARD_LINE_SM_H` and the height
-    // `TreeRow::height` reports stays true.
+    // Branch suppressed when it duplicates the worktree name above, same rule as the tree's branch chip.
     let meta = div()
         .flex()
         .w_full()
@@ -1595,9 +1277,7 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         )
         .child({
             let chips = diff_chips(*diff);
-            // Only an actual `+N -M` pair is worth opening the viewer for —
-            // a clean worktree has nothing to show, and the chip's own shell
-            // already draws nothing while the poll is unknown.
+            // Only an actual `+N -M` pair is worth opening the viewer for.
             match diff_display(*diff) {
                 DiffDisplay::Counts(..) => {
                     let dispatch = Rc::clone(&ctx.dispatch);
@@ -1648,9 +1328,7 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         .flex_none()
         .relative()
         .overflow_hidden()
-        // Fills stack from least to most urgent, so the last one wins: an
-        // armed kill outranks the selection, which outranks the attention
-        // tint. None of them changes the box.
+        // Fills stack least to most urgent, so the last one wins: armed kill outranks selection, which outranks attention tint.
         .when(waiting, |d| d.bg(c::AMBER_ROW_TINT()))
         .when(*active, |d| {
             d.bg(c::SEL_TINT_SOFT()).border_color(c::SEL_RING())
@@ -1658,8 +1336,7 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         .when(*pending_kill, |d| {
             d.bg(c::RED_WASH()).border_color(c::RED())
         })
-        // Overlaid rather than a `border_l` so the amber accent never shifts
-        // the card's content (`src/gui/rows.rs:539-566`).
+        // Overlaid rather than `border_l` so the amber accent never shifts card content (`src/gui/rows.rs:539-566`).
         .when(waiting, |d| {
             d.child(
                 div()
@@ -1687,10 +1364,7 @@ fn empty_row(title: &'static str, subtitle: &'static str) -> AnyElement {
         .into_any_element()
 }
 
-/// A static, non-collapsible section label above one of the sessions rail's
-/// four sections (`NEEDS YOU`, `REVIEW`, `WORKING`, `IDLE`). Same typography/colour as [`terminals_header`]'s label
-/// (mono, [`TEXT_MICRO`], [`c::FG_MUTE`]) but with no chevron, no toggle
-/// action and no activity dot — it never collapses.
+/// Same typography/colour as [`terminals_header`]'s label but no chevron, toggle, or activity dot — it never collapses.
 fn section_header(label: &'static str) -> AnyElement {
     div()
         .id("sessions-section-header")
@@ -1709,9 +1383,7 @@ fn section_header(label: &'static str) -> AnyElement {
         .into_any_element()
 }
 
-/// The collapsible TERMINALS header (`src/gui/rows.rs:643-...`). Rendered both
-/// inline (expanded) and docked at the rail's bottom (collapsed) — the dot is
-/// the only difference, and the caller decides it.
+/// Rendered both inline (expanded) and docked at the rail's bottom (collapsed) — the dot is the only difference, and the caller decides it (`src/gui/rows.rs:643-...`).
 pub fn terminals_header(
     expanded: bool,
     count: usize,
@@ -1762,8 +1434,7 @@ fn terminal_row(
     running: bool,
     ctx: &RowCtx,
 ) -> AnyElement {
-    // No synthetic "terminal N" name — the icon plus the shell's own title,
-    // falling back to `~` (`src/gui/rows.rs:596-600`).
+    // No synthetic "terminal N" name — the shell's own title, falling back to `~` (`src/gui/rows.rs:596-600`).
     let context = ctx
         .terminal_text
         .get(idx)
@@ -1798,8 +1469,7 @@ fn terminal_row(
             RowAction::ArmKillTerminal(idx),
         )
     };
-    // Wrapper for the same reason as `session_row`'s `close`: `AnyElement`
-    // isn't `Styled`, so the auto margin needs a thin div around it.
+    // Wrapper for the same reason as `session_row`'s `close`.
     let close = div().flex_none().ml_auto().child(close);
     div()
         .id(SharedString::from(format!("term-{idx}")))
@@ -1815,10 +1485,7 @@ fn terminal_row(
         .cursor_pointer()
         .on_mouse_down(MouseButton::Left, ctx.on(RowAction::SelectTerminal(idx)))
         .child(
-            // No `flex_1` — see `project_row`'s name-child comment (`rows.rs`):
-            // `.truncate()` fixes its ellipsis at measure time, so the name
-            // cluster keeps `auto` basis and the close button (fixed-width)
-            // claims the right edge via `ml_auto()` above instead.
+            // No `flex_1` — see `project_row`'s name-child comment.
             div()
                 .flex()
                 .min_w_0()
@@ -1836,8 +1503,6 @@ fn terminal_row(
 mod tests {
     use super::*;
     use crate::entities::workspace_state::{SnapshotProject, SnapshotWorktree};
-
-    // ── pure helpers ────────────────────────────────────────────────────
 
     /// `src/gui/rows.rs:249`.
     #[test]
@@ -1931,8 +1596,6 @@ mod tests {
         assert!(sidebar_empty_copy(1, 1).is_none());
         assert!(sidebar_empty_copy(5, 2).is_none());
     }
-
-    // ── flattening ──────────────────────────────────────────────────────
 
     fn sid(n: u64) -> SessionId {
         SessionId::from_raw(n)
@@ -2784,8 +2447,6 @@ mod tests {
             TreeRow::TerminalsHeader { .. } | TreeRow::Terminal { .. }
         )));
     }
-
-    // ── visible_session_order ───────────────────────────────────────────
 
     /// `sidebar.rs:386-417` — the same walk, sessions only.
     #[test]

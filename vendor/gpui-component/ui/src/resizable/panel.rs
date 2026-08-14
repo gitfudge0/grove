@@ -28,7 +28,6 @@ impl Render for DragPanel {
     }
 }
 
-/// A group of resizable panels.
 #[derive(IntoElement)]
 pub struct ResizablePanelGroup {
     id: ElementId,
@@ -40,7 +39,6 @@ pub struct ResizablePanelGroup {
 }
 
 impl ResizablePanelGroup {
-    /// Create a new resizable panel group.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -52,9 +50,7 @@ impl ResizablePanelGroup {
         }
     }
 
-    /// Bind yourself to a resizable state entity.
-    ///
-    /// If not provided, it will handle its own state internally.
+    /// If not provided, handles its own state internally.
     pub fn with_state(mut self, state: &Entity<ResizableState>) -> Self {
         self.state = Some(state.clone());
         self
@@ -66,17 +62,11 @@ impl ResizablePanelGroup {
         self
     }
 
-    /// Add a panel to the group.
-    ///
-    /// - The `axis` will be set to the same axis as the group.
-    /// - The `initial_size` will be set to the average size of all panels if not provided.
-    /// - The `group` will be set to the group entity.
     pub fn child(mut self, panel: impl Into<ResizablePanel>) -> Self {
         self.children.push(panel.into());
         self
     }
 
-    /// Add multiple panels to the group.
     pub fn children<I>(mut self, panels: impl IntoIterator<Item = I>) -> Self
     where
         I: Into<ResizablePanel>,
@@ -85,20 +75,12 @@ impl ResizablePanelGroup {
         self
     }
 
-    /// Set size of the resizable panel group
-    ///
-    /// - When the axis is horizontal, the size is the height of the group.
-    /// - When the axis is vertical, the size is the width of the group.
+    /// Horizontal axis: height of the group. Vertical axis: width of the group.
     pub fn size(mut self, size: Pixels) -> Self {
         self.size = Some(size);
         self
     }
 
-    /// Set the callback to be called when the panels are resized.
-    ///
-    /// ## Callback arguments
-    ///
-    /// - Entity<ResizableState>: The state of the ResizablePanelGroup.
     pub fn on_resize(
         mut self,
         on_resize: impl Fn(&Entity<ResizableState>, &mut Window, &mut App) + 'static,
@@ -136,7 +118,6 @@ impl RenderOnce for ResizablePanelGroup {
             v_flex()
         };
 
-        // Sync panels to the state
         let panels_count = self.children.len();
         state.update(cx, |state, cx| {
             state.sync_panels_count(self.axis, panels_count, cx);
@@ -179,19 +160,10 @@ impl RenderOnce for ResizablePanelGroup {
     }
 }
 
-/// A resizable panel inside a [`ResizablePanelGroup`].
-///
-/// Implements [`Styled`], so call sites can override the panel's
-/// rendered styles. User overrides are applied **between** the panel's
-/// flex defaults and its size management — the caller can override the
-/// internal `flex_grow: 1` (e.g. via `.flex_none()`) and add their own
-/// padding / colors / borders, while the panel's runtime size
-/// constraints (`min_w`/`max_w`/`flex_basis` driven by `ResizableState`)
-/// always win.
-///
-/// A common override is `.flex_none()`: the panel sets `flex_grow: 1`
-/// internally, so a sized panel that should hold its width when a
-/// sibling collapses needs to opt out of growth via `.flex_none()`.
+/// A resizable panel inside a [`ResizablePanelGroup`]. Implements [`Styled`]; caller overrides
+/// apply between the panel's flex defaults and its size management, but the runtime size
+/// constraints driven by `ResizableState` always win. A sized panel that should hold its width
+/// when a sibling collapses needs `.flex_none()` to opt out of the internal `flex_grow: 1`.
 ///
 /// ```ignore
 /// h_resizable("layout")
@@ -200,20 +172,15 @@ impl RenderOnce for ResizablePanelGroup {
 ///     .child(resizable_panel().size(px(280.)).flex_none().child(metadata))
 /// ```
 ///
-/// **Reserved styles**: do not call these from outside — they fight the
-/// panel's own layout management:
-/// - `.flex_basis(...)` — driven by `ResizableState`, not by the caller.
-/// - `.absolute()` — would remove the panel from the resizable's flex flow.
-/// - `.overflow_hidden()` — may clip the resize handle, which is positioned
-///   absolute at `left: -4px` of each panel after the first.
+/// **Reserved styles**, do not call from outside: `.flex_basis(...)` (driven by `ResizableState`),
+/// `.absolute()` (removes the panel from the resizable's flex flow), `.overflow_hidden()` (may
+/// clip the resize handle, positioned absolute at `left: -4px`).
 #[derive(IntoElement)]
 pub struct ResizablePanel {
     axis: Axis,
     panel_ix: usize,
     state: Option<Entity<ResizableState>>,
-    /// Initial size is the size that the panel has when it is created.
     initial_size: Option<Pixels>,
-    /// size range limit of this panel.
     size_range: Range<Pixels>,
     children: Vec<AnyElement>,
     visible: bool,
@@ -221,7 +188,6 @@ pub struct ResizablePanel {
 }
 
 impl ResizablePanel {
-    /// Create a new resizable panel.
     pub(super) fn new() -> Self {
         Self {
             panel_ix: 0,
@@ -235,20 +201,16 @@ impl ResizablePanel {
         }
     }
 
-    /// Set the visibility of the panel, default is true.
     pub fn visible(mut self, visible: bool) -> Self {
         self.visible = visible;
         self
     }
 
-    /// Set the initial size of the panel.
     pub fn size(mut self, size: impl Into<Pixels>) -> Self {
         self.initial_size = Some(size.into());
         self
     }
 
-    /// Set the size range to limit panel resize.
-    ///
     /// Default is [`PANEL_MIN_SIZE`] to [`Pixels::MAX`].
     pub fn size_range(mut self, range: impl Into<Range<Pixels>>) -> Self {
         self.size_range = range.into();
@@ -290,13 +252,8 @@ impl RenderOnce for ResizablePanel {
             .flex_grow_1()
             .size_full()
             .relative()
-            // Apply caller style overrides here — between the flex defaults
-            // above and the size management below. This lets callers cancel
-            // the unconditional `.flex_grow_1()` (via `.flex_none()`, the load-
-            // bearing case for sized panels next to a collapsing sibling) and
-            // add their own padding / colors / borders, while keeping the
-            // panel's runtime size constraints (min/max + `flex_basis` driven
-            // by `ResizableState`) authoritative.
+            // Between the flex defaults above and the size management below, so callers can
+            // cancel flex_grow_1 via .flex_none() while the runtime size constraints still win.
             .refine_style(&self.style)
             .when(self.axis.is_vertical(), |this| {
                 this.min_h(size_range.start).max_h(size_range.end)
@@ -304,13 +261,9 @@ impl RenderOnce for ResizablePanel {
             .when(self.axis.is_horizontal(), |this| {
                 this.min_w(size_range.start).max_w(size_range.end)
             })
-            // 1. initial_size is None, to use auto size.
-            // 2. initial_size is Some and size is none, to use the initial size of the panel for first time render.
-            // 3. initial_size is Some and size is Some, use `size`.
             .when(self.initial_size.is_none(), |this| this.flex_shrink_1())
             .when_some(self.initial_size, |this, initial_size| {
-                // The `self.size` is None, that mean the initial size for the panel,
-                // so we need set `flex_shrink_0` To let it keep the initial size.
+                // panel_state.size is None on first render, so use flex_none to keep the initial size.
                 this.when(
                     panel_state.size.is_none() && !initial_size.is_zero(),
                     |this| this.flex_none(),
@@ -336,7 +289,6 @@ impl RenderOnce for ResizablePanel {
                     DragPanel,
                     move |drag_panel, _, _, cx| {
                         cx.stop_propagation();
-                        // Set current resizing panel ix
                         state.update(cx, |state, _| {
                             state.resizing_panel_ix = Some(ix);
                         });
@@ -437,7 +389,6 @@ impl Element for ResizePanelGroupElement {
             }
         });
 
-        // When any mouse up, stop dragging
         window.on_mouse_event({
             let state = self.state.clone();
             let current_ix = state.read(cx).resizing_panel_ix;

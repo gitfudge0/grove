@@ -98,9 +98,7 @@ pub trait RopeExt {
     /// ```
     fn line_start_offset(&self, row: usize) -> usize;
 
-    /// Line the end offset (including `\n`) of the line at the given row (0-based) index.
-    ///
-    /// Return the end of the rope if the row is out of bounds.
+    /// End offset (including `\n`) of the line at the given row; returns the rope's end if the row is out of bounds.
     ///
     /// ```
     /// use gpui_component::{Rope, RopeExt};
@@ -122,9 +120,7 @@ pub trait RopeExt {
     /// ```
     fn slice_line(&self, row: usize) -> RopeSlice<'_>;
 
-    /// Return a slice of rows in the given range (0-based, end exclusive).
-    ///
-    /// If the range is out of bounds, it will be clamped to the valid range.
+    /// Rows in the given range (0-based, end exclusive), clamped if out of bounds.
     ///
     /// ```
     /// use gpui_component::{Rope, RopeExt};
@@ -137,9 +133,7 @@ pub trait RopeExt {
     /// ```
     fn slice_lines(&self, rows_range: Range<usize>) -> RopeSlice<'_>;
 
-    /// Return an iterator over all lines in the rope.
-    ///
-    /// Each line slice includes `\r` if present, but not `\n`.
+    /// Iterator over all lines; each slice includes `\r` if present, but not `\n`.
     ///
     /// ```
     /// use gpui_component::{Rope, RopeExt};
@@ -158,9 +152,7 @@ pub trait RopeExt {
     /// ```
     fn lines_len(&self) -> usize;
 
-    /// Return the length of the row (0-based) in characters, including `\r` if present, but not `\n`.
-    ///
-    /// If the row is out of bounds, return 0.
+    /// Length of the row in characters, including `\r` but not `\n`; 0 if out of bounds.
     ///
     /// ```
     /// use gpui_component::{Rope, RopeExt};
@@ -172,12 +164,7 @@ pub trait RopeExt {
     /// ```
     fn line_len(&self, row: usize) -> usize;
 
-    /// Replace the text in the given byte range with new text.
-    ///
-    /// # Panics
-    ///
-    /// - If the range is not on char boundary.
-    /// - If the range is out of bounds.
+    /// Replace the text in the given byte range with new text; panics if the range isn't on a char boundary or is out of bounds.
     ///
     /// ```
     /// use gpui_component::{Rope, RopeExt};
@@ -187,30 +174,19 @@ pub trait RopeExt {
     /// ```
     fn replace(&mut self, range: Range<usize>, new_text: &str);
 
-    /// Get char at the given offset (byte).
-    ///
-    /// - If the offset is in the middle of a multi-byte character will panic.
-    /// - If the offset is out of bounds, return None.
+    /// Panics if the offset is mid-character; `None` if out of bounds.
     fn char_at(&self, offset: usize) -> Option<char>;
 
-    /// Get the byte offset from the given line, column [`Position`] (0-based).
-    ///
-    /// The column is in characters.
+    /// Byte offset from a line/column [`Position`]; column is in characters.
     fn position_to_offset(&self, line_col: &Position) -> usize;
 
-    /// Get the line, column [`Position`] (0-based) from the given byte offset.
-    ///
-    /// The column is in characters.
+    /// Line/column [`Position`] from a byte offset; column is in characters.
     fn offset_to_position(&self, offset: usize) -> Position;
 
-    /// Get point (row, column) from the given byte offset.
-    ///
-    /// The column is in bytes.
+    /// Point (row, column) from a byte offset; column is in bytes.
     fn offset_to_point(&self, offset: usize) -> Point;
 
-    /// Get byte offset from the given point (row, column).
-    ///
-    /// The column is 0-based in bytes.
+    /// Byte offset from a point (row, column), column 0-based in bytes.
     fn point_to_offset(&self, point: Point) -> usize;
 
     /// Get the word byte range at the given byte offset (0-based).
@@ -219,21 +195,13 @@ pub trait RopeExt {
     /// Get word at the given byte offset (0-based).
     fn word_at(&self, offset: usize) -> String;
 
-    /// Convert offset in UTF-16 to byte offset (0-based).
-    ///
-    /// Runs in O(log N) time.
+    /// UTF-16 offset to byte offset; O(log N).
     fn offset_utf16_to_offset(&self, offset_utf16: usize) -> usize;
 
-    /// Convert byte offset (0-based) to offset in UTF-16.
-    ///
-    /// Runs in O(log N) time.
+    /// Byte offset to UTF-16 offset; O(log N).
     fn offset_to_offset_utf16(&self, offset: usize) -> usize;
 
-    /// Get a clipped offset (avoid in a char boundary).
-    ///
-    /// - If Bias::Left and inside the char boundary, return the ix - 1;
-    /// - If Bias::Right and in inside char boundary, return the ix + 1;
-    /// - Otherwise return the ix.
+    /// A clipped offset avoiding a char boundary: `Bias::Left` rounds down, `Bias::Right` rounds up.
     ///
     /// ```
     /// use gpui_component::{Rope, RopeExt};
@@ -247,9 +215,7 @@ pub trait RopeExt {
     /// ```
     fn clip_offset(&self, offset: usize, bias: Bias) -> usize;
 
-    /// Convert offset in characters to byte offset (0-based).
-    ///
-    /// Run in O(n) time.
+    /// Char offset to byte offset; O(n).
     ///
     /// # Example
     ///
@@ -263,9 +229,7 @@ pub trait RopeExt {
     /// ```
     fn char_index_to_offset(&self, char_index: usize) -> usize;
 
-    /// Convert byte offset (0-based) to offset in characters.
-    ///
-    /// Run in O(n) time.
+    /// Byte offset to char offset; O(n).
     ///
     /// # Example
     ///

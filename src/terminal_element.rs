@@ -1,12 +1,7 @@
 //! The custom `Element` that paints one terminal grid.
 //!
-//! Owns no input: the view (`crate::views::terminal_view`) handles events and
-//! hands this element a snapshot-shaped description of what to draw. All the
-//! work happens in `prepaint` — shaping needs `&mut Window`, so `paint` only
-//! replays quads and already-shaped lines (findings §S1 Step 1).
-//!
-//! Paint order is `src/gui/pty.rs:216-330`: base fill, merged background
-//! quads, text runs, selection overlay, cursor.
+//! Owns no input; all work happens in `prepaint` since shaping needs `&mut Window`, so `paint` only replays quads and shaped lines.
+//! Paint order ported from `src/gui/pty.rs:216-330`: base fill, background quads, text runs, selection, cursor.
 
 use std::cell::Cell as StdCell;
 use std::collections::hash_map::DefaultHasher;
@@ -29,14 +24,12 @@ use crate::zoom::ZoomState;
 
 pub struct TerminalElement {
     session: gpui::Entity<TerminalSession>,
-    /// Project this PTY belongs to, for the pinned content-theme lookup.
     /// `None` for home terminals, which belong to no project.
     project: Option<String>,
     selection: Option<(AbsCell, AbsCell)>,
     cursor_visible: bool,
     zoom: f32,
-    /// Written in `prepaint` so the view can turn window-space pointer events
-    /// into element-local pixels.
+    /// Written in `prepaint` so the view can turn window-space pointer events into element-local pixels.
     bounds_out: Rc<StdCell<Bounds<Pixels>>>,
 }
 
@@ -60,67 +53,37 @@ impl TerminalElement {
     }
 }
 
-/// One row's drawing: the merged background quads and the shaped text runs for
-/// a single grid line, plus the hash of the raw cells that produced them.
-///
-/// **Origins are relative to the ROW's top-left, not the element's**, and that
-/// is the whole trick: a row that scrolled to a different index is byte-identical
-/// drawing, so it can be reused as-is and `paint` supplies the `y` offset. Bake
-/// `r * cell_h` in here and scroll reuse silently stops working.
+/// One row's drawing: merged background quads and shaped text runs, plus the hash of the raw cells that produced them.
+/// Origins are relative to the ROW's top-left, not the element's, so a row that scrolled to a different index is byte-identical and reusable.
 pub struct RowScene {
-    /// Hash of the raw [`grove_terminal::Cell`]s, never of the resolved colors:
-    /// raw cells avoid hashing floats, and a theme change already invalidates
-    /// every row through [`GeomKey::theme`].
+    /// Hashes the raw cells, never resolved colors — a theme change already invalidates every row via [`GeomKey::theme`].
     hash: u64,
-    /// `x` is anchored at `col * cell_w`, `y` is 0; nothing here depends on
-    /// accumulated glyph advances.
     bg_quads: Vec<PaintQuad>,
     runs: Vec<(Point<Pixels>, ShapedLine)>,
 }
 
-/// Everything in a terminal frame that only changes when the grid content
-/// changes, i.e. the entire cost of `prepaint` (a full `snapshot()` copy,
-/// `colors::resolve_pair` per cell, ~180 `shape_line` calls per tile).
-///
-/// Rows in top-to-bottom order, `Rc` per row so reusing one across frames is a
-/// refcount bump. Duplicate rows (blank lines are common) naturally share a
-/// single `Rc` — that is correct and desirable.
-///
-/// The scene itself carries no `bounds.origin`, and that is load-bearing: when
-/// two tiles swap, each session's `bounds.origin` moves but its `bounds.size`
-/// does not. Absolute origins would be wrong after a swap and would force
-/// invalidation on exactly the frames this cache exists to make cheap.
+/// Everything in a terminal frame that only changes when the grid content changes.
+/// Carries no `bounds.origin`: when two tiles swap, only `bounds.origin` moves, so absolute origins would force needless invalidation.
 pub struct TermScene {
     pub rows: Vec<Rc<RowScene>>,
 }
 
-/// The part of the key whose change invalidates **every** row: geometry moved,
-/// or the palette every cell resolves against did.
+/// The part of the key whose change invalidates every row: geometry moved, or the palette did.
 #[derive(Clone, PartialEq, Eq)]
 pub struct GeomKey {
     /// f32 bits — `Pixels` is not `Eq`.
     pub width_bits: u32,
     pub height_bits: u32,
     pub zoom_bits: u32,
-    /// Themes are only compared by name; ~40 named themes, all derived, and
-    /// `Theme` is `Clone` but not `PartialEq`
-    /// (`crates/grove-core/src/theme.rs:17-19`).
+    /// Compared by name only; `Theme` is `Clone` but not `PartialEq`.
     pub theme: SharedString,
 }
 
-/// Cheap fingerprint of every input [`TermScene`] depends on. Note the absence
-/// of `bounds.origin` — see the [`TermScene`] note.
-///
-/// Split deliberately: an equal `geom` with a differing tail means the rows are
-/// still individually valid, so `prepaint` can re-key them by content hash and
-/// reshape only what actually changed.
+/// Split deliberately: an equal `geom` with a differing tail means rows are still individually valid, so `prepaint` can re-key by content hash.
 #[derive(Clone, PartialEq, Eq)]
 pub struct TermSceneKey {
     pub geom: GeomKey,
-    /// `GroveTerm::damage_generation` (`crates/grove-terminal/src/term.rs:163`),
-    /// bumped only when alacritty reported real grid damage. It already gates
-    /// repaints (`src/entities/terminal_session.rs:328-338`), so gating render
-    /// work on it is consistent.
+    /// Bumped only when alacritty reported real grid damage; gates repaints elsewhere too.
     pub damage_gen: u64,
     pub display_offset: usize,
 }
@@ -180,19 +143,11 @@ impl Element for TerminalElement {
         let cell_w = zoom.cell_w();
         let cell_h = zoom.cell_h();
 
-        // The single place PTY dims are decided: a window resize and a zoom
-        // change both land here (findings amendment 7). Resize *before* reading
-        // the snapshot, never the reverse, so the painted frame matches the
-        // dims the PTY was just told about.
+        // Resize before reading the snapshot, never the reverse, so the painted frame matches the dims the PTY was just told about.
         let dims = zoom.pty_dims(f32::from(bounds.size.width), f32::from(bounds.size.height));
         self.session.update(cx, |session, cx| {
             session.resize(dims.0, dims.1);
-            // A reattached tmux session deliberately defers its client spawn
-            // until here — this is the first moment its *own* tile's dims
-            // exist, and in grid view every tile has different ones. Attaching
-            // after the resize means the client is born at the final size and
-            // the agent never sees an attach-then-relayout SIGWINCH pair
-            // (`TerminalSession::attach_now`).
+            // Deferred to here so a reattached tmux client is born at the final tile size, avoiding an attach-then-relayout SIGWINCH.
             if session.is_pending_attach() {
                 session.attach_now(cx);
             }
@@ -206,27 +161,10 @@ impl Element for TerminalElement {
         let bold_font = gpui::font(fonts::MONO_FAMILY).bold();
         let font_size = px(zoom.font_size());
 
-        // A PTY belonging to a project with a pinned content theme resolves
-        // its *content* against that theme here. App chrome stays on the global
-        // theme regardless, which is why the override lives at this call site
-        // and nowhere else.
-        //
-        // The iced build memoizes this per frame (`src/gui/view/terminal.rs:33-46`,
-        // reset at the top of `view()`) and invalidates it on picker
-        // cancel/submit. **That cache is deliberately not ported**: resolving is
-        // a `Store` field read plus a name lookup, done fresh in `prepaint`, so
-        // flipping `project_themes_enabled` re-colors on the next frame with no
-        // bookkeeping. A future reader looking for the cache will find this note
-        // instead.
-        //
-        // `with_current` is an atomic-load snapshot, not a lock, so the global
-        // fallback is equally free to read per frame.
+        // App chrome always stays on the global theme; only a pinned project resolves content against a different one, here.
+        // Deliberately not memoized (unlike the old iced build): resolving is cheap, so toggling `project_themes_enabled` re-colors next frame with no bookkeeping.
         let pinned = self.project.as_ref().and_then(|name| {
-            // Plan 08 carried decision 7: the ONE live-preview hook. The theme
-            // picker and the launcher's theme pane both drive it through
-            // `ThemePreview`; `Some(None)` means "preview the global theme",
-            // `None` means "no preview" and the persisted pin wins. There is
-            // deliberately no second theme-override path.
+            // `Some(None)` means "preview the global theme"; `None` means "no preview, use the persisted pin".
             let preview = crate::views::modals::theme_picker::ThemePreview::for_project(cx, name);
             project_theme_override(
                 &cx.global::<crate::settings::SettingsState>().store,
@@ -234,10 +172,7 @@ impl Element for TerminalElement {
                 preview,
             )
         });
-        // The scene cache is keyed by the theme *name* only, so the hit path
-        // never needs the resolved `Theme` (which is `Clone` but not `Eq`).
-        // `with_current` is an atomic-load snapshot, so reading the global
-        // name per frame is as free as resolving the theme was.
+        // Keyed by theme name only, so the hit path never needs the resolved `Theme` (`Clone` but not `Eq`).
         let theme_name: SharedString = match pinned.as_ref() {
             Some(theme) => SharedString::from(theme.name.to_string()),
             None => grove_core::theme::with_current(|t| SharedString::from(t.name.to_string())),
@@ -252,10 +187,7 @@ impl Element for TerminalElement {
             damage_gen,
             display_offset: scrollback,
         };
-        // Three paths, cheapest first: the full key matches and the whole scene
-        // is reused; only `geom` matches and the rows are still individually
-        // valid, so they are re-keyed by content hash below; or `geom` moved and
-        // every row is discarded.
+        // Cheapest first: full key match reuses the whole scene; `geom`-only match re-keys rows by content hash; else discard everything.
         let (cached, reusable_rows) = match self.session.read(cx).scene_cache() {
             Some((k, scene)) if *k == key => (Some(scene.clone()), None),
             Some((k, scene)) if k.geom == key.geom => (None, Some(scene.clone())),
@@ -263,14 +195,10 @@ impl Element for TerminalElement {
         };
 
         let scene = match cached {
-            // The whole point: no `snapshot()`, no per-cell color resolve, no
-            // re-shaping. A tile that produced no bytes costs nothing here.
             Some(scene) => scene,
             None => {
                 let snapshot = self.session.read(cx).snapshot();
-                // Content-addressed pool of the previous frame's rows. ~48
-                // entries, rebuilt per miss; a linear scan would do, the map is
-                // just clearer about intent.
+                // Content-addressed pool of the previous frame's rows, rebuilt per miss.
                 let pool: std::collections::HashMap<u64, Rc<RowScene>> = reusable_rows
                     .iter()
                     .flat_map(|scene| scene.rows.iter())
@@ -281,26 +209,16 @@ impl Element for TerminalElement {
                     let cols = snapshot.cols as usize;
                     let mut out: Vec<Rc<RowScene>> = Vec::with_capacity(rows);
 
-                    // Resolved once per cell; every color in the grid goes through
-                    // `colors::resolve_pair`, the pipeline's only inverse swap.
                     let mut row_cells: Vec<(char, Hsla, Option<Hsla>, bool)> =
                         Vec::with_capacity(cols);
 
                     for r in 0..rows {
-                        // ponytail: SipHash over the row's raw cells (~4.5k cells
-                        // per grid) costs tens of µs — the ceiling. If it ever
-                        // shows up in a profile, swap in a faster hasher, or drop
-                        // hashing entirely for alacritty's per-line `TermDamage`
-                        // ranges, which say directly which rows changed.
+                        // If hashing ever shows up in a profile, swap in a faster hasher or use alacritty's per-line `TermDamage` instead.
                         let mut hasher = DefaultHasher::new();
                         for col in 0..cols {
                             snapshot.cell(r as u16, col as u16).hash(&mut hasher);
                         }
                         let hash = hasher.finish();
-                        // The optimization: an unchanged row skips both
-                        // `resolve_pair` and `shape_line` outright. Row-local
-                        // origins are what make this legal for a row that
-                        // scrolled to a different index.
                         if let Some(row) = pool.get(&hash) {
                             out.push(row.clone());
                             continue;
@@ -308,8 +226,7 @@ impl Element for TerminalElement {
 
                         let mut bg_quads: Vec<PaintQuad> = Vec::new();
                         let mut runs: Vec<(Point<Pixels>, ShapedLine)> = Vec::new();
-                        // Row-local: `y` is 0 within the row, `paint` adds both
-                        // `bounds.origin` and `r * line_height`.
+                        // Row-local: `paint` adds `bounds.origin` and `r * line_height`.
                         let y = px(0.0);
                         row_cells.clear();
                         for col in 0..cols {
@@ -325,9 +242,7 @@ impl Element for TerminalElement {
                             row_cells.push((ch, fg, bg, bold));
                         }
 
-                        // 2. Merged background quads: coalesce adjacent equal
-                        //    backgrounds. A `None` background emits no quad at all, so
-                        //    a default-background screen costs nothing here.
+                        // Merges adjacent equal backgrounds; a `None` background emits no quad.
                         let mut c0 = 0usize;
                         while c0 < cols {
                             let bg = row_cells[c0].2;
@@ -347,11 +262,7 @@ impl Element for TerminalElement {
                             c0 = c1;
                         }
 
-                        // 3. Text runs: coalesce adjacent non-blank cells with an equal
-                        //    `(fg, bold)`. Blanks are skipped entirely — a mostly-empty
-                        //    screen shapes almost nothing. Each run is painted at its
-                        //    own `col * cell_w` origin (carried amendment 3), so a
-                        //    width mismatch inside one run cannot drift the next.
+                        // Coalesces adjacent non-blank cells with equal (fg, bold); each run keeps its own `col * cell_w` origin.
                         let mut c0 = 0usize;
                         while c0 < cols {
                             if is_blank(row_cells[c0].0) {
@@ -404,35 +315,15 @@ impl Element for TerminalElement {
                     None => grove_core::theme::with_current(render_grid),
                 };
                 let scene = Rc::new(TermScene { rows });
-                // The cache lives on the *session*, deliberately not in gpui
-                // element state: `with_element_state` is keyed by the full
-                // ancestor `GlobalElementId` path, and the terminal sits under
-                // `div().id(format!("grid-tile-{tile_idx}"))`
-                // (`src/views/grid.rs:253`). That path embeds the tile *slot*,
-                // so moving a tile would invalidate the cache on exactly the
-                // frames this exists to fix. Do not "fix" this back.
+                // Cache lives on the session, not gpui element state: element state is keyed by the ancestor id path, which embeds the tile slot — moving a tile would invalidate it.
                 self.session
                     .update(cx, |session, _| session.set_scene_cache(key, scene.clone()));
                 scene
             }
         };
 
-        // 4. Selection overlay, between the text and the cursor. The endpoints
-        //    are absolute (scrollback-stable), so they are converted to the
-        //    *current* viewport here — which is what makes the highlight stay
-        //    on the same text while the view scrolls underneath it.
-        //
-        //    The wash is the hardcoded `rgba(0.40, 0.50, 0.78, 0.35)` that spec
-        //    Appendix A pins — deliberately not a theme token.
-        //
-        //    Deliberately OUT of the scene cache and rebuilt every frame: it is
-        //    cheap, and the cursor below blinks ~2x/second, which would
-        //    otherwise bust the text cache on every blink. Their origins stay
-        //    ABSOLUTE — there is nothing to translate at paint time.
-        //
-        //    `dims` replaces the old `snapshot.rows/cols` reads, which are
-        //    unavailable on the cache hit path: the term was just resized to
-        //    exactly `dims`, so they are equal by construction.
+        // Selection endpoints are absolute (scrollback-stable) and converted to the current viewport here, so the highlight stays on the same text while the view scrolls.
+        // Rebuilt every frame, deliberately outside the scene cache — cheap, and the cursor's blink would otherwise bust the text cache constantly.
         let (sr, sg, sb_c, sa) = mouse::SELECTION_RGBA;
         let wash = rgba(
             (u32::from((sr * 255.0) as u8) << 24)
@@ -446,7 +337,7 @@ impl Element for TerminalElement {
                 let rows = dims.0 as usize;
                 let cols = dims.1 as usize;
                 let to_view = |c: AbsCell| AbsCell {
-                    // Inverse of `pixel_to_abs`: viewport_row = h - 1 - (a_row - sb).
+                    // Inverse of `pixel_to_abs`.
                     a_row: rows
                         .saturating_sub(1)
                         .saturating_sub(c.a_row.saturating_sub(scrollback)),
@@ -467,8 +358,7 @@ impl Element for TerminalElement {
             })
             .unwrap_or_default();
 
-        // 5. Block cursor. `GroveTerm::cursor` already folds the display offset
-        //    in, so a scrolled-back view leaves the caret parked on its line.
+        // `GroveTerm::cursor` already folds the display offset in, so a scrolled-back view leaves the caret parked on its line.
         let cursor = if self.cursor_visible && !cur_hidden && (cur_row as usize) < dims.0 as usize {
             Some(fill(
                 Bounds::new(
@@ -502,16 +392,9 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        // 1. One full-bounds fill, so short rows and the sub-cell remainder at
-        //    the right/bottom edge carry the terminal background.
         window.paint_quad(fill(bounds, c::BG()));
-        // The scene is shared with the session's cache, so it is read by
-        // reference and translated here — draining it would empty the cache on
-        // the first paint. `PaintQuad` is POD-ish, so the clone is cheap.
-        //
-        // Row origins are row-local, so each row is offset by its index here.
-        // ALL backgrounds go down before ANY text: interleaving per row would
-        // let one row's background paint over the previous row's descenders.
+        // Scene is read by reference, not drained, since it's shared with the session's cache.
+        // All backgrounds go down before any text — interleaving per row would let one row's background paint over the previous row's descenders.
         for (r, row) in pre.scene.rows.iter().enumerate() {
             let offset = bounds.origin + point(px(0.0), pre.line_height * r as f32);
             for quad in &row.bg_quads {
@@ -523,8 +406,6 @@ impl Element for TerminalElement {
         for (r, row) in pre.scene.rows.iter().enumerate() {
             let offset = bounds.origin + point(px(0.0), pre.line_height * r as f32);
             for (origin, line) in &row.runs {
-                // `paint` returning `Err` means the line could not be rendered;
-                // there is nothing useful to do per-run but skip it.
                 let _ = line.paint(
                     *origin + offset,
                     pre.line_height,
@@ -544,24 +425,14 @@ impl Element for TerminalElement {
     }
 }
 
-/// A cell counts as blank when it has no text or holds a space. The trailing
-/// `WIDE_CHAR_SPACER` of a wide character is emitted blank
-/// (`crates/grove-terminal/src/cell.rs:29-33`), which is exactly why a run ends
-/// at a wide character — [`forced_width`] then pins that one-glyph run to its
-/// true two-cell slot.
+/// A cell counts as blank when it has no text or holds a space; a wide character's trailing spacer is also blank, which is why a run ends there.
 fn is_blank(ch: char) -> bool {
     ch == ' ' || ch == '\0'
 }
 
-/// Columns a character occupies in the terminal grid.
-///
-/// The East Asian Wide / Fullwidth ranges of UAX #11 — the same accounting the
-/// terminal itself uses to reserve a spacer cell. Deliberately *not*
-/// `str::chars().count()`: the whole point is that a wide glyph is two cells.
+/// Columns a character occupies, per the East Asian Wide/Fullwidth ranges of UAX #11.
 fn wide_cells(ch: char) -> usize {
     let c = ch as u32;
-    // Fast path: everything below U+1100 (which includes all of ASCII) is
-    // narrow, so ordinary text never touches the table below.
     if c < 0x1100 {
         return 1;
     }
@@ -589,19 +460,7 @@ fn wide_cells(ch: char) -> usize {
     }
 }
 
-/// Wide chars fall back to a system CJK face that shapes to ~1.33 cells instead
-/// of 2 (findings §S1 Step 1). `shape_line`'s `force_width` is the fix, and it
-/// **does exist** at the pinned rev
-/// (`gpui/src/text_system.rs:397-403`, `force_width: Option<Pixels>`).
-///
-/// Returns `None` — the untouched fast path — when every character in the run
-/// is narrow, so ASCII text is never forced. Per-run anchoring (the run origin
-/// at `col * cell_w`) remains the primary, non-negotiable mitigation; this only
-/// fixes the glyph's own width inside its run.
-///
-/// If the manual CJK check (Plan 04 Task 6 Step 3 row 2) finds forcing distorts
-/// the glyph, delete the `force_width` argument at the `shape_line` call site
-/// and keep anchoring alone.
+/// Wide chars fall back to a CJK face that shapes to ~1.33 cells instead of 2; `shape_line`'s `force_width` corrects it. Returns `None` (untouched fast path) when the run is all-narrow.
 fn forced_width(run_text: &str, cell_w: f32) -> Option<Pixels> {
     let mut cells = 0usize;
     let mut any_wide = false;
@@ -616,20 +475,8 @@ fn forced_width(run_text: &str, cell_w: f32) -> Option<Pixels> {
     Some(px(cells as f32 * cell_w))
 }
 
-/// The theme a PTY belonging to `project_name` renders its **content** in, or
-/// `None` to fall back to the global active theme. Ported from
-/// `src/app/theme_picker.rs:65-128` and `src/gui/view/terminal.rs:48-73`.
-///
-/// **App chrome always stays on the global theme regardless**
-/// (`crates/grove-core/src/storage.rs:151-155`): every `c::*` call site in this
-/// crate is untouched by this function, which is exactly why the override lives
-/// at the single PTY-content call site and nowhere else.
-///
-/// `preview` is the project-scoped theme picker's live highlight, and its shape
-/// is load-bearing: `Some(None)` means "preview the global theme", which is
-/// **not** `None` ("no preview"). The preview check comes *before* the toggle
-/// check — `theme_picker.rs:111-118` orders it that way, so a preview renders
-/// even while Project themes is off. That ordering is the parity contract.
+/// The theme a PTY for `project_name` renders its content in, or `None` for the global theme. Ported from `theme_picker.rs:65-128`.
+/// `preview`'s shape is load-bearing: `Some(None)` means "preview the global theme", not `None` ("no preview"); the preview check runs before the toggle check.
 pub fn project_theme_override(
     store: &grove_core::storage::Store,
     project_name: &str,
@@ -660,7 +507,6 @@ mod tests {
     fn ascii_runs_are_never_forced() {
         assert_eq!(forced_width("hello world", CELL_W), None);
         assert_eq!(forced_width("", CELL_W), None);
-        // Narrow non-ASCII (Latin-1, Greek, Cyrillic) is still one cell.
         assert_eq!(forced_width("café αβγ", CELL_W), None);
     }
 
@@ -672,8 +518,6 @@ mod tests {
 
     #[test]
     fn a_mixed_run_sums_cells_not_chars() {
-        // 2 (wide) + 1 + 1 = 4 cells across 3 chars — `chars().count()` would
-        // say 3 and squash the glyph.
         assert_eq!(forced_width("漢ab", CELL_W), Some(px(4.0 * CELL_W)));
     }
 
@@ -694,8 +538,6 @@ mod tests {
         assert!(is_blank('\0'));
         assert!(!is_blank('a'));
     }
-
-    // ── per-project pinned content themes (Plan 05 Task 6 Step 3) ────────
 
     fn store_with(project_themes_enabled: bool, pin: Option<&str>) -> Store {
         Store {
@@ -719,14 +561,12 @@ mod tests {
         t
     }
 
-    /// `src/app/theme_picker.rs:119-121` — the universal toggle.
     #[test]
     fn the_toggle_being_off_beats_a_pin() {
         let store = store_with(false, Some("tokyonight-day"));
         assert!(project_theme_override(&store, "alpha", None).is_none());
     }
 
-    /// `theme_picker.rs:122-128`.
     #[test]
     fn a_pin_resolves_when_the_toggle_is_on() {
         let store = store_with(true, Some("tokyonight-day"));
@@ -740,12 +580,9 @@ mod tests {
     fn an_unresolvable_pin_falls_back_to_the_global_theme() {
         let store = store_with(true, Some("no-such-theme"));
         assert!(project_theme_override(&store, "alpha", None).is_none());
-        // An unknown project name is the same fallback.
         assert!(project_theme_override(&store, "nobody", None).is_none());
     }
 
-    /// `theme_picker.rs:111-118` — the preview check comes **before** the
-    /// toggle check, and that ordering is the parity contract.
     #[test]
     fn a_preview_of_none_means_the_global_theme_even_with_a_pin() {
         let store = store_with(true, Some("tokyonight-day"));

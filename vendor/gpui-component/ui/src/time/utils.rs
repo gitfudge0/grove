@@ -62,8 +62,7 @@ pub(crate) fn days_in_month(year: i32, month: u32) -> Vec<Vec<NaiveDate>> {
                 y = if m == 1 { year - 1 } else { y };
             }
 
-            // If start_weekday is 3, and n is 0 and weekday is 3, then day is 1.
-            // If start_weekday is 3, and n is 1 and weekday is 4, then day is 9.
+            // e.g. start_weekday 3: (n=0, weekday=3) -> day 1; (n=1, weekday=4) -> day 9.
             let day = n * 7 + weekday as i32 - start_weekday as i32;
 
             // If the day is greater than the number of days in the month, we need to go to the next month.

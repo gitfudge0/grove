@@ -5,7 +5,6 @@ use gpui::{
 };
 use std::collections::HashMap;
 
-/// Initialize the focus trap manager as a global
 pub(crate) fn init(cx: &mut App) {
     cx.set_global(FocusTrapManager::new());
 }
@@ -49,16 +48,13 @@ pub trait FocusTrapElement: InteractiveElement + Sized {
 }
 impl<T: InteractiveElement + Sized> FocusTrapElement for T {}
 
-/// Global state to manage all focus trap containers
 pub(crate) struct FocusTrapManager {
-    /// Map from container element ID to its focus trap info
     traps: HashMap<GlobalElementId, WeakFocusHandle>,
 }
 
 impl Global for FocusTrapManager {}
 
 impl FocusTrapManager {
-    /// Create a new focus trap manager
     fn new() -> Self {
         Self {
             traps: HashMap::new(),
@@ -73,14 +69,12 @@ impl FocusTrapManager {
         cx.global_mut::<FocusTrapManager>()
     }
 
-    /// Register a focus trap container
     fn register_trap(id: &GlobalElementId, container_handle: WeakFocusHandle, cx: &mut App) {
         let this = Self::global_mut(cx);
         this.traps.insert(id.clone(), container_handle);
         this.cleanup();
     }
 
-    /// Find which focus trap contains the currently focused element
     pub(crate) fn find_active_trap(window: &Window, cx: &App) -> Option<FocusHandle> {
         for (_id, container_handle) in Self::global(cx).traps.iter() {
             let Some(container) = container_handle.upgrade() else {
@@ -94,7 +88,6 @@ impl FocusTrapManager {
         None
     }
 
-    /// Cleanup any traps with dropped handles
     fn cleanup(&mut self) {
         self.traps.retain(|_, handle| handle.upgrade().is_some());
     }
@@ -106,10 +99,7 @@ impl Default for FocusTrapManager {
     }
 }
 
-/// A wrapper element that implements focus trap behavior.
-///
-/// This element wraps another element and registers it as a focus trap container.
-/// Focus will automatically cycle within the container when Tab/Shift-Tab is pressed.
+/// Wraps an element as a focus trap: Tab/Shift-Tab cycles focus within the container.
 pub struct FocusTrapContainer<E: InteractiveElement + ParentElement + Styled + Element> {
     id: ElementId,
     focus_handle: FocusHandle,
@@ -180,7 +170,6 @@ impl<E: InteractiveElement + ParentElement + Styled + Element + 'static> Element
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        // Register this focus trap with the manager
         FocusTrapManager::register_trap(global_id.unwrap(), self.focus_handle.downgrade(), cx);
 
         self.base.request_layout(global_id, None, window, cx)

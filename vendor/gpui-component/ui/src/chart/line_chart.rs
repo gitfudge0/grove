@@ -63,16 +63,12 @@ where
         }
     }
 
-    /// Enable an interactive hover tooltip (with crosshair and a data dot) for this chart.
-    ///
-    /// The `id` must be unique among sibling elements. Without it, the chart stays a
-    /// non-interactive plot.
+    /// `id` must be unique among siblings, or the chart stays non-interactive.
     pub fn id(mut self, id: impl Into<ElementId>) -> Self {
         self.id = Some(id.into());
         self
     }
 
-    /// Set the series name shown in the hover tooltip row (e.g. "Desktop").
     pub fn name(mut self, name: impl Into<SharedString>) -> Self {
         self.name = Some(name.into());
         self
@@ -118,8 +114,6 @@ where
         self
     }
 
-    /// Show or hide the x-axis line and labels.
-    ///
     /// Default is true.
     pub fn x_axis(mut self, x_axis: bool) -> Self {
         self.x_axis = x_axis;
@@ -131,10 +125,7 @@ where
         self
     }
 
-    /// Build the x (point) and y (linear) scales for the given bounds.
-    ///
-    /// Shared by `paint` and `tooltip_state` so the two stay in sync. Returns `None` when the
-    /// x/y accessors have not been set.
+    /// Shared by `paint` and `tooltip_state` so the two stay in sync.
     fn scales(&self, bounds: Bounds<Pixels>) -> Option<(ScalePoint<X>, ScaleLinear<Y>)> {
         let (x_fn, y_fn) = (self.x.as_ref()?, self.y.as_ref()?);
 
@@ -143,7 +134,6 @@ where
         let height = bounds.size.height.as_f32() - axis_gap;
 
         let x = ScalePoint::new(self.data.iter().map(|v| x_fn(v)).collect(), vec![0., width]);
-        // Y scale, ensure start from 0.
         let y = ScaleLinear::new(
             self.data
                 .iter()
@@ -173,7 +163,6 @@ where
         let axis_gap = if self.x_axis { AXIS_GAP } else { 0. };
         let height = bounds.size.height.as_f32() - axis_gap;
 
-        // Draw X axis
         let mut axis = PlotAxis::new().stroke(cx.theme().border);
         if self.x_axis {
             let labels = build_point_x_labels(
@@ -187,7 +176,6 @@ where
         }
         axis.paint(&bounds, window, cx);
 
-        // Draw grid
         if self.grid {
             Grid::new()
                 .y((0..=3).map(|i| height * i as f32 / 4.0).collect())
@@ -196,7 +184,6 @@ where
                 .paint(&bounds, window);
         }
 
-        // Draw line
         let stroke = self.stroke.unwrap_or(cx.theme().chart_2);
         let x_fn = x_fn.clone();
         let y_fn = y_fn.clone();
@@ -262,10 +249,8 @@ where
         let name = self.name.clone().unwrap_or_default();
 
         Some(
-            // Follow the cursor; the crosshair and dot stay snapped to the data point.
             Tooltip::new(cursor, bounds.size)
                 .gap(px(8.))
-                // Confine the crosshair to the plot area so it doesn't cross the x-axis.
                 .cross_line(
                     CrossLine::new(state.cross_line).height(
                         bounds.size.height.as_f32() - if self.x_axis { AXIS_GAP } else { 0. },

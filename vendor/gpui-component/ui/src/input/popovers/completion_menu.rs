@@ -167,23 +167,19 @@ impl ListDelegate for ContextMenuDelegate {
     }
 }
 
-/// A context menu for code completions and code actions.
 pub struct CompletionMenu {
     offset: usize,
     editor: Entity<InputState>,
     list: Entity<ListState<ContextMenuDelegate>>,
     open: bool,
 
-    /// The offset of the first character that triggered the completion.
     pub(crate) trigger_start_offset: Option<usize>,
     query: SharedString,
     _subscriptions: Vec<Subscription>,
 }
 
 impl CompletionMenu {
-    /// Creates a new `CompletionMenu` with the given offset and completion items.
-    ///
-    /// NOTE: This element should not call from InputState::new, unless that will stack overflow.
+    /// Must not be called from `InputState::new`, or it stack overflows.
     pub(crate) fn new(
         editor: Entity<InputState>,
         window: &mut Window,
@@ -262,8 +258,7 @@ impl CompletionMenu {
                     cx,
                 );
                 editor.completion_inserting = false;
-                // FIXME: Input not get the focus
-                editor.focus(window, cx);
+                editor.focus(window, cx); // FIXME: Input not get the focus
             })
         })
         .detach();
@@ -324,14 +319,12 @@ impl CompletionMenu {
         self.open
     }
 
-    /// Hide the completion menu and reset the trigger start offset.
     pub(crate) fn hide(&mut self, cx: &mut Context<Self>) {
         self.open = false;
         self.trigger_start_offset = None;
         cx.notify();
     }
 
-    /// Sets the trigger start offset if it is not already set.
     pub(crate) fn update_query(&mut self, start_offset: usize, query: impl Into<SharedString>) {
         if self.trigger_start_offset.is_none() {
             self.trigger_start_offset = Some(start_offset);

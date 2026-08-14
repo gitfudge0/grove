@@ -5,7 +5,6 @@ use gpui::{
 
 use crate::text::node::{BlockNode, NodeContext};
 
-/// The parsed document AST.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct ParsedDocument {
     pub(crate) source: SharedString,
@@ -46,21 +45,14 @@ impl ParsedDocument {
         text
     }
 
-    /// Synchronously clear the selection stored in every inline state.
-    ///
-    /// This mirrors the [`selected_text`](Self::selected_text) traversal so the
-    /// stored selection can be cleared without relying on a repaint. Offscreen
-    /// (virtualized) views do not repaint, so their `InlineState.selection`
-    /// would otherwise retain stale values from the last painted frame.
+    /// Clears synchronously rather than relying on a repaint: offscreen (virtualized) views don't repaint, so stale selections would linger.
     pub(super) fn clear_selection(&self) {
         for block in self.blocks.iter() {
             block.clear_selection();
         }
     }
 
-    /// Converts the node to markdown format.
-    ///
-    /// This is used to generate markdown for test.
+    /// Used to generate markdown for tests.
     #[allow(dead_code)]
     pub(crate) fn to_markdown(&self) -> String {
         self.blocks

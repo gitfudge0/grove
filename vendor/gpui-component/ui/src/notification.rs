@@ -58,12 +58,8 @@ impl From<(TypeId, ElementId)> for NotificationId {
     }
 }
 
-/// A notification element.
 pub struct Notification {
-    /// The id is used make the notification unique.
-    /// Then you push a notification with the same id, the previous notification will be replaced.
-    ///
-    /// None means the notification will be added to the end of the list.
+    /// Pushing a notification with the same id replaces the previous one.
     id: NotificationId,
     style: StyleRefinement,
     type_: Option<NotificationType>,
@@ -114,9 +110,7 @@ where
 struct DefaultIdType;
 
 impl Notification {
-    /// Create a new notification.
-    ///
-    /// The default id is a random UUID.
+    /// Default id is a random UUID.
     pub fn new() -> Self {
         let id: SharedString = uuid::Uuid::new_v4().to_string().into();
         let id = (TypeId::of::<DefaultIdType>(), id.into());
@@ -137,42 +131,35 @@ impl Notification {
         }
     }
 
-    /// Set the message of the notification, default is None.
     pub fn message(mut self, message: impl Into<SharedString>) -> Self {
         self.message = Some(message.into());
         self
     }
 
-    /// Create an info notification with the given message.
     pub fn info(message: impl Into<SharedString>) -> Self {
         Self::new()
             .message(message)
             .with_type(NotificationType::Info)
     }
 
-    /// Create a success notification with the given message.
     pub fn success(message: impl Into<SharedString>) -> Self {
         Self::new()
             .message(message)
             .with_type(NotificationType::Success)
     }
 
-    /// Create a warning notification with the given message.
     pub fn warning(message: impl Into<SharedString>) -> Self {
         Self::new()
             .message(message)
             .with_type(NotificationType::Warning)
     }
 
-    /// Create an error notification with the given message.
     pub fn error(message: impl Into<SharedString>) -> Self {
         Self::new()
             .message(message)
             .with_type(NotificationType::Error)
     }
 
-    /// Set the type for unique identification of the notification.
-    ///
     /// ```rs
     /// struct MyNotificationKind;
     /// let notification = Notification::new().message("Hello").id::<MyNotificationKind>();
@@ -182,41 +169,32 @@ impl Notification {
         self
     }
 
-    /// Set the type and id of the notification, used to uniquely identify the notification.
     pub fn id1<T: Sized + 'static>(mut self, key: impl Into<ElementId>) -> Self {
         self.id = (TypeId::of::<T>(), key.into()).into();
         self
     }
 
-    /// Set the title of the notification, default is None.
-    ///
-    /// If title is None, the notification will not have a title.
     pub fn title(mut self, title: impl Into<SharedString>) -> Self {
         self.title = Some(title.into());
         self
     }
 
-    /// Set the icon of the notification.
-    ///
-    /// If icon is None, the notification will use the default icon of the type.
+    /// `None` uses the type's default icon.
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.icon = Some(icon.into());
         self
     }
 
-    /// Set the type of the notification, default is NotificationType::Info.
     pub fn with_type(mut self, type_: NotificationType) -> Self {
         self.type_ = Some(type_);
         self
     }
 
-    /// Set the auto hide of the notification, default is true.
     pub fn autohide(mut self, autohide: bool) -> Self {
         self.autohide = autohide;
         self
     }
 
-    /// Set the click callback of the notification.
     pub fn on_click(
         mut self,
         on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -225,18 +203,13 @@ impl Notification {
         self
     }
 
-    /// Set the close callback of the notification.
-    ///
-    /// Triggered when the notification is closed by any means
-    /// (close button, middle-click, autohide, click handler, or programmatic close).
+    /// Triggered on any close path: button, middle-click, autohide, click handler, or programmatic.
     pub fn on_close(mut self, on_close: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_close = Some(Rc::new(on_close));
         self
     }
 
-    /// Set the action button of the notification.
-    ///
-    /// When an action is set, the notification will not autohide.
+    /// Setting an action disables autohide.
     pub fn action<F>(mut self, action: F) -> Self
     where
         F: Fn(&mut Self, &mut Window, &mut Context<Self>) -> Button + 'static,
@@ -246,7 +219,6 @@ impl Notification {
         self
     }
 
-    /// Dismiss the notification.
     pub fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.closing {
             return;
@@ -255,7 +227,7 @@ impl Notification {
         cx.notify();
 
         let on_close = self.on_close.clone();
-        // Dismiss the notification after 0.15s to show the animation.
+        // 0.15s delay to show the dismiss animation.
         cx.spawn_in(window, async move |view, cx| {
             cx.background_executor()
                 .timer(Duration::from_secs_f32(0.15))
@@ -272,7 +244,6 @@ impl Notification {
         .detach();
     }
 
-    /// Set the content of the notification.
     pub fn content(
         mut self,
         content: impl Fn(&mut Self, &mut Window, &mut Context<Self>) -> AnyElement + 'static,
@@ -420,14 +391,10 @@ impl Render for Notification {
     }
 }
 
-/// The settings for notifications.
 #[derive(Debug, Clone)]
 pub struct NotificationSettings {
-    /// The placement of the notification, default: [`Anchor::TopRight`]
     pub placement: Anchor,
-    /// The margins of the notification with respect to the window edges.
     pub margins: Edges<Pixels>,
-    /// The maximum number of notifications to show at once, default: 10
     pub max_items: usize,
 }
 
@@ -447,9 +414,7 @@ impl Default for NotificationSettings {
     }
 }
 
-/// A list of notifications.
 pub struct NotificationList {
-    /// Notifications that will be auto hidden.
     pub(crate) notifications: VecDeque<Entity<Notification>>,
     expanded: bool,
     _subscriptions: HashMap<NotificationId, Subscription>,
@@ -474,7 +439,6 @@ impl NotificationList {
         let id = notification.id.clone();
         let autohide = notification.autohide;
 
-        // Remove the notification by id, for keep unique.
         self.notifications.retain(|note| note.read(cx).id != id);
 
         let notification = cx.new(|_| notification);
@@ -489,7 +453,6 @@ impl NotificationList {
 
         self.notifications.push_back(notification.clone());
         if autohide {
-            // Sleep for 5 seconds to autohide the notification
             cx.spawn_in(window, async move |_, cx| {
                 cx.background_executor().timer(Duration::from_secs(5)).await;
 
@@ -517,8 +480,7 @@ impl NotificationList {
         cx.notify();
     }
 
-    /// Close all notifications whose id matches the given [`TypeId`], regardless of
-    /// whether they were registered via [`Notification::id`] or [`Notification::id1`].
+    /// Matches both [`Notification::id`] and [`Notification::id1`] registrations, unlike [`Self::close`]'s narrower `TypeId` match.
     pub(crate) fn close_by_type(
         &mut self,
         type_id: TypeId,
@@ -576,19 +538,19 @@ impl Render for NotificationList {
             .gap_3()
             .when(
                 matches!(placement, Anchor::TopRight),
-                |this| this.pr(margins.right), // ignore left
+                |this| this.pr(margins.right),
             )
             .when(
                 matches!(placement, Anchor::TopLeft),
-                |this| this.pl(margins.left), // ignore right
+                |this| this.pl(margins.left),
             )
             .when(
                 matches!(placement, Anchor::BottomLeft),
-                |this| this.flex_col_reverse().pl(margins.left), // ignore right
+                |this| this.flex_col_reverse().pl(margins.left),
             )
             .when(
                 matches!(placement, Anchor::BottomRight),
-                |this| this.flex_col_reverse().pr(margins.right), // ignore left
+                |this| this.flex_col_reverse().pr(margins.right),
             )
             .when(matches!(placement, Anchor::BottomCenter), |this| {
                 this.flex_col_reverse()
@@ -629,8 +591,6 @@ mod tests {
         })
     }
 
-    /// Drive the dismiss animation timer + propagate the resulting `DismissEvent`
-    /// so that closed notifications are removed from the list.
     fn flush_dismiss(cx: &mut VisualTestContext) {
         cx.background_executor
             .advance_clock(Duration::from_millis(200));
@@ -729,9 +689,6 @@ mod tests {
 
     #[gpui::test]
     fn close_with_only_type_id_does_not_match_id1_entries(cx: &mut TestAppContext) {
-        // The plain `close(TypeId)` form (used by the legacy code path) must keep
-        // its narrow semantics: it only matches `NotificationId::Id`, not
-        // `NotificationId::IdAndElementId`. The new `close_by_type` is the broad form.
         cx.update(|cx| cx.set_global(Theme::default()));
         let (root, cx) = cx.add_window_view(|window, cx| TestRoot {
             list: cx.new(|cx| NotificationList::new(window, cx)),

@@ -30,9 +30,7 @@ fn shape_label(
         .shape_line(text.clone(), font_size, &[text_run], None)
 }
 
-/// Returns the rendered width of `text` at `font_size` using the window's
-/// current text style.  Used for layout calculations that need to reserve
-/// space for labels before the scale ranges are fixed.
+/// For layout calculations that need to reserve label space before scale ranges are fixed.
 pub fn measure_text_width(text: &SharedString, font_size: Pixels, window: &mut Window) -> f32 {
     if text.is_empty() {
         return 0.;
@@ -52,11 +50,7 @@ pub fn measure_text_width(text: &SharedString, font_size: Pixels, window: &mut W
     .as_f32()
 }
 
-/// Truncate `text` with a trailing ellipsis so it fits within `max_width` at
-/// `font_size`. Returns `text` unchanged when it already fits; returns just
-/// the ellipsis when not even one character fits. `max_width <= 0` is treated
-/// as "no budget" and returns `text` unchanged (the caller has no room to
-/// reason about).
+/// `max_width <= 0` is treated as "no budget" and returns `text` unchanged.
 pub fn truncate_text_to_width(
     text: &SharedString,
     font_size: Pixels,
@@ -68,8 +62,7 @@ pub fn truncate_text_to_width(
     }
 
     const ELLIPSIS: &str = "…";
-    // Byte offsets of every char boundary after the first char; cutting at
-    // `cuts[k]` keeps the first `k + 1` chars.
+    // Byte offsets of every char boundary after the first char; cutting at `cuts[k]` keeps the first `k + 1` chars.
     let cuts: Vec<usize> = text.char_indices().skip(1).map(|(i, _)| i).collect();
 
     // Binary search the largest prefix whose text + ellipsis still fits.

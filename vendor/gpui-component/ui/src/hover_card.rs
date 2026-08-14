@@ -8,10 +8,7 @@ use std::{cell::Cell, rc::Rc};
 
 use crate::{ElementExt, StyledExt as _, popover::Popover};
 
-/// A hover card element that displays content when hovering over a trigger element.
-///
-/// Similar to Popover but triggered by mouse hover instead of click, with configurable delays
-/// for showing and hiding the content.
+/// Similar to Popover but triggered by hover, with configurable show/hide delays.
 #[derive(IntoElement)]
 pub struct HoverCard {
     id: ElementId,
@@ -32,7 +29,6 @@ pub struct HoverCard {
 }
 
 impl HoverCard {
-    /// Create a new HoverCard.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -48,17 +44,12 @@ impl HoverCard {
         }
     }
 
-    /// Set the anchor corner of the hover card, default is [`Anchor::TopCenter`].
-    ///
-    /// Imagine the card has a pointer tip (like a speech bubble's tail). The anchor
-    /// is where that tip sits relative to the trigger — e.g. `Anchor::TopCenter`
-    /// places it at the trigger's top center. The card then hangs off that point.
+    /// Where the card's speech-bubble-tail sits relative to the trigger; default [`Anchor::TopCenter`].
     pub fn anchor(mut self, anchor: impl Into<Anchor>) -> Self {
         self.anchor = anchor.into();
         self
     }
 
-    /// Set the trigger element of the hover card.
     pub fn trigger<T>(mut self, trigger: T) -> Self
     where
         T: IntoElement + 'static,
@@ -67,9 +58,6 @@ impl HoverCard {
         self
     }
 
-    /// Set the content builder of the hover card.
-    ///
-    /// The builder function receives the HoverCardState, Window, and Context as parameters.
     pub fn content<F, E>(mut self, content: F) -> Self
     where
         F: Fn(&mut HoverCardState, &mut Window, &mut Context<HoverCardState>) -> E + 'static,
@@ -81,25 +69,24 @@ impl HoverCard {
         self
     }
 
-    /// Set the delay before showing the hover card in milliseconds, default is 600ms.
+    /// Default 600ms.
     pub fn open_delay(mut self, duration: Duration) -> Self {
         self.open_delay = duration;
         self
     }
 
-    /// Set the delay before hiding the hover card in milliseconds, default is 300ms.
+    /// Default 300ms.
     pub fn close_delay(mut self, duration: Duration) -> Self {
         self.close_delay = duration;
         self
     }
 
-    /// Set whether to apply default appearance styles, default is `true`.
+    /// Default `true`.
     pub fn appearance(mut self, appearance: bool) -> Self {
         self.appearance = appearance;
         self
     }
 
-    /// Set a callback to be called when the open state changes.
     pub fn on_open_change<F>(mut self, callback: F) -> Self
     where
         F: Fn(&bool, &mut Window, &mut App) + 'static,
@@ -121,23 +108,20 @@ impl ParentElement for HoverCard {
     }
 }
 
-/// State management for HoverCard component.
 pub struct HoverCardState {
     open: bool,
     trigger_bounds: Bounds<Pixels>,
     open_delay: Duration,
     close_delay: Duration,
 
-    // Timer management
     open_task: Option<Task<()>>,
     close_task: Option<Task<()>>,
-    epoch: usize, // Used to cancel stale timers
+    /// Bumped to cancel stale timers.
+    epoch: usize,
 
-    // Hover state tracking
     is_hovering_trigger: bool,
     is_hovering_content: bool,
 
-    // Callbacks
     on_open_change: Option<Rc<dyn Fn(&bool, &mut Window, &mut App)>>,
 }
 
@@ -157,12 +141,10 @@ impl HoverCardState {
         }
     }
 
-    /// Check if the hover card is open.
     pub fn is_open(&self) -> bool {
         self.open
     }
 
-    /// Schedule opening the hover card after the configured delay.
     fn schedule_open(&mut self, cx: &mut Context<Self>) {
         self.cancel_tasks();
         let epoch = self.next_epoch();
@@ -179,7 +161,6 @@ impl HoverCardState {
         }));
     }
 
-    /// Schedule closing the hover card after the configured delay.
     fn schedule_close(&mut self, cx: &mut Context<Self>) {
         self.cancel_tasks();
         let epoch = self.next_epoch();
@@ -198,7 +179,7 @@ impl HoverCardState {
     }
 
     fn cancel_tasks(&mut self) {
-        self.epoch += 1; // Invalidate all pending timers
+        self.epoch += 1;
         self.open_task = None;
         self.close_task = None;
     }
@@ -217,28 +198,24 @@ impl HoverCardState {
         cx.notify();
     }
 
-    /// Handle hover state change on the trigger element.
     fn on_trigger_hover(&mut self, hovering: bool, cx: &mut Context<Self>) {
         self.is_hovering_trigger = hovering;
 
         if hovering {
             self.schedule_open(cx);
         } else {
-            // Only close if not hovering content
             if !self.is_hovering_content {
                 self.schedule_close(cx);
             }
         }
     }
 
-    /// Handle hover state change on the content element.
     fn on_content_hover(&mut self, hovered: bool, cx: &mut Context<Self>) {
         self.is_hovering_content = hovered;
 
         if hovered {
             self.cancel_tasks();
         } else {
-            // Only close if not hovering trigger
             if !self.is_hovering_trigger {
                 self.schedule_close(cx);
             }
@@ -248,7 +225,7 @@ impl HoverCardState {
 
 impl Render for HoverCardState {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div() // Empty render
+        div()
     }
 }
 
@@ -258,7 +235,6 @@ impl RenderOnce for HoverCard {
             HoverCardState::new(self.open_delay, self.close_delay)
         });
 
-        // Update state and track if controlled mode changed the open state
         let prev_open = state.read(cx).open;
         state.update(cx, |state, _| {
             state.open_delay = self.open_delay;
@@ -269,7 +245,6 @@ impl RenderOnce for HoverCard {
         let open = state.read(cx).open;
         let trigger_bounds = state.read(cx).trigger_bounds;
 
-        // Trigger callback if state changed in controlled mode
         if prev_open != open {
             if let Some(ref callback) = self.on_open_change {
                 callback(&open, window, cx);

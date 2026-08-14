@@ -12,7 +12,6 @@ use std::f32::consts::TAU;
 use super::ProgressState;
 use crate::plot::shape::{Arc, ArcData};
 
-/// A circular progress indicator element.
 #[derive(IntoElement)]
 pub struct ProgressCircle {
     id: ElementId,
@@ -25,7 +24,6 @@ pub struct ProgressCircle {
 }
 
 impl ProgressCircle {
-    /// Create a new circular progress indicator.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -38,24 +36,18 @@ impl ProgressCircle {
         }
     }
 
-    /// Enable indeterminate loading animation.
-    ///
-    /// When `loading` is `true`, the `value` is ignored and an infinite
-    /// rotating arc animation is shown instead.
+    /// When `true`, `value` is ignored and an infinite rotating arc animation shows instead.
     pub fn loading(mut self, loading: bool) -> Self {
         self.loading = loading;
         self
     }
 
-    /// Set the color of the progress circle.
     pub fn color(mut self, color: impl Into<Hsla>) -> Self {
         self.color = Some(color.into());
         self
     }
 
-    /// Set the percentage value of the progress circle.
-    ///
-    /// The value should be between 0.0 and 100.0.
+    /// Clamped to 0.0..=100.0.
     pub fn value(mut self, value: f32) -> Self {
         self.value = value.clamp(0., 100.);
         self

@@ -35,9 +35,7 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::Rgb(r, g, b)
 }
 
-/// The 11 editable color fields, in the theme editor's fixed row order
-/// (`Theme::field`/`set_field` index into this same order). Grouped
-/// Surfaces / Text / Accents, matching the editor's section headers.
+/// The theme editor's fixed row order — `Theme::field`/`set_field` index into this same order.
 pub const FIELD_NAMES: [&str; 11] = [
     "bg",
     "bg_highlight",
@@ -58,10 +56,7 @@ pub const FIELD_GROUPS: [&str; 11] = [
     "Accents", "Accents",
 ];
 
-/// For each editable field, the index of the field it's contrast-checked
-/// against in the theme editor (`None` for `bg`, which has no pair of its
-/// own) — `bg_highlight` is checked against `fg` (the text that sits on
-/// it), everything else against `bg`.
+/// Contrast-check partner per editable field; `None` for `bg`.
 pub const CONTRAST_PARTNER: [Option<usize>; 11] = [
     None,
     Some(2),
@@ -77,9 +72,7 @@ pub const CONTRAST_PARTNER: [Option<usize>; 11] = [
 ];
 
 impl Theme {
-    /// Reads one of the 11 editable colors by index (`FIELD_NAMES` order).
-    /// Out-of-range indices fall back to `bg` rather than panicking, since
-    /// this is only ever driven by a `0..11` UI row cursor.
+    /// Out-of-range indices fall back to `bg` rather than panicking.
     pub fn field(&self, i: usize) -> Color {
         match i {
             0 => self.bg,
@@ -97,8 +90,7 @@ impl Theme {
         }
     }
 
-    /// Writes one of the 11 editable colors by index. Out-of-range indices
-    /// are a no-op (same defensive contract as `field`).
+    /// Out-of-range indices are a no-op.
     pub fn set_field(&mut self, i: usize, c: Color) {
         match i {
             0 => self.bg = c,
@@ -116,16 +108,13 @@ impl Theme {
         }
     }
 
-    /// Whether every one of the 11 editable colors matches `other` — the
-    /// theme editor's dirty check (name/kind aren't editable there, so they
-    /// don't factor in).
+    /// The theme editor's dirty check; name/kind aren't editable there.
     pub fn colors_eq(&self, other: &Theme) -> bool {
         (0..FIELD_NAMES.len()).all(|i| self.field(i) == other.field(i))
     }
 }
 
-/// WCAG 2.x relative luminance of an sRGB color (the sRGB → linear gamma
-/// correction, then the standard 0.2126/0.7152/0.0722 luma weights).
+/// WCAG 2.x relative luminance of an sRGB color.
 pub fn relative_luminance(c: Color) -> f64 {
     let Color::Rgb(r, g, b) = c;
     let chan = |v: u8| -> f64 {
@@ -139,10 +128,7 @@ pub fn relative_luminance(c: Color) -> f64 {
     0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b)
 }
 
-/// WCAG 2.x contrast ratio between two colors: `(L1 + 0.05) / (L2 + 0.05)`
-/// with `L1` the lighter of the two relative luminances, always in `[1.0,
-/// 21.0]`. Used for the theme editor's amber/red contrast badges — warns
-/// only, never blocks saving.
+/// WCAG 2.x contrast ratio, in `[1.0, 21.0]`. Used for the editor's amber/red badges — warns only, never blocks saving.
 pub fn contrast_ratio(a: Color, b: Color) -> f64 {
     let la = relative_luminance(a) + 0.05;
     let lb = relative_luminance(b) + 0.05;
@@ -152,8 +138,6 @@ pub fn contrast_ratio(a: Color, b: Color) -> f64 {
         lb / la
     }
 }
-
-// ---------------- Dark themes ----------------
 
 pub const TOKYONIGHT: Theme = Theme {
     name: Cow::Borrowed("tokyonight"),
@@ -298,8 +282,6 @@ pub const GITHUB_DARK: Theme = Theme {
     yellow: rgb(0xd2, 0x99, 0x22),
     red: rgb(0xf8, 0x51, 0x49),
 };
-
-// ---------------- Light themes ----------------
 
 pub const GITHUB_LIGHT: Theme = Theme {
     name: Cow::Borrowed("github-light"),
@@ -689,20 +671,13 @@ pub const BUILTINS: &[Theme] = &[
     ONE_LIGHT,
 ];
 
-/// The active theme, behind an `Arc` so readers can snapshot it without
-/// holding the lock. Every mutation must go through [`store_active`] so the
-/// generation counter stays in sync with the contents.
+/// Every mutation must go through [`store_active`] so the generation counter stays in sync.
 static ACTIVE: LazyLock<RwLock<Arc<Theme>>> = LazyLock::new(|| RwLock::new(Arc::new(TOKYONIGHT)));
 
-/// Bumped on every write to [`ACTIVE`]. Per-thread caches compare against it
-/// to decide whether their snapshot is stale, so the steady-state cost of a
-/// theme read is one relaxed atomic load plus a thread-local access — no lock
-/// at all. Views call color tokens thousands of times per frame, so this is
-/// the difference between per-token lock traffic and none.
+/// Lets per-thread caches skip the lock entirely on the common case — views call color tokens thousands of times per frame.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
-    /// This thread's `(generation, snapshot)` cache of [`ACTIVE`].
     static ACTIVE_CACHE: RefCell<Option<(u64, Arc<Theme>)>> = const { RefCell::new(None) };
 }
 
@@ -710,13 +685,10 @@ fn store_active(theme: Theme) {
     *ACTIVE
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(theme);
-    // Release pairs with the Acquire load in `active()`: a thread that sees
-    // the new generation must also see the new `Arc` through the lock.
+    // Release pairs with the Acquire load in active(): seeing the new generation implies seeing the new Arc.
     GENERATION.fetch_add(1, Ordering::Release);
 }
 
-/// A snapshot of the active theme, served from this thread's cache when the
-/// generation is unchanged (the overwhelmingly common case).
 fn active() -> Arc<Theme> {
     let gen_now = GENERATION.load(Ordering::Acquire);
     ACTIVE_CACHE.with(|cell| {
@@ -734,32 +706,22 @@ fn active() -> Arc<Theme> {
     })
 }
 
-/// User-defined themes loaded from `themes.json` (see `theme_file`). Empty
-/// until `load_custom()` is called (typically once at startup).
+/// Empty until `load_custom()` is called (typically once at startup).
 static CUSTOM: RwLock<Vec<Theme>> = RwLock::new(Vec::new());
 
-/// Serializes any test, in any module, that touches the shared `CUSTOM`
-/// registry (and, via `save_custom`, the on-disk `themes.json`) so parallel
-/// `cargo test` runs don't stomp on each other. Not `#[cfg(test)]`: it's
-/// shared by tests in the downstream `grove` crate, which can't see this
-/// crate's `cfg(test)` items, so it must be compiled unconditionally. An
-/// uncontended `Mutex<()>` static costs nothing in release builds.
+/// Serializes tests touching CUSTOM/themes.json. Not `#[cfg(test)]`: shared by the downstream grove crate's tests.
 pub static CUSTOM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn current() -> Theme {
     (*active()).clone()
 }
 
-/// Borrow the active theme without cloning it — prefer this on hot paths
-/// (e.g. per-frame palette color lookups) over `current()`.
+/// Prefer this over `current()` on hot paths (no clone).
 pub fn with_current<R>(f: impl FnOnce(&Theme) -> R) -> R {
     f(&active())
 }
 
-/// Look up a theme by name without touching the global `ACTIVE` theme.
-/// Checks builtins first, then custom themes (builtins win on collision).
-/// Used to resolve a project's pinned "Project theme" for PTY rendering; an
-/// unknown/stale name yields `None` so callers fall back to the global theme.
+/// Checks builtins first, then customs (builtins win on collision). `None` for an unknown/stale name.
 pub fn by_name(name: &str) -> Option<Theme> {
     if let Some(t) = BUILTINS.iter().find(|t| t.name == name) {
         return Some(t.clone());
@@ -795,31 +757,17 @@ pub fn themes_of(kind: ThemeKind) -> Vec<Theme> {
     v
 }
 
-/// The single source of truth for "every theme of `kind` a user can pick
-/// from", in the stable order every selection surface must agree on:
-/// builtins first (alphabetical, `themes_of`'s order), then custom themes
-/// (alphabetical, `custom_themes_of`'s order) — never interleaved. This
-/// mirrors the palette's `theme_pane_combined_rows`, which is the reference
-/// implementation this function generalizes.
-///
-/// Any UI that stores a selection as a positional index into "the list of
-/// themes" (rather than resolving by name) must build that list — and
-/// compute that index — via this function, not `themes_of` alone, or the
-/// index will point at the wrong theme the moment a custom theme exists.
+/// Builtins first, then customs, never interleaved. A UI that indexes a theme list positionally
+/// must build it via this function, not `themes_of` alone, or the index breaks once a custom theme exists.
 pub fn selectable_themes_of(kind: ThemeKind) -> Vec<Theme> {
     let mut v = themes_of(kind);
     v.extend(custom_themes_of(kind));
     v
 }
 
-/// The theme at position `idx` in `selectable_themes_of(kind)`, without
-/// materializing that whole list. Same order, same result as
-/// `selectable_themes_of(kind).get(idx).cloned()` — this exists purely for
-/// hot paths (per-frame render code) where building ~40 themes, taking the
-/// `CUSTOM` lock and sorting on every call is pure waste.
+/// Same result as `selectable_themes_of(kind).get(idx).cloned()` without materializing the whole list — for hot paths.
 pub fn selectable_theme_at(kind: ThemeKind, idx: usize) -> Option<Theme> {
-    /// `BUILTINS` of each kind in `themes_of`'s order, sorted once. The set is
-    /// a compile-time constant, so the order can never change at runtime.
+    /// Sorted once; BUILTINS is a compile-time constant so this order never changes at runtime.
     static SORTED_BUILTINS: std::sync::OnceLock<[Vec<&'static Theme>; 2]> =
         std::sync::OnceLock::new();
     let sorted = SORTED_BUILTINS.get_or_init(|| {
@@ -839,12 +787,10 @@ pub fn selectable_theme_at(kind: ThemeKind, idx: usize) -> Option<Theme> {
     }
 }
 
-/// Whether `name` refers to a builtin theme.
 fn is_builtin(name: &str) -> bool {
     BUILTINS.iter().any(|t| t.name == name)
 }
 
-/// Whether `name` refers to a custom (user-defined) theme.
 pub fn is_custom(name: &str) -> bool {
     CUSTOM
         .read()
@@ -853,8 +799,6 @@ pub fn is_custom(name: &str) -> bool {
         .any(|t| t.name == name)
 }
 
-/// Custom themes of `kind`, sorted alphabetically. UI shows these separately
-/// from `themes_of` (builtins-only).
 pub fn custom_themes_of(kind: ThemeKind) -> Vec<Theme> {
     let mut v: Vec<Theme> = CUSTOM
         .read()
@@ -867,9 +811,7 @@ pub fn custom_themes_of(kind: ThemeKind) -> Vec<Theme> {
     v
 }
 
-/// All custom themes (either kind), sorted alphabetically — used by
-/// `Modal::ThemeManager`'s flat list, which shows a kind badge per row
-/// instead of splitting into Dark/Light tabs like the palette's Theme pane.
+/// Used by ThemeManager's flat list, which shows a kind badge instead of Dark/Light tabs.
 pub fn all_custom_themes() -> Vec<Theme> {
     let mut v: Vec<Theme> = CUSTOM
         .read()
@@ -879,11 +821,7 @@ pub fn all_custom_themes() -> Vec<Theme> {
     v
 }
 
-/// Loads `themes.json` into `CUSTOM`, replacing its previous contents.
-/// Returns the list of entries that were skipped, with human-readable
-/// reasons. A missing file is not an error (yields an empty list, no
-/// errors); a corrupt top-level file yields a single error and leaves
-/// `CUSTOM` empty without touching the file on disk.
+/// A missing file yields an empty list, no errors; a corrupt top-level file leaves CUSTOM empty without touching disk.
 pub fn load_custom() -> Vec<crate::theme_file::ThemeLoadError> {
     let (themes, errors) = crate::theme_file::load();
     *CUSTOM
@@ -892,7 +830,6 @@ pub fn load_custom() -> Vec<crate::theme_file::ThemeLoadError> {
     errors
 }
 
-/// Persists the current `CUSTOM` contents to `themes.json`.
 pub fn save_custom() -> std::io::Result<()> {
     let themes = CUSTOM
         .read()
@@ -901,8 +838,7 @@ pub fn save_custom() -> std::io::Result<()> {
     crate::theme_file::save(&themes)
 }
 
-/// Adds a new custom theme. Rejects a name that collides with a builtin or
-/// an existing custom theme.
+/// Rejects a name that collides with a builtin or an existing custom theme.
 pub fn add_custom(mut theme: Theme) -> Result<(), String> {
     let trimmed = theme.name.trim().to_string();
     if trimmed.is_empty() {
@@ -926,11 +862,7 @@ pub fn add_custom(mut theme: Theme) -> Result<(), String> {
     save_custom().map_err(|e| e.to_string())
 }
 
-/// Replaces the custom theme named `original_name` with `theme` in place
-/// (preserving its position). Errors if `original_name` isn't a known
-/// custom theme, if `theme.name` is empty/whitespace-only (mirrors the
-/// list-view rename path's validation — a theme can never be saved with a
-/// blank name), or if renaming to `theme.name` would collide.
+/// Errors if `original_name` is unknown, `theme.name` is blank, or the rename would collide.
 pub fn update_custom(original_name: &str, mut theme: Theme) -> Result<(), String> {
     let trimmed = theme.name.trim().to_string();
     if trimmed.is_empty() {
@@ -960,8 +892,7 @@ pub fn update_custom(original_name: &str, mut theme: Theme) -> Result<(), String
     save_custom().map_err(|e| e.to_string())
 }
 
-/// Renames a custom theme, updating `ACTIVE` in place if it was the active
-/// theme (nothing else is affected — callers own any project-pin bookkeeping).
+/// Updates `ACTIVE` in place if it was the active theme; callers own any project-pin bookkeeping.
 pub fn rename_custom(old: &str, new: &str) -> Result<(), String> {
     if old == new {
         return Ok(());
@@ -992,7 +923,6 @@ pub fn rename_custom(old: &str, new: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Removes a custom theme by name. Returns `false` if no such theme exists.
 pub fn delete_custom(name: &str) -> bool {
     let mut guard = CUSTOM
         .write()
@@ -1009,8 +939,7 @@ pub fn delete_custom(name: &str) -> bool {
     removed
 }
 
-/// Produces a fresh, non-colliding name derived from `base`: "X copy", then
-/// "X copy 2", "X copy 3", ... — checked against both builtins and customs.
+/// "X copy", then "X copy 2", "X copy 3"... checked against both builtins and customs.
 pub fn duplicate_name(base: &str) -> String {
     let exists = |name: &str| {
         BUILTINS.iter().any(|t| t.name == name)
@@ -1058,9 +987,7 @@ mod tests {
         }
     }
 
-    /// Snapshots `CUSTOM`'s contents and restores them (in-memory only, no
-    /// disk write) when dropped, so a test's mutations never leak into
-    /// another test even under panics.
+    /// Restores CUSTOM's contents (in-memory only) on drop, so mutations never leak between tests.
     struct CustomGuard {
         original: Vec<Theme>,
     }
@@ -1103,17 +1030,12 @@ mod tests {
         let customs = custom_themes_of(ThemeKind::Dark);
         let selectable = selectable_themes_of(ThemeKind::Dark);
 
-        // Every builtin comes first, in `themes_of`'s order, followed by
-        // every custom of the same kind, in `custom_themes_of`'s order —
-        // never interleaved.
         assert_eq!(selectable.len(), builtins.len() + customs.len());
         assert_eq!(names(&selectable[..builtins.len()]), names(&builtins));
         assert_eq!(names(&selectable[builtins.len()..]), names(&customs));
-        // Customs are alphabetical among themselves.
         assert_eq!(customs[0].name, "zz-custom-dark-a");
         assert_eq!(customs[1].name, "zz-custom-dark-b");
 
-        // A custom theme of the other kind never leaks into this kind's list.
         assert!(!selectable.iter().any(|t| t.name == "zz-custom-light-only"));
     }
 
@@ -1173,7 +1095,6 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Vec::new();
         assert_eq!(duplicate_name("mytheme"), "mytheme copy");
 
-        // A duplicate name that collides with a builtin is also avoided.
         let builtin_name = BUILTINS[0].name.to_string();
         assert_eq!(
             duplicate_name(&builtin_name),
@@ -1187,15 +1108,11 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _guard = CustomGuard::new();
-        // An in-memory-only entry that was never written to `themes.json`.
         *CUSTOM
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             vec![sample("stale-injected-not-on-disk", ThemeKind::Dark)];
         let _ = load_custom();
-        // Reloading re-reads from disk: a genuine replace throws this stale
-        // in-memory-only entry away rather than keeping it alongside
-        // whatever was actually loaded.
         assert!(
             !CUSTOM
                 .read()
@@ -1219,7 +1136,6 @@ mod tests {
             sample("theme-b", ThemeKind::Dark),
         ];
 
-        // Colliding with another custom theme is rejected; nothing changes.
         let err = rename_custom("theme-a", "theme-b");
         assert!(err.is_err());
         assert_eq!(
@@ -1230,7 +1146,6 @@ mod tests {
             "theme-a"
         );
 
-        // Colliding with a builtin is rejected too.
         let builtin_name = BUILTINS[0].name.to_string();
         let err = rename_custom("theme-a", &builtin_name);
         assert!(err.is_err());
@@ -1248,7 +1163,6 @@ mod tests {
 
         assert!(add_custom(sample("", ThemeKind::Dark)).is_err());
         assert!(add_custom(sample("   ", ThemeKind::Dark)).is_err());
-        // Rejected before ever touching the registry.
         assert!(CUSTOM
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1268,7 +1182,6 @@ mod tests {
 
         let err = update_custom("theme-a", sample("   ", ThemeKind::Dark));
         assert!(err.is_err());
-        // The original entry is left untouched by the rejected save.
         assert_eq!(
             CUSTOM
                 .read()
@@ -1286,8 +1199,6 @@ mod tests {
         let _guard = CustomGuard::new();
         let builtin_name = BUILTINS[0].name.to_string();
         assert!(is_builtin(&builtin_name));
-        // A "custom" theme that (illegally) shares a builtin's name still
-        // never wins the lookup — builtins are checked first.
         *CUSTOM
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -1316,7 +1227,7 @@ mod tests {
         let a = sample("a", ThemeKind::Dark);
         let mut b = a.clone();
         assert!(a.colors_eq(&b), "identical theme must compare equal");
-        b.set_field(7, rgb(1, 2, 3)); // magenta
+        b.set_field(7, rgb(1, 2, 3));
         assert!(!a.colors_eq(&b), "a differing field must break equality");
     }
 
@@ -1344,8 +1255,6 @@ mod tests {
 
     #[test]
     fn contrast_ratio_flags_low_contrast_pair_below_thresholds() {
-        // Two similarly dark grays: well under both the amber (4.5) and red
-        // (3.0) editor thresholds.
         let ratio = contrast_ratio(rgb(0x20, 0x20, 0x20), rgb(0x30, 0x30, 0x30));
         assert!(ratio < 3.0, "expected a low-contrast pair, got {ratio}");
     }

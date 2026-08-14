@@ -15,7 +15,6 @@ pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", Cancel, Some(CONTEXT))])
 }
 
-/// A popover element that can be triggered by a button or any other element.
 #[derive(IntoElement)]
 pub struct Popover {
     id: ElementId,
@@ -32,8 +31,7 @@ pub struct Popover {
         >,
     >,
     children: Vec<AnyElement>,
-    /// Style for trigger element.
-    /// This is used for hotfix the trigger element style to support w_full.
+    /// Hotfix for the trigger element style to support w_full.
     trigger_style: Option<StyleRefinement>,
     mouse_button: MouseButton,
     appearance: bool,
@@ -42,7 +40,6 @@ pub struct Popover {
 }
 
 impl Popover {
-    /// Create a new Popover with `view` mode.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -62,24 +59,17 @@ impl Popover {
         }
     }
 
-    /// Set the anchor corner of the popover, default is [`Anchor::TopLeft`].
-    ///
-    /// Imagine the popover has a pointer tip (like a speech bubble's tail). The
-    /// anchor is where that tip sits relative to the trigger: `Anchor::TopLeft`
-    /// places it at the trigger's top-left corner, `Anchor::BottomRight` at the
-    /// bottom-right, and so on. The popover then hangs off that point.
+    /// Where the popover's speech-bubble tip sits relative to the trigger; default [`Anchor::TopLeft`].
     pub fn anchor(mut self, anchor: impl Into<Anchor>) -> Self {
         self.anchor = anchor.into();
         self
     }
 
-    /// Set the mouse button to trigger the popover, default is `MouseButton::Left`.
     pub fn mouse_button(mut self, mouse_button: MouseButton) -> Self {
         self.mouse_button = mouse_button;
         self
     }
 
-    /// Set the trigger element of the popover.
     pub fn trigger<T>(mut self, trigger: T) -> Self
     where
         T: Selectable + IntoElement + 'static,
@@ -91,31 +81,19 @@ impl Popover {
         self
     }
 
-    /// Set the default open state of the popover, default is `false`.
-    ///
-    /// This is only used to initialize the open state of the popover.
-    ///
-    /// And please note that if you use the `open` method, this value will be ignored.
+    /// Only initializes open state; ignored if `open` is also used.
     pub fn default_open(mut self, open: bool) -> Self {
         self.default_open = open;
         self
     }
 
-    /// Force set the open state of the popover.
-    ///
-    /// If this is set, the popover will be controlled by this value.
-    ///
-    /// NOTE: You must be used in conjunction with `on_open_change` to handle state changes.
+    /// Controls the popover directly; must be used with `on_open_change` to handle state changes.
     pub fn open(mut self, open: bool) -> Self {
         self.open = Some(open);
         self
     }
 
-    /// Add a callback to be called when the open state changes.
-    ///
-    /// The first `&bool` parameter is the **new open state**.
-    ///
-    /// This is useful when using the `open` method to control the popover state.
+    /// The `&bool` parameter is the new open state.
     pub fn on_open_change<F>(mut self, callback: F) -> Self
     where
         F: Fn(&bool, &mut Window, &mut App) + 'static,
@@ -124,22 +102,17 @@ impl Popover {
         self
     }
 
-    /// Set the style for the trigger element.
     pub fn trigger_style(mut self, style: StyleRefinement) -> Self {
         self.trigger_style = Some(style);
         self
     }
 
-    /// Set whether clicking outside the popover will dismiss it, default is `true`.
     pub fn overlay_closable(mut self, closable: bool) -> Self {
         self.overlay_closable = closable;
         self
     }
 
-    /// Set the content builder for content of the Popover.
-    ///
-    /// This callback will called every time on render the popover.
-    /// So, you should avoid creating new elements or entities in the content closure.
+    /// Called every render; avoid creating new elements or entities in the closure.
     pub fn content<F, E>(mut self, content: F) -> Self
     where
         E: IntoElement,
@@ -151,21 +124,13 @@ impl Popover {
         self
     }
 
-    /// Set whether the popover no style, default is `false`.
-    ///
-    /// If no style:
-    ///
-    /// - The popover will not have a bg, border, shadow, or padding.
-    /// - The click out of the popover will not dismiss it.
+    /// `false` drops bg/border/shadow/padding and click-out dismissal.
     pub fn appearance(mut self, appearance: bool) -> Self {
         self.appearance = appearance;
         self
     }
 
-    /// Bind the focus handle to receive focus when the popover is opened.
-    /// If you not set this, a new focus handle will be created for the popover to
-    ///
-    /// If popover is opened, the focus will be moved to the focus handle.
+    /// If unset, a new focus handle is created for the popover.
     pub fn track_focus(mut self, handle: &FocusHandle) -> Self {
         self.tracked_focus_handle = Some(handle.clone());
         self
@@ -188,7 +153,6 @@ impl Popover {
                 x: trigger_bounds.top_right().x,
                 y: trigger_bounds.origin.y - trigger_bounds.size.height,
             },
-            // Fallback for LeftCenter/RightCenter – adjust as needed.
             _ => trigger_bounds.origin,
         }
     }
@@ -232,19 +196,16 @@ impl PopoverState {
         }
     }
 
-    /// Check if the popover is open.
     pub fn is_open(&self) -> bool {
         self.open
     }
 
-    /// Dismiss the popover if it is open.
     pub fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.open {
             self.toggle_open(window, cx);
         }
     }
 
-    /// Open the popover if it is closed.
     pub fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.open {
             self.toggle_open(window, cx);
@@ -263,7 +224,7 @@ impl PopoverState {
     fn toggle_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let opening = !self.open;
         if opening {
-            // Save the focused element before opening, so we can restore it on close.
+            // Saved so it can be restored on close.
             self.previous_focus_handle = window.focused(cx);
         }
         self.set_open(opening, cx);
@@ -288,7 +249,6 @@ impl PopoverState {
                 );
         } else {
             self._dismiss_subscription = None;
-            // Restore focus to the element that was focused before the popover opened.
             if let Some(prev) = self.previous_focus_handle.take() {
                 if self.focus_handle.contains_focused(window, cx) {
                     prev.focus(window, cx);
@@ -356,7 +316,7 @@ impl Popover {
             .map(|this| match anchor {
                 Anchor::TopLeft | Anchor::TopCenter | Anchor::TopRight => this.top_1(),
                 Anchor::BottomLeft | Anchor::BottomCenter | Anchor::BottomRight => this.bottom_1(),
-                Anchor::LeftCenter | Anchor::RightCenter => this.top_1(), // Fallback for centered
+                Anchor::LeftCenter | Anchor::RightCenter => this.top_1(),
             })
     }
 }
@@ -391,8 +351,7 @@ impl RenderOnce for Popover {
 
         let parent_view_id = window.current_view();
 
-        // Shared cell so the deferred Anchored element can read the real trigger bounds at
-        // prepaint time (after trigger's on_prepaint has already fired with the correct bounds).
+        // Shared so the deferred Anchored element can read real trigger bounds at prepaint time.
         let position = Rc::new(Cell::new(Self::resolved_corner(
             self.anchor,
             trigger_bounds,
@@ -406,8 +365,7 @@ impl RenderOnce for Popover {
                 move |_, window, cx| {
                     cx.stop_propagation();
                     state.update(cx, |state, cx| {
-                        // We force set open to false to toggle it correctly.
-                        // Because if the mouse down out will toggle open first.
+                        // Force set open first, since mouse-down-out toggles it before this runs.
                         state.set_open(open, cx);
                         state.toggle_open(window, cx);
                     });
@@ -426,8 +384,7 @@ impl RenderOnce for Popover {
                         state.trigger_bounds_captured = true;
                         first
                     });
-                    // On the very first bounds capture, request a new frame so the popover
-                    // renders at the correct position (outside the current paint cycle).
+                    // On the first bounds capture, request a new frame so the popover renders at the correct position.
                     if first_capture {
                         window.request_animation_frame();
                     }

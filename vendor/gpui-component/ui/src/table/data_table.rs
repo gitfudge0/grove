@@ -30,11 +30,8 @@ pub(super) fn init(cx: &mut App) {
 
 pub(super) struct TableOptions {
     pub(super) scrollbar_visible: Edges<bool>,
-    /// Set stripe style of the table.
     pub(super) stripe: bool,
-    /// Set to use border style of the table.
     pub(super) bordered: bool,
-    /// The cell size of the table.
     pub(super) size: Size,
 }
 
@@ -49,31 +46,8 @@ impl Default for TableOptions {
     }
 }
 
-/// A table element with support for row, column, and cell selection.
-///
-/// # Features
-///
-/// - **Multiple Selection Modes**: Support for row, column, and cell selection
-/// - **Cell Selection**: Click to select individual cells, with keyboard navigation
-/// - **Virtual Scrolling**: Efficient rendering of large datasets
-/// - **Resizable Columns**: Drag column borders to resize
-/// - **Movable Columns**: Drag column headers to reorder
-/// - **Fixed Columns**: Pin columns to the left side
-/// - **Sortable Columns**: Click column headers to sort
-/// - **Context Menus**: Right-click support for rows and cells
-///
-/// # Cell Selection Mode
-///
-/// When cell selection is enabled via [`TableState::cell_selectable()`]:
-/// - Click on cells to select them
-/// - A row header column appears on the left for selecting entire rows
-///   (use [`TableState::row_header()`] to hide it)
-/// - Keyboard navigation (arrow keys, Tab, Home, End, PageUp, PageDown) works at cell level
-/// - Right-click and double-click events are supported
-///
-/// See [`TableState`] for more details on cell selection.
-///
-/// # Example
+/// Row/column/cell selection, virtual scrolling, resizable/movable/fixed/sortable columns, context menus.
+/// Cell selection mode (via [`TableState::cell_selectable()`]) adds a row-header selection column (hide with [`TableState::row_header()`]) and cell-level keyboard nav.
 ///
 /// ```rust,ignore
 /// let table_state = cx.new(|cx| {
@@ -96,7 +70,6 @@ impl<D> DataTable<D>
 where
     D: TableDelegate,
 {
-    /// Create a new DataTable element with the given [`TableState`].
     pub fn new(state: &Entity<TableState<D>>) -> Self {
         Self {
             state: state.clone(),
@@ -104,19 +77,18 @@ where
         }
     }
 
-    /// Set to use stripe style of the table, default to false.
+    /// Default false.
     pub fn stripe(mut self, stripe: bool) -> Self {
         self.options.stripe = stripe;
         self
     }
 
-    /// Set to use border style of the table, default to true.
+    /// Default true.
     pub fn bordered(mut self, bordered: bool) -> Self {
         self.options.bordered = bordered;
         self
     }
 
-    /// Set scrollbar visibility.
     pub fn scrollbar_visible(mut self, vertical: bool, horizontal: bool) -> Self {
         self.options.scrollbar_visible = Edges {
             right: vertical,

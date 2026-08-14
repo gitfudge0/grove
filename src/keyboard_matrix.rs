@@ -1,19 +1,10 @@
-//! The keyboard matrix — spec §8.2, half of Plan 08's exit gate.
-//!
-//! One table-driven test per contract, covering **every `SHORTCUTS` row ×
-//! {Workspace, Grid, Zen, each modal} × armed/disarmed**, asserting the
-//! dispatch target: PTY bytes, a named action, or swallowed.
-//!
-//! The matrix is expressed against the two pure deciders — [`crate::modal`]'s
-//! verdict table and [`crate::keymap`]'s registry — because that is exactly
-//! where the decision is made at runtime: the modal layer maps a keystroke
-//! through `key_verdict`, and gpui maps a chord through the registry-generated
-//! bindings scoped by key context. Nothing here re-implements either.
+//! One table-driven test per contract, covering every `SHORTCUTS` row ×
+//! {Workspace, Grid, Zen, each modal} × armed/disarmed, asserting the dispatch
+//! target: PTY bytes, a named action, or swallowed. Expressed against the two
+//! pure deciders — [`crate::modal`]'s verdict table and [`crate::keymap`]'s
+//! registry — since that's exactly where the runtime decision is made.
 
 #![cfg(test)]
-// A test-only module: an unwrap here fails the test it belongs to, which is
-// the point. Same allow the `grove-terminal` test modules carry, and what the
-// workspace lint table (`Cargo.toml:25-26`) already assumes for test targets.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::keymap::{
@@ -27,15 +18,11 @@ use crate::modal::{
 /// Where a keystroke ends up.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Target {
-    /// Reaches the PTY as bytes.
     Pty,
-    /// Fires a named action.
     Action(&'static str),
-    /// Claimed and deliberately dropped.
     Swallowed,
 }
 
-/// One representative `Modal` per kind, so the matrix can enumerate them all.
 fn sample_modal(kind: ModalKind) -> Modal {
     use crate::modal::*;
     match kind {
@@ -124,11 +111,7 @@ fn sample_modal(kind: ModalKind) -> Modal {
     }
 }
 
-/// The runtime rule, stated once: while a modal is open the workspace stops
-/// declaring its screen key-context, so no screen-scoped chord can fire from
-/// behind the scrim (`views/workspace.rs`, carried decision 3). A modal claims
-/// exactly what its verdict table names; everything else belongs to the
-/// modal's own field or delegate.
+/// While a modal is open the workspace drops its screen key-context, so no screen-scoped chord fires from behind the scrim.
 fn dispatch_with_modal(kind: ModalKind, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -> Target {
     let modal = sample_modal(kind);
     match key_verdict(&modal, key, mods, ctx) {
@@ -141,14 +124,8 @@ fn dispatch_with_modal(kind: ModalKind, key: ModalKey, mods: ModalMods, ctx: Key
     }
 }
 
-/// With no modal open, a chord dispatches only if the registry binds it for a
-/// context the current screen declares.
 fn dispatch_on_screen(def: &ShortcutDef, screen: Screen) -> Target {
     let Some(action) = def.action else {
-        // Grid-nav rows resolve to a ctrl-shift-letter chord on non-mac,
-        // which `key_to_bytes` now swallows outright (see
-        // `is_non_mac_platform_mod_letter_row`) — it never reaches the PTY,
-        // on this screen or any other.
         if is_non_mac_platform_mod_letter_row(def) {
             return Target::Swallowed;
         }
@@ -184,20 +161,12 @@ fn dispatch_on_screen(def: &ShortcutDef, screen: Screen) -> Target {
             GlobalShortcut::SwitchSession => "SwitchSession",
         })
     } else {
-        // Not this screen's chord: it falls through to the PTY.
         Target::Pty
     }
 }
 
-/// The registry's display-only grid-nav rows resolve, at runtime, to
-/// `platform_mod_prefix()` (`ctrl-shift-` on non-mac) over a single letter
-/// (h/j/k/l, plus `alt-` for the swap variant). `key_to_bytes`
-/// (`terminal/keys.rs`) now swallows ctrl-shift-letter chords outright on
-/// non-mac — they're the app's global-shortcut modifier — so off their own
-/// screen these rows no longer reach the PTY; they're dropped before the
-/// terminal ever sees them. On macOS the platform prefix is `cmd-`, already
-/// filtered by the `platform` branch in `key_to_bytes`, so this is a non-mac
-/// only distinction.
+/// On non-mac, grid-nav rows resolve to ctrl-shift-letter, which `key_to_bytes` swallows
+/// outright as the app's global-shortcut modifier, before it ever reaches the terminal.
 fn is_non_mac_platform_mod_letter_row(def: &ShortcutDef) -> bool {
     cfg!(not(target_os = "macos"))
         && matches!(def.description, "Move focus in grid" | "Move tile in grid")
@@ -212,16 +181,8 @@ const PLATFORM: ModalMods = ModalMods {
     platform: true,
 };
 
-// ── the six named contracts spec §5 enumerates ───────────────────────────
-
-/// **Escape despite capture.** Escape reaches the modal from inside a focused
-/// `ModalInput` — `InputState::escape()` propagates (vendored
-/// `input/state.rs:1685`) because `ModalInput` never sets `clean_on_escape` —
-/// and with no modal open it reaches the PTY unless `escape_should_dismiss`
-/// says otherwise.
 #[test]
 fn escape_despite_capture() {
-    // Inside a modal with a focused field, Escape is still the modal's.
     for kind in [
         ModalKind::Input,
         ModalKind::AddProject,
@@ -232,19 +193,12 @@ fn escape_despite_capture() {
         assert_ne!(t, Target::Pty, "{kind:?} must claim Escape");
         assert_ne!(t, Target::Swallowed, "{kind:?} must act on Escape");
     }
-    // No modal open: Escape reaches the PTY unless something is armed. The
-    // wiring lives in `TerminalView::on_key_down` step 1b, which consults
-    // `WorkspaceState::escape_dismiss` (tested in `workspace_state`).
     assert!(!escape_should_dismiss(false, false, false, false));
     assert!(escape_should_dismiss(true, false, false, false));
 }
 
-/// **Palette arrow carve-outs.** ←/→ reach the palette, not the caret, and
-/// only while the palette is open.
 #[test]
 fn palette_arrow_carve_outs() {
-    // The palette (and the wizard, whose arrows drive the match list) claim
-    // them; every other modal leaves them to the caret.
     for kind in ModalKind::ALL {
         let claims = kind.wants_arrows();
         assert_eq!(
@@ -253,8 +207,6 @@ fn palette_arrow_carve_outs() {
             "{kind:?}"
         );
     }
-    // The palette delegates every key to its own handler, which is where the
-    // arrows are consumed (`views::modals::launcher::palette_key`).
     for key in [ModalKey::Left, ModalKey::Right] {
         assert_eq!(
             dispatch_with_modal(
@@ -266,8 +218,6 @@ fn palette_arrow_carve_outs() {
             Target::Action("modal-delegate")
         );
     }
-    // With no palette open the caret keeps them: no registry row binds a bare
-    // arrow at all.
     for def in SHORTCUTS {
         for ks in keystrokes_for(def) {
             assert!(
@@ -278,13 +228,8 @@ fn palette_arrow_carve_outs() {
     }
 }
 
-/// **Cmd-chord suppression in the palette.** A global-mods chord is an action,
-/// never inserted text.
 #[test]
 fn cmd_chord_suppression_in_the_palette() {
-    // The palette hands every key to its own handler, which treats a
-    // platform-modified key as a command and stops propagation, so it can
-    // never reach the `Input` as text.
     assert_eq!(
         dispatch_with_modal(
             ModalKind::SessionLauncher,
@@ -294,8 +239,7 @@ fn cmd_chord_suppression_in_the_palette() {
         ),
         Target::Action("modal-delegate")
     );
-    // And a chord a modal's context binds must be claimed by its table — the
-    // drift guard, restated here so the matrix owns it too.
+    // Drift guard restated here so the matrix owns it too.
     for kind in ModalKind::ALL {
         for chord in bound_chords(kind) {
             let ctx = KeyCtx {
@@ -314,9 +258,6 @@ fn cmd_chord_suppression_in_the_palette() {
     }
 }
 
-/// **Alt+Escape reaches the PTY as `ESC ESC`.** The registry binds no
-/// alt-Escape chord, and no modal claims a modified Escape, so it is the
-/// terminal's.
 #[test]
 fn alt_escape_reaches_the_pty() {
     for def in SHORTCUTS {
@@ -345,19 +286,12 @@ fn alt_escape_reaches_the_pty() {
     );
 }
 
-/// **Two-step confirm-kill arming/disarming**, sessions and home terminals
-/// armed separately, Escape disarming. The arming itself is a
-/// `WorkspaceState` concern; the matrix pins that Escape outranks it only when
-/// no modal is open.
 #[test]
 fn two_step_confirm_kill_arming_and_disarming() {
-    // Armed separately: either one alone makes Escape a dismissal.
     assert!(escape_should_dismiss(true, false, false, false));
     assert!(escape_should_dismiss(false, true, false, false));
-    // …and so do the other two arming inputs.
     assert!(escape_should_dismiss(false, false, true, false));
     assert!(escape_should_dismiss(false, false, false, true));
-    // Nothing armed: the PTY gets it.
     assert!(!escape_should_dismiss(false, false, false, false));
     // A modal outranks all of it — the modal machine is asked first.
     assert_eq!(
@@ -371,16 +305,8 @@ fn two_step_confirm_kill_arming_and_disarming() {
     );
 }
 
-/// **Fall-through to PTY** for any screen-scoped row whose screen is not
-/// current.
-///
-/// Two halves, because the registry currently has both shapes:
-/// - a **bound** screen-scoped row binds only into its own screen's context,
-///   so on any other screen nothing matches and the keystroke reaches the PTY;
-/// - every screen-scoped row in the registry today is **display-only**
-///   (`action: None` — the grid move/swap chords are matched dynamically, and
-///   "Resize terminal panel" must reach the PTY by design), so it falls
-///   through on *every* screen including its own.
+/// Two halves: a bound screen-scoped row falls through off its own screen; a display-only
+/// row (`action: None`) falls through on every screen including its own.
 #[test]
 fn screen_scoped_rows_fall_through_off_their_screen() {
     let mut display_only = 0;
@@ -400,13 +326,6 @@ fn screen_scoped_rows_fall_through_off_their_screen() {
         if def.action.is_none() {
             display_only += 1;
             for screen in SCREENS {
-                // The grid-nav rows are the one exception (see
-                // `is_non_mac_platform_mod_letter_row`): on non-mac their
-                // real chord is ctrl-shift-letter, which `key_to_bytes` now
-                // swallows before it ever reaches the PTY. Every other
-                // display-only row (Escape aside, "Resize terminal panel"'s
-                // ctrl-shift-arrow chord) is unaffected — arrows aren't
-                // letters, so the new guard never fires for them.
                 let expected = if is_non_mac_platform_mod_letter_row(def) {
                     Target::Swallowed
                 } else {
@@ -440,8 +359,6 @@ fn screen_scoped_rows_fall_through_off_their_screen() {
         display_only > 0,
         "the registry must still carry its display-only screen rows"
     );
-    // The scoping mechanism itself, independent of whether a bound row happens
-    // to exist right now: a screen scope binds into exactly that context.
     let probe = ShortcutDef {
         action: Some(GlobalShortcut::ToggleGrid),
         triggers: &["g"],
@@ -460,13 +377,7 @@ fn screen_scoped_rows_fall_through_off_their_screen() {
     let _ = bound;
 }
 
-// ── the full sweep ───────────────────────────────────────────────────────
-
-/// Every `SHORTCUTS` row × every screen: the row either fires its action,
-/// falls through to the PTY, or — for the one non-mac ctrl-shift-letter
-/// exception (`is_non_mac_platform_mod_letter_row`) — is deliberately
-/// swallowed by `key_to_bytes` before it ever reaches the PTY. Nothing else
-/// is ever silently swallowed with no modal open.
+/// Nothing is ever silently swallowed with no modal open, except the one non-mac ctrl-shift-letter exception.
 #[test]
 fn every_registry_row_on_every_screen_resolves_to_an_action_or_the_pty() {
     for def in SHORTCUTS {
@@ -490,9 +401,6 @@ fn every_registry_row_on_every_screen_resolves_to_an_action_or_the_pty() {
     }
 }
 
-/// Every `SHORTCUTS` row × every modal: **no registry chord fires from behind
-/// a scrim.** The workspace drops its screen key-context while a modal is
-/// open, so the only thing that can act on the keystroke is the modal itself.
 #[test]
 fn no_registry_chord_fires_from_behind_a_modal() {
     for kind in ModalKind::ALL {
@@ -519,8 +427,6 @@ fn no_registry_chord_fires_from_behind_a_modal() {
     }
 }
 
-/// Every modal × the armed/disarmed axis: arming never changes a modal's
-/// verdict, because the modal is asked first and outranks it.
 #[test]
 fn arming_never_changes_a_modal_verdict() {
     for kind in ModalKind::ALL {
@@ -553,8 +459,7 @@ fn arming_never_changes_a_modal_verdict() {
     }
 }
 
-/// The one `KeyCtx` input that *does* change a verdict: an in-flight update
-/// refuses `Updating`'s Escape (`modals.rs:250-256`).
+/// The one KeyCtx input that changes a verdict: an in-flight update refuses Updating's Escape.
 #[test]
 fn only_updating_reads_the_in_flight_flag() {
     for kind in ModalKind::ALL {
@@ -577,8 +482,6 @@ fn only_updating_reads_the_in_flight_flag() {
     }
 }
 
-/// Drift guard restated (Task 2 Step 5): every modal kind has a unique key
-/// context, so two modals can never share a binding namespace.
 #[test]
 fn every_modal_kind_has_a_unique_key_context() {
     let mut seen = std::collections::HashSet::new();
@@ -587,8 +490,6 @@ fn every_modal_kind_has_a_unique_key_context() {
     }
 }
 
-/// Drift guard restated (Task 6 Step 2): every registry row with a display
-/// label reaches the overlay on at least one screen.
 #[test]
 fn every_registry_row_with_a_label_reaches_the_overlay() {
     for def in SHORTCUTS {
@@ -602,12 +503,9 @@ fn every_registry_row_with_a_label_reaches_the_overlay() {
     }
 }
 
-/// `should_forward`, `MODAL_OPEN` and `PALETTE_OPEN` have no counterpart —
-/// pinned here so a future reader can see all three carve-outs survive without
-/// either static (carried decision 3).
+/// Pins that all three iced carve-outs (carried decision 3) survive without either static.
 #[test]
 fn the_three_carve_outs_survive_without_either_static() {
-    // 1. Escape propagates out of a focused field.
     assert_eq!(
         dispatch_with_modal(
             ModalKind::Input,
@@ -617,7 +515,6 @@ fn the_three_carve_outs_survive_without_either_static() {
         ),
         Target::Action("cancel")
     );
-    // 2. A global-mods chord inside a modal is the modal's, never text.
     assert_ne!(
         dispatch_with_modal(
             ModalKind::SessionLauncher,
@@ -627,12 +524,8 @@ fn the_three_carve_outs_survive_without_either_static() {
         ),
         Target::Pty
     );
-    // 3. ←/→ belong to the palette while it is open, and to the caret
-    //    everywhere else.
     assert!(ModalKind::SessionLauncher.wants_arrows());
     assert!(!ModalKind::Settings.wants_arrows());
-    // And the platform modifier label the overlay renders is the same one the
-    // bindings are generated from.
     assert_eq!(
         keymap::platform_mod_prefix()
             .trim_end_matches('-')
@@ -641,17 +534,10 @@ fn the_three_carve_outs_survive_without_either_static() {
     );
 }
 
-// ── modal fields: the keys reclaimed from a focused `Input` ──────────────
-//
-// gpui-component binds up/down/left/right/tab/shift-tab/enter in the plain
-// `"Input"` context, and a matched binding ends dispatch before the modal
-// layer's bubble-phase `on_key_down` runs. Grove registers the same chords in
-// the descendant context `"<ModalKind> > Input"`, which matches at the same
-// node and therefore wins on registration order. These two tests pin both
-// halves: the bindings exist, and they out-rank the `"Input"` ones.
+// Grove registers "<ModalKind> > Input" bindings that win over gpui-component's plain "Input"
+// ones by registration order. These two tests pin that the bindings exist and out-rank them.
 
-/// The full binding set as gpui would see it: gpui-component's `"Input"`
-/// bindings first (`gpui_component::init`), Grove's second (`app.rs`).
+/// gpui-component's "Input" bindings first, Grove's second — matches real registration order.
 fn keymap_as_registered() -> gpui::Keymap {
     use gpui_component::input::{
         Enter, Escape, IndentInline, MoveDown, MoveLeft, MoveRight, MoveUp,
@@ -677,8 +563,6 @@ fn keymap_as_registered() -> gpui::Keymap {
     gpui::Keymap::new(bindings)
 }
 
-/// The dispatch stack a focused modal field presents: the modal layer's
-/// `key_context`, then the `Input` element's own.
 fn modal_field_stack(kind: ModalKind) -> Vec<gpui::KeyContext> {
     vec![
         gpui::KeyContext::try_from(kind.key_context()).unwrap(),
@@ -686,7 +570,6 @@ fn modal_field_stack(kind: ModalKind) -> Vec<gpui::KeyContext> {
     ]
 }
 
-/// The name of the action that wins for `key` while `kind`'s field is focused.
 fn winning_action(kind: ModalKind, key: &str) -> String {
     let keymap = keymap_as_registered();
     let keystroke = gpui::Keystroke::parse(key).unwrap();
@@ -696,9 +579,6 @@ fn winning_action(kind: ModalKind, key: &str) -> String {
         .map_or_else(|| "<none>".to_string(), |b| b.action().name().to_string())
 }
 
-/// Every single-line modal registers its `"<ModalKind> > Input"` bindings —
-/// otherwise the modal layer never sees ↑/↓/Enter at all (the bug this
-/// replaces: `bindings()` registered zero modal-context bindings).
 #[test]
 fn every_single_line_modal_binds_the_keys_its_field_would_swallow() {
     use crate::views::modals::input::InputPolicy;
@@ -706,7 +586,6 @@ fn every_single_line_modal_binds_the_keys_its_field_would_swallow() {
     for kind in ModalKind::ALL {
         let policy = InputPolicy::for_modal(kind);
         if policy.multi_line {
-            // A multiline buffer keeps Enter/↑/↓/Tab for the caret.
             continue;
         }
         let ctx = format!("{} > Input", kind.key_context());
@@ -730,12 +609,9 @@ fn every_single_line_modal_binds_the_keys_its_field_would_swallow() {
     }
 }
 
-/// …and the modal binding, not gpui-component's `"Input"` one, is what gpui
-/// picks. Registration order is the tie-breaker, so this is the assertion that
-/// fails if `bindings()` is ever registered before `gpui_component::init`.
+/// Fails if `bindings()` is ever registered before `gpui_component::init`.
 #[test]
 fn the_modal_binding_out_ranks_the_input_binding() {
-    // The palette claims ←/→ too (`wants_arrows`).
     for key in ["up", "down", "enter", "left", "right"] {
         let winner = winning_action(ModalKind::SessionLauncher, key);
         assert!(
@@ -743,15 +619,8 @@ fn the_modal_binding_out_ranks_the_input_binding() {
             "{key} in the palette went to {winner}"
         );
     }
-    // Tab is claimed only where the modal asked for it.
     assert!(winning_action(ModalKind::AddProject, "tab").starts_with("grove_modal::"));
     assert!(!winning_action(ModalKind::SessionLauncher, "tab").starts_with("grove_modal::"));
-    // The name field and the three lifecycle buffers are all single-line
-    // since the "Variant D" redesign (`views/modals/mod.rs`'s `ScriptsEditor`
-    // field-construction arm; `InputPolicy::for_modal` no longer marks this
-    // kind `multi_line`), so Up/Down/Enter are the modal's, exactly like
-    // every other single-line-only kind above. It still doesn't want Tab
-    // (`ModalKind::wants_tab`), so Tab stays the field's own.
     for key in ["up", "down", "enter"] {
         let winner = winning_action(ModalKind::ScriptsEditor, key);
         assert!(
@@ -760,7 +629,6 @@ fn the_modal_binding_out_ranks_the_input_binding() {
         );
     }
     assert!(!winning_action(ModalKind::ScriptsEditor, "tab").starts_with("grove_modal::"));
-    // Escape is nobody's action here — it still propagates to `on_key_down`.
     assert_eq!(
         winning_action(ModalKind::SessionLauncher, "escape"),
         "input::Escape"

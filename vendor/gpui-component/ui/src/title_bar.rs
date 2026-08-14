@@ -17,9 +17,6 @@ const TITLE_BAR_LEFT_PADDING: Pixels = px(80.);
 #[cfg(not(target_os = "macos"))]
 const TITLE_BAR_LEFT_PADDING: Pixels = px(12.);
 
-/// TitleBar used to customize the appearance of the title bar.
-///
-/// We can put some elements inside the title bar.
 #[derive(IntoElement)]
 pub struct TitleBar {
     style: StyleRefinement,
@@ -28,7 +25,6 @@ pub struct TitleBar {
 }
 
 impl TitleBar {
-    /// Create a new TitleBar.
     pub fn new() -> Self {
         Self {
             style: StyleRefinement::default(),
@@ -37,7 +33,6 @@ impl TitleBar {
         }
     }
 
-    /// Returns the default title bar options for compatible with the [`crate::TitleBar`].
     pub fn title_bar_options() -> TitlebarOptions {
         TitlebarOptions {
             title: None,
@@ -46,8 +41,7 @@ impl TitleBar {
         }
     }
 
-    /// Add custom for close window event, default is None, then click X button will call `window.remove_window()`.
-    /// Linux only, this will do nothing on other platforms.
+    /// Default closes via `window.remove_window()`. Linux only; a no-op elsewhere.
     pub fn on_close_window(
         mut self,
         f: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -59,10 +53,7 @@ impl TitleBar {
     }
 }
 
-// The Windows control buttons have a fixed width of 35px.
-//
-// We don't need implementation the click event for the control buttons.
-// If user clicked in the bounds, the window event will be triggered.
+// Windows control buttons are 35px; no click handler needed — the window event fires when clicked inside the bounds.
 #[derive(IntoElement, Clone)]
 enum ControlIcon {
     Minimize,

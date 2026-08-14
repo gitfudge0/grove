@@ -365,9 +365,7 @@ impl Language {
         languages.into_iter().map(SharedString::from).collect()
     }
 
-    /// Return the language info for the language.
-    ///
-    /// (language, query, injection, locals)
+    /// Returns (language, query, injection, locals).
     pub(super) fn config(&self) -> LanguageConfig {
         let (language, query, injection, locals) = match self {
             Self::Plain => return LanguageConfig::plain(self.name()),

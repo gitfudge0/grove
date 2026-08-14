@@ -8,14 +8,12 @@ use gpui::{
 
 use crate::{h_flex, ActiveTheme, Icon, IconName, StyledExt};
 
-/// A breadcrumb navigation element.
 #[derive(IntoElement)]
 pub struct Breadcrumb {
     style: StyleRefinement,
     items: Vec<BreadcrumbItem>,
 }
 
-/// Item for the [`Breadcrumb`].
 #[derive(IntoElement)]
 pub struct BreadcrumbItem {
     id: ElementId,
@@ -27,7 +25,6 @@ pub struct BreadcrumbItem {
 }
 
 impl BreadcrumbItem {
-    /// Create a new BreadcrumbItem with the given id and label.
     pub fn new(label: impl Into<SharedString>) -> Self {
         Self {
             id: ElementId::Integer(0),
@@ -57,7 +54,6 @@ impl BreadcrumbItem {
         self
     }
 
-    /// For internal use only.
     fn is_last(mut self, is_last: bool) -> Self {
         self.is_last = is_last;
         self
@@ -115,7 +111,6 @@ impl RenderOnce for BreadcrumbItem {
 }
 
 impl Breadcrumb {
-    /// Create a new breadcrumb.
     pub fn new() -> Self {
         Self {
             items: Vec::new(),
@@ -123,13 +118,11 @@ impl Breadcrumb {
         }
     }
 
-    /// Add an [`BreadcrumbItem`] to the breadcrumb.
     pub fn child(mut self, item: impl Into<BreadcrumbItem>) -> Self {
         self.items.push(item.into());
         self
     }
 
-    /// Add multiple [`BreadcrumbItem`] items to the breadcrumb.
     pub fn children(mut self, items: impl IntoIterator<Item = impl Into<BreadcrumbItem>>) -> Self {
         self.items.extend(items.into_iter().map(Into::into));
         self

@@ -1,15 +1,5 @@
-//! A menu rendered natively by the operating system.
-//!
-//! Unlike [`crate::menu::PopupMenu`], which is drawn by GPUI and therefore
-//! clipped to the window bounds, [`NativeMenu`] is rendered by the OS. It can
-//! extend beyond the window — useful for small windows where a GPUI-drawn popup
-//! menu would otherwise be cut off.
-//!
-//! Items carry a GPUI [`Action`], dispatched via [`Window::dispatch_action`]
-//! when selected — the same mechanism the application menu bar and key bindings
-//! use. A [`NativeMenu`] can therefore be built directly from GPUI
-//! [`gpui::MenuItem`]s (see [`NativeMenu::from_menu_items`] /
-//! [`From<gpui::Menu>`]).
+//! A menu rendered natively by the OS, unlike [`crate::menu::PopupMenu`] which GPUI draws clipped to the window bounds.
+//! Items carry a GPUI [`Action`] dispatched via [`Window::dispatch_action`], so a [`NativeMenu`] can be built directly from [`gpui::MenuItem`]s (see [`From<gpui::Menu>`]).
 //!
 //! ```ignore
 //! use gpui_component::native_menu::NativeMenu;
@@ -39,8 +29,7 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
-// Drawn-menu fallback (used on platforms without an OS-native popup, e.g. Linux).
-// Compiled on all platforms because `Root` holds the overlay entity.
+// Drawn-menu fallback for platforms without an OS-native popup (e.g. Linux); compiled everywhere because `Root` holds the overlay entity.
 mod fallback;
 pub(crate) use fallback::FallbackMenuOverlay;
 
@@ -50,9 +39,7 @@ enum NativeMenuItem {
         label: SharedString,
         disabled: bool,
         checked: bool,
-        /// Icon shown next to the label.
         icon: Option<Box<Icon>>,
-        /// Action dispatched when the item is selected.
         action: Option<Box<dyn Action>>,
     },
     Submenu {
@@ -62,27 +49,20 @@ enum NativeMenuItem {
     },
 }
 
-/// A menu rendered by the operating system.
-///
-/// Build it with the [`NativeMenu::menu`] / [`NativeMenu::separator`] builders,
-/// then call [`NativeMenu::show`] to display it at a position.
 #[derive(Default)]
 pub struct NativeMenu {
     items: Vec<NativeMenuItem>,
 }
 
 impl NativeMenu {
-    /// Create an empty native menu.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Append a clickable item that dispatches `action` when selected.
     pub fn menu(self, label: impl Into<SharedString>, action: Box<dyn Action>) -> Self {
         self.menu_with(label, false, false, None, Some(action))
     }
 
-    /// Append an item, controlling its `disabled` state.
     pub fn menu_with_disabled(
         self,
         label: impl Into<SharedString>,
@@ -92,7 +72,6 @@ impl NativeMenu {
         self.menu_with(label, disabled, false, None, Some(action))
     }
 
-    /// Append an item, controlling its `checked` state (a check mark is shown).
     pub fn menu_with_check(
         self,
         label: impl Into<SharedString>,
@@ -102,18 +81,7 @@ impl NativeMenu {
         self.menu_with(label, false, checked, None, Some(action))
     }
 
-    /// Append an item showing `icon` next to its label.
-    ///
-    /// Native platform menus render file-backed icons from their filesystem path
-    /// and asset-backed icons from memory. [`crate::IconName`] works across all backends.
-    /// - **macOS**: loaded into an `NSImage` as a template image, so it tints with the item
-    /// text and assigned to the item ([`NSMenuItem::image`]).
-    /// - **Windows**: loaded into an `HBITMAP` and set as the item's
-    /// content bitmap (`MENUITEMINFOW::hbmpItem`), shown beside the label. SVG files are
-    /// rasterized, with `resvg`; other formats (PNG, JPEG, BMP, ...) are decoded by GDI+.
-    /// **Other platforms** (fallback): rendered as the menu item's [`crate::Icon`].
-    ///
-    /// Note: this is the menu item's *content* icon, not its state/check-mark indicator.
+    /// This is the item's content icon, not its check-mark indicator. macOS loads it as an `NSImage` template (tints with item text); Windows as an `HBITMAP`, SVG rasterized via `resvg`.
     pub fn menu_with_icon(
         self,
         label: impl Into<SharedString>,
@@ -123,10 +91,6 @@ impl NativeMenu {
         self.menu_with(label, false, false, Some(icon.into()), Some(action))
     }
 
-    /// Append an item showing `icon` next to its label, controlling its `disabled` state.
-    ///
-    /// Same icon behavior as [`Self::menu_with_icon`]. Use this when an item
-    /// carries an icon but should be greyed out.
     pub fn menu_with_icon_disabled(
         self,
         label: impl Into<SharedString>,
@@ -137,8 +101,6 @@ impl NativeMenu {
         self.menu_with(label, disabled, false, Some(icon.into()), Some(action))
     }
 
-    /// Add Menu Item with Icon and disabled state.
-    ///
     /// Alias for [`Self::menu_with_icon_disabled`], matching [`crate::menu::PopupMenu`].
     pub fn menu_with_icon_and_disabled(
         self,
@@ -168,13 +130,11 @@ impl NativeMenu {
         self
     }
 
-    /// Append a separator line.
     pub fn separator(mut self) -> Self {
         self.items.push(NativeMenuItem::Separator);
         self
     }
 
-    /// Append a submenu built from another [`NativeMenu`].
     pub fn submenu(mut self, label: impl Into<SharedString>, submenu: NativeMenu) -> Self {
         self.items.push(NativeMenuItem::Submenu {
             label: label.into(),
@@ -184,16 +144,11 @@ impl NativeMenu {
         self
     }
 
-    /// Whether the menu has no items.
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
-    /// Pop up the menu at `position` (window coordinates, in logical pixels).
-    ///
-    /// The menu is shown without blocking the caller: the OS tracking loop runs
-    /// off GPUI's call stack, so GPUI is not borrowed while it is open. When an
-    /// item is selected, its action is dispatched via [`Window::dispatch_action`].
+    /// The OS tracking loop runs off GPUI's call stack, so GPUI is never borrowed while the menu is open.
     pub fn show(self, position: Point<Pixels>, window: &mut Window, cx: &mut App) {
         if self.items.is_empty() {
             return;
@@ -303,11 +258,7 @@ fn is_svg_bytes(bytes: &[u8]) -> bool {
     text.starts_with("<svg") || text.starts_with("<?xml")
 }
 
-/// Reuse an existing GPUI menu definition as a native menu.
-///
-/// `Action`s, separators, submenus, `checked`, and `disabled` are mapped over;
-/// system menus (e.g. macOS Services) have no native popup equivalent and are
-/// skipped.
+/// System menus (e.g. macOS Services) have no native popup equivalent and are skipped.
 impl From<gpui::Menu> for NativeMenu {
     fn from(menu: gpui::Menu) -> Self {
         let mut native = Self::new();

@@ -1,9 +1,4 @@
-//! The shared spawn path for a worktree's `run` lifecycle script.
-//!
-//! Both the header ▶ / palette (`Workspace::spawn_wt_script`) and the sidebar
-//! row's ▶ (`Sidebar::dispatch`, `RowAction::RunScript`) route through here so
-//! there is exactly one place that turns a worktree path + script string into
-//! a spawned panel shell.
+//! The shared spawn path for a worktree's `run` lifecycle script; both the header/palette and sidebar row ▶ route through here.
 
 use gpui::AppContext as _;
 
@@ -12,12 +7,7 @@ use crate::entities::terminal_session::TerminalSession;
 use crate::entities::toast::ToastState;
 use crate::entities::workspace_state::{PtyPane, WorkspaceState};
 
-/// Spawn a one-shot script as a panel shell rooted at the worktree, and
-/// focus it. Identical to `Sidebar`/`Workspace`'s `spawn_wt_shell` except the
-/// PTY runs `script` instead of an interactive login shell — the palette
-/// strip's lifecycle-script rows (`src/views/modals/launcher.rs`,
-/// `row_actions`) route through here since gpui has no `spawn_script_session`
-/// equivalent to the iced original.
+/// Identical to `spawn_wt_shell` except the PTY runs `script` instead of an interactive login shell.
 pub(crate) fn spawn_wt_script(
     registry: &gpui::Entity<SessionRegistry>,
     state: &gpui::Entity<WorkspaceState>,
@@ -44,7 +34,6 @@ pub(crate) fn spawn_wt_script(
         label,
         spawned_at: std::time::Instant::now(),
         attention: None,
-        // Home terminals and panel shells are always native.
         tmux: false,
         tmux_name: None,
     };

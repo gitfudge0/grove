@@ -1,108 +1,57 @@
 use gpui::Window;
 
-/// Semantic content type for an [`Input`](super::Input).
-///
-/// These variants mirror Swift's text content types.
+/// Semantic content type for an [`Input`](super::Input); variants mirror Swift's text content types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputContentType {
-    /// A person's full name.
     Name,
-    /// A name prefix, such as Mr. or Dr.
     NamePrefix,
-    /// A person's given name.
     GivenName,
-    /// A person's middle name.
     MiddleName,
-    /// A person's family name.
     FamilyName,
-    /// A name suffix, such as Jr. or PhD.
     NameSuffix,
-    /// A nickname.
     Nickname,
-    /// A job title.
     JobTitle,
-    /// An organization or company name.
     OrganizationName,
-    /// A location name.
     Location,
-    /// A full street address.
     FullStreetAddress,
-    /// The first line of a street address.
     StreetAddressLine1,
-    /// The second line of a street address.
     StreetAddressLine2,
-    /// A city or locality.
     AddressCity,
-    /// A state, province, or region.
     AddressState,
-    /// A combined city and state.
     AddressCityAndState,
-    /// A sublocality, district, or neighborhood.
     Sublocality,
-    /// A country name.
     CountryName,
-    /// A postal or ZIP code.
     PostalCode,
-    /// A telephone number.
     TelephoneNumber,
-    /// An email address.
     EmailAddress,
-    /// A URL.
     Url,
-    /// A credit card number.
     CreditCardNumber,
-    /// The full name on a credit card.
     CreditCardName,
-    /// The given name on a credit card.
     CreditCardGivenName,
-    /// The middle name on a credit card.
     CreditCardMiddleName,
-    /// The family name on a credit card.
     CreditCardFamilyName,
-    /// The security code on a credit card.
     CreditCardSecurityCode,
-    /// A credit card expiration date.
     CreditCardExpiration,
-    /// A credit card expiration month.
     CreditCardExpirationMonth,
-    /// A credit card expiration year.
     CreditCardExpirationYear,
-    /// A credit card type.
     CreditCardType,
-    /// A username or account identifier.
     Username,
-    /// The password for the account identified by the username field.
     Password,
-    /// A new password, such as during sign up or password reset.
     NewPassword,
-    /// A one-time verification code.
     OneTimeCode,
-    /// A parcel shipment tracking number.
     ShipmentTrackingNumber,
-    /// An airline flight number.
     FlightNumber,
-    /// A date, time, or duration.
     DateTime,
-    /// A birthdate.
     Birthdate,
-    /// A birthdate day.
     BirthdateDay,
-    /// A birthdate month.
     BirthdateMonth,
-    /// A birthdate year.
     BirthdateYear,
-    /// An eSIM EID.
     CellularEid,
-    /// A cellular IMEI.
     CellularImei,
 }
 
 impl InputContentType {
-    // GROVE LOCAL PATCH (re-apply on re-vendor): gate matches the sole caller,
-    // `native::set_text_content_type`, which is itself compiled out when
-    // `grove-test-support` is on. Upstream's plain `cfg(target_os = "macos")`
-    // makes this a never-used method under `cargo clippy --all-targets` on
-    // macOS, which is a hard error at `-D warnings`.
+    // GROVE LOCAL PATCH (re-apply on re-vendor): gate matches the sole caller so this isn't never-used under clippy -D warnings on macOS.
     #[cfg(all(target_os = "macos", not(feature = "grove-test-support")))]
     pub(crate) const fn ns_text_content_type(self) -> Option<&'static str> {
         match self {
@@ -163,13 +112,7 @@ pub(super) fn sync_native_content_type(
         return;
     }
 
-    // Grove's test builds enable `grove-test-support` (see `ui/Cargo.toml`) to
-    // skip the native sync entirely. gpui's test platform window
-    // (`platform/test/window.rs`) answers `HasWindowHandle::window_handle`
-    // with `unimplemented!()`, so `native::ns_view`'s defensive `.ok()?` never
-    // gets the `Err` it is written to absorb and every `#[gpui::test]` that
-    // renders an `Input` panics. The feature is a pure marker enabled only via
-    // Grove's `[dev-dependencies]`, so release builds keep the AppKit path.
+    // `grove-test-support` skips native sync in tests: gpui's test window panics `unimplemented!()` on `window_handle`, which `native::ns_view` can't absorb.
     #[cfg(all(target_os = "macos", not(feature = "grove-test-support")))]
     super::native::set_text_content_type(window, content_type);
 
@@ -177,9 +120,7 @@ pub(super) fn sync_native_content_type(
     let _ = (window, content_type);
 }
 
-// GROVE LOCAL PATCH (re-apply on re-vendor): same gate as
-// `ns_text_content_type` above, so this module does not reference a method
-// that has been compiled out.
+// GROVE LOCAL PATCH (re-apply on re-vendor): same gate as `ns_text_content_type` above.
 #[cfg(all(test, target_os = "macos", not(feature = "grove-test-support")))]
 mod tests {
     use super::*;

@@ -4,49 +4,32 @@ use std::process::Command;
 use std::time::SystemTime;
 use thiserror::Error;
 
-/// Everything the git layer can fail with. Each variant corresponds to a real
-/// failure site below; callers that only bubble errors upward keep working
-/// unchanged (`anyhow` converts any `std::error::Error` via `?`), while callers
-/// that want to react to a specific failure can now match instead of grepping
-/// a formatted string.
 #[derive(Debug, Error)]
 pub enum GitError {
-    /// A stale or buggy path asked us to remove the project's main checkout.
     #[error("refusing to remove the project root checkout")]
     RefusesProjectRoot,
-    /// The user-supplied worktree name failed [`valid_worktree_name`].
     #[error("invalid worktree name: use letters, digits, '-', '_' or '.'")]
     InvalidWorktreeName,
-    /// The project name failed [`valid_project_name`]. It becomes a path
-    /// component under `worktrees_root()`, so it must not escape it.
     #[error(
         "invalid project name: must not be empty, start with '-', or contain '/', '\\' or '..'"
     )]
     InvalidProjectName,
-    /// A `git` subprocess ran but exited non-zero. `cmd` is the subcommand
-    /// (e.g. `worktree add`), `stderr` its captured error output.
     #[error("git {cmd} failed: {stderr}")]
     Command { cmd: String, stderr: String },
-    /// `dirs::home_dir()` returned nothing, so `worktrees_root` has no base.
     #[error("no home dir")]
     NoHomeDir,
-    /// Creating a parent directory for a new worktree failed.
     #[error("create {path}: {source}")]
     CreateDir {
         path: String,
         #[source]
         source: std::io::Error,
     },
-    /// One or more `.worktreeinclude` files could not be copied; the payload
-    /// is the joined `path: reason` list.
     #[error("failed to copy: {0}")]
     Copy(String),
-    /// Spawning `git` (or any other raw I/O on the git path) failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
 
-/// Shorthand for this module's fallible functions.
 pub type Result<T, E = GitError> = std::result::Result<T, E>;
 
 #[derive(Clone, Debug)]
@@ -66,9 +49,7 @@ pub fn list_worktrees(project_path: &str) -> Vec<Worktree> {
     let out = Command::new("git")
         .args(["-C", project_path, "worktree", "list", "--porcelain"])
         .output();
-    // Not a git repo (or git unavailable): surface a single synthetic root
-    // worktree so the project still has a row to host sessions/terminals. Git
-    // is optional — sessions run directly in the project path, no isolation.
+    // Not a git repo: surface a synthetic root worktree so the project still has a row.
     let Ok(out) = out else {
         return vec![root_worktree(project_path)];
     };
@@ -114,18 +95,11 @@ pub fn list_worktrees(project_path: &str) -> Vec<Worktree> {
             is_main,
         });
     }
-    // `git worktree list` always emits the main checkout first; keep it pinned
-    // at the top and sort only the linked worktrees by recency.
+    // git worktree list always emits the main checkout first; keep it pinned, sort only the rest by recency.
     if result.len() > 1 {
         result[1..].sort_by_key(|w| std::cmp::Reverse(w.mtime));
     }
-    // Guarantee the project root is always present at the top, even if git
-    // emitted nothing (not a repo / fresh init with no HEAD) or somehow didn't
-    // include it. The root is the user's default landing spot.
-    // Compare canonicalized paths: git prints resolved paths (on macOS,
-    // /tmp and /var are symlinks into /private), so a raw string compare
-    // would miss the root and duplicate it whenever the project was added
-    // via a symlinked path.
+    // Compare canonicalized paths — git resolves symlinks (e.g. macOS /tmp -> /private/tmp), a raw compare would duplicate the root.
     let canon = |p: &str| fs_err::canonicalize(p).unwrap_or_else(|_| p.into());
     let project_canon = canon(project_path);
     let has_root = result
@@ -137,16 +111,8 @@ pub fn list_worktrees(project_path: &str) -> Vec<Worktree> {
     result
 }
 
-/// Runs `list_worktrees` for each of `paths` concurrently (one thread per
-/// path, via `std::thread::scope`), returning results in the same order as
-/// the input. Each `list_worktrees` call spawns a `git` subprocess and does
-/// filesystem metadata work, so doing them concurrently instead of
-/// sequentially turns N round-trips into roughly one.
-///
-// ponytail: still runs on (and blocks) the calling thread — this only
-// collapses N sequential blocking calls into one concurrent batch, bounded
-// by project count. If that ever shows up as real jank, the actual fix is
-// moving worktree scanning off the UI thread entirely (Task::perform).
+/// Runs [`list_worktrees`] for each path concurrently (one thread per path), preserving input order.
+// Still runs on (and blocks) the calling thread; if this shows up as jank, the fix is moving scanning off the UI thread entirely.
 pub fn list_worktrees_many(paths: &[String]) -> Vec<Vec<Worktree>> {
     if paths.len() <= 1 {
         return paths.iter().map(|p| list_worktrees(p)).collect();
@@ -158,17 +124,14 @@ pub fn list_worktrees_many(paths: &[String]) -> Vec<Vec<Worktree>> {
             .map(|p| scope.spawn(move || list_worktrees(p)))
             .collect();
         for (slot, handle) in results.iter_mut().zip(handles) {
-            // A panic inside `list_worktrees` (subprocess spawn/parsing) would
-            // poison the join; treat that project as having no worktrees
-            // rather than propagating the panic across threads.
+            // A panic here degrades to "no worktrees" rather than propagating across threads.
             *slot = handle.join().ok();
         }
     });
     results.into_iter().map(Option::unwrap_or_default).collect()
 }
 
-/// The implicit main worktree for a project root — used both for git repos that
-/// didn't emit their root and for non-git projects (where it's the only entry).
+/// The implicit main worktree for a project root, git or not.
 fn root_worktree(project_path: &str) -> Worktree {
     let branch = current_branch(project_path);
     Worktree {
@@ -183,10 +146,7 @@ fn root_worktree(project_path: &str) -> Worktree {
     }
 }
 
-/// Whether `path` is a git repository. The app's single definition of "is a
-/// repo" — a `.git` entry exists (directory for a normal repo, file for a linked
-/// worktree/submodule). Cheap (one stat), safe to call per render. Used to gate
-/// git-only affordances (worktrees, lifecycle scripts) consistently.
+/// Cheap (one stat), safe to call per render.
 pub fn is_repo(path: &str) -> bool {
     Path::new(path).join(".git").exists()
 }
@@ -241,7 +201,6 @@ fn worktree_mtime(path: &str) -> Option<SystemTime> {
 }
 
 pub fn remove_worktree(project_path: &str, wt_path: &str) -> Result<()> {
-    // Never let a stale/buggy path force-remove the main checkout itself.
     if Path::new(wt_path) == Path::new(project_path) {
         return Err(GitError::RefusesProjectRoot);
     }
@@ -267,19 +226,7 @@ pub fn remove_worktree(project_path: &str, wt_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// The main checkout of the repository that owns the worktree at `wt_path`,
-/// asked of `git` itself rather than guessed from the directory layout.
-///
-/// `git rev-parse --git-common-dir` yields the OWNING repository's `.git`
-/// directory (as opposed to `--git-dir`, which for a linked worktree points at
-/// `<repo>/.git/worktrees/<name>`), so its parent is the project's main
-/// checkout path. This is the authoritative answer even when the worktree
-/// directory sits somewhere completely unrelated to the repo — which is
-/// exactly the case for grove-managed worktrees under [`worktrees_root`].
-///
-/// Returns `None` when `wt_path` is not a worktree, `git` is unavailable, or
-/// the output cannot be interpreted; callers treat that as "unknown owner"
-/// rather than as an error worth failing a startup pass over.
+/// `--git-common-dir` (not `--git-dir`) yields the owning repo's real `.git`; correct even when the worktree lives far from the repo.
 pub fn worktree_owner_repo(wt_path: &str) -> Option<PathBuf> {
     tracing::debug!(
         args = "rev-parse --path-format=absolute --git-common-dir",
@@ -308,8 +255,7 @@ pub fn worktree_owner_repo(wt_path: &str) -> Option<PathBuf> {
     if common.is_empty() {
         return None;
     }
-    // `<repo>/.git` -> `<repo>`. A bare repo has no such parent layout, so a
-    // missing/empty parent means "no main checkout to speak of".
+    // `<repo>/.git` -> `<repo>`; a bare repo has no such parent.
     let parent = Path::new(&common).parent()?;
     if parent.as_os_str().is_empty() {
         return None;
@@ -318,17 +264,12 @@ pub fn worktree_owner_repo(wt_path: &str) -> Option<PathBuf> {
 }
 
 pub fn worktrees_root() -> Result<PathBuf> {
-    // Worktrees always live under `~/.config/grove/worktrees` on both macOS and
-    // Linux. We intentionally do not use `dirs::config_dir()` here because on
-    // macOS that resolves to `~/Library/Application Support` — we want the
-    // identical `~/.config` location on every platform.
+    // Not `dirs::config_dir()`: on macOS that resolves to ~/Library/Application Support, but we want ~/.config on every platform.
     let home = dirs::home_dir().ok_or(GitError::NoHomeDir)?;
     Ok(home.join(".config").join("grove").join("worktrees"))
 }
 
-/// Create `dir` (and its parents) and restrict it to 0700, matching the
-/// attention dir: worktrees hold the user's source, including whatever
-/// `.worktreeinclude` copied in (`.env` files and friends).
+/// Restricts to 0700 — worktrees hold the user's source and copied `.env` files.
 fn create_private_dir(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir).map_err(|source| GitError::CreateDir {
         path: dir.display().to_string(),
@@ -338,8 +279,6 @@ fn create_private_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Validate a user-supplied worktree/branch name before it's used as both a
-/// git branch name and a filesystem path component.
 pub fn valid_worktree_name(name: &str) -> bool {
     !name.is_empty()
         && name != "."
@@ -353,11 +292,7 @@ pub fn valid_worktree_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
-/// Validate a project name before it's used as a path component under
-/// `worktrees_root()`. Looser than `valid_worktree_name` — a project name is
-/// never a git ref, and users legitimately have names with spaces or dots in
-/// them — but it must never escape its parent directory or read as a flag to
-/// the `git` commands it gets spliced into.
+/// Looser than `valid_worktree_name` (not a git ref), but still must not escape its parent directory or read as a git flag.
 pub fn valid_project_name(name: &str) -> bool {
     !name.is_empty()
         && name != "."
@@ -367,21 +302,11 @@ pub fn valid_project_name(name: &str) -> bool {
         && !name.contains("..")
 }
 
-/// Create a worktree named `name` for the repo at `project_path`, placed at
-/// `worktrees_root()/<worktree_dir>/<name>`.
-///
-/// `worktree_dir` is the project's PINNED directory key
-/// (`storage::Project::worktree_dir()`), not necessarily its current display
-/// name: renaming a project must not orphan the worktree directories it
-/// already has on disk, so the key is frozen at the first rename.
+/// `worktree_dir` is the project's pinned directory key, not its current display name — frozen at first rename so renaming a project can't orphan its worktree directories.
 pub fn add_worktree(project_path: &str, worktree_dir: &str, name: &str) -> Result<String> {
     if !valid_worktree_name(name) {
         return Err(GitError::InvalidWorktreeName);
     }
-    // `worktree_dir` is a path component under `worktrees_root()` just like
-    // `name`, so it gets the same treatment rather than being trusted because
-    // it came from our own config file — a pinned key is every bit as much a
-    // path component as a live project name.
     if !valid_project_name(worktree_dir) {
         return Err(GitError::InvalidProjectName);
     }
@@ -436,15 +361,11 @@ pub fn add_worktree(project_path: &str, worktree_dir: &str, name: &str) -> Resul
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         });
     }
-    // `git worktree add` creates the leaf itself, under git's umask — tighten
-    // it to 0700 like the parents above.
     crate::attention::restrict_dir(&dest);
     Ok(dest_str)
 }
 
-/// Seed a new worktree with files matching `.worktreeinclude` (gitignore
-/// syntax — gitignored files that should still be copied so the worktree can
-/// run, e.g. `.env`).
+/// Copies files matching `.worktreeinclude` (gitignore syntax) into the new worktree, e.g. `.env`.
 pub fn copy_worktree_includes(project_path: &str, wt_path: &str) -> Result<()> {
     let include = Path::new(project_path).join(".worktreeinclude");
     if !include.exists() {
@@ -510,10 +431,6 @@ mod tests {
 
     use super::*;
 
-    // ── list_worktrees_many ──────────────────────────────────────────────────
-
-    /// Degenerate cases (0 or 1 paths) must not spawn threads; verify they
-    /// still produce the expected result via the direct `list_worktrees` path.
     #[test]
     fn list_worktrees_many_short_circuits_on_len_le_1() {
         assert_eq!(list_worktrees_many(&[]).len(), 0);
@@ -521,12 +438,9 @@ mod tests {
         let one = vec!["/nonexistent/grove-test-path-a".to_string()];
         let result = list_worktrees_many(&one);
         assert_eq!(result.len(), 1);
-        // Non-git path still yields a synthetic root worktree matching the input path.
         assert_eq!(result[0][0].path, one[0]);
     }
 
-    /// Results must preserve input order even though the underlying scans
-    /// run concurrently on separate threads.
     #[test]
     fn valid_project_name_rejects_path_escapes_and_flags() {
         assert!(valid_project_name("grove"));
@@ -552,9 +466,6 @@ mod tests {
         }
     }
 
-    // ── valid_worktree_name ──────────────────────────────────────────────────
-
-    /// Ordinary names that are safe as both branch names and path components.
     #[test]
     fn valid_names_accepted() {
         for name in &["feature-x", "fix_1", "v1.2", "abc", "a-b_c.d", "123"] {
@@ -565,20 +476,17 @@ mod tests {
         }
     }
 
-    /// An empty string is never a valid worktree name.
     #[test]
     fn empty_name_rejected() {
         assert!(!valid_worktree_name(""));
     }
 
-    /// `.` and `..` are invalid as path components.
     #[test]
     fn dot_names_rejected() {
         assert!(!valid_worktree_name("."));
         assert!(!valid_worktree_name(".."));
     }
 
-    /// Names starting with `-` can be misinterpreted as git flags.
     #[test]
     fn leading_dash_rejected() {
         assert!(!valid_worktree_name("-bad"));
@@ -586,35 +494,30 @@ mod tests {
         assert!(!valid_worktree_name("-"));
     }
 
-    /// `.lock` suffix is reserved by git's ref locking mechanism.
     #[test]
     fn lock_suffix_rejected() {
         assert!(!valid_worktree_name("HEAD.lock"));
         assert!(!valid_worktree_name("feature.lock"));
     }
 
-    /// Path separators must never appear in a name used as a path component.
     #[test]
     fn slash_in_name_rejected() {
         assert!(!valid_worktree_name("feat/scope"));
         assert!(!valid_worktree_name("a/b"));
     }
 
-    /// `..` anywhere inside the name is a path-traversal vector.
     #[test]
     fn double_dot_inside_rejected() {
         assert!(!valid_worktree_name("a..b"));
         assert!(!valid_worktree_name("..bad"));
     }
 
-    /// `@{` is rejected by git's refname rules.
     #[test]
     fn at_brace_rejected() {
         assert!(!valid_worktree_name("ref@{0}"));
         assert!(!valid_worktree_name("a@{b}"));
     }
 
-    /// Spaces and common shell metacharacters must be rejected.
     #[test]
     fn space_and_shell_metacharacters_rejected() {
         let bad = [
@@ -628,11 +531,6 @@ mod tests {
         }
     }
 
-    // ── remove_worktree ──────────────────────────────────────────────────────
-
-    /// `remove_worktree` must return `Err` immediately — without shelling out
-    /// to git — when `wt_path` equals `project_path`. Use a nonexistent path
-    /// so no filesystem side-effects can occur even if the guard is bypassed.
     #[test]
     fn remove_worktree_refuses_to_remove_project_root() {
         let path = "/nonexistent/path/that/does/not/exist";
@@ -649,27 +547,16 @@ mod tests {
     }
 }
 
-/// Per-worktree git status snapshot used for the sidebar's compact suffix
-/// (`*` dirty, `↑N`/`↓M` ahead/behind upstream). Populated by
-/// [`worktree_git_state`] via a single `git status --porcelain=v2 -b`
-/// invocation per worktree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WorktreeGitState {
     pub dirty: bool,
     pub ahead: u32,
     pub behind: u32,
-    /// Lines inserted in the uncommitted diff against `HEAD`. Only populated
-    /// when `dirty` is true; a clean worktree leaves this at 0 without paying
-    /// for a second git invocation.
+    /// Only populated when `dirty`; a clean worktree skips the second git invocation.
     pub added: u32,
-    /// Lines deleted in the uncommitted diff against `HEAD`. Same gating as
-    /// [`WorktreeGitState::added`].
     pub removed: u32,
 }
 
-/// Query `path`'s git status via one `git status --porcelain=v2 -b` call.
-/// Returns `None` on any failure (not a repo, git missing, etc.) so callers
-/// degrade to showing nothing rather than a stale or error value.
 pub fn worktree_git_state(path: &str) -> Option<WorktreeGitState> {
     tracing::debug!(
         args = "status --porcelain=v2 -b",
@@ -689,9 +576,6 @@ pub fn worktree_git_state(path: &str) -> Option<WorktreeGitState> {
         return None;
     }
     let mut state = parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout));
-    // Only a dirty worktree can have a nonzero uncommitted diff, so a clean
-    // one skips the second command entirely — that gating is what keeps the
-    // poll cheap across many worktrees.
     if state.dirty {
         let (added, removed) = worktree_diff_stat(path);
         state.added = added;
@@ -700,9 +584,7 @@ pub fn worktree_git_state(path: &str) -> Option<WorktreeGitState> {
     Some(state)
 }
 
-/// Uncommitted insertion/deletion counts for `path` via one
-/// `git diff --shortstat HEAD`. Any failure yields `(0, 0)` — callers get a
-/// missing number rather than a stale or bogus one.
+/// Any failure yields `(0, 0)` rather than a stale or bogus number.
 fn worktree_diff_stat(path: &str) -> (u32, u32) {
     tracing::debug!(
         args = "diff --shortstat HEAD",
@@ -726,9 +608,7 @@ fn worktree_diff_stat(path: &str) -> (u32, u32) {
     parse_shortstat(&String::from_utf8_lossy(&out.stdout))
 }
 
-/// Parse ` 3 files changed, 128 insertions(+), 9 deletions(-)` into
-/// `(insertions, deletions)`. Either clause may be absent (a pure-insertion
-/// or pure-deletion diff), and anything unrecognised contributes 0.
+/// Either clause may be absent; anything unrecognised contributes 0.
 fn parse_shortstat(out: &str) -> (u32, u32) {
     let mut added = 0;
     let mut removed = 0;
@@ -748,10 +628,7 @@ fn parse_shortstat(out: &str) -> (u32, u32) {
     (added, removed)
 }
 
-/// Parse `git status --porcelain=v2 -b` output into a [`WorktreeGitState`].
-/// The `# branch.ab +N -M` header line (present only when an upstream is
-/// configured) supplies ahead/behind counts; any other non-`#` line means
-/// the worktree has uncommitted changes (tracked, staged, or untracked).
+/// `# branch.ab +N -M` supplies ahead/behind; any other non-`#` line means dirty.
 fn parse_porcelain_v2(out: &str) -> WorktreeGitState {
     let mut state = WorktreeGitState::default();
     for line in out.lines() {
@@ -770,9 +647,7 @@ fn parse_porcelain_v2(out: &str) -> WorktreeGitState {
     state
 }
 
-/// Render a [`WorktreeGitState`] as the sidebar's compact suffix (e.g.
-/// `* ↑1 ↓2`), or `None` when the worktree is clean and in sync (nothing to
-/// show).
+/// e.g. `* ↑1 ↓2`, or `None` when clean and in sync.
 pub fn git_state_suffix(state: &WorktreeGitState) -> Option<String> {
     let mut parts: Vec<String> = Vec::with_capacity(3);
     if state.dirty {
@@ -795,8 +670,6 @@ pub fn git_state_suffix(state: &WorktreeGitState) -> Option<String> {
 mod git_state_tests {
     use super::*;
 
-    /// A clean worktree with no upstream configured (no `branch.ab` line):
-    /// nothing dirty, nothing ahead/behind.
     #[test]
     fn clean_no_upstream() {
         let out = "# branch.oid abc123\n# branch.head main\n";
@@ -805,7 +678,6 @@ mod git_state_tests {
         assert_eq!(git_state_suffix(&state), None);
     }
 
-    /// A clean worktree that is even with its upstream: `+0 -0`.
     #[test]
     fn clean_with_upstream_in_sync() {
         let out = "# branch.oid abc123\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +0 -0\n";
@@ -816,7 +688,6 @@ mod git_state_tests {
         assert_eq!(git_state_suffix(&state), None);
     }
 
-    /// Ahead-only: `+2 -0` shows only `↑2`.
     #[test]
     fn ahead_only() {
         let out = "# branch.ab +2 -0\n";
@@ -826,7 +697,6 @@ mod git_state_tests {
         assert_eq!(git_state_suffix(&state).as_deref(), Some("↑2"));
     }
 
-    /// Behind-only: `+0 -3` shows only `↓3`.
     #[test]
     fn behind_only() {
         let out = "# branch.ab +0 -3\n";
@@ -836,7 +706,6 @@ mod git_state_tests {
         assert_eq!(git_state_suffix(&state).as_deref(), Some("↓3"));
     }
 
-    /// Ahead and behind combine: `+1 -2` shows `↑1 ↓2`.
     #[test]
     fn ahead_and_behind() {
         let out = "# branch.ab +1 -2\n";
@@ -846,8 +715,6 @@ mod git_state_tests {
         assert_eq!(git_state_suffix(&state).as_deref(), Some("↑1 ↓2"));
     }
 
-    /// A non-`#` line (tracked-modified, staged, or untracked entry) marks the
-    /// worktree dirty regardless of ahead/behind.
     #[test]
     fn dirty_detection_tracked_change() {
         let out =
@@ -857,7 +724,6 @@ mod git_state_tests {
         assert_eq!(git_state_suffix(&state).as_deref(), Some("*"));
     }
 
-    /// Untracked files (`?` entries in porcelain v2) count as dirty too.
     #[test]
     fn dirty_detection_untracked() {
         let out = "# branch.oid abc123\n? new_file.txt\n";
@@ -866,7 +732,6 @@ mod git_state_tests {
         assert_eq!(git_state_suffix(&state).as_deref(), Some("*"));
     }
 
-    /// Dirty + diverged combine into `* ↑1`.
     #[test]
     fn dirty_and_ahead_combine() {
         let out =
@@ -877,44 +742,36 @@ mod git_state_tests {
         assert_eq!(git_state_suffix(&state).as_deref(), Some("* ↑1"));
     }
 
-    // ── parse_shortstat ──────────────────────────────────────────────────
-
-    /// The common case: both an insertions and a deletions clause.
     #[test]
     fn shortstat_both_clauses() {
         let out = " 3 files changed, 128 insertions(+), 9 deletions(-)\n";
         assert_eq!(parse_shortstat(out), (128, 9));
     }
 
-    /// A pure-insertion diff omits the deletions clause entirely.
     #[test]
     fn shortstat_insertions_only() {
         let out = " 1 file changed, 5 insertions(+)\n";
         assert_eq!(parse_shortstat(out), (5, 0));
     }
 
-    /// A pure-deletion diff omits the insertions clause entirely.
     #[test]
     fn shortstat_deletions_only() {
         let out = " 1 file changed, 7 deletions(-)\n";
         assert_eq!(parse_shortstat(out), (0, 7));
     }
 
-    /// Singular wording (`1 insertion(+)`) must still parse.
     #[test]
     fn shortstat_singular_wording() {
         let out = " 1 file changed, 1 insertion(+), 1 deletion(-)\n";
         assert_eq!(parse_shortstat(out), (1, 1));
     }
 
-    /// Empty output (nothing to diff) is 0/0, not a panic.
     #[test]
     fn shortstat_empty() {
         assert_eq!(parse_shortstat(""), (0, 0));
         assert_eq!(parse_shortstat("\n"), (0, 0));
     }
 
-    /// Garbage output degrades to 0/0.
     #[test]
     fn shortstat_garbage() {
         assert_eq!(parse_shortstat("fatal: not a git repository"), (0, 0));

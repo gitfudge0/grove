@@ -63,18 +63,13 @@ where
         }
     }
 
-    /// Enable an interactive hover tooltip (crosshair + a dot and row per series).
-    ///
-    /// The `id` must be unique among sibling elements. Without it, the chart stays a
-    /// non-interactive plot.
+    /// `id` must be unique among sibling elements, or the chart stays non-interactive.
     pub fn id(mut self, id: impl Into<ElementId>) -> Self {
         self.id = Some(id.into());
         self
     }
 
-    /// Set the name of the most recently added series, shown in its tooltip row.
-    ///
-    /// Call after the matching [`AreaChart::y`] (e.g. `.y(..).stroke(..).name("Desktop")`).
+    /// Call after the matching [`AreaChart::y`], e.g. `.y(..).stroke(..).name("Desktop")`.
     pub fn name(mut self, name: impl Into<SharedString>) -> Self {
         self.names.push(name.into());
         self
@@ -120,8 +115,6 @@ where
         self
     }
 
-    /// Show or hide the x-axis line and labels.
-    ///
     /// Default is true.
     pub fn x_axis(mut self, x_axis: bool) -> Self {
         self.x_axis = x_axis;
@@ -133,10 +126,7 @@ where
         self
     }
 
-    /// Build the x (point) and y (linear) scales for the given bounds.
-    ///
-    /// Shared by `paint` and `tooltip_state` so the two stay in sync. Returns `None` when there
-    /// is no x accessor or no series.
+    /// Shared by `paint` and `tooltip_state` so the two stay in sync.
     fn scales(&self, bounds: Bounds<Pixels>) -> Option<(ScalePoint<X>, ScaleLinear<Y>)> {
         let x_fn = self.x.as_ref()?;
         if self.y.is_empty() {
@@ -176,7 +166,6 @@ where
         let axis_gap = if self.x_axis { AXIS_GAP } else { 0. };
         let height = bounds.size.height.as_f32() - axis_gap;
 
-        // Draw X axis
         let mut axis = PlotAxis::new().stroke(cx.theme().border);
         if self.x_axis {
             let labels = build_point_x_labels(
@@ -190,7 +179,6 @@ where
         }
         axis.paint(&bounds, window, cx);
 
-        // Draw grid
         if self.grid {
             Grid::new()
                 .y((0..=3).map(|i| height * i as f32 / 4.0).collect())
@@ -199,7 +187,6 @@ where
                 .paint(&bounds, window);
         }
 
-        // Draw area
         for (i, y_fn) in self.y.iter().enumerate() {
             let x = x.clone();
             let y = y.clone();
@@ -243,7 +230,6 @@ where
         let x_fn = self.x.as_ref()?;
         let (x, y) = self.scales(bounds)?;
 
-        // Ignore the x-axis label gutter so hovering the labels doesn't show a tooltip.
         let axis_gap = if self.x_axis { AXIS_GAP } else { 0. };
         if position.y.as_f32() > bounds.size.height.as_f32() - axis_gap {
             return None;
@@ -253,7 +239,6 @@ where
         let d = self.data.get(index)?;
         let x_tick = x.tick(&x_fn(d))?;
 
-        // One dot per series at the hovered x.
         let dots = self
             .y
             .iter()
@@ -283,10 +268,8 @@ where
         let dot_stroke = cx.theme().background;
         let color = |i: usize| *self.strokes.get(i).unwrap_or(&default_color);
 
-        // Follow the cursor; the crosshair and dots stay snapped to the data point.
         let mut tooltip = Tooltip::new(cursor, bounds.size)
             .gap(px(8.))
-            // Confine the crosshair to the plot area so it doesn't cross the x-axis.
             .cross_line(
                 CrossLine::new(state.cross_line)
                     .height(bounds.size.height.as_f32() - if self.x_axis { AXIS_GAP } else { 0. }),
@@ -300,7 +283,6 @@ where
             )
             .title(title);
 
-        // One row per series: swatch + label + value.
         for (i, y_fn) in self.y.iter().enumerate() {
             let name = self.names.get(i).cloned().unwrap_or_default();
             let value = y_fn(d).to_f64()?;

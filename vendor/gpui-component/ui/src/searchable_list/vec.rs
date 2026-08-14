@@ -4,8 +4,6 @@ use crate::IndexPath;
 
 use super::delegate::{SearchableListDelegate, SearchableListItem};
 
-// MARK: Primitive impls
-
 impl SearchableListItem for String {
     type Value = Self;
 
@@ -42,8 +40,6 @@ impl SearchableListItem for &'static str {
     }
 }
 
-// MARK: Vec delegate
-
 impl<T: SearchableListItem + 'static> SearchableListDelegate for Vec<T> {
     type Item = T;
 
@@ -66,8 +62,6 @@ impl<T: SearchableListItem + 'static> SearchableListDelegate for Vec<T> {
     }
 }
 
-// MARK: SearchableVec
-
 /// A vector of items that supports incremental filtering.
 ///
 /// On each `perform_search` call the `matched_items` view is rebuilt by filtering
@@ -79,7 +73,6 @@ pub struct SearchableVec<T> {
 }
 
 impl<T: Clone> SearchableVec<T> {
-    /// Create a new `SearchableVec` from an initial list of items.
     pub fn new(items: impl Into<Vec<T>>) -> Self {
         let items = items.into();
 
@@ -139,8 +132,6 @@ impl<I: SearchableListItem + 'static> SearchableListDelegate for SearchableVec<I
     }
 }
 
-// MARK: SearchableGroup
-
 /// A named group of items used for sectioned lists.
 #[derive(Debug, Clone)]
 pub struct SearchableGroup<I: SearchableListItem> {
@@ -149,7 +140,6 @@ pub struct SearchableGroup<I: SearchableListItem> {
 }
 
 impl<I: SearchableListItem> SearchableGroup<I> {
-    /// Create an empty group with the given section title.
     pub fn new(title: impl Into<SharedString>) -> Self {
         Self {
             title: title.into(),
@@ -157,13 +147,11 @@ impl<I: SearchableListItem> SearchableGroup<I> {
         }
     }
 
-    /// Append a single item to this group.
     pub fn item(mut self, item: I) -> Self {
         self.items.push(item);
         self
     }
 
-    /// Append multiple items to this group.
     pub fn items(mut self, items: impl IntoIterator<Item = I>) -> Self {
         self.items.extend(items);
         self

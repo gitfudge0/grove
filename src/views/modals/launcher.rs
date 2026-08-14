@@ -1,16 +1,5 @@
-//! The recents-first command palette: the three list states, the drill-ins,
-//! and the live project-theme preview.
-//!
-//! The pure half — row building, fuzzy ranking, identity resolution, recents
-//! ordering — lives in [`crate::launcher`] and is tested there. This module
-//! is the view plus the keyboard/click glue.
-//!
-//! Ported from `src/gui/session_launcher/{palette.rs,view/*}` and
-//! `keys.rs:26+` (`handle_session_launcher_key`).
-//!
-//! **The palette is the canonical `wants_arrows` modal** (carried decision 2):
-//! ←/→ mean agent cycling / zoom / the update strip, never caret movement, and
-//! a global-mods chord is an action, never text.
+//! View plus keyboard/click glue; the pure half lives in [`crate::launcher`]. Ported from `src/gui/session_launcher/{palette.rs,view/*}` and `keys.rs:26+`.
+//! The canonical `wants_arrows` modal: ←/→ never move the caret here.
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -28,11 +17,7 @@ use crate::views::components::{
     palette_row, section_header, ui,
 };
 
-/// Left indent that lines an inline note up with a palette row's *title*
-/// rather than its icon: `palette_row`'s own `SPACE_2XL` h-padding, plus the
-/// 24px `icon_slot` and the `SPACE_LG` gap `palette_row_content` puts between
-/// the slot and the title. (`components::ICON_SLOT_W` is private, so its 24 is
-/// restated here — §14's "derived geometry as a named constant".)
+/// Lines an inline note up with a row's title, not its icon: SPACE_2XL + the 24px icon_slot + SPACE_LG gap.
 const ROW_TEXT_INDENT: f32 = SPACE_2XL + 24.0 + SPACE_LG;
 
 /// Every `(proj, project_name, wt_path, agent)` combo the palette can list.
@@ -68,9 +53,7 @@ impl ModalLayer {
                     .iter()
                     .map(|w| w.path.clone())
                     .collect();
-                // Un-cached, non-active projects report zero worktrees until
-                // their cache warms; fall back to the project root so the
-                // project is still searchable and launchable in the palette.
+                // Un-cached, non-active projects report zero worktrees until warmed; fall back to the project root.
                 if wts.is_empty() {
                     wts.push(p.path.clone());
                 }
@@ -101,10 +84,7 @@ impl ModalLayer {
         let tree_paths = self.tree_paths(cx);
         let combos = combos(cx, &tree_paths);
         let recents = self.recents(cx);
-        // A worktrees-only palette has no action block to keep in view, so its
-        // empty-query state is the browse-all list rather than `root_rows` —
-        // that routes both of its states through `typed_rows`, the one place
-        // the scope is gated.
+        // Worktrees-only has no action block, so its empty-query state routes through typed_rows too.
         let scoped = st.scope == launcher::PaletteScope::WorktreesOnly;
         match st.view {
             LauncherView::Root if st.query.trim().is_empty() && !scoped => {
@@ -143,11 +123,7 @@ impl ModalLayer {
         }
     }
 
-    /// The active session's worktree path paired with its project's
-    /// non-blank `run` script — the same condition `Workspace::
-    /// active_run_script` (`src/views/workspace.rs`) uses for the session
-    /// header's ▶ button. `Workspace`'s copy is private to that view, so
-    /// this is the launcher's own equivalent rather than a shared call.
+    /// Mirrors `Workspace::active_run_script`'s condition; that copy is private to its own view.
     fn active_run_script(&self, cx: &App) -> Option<(String, String)> {
         let id = self.state.read(cx).active_session()?;
         let meta = self.registry.read(cx).meta(id)?;
@@ -159,19 +135,13 @@ impl ModalLayer {
         Some((wt_path, script))
     }
 
-    /// The focused session's worktree, for the "View diff" action row — the
-    /// same resolve-at-activation shape as [`Self::active_run_script`], minus
-    /// the project-script lookup: any session with a worktree can show a
-    /// diff, whether or not it currently has one.
+    /// For "View diff": any session with a worktree can show one, whether or not it currently has changes.
     fn active_diff_wt(&self, cx: &App) -> Option<String> {
         let id = self.state.read(cx).active_session()?;
         let meta = self.registry.read(cx).meta(id)?;
         Some(meta.wt_path.clone())
     }
 
-    /// The switch drill-in's display order: sessions most-recently-used first
-    /// with the active one last ([`launcher::order_switch_sessions`]), then
-    /// home terminals.
     fn switch_rows(&self, cx: &App) -> Vec<SwitchRow> {
         let Some(Modal::SessionLauncher(st)) = self.slot.get() else {
             return Vec::new();
@@ -213,12 +183,7 @@ impl ModalLayer {
         }
     }
 
-    /// The row-actions strip's lifecycle-script rows, in fixed order
-    /// setup/run/teardown, skipping unset/blank scripts. This backs
-    /// `row_action_len`, the view, and `activate_row_action` so all three
-    /// stay in sync — that sync was the whole point of the helper in the
-    /// iced original (`src/gui/session_launcher/palette.rs:883-905`,
-    /// `row_action_scripts`).
+    /// Backs `row_action_len`, the view, and `activate_row_action` so all three stay in sync.
     fn row_action_scripts(&self, wt_path: &str, cx: &App) -> Vec<(&'static str, String)> {
         let store = &cx.global::<SettingsState>().store;
         let Some((_, p)) = grove_core::storage::project_for_worktree_path(&store.projects, wt_path)
@@ -242,19 +207,8 @@ impl ModalLayer {
         .collect()
     }
 
-    /// Whether the anchored worktree is a project's default/base checkout —
-    /// it can't be deleted, so action 1 offers "Create worktree…" there
-    /// instead of "Delete worktree" (`src/gui/session_launcher/view/rows.rs`,
-    /// `palette_row_actions_strip`). A worktree that vanished from the tree
-    /// falls back to "not main", i.e. Delete — the pre-strip-rewrite behavior.
-    ///
-    /// `worktrees_for_project` only returns live data for the active
-    /// project; every other project reads `wt_cache`, which is empty until
-    /// the sidebar has expanded it. When the tree lookup finds nothing, fall
-    /// back to comparing `wt_path` against the project's own registered
-    /// root — the same substitution `tree_paths` already makes when handing
-    /// out worktree paths for a cold project, so a cold project's own root
-    /// must agree that it is main.
+    /// Main checkouts can't be deleted, so action 1 offers "Create worktree…" instead. Falls back to
+    /// comparing against the project's registered root for a cold, non-active project's empty `wt_cache`.
     fn anchor_is_main(&self, proj: usize, wt_path: &str, cx: &App) -> bool {
         let found = self
             .tree
@@ -272,9 +226,6 @@ impl ModalLayer {
         wt_path.trim_end_matches('/') == p.path.trim_end_matches('/')
     }
 
-    /// The row-actions strip's row count: launch + (create-worktree or
-    /// delete-worktree) + an optional project-theme row + one row per
-    /// configured lifecycle script (`palette_row_actions_strip`).
     fn row_action_len(&self, cx: &App) -> usize {
         let Some(Modal::SessionLauncher(st)) = self.slot.get() else {
             return 0;
@@ -290,29 +241,21 @@ impl ModalLayer {
         base + self.row_action_scripts(&wt_path, cx).len()
     }
 
-    /// Ask the results zone to bring the selected row into view, but only when
-    /// the selection actually moved: `scroll_to_item` is resolved in prepaint,
-    /// so re-issuing it on every frame would fight the mouse wheel.
+    /// Only re-issued when the selection moved, since scroll_to_item runs in prepaint and would fight the mouse wheel.
     fn scroll_palette_to(&self, view: LauncherView, sel: usize, child_ix: usize) {
         if self.palette_scrolled_to.get() == Some((view, sel)) {
             return;
         }
         self.palette_scrolled_to.set(Some((view, sel)));
-        // The variant that scrolls the minimum distance to make the child
-        // fully visible; `scroll_to_top_of_item` is the align-to-top one.
         self.palette_scroll.scroll_to_item(child_ix);
     }
 
-    /// Drop the retained scroll position, for the transitions that replace the
-    /// row set wholesale (a drill-in or -out, a query edit): the offset only
-    /// means anything against the list it was measured on.
+    /// For transitions that replace the row set wholesale — the offset only means anything against that list.
     pub(super) fn reset_palette_scroll(&self) {
         self.palette_scroll.set_offset(gpui::Point::default());
         self.palette_scrolled_to.set(None);
     }
 
-    /// The palette owns its whole keyboard (`handle_session_launcher_key`), so
-    /// [`crate::modal::key_verdict`] falls through to here.
     pub(super) fn palette_key(
         &mut self,
         key: crate::modal::ModalKey,
@@ -331,7 +274,6 @@ impl ModalLayer {
         };
         match key {
             K::Escape => {
-                // Esc pops one drill-in level before closing the palette.
                 if st.view == LauncherView::Root {
                     self.cancel(cx);
                 } else {
@@ -344,9 +286,7 @@ impl ModalLayer {
             }
             K::Down => {
                 st.sel = launcher::cycle(st.sel, 1, len);
-                // RowActions, Switch and Settings all draw their rows from
-                // something other than `palette_rows`, so re-anchoring in any
-                // of them would clobber the anchor with an unrelated root row.
+                // These views draw rows from something other than palette_rows, so re-anchoring would clobber it.
                 if matches!(
                     st.view,
                     LauncherView::RowActions | LauncherView::Settings | LauncherView::Switch
@@ -369,10 +309,7 @@ impl ModalLayer {
                 }
                 true
             }
-            // ←/→ NEVER move the caret here — they cycle the strip's agent,
-            // and only on row 0 (launch session), the one row that has
-            // horizontal options. Every other strip row falls through to the
-            // claimed no-op below.
+            // Cycles the strip's agent, only on row 0 — the one row with horizontal options.
             K::Left | K::Right if st.view == LauncherView::RowActions && st.sel == 0 => {
                 let delta = if key == K::Left { -1 } else { 1 };
                 let agents = super::confirm::available_agents();
@@ -381,8 +318,7 @@ impl ModalLayer {
                 true
             }
             K::Left | K::Right => {
-                // Outside the strip the palette still claims them, so the
-                // caret cannot silently eat a navigation key.
+                // Outside the strip the palette still claims them so the caret can't eat a nav key.
                 cx.notify();
                 true
             }
@@ -391,7 +327,6 @@ impl ModalLayer {
                 true
             }
             _ if mods.platform => {
-                // A global-mods chord is a command, never text.
                 cx.notify();
                 true
             }
@@ -399,17 +334,8 @@ impl ModalLayer {
         }
     }
 
-    /// Tab reveals the row-action strip under the highlighted row — but it
-    /// must resolve that row FRESH from `palette_rows` at `st.sel` rather
-    /// than trust `st.anchor`, which is only ever populated by arrow-key
-    /// navigation (`reanchor`) and so is still `None` the first time Tab is
-    /// pressed after typing a query without ever pressing an arrow. The iced
-    /// original resolved the row the same way (`palette.rs:399`,
-    /// `launcher_enter_row_actions`): a `Recent`/`Combo` row reveals the
-    /// strip; `SwitchToSession`/`Settings`/`Setting` mirror Enter; every
-    /// other row is a no-op the palette still claims. Tab already inside the
-    /// strip pops back to Root; Tab inside Switch/Settings is a claimed
-    /// no-op — only Root/BrowseAll/the typing state resolve a row.
+    /// Resolves the row FRESH from `palette_rows` at `st.sel` rather than trusting `st.anchor`,
+    /// which stays `None` until an arrow key is pressed (`reanchor`).
     fn palette_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(Modal::SessionLauncher(st)) = self.slot.get() else {
             return false;
@@ -475,9 +401,7 @@ impl ModalLayer {
         true
     }
 
-    /// Re-capture the selected row's identity whenever the cursor moves, so
-    /// activation resolves by content rather than by a possibly-stale index
-    /// (`state.rs:28-48` — the load-bearing invariant).
+    /// Activation resolves by content rather than by a possibly-stale index (`state.rs:28-48`).
     fn reanchor(&mut self, cx: &mut Context<Self>) {
         let rows = self.palette_rows(cx);
         if let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() {
@@ -512,7 +436,7 @@ impl ModalLayer {
             self.activate_setting(row, window, cx);
             return;
         }
-        // Identity first; a vanished row activates nothing at all.
+        // A vanished row activates nothing.
         let Some(idx) = launcher::resolve_row_by_identity(&rows, st.anchor.as_ref(), st.sel) else {
             return;
         };
@@ -624,14 +548,8 @@ impl ModalLayer {
         }
     }
 
-    /// Dispatches the RowActions strip: row 0 launches the anchored session
-    /// with whichever agent the strip has selected; row 1 opens either the
-    /// new-worktree prompt (anchored worktree is the project's main
-    /// checkout) or the delete-worktree confirmation; row 2 opens the
-    /// project theme picker, when project themes are enabled; every row
-    /// after that runs a configured lifecycle script in the worktree's
-    /// terminal panel (`src/gui/session_launcher/palette.rs:908-937`,
-    /// `launcher_run_row_action`).
+    /// Row 0 launches; row 1 opens create/delete-worktree; row 2 (if enabled) opens the theme picker;
+    /// everything after that runs a configured lifecycle script.
     fn activate_row_action(&mut self, cx: &mut Context<Self>) {
         let Some(Modal::SessionLauncher(st)) = self.slot.get() else {
             return;
@@ -665,11 +583,7 @@ impl ModalLayer {
             });
         } else if sel == 1 {
             let is_main = self.anchor_is_main(proj, &wt_path, cx);
-            // Select the anchored project first — `ConfirmKind::RemoveWorktree`
-            // resolves the project to tear down via `selected_project`, which
-            // reads the sidebar's active project index (`confirm.rs:100-107`);
-            // the new-worktree prompt reads the same active index
-            // (`sidebar.rs:256-269`).
+            // Both the removal confirm and the new-worktree prompt read the active project index.
             self.state.update(cx, |s, cx| {
                 s.select_project(proj);
                 cx.notify();
@@ -720,8 +634,7 @@ impl ModalLayer {
         }
     }
 
-    /// Recents are deduped by `(project, wt_path, agent)` and moved to the
-    /// front (`push_recent_launch`).
+    /// Deduped by `(project, wt_path, agent)` and moved to the front.
     fn push_recent_launch(
         &mut self,
         project: &str,
@@ -747,11 +660,7 @@ impl ModalLayer {
     }
 }
 
-// ── the view ─────────────────────────────────────────────────────────────
-
-/// The leading glyph slot: the search icon in every state except the two
-/// drill-ins, which show a static cue chip instead
-/// (`src/gui/session_launcher/view/mod.rs:60-69`).
+/// The search icon in every state except the two drill-ins, which show a static cue chip instead.
 fn leading_glyph(view: LauncherView) -> AnyElement {
     match view {
         LauncherView::Switch => cue_chip("SWITCH TO SESSION").into_any_element(),
@@ -792,15 +701,11 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
         LauncherView::RowActions => row_actions(layer, st, dispatch, cx),
         _ => row_list(layer, st, dispatch, cx),
     };
-    // `scroll_to_item` indexes the tracked element's direct children, and the
-    // section headers interleaved among the rows push the selected row off
-    // `st.sel` — so the builders report where it actually landed.
+    // Section headers interleaved among the rows push the selected row off st.sel, so builders report where it landed.
     if let Some(ix) = selected_child {
         layer.scroll_palette_to(st.view, st.sel, ix);
     }
-    // The rows are the scroll container's own children rather than a nested
-    // column, because that is the only way their indices mean anything to
-    // `scroll_to_item`.
+    // Rows are the scroll container's own children, not a nested column, so their indices mean something to scroll_to_item.
     let list_zone = div()
         .id("palette-list")
         .max_h(rpx(MODAL_SCROLL_MAX_H))
@@ -830,17 +735,11 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     };
 
     modal_panel(
-        // Per DESIGN.md §8.5, every modal is capped at MODAL_W_XL ("nothing
-        // goes above this"); the palette's old extra width was retired the
-        // same way MODAL_W_LG2 was retired for Project Settings.
         MODAL_W_XL,
         div()
             .children(search)
             .child(divider_h())
             .child(list_zone)
-            // No `divider_h()` here: §9.1.1 puts a rule directly under the
-            // header and nowhere above a footer — `footer_container`'s
-            // `BG_STRIP` fill already draws that seam.
             .child(modal_footer_hints(hints)),
     )
     .into_any_element()
@@ -877,14 +776,10 @@ fn row_label(row: &PaletteRow, cx: &App) -> (String, String, &'static str) {
         PaletteRow::TerminalWt => ("Worktree terminal".into(), String::new(), "term"),
         PaletteRow::AddProject => ("Add project…".into(), String::new(), "plus"),
         PaletteRow::RunScript => ("Run script".into(), String::new(), "play"),
-        // Reuses the sidebar's git glyph rather than adding a new sprite — the
-        // icon vocabulary is fixed, and a diff is a git view like any other.
         PaletteRow::ViewDiff => ("View diff".into(), String::new(), "git"),
         PaletteRow::SwitchToSession => ("Switch to session…".into(), String::new(), "restart"),
         PaletteRow::Settings => ("Settings…".into(), String::new(), "cog"),
-        // The value, not the section: activating a toggle row leaves the
-        // palette open, so the subtitle is the only thing that can report the
-        // flip — the same value the Settings drill-in shows.
+        // The value, not the section: the subtitle is the only thing that can report a toggle's flip.
         PaletteRow::Setting(s) => (
             s.label().to_string(),
             super::settings::setting_value(*s, cx),
@@ -894,10 +789,7 @@ fn row_label(row: &PaletteRow, cx: &App) -> (String, String, &'static str) {
     }
 }
 
-/// The icon + stacked title/subtitle idiom every palette row shares —
-/// `palette_agent_content` (`src/gui/session_launcher/view/rows.rs:26-61`).
-/// `selected` lights the icon and title up and, when `show_hint` is set,
-/// right-aligns a trailing "⏎" keycap.
+/// `selected` lights the icon/title; `show_hint` right-aligns a trailing "⏎" keycap.
 fn palette_row_content(
     icon: &str,
     title: String,
@@ -929,9 +821,7 @@ fn palette_row_content(
     row
 }
 
-/// A built list: the scroll container's children, plus the child index the
-/// selected row landed at (`None` when the list has no selectable row). The
-/// index is what `scroll_to_item` needs — see [`render`].
+/// The scroll container's children, plus the child index the selected row landed at, for scroll_to_item.
 type PaletteList = (Vec<AnyElement>, Option<usize>);
 
 fn row_list(
@@ -978,8 +868,7 @@ fn row_list(
             )
             .into_any_element(),
         );
-        // The inline safety warning under a selected Permissions row — the
-        // same string the Settings pane promotes (`panes.rs:24-42`).
+        // Same safety-warning string the Settings pane promotes.
         if selected
             && matches!(
                 row,
@@ -1004,9 +893,6 @@ fn row_list(
     (list, selected_child)
 }
 
-/// Session/terminal rows in the Switch drill-in: same icon+title/subtitle
-/// idiom as the results list, plus the sidebar's waiting-session amber tint
-/// (`src/gui/session_launcher/view/panes.rs:302-462`).
 fn switch_list(
     layer: &ModalLayer,
     st: &LauncherSlotState,
@@ -1082,8 +968,6 @@ fn switch_list(
         if selected {
             selected_child = Some(list.len());
         }
-        // Waiting sessions keep the sidebar's amber tint, same idiom as
-        // `views::rows`'s waiting row.
         if waiting {
             list.push(
                 div()
@@ -1130,8 +1014,6 @@ fn settings_list(st: &LauncherSlotState, dispatch: &ModalDispatch, cx: &App) -> 
             )
             .into_any_element(),
         );
-        // The inline safety warning under a selected Permissions row (B3 in
-        // the palette redesign) — `panes.rs:24-42`.
         if selected && matches!(s, crate::launcher::SettingRow::Permissions) {
             list.push(
                 div()
@@ -1151,13 +1033,9 @@ fn settings_list(st: &LauncherSlotState, dispatch: &ModalDispatch, cx: &App) -> 
     (list, selected_child)
 }
 
-/// One agent icon button in the row-actions strip's agent bar: a 26px
-/// rounded square, ringed yellow when it is the selected agent
-/// (`src/gui/session_launcher/view/rows.rs:17-18`, `AGENT_BTN`).
+/// A 26px rounded square, ringed yellow when it's the selected agent.
 const AGENT_BTN: f32 = 26.0;
 
-/// One strip row's icon + colored label — the shape every RowActions row
-/// but the launch row shares (`palette_row_actions_strip`'s `action_row`).
 fn strip_row_content(icon: &str, label: &'static str, color: gpui::Hsla) -> impl IntoElement {
     div()
         .flex()
@@ -1167,19 +1045,8 @@ fn strip_row_content(icon: &str, label: &'static str, color: gpui::Hsla) -> impl
         .child(ui(label, TEXT_BODY, color))
 }
 
-/// The Tab-revealed action strip: launch (with its agent icon bar), then
-/// create/delete-worktree, an optional project-theme row, then one row per
-/// configured lifecycle script. ←/→ walk the agent bar, which is exactly the
-/// carve-out the caret would otherwise eat (`src/gui/session_launcher/view/
-/// rows.rs`, `strip_launch_row` and `palette_row_actions_strip`).
-///
-/// The agent bar's icon buttons are deliberately non-clickable here: their
-/// `ModalClick::SelectRow(i)` index space collides with the strip's own row
-/// selection (both use `SelectRow`, and the bar was already wired to the
-/// agent index before this strip grew past two rows), so making them
-/// clickable would silently reinterpret a click on action row `i >= 1` as an
-/// agent pick. ←/→ is the supported gesture for `agent_sel`; the bar renders
-/// as static icons.
+/// The agent bar's icons are deliberately non-clickable: their index space collides with the
+/// strip's own row selection, so a click there would misfire as an agent pick. ←/→ only.
 fn row_actions(
     layer: &ModalLayer,
     st: &LauncherSlotState,
@@ -1223,8 +1090,6 @@ fn row_actions(
         .child(mono(sel_label.to_string(), TEXT_BODY, c::FG_DIM()))
         .child(bar);
 
-    // The strip has no section headers, so a row's child index is its own
-    // selection index.
     let mut list: Vec<AnyElement> = vec![palette_row(
         gpui::SharedString::from("strip-0"),
         st.sel == 0,
@@ -1314,10 +1179,6 @@ mod tests {
     use crate::entities::workspace_state::WorkspaceState;
     use crate::modal::LauncherView;
 
-    // A trimmed copy of the focus-regression harness in
-    // `views::modals::mod::tests` — this module needs its own root because
-    // that harness's helpers are private to `mod.rs`.
-
     fn boot_globals(cx: &mut App) {
         cx.set_global(SettingsState::new(Store::default()));
         cx.set_global(crate::theme::ThemeState::new(
@@ -1384,10 +1245,7 @@ mod tests {
         }
     }
 
-    /// Tab on the highlighted `Recent`/`Combo` row must populate `anchor`
-    /// from that row — freshly resolved from `palette_rows`, not from a
-    /// stale (possibly never-set) value — and reveal the strip. This is the
-    /// exact bug: open the palette, never touch an arrow key, press Tab.
+    /// Regression: open the palette, never touch an arrow key, press Tab.
     #[gpui::test]
     fn tab_on_a_session_row_populates_anchor_and_enters_row_actions(cx: &mut TestAppContext) {
         cx.update(boot_globals);
@@ -1400,8 +1258,6 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        // Root, empty query, no recents: row 0 is the fallback `Combo` for
-        // the one project — a session row, never touched by an arrow key.
         modals.update(vcx, |l, cx| {
             let rows = l.palette_rows(cx);
             assert!(
@@ -1430,9 +1286,6 @@ mod tests {
         });
     }
 
-    /// Tab on a non-session row (here, `NewSession`, with zero projects so
-    /// it is the highlighted root row) is a claimed no-op: the view stays at
-    /// `Root` and no anchor is set.
     #[gpui::test]
     fn tab_on_a_non_session_row_leaves_view_at_root(cx: &mut TestAppContext) {
         cx.update(boot_globals);
@@ -1466,13 +1319,7 @@ mod tests {
         });
     }
 
-    /// `anchor_is_main` must agree with `tree_paths`'s cold-cache
-    /// substitution: a non-active project whose worktrees were never warmed
-    /// into `wt_cache` reports its own registered root as main, not "not
-    /// main" (which would wrongly offer "Delete worktree" on a checkout that
-    /// can't be deleted). Project index 1 is used specifically because
-    /// `proj_idx()` defaults to 0, so project 1 is guaranteed non-active and
-    /// its tree cache is guaranteed cold (never queried, let alone warmed).
+    /// Project 1 is guaranteed non-active since proj_idx() defaults to 0, so its tree cache is cold.
     #[gpui::test]
     fn anchor_is_main_falls_back_to_project_root_for_a_cold_non_active_project(
         cx: &mut TestAppContext,

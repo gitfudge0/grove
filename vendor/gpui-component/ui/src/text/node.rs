@@ -36,10 +36,8 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-/// The block-level nodes.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BlockNode {
-    /// Something like a Div container in HTML.
     Root {
         children: Vec<BlockNode>,
         span: Option<Span>,
@@ -55,7 +53,7 @@ pub(crate) enum BlockNode {
         span: Option<Span>,
     },
     List {
-        /// Only contains ListItem, others will be ignored
+        /// Only ListItem; others are ignored.
         children: Vec<BlockNode>,
         ordered: bool,
         span: Option<Span>,
@@ -63,12 +61,11 @@ pub(crate) enum BlockNode {
     ListItem {
         children: Vec<BlockNode>,
         spread: bool,
-        /// Whether the list item is checked, if None, it's not a checkbox
+        /// `None` means it's not a checkbox.
         checked: Option<bool>,
         span: Option<Span>,
     },
     CodeBlock(CodeBlock),
-    /// A custom Markdown node produced by [`MarkdownExtensions`].
     Custom(MarkdownNode),
     Table(Table),
     Break {
@@ -78,7 +75,7 @@ pub(crate) enum BlockNode {
     HorizontalRule {
         span: Option<Span>,
     },
-    /// Use for to_markdown get raw definition
+    /// For to_markdown's raw definition.
     Definition {
         identifier: SharedString,
         url: SharedString,
@@ -99,7 +96,7 @@ impl BlockNode {
         matches!(self, Self::ListItem { .. })
     }
 
-    /// Combine all children, omitting the empt parent nodes.
+    /// Omits empty parent nodes.
     pub(super) fn compact(self) -> BlockNode {
         match self {
             Self::Root { mut children, .. } if children.len() == 1 => children.remove(0).compact(),
@@ -107,7 +104,6 @@ impl BlockNode {
         }
     }
 
-    /// Get the span of the node.
     pub(crate) fn span(&self) -> Option<Span> {
         match self {
             BlockNode::Root { span, .. } => *span,
@@ -233,10 +229,7 @@ impl BlockNode {
         text
     }
 
-    /// Synchronously clear the selection stored in every inline state.
-    ///
-    /// Mirrors the [`selected_text`](Self::selected_text) traversal so the
-    /// selection can be cleared without relying on a repaint.
+    /// Mirrors the [`selected_text`](Self::selected_text) traversal, so selection clears without a repaint.
     pub(super) fn clear_selection(&self) {
         match self {
             BlockNode::Root { children, .. }
@@ -270,7 +263,7 @@ impl BlockNode {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct LinkMark {
     pub url: SharedString,
-    /// Optional identifier for footnotes.
+    /// For footnotes.
     pub identifier: Option<SharedString>,
     pub title: Option<SharedString>,
 }
@@ -282,9 +275,7 @@ pub struct TextMark {
     pub strikethrough: bool,
     pub underline: bool,
     pub code: bool,
-    /// Highlight (`<mark>`) the text with this background color.
-    ///
-    /// `None` means the text is not highlighted.
+    /// `<mark>` background color; `None` means not highlighted.
     pub highlight: Option<Hsla>,
     pub link: Option<LinkMark>,
 }
@@ -315,7 +306,6 @@ impl TextMark {
         self
     }
 
-    /// Mark the text as highlighted (`<mark>`) with the given background color.
     pub fn highlight(mut self, color: Hsla) -> Self {
         self.highlight = Some(color);
         self
@@ -341,7 +331,6 @@ impl TextMark {
     }
 }
 
-/// The bytes
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub struct Span {
     pub start: usize,
@@ -387,10 +376,8 @@ impl PartialEq for ImageNode {
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct InlineNode {
-    /// The text content.
     pub(crate) text: SharedString,
     pub(crate) image: Option<ImageNode>,
-    /// The text styles, each tuple contains the range of the text and the style.
     pub(crate) marks: Vec<(Range<usize>, TextMark)>,
 
     state: Arc<Mutex<InlineState>>,
@@ -424,17 +411,12 @@ impl InlineNode {
     }
 }
 
-/// The paragraph element, contains multiple text nodes.
-///
-/// Unlike other Element, this is cloneable, because it is used in the Node AST.
-/// We are keep the selection state inside this AST Nodes.
+/// Cloneable (unlike other Elements) since it's used in the Node AST and keeps selection state there.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Paragraph {
     pub(super) span: Option<Span>,
     pub(super) children: Vec<InlineNode>,
-    /// The link references in this paragraph, used for reference links.
-    ///
-    /// The key is the identifier, the value is the url.
+    /// Reference-link map: identifier -> url.
     pub(super) link_refs: HashMap<SharedString, SharedString>,
 
     pub(crate) state: Arc<Mutex<InlineState>>,
@@ -487,8 +469,6 @@ impl Paragraph {
         text
     }
 
-    /// Synchronously clear the selection stored in every inline state.
-    ///
     /// Mirrors the [`selected_text`](Self::selected_text) traversal.
     pub(super) fn clear_selection(&self) {
         for c in self.children.iter() {
@@ -589,7 +569,6 @@ impl Paragraph {
                 .all(|node| node.text.is_empty() && node.image.is_none())
     }
 
-    /// Return length of children text.
     pub(crate) fn text_len(&self) -> usize {
         self.children
             .iter()
@@ -604,7 +583,7 @@ impl Paragraph {
 
 #[derive(Debug, Clone)]
 struct CachedCodeBlockStyles {
-    /// The active theme used to compute `styles`.
+    /// The theme used to compute `styles`.
     highlight_theme: Arc<HighlightTheme>,
     styles: Vec<(Range<usize>, HighlightStyle)>,
 }
@@ -624,12 +603,10 @@ impl PartialEq for CodeBlock {
 }
 
 impl CodeBlock {
-    /// Get the language of the code block.
     pub fn lang(&self) -> Option<SharedString> {
         self.lang.clone()
     }
 
-    /// Get the code content of the code block.
     pub fn code(&self) -> SharedString {
         self.state
             .lock()
@@ -667,9 +644,7 @@ impl CodeBlock {
             return Vec::new();
         };
 
-        // Pointer identity is the common render-path fast check. If an
-        // equivalent theme is reallocated, adopt its Arc while preserving the
-        // computed styles so subsequent renders also use the fast path.
+        // Pointer identity is the fast path; a reallocated-but-equivalent theme adopts its Arc so later renders also hit it.
         if let Some(cached) = styles.as_mut() {
             if Arc::ptr_eq(&cached.highlight_theme, highlight_theme) {
                 return cached.styles.clone();
@@ -734,9 +709,6 @@ impl CodeBlock {
             .unwrap_or_default()
     }
 
-    /// Synchronously clear the selection stored in the inline state.
-    ///
-    /// Mirrors the [`selected_text`](Self::selected_text) traversal.
     pub(super) fn clear_selection(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.selection = None;
@@ -791,11 +763,9 @@ impl CodeBlock {
     }
 }
 
-/// A context for rendering nodes, contains link references.
 #[derive(Default, Clone)]
 pub(crate) struct NodeContext {
-    /// The byte offset of the node in the original markdown text.
-    /// Used for incremental updates.
+    /// Byte offset in the original markdown text, for incremental updates.
     pub(crate) offset: usize,
     pub(crate) link_refs: HashMap<SharedString, LinkMark>,
     pub(crate) style: TextViewStyle,
@@ -812,8 +782,7 @@ impl NodeContext {
 impl PartialEq for NodeContext {
     fn eq(&self, other: &Self) -> bool {
         self.link_refs == other.link_refs && self.style == other.style
-        // Note: code_block_actions and markdown_extensions are intentionally
-        // not compared (closures can't be compared)
+        // code_block_actions/markdown_extensions intentionally not compared: closures can't be.
     }
 }
 
@@ -920,7 +889,6 @@ impl Paragraph {
                             ..Default::default()
                         });
 
-                        // convert link references, replace link
                         if let Some(identifier) = link_mark.identifier.as_ref() {
                             if let Some(mark) = node_cx.link_refs.get(identifier) {
                                 link_mark = mark.clone();
@@ -939,7 +907,6 @@ impl Paragraph {
             ix += 1;
         }
 
-        // Add the last text node
         if text.len() > 0 {
             if let Ok(mut state) = self.state.lock() {
                 state.set_text(text.into());
@@ -1115,9 +1082,7 @@ impl Paragraph {
 }
 
 impl BlockNode {
-    /// Converts the node to markdown format.
-    ///
-    /// This is used to generate markdown for test.
+    /// Used to generate markdown for tests.
     #[allow(dead_code)]
     pub(crate) fn to_markdown(&self) -> String {
         match self {
@@ -1273,7 +1238,6 @@ impl BlockNode {
                 this.child(list_item_prefix(ix, options.ordered, options.depth))
             })
             .when_some(checked, |this, checked| {
-                // Todo list checkbox
                 this.child(
                     div()
                         .flex()
@@ -1335,9 +1299,7 @@ impl BlockNode {
                                     cx,
                                 );
 
-                                // Continuation paragraph — stack vertically below
-                                // the previous row, indented to align with the text
-                                // column (past bullet/number prefix).
+                                // Continuation paragraph: stack below the previous row, indented past the bullet/number prefix.
                                 if last_not_list {
                                     if let Some(preceding_row) = items.pop() {
                                         items.push(
@@ -1394,9 +1356,7 @@ impl BlockNode {
                                         block, ix, options, *checked, cx,
                                     ));
                                 } else {
-                                    // Indent continuation blocks to align with a
-                                    // nested sub-list (`ml(rems(1.))`) and with
-                                    // continuation paragraphs.
+                                    // Indent to align with a nested sub-list and continuation paragraphs.
                                     items.push(
                                         div()
                                             .w_full()
@@ -1420,9 +1380,7 @@ impl BlockNode {
         }
     }
 
-    /// Render a Markdown table. Dispatches to a horizontally scrollable layout
-    /// when `style.table` opts in with overflow-x: scroll, otherwise to the
-    /// default layout that fits the container width and wraps cell content.
+    /// Dispatches to horizontally scrollable layout when `style.table` opts into overflow-x: scroll; otherwise wraps to fit the container.
     fn render_table(
         item: &BlockNode,
         options: &NodeRenderOptions,
@@ -1437,8 +1395,7 @@ impl BlockNode {
             _ => return div().into_any_element(),
         };
 
-        // Per-column max text length (in chars), used to proportion the columns
-        // in the default (wrap) layout.
+        // Per-column max text length, used to proportion columns in the wrap layout.
         let mut col_lens: Vec<usize> = vec![];
         for row in table.children.iter() {
             for (ix, cell) in row.children.iter().enumerate() {
@@ -1449,7 +1406,6 @@ impl BlockNode {
             }
         }
 
-        // Scroll mode is opted in via `style.table` overflow-x: scroll.
         if matches!(node_cx.style.table.overflow.x, Some(Overflow::Scroll)) {
             Self::render_scroll_table(table, col_lens.len(), options, node_cx, window, cx)
         } else {
@@ -1457,14 +1413,7 @@ impl BlockNode {
         }
     }
 
-    /// Horizontally scrollable table layout (opt-in via `style.table`
-    /// overflow-x: scroll).
-    ///
-    /// Column widths come from the **measured** shaped text of each cell (the
-    /// widest per column across all rows), so columns line up and fit their
-    /// content exactly — char-count heuristics are inaccurate on proportional
-    /// fonts. A narrow table stretches to fill the frame (cells `flex_grow`
-    /// proportionally); a wide table keeps its content widths and scrolls.
+    /// Column widths come from measured shaped text (the widest per column), not char-count heuristics, since fonts are proportional.
     fn render_scroll_table(
         table: &Table,
         col_count: usize,
@@ -1477,7 +1426,6 @@ impl BlockNode {
         const CELL_MIN_PX: f32 = 48.0;
         const CELL_MAX_PX: f32 = 480.0;
 
-        // Measure the widest text per column.
         let text_style = window.text_style();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let mut col_w = vec![CELL_MIN_PX; col_count];
@@ -1534,11 +1482,7 @@ impl BlockNode {
                 cells.push(
                     div()
                         .id(("cell", ix))
-                        // Measured content width is the flex-basis; `flex_grow`
-                        // (proportional to it) distributes any extra space so a
-                        // narrow table still fills the frame, while `flex_shrink_0`
-                        // keeps columns from collapsing when the table is wider
-                        // than the viewport and scrolls.
+                        // flex_grow fills a narrow table; flex_shrink_0 stops columns collapsing when wider than the viewport.
                         .flex_basis(px(width))
                         .flex_grow(width)
                         .flex_shrink_0()
@@ -1571,19 +1515,12 @@ impl BlockNode {
             .pb(rems(1.))
             .w_full()
             .child(
-                // Scroll viewport: clips and scrolls horizontally (overflow-x
-                // is handled by `ScrollableMask`, so vertical wheel events keep
-                // bubbling to the parent TextView). No border — the frame is on
-                // the inner track so it wraps the table tightly.
+                // No border here: ScrollableMask handles overflow-x while vertical wheel events bubble to the parent TextView; the frame is on the inner track.
                 horizontal_scroll_area(
                     ("table", options.ix),
                     &scroll_handle,
                     &style.table,
-                    // Bordered track sized to `max(viewport, total table
-                    // width)`: `min_w_full` fills the frame when the table is
-                    // narrow (cells then grow to fill), the definite `w(total_w)`
-                    // lets it exceed the viewport and scroll when the content is
-                    // wider.
+                    // min_w_full fills the frame when narrow; w(total_w) lets it exceed the viewport and scroll when wide.
                     div()
                         .min_w_full()
                         .w(px(total_w))
@@ -1596,8 +1533,7 @@ impl BlockNode {
             .into_any_element()
     }
 
-    /// Default table layout: a flex grid whose columns are proportioned by
-    /// content length and shrink to fit the container width (cell text wraps).
+    /// Columns proportioned by content length and shrunk to fit; cell text wraps.
     fn render_wrap_table(
         table: &Table,
         col_lens: &[usize],

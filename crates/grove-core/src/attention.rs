@@ -1,25 +1,4 @@
-//! Attention-signal detection for Claude and Codex sessions.
-//!
-//! Grove owns the spawn command line for every agent session, so it can wire
-//! up hook/notify configuration with zero user setup: each session gets a
-//! small per-session state file, whose path is passed to the agent process
-//! via the `GROVE_STATE_FILE` env var. Claude's generated `--settings` file
-//! declares `Notification`/`Stop`/`UserPromptSubmit` hooks that each append a
-//! state word to that file; Codex's `-c notify=[...]` override does the same
-//! on the agent-turn-complete event (Codex exposes no approval-prompt event,
-//! so it only ever reaches `working`/`done`).
-//!
-//! The UI's existing activity tick (see `gui::update::refresh_activity`)
-//! reads these files each pass and prefers their deterministic signal over
-//! the screen-scraping heuristics in `gui::activity` whenever one is present.
-//!
-//! Failures here are silent by design (see the design doc): a state file
-//! that can't be written or read just means "no signal", never a crash or a
-//! visible error in the agent CLI.
-//!
-//! Windows: hook/notify injection is gated off for v1 (see `prepare`) rather
-//! than risk a shell one-liner that doesn't work under `pwsh`/`cmd.exe`.
-//! Windows sessions simply keep the existing running/idle baseline.
+//! Attention-signal detection: hooks append a state word to a per-session file. Failures are silent by design — no signal, not a crash.
 
 use crate::agent::Agent;
 use crate::error::Result;
@@ -29,9 +8,7 @@ use std::path::{Path, PathBuf};
 /// Env var carrying a session's state-file path to the spawned agent process.
 pub const STATE_FILE_ENV: &str = "GROVE_STATE_FILE";
 
-/// Deterministic attention state parsed from a session's state file. `None`
-/// (missing file, empty file, or an unrecognized last line) means "no
-/// signal" — callers fall back to the existing running/idle baseline.
+/// `None` (missing/empty/unrecognized last line) means "no signal" — callers fall back to the running/idle baseline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttentionState {
     Working,
@@ -39,30 +16,22 @@ pub enum AttentionState {
     Done,
 }
 
-/// Files backing one session's attention signal, plumbed onto `Session` so
-/// they can be polled on the UI tick and cleaned up when the session closes.
 #[derive(Clone, Debug)]
 pub struct AttentionFiles {
     pub state_file: PathBuf,
-    /// Claude only: the generated `--settings` file passed on the command
-    /// line. `None` for Codex, which needs no extra file.
+    /// `None` for Codex, which needs no extra file.
     pub settings_file: Option<PathBuf>,
 }
 
-/// `<storage::config_dir()>/attention`. Routed through `storage::config_dir()`
-/// rather than deriving `dirs::config_dir().join("grove")` here, so the legacy
-/// directory migration and the `GROVE_CONFIG_DIR` override both apply.
+/// Routed through `storage::config_dir()` so legacy migration and `GROVE_CONFIG_DIR` both apply.
 fn attention_dir() -> Result<PathBuf> {
     let dir = crate::storage::config_dir()?.join("attention");
     fs::create_dir_all(&dir)?;
-    // The state files carry agent activity signals and the generated settings
-    // files are read by the agent CLI — keep both out of other users' reach.
     restrict_dir(&dir);
     Ok(dir)
 }
 
-/// Best-effort 0700 on a grove-owned directory. No-op off unix. Shared with
-/// `git`'s worktree directories, which carry the same "only this user" rule.
+/// Best-effort 0700 on a grove-owned directory. No-op off unix.
 pub(crate) fn restrict_dir(dir: &Path) {
     #[cfg(unix)]
     {
@@ -75,8 +44,6 @@ pub(crate) fn restrict_dir(dir: &Path) {
     let _ = dir;
 }
 
-/// True when a process with this pid is running. Used to decide whether a
-/// leftover attention file belongs to a live Grove or is genuinely stale.
 /// Errs on the side of "alive" (keep the file) when it can't tell.
 fn pid_is_live(pid: u32) -> bool {
     #[cfg(target_os = "linux")]
@@ -85,18 +52,14 @@ fn pid_is_live(pid: u32) -> bool {
     }
     #[cfg(all(unix, not(target_os = "linux")))]
     {
-        // kill(2) gives pid 0 and negative pids special meanings ("this
-        // process group" / "every process"), and a pid that overflows pid_t
-        // would wrap into that range — none of those can name a real single
-        // process, so they are dead by definition, not a question for kill.
+        // pid 0/negative and anything overflowing pid_t can't name a real process — dead by definition.
         let Ok(pid) = libc::pid_t::try_from(pid) else {
             return false;
         };
         if pid <= 0 {
             return false;
         }
-        // signal 0 performs the permission/existence checks without signalling.
-        // EPERM (a live process we don't own) also means "alive".
+        // signal 0 checks existence without signalling; EPERM (a live process we don't own) also means "alive".
         let rc = unsafe { libc::kill(pid, 0) };
         rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
@@ -107,18 +70,7 @@ fn pid_is_live(pid: u32) -> bool {
     }
 }
 
-/// Delete every file under the attention dir. Call once on startup, before
-/// any session is spawned.
-///
-/// This is purely garbage collection of previous runs' files. Cross-run
-/// collisions are prevented by the pid prefix in the filenames
-/// (`{run}-{session_id}.state`): `NEXT_SESSION_ID` resets to 0 each run,
-/// but each run's pid is unique, so two runs with the same session id still
-/// produce distinct paths. Surviving tmux agents from prior runs will
-/// recreate their old state files via `>>` appends, but those recreated
-/// files are orphans — nobody in the current run reads them — and they are
-/// collected on the next startup. Best-effort: a failure here just means
-/// leftover files linger, never a startup error.
+/// Garbage-collects previous runs' files, keyed by the pid prefix in each filename (`{run}-{session_id}.state`).
 pub fn cleanup_stale_files() {
     if let Ok(dir) = attention_dir() {
         clear_dir(&dir);
@@ -139,11 +91,7 @@ fn clear_dir(dir: &Path) {
     }
 }
 
-/// True when a filename's `{pid}-` prefix names a process that is no longer
-/// running. Anything that doesn't parse as `{pid}-…` is left alone: another
-/// Grove instance (or a surviving tmux agent still appending) owns files we
-/// can't attribute, and deleting a live session's state file silently drops
-/// its attention signal for the rest of its life.
+/// Anything that doesn't parse as `{pid}-…` is left alone rather than risk deleting a live session's file.
 fn is_stale_name(name: &str) -> bool {
     let Some((pid, _)) = name.split_once('-') else {
         return false;
@@ -154,15 +102,7 @@ fn is_stale_name(name: &str) -> bool {
     }
 }
 
-/// Prepare hook/notify injection for a freshly spawned session, if this
-/// agent/platform combination supports it. Returns `None` for OpenCode,
-/// Terminal, and (v1) Windows — those sessions keep the existing
-/// running/idle baseline with no extra args or env.
-///
-/// On success, returns the extra CLI args to append to the agent's launch
-/// args and the file paths to remember on the `Session`. Best-effort:
-/// returns `None` rather than failing the whole spawn if the settings file
-/// can't be written.
+/// `None` for OpenCode, Terminal, and (v1) Windows, or if the settings file can't be written.
 pub fn prepare(agent: Agent, session_id: u64) -> Option<(Vec<String>, AttentionFiles)> {
     #[cfg(windows)]
     {
@@ -219,8 +159,7 @@ pub fn prepare(agent: Agent, session_id: u64) -> Option<(Vec<String>, AttentionF
 fn state_file_path(session_id: u64) -> Result<PathBuf> {
     let run = std::process::id();
     let path = attention_dir()?.join(format!("{run}-{session_id}.state"));
-    // Pre-create it 0600 so the agent's `>>` append inherits our mode rather
-    // than whatever the agent's umask would have produced.
+    // Pre-create 0600 so the agent's `>>` append inherits our mode, not its umask.
     create_private(&path);
     Ok(path)
 }
@@ -261,17 +200,12 @@ fn settings_file_path(session_id: u64) -> Result<PathBuf> {
     Ok(attention_dir()?.join(format!("{run}-{session_id}.claude-settings.json")))
 }
 
-/// Shell one-liner that appends `word` to the state file named by
-/// `GROVE_STATE_FILE`. A failed append (missing env var, unwritable path,
-/// etc.) is swallowed by shell redirection semantics rather than surfacing
-/// as an error the agent CLI would see.
+/// A failed append is swallowed by shell redirection semantics, never surfaced to the agent CLI.
 fn append_command(word: &str) -> String {
     format!("echo {word} >> \"${STATE_FILE_ENV}\"")
 }
 
-/// Build the JSON contents of a generated Claude `--settings` file. `--settings`
-/// merges with the user's own settings rather than replacing them, so this
-/// never touches anything the user configured themselves.
+/// `--settings` merges with the user's own settings rather than replacing them.
 pub fn claude_settings_json() -> String {
     let hook = |command: String| {
         serde_json::json!([{
@@ -292,19 +226,13 @@ pub fn claude_settings_json() -> String {
 fn write_claude_settings(session_id: u64, _state_file: &Path) -> Result<PathBuf> {
     let path = settings_file_path(session_id)?;
     let json = claude_settings_json();
-    // 0600 from creation, so the file is never briefly world-readable between
-    // the rename and a post-hoc chmod. `restrict_file` still runs to tighten an
-    // already-existing file left over from a previous, looser write.
+    // 0600 from creation so the file is never briefly world-readable before a chmod.
     crate::storage::write_atomic_private(&path, json.as_bytes())?;
     restrict_file(&path);
     Ok(path)
 }
 
-/// Codex `-c notify=[...]` value: a shell + `-c` + our append-"done" one-liner,
-/// matching the `program + args` array Codex's `notify` config expects. Codex
-/// invokes this on the agent-turn-complete event, appending a JSON payload as
-/// one more argument (ignored by the one-liner, which only reads `$0`-style
-/// positional args it never references).
+/// Codex appends a JSON payload as one more argument, ignored by our one-liner.
 #[cfg(not(windows))]
 fn codex_notify_arg() -> String {
     let cmd = append_command("done");
@@ -312,10 +240,7 @@ fn codex_notify_arg() -> String {
     format!("notify={value}")
 }
 
-/// Parse the last non-empty, recognized line of raw state-file contents.
-/// Last line wins so a burst of hook fires (e.g. `working` immediately
-/// followed by `done`) resolves to the most recent one. Unrecognized lines
-/// are skipped rather than treated as an error.
+/// Last line wins, so a burst of hook fires resolves to the most recent one.
 pub fn parse_state(raw: &str) -> Option<AttentionState> {
     raw.lines().rev().find_map(|line| match line.trim() {
         "working" => Some(AttentionState::Working),
@@ -325,25 +250,15 @@ pub fn parse_state(raw: &str) -> Option<AttentionState> {
     })
 }
 
-/// Last (mtime, len) seen per state file and the value parsed from it. The UI
-/// polls every session's state file several times a second, but the files only
-/// change when a hook fires — keying on the metadata we already have to stat
-/// turns the steady state into one `metadata()` call instead of a 4 KiB read
-/// plus a parse.
+/// Keyed on (mtime, len) so the steady state costs one `metadata()` call instead of a read+parse.
 type StateCache =
     std::collections::HashMap<PathBuf, (std::time::SystemTime, u64, Option<AttentionState>)>;
 static STATE_CACHE: std::sync::Mutex<Option<StateCache>> = std::sync::Mutex::new(None);
 
-/// Read and parse a session's state file. `None` — missing file, unreadable,
-/// or unparseable — is treated identically to "no signal" (see module docs).
 pub fn read_state(path: &Path) -> Option<AttentionState> {
     use std::io::{Read, Seek, SeekFrom};
 
-    // These files are append-only for the life of a session and only ever
-    // truncated on acknowledge, so a long-running agent's file grows without
-    // bound. Only the last line matters — read a bounded tail rather than the
-    // whole file on every UI tick. A partial first line in the window is
-    // harmless: `parse_state` skips unrecognized lines.
+    // Files grow unbounded (append-only); only the last line matters, so read a bounded tail.
     const TAIL_BYTES: u64 = 4096;
 
     let mut file = fs::File::open(path).ok()?;
@@ -351,9 +266,7 @@ pub fn read_state(path: &Path) -> Option<AttentionState> {
     let len = meta.len();
     let stamp = meta.modified().ok();
 
-    // A poisoned lock here would mean a panic inside this tiny critical
-    // section; the cache is pure derived data, so recover rather than
-    // propagate.
+    // The cache is pure derived data, so recover from a poisoned lock rather than propagate.
     let mut guard = STATE_CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -378,31 +291,16 @@ pub fn read_state(path: &Path) -> Option<AttentionState> {
     value
 }
 
-/// Clear a session's recorded signal back to baseline. Called when the user
-/// focuses/views the session — mirrors `gui::activity::Tracker::acknowledge`.
-/// Truncates (rather than deletes) so the hooks can keep appending to the
-/// same path for the life of the session. Best-effort: a failed truncate is
-/// silently ignored, same as every other write in this module.
+/// Truncates rather than deletes, so hooks can keep appending to the same path.
 pub fn acknowledge(path: &Path) {
-    // ponytail: this truncate races the agent's `>>` append — a hook that fires
-    // between our read and this write has its word discarded, and a pid that is
-    // reused across runs can have a surviving tmux agent appending to a path a
-    // new session now owns. Both are benign today (worst case one missed signal
-    // until the next hook fires) and the file-per-session + last-line-wins
-    // protocol is deliberately dumb. If signals are ever observed genuinely
-    // dropping, the fix is a seq-numbered O_APPEND protocol — each hook writes
-    // `{seq} {word}` and acknowledge records the last seq it saw instead of
-    // truncating — not a lock or a rewrite of the hook wiring.
+    // This truncate races the agent's `>>` append — benign today (worst case one missed signal); see history for the seq-numbered fix if that changes.
     if let Err(e) = fs::write(path, b"") {
         tracing::debug!(path = %path.display(), error = %e, "attention: acknowledge write failed");
     }
 }
 
-/// Remove a session's attention files when it closes. Best-effort per the
-/// design doc's cleanup note.
 pub fn cleanup(files: &AttentionFiles) {
-    // Drop the cache entry too, so the map doesn't grow for the life of the
-    // process as sessions come and go.
+    // Drop the cache entry too, so the map doesn't grow for the process's life.
     if let Ok(mut guard) = STATE_CACHE.lock() {
         if let Some(cache) = guard.as_mut() {
             cache.remove(&files.state_file);
@@ -423,8 +321,6 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-
-    // ── parse_state ──────────────────────────────────────────────────────────
 
     #[test]
     fn parse_state_recognizes_each_word() {
@@ -459,11 +355,8 @@ mod tests {
 
     #[test]
     fn parse_state_skips_unrecognized_trailing_line() {
-        // A stray/corrupted line after a real word must not blank the result.
         assert_eq!(parse_state("working\n???"), Some(AttentionState::Working));
     }
-
-    // ── read_state / acknowledge (real filesystem, tmp dir) ─────────────────
 
     fn tmp_state_file(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -498,17 +391,12 @@ mod tests {
         assert_eq!(read_state(&path), Some(AttentionState::NeedsYou));
         acknowledge(&path);
         assert_eq!(read_state(&path), None);
-        // The file itself must still exist (truncated, not removed) so hooks
-        // can keep appending to the same path.
         assert!(path.exists());
     }
-
-    // ── clear_dir (startup cleanup) ──────────────────────────────────────────
 
     #[test]
     fn clear_dir_removes_dead_pid_files_but_keeps_the_dir() {
         let dir = tmp_state_file("cleanup").parent().unwrap().to_path_buf();
-        // u32::MAX is above every platform's pid_max, so it is never live.
         fs::write(dir.join("4294967295-0.state"), "needs-you\n").unwrap();
         fs::write(dir.join("4294967295-1.claude-settings.json"), "{}").unwrap();
         clear_dir(&dir);
@@ -547,10 +435,8 @@ mod tests {
     fn clear_dir_missing_dir_is_a_silent_noop() {
         let dir = std::env::temp_dir().join("grove_test_attention_missing_dir_xyz");
         let _ = fs::remove_dir_all(&dir);
-        clear_dir(&dir); // must not panic
+        clear_dir(&dir);
     }
-
-    // ── claude_settings_json ─────────────────────────────────────────────────
 
     #[test]
     fn claude_settings_json_is_valid_json() {
@@ -598,18 +484,11 @@ mod tests {
         assert!(cmd("UserPromptSubmit").contains("working"));
     }
 
-    // ── append_command ───────────────────────────────────────────────────────
-
     #[test]
     fn append_command_references_env_var_not_literal_path() {
-        // The command must reference $GROVE_STATE_FILE rather than a baked-in
-        // path, so the same generated settings file works across sessions
-        // (and the path never needs shell-escaping).
         let cmd = append_command("done");
         assert_eq!(cmd, "echo done >> \"$GROVE_STATE_FILE\"");
     }
-
-    // ── prepare (non-Windows) ─────────────────────────────────────────────────
 
     #[cfg(not(windows))]
     #[test]
@@ -623,7 +502,6 @@ mod tests {
         assert!(files.settings_file.is_some());
         assert!(files.state_file.to_string_lossy().contains(&pid));
         assert!(files.state_file.ends_with(format!("{pid}-999001.state")));
-        // The settings file must actually exist on disk with valid JSON.
         let contents = fs::read_to_string(files.settings_file.as_ref().unwrap()).unwrap();
         assert!(serde_json::from_str::<serde_json::Value>(&contents).is_ok());
         cleanup(&files);
@@ -654,8 +532,6 @@ mod tests {
         assert!(prepare(Agent::Codex, 999_006).is_none());
     }
 
-    // ── path format ──────────────────────────────────────────────────────────
-
     #[test]
     fn state_file_paths_contain_pid_prefix_and_differ_by_session_id() {
         let pid = std::process::id().to_string();
@@ -663,10 +539,8 @@ mod tests {
         let p2 = state_file_path(2).unwrap();
         let name1 = p1.file_name().unwrap().to_string_lossy();
         let name2 = p2.file_name().unwrap().to_string_lossy();
-        // Each name must be "{pid}-{session_id}.state".
         assert_eq!(name1.as_ref(), format!("{pid}-1.state"));
         assert_eq!(name2.as_ref(), format!("{pid}-2.state"));
-        // Different session ids must produce different paths.
         assert_ne!(p1, p2);
     }
 }

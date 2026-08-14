@@ -1,14 +1,4 @@
-//! The diff viewer's gpui-side state: which worktree is open, its file list,
-//! the selected path, and a per-path patch cache — all loaded off the main
-//! thread through [`gpui::Context::background_spawn`], following the same
-//! idiom [`crate::entities::upgrade::Upgrade`] and
-//! [`crate::entities::session_registry`] use for their own I/O.
-//!
-//! Everything that can be computed without gpui — parsing, patch shape, the
-//! oversize/binary guards, live-update reconciliation, tree flattening —
-//! already lives in `grove_core::diff`. This entity's only job is *when*
-//! that runs and *where* the result lands: it owns no diff arithmetic of its
-//! own.
+//! The diff viewer's gpui-side state, loaded off the main thread. All diff arithmetic lives in `grove_core::diff`.
 
 use std::collections::HashMap;
 use std::time::{Instant, SystemTime};
@@ -19,15 +9,10 @@ use grove_core::highlight;
 use grove_core::render_rows::{self, SplitRenderRow, UnifiedRenderRow};
 use grove_core::storage::DiffMode;
 
-/// The live-update poll's own cadence, matched to `ProjectTree`'s
-/// `GIT_POLL_INTERVAL` (`src/entities/project_tree.rs`) so the file list
-/// refreshes on the same rhythm as the git-state chips it's opened from,
-/// without this entity depending on that private constant.
+/// Matched to `ProjectTree`'s `GIT_POLL_INTERVAL` so the file list refreshes on the same rhythm as the git-state chips it's opened from.
 const LIVE_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Which list presentation the file list uses. The tree toggle is
-/// session-only (never persisted) and scoped per worktree, per the brief —
-/// switching worktrees does not carry an expansion set over.
+/// Session-only, scoped per worktree — switching worktrees does not carry an expansion set over.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FileListStyle {
     #[default]
@@ -35,101 +20,43 @@ pub enum FileListStyle {
     Tree,
 }
 
-/// One cached patch, keyed by the file's mtime at load time so a later poll
-/// can tell a stale entry from a fresh one without re-diffing eagerly.
+/// One cached patch, keyed by the file's mtime at load time so a later poll can tell a stale entry from a fresh one.
 #[derive(Clone, Debug)]
 pub struct CachedPatch {
     pub patch: Patch,
-    /// Compared against a fresh `stat` on every live-update tick for the
-    /// *selected* file: unchanged mtime skips the reload, a changed one
-    /// re-triggers it (`Self::maybe_refresh_live`).
     pub mtime: Option<SystemTime>,
-    /// The fully baked render rows for both modes, built once per load in
-    /// [`Self`]'s construction site (`DiffViewerState::load_patch`, on the
-    /// main thread) so the render path never derives rows again.
-    ///
-    /// `Rc` rather than `Arc` or a plain `Vec`: the row vectors never cross
-    /// a thread boundary (they are built after the background work lands),
-    /// and the render path clones the handle cheaply instead of the rows.
+    /// `Rc`, not `Arc`: the row vectors never cross a thread boundary.
     pub unified: std::rc::Rc<Vec<UnifiedRenderRow>>,
     pub split: std::rc::Rc<Vec<SplitRenderRow>>,
-    /// Index of the widest unified row — the horizontal scroll extent's
-    /// reference row (see [`grove_core::render_rows::widest_unified_row`]).
-    /// The split body has no counterpart: its `uniform_list` sizes columns
-    /// from `split_col_w`'s measured text widths (below), not from a
-    /// precomputed widest-row index — every `SplitRenderRow::Lines` row now
-    /// has a definite pixel width, so there is no "widest" row to pick.
+    /// The horizontal scroll extent's reference row; split has no counterpart since every row already has a definite pixel width.
     pub unified_widest: usize,
-    /// The widest line of text on each side of the split body (see
-    /// [`grove_core::render_rows::widest_split_side_text`]), baked here so
-    /// the view measures its real pixel width (needs a `Window`, so that
-    /// step can't happen off-thread) at most twice per render frame instead
-    /// of rescanning every row.
+    /// Baked here since measuring pixel width needs a `Window` and can't happen off-thread.
     pub split_old_widest_text: String,
     pub split_new_widest_text: String,
 }
 
-/// The diff viewer's live state for one open worktree. Constructed fresh each
-/// time the modal opens (`ModalLayer::open`) rather than kept warm across
-/// closes, so a stale file list can never leak into a different worktree's
-/// session — mirroring why `Modal::AgentPicker` is rebuilt per open rather
-/// than reused.
+/// Constructed fresh each time the modal opens rather than kept warm, so a stale file list can never leak into a different worktree's session.
 pub struct DiffViewerState {
     pub wt_path: String,
-    /// The worktree's current branch, for the header (`None` while unknown or
-    /// detached — the header falls back to the path alone).
     pub branch: Option<String>,
     pub files: Vec<FileChange>,
-    /// Selection follows the *path*, not an index, so a file that stops
-    /// being changed can show "No longer changed" in place instead of
-    /// snapping the selection elsewhere (brief decision 6) — see
-    /// [`Self::maybe_refresh_live`] for the live-update side of this.
+    /// Follows the *path*, not an index, so a file that stops changing shows "No longer changed" in place instead of the selection snapping elsewhere.
     pub selected_path: Option<String>,
-    /// Which list presentation the body renders — read by the split-mode
-    /// renderer and flipped by the header's segmented control / Tab.
     pub mode: DiffMode,
     pub list_style: FileListStyle,
-    /// Session-only, per-worktree tree-mode disclosure state, keyed by
-    /// directory path. Directories default to *expanded* (brief decision
-    /// 7), so this holds the directories the user has explicitly
-    /// **collapsed** — an empty set means "everything expanded", matching
-    /// [`grove_core::diff::flatten_file_tree`]'s `collapsed` parameter
-    /// directly.
+    /// Directories default to expanded; this holds only the ones explicitly collapsed.
     pub tree_expanded: std::collections::HashSet<String>,
     pub patch_cache: HashMap<String, CachedPatch>,
-    /// True while the file list or a patch is loading on the background
-    /// executor. The view shows a plain loading state rather than an empty
-    /// list while this is set.
     pub loading: bool,
-    /// Last time [`Self::maybe_refresh_live`] actually kicked off a
-    /// background refresh — its own throttle, on the same cadence as
-    /// [`LIVE_REFRESH_INTERVAL`] rather than firing on every render.
+    /// Throttle for [`Self::maybe_refresh_live`], on [`LIVE_REFRESH_INTERVAL`]'s cadence rather than firing every render.
     last_live_refresh: Option<Instant>,
-    /// Set while a live-update refresh is in flight, so a second render
-    /// frame before it lands can't overlap it — the same discipline
-    /// `ProjectTree::git_poll_inflight` uses for its own poll.
+    /// Guards against a second render frame overlapping an in-flight refresh.
     live_refresh_inflight: bool,
-    /// True once Enter has moved keyboard focus from the file list to the
-    /// scrolling body — ↑/↓/j/k then scroll the body instead of moving the
-    /// file selection.
+    /// True once Enter has moved keyboard focus from the file list to the scrolling body.
     pub body_focused: bool,
-    /// The body's vertical scroll position, moved by one [`crate::views::tokens::DIFF_BODY_LINE_H`]
-    /// per Move verdict while [`Self::body_focused`] is set.
-    ///
-    /// A [`gpui::UniformListScrollHandle`], shared by both modes: unified and
-    /// split are both `uniform_list`s now, so there is only one scroll
-    /// target — see [`Self::scroll_body`].
+    /// Shared [`gpui::UniformListScrollHandle`]: unified and split are both `uniform_list`s now, so there is only one scroll target.
     pub body_scroll: gpui::UniformListScrollHandle,
-    /// Split mode's **shared** horizontal pan offset, in device pixels, always
-    /// `>= 0`. One value for both halves is the whole point: the two sides pan
-    /// in lockstep, so a line and its counterpart stay column-aligned. Each
-    /// half is a fixed-width clipped viewport whose inner content row is
-    /// offset by `-pan_x`; the outer two-column strip never moves. Stored raw
-    /// and clamped on *read* (`grove_core::render_rows::clamp_split_pan`), so
-    /// it survives a file switch — reading two files at the same column keeps
-    /// the offset — and collapses by itself when the new content fits.
-    /// Unified mode ignores it entirely (it keeps `Unconstrained` scroll), and
-    /// vertical scrolling stays with [`Self::body_scroll`] in both modes.
+    /// Shared by both halves so a line and its counterpart stay column-aligned; clamped on read, not write, so it survives a file switch.
     pub pan_x: f32,
 }
 
@@ -189,12 +116,7 @@ impl DiffViewerState {
         .detach();
     }
 
-    /// The live-update tick: called from the same call site that drives
-    /// `ProjectTree::maybe_poll_git_state` (`src/views/workspace.rs`'s
-    /// render), so the file list refreshes on the worktree git-state poll's
-    /// own cadence rather than a second timer. Self-throttled to
-    /// [`LIVE_REFRESH_INTERVAL`] and guarded against overlap, mirroring
-    /// `ProjectTree`'s own poll discipline.
+    /// Rides `ProjectTree`'s own poll cadence rather than a second timer; self-throttled and guarded against overlap.
     pub fn maybe_refresh_live(&mut self, cx: &mut Context<Self>) {
         let now = Instant::now();
         let due = self
@@ -207,10 +129,7 @@ impl DiffViewerState {
         self.live_refresh_inflight = true;
 
         let wt_path = self.wt_path.clone();
-        // Only the currently-selected file's mtime is worth a fresh `stat`
-        // here — every other cached patch is either still valid (its path is
-        // still changed and its content is fine to redisplay lazily) or gets
-        // evicted outright once it drops out of the fresh file list.
+        // Only the selected file's mtime is worth a fresh `stat`; other cached patches stay valid or get evicted.
         let watched_path = self.selected_path.clone();
         cx.spawn(async move |this, cx| {
             let (files, fresh_mtime) = cx
@@ -232,12 +151,7 @@ impl DiffViewerState {
         .detach();
     }
 
-    /// Fold a fresh [`diff::changed_files`] result into live state: pure
-    /// reconciliation via [`diff::reconcile`] decides the new selection and
-    /// which cache entries to evict, then the selected file's patch reloads
-    /// only if its mtime actually changed (or it's newly selected and not
-    /// yet cached) — never unconditionally, so an open, untouched file isn't
-    /// re-diffed and re-highlighted every tick.
+    /// The selected file's patch reloads only if its mtime changed — an open, untouched file is never re-diffed every tick.
     fn apply_live_update(
         &mut self,
         new_files: Vec<FileChange>,
@@ -266,7 +180,6 @@ impl DiffViewerState {
         }
     }
 
-    /// Select `path` and, if its patch is not already cached, load it.
     pub fn select(&mut self, path: String, cx: &mut Context<Self>) {
         if self.selected_path.as_deref() == Some(path.as_str()) {
             return;
@@ -278,8 +191,6 @@ impl DiffViewerState {
         }
     }
 
-    /// Kick off `file_patch` on the background executor for `path`, caching
-    /// the result keyed by the working file's mtime at load time.
     fn load_patch(&mut self, path: &str, cx: &mut Context<Self>) {
         let Some(file) = self.files.iter().find(|f| f.path == path) else {
             return;
@@ -291,15 +202,7 @@ impl DiffViewerState {
         cx.spawn(async move |this, cx| {
             let path_for_mtime = path.clone();
             let wt_for_mtime = wt_path.clone();
-            // Everything below is `Send`: `Patch`, `Vec<Vec<Span>>`,
-            // `Vec<UnifiedRenderRow>` and `Vec<SplitRenderRow>` all hold only
-            // owned data (`String`, `Vec`, `Copy` enums) — nothing here is an
-            // `Rc`. Only the `Rc::new(...)` wrapping below is main-thread-only,
-            // so the actual baking (previously done in `this.update` "because
-            // `Rc` is not `Send`") now happens here instead, off the main
-            // thread — the split bake alone measured ~2.4ms in
-            // `diff_bench`, a real hitch to pay on every render frame's
-            // thread if left on `this.update`.
+            // Baking happens off the main thread; the split bake alone measured ~2.4ms in `diff_bench`.
             let (
                 patch,
                 mtime,
@@ -315,11 +218,7 @@ impl DiffViewerState {
                         fs_err::metadata(std::path::Path::new(&wt_for_mtime).join(&path_for_mtime))
                             .ok()
                             .and_then(|m| m.modified().ok());
-                    // Highlight both sides once here, off the main thread,
-                    // cached alongside the patch — never recomputed on the
-                    // render path. Only a `Text` patch has anything to
-                    // highlight; `Binary`/`TooLarge` skip straight to empty
-                    // spans, matching their existing no-content stubs.
+                    // Only a `Text` patch has anything to highlight; `Binary`/`TooLarge` skip to empty spans.
                     let (old_spans, new_spans) = match &patch {
                         Patch::Text { .. } => {
                             let old_spans = diff::head_blob(&wt_path, &path)
@@ -351,9 +250,7 @@ impl DiffViewerState {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                // Only the O(1) `Rc` wrapping happens on the main thread —
-                // `Rc` itself is not `Send`, so it can never cross the
-                // `background_spawn` boundary above.
+                // Only the O(1) `Rc` wrapping happens on the main thread — `Rc` is not `Send`.
                 this.patch_cache.insert(
                     insert_key,
                     CachedPatch {
@@ -372,15 +269,11 @@ impl DiffViewerState {
         .detach();
     }
 
-    /// The selected file's cached patch, if loaded yet.
     pub fn selected_patch(&self) -> Option<&Patch> {
         let path = self.selected_path.as_deref()?;
         self.patch_cache.get(path).map(|c| &c.patch)
     }
 
-    /// The selected file's baked unified render rows plus the index of its
-    /// widest row — one cache lookup, no derivation. `None` until the patch
-    /// has loaded.
     pub fn selected_unified(&self) -> Option<(&std::rc::Rc<Vec<UnifiedRenderRow>>, usize)> {
         let path = self.selected_path.as_deref()?;
         self.patch_cache
@@ -388,19 +281,12 @@ impl DiffViewerState {
             .map(|c| (&c.unified, c.unified_widest))
     }
 
-    /// The selected file's baked split render rows — one cache lookup, no
-    /// derivation. `None` until the patch has loaded. Unlike
-    /// [`Self::selected_unified`], this has no widest-row index to hand
-    /// back: the split body's `uniform_list` sizes its columns from
-    /// `selected_split_col_texts`'s measured text widths, since every row
-    /// already has a definite pixel width and none is "the widest".
+    /// Unlike [`Self::selected_unified`], no widest-row index: split columns size from measured text widths instead.
     pub fn selected_split(&self) -> Option<&std::rc::Rc<Vec<SplitRenderRow>>> {
         let path = self.selected_path.as_deref()?;
         self.patch_cache.get(path).map(|c| &c.split)
     }
 
-    /// The widest line of text on each side (old, new) of the selected
-    /// file's split body — see [`CachedPatch::split_old_widest_text`].
     pub fn selected_split_col_texts(&self) -> Option<(&str, &str)> {
         let path = self.selected_path.as_deref()?;
         self.patch_cache.get(path).map(|c| {
@@ -411,7 +297,6 @@ impl DiffViewerState {
         })
     }
 
-    /// Flips flat/tree. Wired to the file list's segmented control.
     pub fn toggle_list_style(&mut self, cx: &mut Context<Self>) {
         self.list_style = match self.list_style {
             FileListStyle::Flat => FileListStyle::Tree,
@@ -420,7 +305,6 @@ impl DiffViewerState {
         cx.notify();
     }
 
-    /// Flip one directory's collapsed state (tree mode's disclosure click).
     pub fn toggle_dir(&mut self, path: String, cx: &mut Context<Self>) {
         if !self.tree_expanded.remove(&path) {
             self.tree_expanded.insert(path);
@@ -428,12 +312,7 @@ impl DiffViewerState {
         cx.notify();
     }
 
-    /// The file paths in on-screen order for whichever list style is active
-    /// — flat is just `files` in path order; tree mode walks
-    /// [`diff::flatten_file_tree`] and keeps only the file rows, so a
-    /// collapsed directory's contents are skipped exactly as they are
-    /// on-screen. Keyboard navigation (`Self::move_selection`) and mouse
-    /// selection both want this same order.
+    /// Tree mode skips a collapsed directory's contents, matching what's on-screen.
     fn visible_file_order(&self) -> Vec<String> {
         match self.list_style {
             FileListStyle::Flat => self.files.iter().map(|f| f.path.clone()).collect(),
@@ -447,9 +326,7 @@ impl DiffViewerState {
         }
     }
 
-    /// Move the selection by `delta` rows (`+1`/`-1`), used by ↑/↓/j/k.
-    /// Wraps neither end — hitting an edge simply stays put. Traverses the
-    /// *visible* order, so tree mode skips a collapsed directory's contents.
+    /// Wraps neither end — hitting an edge simply stays put.
     pub fn move_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
         let order = self.visible_file_order();
         if order.is_empty() {
@@ -464,28 +341,14 @@ impl DiffViewerState {
         self.select(order[next].clone(), cx);
     }
 
-    /// Move keyboard focus to the scrolling body (Enter).
     pub fn focus_body(&mut self, cx: &mut Context<Self>) {
         self.body_focused = true;
         cx.notify();
     }
 
-    /// Scroll the body by `delta` lines (`+1`/`-1`), one
-    /// [`crate::views::tokens::DIFF_BODY_LINE_H`] each, clamped to the
-    /// container's real scroll range.
-    ///
-    /// gpui's scroll offset is **negative** as content moves up, and
-    /// `ScrollHandle::max_offset` is the *positive* overflow, so the valid
-    /// range is `-max_offset.y ..= 0` (`div.rs:2271-2276` clamps exactly that
-    /// way on prepaint). Clamping against `+max_offset.y` would pin the body
-    /// at zero and swallow every downward key.
+    /// gpui's scroll offset is negative as content moves up; clamping against `+max_offset.y` would pin the body at zero.
     pub fn scroll_body(&mut self, delta: i32, cx: &mut Context<Self>) {
         let step = crate::views::tokens::DIFF_BODY_LINE_H * delta as f32;
-        // Both modes are `uniform_list`s sharing `body_scroll` now, so there
-        // is only one scroll target regardless of `self.mode`. Clone the
-        // inner handle out from under the `RefCell` first — `ScrollHandle`
-        // shares its state, so the clone drives the same scroll position,
-        // and no borrow is held across the reads/write below.
         let base = self.base_scroll();
         let mut offset = base.offset();
         offset.y = (offset.y - gpui::px(step))
@@ -495,24 +358,11 @@ impl DiffViewerState {
         cx.notify();
     }
 
-    /// Split mode's shared pan offset, clamped to what the current layout can
-    /// actually show — the only way the view should read [`Self::pan_x`].
-    /// `left_content_w`/`right_content_w` are the two sides' natural content
-    /// widths and `half_w` one half's fixed viewport width, all in device px.
+    /// The only way the view should read [`Self::pan_x`] — clamped to what the layout can show.
     pub fn split_pan(&self, left_content_w: f32, right_content_w: f32, half_w: f32) -> f32 {
         render_rows::clamp_split_pan(self.pan_x, left_content_w, right_content_w, half_w)
     }
-    /// **The** pan entry point: fold `delta_x` device pixels into the shared
-    /// split pan offset, re-clamped against the layout it was measured in.
-    /// Positive `delta_x` moves the content left (reveals text further right).
-    ///
-    /// Only the split body's `on_scroll_wheel` calls this — trackpad
-    /// horizontal swipe and shift+wheel. The keyboard branch (Left/Right
-    /// while the body is focused) is **deliberately unwired**: routing it
-    /// would mean touching the keymap and the modal verdict plumbing outside
-    /// this change's permitted file set, and those files carry other work.
-    /// Wiring it later is purely a matter of calling this method with a
-    /// `DIFF_BODY_LINE_H`-ish step from that verdict arm; no state changes.
+    /// Keyboard Left/Right while the body is focused is deliberately left unwired here.
     pub fn pan_split(
         &mut self,
         delta_x: f32,
@@ -534,17 +384,12 @@ impl DiffViewerState {
         cx.notify();
     }
 
-    /// The plain [`gpui::ScrollHandle`] inside [`Self::body_scroll`], shared
-    /// (not copied) with whichever mode's `uniform_list` is on screen —
-    /// [`Self::scroll_body`]'s arithmetic needs the real offset and extent
-    /// underneath the `UniformListScrollHandle` wrapper.
+    /// [`Self::scroll_body`] needs the real offset/extent underneath the `UniformListScrollHandle` wrapper.
     pub fn base_scroll(&self) -> gpui::ScrollHandle {
         self.body_scroll.0.borrow().base_handle.clone()
     }
 
-    /// Apply `mode` to the open viewer. Persistence is the *caller's* — the
-    /// segment click and `Tab`'s handler both write `SettingsState` and then
-    /// reach here, so the click and key paths can never diverge.
+    /// Persistence is the caller's — the click and key paths both write `SettingsState` before reaching here.
     pub fn set_mode(&mut self, mode: DiffMode, cx: &mut Context<Self>) {
         self.mode = mode;
         cx.notify();

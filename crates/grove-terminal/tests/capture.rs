@@ -127,7 +127,6 @@ fn capture() {
     let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
     let done = Arc::new(AtomicBool::new(false));
 
-    // Blocking reader thread (no async runtime).
     let mut reader = pair.master.try_clone_reader().unwrap();
     let rbuf = Arc::clone(&buf);
     let rdone = Arc::clone(&done);
@@ -204,7 +203,6 @@ fn generate_synthetic() {
 fn sgr_torture_bytes() -> Vec<u8> {
     let mut o = String::new();
     o.push_str("\x1b[2J\x1b[H");
-    // All 16 ANSI named colors, fg then bg.
     for i in 0..8 {
         o.push_str(&format!("\x1b[{}mF{i}\x1b[0m", 30 + i));
     }

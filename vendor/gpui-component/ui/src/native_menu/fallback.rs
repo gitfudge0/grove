@@ -1,8 +1,4 @@
-//! Fallback popup menu for platforms without an OS-native popup (e.g. Linux).
-//!
-//! It renders gpui-component's drawn [`PopupMenu`] through an overlay held by
-//! [`Root`]. Unlike a real native menu it is clipped to the window, but it keeps
-//! the [`super::NativeMenu`] API working on every platform.
+//! Fallback popup menu for platforms without an OS-native popup (e.g. Linux); clipped to the window, but keeps [`super::NativeMenu`]'s API working everywhere.
 
 use gpui::{
     App, Context, DismissEvent, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Pixels,
@@ -30,10 +26,7 @@ impl FallbackMenuOverlay {
         Self { active: None }
     }
 
-    /// Build a [`PopupMenu`] from `items` and show it anchored at `position`.
-    ///
-    /// `action_context` is the focus handle the selected action is dispatched
-    /// to, matching the native backends (which dispatch to the window's focus).
+    /// `action_context` is the focus handle actions dispatch to, matching the native backends.
     #[allow(dead_code)] // Only used where the native menu falls back (e.g. Linux).
     fn show(
         &mut self,

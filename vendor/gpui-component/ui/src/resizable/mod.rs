@@ -55,15 +55,7 @@ impl ResizableState {
         &self.sizes
     }
 
-    /// Programmatically resize the panel at `ix` to `size`, redistributing
-    /// space among siblings using the same logic as a drag.
-    ///
-    /// Sizes are clamped to the panel's `size_range` and to the container.
-    /// Emits `ResizablePanelEvent::Resized` so subscribers (e.g. preference
-    /// persistence) see the change just as if the user had dragged a handle.
-    ///
-    /// Out-of-range indices are a no-op. For the last panel, space is taken
-    /// from the previous sibling (the last panel has no handle of its own).
+    /// Redistributes space among siblings using the same logic as a drag, clamped to `size_range`; out-of-range indices are a no-op.
     pub fn resize_panel(
         &mut self,
         ix: usize,
@@ -77,8 +69,7 @@ impl ResizableState {
         if ix + 1 < self.sizes.len() {
             self.resize_panel_at_handle(ix, size, window, cx);
         } else if ix > 0 {
-            // Last panel: drive its size by resizing the previous sibling so
-            // the freed space lands here.
+            // Last panel: drive its size by resizing the previous sibling so the freed space lands here.
             let delta = self.sizes[ix] - size;
             let prev = self.sizes[ix - 1];
             self.resize_panel_at_handle(ix - 1, prev + delta, window, cx);
@@ -99,8 +90,7 @@ impl ResizableState {
 
         let size = size.unwrap_or(PANEL_MIN_SIZE);
 
-        // We make sure that the size always sums up to the container size
-        // by reducing the size of all other panels first.
+        // Reduce all other panels first so the total always sums to the container size.
         let container_size = self.container_size().max(px(1.));
         let total_leftover_size = (container_size - size).max(px(1.));
 
@@ -158,9 +148,7 @@ impl ResizableState {
         cx: &mut Context<Self>,
     ) {
         let size = bounds.size.along(self.axis);
-        // This check is only necessary to stop the very first panel from resizing on its own
-        // it needs to be passed when the panel is freshly created so we get the initial size,
-        // but its also fine when it sometimes passes later.
+        // Stops the first panel from resizing itself on creation; harmless if it passes later too.
         if self.sizes[panel_ix].as_f32() == PANEL_MIN_SIZE.as_f32() {
             self.sizes[panel_ix] = size;
             self.panels[panel_ix].size = Some(size);
@@ -223,12 +211,7 @@ impl ResizableState {
         }
     }
 
-    /// Resize the panel at `ix` by treating `ix` as the drag-handle position
-    /// (the handle that sits between panel `ix` and panel `ix + 1`). Returns
-    /// early on the last panel since there is no handle below it.
-    ///
-    /// This is the worker behind drag interactions and the public
-    /// [`Self::resize_panel`] API.
+    /// Treats `ix` as the drag-handle position between panel `ix` and `ix + 1`; the worker behind drags and [`Self::resize_panel`].
     fn resize_panel_at_handle(
         &mut self,
         ix: usize,
@@ -301,9 +284,7 @@ impl ResizableState {
         cx.notify();
     }
 
-    /// Adjust panel sizes according to the container size.
-    ///
-    /// When the container size changes, the panels should take up the same percentage as they did before.
+    /// Adjust panel sizes according to the container size. When the container size changes, the panels should take up the same percentage as they did before.
     fn adjust_to_container_size(&mut self, cx: &mut Context<Self>) {
         if self.container_size().is_zero() {
             return;

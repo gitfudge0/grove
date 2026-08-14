@@ -7,18 +7,13 @@ use crate::plot::{
     origin_point,
 };
 
-/// Alignment of bars within a [`Bar`] shape, controlling both the orientation
-/// (vertical vs horizontal) and the side where the baseline lives.
+/// Controls both orientation (vertical vs horizontal) and which side the baseline lives on.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BarAlignment {
-    /// Vertical bars with the baseline at the bottom; bars grow upward.
     #[default]
     Bottom,
-    /// Vertical bars with the baseline at the top; bars grow downward.
     Top,
-    /// Horizontal bars with the baseline at the left; bars grow rightward.
     Left,
-    /// Horizontal bars with the baseline at the right; bars grow leftward.
     Right,
 }
 
@@ -31,11 +26,7 @@ impl BarAlignment {
         !self.is_horizontal()
     }
 
-    /// Linear-gradient angle (in degrees) that runs from the bar's base to its
-    /// tip for this alignment.
-    ///
-    /// gpui convention: `0°` points upward (stop-0 at bottom, stop-1 at top);
-    /// angles increase clockwise.
+    /// gpui convention: `0°` points upward, angles increase clockwise.
     pub fn gradient_angle(self) -> f32 {
         match self {
             Self::Bottom => 0.,
@@ -80,7 +71,6 @@ impl<T> Bar<T> {
         Self::default()
     }
 
-    /// Set the data of the Bar.
     pub fn data<I>(mut self, data: I) -> Self
     where
         I: IntoIterator<Item = T>,
@@ -89,18 +79,13 @@ impl<T> Bar<T> {
         self
     }
 
-    /// Set the alignment of the Bar.
-    ///
     /// Default is [`BarAlignment::Bottom`].
     pub fn alignment(mut self, alignment: BarAlignment) -> Self {
         self.alignment = alignment;
         self
     }
 
-    /// Set the cross-axis position of each bar (in pixels).
-    ///
-    /// For vertical alignments this is the X coordinate; for horizontal
-    /// alignments this is the Y coordinate.
+    /// X for vertical alignments, Y for horizontal.
     pub fn cross<F>(mut self, cross: F) -> Self
     where
         F: Fn(&T) -> Option<f32> + 'static,
@@ -109,13 +94,11 @@ impl<T> Bar<T> {
         self
     }
 
-    /// Set the band width of the Bar (the bar thickness along the cross axis).
     pub fn band_width(mut self, band_width: f32) -> Self {
         self.band_width = band_width;
         self
     }
 
-    /// Set the baseline position of each bar (in pixels along the value axis).
     pub fn base<F>(mut self, base: F) -> Self
     where
         F: Fn(&T) -> f32 + 'static,
@@ -124,7 +107,6 @@ impl<T> Bar<T> {
         self
     }
 
-    /// Set the value-end position of each bar (in pixels along the value axis).
     pub fn value<F>(mut self, value: F) -> Self
     where
         F: Fn(&T) -> Option<f32> + 'static,
@@ -133,17 +115,7 @@ impl<T> Bar<T> {
         self
     }
 
-    /// Set the fill of each bar.
-    ///
-    /// The closure receives the datum, the bar's painted frame (`Bounds<f32>`)
-    /// in raw pixel coordinates relative to the plot bounds origin, and the
-    /// bar's [`BarAlignment`] (so callers can branch on orientation, e.g. flip
-    /// a gradient angle). Callers wishing to derive normalized or chart-relative
-    /// coordinates from this frame should do so themselves.
-    ///
-    /// Accepts any type convertible to [`Background`], including solid colors and
-    /// fully-specified [`gpui::linear_gradient`] values. The background is used
-    /// verbatim — the gradient angle is not adjusted for bar orientation.
+    /// Closure gets the datum, painted frame (raw pixels relative to plot origin), and [`BarAlignment`]; the background is used verbatim, gradient angle not auto-adjusted for orientation.
     pub fn fill<F, B>(mut self, fill: F) -> Self
     where
         F: Fn(&T, Bounds<f32>, BarAlignment) -> B + 'static,
@@ -153,7 +125,6 @@ impl<T> Bar<T> {
         self
     }
 
-    /// Set the label of the Bar.
     pub fn label<F>(mut self, label: F) -> Self
     where
         F: Fn(&T, Point<Pixels>) -> Vec<Text> + 'static,
@@ -162,10 +133,7 @@ impl<T> Bar<T> {
         self
     }
 
-    /// Set the corner radii applied to every bar rectangle.
-    ///
-    /// Use [`Corners::all`] for uniform rounding, or construct `Corners` manually to
-    /// round only specific corners (e.g. just the tip end of each bar).
+    /// Use [`Corners::all`] for uniform rounding, or construct manually to round only specific corners.
     pub fn corner_radii(mut self, corner_radii: impl Into<Corners<Pixels>>) -> Self {
         self.corner_radii = corner_radii.into();
         self
@@ -228,7 +196,6 @@ impl<T> Bar<T> {
         (graph, PlotLabel::new(labels))
     }
 
-    /// Paint the Bar.
     pub fn paint(&self, bounds: &Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         let (graph, labels) = self.path(bounds);
         for quad in graph {
@@ -238,10 +205,7 @@ impl<T> Bar<T> {
     }
 }
 
-/// Origin point for a bar label, positioned outside the bar at the value end.
-///
-/// The caller chooses the [`gpui::TextAlign`] (typically `Center` for vertical
-/// bars, `Left` for `BarAlignment::Left`, `Right` for `BarAlignment::Right`).
+/// Positioned outside the bar at the value end; caller chooses the [`gpui::TextAlign`].
 fn label_origin(
     alignment: BarAlignment,
     cross: f32,
@@ -252,7 +216,6 @@ fn label_origin(
     match alignment {
         BarAlignment::Bottom => {
             let cx = cross + band_width / 2.;
-            // Normal: value < base (bar grows up). Label above bar end.
             if value <= base {
                 point(px(cx), px(value - TEXT_HEIGHT))
             } else {
@@ -261,7 +224,6 @@ fn label_origin(
         }
         BarAlignment::Top => {
             let cx = cross + band_width / 2.;
-            // Normal: value > base (bar grows down). Label below bar end.
             if value >= base {
                 point(px(cx), px(value + TEXT_GAP))
             } else {
@@ -269,9 +231,7 @@ fn label_origin(
             }
         }
         BarAlignment::Left => {
-            // Vertical centering: text origin is the top of the glyph cell.
             let cy = cross + band_width / 2. - TEXT_SIZE / 2.;
-            // Normal: value > base (bar grows right). Label to the right of bar end.
             if value >= base {
                 point(px(value + TEXT_GAP), px(cy))
             } else {
@@ -280,7 +240,6 @@ fn label_origin(
         }
         BarAlignment::Right => {
             let cy = cross + band_width / 2. - TEXT_SIZE / 2.;
-            // Normal: value < base (bar grows left). Label to the left of bar end.
             if value <= base {
                 point(px(value - TEXT_GAP), px(cy))
             } else {

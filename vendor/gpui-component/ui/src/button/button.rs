@@ -43,52 +43,43 @@ pub struct ButtonCustomVariant {
 pub trait ButtonVariants: Sized {
     fn with_variant(self, variant: ButtonVariant) -> Self;
 
-    /// With the primary style for the Button.
     fn primary(self) -> Self {
         self.with_variant(ButtonVariant::Primary)
     }
 
-    /// With the secondary style for the Button.
     fn secondary(self) -> Self {
         self.with_variant(ButtonVariant::Secondary)
     }
 
-    /// With the danger style for the Button.
     fn danger(self) -> Self {
         self.with_variant(ButtonVariant::Danger)
     }
 
-    /// With the warning style for the Button.
     fn warning(self) -> Self {
         self.with_variant(ButtonVariant::Warning)
     }
 
-    /// With the success style for the Button.
     fn success(self) -> Self {
         self.with_variant(ButtonVariant::Success)
     }
 
-    /// With the info style for the Button.
     fn info(self) -> Self {
         self.with_variant(ButtonVariant::Info)
     }
 
-    /// With the ghost style for the Button.
     fn ghost(self) -> Self {
         self.with_variant(ButtonVariant::Ghost)
     }
 
-    /// With the link style for the Button.
     fn link(self) -> Self {
         self.with_variant(ButtonVariant::Link)
     }
 
-    /// With the text style for the Button, it will no padding look like a normal text.
+    /// No padding — looks like plain text.
     fn text(self) -> Self {
         self.with_variant(ButtonVariant::Text)
     }
 
-    /// With the custom style for the Button.
     fn custom(self, style: ButtonCustomVariant) -> Self {
         self.with_variant(ButtonVariant::Custom(style))
     }
@@ -225,8 +216,7 @@ impl Button {
 
         Self {
             id: id.clone(),
-            // ID must be set after div is created;
-            // `dropdown_menu` uses this id to create the popup menu.
+            // ID must be set after div is created; `dropdown_menu` uses this id to create the popup menu.
             base: div().flex_shrink_0().id(id),
             style: StyleRefinement::default(),
             icon: None,
@@ -258,25 +248,21 @@ impl Button {
         }
     }
 
-    /// Set the outline style of the Button.
     pub fn outline(mut self) -> Self {
         self.outline = true;
         self
     }
 
-    /// Set the border radius of the Button.
     pub fn rounded(mut self, rounded: impl Into<ButtonRounded>) -> Self {
         self.rounded = rounded.into();
         self
     }
 
-    /// Set the border corners side of the Button.
     pub(crate) fn border_corners(mut self, corners: impl Into<Corners<bool>>) -> Self {
         self.border_corners = corners.into();
         self
     }
 
-    /// Set the border edges of the Button.
     pub(crate) fn border_edges(mut self, edges: impl Into<Edges<bool>>) -> Self {
         self.border_edges = edges.into();
         self
@@ -329,7 +315,6 @@ impl Button {
         self
     }
 
-    /// Add click handler.
     pub fn on_click(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -344,31 +329,24 @@ impl Button {
         self
     }
 
-    /// Set the loading icon of the button, it will be used when loading is true.
-    ///
-    /// Default is a spinner icon.
+    /// Set the loading icon of the button, it will be used when loading is true. Default is a spinner icon.
     pub fn loading_icon(mut self, icon: impl Into<Icon>) -> Self {
         self.loading_icon = Some(icon.into());
         self
     }
 
-    /// Set the tab index of the button, it will be used to focus the button by tab key.
-    ///
-    /// Default is 0.
+    /// Set the tab index of the button, it will be used to focus the button by tab key. Default is 0.
     pub fn tab_index(mut self, tab_index: isize) -> Self {
         self.tab_index = tab_index;
         self
     }
 
-    /// Set the tab stop of the button, if true, the button will be focusable by tab key.
-    ///
-    /// Default is true.
+    /// Set the tab stop of the button, if true, the button will be focusable by tab key. Default is true.
     pub fn tab_stop(mut self, tab_stop: bool) -> Self {
         self.tab_stop = tab_stop;
         self
     }
 
-    /// Set to show a dropdown caret icon at the end of the button.
     pub fn dropdown_caret(mut self, dropdown_caret: bool) -> Self {
         self.dropdown_caret = dropdown_caret;
         self
@@ -572,8 +550,7 @@ impl RenderOnce for Button {
             })
             .refine_style(&self.style)
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                // Stop handle any click event when disabled.
-                // To avoid handle dropdown menu open when button is disabled.
+                // Stop handle any click event when disabled. To avoid handle dropdown menu open when button is disabled.
                 if is_disabled {
                     cx.stop_propagation();
                     return;
@@ -587,8 +564,7 @@ impl RenderOnce for Button {
             })
             .when_some(self.on_click, |this, on_click| {
                 this.on_click(move |event, window, cx| {
-                    // Stop handle any click event when disabled.
-                    // To avoid handle dropdown menu open when button is disabled.
+                    // Stop handle any click event when disabled. To avoid handle dropdown menu open when button is disabled.
                     if !clickable {
                         cx.stop_propagation();
                         return;
@@ -1186,27 +1162,22 @@ mod tests {
 
     #[gpui::test]
     fn test_button_clickable_logic(_cx: &mut gpui::TestAppContext) {
-        // Button with click handler should be clickable
         let clickable = Button::new("test").on_click(|_, _, _| {});
         assert!(clickable.clickable());
 
-        // Disabled button should not be clickable
         let disabled = Button::new("test").disabled(true).on_click(|_, _, _| {});
         assert!(!disabled.clickable());
 
-        // Loading button should not be clickable
         let loading = Button::new("test").loading(true).on_click(|_, _, _| {});
         assert!(!loading.clickable());
     }
 
     #[gpui::test]
     fn test_button_variant_methods(_cx: &mut gpui::TestAppContext) {
-        // Test variant check methods
         assert!(ButtonVariant::Link.is_link());
         assert!(ButtonVariant::Text.is_text());
         assert!(ButtonVariant::Ghost.is_ghost());
 
-        // Test no_padding logic
         assert!(ButtonVariant::Link.no_padding());
         assert!(ButtonVariant::Text.no_padding());
         assert!(!ButtonVariant::Ghost.no_padding());

@@ -45,127 +45,39 @@ impl SelectionMode {
     }
 }
 
-/// The Table event.
 #[derive(Clone)]
 pub enum TableEvent {
-    /// Single click or move to selected row.
     SelectRow(usize),
-    /// Double click on the row.
     DoubleClickedRow(usize),
-    /// Selected column.
     SelectColumn(usize),
-    /// A cell has been selected (clicked or navigated to via keyboard).
-    ///
-    /// Emitted when a cell is selected in cell selection mode.
-    /// The first `usize` is the row index, and the second `usize` is the column index.
-    ///
-    /// This event is also emitted when navigating between cells using keyboard shortcuts.
+    /// `(row_ix, col_ix)`; also emitted when navigating cells by keyboard.
     SelectCell(usize, usize),
-    /// A cell has been double-clicked.
-    ///
-    /// Emitted when a cell is double-clicked in cell selection mode.
-    /// The first `usize` is the row index, and the second `usize` is the column index.
-    ///
-    /// Use this event to trigger actions like opening a detail view or editing the cell content.
     DoubleClickedCell(usize, usize),
-    /// The column widths have changed.
-    ///
-    /// The `Vec<Pixels>` contains the new widths of all columns.
     ColumnWidthsChanged(Vec<Pixels>),
-    /// A column has been moved.
-    ///
-    /// The first `usize` is the original index of the column,
-    /// and the second `usize` is the new index of the column.
+    /// `(from_ix, to_ix)`.
     MoveColumn(usize, usize),
-    /// A row has been right-clicked.
-    ///
-    /// Contains the row index, or `None` if right-clicked on an empty area.
-    /// Use this event to show context menus for rows.
+    /// `None` if right-clicked on an empty area.
     RightClickedRow(Option<usize>),
-    /// A cell has been right-clicked.
-    ///
-    /// Emitted when a cell is right-clicked in cell selection mode.
-    /// The first `usize` is the row index, and the second `usize` is the column index.
-    ///
-    /// Use this event to show context menus specific to the cell content.
-    /// The right-clicked cell is highlighted with a subtle border until another cell is clicked.
     RightClickedCell(usize, usize),
-    /// The selection has been cleared.
-    ///
-    /// This event is emitted when the selection is cleared.
     ClearSelection,
 }
 
-/// The visible range of the rows and columns.
 #[derive(Debug, Default)]
 pub struct TableVisibleRange {
-    /// The visible range of the rows.
     rows: Range<usize>,
-    /// The visible range of the columns.
     cols: Range<usize>,
 }
 
 impl TableVisibleRange {
-    /// Returns the visible range of the rows.
     pub fn rows(&self) -> &Range<usize> {
         &self.rows
     }
 
-    /// Returns the visible range of the columns.
     pub fn cols(&self) -> &Range<usize> {
         &self.cols
     }
 }
 
-/// The state for [`DataTable`].
-///
-/// # Selection Modes
-///
-/// The table supports three selection modes:
-/// - **Row Selection**: Select entire rows (default mode)
-/// - **Column Selection**: Select entire columns
-/// - **Cell Selection**: Select individual cells
-///
-/// ## Cell Selection
-///
-/// When `cell_selectable` is enabled, users can:
-/// - Click on cells to select them
-/// - Right-click on cells to mark them for context menus
-/// - Double-click on cells to trigger actions
-/// - Navigate between cells using keyboard (arrow keys, Home, End, PageUp, PageDown, Tab)
-///
-/// When in cell selection mode, a row header column appears on the left side,
-/// allowing users to select entire rows by clicking on it.
-///
-/// # Events
-///
-/// The table emits the following events related to cell selection:
-/// - [`TableEvent::SelectCell`]: Emitted when a cell is selected
-/// - [`TableEvent::DoubleClickedCell`]: Emitted when a cell is double-clicked
-/// - [`TableEvent::RightClickedCell`]: Emitted when a cell is right-clicked
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let table_state = cx.new(|cx| {
-///     TableState::new(delegate, cx)
-///         .cell_selectable(true)
-///         .row_selectable(true)
-/// });
-///
-/// // Subscribe to cell events
-/// cx.subscribe(&table_state, |this, table, event, cx| {
-///     match event {
-///         TableEvent::SelectCell(row_ix, col_ix) => {
-///             println!("Selected cell: ({}, {})", row_ix, col_ix);
-///         }
-///         TableEvent::DoubleClickedCell(row_ix, col_ix) => {
-///             println!("Double-clicked cell: ({}, {})", row_ix, col_ix);
-///         }
-///         _ => {}
-///     }
-/// });
-/// ```
 #[derive(Clone)]
 pub(crate) struct HeaderCell {
     pub label: SharedString,
@@ -180,47 +92,23 @@ pub struct TableState<D: TableDelegate> {
     focus_handle: FocusHandle,
     delegate: D,
     pub(super) options: TableOptions,
-    /// The bounds of the table container.
     bounds: Bounds<Pixels>,
-    /// The bounds of the fixed head cols.
     fixed_head_cols_bounds: Bounds<Pixels>,
 
     col_groups: Vec<ColGroup>,
     header_layout: Vec<Vec<HeaderCell>>,
 
-    /// Whether the table can loop selection, default is true.
-    ///
-    /// When the prev/next selection is out of the table bounds, the selection will loop to the other side.
+    /// Default true; when the prev/next selection is out of bounds, it loops to the other side.
     pub loop_selection: bool,
-    /// Whether the table can select column.
     pub col_selectable: bool,
-    /// Whether the table can select row.
     pub row_selectable: bool,
-    /// Whether the table can select cell, default is false.
-    ///
-    /// When enabled:
-    /// - Users can click on individual cells to select them
-    /// - A row header column appears on the left for selecting entire rows
-    ///   (can be hidden via [`Self::row_header`])
-    /// - Keyboard navigation works at the cell level (arrow keys move between cells)
-    /// - Right-click and double-click events are supported for cells
+    /// Default false; when enabled, a row header column appears (see [`Self::row_header`]) and keyboard nav moves per-cell.
     pub cell_selectable: bool,
-    /// Whether the row header column is visible when `cell_selectable` is enabled,
-    /// default is `true`.
-    ///
-    /// Set to `false` to hide the narrow leftmost header column while keeping cell
-    /// selection — useful when you want to put your own content (e.g. a row index
-    /// column) on the left. When hidden, clicking the already-selected cell again
-    /// escalates the selection to the whole row so users can still pick rows; row
-    /// escalation requires `row_selectable` to be enabled.
+    /// Default true; when hidden and a cell is re-clicked, selection escalates to the row (requires `row_selectable`).
     pub row_header: bool,
-    /// Whether the table can sort.
     pub sortable: bool,
-    /// Whether the table can resize columns.
     pub col_resizable: bool,
-    /// Whether the table can move columns.
     pub col_movable: bool,
-    /// Enable/disable fixed columns feature.
     pub col_fixed: bool,
 
     pub vertical_scroll_handle: UniformListScrollHandle,
@@ -233,15 +121,11 @@ pub struct TableState<D: TableDelegate> {
     selected_col: Option<usize>,
     selected_cell: Option<(usize, usize)>,
 
-    /// The column index that is being resized.
     resizing_col: Option<usize>,
 
-    /// The insertion gap index (`0..=cols_count`) while dragging a column
-    /// header: the dragged column will be inserted between the columns
-    /// `gap - 1` and `gap` on drop.
+    /// `0..=cols_count`; the dragged column drops between `gap - 1` and `gap`.
     col_drag_gap: Option<usize>,
 
-    /// The visible range of the rows and columns.
     visible_range: TableVisibleRange,
 
     _measure: Vec<Duration>,
@@ -252,7 +136,6 @@ impl<D> TableState<D>
 where
     D: TableDelegate,
 {
-    /// Create a new TableState with the given delegate.
     pub fn new(delegate: D, _: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             focus_handle: cx.focus_handle().tab_stop(true),
@@ -290,102 +173,64 @@ where
         this
     }
 
-    /// Returns a reference to the delegate.
     pub fn delegate(&self) -> &D {
         &self.delegate
     }
 
-    /// Returns a mutable reference to the delegate.
     pub fn delegate_mut(&mut self) -> &mut D {
         &mut self.delegate
     }
 
-    /// Set to loop selection, default to true.
     pub fn loop_selection(mut self, loop_selection: bool) -> Self {
         self.loop_selection = loop_selection;
         self
     }
 
-    /// Set to enable/disable column movable, default to true.
     pub fn col_movable(mut self, col_movable: bool) -> Self {
         self.col_movable = col_movable;
         self
     }
 
-    /// Set to enable/disable column resizable, default to true.
     pub fn col_resizable(mut self, col_resizable: bool) -> Self {
         self.col_resizable = col_resizable;
         self
     }
 
-    /// Set to enable/disable column sortable, default true
     pub fn sortable(mut self, sortable: bool) -> Self {
         self.sortable = sortable;
         self
     }
 
-    /// Set to enable/disable row selectable, default true
     pub fn row_selectable(mut self, row_selectable: bool) -> Self {
         self.row_selectable = row_selectable;
         self
     }
 
-    /// Set to enable/disable column selectable, default true
     pub fn col_selectable(mut self, col_selectable: bool) -> Self {
         self.col_selectable = col_selectable;
         self
     }
 
-    /// Set to enable/disable cell selection, default is false.
-    ///
-    /// When enabled:
-    /// - Individual cells become selectable by clicking
-    /// - A row header column appears on the left side (can be hidden via [`Self::row_header`])
-    /// - Keyboard navigation operates at the cell level
-    /// - Cell-specific events (SelectCell, DoubleClickedCell, RightClickedCell) are emitted
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let table_state = cx.new(|cx| {
-    ///     TableState::new(delegate, cx)
-    ///         .cell_selectable(true)  // Enable cell selection
-    ///         .row_selectable(true)   // Also allow row selection via row header
-    /// });
-    /// ```
     pub fn cell_selectable(mut self, cell_selectable: bool) -> Self {
         self.cell_selectable = cell_selectable;
         self
     }
 
-    /// Set whether the row header column is shown, default is `true`.
-    ///
-    /// Only effective when `cell_selectable` is `true` — otherwise the row header
-    /// column is never rendered. Hide it when you want to use the leftmost column
-    /// for your own content (e.g. a row index column).
-    ///
-    /// When hidden, the first click on a cell selects the cell; clicking the
-    /// already-selected cell again escalates to selecting the whole row, so users
-    /// can still pick rows without the dedicated header column. The row escalation
-    /// requires `row_selectable` to be enabled.
     pub fn row_header(mut self, row_header: bool) -> Self {
         self.row_header = row_header;
         self
     }
 
-    /// When we update columns or rows, we need to refresh the table.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.prepare_col_groups(cx);
     }
 
-    /// Scroll to the row at the given index.
     pub fn scroll_to_row(&mut self, row_ix: usize, cx: &mut Context<Self>) {
         self.vertical_scroll_handle
             .scroll_to_item(row_ix, ScrollStrategy::Top);
         cx.notify();
     }
 
-    // Scroll to the column at the given index.
     pub fn scroll_to_col(&mut self, col_ix: usize, cx: &mut Context<Self>) {
         let col_ix = col_ix.saturating_sub(self.fixed_left_cols_count());
 
@@ -394,12 +239,10 @@ where
         cx.notify();
     }
 
-    /// Returns the selected row index.
     pub fn selected_row(&self) -> Option<usize> {
         self.selected_row
     }
 
-    /// Sets the selected row to the given index.
     pub fn set_selected_row(&mut self, row_ix: usize, cx: &mut Context<Self>) {
         let is_down = match self.selected_row {
             Some(selected_row) => row_ix > selected_row,
@@ -425,26 +268,20 @@ where
         cx.notify();
     }
 
-    /// Returns the row that has been right clicked.
     pub fn right_clicked_row(&self) -> Option<usize> {
         self.right_clicked_row
     }
 
-    /// Set or clear the right-clicked row state.
-    ///
-    /// Pass `None` to clear — useful when opening a header context menu
-    /// to prevent the row context menu from appearing simultaneously.
+    /// `None` clears it — useful to suppress the row menu while a header menu opens.
     pub fn set_right_clicked_row(&mut self, row: Option<usize>, cx: &mut Context<Self>) {
         self.right_clicked_row = row;
         cx.notify();
     }
 
-    /// Returns the selected column index.
     pub fn selected_col(&self) -> Option<usize> {
         self.selected_col
     }
 
-    /// Sets the selected col to the given index.
     pub fn set_selected_col(&mut self, col_ix: usize, cx: &mut Context<Self>) {
         self.selection_mode = SelectionMode::Column;
         self.selected_col = Some(col_ix);
@@ -455,41 +292,15 @@ where
         cx.notify();
     }
 
-    /// Returns the selected cell as `(row_ix, col_ix)`.
-    ///
-    /// Returns `None` if no cell is currently selected or if the table is in row/column selection mode.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// if let Some((row_ix, col_ix)) = table_state.read(cx).selected_cell() {
-    ///     println!("Selected cell: ({}, {})", row_ix, col_ix);
-    /// }
-    /// ```
+    /// `None` unless the table is in cell selection mode.
     pub fn selected_cell(&self) -> Option<(usize, usize)> {
         self.selected_cell
     }
 
-    /// Sets the selected cell to the given row and column indices.
-    ///
-    /// This method:
-    /// - Switches the table to cell selection mode
-    /// - Scrolls to make the cell visible (centered vertically)
-    /// - Emits a [`TableEvent::SelectCell`] event
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// // Select the cell at row 5, column 3
-    /// table_state.update(cx, |state, cx| {
-    ///     state.set_selected_cell(5, 3, cx);
-    /// });
-    /// ```
     pub fn set_selected_cell(&mut self, row_ix: usize, col_ix: usize, cx: &mut Context<Self>) {
         self.selection_mode = SelectionMode::Cell;
         self.selected_cell = Some((row_ix, col_ix));
 
-        // Scroll to the cell
         self.vertical_scroll_handle
             .scroll_to_item(row_ix, ScrollStrategy::Center);
         self.scroll_to_col(col_ix, cx);
@@ -498,7 +309,6 @@ where
         cx.notify();
     }
 
-    /// Clear the selection of the table.
     pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
         self.selection_mode = SelectionMode::Row;
         self.selected_row = None;
@@ -508,18 +318,12 @@ where
         cx.notify();
     }
 
-    /// Returns the visible range of the rows and columns.
-    ///
-    /// See [`TableVisibleRange`].
     pub fn visible_range(&self) -> &TableVisibleRange {
         &self.visible_range
     }
 
-    /// Dump table data.
-    ///
-    /// Returns a tuple of (headers, rows) where each row is a vector of cell values.
+    /// Returns `(headers, rows)`.
     pub fn dump(&self, cx: &App) -> (Vec<String>, Vec<Vec<String>>) {
-        // Get header row
         let columns_count = self.delegate.columns_count(cx);
         let mut headers = Vec::with_capacity(columns_count);
         for col_ix in 0..columns_count {
@@ -527,7 +331,6 @@ where
             headers.push(column.name.to_string());
         }
 
-        // Get data rows
         let rows_count = self.delegate.rows_count(cx);
         let mut rows = Vec::with_capacity(rows_count);
         for row_ix in 0..rows_count {
@@ -541,9 +344,7 @@ where
         (headers, rows)
     }
 
-    /// Re-compute the header layout from the current delegate.
-    ///
-    /// Call this after changing delegate state that affects `group_headers`.
+    /// Call after changing delegate state that affects `group_headers`.
     pub fn refresh_header_layout(&mut self, cx: &mut Context<Self>) {
         self.update_header_layout(cx);
         cx.notify();
@@ -712,11 +513,7 @@ where
 
         let is_double_click = e.click_count() == 2;
 
-        // When the row header column is hidden, a single click on the
-        // already-selected cell escalates the selection to the entire row —
-        // giving users a way to pick rows without the dedicated header column.
-        // Double-clicks are passed through to `DoubleClickedCell` and never
-        // trigger the escalation.
+        // When the row header is hidden, re-clicking a selected cell escalates to row selection; double-clicks never escalate.
         let is_reselect =
             self.selection_mode.is_cell() && self.selected_cell == Some((row_ix, col_ix));
         let should_escalate_to_row =
@@ -756,7 +553,6 @@ where
             return;
         }
 
-        // Cell selection mode: move up within the same column
         if self.selection_mode.is_cell() {
             if let Some((row_ix, col_ix)) = self.selected_cell {
                 let new_row = if row_ix > 0 {
@@ -768,13 +564,11 @@ where
                 };
                 self.set_selected_cell(new_row, col_ix, cx);
             } else {
-                // No cell selected, select first cell
                 self.set_selected_cell(0, 0, cx);
             }
             return;
         }
 
-        // Row selection mode
         let mut selected_row = self.selected_row.unwrap_or(0);
         if selected_row > 0 {
             selected_row = selected_row.saturating_sub(1);
@@ -798,7 +592,6 @@ where
             return;
         }
 
-        // Cell selection mode: move down within the same column
         if self.selection_mode.is_cell() {
             if let Some((row_ix, col_ix)) = self.selected_cell {
                 let new_row = if row_ix < rows_count.saturating_sub(1) {
@@ -810,13 +603,11 @@ where
                 };
                 self.set_selected_cell(new_row, col_ix, cx);
             } else {
-                // No cell selected, select first cell
                 self.set_selected_cell(0, 0, cx);
             }
             return;
         }
 
-        // Row selection mode
         let selected_row = match self.selected_row {
             Some(selected_row) if selected_row < rows_count.saturating_sub(1) => selected_row + 1,
             Some(selected_row) => {
@@ -838,18 +629,15 @@ where
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Cell selection mode: move to first cell in current row
         if self.selection_mode.is_cell() {
             if let Some((row_ix, _)) = self.selected_cell {
                 self.set_selected_cell(row_ix, 0, cx);
             } else {
-                // No cell selected, select first cell of first row
                 self.set_selected_cell(0, 0, cx);
             }
             return;
         }
 
-        // Column selection mode
         self.set_selected_col(0, cx);
     }
 
@@ -861,18 +649,15 @@ where
     ) {
         let columns_count = self.delegate.columns_count(cx);
 
-        // Cell selection mode: move to last cell in current row
         if self.selection_mode.is_cell() {
             if let Some((row_ix, _)) = self.selected_cell {
                 self.set_selected_cell(row_ix, columns_count.saturating_sub(1), cx);
             } else {
-                // No cell selected, select last cell of first row
                 self.set_selected_cell(0, columns_count.saturating_sub(1), cx);
             }
             return;
         }
 
-        // Column selection mode
         self.set_selected_col(columns_count.saturating_sub(1), cx);
     }
 
@@ -884,19 +669,16 @@ where
     ) {
         let step = self.page_item_count();
 
-        // Cell selection mode: move up by page within the same column
         if self.selection_mode.is_cell() {
             if let Some((row_ix, col_ix)) = self.selected_cell {
                 let target = row_ix.saturating_sub(step);
                 self.set_selected_cell(target, col_ix, cx);
             } else {
-                // No cell selected, select first cell
                 self.set_selected_cell(0, 0, cx);
             }
             return;
         }
 
-        // Row selection mode
         let current = self.selected_row.unwrap_or(0);
         let target = current.saturating_sub(step);
         self.set_selected_row(target, cx);
@@ -915,20 +697,17 @@ where
 
         let step = self.page_item_count();
 
-        // Cell selection mode: move down by page within the same column
         if self.selection_mode.is_cell() {
             if let Some((row_ix, col_ix)) = self.selected_cell {
                 let max_row = rows_count.saturating_sub(1);
                 let target = (row_ix + step).min(max_row);
                 self.set_selected_cell(target, col_ix, cx);
             } else {
-                // No cell selected, select first cell
                 self.set_selected_cell(0, 0, cx);
             }
             return;
         }
 
-        // Row selection mode
         let current = self.selected_row.unwrap_or(0);
         let max_row = rows_count.saturating_sub(1);
         let target = (current + step).min(max_row);
@@ -943,7 +722,6 @@ where
     ) {
         let columns_count = self.delegate.columns_count(cx);
 
-        // Cell selection mode: move left within the same row
         if self.selection_mode.is_cell() {
             if let Some((row_ix, col_ix)) = self.selected_cell {
                 let new_col = if col_ix > 0 {
@@ -955,13 +733,11 @@ where
                 };
                 self.set_selected_cell(row_ix, new_col, cx);
             } else {
-                // No cell selected, select first cell
                 self.set_selected_cell(0, 0, cx);
             }
             return;
         }
 
-        // Column selection mode
         let mut selected_col = self.selected_col.unwrap_or(0);
         if selected_col > 0 {
             selected_col = selected_col.saturating_sub(1);
@@ -981,7 +757,6 @@ where
     ) {
         let columns_count = self.delegate.columns_count(cx);
 
-        // Cell selection mode: move right within the same row
         if self.selection_mode.is_cell() {
             if let Some((row_ix, col_ix)) = self.selected_cell {
                 let new_col = if col_ix < columns_count.saturating_sub(1) {
@@ -993,13 +768,11 @@ where
                 };
                 self.set_selected_cell(row_ix, new_col, cx);
             } else {
-                // No cell selected, select first cell
                 self.set_selected_cell(0, 0, cx);
             }
             return;
         }
 
-        // Column selection mode
         let mut selected_col = self.selected_col.unwrap_or(0);
         if selected_col < columns_count.saturating_sub(1) {
             selected_col += 1;
@@ -1012,13 +785,11 @@ where
         self.set_selected_col(selected_col, cx);
     }
 
-    /// Scroll table when mouse position is near the edge of the table bounds.
     fn scroll_table_by_col_resizing(
         &mut self,
         mouse_position: Point<Pixels>,
         col_group: &ColGroup,
     ) {
-        // Do nothing if pos out of the table bounds right for avoid scroll to the right.
         if mouse_position.x > self.bounds.right() {
             return;
         }
@@ -1039,8 +810,6 @@ where
         self.horizontal_scroll_handle.set_offset(offset);
     }
 
-    /// The `ix`` is the index of the col to resize,
-    /// and the `size` is the new size for the col.
     fn resize_cols(&mut self, ix: usize, size: Pixels, _: &mut Window, cx: &mut Context<Self>) {
         if !self.col_resizable {
             return;
@@ -1114,22 +883,17 @@ where
         cx.notify();
     }
 
-    /// Resolve the insertion gap for a column-header drag at the window
-    /// coordinate `x`, or `None` when dropping there would not move the
-    /// dragged column at `drag_col_ix`.
+    /// `None` when dropping at `x` would not move `drag_col_ix`.
     fn drag_gap_at(&self, x: Pixels, drag_col_ix: usize) -> Option<usize> {
         let fixed_count = self.fixed_left_cols_count();
 
-        // Columns scrolled beneath the fixed region keep stale bounds, so
-        // resolve `x` against the fixed columns alone when it falls in that
-        // region, and against the visible scrollable columns otherwise.
+        // Columns scrolled beneath the fixed region keep stale bounds, so resolve against fixed columns there, scrollable ones otherwise.
         let candidates = if fixed_count > 0 && x < self.fixed_head_cols_bounds.right() {
             0..fixed_count
         } else {
             self.calculate_visible_leaf_col_range(fixed_count).0
         };
 
-        // The gap sits after the last candidate column whose center is left of `x`.
         let mut gap = candidates.start;
         for ix in candidates {
             if x < self.col_groups[ix].bounds.center().x {
@@ -1138,8 +902,6 @@ where
             gap = ix + 1;
         }
 
-        // No gap if dropping there would put the dragged column back to
-        // where it already is.
         if gap == drag_col_ix || gap == drag_col_ix + 1 {
             None
         } else {
@@ -1147,7 +909,6 @@ where
         }
     }
 
-    /// Dispatch delegate's `load_more` method when the visible range is near the end.
     fn load_more_if_need(
         &mut self,
         rows_count: usize,
@@ -1156,7 +917,6 @@ where
         cx: &mut Context<Self>,
     ) {
         let threshold = self.delegate.load_more_threshold();
-        // Securely handle subtract logic to prevent attempt to subtract with overflow
         if visible_end >= rows_count.saturating_sub(threshold) {
             if !self.delegate.has_more(cx) {
                 return;
@@ -1177,8 +937,7 @@ where
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Skip when visible range is only 1 item.
-        // The visual_list will use first item to measure.
+        // A single-item range is the visual_list measuring the first item, not a real viewport.
         if visible_range.len() <= 1 {
             return;
         }
@@ -1231,8 +990,6 @@ where
             })
     }
 
-    /// Show Column selection style, when the column is selected and the selection state is Column.
-    /// Note: When a cell is selected, column selection style is not shown.
     fn render_col_wrap(
         &self,
         _row_ix: Option<usize>,
@@ -1248,7 +1005,6 @@ where
                 .map(|col_group| col_group.column.selectable)
                 .unwrap_or(false);
 
-        // Don't show column selection if a cell is selected
         if self.selection_mode.is_cell() {
             return el;
         }
@@ -1328,7 +1084,6 @@ where
                                 cx,
                             );
 
-                            // scroll the table if the drag is near the edge
                             view.scroll_table_by_col_resizing(e.event.position, &col_group);
                         }
                     };
@@ -1355,7 +1110,6 @@ where
             .into_any_element()
     }
 
-    /// Render the row header cell (when cell_selectable is enabled)
     fn render_row_header_cell(
         &self,
         row_ix: usize,
@@ -1423,10 +1177,7 @@ where
         )
     }
 
-    /// Render the column header.
-    /// The children must be one by one items.
-    /// Because the horizontal scroll handle will use the child_item_bounds to
-    /// calculate the item position for itself's `scroll_to_item` method.
+    /// Children must be one-by-one items: the horizontal scroll handle keys off `child_item_bounds` for `scroll_to_item`.
     fn render_th(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let entity_id = cx.entity_id();
         let col_group = self.col_groups.get(col_ix).expect("BUG: invalid col index");
@@ -1450,7 +1201,6 @@ where
                             .items_center()
                             .child(self.delegate.render_th(col_ix, window, cx))
                             .when_some(paddings, |this, paddings| {
-                                // Leave right space for the sort icon, if this column have custom padding
                                 let offset_pr =
                                     self.options.size.table_cell_padding().right - paddings.right;
                                 this.pr(offset_pr.max(px(0.)))
@@ -1472,10 +1222,7 @@ where
                         )
                     })
                     .map(|this| {
-                        // Draw the insertion indicator on the left edge of the gap
-                        // column, or on the right edge of the last column for the
-                        // trailing gap. Use an absolutely positioned overlay instead
-                        // of a border, to avoid shifting the cell content.
+                        // An overlay, not a border, so the indicator doesn't shift the cell content.
                         let last_gap = col_ix + 1 == self.col_groups.len();
                         match self.col_drag_gap {
                             Some(gap)
@@ -1497,24 +1244,14 @@ where
                         }
                     }),
             )
-            // resize handle
             .child(self.render_resize_handle(col_ix, window, cx))
-            // to save the bounds of this col.
             .on_prepaint({
                 let view = cx.entity().clone();
                 move |bounds, _, cx| view.update(cx, |r, _| r.col_groups[col_ix].bounds = bounds)
             })
     }
 
-    /// Compute the visible non-fixed leaf-column range for header rendering.
-    ///
-    /// Returns `(visible_range, left_spacer_width)` where:
-    /// - `visible_range` is the column-index range that should be rendered.
-    /// - `left_spacer_width` is the total width of the off-screen left columns,
-    ///   used as a spacer div to keep visible columns at the correct position.
-    ///
-    /// On the first frame `self.bounds` is zero, so a fallback that covers all
-    /// columns is returned to avoid a blank header on initial paint.
+    /// Returns `(visible_range, left_spacer_width)`; falls back to all columns on the first frame when `self.bounds` is still zero.
     fn calculate_visible_leaf_col_range(
         &self,
         left_columns_count: usize,
@@ -1527,13 +1264,9 @@ where
 
         let fixed_width = self.fixed_head_cols_bounds.size.width;
         let available_width = (self.bounds.size.width - fixed_width).max(px(0.));
-        // The scroll handle offset is negative when scrolled right; negate it
-        // to obtain a positive distance from the left edge of the scroll area.
+        // The scroll offset is negative when scrolled right; negate for a positive distance from the left edge.
         let scroll_x = (-self.horizontal_scroll_handle.offset().x).max(px(0.));
 
-        // Walk left-to-right through non-fixed columns to find the first one
-        // whose right edge enters the viewport. The accumulated width of the
-        // skipped columns becomes the left spacer width.
         let mut range_start = left_columns_count;
         let mut left_spacer = px(0.);
         let mut cumulative = px(0.);
@@ -1547,9 +1280,7 @@ where
             cumulative = right_edge;
         }
 
-        // Continue from `range_start` (skipping already-scanned columns) to
-        // find the last column still within the viewport. The 200 px overdraw
-        // buffer prevents a visible flash when the user scrolls quickly.
+        // 200px overdraw buffer prevents a visible flash on fast scroll.
         let right_bound = scroll_x + available_width + px(200.);
         let mut range_end = total_cols;
         let mut cumulative = left_spacer; // already summed widths before `range_start`
@@ -1573,26 +1304,13 @@ where
         let view = cx.entity().clone();
         let horizontal_scroll_handle = self.horizontal_scroll_handle.clone();
 
-        // Header leaf-column virtualization.
-        //
-        // `render_th` creates interactive elements with resize-handle listeners.
-        // Calling it for every column every frame is O(n) in column count; with
-        // 1000+ columns this alone drops FPS below 60 even in release mode.
-        //
-        // We restrict rendering to the columns currently visible inside the
-        // overflow-scroll viewport, surrounding them with inert spacer divs:
-        //
-        //   [left_spacer] [visible columns…] [right_spacer] [last_empty_col]
-        //
-        // The spacers preserve the flex container's total content width so that
-        // the scrollbar range stays correct.
+        // Only visible columns render (spaced with inert filler divs): rendering all of `render_th`'s interactive elements drops FPS below 60 past ~1000 columns.
         let total_cols = self.col_groups.len();
         let (visible_col_range, left_spacer) =
             self.calculate_visible_leaf_col_range(left_columns_count);
 
         let layout_len = self.header_layout.len();
 
-        // Reset fixed head columns bounds, if no fixed columns are present
         if left_columns_count == 0 {
             self.fixed_head_cols_bounds = Bounds::default();
         }
@@ -1629,7 +1347,6 @@ where
                     return;
                 }
 
-                // Insert the dragged column into the indicated gap.
                 let Some(gap) = table.col_drag_gap.take() else {
                     return;
                 };
@@ -1641,7 +1358,6 @@ where
             })
             .when(left_columns_count > 0, |this| {
                 let view = view.clone();
-                // Render left fixed columns
                 this.child(
                     h_flex()
                         .relative()
@@ -1682,7 +1398,6 @@ where
                             }),
                         ))
                         .child(
-                            // Fixed columns border
                             div()
                                 .absolute()
                                 .top_0()
@@ -1699,7 +1414,6 @@ where
                 )
             })
             .child(
-                // Columns
                 h_flex()
                     .id("table-head")
                     .size_full()
@@ -1717,10 +1431,6 @@ where
                                 .border_color(cx.theme().border)
                                 .map(|this| {
                                     if is_leaf_row {
-                                        // Leaf row: apply the spacer virtualization pattern.
-                                        // Only columns in `visible_range` are rendered; the two
-                                        // spacer divs preserve the container's total content width
-                                        // so the scrollbar range stays correct.
                                         this.when(left_spacer > px(0.), |r| {
                                             r.child(div().w(left_spacer).h_full().flex_shrink_0())
                                         })
@@ -1748,8 +1458,6 @@ where
                                         })
                                         .child(self.delegate.render_last_empty_col(window, cx))
                                     } else {
-                                        // Group header rows have far fewer cells (one per group),
-                                        // so the cost of rendering all of them is negligible.
                                         this.children(row_cells.iter().filter_map(|cell| {
                                             if cell.start_leaf_col_ix >= left_columns_count {
                                                 if cell.is_leaf {
@@ -1827,7 +1535,6 @@ where
                     this.child(self.render_row_header_cell(row_ix, false, cx))
                 })
                 .when(left_columns_count > 0, |this| {
-                    // Left fixed columns
                     this.child(
                         h_flex()
                             .relative()
@@ -1906,7 +1613,6 @@ where
                                 items
                             })
                             .child(
-                                // Fixed columns border
                                 div()
                                     .absolute()
                                     .top_0()
@@ -2038,8 +1744,6 @@ where
                         )
                         .child(self.delegate.render_last_empty_col(window, cx)),
                 )
-                // Row selected style
-                // Note: Don't show row selection if a cell is selected
                 .when_some(self.selected_row, |this, _| {
                     this.when(is_selected && self.selection_mode.is_row(), |this| {
                         this.map(|this| {
@@ -2061,7 +1765,6 @@ where
                         })
                     })
                 })
-                // Row right click row style
                 .when(self.right_clicked_row == Some(row_ix), |this| {
                     this.border_color(gpui::transparent_white()).child(
                         div()
@@ -2084,7 +1787,6 @@ where
                     this.on_row_left_click(e, row_ix, window, cx);
                 }))
         } else {
-            // Render fake rows to fill the rest table space
             self.delegate
                 .render_tr(row_ix, window, cx)
                 .h_flex()
@@ -2094,7 +1796,6 @@ where
                 .border_color(cx.theme().table_row_border)
                 .when(is_stripe_row, |this| this.bg(cx.theme().tokens.table_even))
                 .when(self.cell_selectable && self.row_header, |this| {
-                    // Render empty row header cell for fake rows
                     this.child(
                         div()
                             .w(px(40.))
@@ -2112,7 +1813,6 @@ where
         }
     }
 
-    /// Calculate the extra rows needed to fill the table empty space when `stripe` is true.
     fn calculate_extra_rows_needed(
         &self,
         total_height: Pixels,
@@ -2300,9 +2000,7 @@ where
                                 render_rows_count,
                                 cx.processor(
                                     move |table, visible_range: Range<usize>, window, cx| {
-                                        // Use `col.width` (always up-to-date) rather than
-                                        // `col.bounds.size.width`, which is only set after
-                                        // prepaint and is therefore zero on the first frame.
+                                        // `col.bounds.size.width` is zero until the first prepaint, so use `col.width` instead.
                                         let col_sizes: Rc<Vec<gpui::Size<Pixels>>> = Rc::new(
                                             table
                                                 .col_groups
@@ -2342,9 +2040,7 @@ where
                                             visible_range.end.saturating_sub(visible_range.start),
                                         );
 
-                                        // Render fake rows to fill the table
                                         visible_range.for_each(|row_ix| {
-                                            // Render real rows for available data
                                             items.push(table.render_table_row(
                                                 row_ix,
                                                 rows_count,
@@ -2380,10 +2076,7 @@ where
                         Axis::Horizontal,
                         &self.horizontal_scroll_handle,
                     ))
-                    // Keep vertical wheel scrolling from leaking into an
-                    // ancestor scroller. Skipped when the table is empty:
-                    // the `uniform_list` is not rendered then, so the
-                    // handle's offset and `max_offset` are stale.
+                    // Skipped when empty: the `uniform_list` isn't rendered, so the handle's offsets are stale.
                     .when(rows_count > 0, |this| {
                         this.child(ScrollableMask::new(
                             Axis::Vertical,

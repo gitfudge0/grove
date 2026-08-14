@@ -13,16 +13,12 @@ pub struct SessionMeta {
 }
 
 fn sessions_dir() -> Result<PathBuf> {
-    // Via `storage::config_dir()` so `GROVE_CONFIG_DIR` (and the legacy dir
-    // migration) is honored here as well.
     let dir = crate::storage::config_dir()?.join("sessions");
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
 
 fn path_for(name: &str) -> Result<PathBuf> {
-    // Session names come back from `tmux list-sessions`; never let one escape
-    // the sessions dir.
     if name.contains('/') || name.contains('\\') || name.contains("..") {
         return Err(SessionError::InvalidName(name.to_string()));
     }
@@ -65,9 +61,6 @@ pub fn delete(name: &str) {
     }
 }
 
-/// Names (file stems) of every persisted session-meta sidecar. Shared
-/// listing helper behind `prune`, `rename_project` and
-/// `repair_stale_projects`, so none of them re-implements the directory walk.
 fn session_names() -> Vec<String> {
     let Ok(dir) = sessions_dir() else {
         return Vec::new();
@@ -87,7 +80,6 @@ fn session_names() -> Vec<String> {
         .collect()
 }
 
-/// Remove sidecar files whose tmux session no longer exists.
 pub fn prune(live: &[String]) {
     for name in session_names() {
         if !live.iter().any(|n| n == &name) {
@@ -96,15 +88,7 @@ pub fn prune(live: &[String]) {
     }
 }
 
-/// Rewrite every persisted session record whose `project` equals `old_name`
-/// to `new_name`, preserving every other field verbatim. Called when a
-/// project is renamed in Settings, so a session's sidecar metadata (and
-/// anything later keyed off it, e.g. tmux reattach/discovery) does not rot
-/// into a stale project name.
-///
-/// A record that fails to read or write is skipped and warned about, not
-/// propagated — a rename must never fail because one sidecar is unreadable.
-/// Returns the number of records rewritten.
+/// A record that fails to read/write is skipped and warned about, not propagated — a rename must never fail on one bad sidecar.
 pub fn rename_project(old_name: &str, new_name: &str) -> usize {
     if old_name == new_name {
         return 0;
@@ -132,24 +116,7 @@ pub fn rename_project(old_name: &str, new_name: &str) -> usize {
     count
 }
 
-/// Repair persisted session records whose `project` names a project that no
-/// longer exists under the current project list — the rot this module was
-/// built to fix, e.g. a rename that happened before this propagation existed,
-/// or a stale sidecar surviving a project's delete/recreate.
-///
-/// `projects` is the current `(name, path)` list; a record whose `project` is
-/// already one of those names is left untouched. For every other record,
-/// `resolve` is asked to map its `wt_path` to the correct project name — path
-/// resolution is deliberately NOT this module's concern (see
-/// `grove_core::storage::project_for_worktree_path`); the caller supplies the
-/// decision as a closure so there is exactly one source of truth for it. The
-/// record is rewritten only when `resolve` returns `Some` with a different
-/// name than what is currently stored.
-///
-/// Read/write failures are skipped and warned about, exactly as in
-/// `rename_project`. Each successful repair is logged at `info` level, since
-/// unlike a rename this runs unattended at startup and is worth a paper
-/// trail. Returns the number of records repaired.
+/// `resolve` maps a stale record's `wt_path` to its correct project name — path resolution stays out of this module (see `storage::project_for_worktree_path`) so there's one source of truth.
 pub fn repair_stale_projects(
     projects: &[(String, String)],
     resolve: impl Fn(&str) -> Option<String>,
@@ -208,8 +175,6 @@ mod tests {
         }
     }
 
-    /// A session name containing `/` must cause `write` to return `Err` without
-    /// touching disk. The rejection happens inside `path_for` before any I/O.
     #[test]
     fn write_rejects_slash_in_name() {
         let result = write("evil/path", &make_meta());
@@ -219,7 +184,6 @@ mod tests {
         );
     }
 
-    /// A session name containing `\\` must be rejected.
     #[test]
     fn write_rejects_backslash_in_name() {
         let result = write("evil\\path", &make_meta());
@@ -229,7 +193,6 @@ mod tests {
         );
     }
 
-    /// A session name containing `..` must be rejected (path traversal).
     #[test]
     fn write_rejects_double_dot_in_name() {
         let result = write("..evil", &make_meta());
@@ -244,8 +207,6 @@ mod tests {
         );
     }
 
-    /// `read` returns `None` for a name containing `/` — it never reads a file
-    /// outside the sessions directory.
     #[test]
     fn read_returns_none_for_slash_in_name() {
         assert!(
@@ -254,7 +215,6 @@ mod tests {
         );
     }
 
-    /// `read` returns `None` for a name containing `..`.
     #[test]
     fn read_returns_none_for_double_dot_in_name() {
         assert!(
@@ -263,7 +223,6 @@ mod tests {
         );
     }
 
-    /// `SessionMeta` round-trips through `serde_json` faithfully.
     #[test]
     fn session_meta_serde_round_trip() {
         let meta = make_meta();
@@ -275,18 +234,7 @@ mod tests {
         assert_eq!(back.agent, meta.agent);
     }
 
-    /// The tests below exercise `rename_project`/`repair_stale_projects`
-    /// against the real sidecar directory (via `GROVE_CONFIG_DIR`, isolated
-    /// per test into a temp dir), never the user's live
-    /// `~/Library/Application Support/grove`.
-    ///
-    /// `GROVE_CONFIG_DIR` is process-global and `cargo test` runs the whole
-    /// crate's tests concurrently, including `storage.rs`'s own
-    /// `GROVE_CONFIG_DIR`-mutating tests in the SAME process — so this must
-    /// serialize against `storage::tests::CONFIG_DIR_ENV_TEST_LOCK`, the one
-    /// lock storage.rs's tests already use, rather than a second independent
-    /// mutex that would not stop the two modules interleaving with each
-    /// other.
+    /// Isolated per test via `GROVE_CONFIG_DIR`; serializes against `storage::tests::CONFIG_DIR_ENV_TEST_LOCK` since that env var is process-global and both modules' tests run concurrently.
     fn with_temp_config_dir<R>(f: impl FnOnce() -> R) -> R {
         let _lock = crate::storage::tests::CONFIG_DIR_ENV_TEST_LOCK
             .lock()
@@ -320,7 +268,6 @@ mod tests {
         }
     }
 
-    /// A record with the old name is rewritten to the new one.
     #[test]
     fn rename_project_rewrites_matching_records() {
         with_temp_config_dir(|| {
@@ -332,7 +279,6 @@ mod tests {
         });
     }
 
-    /// A record with a different project name is left completely untouched.
     #[test]
     fn rename_project_leaves_other_names_untouched() {
         with_temp_config_dir(|| {
@@ -345,7 +291,6 @@ mod tests {
         });
     }
 
-    /// Every field besides `project` survives the rewrite verbatim.
     #[test]
     fn rename_project_preserves_other_fields() {
         with_temp_config_dir(|| {
@@ -360,7 +305,6 @@ mod tests {
         });
     }
 
-    /// Same name in and out is a no-op — no spurious rewrite, no false count.
     #[test]
     fn rename_project_is_a_noop_when_names_match() {
         with_temp_config_dir(|| {
@@ -369,8 +313,6 @@ mod tests {
         });
     }
 
-    /// A record whose project is already known is left alone, even if the
-    /// resolver would have mapped its path elsewhere.
     #[test]
     fn repair_stale_projects_skips_known_names() {
         with_temp_config_dir(|| {
@@ -383,8 +325,6 @@ mod tests {
         });
     }
 
-    /// A record naming an unknown project is repaired using the resolver's
-    /// decision for its `wt_path`.
     #[test]
     fn repair_stale_projects_repairs_using_the_resolver() {
         with_temp_config_dir(|| {
@@ -398,8 +338,6 @@ mod tests {
         });
     }
 
-    /// When the resolver has no answer for a stale record, it is left alone
-    /// rather than guessed at.
     #[test]
     fn repair_stale_projects_leaves_unresolvable_records_alone() {
         with_temp_config_dir(|| {

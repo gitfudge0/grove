@@ -1,66 +1,4 @@
-//! DESIGN.md conformance tripwires — a lint-by-grep over the view layer.
-//!
-//! This project has no visual regression net: no screenshot tooling, no render
-//! tests for modals. A ~200-site sweep brought `src/views/` into line with
-//! DESIGN.md, and nothing mechanical stopped it from rotting back. This module
-//! is that cheap net: plain `#[test]` functions that read the view-layer `.rs`
-//! files as **source text** and fail on the exact patterns the sweep removed.
-//!
-//! It is deliberately *not* a real linter. No proc macro, no syntax tree, no
-//! dev-dependency, no extra toolchain — it runs in `cargo test` and it is a
-//! few hundred lines. That is the whole value proposition.
-//!
-//! **Known limits.** Because it reads text, it can be fooled:
-//!
-//! - a styling call built by a macro, or split across lines so the method and
-//!   its argument never share a line, is invisible to it;
-//! - a match inside a string literal or a comment is indistinguishable from
-//!   real code (comment lines are skipped, string literals are not);
-//! - R3's family check uses a fixed line window, so an unusually long element
-//!   chain can hide a legitimate `.font(` or shelter an illegitimate omission.
-//!
-//! R6 exists because of one of those limits. R1 only matches
-//! `.setter(rpx(N))`, so it is blind to every size passed *positionally* —
-//! icon sizes, dot sizes and modal widths are all bare function arguments, and
-//! that category alone produced most of the sweep's violations. R6 reads
-//! forward from a call to one of the known sizing functions ([`SIZE_FNS`]) and
-//! flags any top-level argument that is nothing but a number. What it does
-//! **not** catch: a size passed to a function not on that list; a size laundered
-//! through a local `let` or an arithmetic expression (`ICON_LG - 2.0` reads as
-//! a runtime choice and is deliberately ignored); a call whose arguments run
-//! past [`R6_WINDOW`] lines; and it cannot tell a *good* identifier from a bad
-//! one — `icon_btn(.., SPACE_2XL, ..)` is off-scale but passes, because R6
-//! checks the shape of the argument, not which scale it came from.
-//!
-//! It is a tripwire, not a proof. A green run means "none of the known
-//! regressions is present in an obvious form", never "the views conform".
-//!
-//! R8 is the narrowest of them by construction: it names three functions and
-//! checks each still mentions `CONTROL_H`. A source-text scan cannot tell an
-//! in-row control from any other element, so the rule guards the three that
-//! regressed rather than pretending to the general case its section states.
-//!
-//! R9, R10 and R11 guard the panel-modal grammar (§9.1.1) and its width scale
-//! (§8.5) the same way: narrow, text-shaped checks against the exact
-//! regressions the sweep found, not a general parse of "is this modal
-//! conformant". R9 requires `modal_panel(`'s first argument to start with
-//! `MODAL_W_` — it is blind to a width laundered through a local `let` or a
-//! wrapper function before it ever reaches `modal_panel`, and (like R6) to a
-//! call whose arguments run past [`R6_WINDOW`] lines, since it reuses
-//! [`call_args`]. R10 is a one-line lookahead: a `divider_h()` on the same
-//! line as, or the line directly before, a
-//! `modal_footer`/`modal_footer_hints` call is a violation, but inserting even one unrelated
-//! line between the two defeats it — it is a narrow tripwire, not a proof,
-//! exactly like the rules above it. R11 forbids `c::CYAN()`/`c::AMBER()` as an
-//! argument to `modal_header_with_close(` specifically; it cannot see a
-//! colour passed in through a variable instead of the literal
-//! `c::CYAN()`/`c::AMBER()` call, and — again like R6 and R9 — a call past
-//! [`R6_WINDOW`] lines is invisible to it.
-//!
-//! Each rule cites the DESIGN.md section it enforces, and every exemption is a
-//! narrow entry in an allow-list below naming the §14 case that sanctions it.
-//! If a rule fires on legitimate code, add an allow-list entry with a
-//! justification — do **not** loosen the rule.
+//! DESIGN.md conformance tripwires — a lint-by-grep over the view layer, not a real linter (see DESIGN.md).
 
 #![cfg(test)]
 
@@ -70,11 +8,8 @@ use std::path::PathBuf;
 
 /// A source line, with everything a failure message needs to be actionable.
 struct Line {
-    /// Path relative to the crate root, e.g. `src/views/modals/confirm.rs`.
     file: String,
-    /// The file's basename, which is what the allow-lists key on.
     name: String,
-    /// 1-based, matching what an editor shows.
     no: usize,
     text: String,
 }
@@ -89,8 +24,7 @@ fn view_lines() -> Vec<Line> {
         for entry in entries {
             let Ok(entry) = entry else { continue };
             let path = entry.path();
-            // Skip this file: it quotes every banned pattern verbatim in its
-            // rules and failure messages, and would flag itself.
+            // Skip self: this file quotes every banned pattern verbatim and would flag itself.
             if path.file_name().is_some_and(|n| n == "conformance.rs") {
                 continue;
             }
@@ -131,8 +65,6 @@ fn view_lines() -> Vec<Line> {
     lines
 }
 
-/// `true` for a line that is purely a comment — DESIGN.md quotes itself in doc
-/// comments all over the view layer, and prose is not a styling call.
 fn is_comment(l: &Line) -> bool {
     l.text.trim_start().starts_with("//")
 }
@@ -162,11 +94,8 @@ fn loc(l: &Line) -> String {
     format!("{}:{}", l.file, l.no)
 }
 
-// ---------------------------------------------------------------------------
 // R1 — no bare numeric literal in a styling call (§6.1, §13 "Code")
-// ---------------------------------------------------------------------------
 
-/// Styling setters whose argument must be a token, never a number.
 const STYLE_SETTERS: &[&str] = &[
     "px",
     "py",
@@ -189,8 +118,7 @@ const STYLE_SETTERS: &[&str] = &[
     "my",
 ];
 
-/// §14 case 3 — optical corrections. Each entry names the file, the exact
-/// snippet, and why the number is not on a scale.
+/// §14 case 3 — optical corrections.
 const R1_ALLOW: &[(&str, &str, &str)] = &[(
     "appbar.rs",
     ".h(rpx(14.0))",
@@ -236,13 +164,9 @@ fn r1_no_bare_numeric_literal_in_styling_call() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R2 — exactly one border weight (§7.2)
-// ---------------------------------------------------------------------------
 
-/// The number between `open` and the next `)`, if it is a plain literal.
-/// Returns `None` for a variable — `.border(px(border_w))` is a runtime
-/// choice between tokens and R2 cannot and should not judge it.
+/// The number between `open` and the next `)`, if it is a plain literal — `None` for a variable.
 fn literal_after(text: &str, open: &str) -> Option<(f32, String)> {
     let start = text.find(open)? + open.len();
     let rest = &text[start..];
@@ -285,31 +209,17 @@ fn r2_borders_are_one_pixel() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R3 — every text run pins a font family (§5.1, §5.2)
-// ---------------------------------------------------------------------------
 
-/// How many **code** lines either side of a `.text_size(` may carry the
-/// `.font(` that belongs to the same element chain. Comment lines are dropped
-/// before the window is measured: a comment cannot carry a `.font(`, so
-/// counting one against the budget only makes a well-documented chain look
-/// like an undocumented violation. Tuned against the real tree: the widest
-/// legitimate gap is `confirm.rs`'s `input_modal`, where the family is pinned
-/// on the container six code lines above the `Input` that sets the size; 6
-/// leaves room without letting an unrelated chain vouch.
+/// Tuned to the widest legitimate gap in the real tree (confirm.rs's input_modal, 6 lines).
 const R3_WINDOW: usize = 6;
 
-/// Files exempt from R3 wholesale, with the clause that sanctions it.
 const R3_EXEMPT_FILES: &[(&str, &str)] = &[(
     "components.rs",
     "§5.2: this file *is* the two text primitives. `ui` and `mono` are the \
      only places a family is bound to a size; every other view consumes them.",
 )];
 
-/// §14-sanctioned sites that pin a family and size directly instead of going
-/// through `ui`/`mono`. These pass R3 on their own merits (they do carry a
-/// `.font(`); the list exists so a reader knows they were reviewed, not
-/// missed.
 const R3_REVIEWED: &[(&str, &str)] = &[
     (
         "statusbar.rs",
@@ -329,16 +239,7 @@ const R3_REVIEWED: &[(&str, &str)] = &[
     ),
 ];
 
-/// Genuine remaining violations, tracked rather than silently tolerated.
-/// **This is debt, not an exemption.** Anything here must be fixed and
-/// removed; nothing may be added without a matching report to a human.
-///
-/// **It must stay empty.** The last entry (`confirm.rs`'s `input_zone`, which
-/// sized its `Input` without pinning a family) has been fixed at source, so
-/// there is no outstanding R3 debt. The mechanism is kept rather than deleted
-/// because an entry here is the only sanctioned way to land a *temporary* R3
-/// bypass — and keeping it visible and empty is what makes a future addition
-/// obviously a regression rather than routine.
+/// Debt tracker, not an exemption — must stay empty.
 const R3_KNOWN_VIOLATIONS: &[(&str, &str, &str)] = &[];
 
 #[test]
@@ -380,16 +281,8 @@ fn r3_every_text_run_pins_a_font_family() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R4 — display tiers are never chrome (§5.3, §13 "Visual")
-// ---------------------------------------------------------------------------
 
-/// The only sanctioned consumers of the display tiers. A `None` snippet
-/// allow-lists the whole file (§5.3's onboarding/empty-state screens, which
-/// are nothing *but* display-tier chrome); a `Some` snippet narrows the
-/// allowance to matching lines only, the same technique [`R1_ALLOW`] uses, so
-/// the rest of a shared file — like the Settings/ScriptsEditor modals living
-/// in `settings.rs` — still gets checked.
 const R4_ALLOW: &[(&str, Option<&str>, &str)] = &[
     (
         "tokens.rs",
@@ -433,9 +326,7 @@ fn r4_display_tiers_never_appear_in_chrome() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R5 — tracking is mono-only (§5.4)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn r5_tracked_text_is_mono_only() {
@@ -458,18 +349,9 @@ fn r5_tracked_text_is_mono_only() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// R6 — no bare numeric literal as a size *argument* (§5.3.1, §5.3.2, §8.5)
-// ---------------------------------------------------------------------------
+// R6 — no bare numeric literal as a size argument (§5.3.1, §5.3.2, §8.5)
 
-/// Functions that take a size on one of the scales as a positional argument.
-/// R1 cannot see these: it matches `.setter(rpx(N))`, and every icon, dot and
-/// panel width is a bare function argument instead — which is exactly the
-/// shape that produced most of the sweep's original violations.
-///
-/// Each pattern ends in `(` so the match is a call, and a match is only taken
-/// when the preceding character cannot continue an identifier — otherwise
-/// `flat_icon_btn(` would also match as `icon_btn(`.
+/// Functions R1 can't see: sizes passed positionally instead of via `.setter(rpx(N))`.
 const SIZE_FNS: &[&str] = &[
     "icons::icon(",
     "icon_btn(",
@@ -481,15 +363,10 @@ const SIZE_FNS: &[&str] = &[
     "modal_action_sized(",
 ];
 
-/// How many lines of a call R6 will read. rustfmt puts one argument per line
-/// for these calls, so the literal usually sits on its own line well below the
-/// opener; 24 covers the longest real call (`icon_btn`'s ten arguments plus a
-/// multi-line closure) without running into the next item.
+/// Covers the longest real call (icon_btn's ten args plus a multi-line closure).
 const R6_WINDOW: usize = 24;
 
-/// `true` if `t` is nothing but a numeric literal — `12`, `13.0`, `0.5`.
-/// An identifier (`ICON_SM`, `MODAL_W_LG`, `CONTROL_H`) is what R6 wants, and
-/// an expression (`w - SPACE_LG`) is a runtime choice R6 must not judge.
+/// `true` if `t` is nothing but a numeric literal — an identifier or expression is not.
 fn is_numeric_literal(t: &str) -> bool {
     let t = t.trim();
     !t.is_empty()
@@ -497,10 +374,7 @@ fn is_numeric_literal(t: &str) -> bool {
         && t.chars().any(|c| c.is_ascii_digit())
 }
 
-/// The top-level, comma-separated arguments of a call whose `(` has already
-/// been consumed, reading forward from `lines[i]` at byte offset `from`.
-/// Stops at the matching `)`. Comment-only continuation lines are skipped —
-/// prose is not an argument, and it can carry stray parens and commas.
+/// The top-level, comma-separated arguments of a call whose `(` was already consumed.
 fn call_args(lines: &[Line], i: usize, from: usize) -> Vec<String> {
     let file = &lines[i].file;
     let mut args = vec![String::new()];
@@ -523,7 +397,6 @@ fn call_args(lines: &[Line], i: usize, from: usize) -> Vec<String> {
                         return args;
                     }
                 }
-                // The separator itself belongs to neither argument.
                 ',' if depth == 1 => {
                     args.push(String::new());
                     continue;
@@ -536,7 +409,6 @@ fn call_args(lines: &[Line], i: usize, from: usize) -> Vec<String> {
                 }
             }
         }
-        // A line break inside a call is an argument separator's worth of space.
         if let Some(last) = args.last_mut() {
             last.push(' ');
         }
@@ -587,36 +459,16 @@ fn r6_no_bare_numeric_literal_as_a_size_argument() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R7 — no pictographic character literal in a text run (§9.3)
-// ---------------------------------------------------------------------------
 
-/// `true` for a codepoint that belongs in the icon sprite (`src/icons.rs`),
-/// never as a character literal in a string the view layer builds — the bug
-/// this rule was written to catch: `modal_checkbox`'s tick used to be a
-/// literal `"✓"` (U+2713), and the bundled fonts have no glyph for it (§9.3).
-///
-/// Scoped to the blocks §9.3 actually names: Dingbats, Miscellaneous Symbols,
-/// Geometric Shapes, Box Drawing, Braille Patterns, plus the dedicated
-/// checkmark/cross-mark codepoints that sit outside those blocks (U+2713,
-/// U+2714, U+2717, U+2718). It deliberately does **not** ban the whole
-/// General Punctuation block (U+2000-U+206F): U+2009 THIN SPACE is
-/// `tracked()`'s own building block (§5.4), and General Punctuation also
-/// hosts ordinary prose marks (en/em dash, ellipsis) with real font coverage.
-/// Real keyboard-key characters (`⏎` U+23CE, `↑` `↓` `←` `→` U+2190-2199,
-/// `esc`/`cmd`/`alt` as plain ASCII words) are outside every banned range, so
-/// the keycap pattern (§5.2) stays legal without an allow-list entry.
-///
-/// The dedicated checkmark/cross-mark codepoints (U+2713, U+2714, U+2717,
-/// U+2718 — the regression this rule exists to catch) already fall inside the
-/// Dingbats block (U+2700-U+27BF) below, so they need no separate arm.
+/// Scoped to Dingbats/Misc Symbols/Geometric Shapes/Box Drawing/Braille, per DESIGN.md §9.3.
 fn is_unmapped_pictographic_mark(c: char) -> bool {
     let cp = c as u32;
     matches!(cp,
-        0x2600..=0x27BF // Miscellaneous Symbols + Dingbats (incl. check/cross marks)
-        | 0x25A0..=0x25FF // Geometric Shapes
-        | 0x2500..=0x257F // Box Drawing
-        | 0x2800..=0x28FF // Braille Patterns
+        0x2600..=0x27BF
+        | 0x25A0..=0x25FF
+        | 0x2500..=0x257F
+        | 0x2800..=0x28FF
     )
 }
 
@@ -639,8 +491,6 @@ mod r7_classifier_tests {
     }
 }
 
-/// §14-sanctioned exceptions: not a text run at all, but a test fixture
-/// proving a sanitizer *strips* the very characters R7 bans.
 const R7_ALLOW: &[(&str, &str, &str)] = &[(
     "rows.rs",
     "sanitize_ui_text(\"",
@@ -687,37 +537,15 @@ fn r7_no_pictographic_character_literal_in_a_text_run() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R8 — in-row controls declare CONTROL_H (§8.1)
-// ---------------------------------------------------------------------------
 
-/// Functions whose doc comment in `components.rs` explicitly claims the
-/// `CONTROL_H` (22) height §8.1 names as "the height of every flat icon/text
-/// button". Named by exact string match rather than parsed as an AST: a
-/// text-only scan cannot reliably tell "a function that claims CONTROL_H in
-/// its own body" (`flat_text_btn`, `seg_button`, both of which write
-/// `.h(rpx(CONTROL_H))` directly) from "a function that claims it by handing
-/// the token to another function as a positional argument"
-/// (`flat_icon_btn`, which passes `CONTROL_H` to `icon_btn`'s `box_h`
-/// parameter and never writes `.h(` itself). Requiring `.h(`/`.size(` to
-/// co-occur with `CONTROL_H` would false-negative on `flat_icon_btn`, so the
-/// check below only asks whether the token `CONTROL_H` appears anywhere in
-/// the named function's own body — narrower than "declares its height with
-/// CONTROL_H", but honest about what a source-text scan can tell apart.
-/// `icon_btn` and `seg_button_content` are deliberately not listed: neither's
-/// doc comment claims a fixed CONTROL_H height (both take the height, or the
-/// whole content box, from a caller).
+/// Named explicitly because a text scan can't tell "declares CONTROL_H directly" from "hands it to another function" (flat_icon_btn).
 const CONTROL_H_FUNCTIONS: &[&str] = &["flat_icon_btn", "flat_text_btn", "seg_button"];
 
-/// The lines of `components.rs`'s body for `pub fn <name>`, from its
-/// signature line up to (not including) the next top-level `pub fn`/`fn`.
 fn function_body<'a>(lines: &'a [Line], name: &str) -> Vec<&'a Line> {
     function_body_in(lines, "components.rs", name)
 }
 
-/// [`function_body`], generalized to any file — [`function_body`] itself
-/// stays components.rs-only since that's the overwhelming majority of
-/// callers and a bare `name` arg reads simpler at those call sites.
 fn function_body_in<'a>(lines: &'a [Line], file: &str, name: &str) -> Vec<&'a Line> {
     let start = lines.iter().position(|l| {
         l.name == file
@@ -772,9 +600,7 @@ fn r8_the_three_named_control_h_functions_still_declare_it() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R9 — every modal panel's width is a token (§8.5)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn r9_every_modal_panel_width_is_a_token() {
@@ -789,8 +615,7 @@ fn r9_every_modal_panel_width_is_a_token() {
         while let Some(off) = l.text[from..].find(pat) {
             let at = from + off;
             from = at + pat.len();
-            // Skip the function definition itself (components.rs) — a
-            // signature is not a call site.
+            // Skip the definition itself — a signature is not a call site.
             let trimmed = l.text.trim_start();
             if trimmed.starts_with("pub fn ") || trimmed.starts_with("fn ") {
                 continue;
@@ -825,20 +650,7 @@ fn r9_every_modal_panel_width_is_a_token() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R10 — no rule above a footer (§9.1.1 "the one rule after the header")
-// ---------------------------------------------------------------------------
-//
-// Rewritten for plan.md §2's C2g "statusbar" footer. The old rationale —
-// "footer_container's own background-fill change already reads as the
-// boundary" — died the moment C2g deleted that fill: footer_container now
-// draws its *own* top divider instead of sitting on a BG_STRIP band. The
-// check a call site must not add a second divider_h() still holds (two rules
-// for one seam is still wrong), but the reason has flipped: the seam is now
-// a rule, not a fill, so double-marking it means two divider_h()s stacked
-// rather than a divider_h() on top of a colour change. The second half below
-// is new: it asserts the seam the call-site check assumes actually exists,
-// by requiring footer_container's own body to contain that divider.
 
 #[test]
 fn r10_no_divider_directly_above_a_footer() {
@@ -872,12 +684,7 @@ fn r10_no_divider_directly_above_a_footer() {
     );
 }
 
-/// R10's inverse: the seam the call-site check above assumes exists must
-/// actually be drawn *inside* [`crate::views::components::footer_container`]
-/// itself. Without this half, deleting `footer_container`'s own
-/// `divider_h()` call would make the call-site check vacuously true — no
-/// call site adds a second rule, because there is no longer a first one
-/// either — and every modal footer would silently lose its top seam.
+/// R10's inverse: footer_container itself must still draw the seam, or the call-site check above passes vacuously.
 #[test]
 fn r10_footer_container_draws_its_own_top_divider() {
     let lines = view_lines();
@@ -897,16 +704,8 @@ fn r10_footer_container_draws_its_own_top_divider() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R11 — modal headers use only the two sanctioned accents (§9.1.1's accent rule)
-// ---------------------------------------------------------------------------
 
-/// Justified exceptions to R11's CYAN/AMBER ban, keyed by the header's `id`
-/// argument (the string literal passed as the call's first argument). Each
-/// entry must be load-bearing, not a workaround: the archive-confirmation
-/// gate's AMBER is the caution accent for a semi-destructive action
-/// (plan.md's own decision — see `project.rs`'s `archive_project_modal`),
-/// not a header-specific palette creeping back in.
 const R11_ACCENT_ALLOWLIST: &[&str] = &["arch-close"];
 
 #[test]
@@ -917,11 +716,7 @@ fn r11_modal_headers_use_only_the_two_sanctioned_accents() {
         if is_comment(l) {
             continue;
         }
-        // R19's dead-rule replacement: `modal_header_with_close` is a thin
-        // wrapper over `modal_header_slotted`/`_custom` (`components.rs`),
-        // so every accent that can reach a header arrives through one of
-        // these three call shapes — checking only the wrapper missed the
-        // five call sites that build a slotted header directly.
+        // Every accent that reaches a header arrives through one of these three call shapes.
         for pat in [
             "modal_header_with_close(",
             "modal_header_slotted(",
@@ -964,25 +759,9 @@ fn r11_modal_headers_use_only_the_two_sanctioned_accents() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R12 — every text field keeps the zeroed-inset Input contract (§14, field_box's doc comment)
-// ---------------------------------------------------------------------------
 
-/// The five calls [`crate::views::components::field_box`]'s doc comment
-/// requires on the `Input` it wraps. Scoped to every `Input::new(` call site
-/// rather than to `field_box(` call sites specifically: the launcher's
-/// search zone is the one sanctioned field that never calls `field_box` at
-/// all (plan.md §1's borderless exception), and it owes the same five-call
-/// contract on the bare `Input` it builds directly on `BG_RAIL`. Scanning
-/// from `Input::new(` catches both shapes with one pattern instead of a
-/// `field_box` check plus a hand-written exemption for the one call site
-/// that skips it.
-// Each entry is a set of alternate spellings for one required call in the
-// chain — `px(0.0)` when `px` is imported bare, `gpui::px(0.0)` when it
-// isn't — so the *zeroed* literal is what's matched, not just the bare
-// method name. A bare `.pl(` would also match a non-zero inset (e.g. a
-// sibling container's `.pl(rpx(SPACE_XL))`), which is exactly the
-// regression this rule exists to catch.
+/// Scoped to Input::new( sites, not just field_box( — the launcher's search zone builds a bare Input directly.
 const INPUT_CONTRACT_CALLS: &[&[&str]] = &[
     &[".appearance(false)"],
     &[".pl(px(0", ".pl(gpui::px(0"],
@@ -991,12 +770,6 @@ const INPUT_CONTRACT_CALLS: &[&[&str]] = &[
     &[".w_full("],
 ];
 
-/// The chain itself is five short calls (`.appearance(false)` +
-/// `.pl/.pr/.py(px(0.0))` + `.w_full()`), one per line, immediately after
-/// `Input::new(..)` — nothing else legitimately sits between them. A window
-/// this tight can't be satisfied by an unrelated sibling element's own
-/// `.pl(`/`.pr(`/`.py(` further down the same block, the way the old
-/// [`R6_WINDOW`]-wide scan could.
 const INPUT_CONTRACT_WINDOW: usize = 16;
 
 #[test]
@@ -1011,10 +784,6 @@ fn r12_every_text_field_keeps_the_zeroed_inset_input_contract() {
         if l.text.find(pat).is_none() {
             continue;
         }
-        // The chained `.appearance/.pl/.pr/.py/.w_full` calls sit *after*
-        // `Input::new(..)`'s closing paren, not inside its argument list —
-        // an R6-style forward window over raw lines, not `call_args`, is
-        // what reads them.
         let hi = (i + INPUT_CONTRACT_WINDOW).min(lines.len());
         let window: String = lines[i..hi]
             .iter()
@@ -1048,9 +817,7 @@ fn r12_every_text_field_keeps_the_zeroed_inset_input_contract() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R13 — field_underline is retired and cannot come back (plan.md §1)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn r13_field_underline_is_gone_and_cannot_come_back() {
@@ -1075,11 +842,8 @@ fn r13_field_underline_is_gone_and_cannot_come_back() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R14 — esc hint vocabulary is exactly cancel / close / back (plan.md §3)
-// ---------------------------------------------------------------------------
 
-/// §14-sanctioned exceptions to the plain cancel/close/back vocabulary.
 const R14_ALLOW: &[(&str, &str, &str)] = &[(
     "project.rs",
     "skip & remove",
@@ -1090,11 +854,6 @@ const R14_ALLOW: &[(&str, &str, &str)] = &[(
      next to the hint.",
 )];
 
-/// The char immediately before `at` in `text`, or `None` at the start of the
-/// line. Used to tell an array/tuple element (`&[("esc", ..`, preceded by
-/// `[`/`,`/whitespace) from a function call whose first argument happens to
-/// be the literal `"esc"` (`static_row("esc", "Close modals")`, a
-/// shortcut-reference *body row*, not a footer hint tuple).
 fn char_before(text: &str, at: usize) -> Option<char> {
     text[..at].chars().next_back()
 }
@@ -1128,11 +887,7 @@ fn r14_esc_hint_vocabulary_is_exactly_cancel_close_or_back() {
                         continue;
                     }
                 }
-                // Case B: the key and its label are on separate lines
-                // (rustfmt one-per-line tuple), e.g.
-                //   "esc",
-                //   "close",
-                // — look ahead a few non-comment lines for the label.
+                // Case B: key and label on separate lines (rustfmt one-per-line tuple).
                 for n in lines.iter().skip(i + 1).take(4) {
                     if n.file != l.file || is_comment(n) {
                         continue;
@@ -1151,9 +906,7 @@ fn r14_esc_hint_vocabulary_is_exactly_cancel_close_or_back() {
                 }
             }
         } else if l.text.trim() == "\"esc\"," {
-            // The standalone-line half of case B, keyed off the key line
-            // rather than the call: `("esc"` never matched because the `(`
-            // sits on the previous line (`&[(`).
+            // Standalone-line half of case B — the `(` sits on the previous line.
             for n in lines.iter().skip(i + 1).take(4) {
                 if n.file != l.file || is_comment(n) {
                     continue;
@@ -1184,9 +937,7 @@ fn r14_esc_hint_vocabulary_is_exactly_cancel_close_or_back() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R15 — footer button order is always Plain before Primary/Danger (plan.md §3)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn r15_footer_button_order_is_plain_before_primary_or_danger() {
@@ -1206,7 +957,6 @@ fn r15_footer_button_order_is_plain_before_primary_or_danger() {
                 continue;
             }
             let args = call_args(&lines, i, from);
-            // The buttons vec is the last top-level argument.
             let Some(buttons) = args.last() else { continue };
             let plain_at = buttons.find("ModalBtn::Plain");
             let Some(plain_at) = plain_at else { continue };
@@ -1231,9 +981,7 @@ fn r15_footer_button_order_is_plain_before_primary_or_danger() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R16 — FOOTER_RADIUS is retired; the panel radius stays full RADIUS_PANEL (plan.md §2)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn r16_footer_radius_is_retired() {
@@ -1278,15 +1026,8 @@ fn r16_footer_radius_is_retired() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R17 — radius arguments are RADIUS_* tokens (§7.1's four-notch scale, extends R1/R6)
-// ---------------------------------------------------------------------------
 
-/// The four-notch radius scale, plus `SWATCH_RADIUS` — plan.md §3's "moves
-/// onto the scale or gets tokenized" resolved the second way: it is a named
-/// `tokens.rs` constant (2.0, the theme swatch's own corner, one below
-/// RADIUS_CONTROL) rather than a bare literal, so it is a fifth sanctioned
-/// name rather than a per-file allow-list entry.
 const RADIUS_TOKENS: &[&str] = &[
     "RADIUS_CONTROL",
     "RADIUS_GROUP",
@@ -1295,8 +1036,6 @@ const RADIUS_TOKENS: &[&str] = &[
     "SWATCH_RADIUS",
 ];
 
-/// `.rounded`/`.rounded_bl`/`.rounded_br`/`.rounded_tl`/`.rounded_tr` — every
-/// corner-radius setter that takes an `rpx(..)` argument.
 const ROUNDED_SETTERS: &[&str] = &[
     "rounded_bl",
     "rounded_br",
@@ -1324,17 +1063,7 @@ fn r17_radius_arguments_are_radius_tokens() {
                 if is_token {
                     continue;
                 }
-                // A bare numeric literal is always a violation (R1 also
-                // catches this shape, but R17 is the one whose message names
-                // the radius scale specifically). An ALL-CAPS identifier
-                // that isn't in RADIUS_TOKENS is an off-scale token —
-                // exactly the blind spot R1's own doc comment admits it has.
-                // A lowercase identifier or expression (`rpx(r)` passing
-                // through a local `let` already validated at its own
-                // definition, `w - SPACE_LG`) is a runtime choice this
-                // text-only scan cannot and should not judge — the same
-                // deliberate limitation R6 documents for its own argument
-                // scan.
+                // An off-scale ALL-CAPS identifier is the blind spot R1 admits it has.
                 let ident: String = arg
                     .chars()
                     .take_while(|c| c.is_alphanumeric() || *c == '_')
@@ -1363,21 +1092,8 @@ fn r17_radius_arguments_are_radius_tokens() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R18 — the retired overflow windows do not come back (plan.md §3 "one overflow strategy")
-// ---------------------------------------------------------------------------
 
-/// The three render functions plan.md names as needing the shared scroll
-/// cap. The positive half of R18 asserts each function's own body actually
-/// contains `MODAL_SCROLL_MAX_H`, not just that the old windows are gone —
-/// the two failure modes are independent (a retired DIR_ROWS proves nothing
-/// about whether ShortcutOverlay ever got capped, since it never had a
-/// window to retire in the first place). Scoped to the named function's
-/// body rather than "somewhere in the file": `settings.rs` alone carries
-/// six independent `MODAL_SCROLL_MAX_H` uses, so a whole-file "does this
-/// token appear anywhere" check is satisfied by the other five even if
-/// `shortcut_overlay` itself loses its cap — the one file-level check
-/// cannot tell which of its many capped surfaces regressed.
 const R18_CAPPED_FNS: &[(&str, &str)] = &[
     ("add_project.rs", "dir_list"),
     ("theme_picker.rs", "picker"),
@@ -1430,21 +1146,14 @@ fn r18_retired_overflow_windows_do_not_come_back() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R19 — one slotted header; the header-row fork is components-only (plan.md §3)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn r19_one_slotted_header_the_row_fork_is_components_only() {
     let lines = view_lines();
     let mut hits = Vec::new();
 
-    // (a) `modal_header_row` must stay private — if it were `pub`, the
-    // cross-file ban below would be *unfalsifiable*: nothing outside
-    // components.rs could legally call a private fn in the first place, so
-    // the ban would pass whether or not it's actually enforcing anything.
-    // Making the fn `pub` is the one change that both defeats this rule and
-    // slips straight past it, so it's checked here directly.
+    // modal_header_row must stay private, or the cross-file ban below is unfalsifiable.
     let sig = lines.iter().find(|l| {
         l.name == "components.rs" && l.text.trim_start().starts_with("fn modal_header_row(")
     });
@@ -1467,7 +1176,6 @@ fn r19_one_slotted_header_the_row_fork_is_components_only() {
         }
     }
 
-    // (b) no view file other than components.rs may call it directly.
     for l in &lines {
         if is_comment(l) {
             continue;
@@ -1495,15 +1203,8 @@ fn r19_one_slotted_header_the_row_fork_is_components_only() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // R20 — no hard-coded panel shadow, no bordered click_action inside a body (plan.md §3)
-// ---------------------------------------------------------------------------
 
-/// The three in-body actions plan.md §3 names as no longer allowed a
-/// bordered `click_action` shell — each must route through `body_action` /
-/// `flat_text_btn_tinted` instead. Matched by a label substring rather than
-/// full-string equality: "Kill all sessions (N)" and "Waiting…"/"Browse…"
-/// carry runtime state in the label.
 const R20_BANNED_BORDERED_LABELS: &[&str] = &["Change", "Kill all sessions", "Browse"];
 
 #[test]
@@ -1511,11 +1212,7 @@ fn r20_no_hardcoded_shadow_or_bordered_in_body_action() {
     let lines = view_lines();
     let mut hits = Vec::new();
 
-    // (a) modal_panel's shadow must come from the theme token, never a
-    // hard-coded black struct literal. `function_body` returns an empty
-    // Vec both when the function is genuinely shadow-free and when it was
-    // renamed out from under this rule — those two cases must not look the
-    // same, or a rename (or a deleted shadow) ships a silent pass.
+    // Distinguish "genuinely shadow-free" from "renamed out from under this rule".
     let body = function_body(&lines, "modal_panel");
     assert!(
         !body.is_empty(),
@@ -1539,8 +1236,6 @@ fn r20_no_hardcoded_shadow_or_bordered_in_body_action() {
         }
     }
 
-    // (b) the three named in-body actions must not be a bordered
-    // click_action — that shell is body_action's job now.
     for (i, l) in lines.iter().enumerate() {
         if is_comment(l) {
             continue;
@@ -1582,9 +1277,7 @@ fn r20_no_hardcoded_shadow_or_bordered_in_body_action() {
     );
 }
 
-/// The allow-lists are the load-bearing part of this module: a rule that
-/// passes because it was watered down is worse than no rule. This guards
-/// against an entry losing its justification in a future edit.
+/// The allow-lists are the load-bearing part of this module — guards against one losing its justification.
 #[test]
 fn every_allow_list_entry_carries_a_justification() {
     let entries: Vec<(&str, &str)> = R1_ALLOW

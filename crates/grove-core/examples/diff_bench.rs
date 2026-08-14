@@ -204,7 +204,6 @@ fn main() {
         new_spans.len()
     );
 
-    // ── (a) unified_rows derivation ─────────────────────────────────────
     let mut a_ns = Vec::with_capacity(ITERATIONS as usize);
     let mut unified_rows = Vec::new();
     for _ in 0..ITERATIONS {
@@ -218,7 +217,6 @@ fn main() {
         unified_rows.len()
     );
 
-    // ── (b) paired_rows derivation ───────────────────────────────────────
     let mut b_ns = Vec::with_capacity(ITERATIONS as usize);
     let mut paired_rows = Vec::new();
     for _ in 0..ITERATIONS {
@@ -232,7 +230,6 @@ fn main() {
         paired_rows.len()
     );
 
-    // ── (c) span projection for unified mode ────────────────────────────
     let mut c_ns = Vec::with_capacity(ITERATIONS as usize);
     let mut total_unified_spans: usize = 0;
     let mut unified_line_count: usize = 0;
@@ -256,7 +253,6 @@ fn main() {
         "BASELINE unified span projection (line_spans over all UnifiedRow::Line): mean={c_mean_us:.2}us total_over_{ITERATIONS}_iters={c_total_us:.2}us"
     );
 
-    // ── (d) split-mode per-frame work: word_runs + line_spans per side ──
     let mut d_ns = Vec::with_capacity(ITERATIONS as usize);
     let mut total_word_run_pairs: usize = 0;
     let mut total_split_spans: usize = 0;
@@ -289,7 +285,6 @@ fn main() {
         "BASELINE split-mode per-frame work (word_runs on Del/Add pairs + line_spans both sides): mean={d_mean_us:.2}us total_over_{ITERATIONS}_iters={d_total_us:.2}us word_run_segments={total_word_run_pairs} split_spans={total_split_spans}"
     );
 
-    // ── (e) realistic combined per-frame costs ──────────────────────────
     // The current view re-derives paired_rows twice per split frame (once
     // for layout, once for painting/measurement) — see the split-view call
     // sites in src/views; that duplication is reproduced here rather than
@@ -303,7 +298,6 @@ fn main() {
         "BASELINE one split frame (paired_rows x2, current view derives twice, + per-frame word-diff/span work): {split_frame_us:.2}us"
     );
 
-    // ── element counts ───────────────────────────────────────────────────
     let mut hunk_header_count = 0usize;
     for row in &unified_rows {
         if matches!(row, UnifiedRow::HunkHeader(_)) {
@@ -370,7 +364,6 @@ fn main() {
         paired_rows.len()
     );
 
-    // ── AFTER: the post-optimization shape ──────────────────────────────
     // Rows and spans are now baked once per patch load into an `Rc`'d
     // vector (`grove_core::render_rows`), and the unified body is a
     // `uniform_list` that builds only its visible range.
@@ -439,7 +432,6 @@ fn main() {
         "AFTER unified mode element count for a ~{VISIBLE_ROWS}-row visible window (uniform_list builds only the visible range): {window_elements} (full list for contrast: {unified_elements})"
     );
 
-    // ── split-mode virtualization: uniform_list builds one item per row ──
     // Split is now a `uniform_list` of paired rows, exactly like unified —
     // one `SplitRenderRow` per item, so the visible window is just the first
     // `VISIBLE_ROWS` rows, no item grouping to translate back through.

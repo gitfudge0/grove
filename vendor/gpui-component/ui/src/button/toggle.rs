@@ -19,13 +19,10 @@ pub enum ToggleVariant {
 }
 
 pub trait ToggleVariants: Sized {
-    /// Set the variant of the toggle.
     fn with_variant(self, variant: ToggleVariant) -> Self;
-    /// Set the variant to ghost.
     fn ghost(self) -> Self {
         self.with_variant(ToggleVariant::Ghost)
     }
-    /// Set the variant to outline.
     fn outline(self) -> Self {
         self.with_variant(ToggleVariant::Outline)
     }
@@ -47,7 +44,6 @@ pub struct Toggle {
 }
 
 impl Toggle {
-    /// Create a new Toggle element.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -69,35 +65,29 @@ impl Toggle {
         }
     }
 
-    /// Set tooltip text for the toggle.
     pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
         self.tooltip.text = Some((tooltip.into(), None));
         self
     }
 
-    /// Add a label to the toggle.
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
         let label: SharedString = label.into();
         self.children.push(label.into_any_element());
         self
     }
 
-    /// Add icon to the toggle.
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         let icon: Icon = icon.into();
         self.children.push(icon.into());
         self
     }
 
-    /// Set the checked state of the toggle, default: false
     pub fn checked(mut self, checked: bool) -> Self {
         self.checked = checked;
         self
     }
 
-    /// Set the callback to be called when the toggle is clicked.
-    ///
-    /// The `&bool` parameter represents the new checked state of the toggle.
+    /// `&bool` is the new checked state.
     pub fn on_click(mut self, handler: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Box::new(handler));
         self
@@ -213,7 +203,6 @@ impl RenderOnce for Toggle {
     }
 }
 
-/// A group of toggles.
 #[derive(IntoElement)]
 pub struct ToggleGroup {
     id: ElementId,
@@ -227,7 +216,6 @@ pub struct ToggleGroup {
 }
 
 impl ToggleGroup {
-    /// Create a new ToggleGroup element.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -241,21 +229,17 @@ impl ToggleGroup {
         }
     }
 
-    /// Add a child [`Toggle`] to the group.
     pub fn child(mut self, toggle: impl Into<Toggle>) -> Self {
         self.items.push(toggle.into());
         self
     }
 
-    /// Add multiple [`Toggle`]s to the group.
     pub fn children(mut self, children: impl IntoIterator<Item = impl Into<Toggle>>) -> Self {
         self.items.extend(children.into_iter().map(Into::into));
         self
     }
 
-    /// Set the callback to be called when the toggle group changes.
-    ///
-    /// The `&Vec<bool>` parameter represents the new check state of each [`Toggle`] in the group.
+    /// `&Vec<bool>` is the new checked state of each [`Toggle`] in the group.
     pub fn on_click(
         mut self,
         on_click: impl Fn(&Vec<bool>, &mut Window, &mut App) + 'static,
@@ -264,10 +248,7 @@ impl ToggleGroup {
         self
     }
 
-    /// Render the group as a connected segmented control.
-    ///
-    /// This keeps the existing multi-toggle behavior, but removes the default
-    /// gap and joins adjacent item borders into a single segmented outline.
+    /// Removes the default gap and joins adjacent item borders into one segmented outline.
     pub fn segmented(mut self) -> Self {
         self.segmented = true;
         self
@@ -401,7 +382,7 @@ mod tests {
             .disabled(false)
             .on_click(|_, _, _| {});
 
-        assert_eq!(toggle.children.len(), 2); // label + icon
+        assert_eq!(toggle.children.len(), 2);
         assert!(toggle.checked);
         assert_eq!(toggle.variant, ToggleVariant::Outline);
         assert_eq!(toggle.size, Size::Large);

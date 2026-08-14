@@ -1,12 +1,5 @@
-//! The right-docked worktree terminal slide-over (Plan 07 Task 6). Port of
-//! `src/gui/view/terminal.rs:234-393` (the panel and its tabs) and `:78-87`
-//! (the divider).
-//!
-//! The panel is **never rendered in grid view**: `workspace()` returns
-//! `grid_workspace()` at `terminal.rs:182-184`, before the split at `:204`, and
-//! `focused_session` checks `grid_view` first (`pty_input.rs:164-166`) — there
-//! is no single "active worktree" in a grid. Confirmed against the oracle in
-//! the Plan 07 Task 6 Step 4 report.
+//! Port of `src/gui/view/terminal.rs:234-393` (panel/tabs) and `:78-87` (divider).
+//! Never rendered in grid view: no single "active worktree" exists there (`pty_input.rs:164-166`).
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -35,13 +28,10 @@ pub enum PanelAction {
 
 pub type PanelDispatch = Rc<dyn Fn(PanelAction, &mut Window, &mut App)>;
 
-/// One shell tab's height. Two pixels above [`CONTROL_H`] so a tab carrying a
-/// dot, a glyph and a close button still centres inside the `SESSBAR_H` strip
-/// (`terminal.rs:319-393`).
+/// Two pixels above [`CONTROL_H`] so a tab's dot, glyph and close button still centre inside `SESSBAR_H` (`terminal.rs:319-393`).
 const TAB_H: f32 = 24.0;
 
-/// The tab's close-button hit box — square, and the tallest box that still
-/// leaves a pixel of breathing room inside [`TAB_H`].
+/// Square, and the tallest box that still leaves a pixel of breathing room inside [`TAB_H`].
 const TAB_CLOSE_BOX: f32 = 18.0;
 
 /// One panel shell as a tab draws it.
@@ -57,9 +47,7 @@ pub struct PanelCtx {
     pub dispatch: PanelDispatch,
 }
 
-/// A small floating hint label matching iced's `Self::hint` chrome
-/// (`common.rs:199-220`): `BG_STRIP` fill, `BORDER` border, `[4, 8]` padding,
-/// 11px `FG_DIM` text.
+/// Matches iced's `Self::hint` chrome (`common.rs:199-220`).
 fn hint_tooltip(label: &'static str, _window: &mut Window, cx: &mut App) -> gpui::AnyView {
     cx.new(|_| HintTooltip { label }).into()
 }
@@ -89,12 +77,9 @@ fn on_panel(
     move |_, window, cx| dispatch(action, window, cx)
 }
 
-/// The tab strip, its hairline, and the active shell's PTY
-/// (`terminal.rs:234-316`).
+/// The tab strip, its hairline, and the active shell's PTY (`terminal.rs:234-316`).
 pub fn term_panel(ctx: &PanelCtx) -> AnyElement {
-    // Horizontally scrollable so many shells stay reachable even when the
-    // strip is narrower than their combined width (`terminal.rs:285-296`
-    // wrapped the same strip in a horizontal `scrollable`).
+    // Horizontally scrollable so many shells stay reachable when the strip is narrower than their combined width.
     let mut tabs = div()
         .id("panel-tab-strip")
         .flex()
@@ -149,8 +134,7 @@ pub fn term_panel(ctx: &PanelCtx) -> AnyElement {
                 .flex_1()
                 .w_full()
                 .overflow_hidden()
-                // The same padding iced's `pty()` applies (`metrics.rs:53-56`),
-                // so the panel's cell grid matches the iced build's.
+                // Same padding as iced's `pty()` (`metrics.rs:53-56`), so the cell grid matches.
                 .px(rpx(SPACE_3XL))
                 .py(rpx(SPACE_2XL))
                 .child(view)
@@ -169,9 +153,7 @@ pub fn term_panel(ctx: &PanelCtx) -> AnyElement {
         .into_any_element()
 }
 
-/// Icon-only tabs (`terminal.rs:319-393`): several shells share one worktree,
-/// so names would not disambiguate them — the dot carries status and the
-/// cyan outline carries "active".
+/// Icon-only (`terminal.rs:319-393`): several shells share a worktree, so a name wouldn't disambiguate them.
 fn shell_tab(idx: usize, tab: &ShellTab, ctx: &PanelCtx) -> AnyElement {
     let dot_color = if tab.running {
         c::GREEN()
@@ -218,8 +200,7 @@ fn shell_tab(idx: usize, tab: &ShellTab, ctx: &PanelCtx) -> AnyElement {
     el.into_any_element()
 }
 
-/// The `DIVIDER_DRAG_HIT_W` grab zone around a `BORDER()` hairline, full height,
-/// with a horizontal-resize cursor (`terminal.rs:78-87`).
+/// Grab zone around the hairline (`terminal.rs:78-87`).
 pub fn divider(dispatch: &PanelDispatch) -> AnyElement {
     div()
         .id("term-panel-divider")
@@ -245,9 +226,7 @@ mod tests {
     use crate::fonts::CELL_W;
     use crate::views::tokens::DIVIDER_DRAG_HIT_W;
 
-    /// `pty_cols_for_fraction` (`src/gui/metrics.rs:302-321`), reimplemented
-    /// **here** as the oracle — never exported from production code
-    /// (carried amendment 1).
+    /// `pty_cols_for_fraction` (`src/gui/metrics.rs:302-321`), reimplemented here as the oracle — never exported from production code.
     fn oracle_cols_for_fraction(
         win_w: f32,
         zoom: f32,
@@ -271,9 +250,7 @@ mod tests {
         }
     }
 
-    /// What gpui's layout hands the panel element: the split's flex weights
-    /// give it `portion/100` of the workspace minus the divider, and the
-    /// element sizes itself from those bounds.
+    /// What gpui's layout hands the panel: `portion/100` of the workspace minus the divider.
     fn gpui_panel_cols(win_w: f32, zoom: f32, sidebar_w: f32, portion: u16) -> u16 {
         let z = crate::zoom::ZoomState::new(zoom);
         let logical_w = win_w / zoom;
@@ -282,9 +259,7 @@ mod tests {
         z.pty_dims(region_w * zoom, 100.0).1
     }
 
-    /// Carried amendment 2's second parity assertion: the 40% split at a
-    /// nominal 1280×800 / zoom 1.0 must land within **±1 cell** of the iced
-    /// oracle.
+    /// The 40% split at a nominal 1280×800 / zoom 1.0 must land within ±1 cell of the iced oracle.
     #[test]
     fn the_panel_split_matches_the_iced_oracle_within_one_cell() {
         let sidebar = crate::entities::workspace_state::RAIL_W;
@@ -303,8 +278,7 @@ mod tests {
         }
     }
 
-    /// The divider's cursor maps straight through `term_portion_for_cursor`,
-    /// which is what the drag commits (`layout.rs:184-193`).
+    /// The divider's cursor maps straight through `term_portion_for_cursor`, what the drag commits (`layout.rs:184-193`).
     #[test]
     fn dragging_the_divider_left_grows_the_panel() {
         let sidebar = crate::entities::workspace_state::RAIL_W;

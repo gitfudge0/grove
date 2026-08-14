@@ -9,7 +9,6 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Window, div, px, relative,
 };
 
-/// Tab variants.
 #[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Hash)]
 pub enum TabVariant {
     #[default]
@@ -68,7 +67,7 @@ impl TabVariant {
         }
     }
 
-    /// Default px(12) to match panel px_3, See [`crate::dock::TabPanel`]
+    /// Default px(12) to match panel px_3; see [`crate::dock::TabPanel`].
     fn inner_paddings(&self, size: Size) -> Edges<Pixels> {
         let mut padding_x = match size {
             Size::XSmall => px(8.),
@@ -389,7 +388,6 @@ impl Default for TabStyle {
     }
 }
 
-/// A Tab element for the [`super::TabBar`].
 #[derive(IntoElement)]
 pub struct Tab {
     ix: usize,
@@ -407,9 +405,7 @@ pub struct Tab {
     pub(super) selected: bool,
     pub(super) indicator_active: bool,
     pub(super) indicator_ready: bool,
-    /// Animation epoch of the [`super::TabBar`] indicator; increments on every
-    /// tab switch. Used to key the selected tab's text color fade so it
-    /// restarts in sync with the indicator slide.
+    /// Keys the selected tab's text-color fade so it restarts in sync with the indicator slide.
     pub(super) indicator_epoch: u64,
     on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
 }
@@ -469,18 +465,15 @@ impl Default for Tab {
 }
 
 impl Tab {
-    /// Create a new tab with a label.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Set label for the tab.
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
         self.label = Some(label.into());
         self
     }
 
-    /// Set the accessible label for the tab.
     pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
         self.aria_label = Some(label.into());
         self
@@ -490,61 +483,51 @@ impl Tab {
         self.aria_label.clone().or_else(|| self.label.clone())
     }
 
-    /// Set icon for the tab.
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.icon = Some(icon.into());
         self
     }
 
-    /// Set Tab Variant.
     pub fn with_variant(mut self, variant: TabVariant) -> Self {
         self.variant = variant;
         self
     }
 
-    /// Use Pill variant.
     pub fn pill(mut self) -> Self {
         self.variant = TabVariant::Pill;
         self
     }
 
-    /// Use outline variant.
     pub fn outline(mut self) -> Self {
         self.variant = TabVariant::Outline;
         self
     }
 
-    /// Use Segmented variant.
     pub fn segmented(mut self) -> Self {
         self.variant = TabVariant::Segmented;
         self
     }
 
-    /// Use Underline variant.
     pub fn underline(mut self) -> Self {
         self.variant = TabVariant::Underline;
         self
     }
 
-    /// Set the left side of the tab
     pub fn prefix(mut self, prefix: impl IntoElement) -> Self {
         self.prefix = Some(prefix.into_any_element());
         self
     }
 
-    /// Set the right side of the tab
     pub fn suffix(mut self, suffix: impl IntoElement) -> Self {
         self.suffix = Some(suffix.into_any_element());
         self
     }
 
-    /// Set disabled state to the tab, default false.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
-    /// Set the click handler for the tab.
     pub fn on_click(
         mut self,
         on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -553,13 +536,11 @@ impl Tab {
         self
     }
 
-    /// Set index to the tab.
     pub(crate) fn ix(mut self, ix: usize) -> Self {
         self.ix = ix;
         self
     }
 
-    /// Set if the tab bar has a prefix.
     pub(crate) fn tab_bar_prefix(mut self, tab_bar_prefix: bool) -> Self {
         self.tab_bar_prefix = Some(tab_bar_prefix);
         self
@@ -645,21 +626,14 @@ impl RenderOnce for Tab {
         };
         let inner_shadow = tab_style.shadow && !segmented_indicator_active;
 
-        // When a sliding indicator is active and ready, it alone represents the
-        // selected state. Suppress the selected tab's own active background/border
-        // so the two don't overlap during the switch animation (Segmented already
-        // does this for its `inner_bg` above). Skip disabled tabs so a
-        // disabled-selected tab keeps its dimmed styling instead of the
-        // full-strength indicator color.
+        // A ready sliding indicator alone represents selection, so suppress the tab's own active bg/border to avoid overlap; disabled tabs keep their dimmed styling.
         let suppress_active_visual =
             self.selected && !self.disabled && self.indicator_active && self.indicator_ready;
-        // Pill paints its active state via the outer `bg`.
         let outer_bg = if suppress_active_visual && self.variant == TabVariant::Pill {
             cx.theme().transparent.into()
         } else {
             tab_style.bg
         };
-        // Underline paints its active state via the bottom `border_color`.
         let outer_border_color = if suppress_active_visual && self.variant == TabVariant::Underline
         {
             cx.theme().transparent
@@ -667,11 +641,7 @@ impl RenderOnce for Tab {
             tab_style.border_color
         };
 
-        // For Pill, the newly selected tab's text color (`primary_foreground`)
-        // would otherwise snap to white instantly while the indicator is still
-        // sliding into place. Fade it from the normal color in sync with the
-        // indicator slide (keyed on the indicator epoch so it restarts on each
-        // switch). `epoch == 0` is the initial layout (no slide), so we skip it.
+        // Fades Pill's text color in sync with the indicator slide instead of snapping instantly; epoch 0 is the initial layout, so skip it.
         let animate_fg = self.selected
             && !self.disabled
             && self.variant == TabVariant::Pill
@@ -752,9 +722,7 @@ impl RenderOnce for Tab {
             .border_color(outer_border_color)
             .rounded(radius)
             .hover(|this| {
-                // Always register the hover style: GPUI only refreshes the cached
-                // hover state while one is present. If the selected tab skipped it,
-                // the stale state would keep hover colors after unselecting.
+                // Always register hover: skipping it would leave a stale cached hover state after unselecting.
                 if self.selected || self.disabled {
                     return this;
                 }
@@ -791,8 +759,7 @@ impl RenderOnce for Tab {
             .child(inner_element)
             .when_some(self.suffix, |this, suffix| this.child(suffix))
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                // Stop propagation behavior, for works on TitleBar.
-                // https://github.com/longbridge/gpui-component/issues/1836
+                // Needed to work inside TitleBar: longbridge/gpui-component#1836.
                 cx.stop_propagation();
             })
             .when(!self.disabled, |this| {

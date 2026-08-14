@@ -36,7 +36,6 @@ pub struct SankeyLabel {
 }
 
 impl SankeyLabel {
-    /// Create a label line with the default color and font size.
     pub fn new(text: impl Into<SharedString>) -> Self {
         Self {
             text: text.into(),
@@ -45,13 +44,11 @@ impl SankeyLabel {
         }
     }
 
-    /// Set the text color. Defaults to the theme foreground.
     pub fn color(mut self, color: impl Into<Hsla>) -> Self {
         self.color = Some(color.into());
         self
     }
 
-    /// Set the font size. Defaults to 10.
     pub fn font_size(mut self, font_size: f32) -> Self {
         self.font_size = Some(font_size);
         self
@@ -66,10 +63,7 @@ fn block_height(lines: &[SankeyLabel]) -> f32 {
     lines.iter().map(|line| line.line_height()).sum()
 }
 
-/// A Sankey diagram, layout modeled after [d3-sankey](https://github.com/d3/d3-sankey).
-///
-/// Links reference nodes by their index in the node list; map string ids to
-/// indices before constructing.
+/// Layout modeled after [d3-sankey](https://github.com/d3/d3-sankey); links reference nodes by index, so map string ids before constructing.
 #[derive(IntoPlot)]
 pub struct SankeyChart<T: 'static> {
     nodes: Vec<T>,
@@ -90,8 +84,6 @@ pub struct SankeyChart<T: 'static> {
 }
 
 impl<T> SankeyChart<T> {
-    /// Create a chart from nodes and links; links reference nodes by their
-    /// index in `nodes` (map string ids to indices before constructing).
     pub fn new<I, L>(nodes: I, links: L) -> Self
     where
         I: IntoIterator<Item = T>,
@@ -116,48 +108,37 @@ impl<T> SankeyChart<T> {
         }
     }
 
-    /// Set the node rectangle width. Defaults to 10.
     pub fn node_width(mut self, node_width: f32) -> Self {
         self.node_width = node_width;
         self
     }
 
-    /// Set the vertical gap between nodes in a column. Defaults to 16.
     pub fn node_padding(mut self, node_padding: f32) -> Self {
         self.node_padding = node_padding;
         self
     }
 
-    /// Set the node alignment. Defaults to [`SankeyAlign::Justify`].
     pub fn node_align(mut self, align: SankeyAlign) -> Self {
         self.align = align;
         self
     }
 
-    /// Set the number of relaxation passes. Defaults to 6.
     pub fn iterations(mut self, iterations: usize) -> Self {
         self.iterations = iterations;
         self
     }
 
-    /// Set how flow values map to node heights.
-    ///
-    /// Defaults to [`SankeyValueScale::Linear`]. Use [`SankeyValueScale::Sqrt`]
-    /// to keep a dominant flow from dwarfing the small ones without
-    /// pre-transforming the data; labels still receive the raw values.
+    /// [`SankeyValueScale::Sqrt`] keeps a dominant flow from dwarfing small ones without pre-transforming data; labels still receive raw values.
     pub fn value_scale(mut self, value_scale: SankeyValueScale) -> Self {
         self.value_scale = value_scale;
         self
     }
 
-    /// Set the corner radius of the node rectangles. Defaults to 0.
     pub fn node_corner_radius(mut self, radius: impl Into<Pixels>) -> Self {
         self.node_corner_radius = Some(radius.into());
         self
     }
 
-    /// Set the color of each node.
-    ///
     /// Defaults to cycling the theme chart palette by node index.
     pub fn node_color<H>(mut self, color: impl Fn(&T) -> H + 'static) -> Self
     where
@@ -167,47 +148,35 @@ impl<T> SankeyChart<T> {
         self
     }
 
-    /// Set the name label of each node, drawn in muted foreground. No name
-    /// label is drawn unless set.
+    /// Not drawn unless set.
     pub fn node_label(mut self, label: impl Fn(&T) -> SharedString + 'static) -> Self {
         self.node_label = Some(Rc::new(label));
         self
     }
 
-    /// Set the value label of each node, drawn above the name label. No value
-    /// label is drawn unless set.
-    ///
-    /// The closure receives the datum and the node's raw computed throughput
-    /// (max of incoming and outgoing flow, in unscaled units).
+    /// Closure receives the datum and the node's raw throughput (max of incoming/outgoing flow, unscaled).
     pub fn value_label(mut self, label: impl Fn(&T, f64) -> SharedString + 'static) -> Self {
         self.value_label = Some(Rc::new(label));
         self
     }
 
-    /// Set fully custom node labels, one [`SankeyLabel`] per line, top to
-    /// bottom. Takes precedence over `node_label`/`value_label` when set;
-    /// unset by default.
-    ///
-    /// The closure receives the datum and the node's raw computed throughput
-    /// (max of incoming and outgoing flow, in unscaled units).
+    /// Takes precedence over `node_label`/`value_label` when set. Closure receives the datum and the node's raw throughput.
     pub fn labels(mut self, labels: impl Fn(&T, f64) -> Vec<SankeyLabel> + 'static) -> Self {
         self.labels = Some(Rc::new(labels));
         self
     }
 
-    /// Set the opacity of the link ribbons. Defaults to 0.3.
     pub fn link_opacity(mut self, opacity: f32) -> Self {
         self.link_opacity = opacity;
         self
     }
 
-    /// Set the minimum ribbon thickness, so tiny flows stay visible. Defaults to 1.
+    /// Keeps tiny flows visible.
     pub fn min_link_width(mut self, width: f32) -> Self {
         self.min_link_width = width;
         self
     }
 
-    /// Set the gap between a node and its labels. Defaults to 6.
     pub fn label_gap(mut self, gap: f32) -> Self {
         self.label_gap = gap;
         self
@@ -222,9 +191,7 @@ impl<T> SankeyChart<T> {
             .value_scale(self.value_scale)
     }
 
-    /// Raw per-node throughput (max of raw incoming and outgoing sums), for
-    /// labels — the layout's `node.value` is in scaled units under a
-    /// non-linear value scale, so labels must not use it.
+    /// For labels: the layout's `node.value` is scaled under a non-linear value scale, so labels must use this instead.
     fn raw_throughput(&self) -> Vec<f64> {
         let mut incoming = vec![0f64; self.nodes.len()];
         let mut outgoing = vec![0f64; self.nodes.len()];
@@ -252,17 +219,13 @@ impl<T> Plot for SankeyChart<T> {
             return;
         }
 
-        // First pass: only the topology (each node's `layer`) is needed to
-        // measure the label margins; label values come from `raw_throughput`.
+        // First pass: only the topology is needed to measure label margins.
         let Ok(topology) = self.sankey().topology(self.nodes.len(), &self.links) else {
             return;
         };
         let layer_count = topology.layer_count();
-        // Labels get the raw throughput, not the layout's (possibly scaled) value.
         let raw_value = self.raw_throughput();
 
-        // Collect each node's label lines: the custom `labels` closure wins,
-        // otherwise synthesize the value/name lines with the default styles.
         let node_labels: Vec<Vec<SankeyLabel>> = topology
             .nodes
             .iter()
@@ -287,8 +250,6 @@ impl<T> Plot for SankeyChart<T> {
             .collect();
         let has_labels = node_labels.iter().any(|lines| !lines.is_empty());
 
-        // Reserve margins so the labels beside the first/last columns and
-        // above the middle columns are not clipped.
         let mut left = 0f32;
         let mut right = 0f32;
         if has_labels {
@@ -311,16 +272,11 @@ impl<T> Plot for SankeyChart<T> {
                 }
             }
 
-            // Cap each side independently so one long label is truncated to a
-            // modest column rather than eating into the flow area.
             let side_cap = width * MAX_LABEL_WIDTH_RATIO;
             left = left.min(side_cap);
             right = right.min(side_cap);
         }
-        // Above-node labels are only emitted for middle columns, so reserve
-        // the top band for the tallest such label block. Cap the vertical
-        // margins like the horizontal ones so a short chart doesn't collapse
-        // the flow.
+        // Only middle columns get above-node labels; reserve the top band for the tallest such block.
         let mut top = 0f32;
         if has_labels && layer_count > 2 {
             for node in &topology.nodes {
@@ -341,8 +297,7 @@ impl<T> Plot for SankeyChart<T> {
             bottom *= k;
         }
 
-        // Second pass: complete the placement on the final extent, reusing
-        // the first pass's topology.
+        // Second pass, reusing the first pass's topology.
         let graph = self
             .sankey()
             .extent(
@@ -370,7 +325,6 @@ impl<T> Plot for SankeyChart<T> {
             })
             .collect();
 
-        // Links first, under the nodes.
         for link in &graph.links {
             if link.value <= 0. {
                 continue;
@@ -396,7 +350,7 @@ impl<T> Plot for SankeyChart<T> {
         for node in &graph.nodes {
             let node_bounds = Bounds::from_corners(
                 origin_point(px(node.x0), px(node.y0), bounds.origin),
-                // Keep tiny nodes visible with a minimum 1px height.
+                // Minimum 1px height keeps tiny nodes visible.
                 origin_point(px(node.x1), px(node.y1.max(node.y0 + 1.)), bounds.origin),
             );
             window.paint_quad(fill(node_bounds, colors[node.index]).corner_radii(corner_radii));
@@ -411,12 +365,7 @@ impl<T> Plot for SankeyChart<T> {
 
             let is_first = node.layer == 0;
             let is_last = node.layer + 1 == layer_count;
-            // `x`/`align` place the label beside (first/last) or centered above
-            // (middle) the node, and `max_width` bounds it so a long label is
-            // truncated with an ellipsis instead of drawn outside the plot:
-            // first/last to their reserved margin, middle to twice the smaller
-            // gap to the plot edge (generous for interior nodes, only bites a
-            // label long enough to actually run off-plot).
+            // `max_width` bounds each label so a long one truncates with an ellipsis instead of drawing outside the plot.
             let (x, align, max_width) = if is_first {
                 (
                     node.x0 - self.label_gap,
@@ -437,14 +386,11 @@ impl<T> Plot for SankeyChart<T> {
 
             let block = block_height(lines);
             let mut y = if is_first || is_last {
-                // Block vertically centered beside the node, clamped into
-                // the plot area so labels of nodes near the top or bottom
-                // edge are not clipped.
+                // Clamped into the plot area so labels near the top/bottom edge aren't clipped.
                 ((node.y0 + node.y1) / 2. - block / 2.)
                     .min(height - block)
                     .max(0.)
             } else {
-                // Block above the node.
                 node.y0 - block - TEXT_GAP
             };
 
@@ -543,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_sankey_chart_raw_throughput() {
-        // A(out 30) -> B, B -> C(20) + D(10): B's throughput is max(in, out).
+        // A -> B(out 30), B -> C(20) + D(10): B's throughput is max(in, out).
         let chart = SankeyChart::new(
             vec!["a", "b", "c", "d"],
             vec![
@@ -555,14 +501,12 @@ mod tests {
         let raw = chart.raw_throughput();
         assert_eq!(raw, vec![30., 30., 20., 10.]);
 
-        // Under Sqrt the layout's node value is scaled, but raw_throughput
-        // (used for labels) must stay in raw units — the two must differ.
+        // Under Sqrt the layout's node value scales but raw_throughput must stay in raw units.
         let sqrt = chart
             .value_scale(SankeyValueScale::Sqrt)
             .sankey()
             .layout(4, &chart_links())
             .unwrap();
-        // Node A: layout value is sqrt-scaled (30 -> sqrt(30)), raw is 30.
         assert!((sqrt.nodes[0].value - 30f64.sqrt()).abs() < 1e-6);
         assert!((raw[0] - 30.).abs() < 1e-6);
         assert!(raw[0] != sqrt.nodes[0].value);

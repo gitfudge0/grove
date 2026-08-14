@@ -11,22 +11,12 @@ impl Global for GlobalState {}
 
 pub struct GlobalState {
     pub(crate) text_view_state_stack: Vec<Entity<TextViewState>>,
-    /// Set of open popover IDs that use deferred rendering.
-    /// When this set is not empty, we are inside at least one deferred context.
-    /// This is used to prevent double-deferred elements which would cause GPUI to panic.
+    /// Non-empty means we're inside at least one deferred context; prevents double-deferred elements panicking GPUI.
     open_deferred_popovers: HashSet<ElementId>,
-    /// Application menus storage
     app_menus: Vec<OwnedMenu>,
-    /// When true, the window-level text selection must not start on the
-    /// current mouse down. Set by components that own their own mouse-down
-    /// interaction (e.g. `Input`, `Button`); reset by the selection
-    /// controller in the capture phase of every left mouse down.
+    /// Set by components owning their own mouse-down interaction; reset in the capture phase of every left mouse down.
     pub(crate) suppress_text_selection: bool,
-    /// Stack of active text-selection scopes, pushed/popped by the
-    /// `SelectionScopeMarker` element that wraps each Dialog/Sheet content
-    /// subtree during paint. Empty means the base window layer. A selectable
-    /// `TextView` reads the top of this stack when it registers, so window
-    /// selection can be confined to the active modal.
+    /// Pushed/popped by `SelectionScopeMarker` around each Dialog/Sheet subtree; empty means the base window layer.
     selection_scope_stack: Vec<SelectionScope>,
 }
 
@@ -41,11 +31,7 @@ impl GlobalState {
         }
     }
 
-    /// Suppress the window-level text selection for the current mouse down.
-    ///
-    /// Call this from a mouse-down handler (bubble phase) of a component that
-    /// owns its own press/drag interaction, so that pressing it does not start
-    /// a window text selection. The flag is reset on the next mouse down.
+    /// Call from a mouse-down handler (bubble phase) of a component owning its own press/drag interaction.
     pub fn suppress_text_selection(cx: &mut App) {
         Self::global_mut(cx).suppress_text_selection = true;
     }
@@ -62,18 +48,15 @@ impl GlobalState {
         self.text_view_state_stack.last()
     }
 
-    /// Push a selection scope while painting a Dialog/Sheet content subtree.
     pub(crate) fn push_selection_scope(&mut self, scope: SelectionScope) {
         self.selection_scope_stack.push(scope);
     }
 
-    /// Pop the selection scope after painting a Dialog/Sheet content subtree.
     pub(crate) fn pop_selection_scope(&mut self) {
         self.selection_scope_stack.pop();
     }
 
-    /// The selection scope currently being painted. `Base` when not inside any
-    /// Dialog/Sheet content subtree.
+    /// `Base` when not inside any Dialog/Sheet content subtree.
     pub(crate) fn current_selection_scope(&self) -> SelectionScope {
         self.selection_scope_stack
             .last()
@@ -81,29 +64,24 @@ impl GlobalState {
             .unwrap_or(SelectionScope::Base)
     }
 
-    /// Check if we are currently inside a deferred context (e.g., inside an open Popover).
     pub(crate) fn is_in_deferred_context(&self) -> bool {
         !self.open_deferred_popovers.is_empty()
     }
 
-    /// Register a popover that uses deferred rendering as open.
     pub(crate) fn register_deferred_popover(&mut self, focus_handle: &FocusHandle) {
         self.open_deferred_popovers
             .insert(format!("{focus_handle:?}").into());
     }
 
-    /// Unregister a popover when it closes.
     pub(crate) fn unregister_deferred_popover(&mut self, focus_handle: &FocusHandle) {
         let element_id: ElementId = format!("{focus_handle:?}").into();
         self.open_deferred_popovers.remove(&element_id);
     }
 
-    /// Get the application menus
     pub fn app_menus(&self) -> &[OwnedMenu] {
         &self.app_menus
     }
 
-    /// Set the application menus
     pub fn set_app_menus(&mut self, menus: Vec<OwnedMenu>) {
         self.app_menus = menus;
     }

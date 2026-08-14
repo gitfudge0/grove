@@ -1,12 +1,5 @@
-//! ThemePicker and ThemeManager (list + paste-first editor).
-//!
-//! Ports `src/gui/view/modals/theme_picker.rs:17+`,
-//! `src/gui/view/modals/theme_manager.rs:19,43` and
-//! `src/gui/theme_manager_editor.rs`.
-//!
-//! **The live preview goes through the single stubbed hook** at
-//! `crate::terminal_element::project_theme_override`'s `preview` argument
-//! (carried decision 7) — there is no second theme-override path.
+//! ThemePicker and ThemeManager (list + paste-first editor). Ports `src/gui/view/modals/theme_{picker,manager}.rs`
+//! and `src/gui/theme_manager_editor.rs`. The live preview goes through one stubbed hook (carried decision 7).
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -26,31 +19,17 @@ use crate::views::components::{
     mono, note_text, seg_button, seg_group, ui, ModalBtn, OnToggle, RowDensity, SegSide,
 };
 
-// ── local layout geometry (§8.4: geometry lives in the owning module) ─────
-
-/// One palette swatch's box. Both preview strips — the picker row's 4-colour
-/// glance and the manager row's 11-colour strip — share it, so a theme reads
-/// the same size wherever it is previewed.
+/// Shared by both preview strips so a theme reads the same size wherever it is previewed.
 const SWATCH_SIZE: f32 = ICON_XS;
 
-/// The manager row's swatch column. Deliberately narrower than the full
-/// 11-swatch strip: the strip clips rather than pushing the row's action
-/// icons out of alignment.
+/// Deliberately narrower than the full 11-swatch strip: it clips rather than pushing the row's icons out of alignment.
 const SWATCH_COL_W: f32 = 90.0;
 
-/// The fake rename caret's height. Derived from [`TEXT_BODY`] with a touch of
-/// overshoot so the bar spans the glyph box rather than the x-height (§14
-/// case 2 — derived geometry, not a scale value).
 const CARET_H: f32 = TEXT_BODY * 1.1;
 
-/// Vertical breathing room for an inline "nothing here" block inside a modal
-/// body — one modal zone padding step above and below.
 const EMPTY_STATE_PY: f32 = SPACE_3XL * 2.0;
 
-/// A tooltip-carrying icon mini button for a `ThemeManager` row action
-/// (edit/rename/duplicate/delete) — `src/gui/widgets/buttons.rs`'
-/// `action_mini`/`action_mini_danger`, ported to gpui's icon sprite + the
-/// built-in `.tooltip()` hover hint (`theme_manager.rs:192-218`).
+/// Ported to gpui's icon sprite + the built-in `.tooltip()` hint (`theme_manager.rs:192-218`).
 fn action_mini(
     id: &'static str,
     icon_name: &'static str,
@@ -77,15 +56,7 @@ fn action_mini(
     .into_any_element()
 }
 
-/// The 11-swatch palette strip previewing a whole theme, in
-/// `grove_core::theme::FIELD_NAMES` order — `ThemeManager`'s row preview
-/// (`theme_manager.rs:18-37`). Distinct from [`swatch`], which is the
-/// 4-color glance `ThemePicker` rows use.
-///
-/// Every colour in this element belongs to the *previewed* theme, border
-/// included (§4.4: never mix bare accessors with `_of` variants in one
-/// element). The swatch fills are the theme's raw tier-1 fields by
-/// construction — showing all eleven is the point of the strip.
+/// `ThemeManager`'s row preview (`theme_manager.rs:18-37`); distinct from [`swatch`]'s 4-color glance.
 fn swatch_strip(t: &Theme) -> impl IntoElement {
     let border = Hsla::from(c::border_of(t));
     let mut strip = div().flex().items_center().gap(rpx(SPACE_XS));
@@ -103,8 +74,6 @@ fn swatch_strip(t: &Theme) -> impl IntoElement {
     strip
 }
 
-/// The DARK/LIGHT kind badge next to a `ThemeManager` row's name
-/// (`theme_manager.rs:145-160`).
 fn kind_badge(kind: ThemeKind) -> impl IntoElement {
     let label: SharedString = match kind {
         ThemeKind::Dark => "DARK".into(),
@@ -117,25 +86,14 @@ fn kind_badge(kind: ThemeKind) -> impl IntoElement {
         .border_1()
         .border_color(c::BORDER())
         .bg(c::BG_HL())
-        // DARK/LIGHT reads as a token, not language (§5.2).
         .child(mono(label, TEXT_MICRO, c::FG_MUTE()))
 }
 
-/// The live project-theme preview an open picker is driving, if any.
-///
-/// This is the ONE hook `terminal_element` consults (`terminal_element.rs:156`
-/// no longer says "Plan 08 will"): `Some(inner)` wins outright over the
-/// persisted pin, and `inner == None` means "preview the global theme",
-/// matching `project_use_default`.
+/// The ONE hook `terminal_element` consults: `Some(inner)` wins over the persisted pin; `None` previews the global.
 #[derive(Clone, Default)]
 pub struct ThemePreview {
-    /// Project name being previewed, and the theme to show for it.
     pub project: Option<(String, Option<Theme>)>,
-    /// App-scope preview: the whole window shows this theme until the picker
-    /// commits or cancels.
-    // Written by the picker and read back only by `views::modals`'
-    // `#[cfg(test)]` "preview global is clear" assertion; the render path reads
-    // the global through `ThemePreview::for_project`.
+    // Written by the picker; read back only by a `#[cfg(test)]` assertion (render reads through `for_project`).
     #[allow(dead_code)]
     pub app: Option<Theme>,
 }
@@ -143,7 +101,6 @@ pub struct ThemePreview {
 impl gpui::Global for ThemePreview {}
 
 impl ThemePreview {
-    /// What `terminal_element` should pass as `preview` for `project_name`.
     pub fn for_project(cx: &App, project_name: &str) -> Option<Option<Theme>> {
         let p = cx.try_global::<ThemePreview>()?;
         let (name, theme) = p.project.as_ref()?;
@@ -161,8 +118,7 @@ impl ThemePreview {
     }
 }
 
-/// Every theme of `kind` a user can pick from, in the stable order every
-/// selection surface agrees on: builtins first, then custom.
+/// Builtins first, then custom, in the order every selection surface agrees on.
 pub fn selectable(kind: ThemeKind) -> Vec<Theme> {
     grove_core::theme::selectable_themes_of(kind)
 }
@@ -213,8 +169,7 @@ impl ModalLayer {
         self.preview_selected_theme(cx);
     }
 
-    /// A click on a theme row: select it and live-preview, but don't commit
-    /// (Enter/save still does that).
+    /// Selects and live-previews; doesn't commit (Enter/save still does that).
     pub(super) fn theme_picker_click(&mut self, i: usize, cx: &mut Context<Self>) {
         if let Some(Modal::ThemePicker {
             sel_dark,
@@ -226,7 +181,7 @@ impl ModalLayer {
             let sel = if *dark_tab { sel_dark } else { sel_light };
             *sel = i;
         }
-        // delta 0 reuses move's clamp + "clears follow-system / use-default" + preview
+        // delta 0 reuses move's clamp + follow-system/use-default clear + preview.
         self.theme_picker_move(0, cx);
     }
 
@@ -251,11 +206,9 @@ impl ModalLayer {
             *sel = crate::launcher::cycle(*sel, delta, len);
             match scope {
                 ThemePickerScope::App => {
-                    // Picking a concrete theme in app scope clears "follow system".
                     *follow_system = false;
                 }
                 ThemePickerScope::Project(_) => {
-                    // Picking a concrete theme clears "Default (follow app)".
                     *project_use_default = false;
                 }
             }
@@ -270,8 +223,7 @@ impl ModalLayer {
         self.preview_selected_theme(cx);
     }
 
-    /// The single live-preview driver. Both the picker and the launcher's
-    /// theme pane call this; there is no second override path.
+    /// The single live-preview driver; no second override path exists.
     pub(super) fn preview_selected_theme(&mut self, cx: &mut Context<Self>) {
         let Some(Modal::ThemePicker {
             sel_dark,
@@ -294,10 +246,7 @@ impl ModalLayer {
         let theme = selectable(kind).get(sel).cloned();
         match scope {
             ThemePickerScope::App => {
-                // While "follow system" is checked, keep the preview showing
-                // the resolved system theme rather than snapping to the
-                // tab's list selection (which would visually contradict the
-                // still-checked checkbox).
+                // While "follow system" is checked, keep showing the resolved system theme, not the tab's list selection.
                 if *follow_system {
                     crate::theme::ThemeState::apply_system_theme(cx);
                 } else if let Some(t) = &theme {
@@ -325,8 +274,6 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// Enter: commit. App scope pins the theme (or `theme_follow_system`);
-    /// project scope pins or clears `Project::theme`.
     pub(super) fn theme_picker_submit(&mut self, cx: &mut Context<Self>) {
         let Some(Modal::ThemePicker {
             sel_dark,
@@ -393,28 +340,14 @@ impl ModalLayer {
         }
         SettingsState::flush_now(cx);
         ThemePreview::clear(cx);
-        // Commit **consumes** `original`: the picker leaves through
-        // `ModalLayer::cancel`, which restores `original` on the way out, and
-        // the theme just pinned above is precisely the one that must survive.
-        // Emptying it here is what makes that restore a no-op on this path —
-        // see [`Self::restore_theme_before_leaving`].
+        // Commit consumes `original`, making `restore_theme_before_leaving`'s restore a no-op on this path.
         if let Some(Modal::ThemePicker { original, .. }) = self.slot.get_mut() {
             original.clear();
         }
         self.cancel(cx);
     }
 
-    /// Undo the live preview on the way out of a `ThemePicker`: restore
-    /// `original` and drop the [`ThemePreview`] global
-    /// (`src/app/modal.rs:74-94`). Does **not** leave the modal — that is
-    /// [`ModalLayer::cancel`]'s job, and this runs as its first step, while
-    /// the slot still holds the picker.
-    ///
-    /// `original` is consumed, mirroring how `ModalSlot::cancel` consumes
-    /// `return_to` on the same exit: an empty `original` means "there is
-    /// nothing to go back to", which is exactly the state
-    /// [`Self::theme_picker_submit`] leaves behind once it has pinned the new
-    /// theme. Self-guarding — a no-op unless a `ThemePicker` is open.
+    /// Does not leave the modal itself — that's [`ModalLayer::cancel`]'s job; this runs as its first step.
     pub(super) fn restore_theme_before_leaving(&mut self, cx: &mut Context<Self>) {
         let Some(Modal::ThemePicker { original, .. }) = self.slot.get_mut() else {
             return;
@@ -426,8 +359,6 @@ impl ModalLayer {
         crate::theme::ThemeState::set_by_name(cx, &original);
         ThemePreview::clear(cx);
     }
-
-    // ── ThemeManager ────────────────────────────────────────────────────
 
     pub fn open_theme_manager(&mut self, cx: &mut Context<Self>) {
         self.open(
@@ -460,8 +391,7 @@ impl ModalLayer {
                 self.open(Modal::Message(format!("Delete failed: {e}")), cx);
                 return;
             }
-            // Editing a theme invalidates the PTY render path
-            // (`modals.rs:214-219`).
+            // Editing a theme invalidates the PTY render path (`modals.rs:214-219`).
             cx.refresh_windows();
         }
         if let Some(Modal::ThemeManager { pending_delete, .. }) = self.slot.get_mut() {
@@ -523,7 +453,6 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// The paste-first editor sub-view's Save.
     pub(super) fn theme_editor_save(&mut self, cx: &mut Context<Self>) {
         self.sync_wizard_buffers(cx);
         let buffer = match self.slot.get() {
@@ -536,7 +465,6 @@ impl ModalLayer {
                 if let Some(Modal::ThemeManager { editor, .. }) = self.slot.get_mut() {
                     *editor = None;
                 }
-                // Re-colors the terminal immediately.
                 cx.refresh_windows();
                 cx.notify();
             }
@@ -544,8 +472,6 @@ impl ModalLayer {
         }
     }
 }
-
-// ── the views ────────────────────────────────────────────────────────────
 
 pub fn render(
     layer: &ModalLayer,
@@ -560,9 +486,6 @@ pub fn render(
     }
 }
 
-/// The picker row's 4-colour glance. Like [`swatch_strip`], every colour here
-/// is the *previewed* theme's — `_of(theme)` throughout, never a bare
-/// accessor (§4.4).
 fn swatch(t: &Theme) -> impl IntoElement {
     div().flex().items_center().gap(rpx(SPACE_SM)).children(
         [c::bg_of(t), c::fg_of(t), c::blue_of(t), c::green_of(t)].map(|col| {
@@ -628,11 +551,8 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
             )),
     );
 
-    // Shared `click_row`s (§9.1.1's `RowDensity::Card` shape, the same one
-    // `setting_row_link` in `settings.rs` uses) sitting inside a `card()`.
     let mut rows: Vec<AnyElement> = Vec::new();
-    // Where the selected theme lands in `rows`; the project scope prepends a
-    // "Default (follow app)" row, so it isn't `sel`.
+    // Not `sel`: the project scope prepends a "Default (follow app)" row.
     let mut selected_row: Option<usize> = None;
     if matches!(scope, ThemePickerScope::Project(_)) {
         rows.push(
@@ -681,13 +601,7 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
             .into_any_element(),
         );
     }
-    // Retires the hard-coded 8-row window: the whole list renders and the
-    // shared MODAL_SCROLL_MAX_H cap scrolls it, matching the manager list's
-    // own scroll container below. The `card` itself is the scroll container
-    // rather than a child of one, because `scroll_to_item` addresses the
-    // tracked element's *direct* children — and those are the card's rows.
-    // `card` interleaves a divider after every row but the last, so row `k`
-    // sits at child `2k`.
+    // `card` interleaves a divider after every row but the last, so row `k` sits at child `2k`.
     if let Some(k) = selected_row {
         layer.scroll_list_to(usize::from(*dark_tab), sel, k * 2);
     }
@@ -752,10 +666,6 @@ fn picker(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement 
     .into_any_element()
 }
 
-/// A picker-list row: the shared [`click_row`] in the same [`RowDensity::Card`]
-/// shape `setting_row_link` (`settings.rs`) uses, sitting inside a [`card`].
-/// `content` carries the theme's name (mono, §5.2) plus the trailing
-/// [`swatch`] glance, or just the name for the "Default (follow app)" row.
 fn theme_row(
     id: impl Into<gpui::ElementId>,
     active: bool,
@@ -783,17 +693,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx: &A
 
     // The editor sub-view wins over the list (`modals.rs:186-228`).
     if editor.is_some() {
-        // The ONE sanctioned multiline exception to `field_box`'s single-line
-        // contract (see its doc comment): a 14-row JSON buffer can't fit a
-        // `FIELD_PY`-padded box sized for one line, so this field keeps its
-        // own bordered box instead. It still owes the app's zeroed-inset half
-        // of that contract — `.pl/.pr/.py` zeroed on the wrapped `Input` so
-        // its own padding doesn't double up with this box's — via the same
-        // five calls `field_box`'s callers make.
-        //
-        // The other half of the contract is honoured too: a focus-reactive
-        // border, `c::MAGENTA()` focused / `c::BORDER()` at rest, the way
-        // every other field in the app behaves.
+        // The one sanctioned multiline exception to `field_box`'s single-line contract: a 14-row JSON buffer needs its own bordered box.
         let field = layer.fields.first().map(|f| {
             let focused = f.state().read(cx).focus_handle(cx).is_focused(window);
             div()
@@ -833,8 +733,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx: &A
                         ))
                         .children(field),
                 ))
-                // Tab INDENTS inside a multiline buffer (carried decision 2);
-                // the footer says so rather than pretending it traverses.
+                // Tab indents inside a multiline buffer (carried decision 2).
                 .child(modal_footer(
                     &[("tab", "indent"), ("esc", "back")],
                     vec![
@@ -860,10 +759,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx: &A
         .into_any_element();
     }
 
-    // A pending delete swaps the whole panel for a confirm-shaped dialog
-    // (header/body/footer) rather than an inline row, matching every other
-    // destructive confirmation in the app (`theme_manager.rs:55-86`). Key
-    // handling (y/esc) is unaffected — it lives in `crate::modal`.
+    // Swaps the whole panel for a confirm dialog, matching every other destructive confirmation (`theme_manager.rs:55-86`).
     if let Some(name) = pending_delete {
         let body_zone = div()
             .flex()
@@ -930,12 +826,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx: &A
                 let buf = rename
                     .as_ref()
                     .map_or_else(|| t.name.to_string(), |(_, buf)| buf.clone());
-                // A real gpui-component `Input` needs a field `mod.rs` owns
-                // (`build_fields` has no ThemeManager-rename arm and this
-                // file cannot add one), so this falls back to a styled
-                // editable-looking buffer row: the live rename buffer plus a
-                // blinking-caret glyph, in the same selected-tint container
-                // the iced original uses (`theme_manager.rs:106-141`).
+                // No real `Input` field exists for this row; falls back to a styled buffer + caret glyph (`theme_manager.rs:106-141`).
                 let mut col = div().flex().flex_col().gap(rpx(SPACE_SM)).child(
                     div()
                         .flex()
@@ -953,8 +844,6 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx: &A
                                 .border_color(c::BORDER())
                                 .flex()
                                 .items_center()
-                                // The rename buffer holds a theme name — a
-                                // token, so mono (§5.2).
                                 .child(mono(buf, TEXT_BODY, c::FG()))
                                 .child(
                                     div()
@@ -976,19 +865,7 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx: &A
                             "Cancel",
                             c::CYAN(),
                             dispatch,
-                            // No `ModalClick` variant exists for a
-                            // mouse-driven rename-cancel (only
-                            // `ModalAction::ThemeManagerRenameCancel`,
-                            // reached from the keyboard verdict table in
-                            // `crate::modal`, which `ModalDispatch`
-                            // cannot invoke) — `mod.rs` is read-only so
-                            // one cannot be added here. `ThemeRenameStart`
-                            // re-seeds `rename` to `(name, name)`, which
-                            // is what Cancel would produce anyway since
-                            // this fallback buffer never diverges from
-                            // the original name (no live-typing dispatch
-                            // exists either). Escape still cancels
-                            // correctly via the keyboard path.
+                            // No mouse-driven rename-cancel `ModalClick` exists; re-seeding via `ThemeRenameStart` produces the same result.
                             ModalClick::ThemeRenameStart(i),
                         )),
                 );
@@ -1013,7 +890,6 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx: &A
                     .items_center()
                     .gap(rpx(SPACE_MD))
                     .overflow_hidden()
-                    // A theme name is a token, not language (§5.2).
                     .child(mono(
                         t.name.to_string(),
                         TEXT_TITLE,
@@ -1056,9 +932,6 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx: &A
                         dispatch,
                         ModalClick::ThemeDeleteRequest(i),
                     ));
-                // The manager row's looser shape is `click_row`'s
-                // `RowDensity::Manager`: it carries a name, a badge, an
-                // eleven-swatch strip and four action buttons on one line.
                 click_row(
                     gpui::SharedString::from(format!("tm-{i}")),
                     active,
@@ -1092,17 +965,9 @@ fn manager(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx: &A
             .into_any_element()
     };
 
-    // Bare title + a close icon button — the Settings modal's header shape —
-    // since like Settings every row action here persists immediately, there
-    // is no unsaved state a Cancel/Save footer would guard
-    // (`theme_manager.rs:214-222`).
+    // Settings modal's header shape: every row action here persists immediately, so no Cancel/Save footer is needed.
     let header = modal_header_with_close("tm-close", "Manage themes", c::MAGENTA(), dispatch);
 
-    // The footer's left slot is retired (plan.md §2): "+ New theme" moves
-    // into the body as a flat magenta `body_action` at the foot of the list,
-    // rather than the Primary button the old left slot forced it to be —
-    // that was already a §9.1.1 contract violation, since a footer's left
-    // cluster is low-emphasis by definition.
     let new_theme_btn = body_action(
         "tm-new",
         "+ New theme",

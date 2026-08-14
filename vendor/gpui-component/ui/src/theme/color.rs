@@ -7,64 +7,41 @@ use serde::{Deserialize, Deserializer, de::Error as _};
 
 use anyhow::{Error, Result, anyhow};
 
-/// Create a [`gpui::Hsla`] color.
-///
-/// - h: 0..360.0
-/// - s: 0.0..100.0
-/// - l: 0.0..100.0
+/// h: 0..360.0, s/l: 0.0..100.0.
 #[inline]
 pub fn hsl(h: f32, s: f32, l: f32) -> Hsla {
     hsla(h / 360., s / 100.0, l / 100.0, 1.0)
 }
 
 pub trait Colorize: Sized {
-    /// Returns a new color with the given opacity.
-    ///
-    /// The opacity is a value between 0.0 and 1.0, where 0.0 is fully transparent and 1.0 is fully opaque.
+    /// `opacity` in 0.0..1.0.
     fn opacity(&self, opacity: f32) -> Self;
-    /// Returns a new color with each channel divided by the given divisor.
-    ///
-    /// The divisor in range of 0.0 .. 1.0
+    /// `divisor` in 0.0..1.0.
     fn divide(&self, divisor: f32) -> Self;
-    /// Return inverted color
     fn invert(&self) -> Self;
-    /// Return inverted lightness
     fn invert_l(&self) -> Self;
-    /// Return a new color with the lightness increased by the given factor.
-    ///
-    /// factor range: 0.0 .. 1.0
+    /// `amount` in 0.0..1.0.
     fn lighten(&self, amount: f32) -> Self;
-    /// Return a new color with the darkness increased by the given factor.
-    ///
-    /// factor range: 0.0 .. 1.0
+    /// `amount` in 0.0..1.0.
     fn darken(&self, amount: f32) -> Self;
-    /// Return a new color with the same lightness and alpha but different hue and saturation.
+    /// Keeps `self`'s lightness/alpha, takes `base_color`'s hue/saturation.
     fn apply(&self, base_color: Self) -> Self;
 
-    /// Mix two colors together, the `factor` is a value between 0.0 and 1.0 for first color.
+    /// `factor` in 0.0..1.0 for `self`.
     fn mix(&self, other: Self, factor: f32) -> Self;
-    /// Mix two colors together in Oklab color space, the `factor` is a value between 0.0 and 1.0 for first color.
-    ///
-    /// This is similar to CSS `color-mix(in oklab, color1 factor%, color2)`.
+    /// Like CSS `color-mix(in oklab, ...)`; `factor` in 0.0..1.0 for `self`.
     fn mix_oklab(&self, other: Self, factor: f32) -> Self;
-    /// Change the `Hue` of the color by the given in range: 0.0 .. 1.0
     fn hue(&self, hue: f32) -> Self;
-    /// Change the `Saturation` of the color by the given value in range: 0.0 .. 1.0
     fn saturation(&self, saturation: f32) -> Self;
-    /// Change the `Lightness` of the color by the given value in range: 0.0 .. 1.0
     fn lightness(&self, lightness: f32) -> Self;
 
-    /// Convert the color to a hex string. For example, "#F8FAFC".
     fn to_hex(&self) -> String;
-    /// Parse a hex string to a color.
     fn parse_hex(hex: &str) -> Result<Self>;
 }
 
-/// Helper functions for Oklab color space conversions
 mod oklab {
     use gpui::Rgba;
 
-    /// Convert sRGB component to linear RGB
     #[inline]
     fn to_linear(c: f32) -> f32 {
         if c <= 0.04045 {
@@ -74,7 +51,6 @@ mod oklab {
         }
     }
 
-    /// Convert linear RGB component to sRGB
     #[inline]
     fn from_linear(c: f32) -> f32 {
         if c <= 0.0031308 {
@@ -84,20 +60,16 @@ mod oklab {
         }
     }
 
-    /// Convert RGB to Oklab color space
     #[allow(non_snake_case)]
     pub fn rgb_to_oklab(rgb: Rgba) -> (f32, f32, f32) {
-        // sRGB to linear RGB
         let lr = to_linear(rgb.r);
         let lg = to_linear(rgb.g);
         let lb = to_linear(rgb.b);
 
-        // Linear RGB to LMS
         let l = 0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb;
         let m = 0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb;
         let s = 0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb;
 
-        // LMS to Oklab (using cube root)
         let l_ = l.cbrt();
         let m_ = m.cbrt();
         let s_ = s.cbrt();
@@ -109,10 +81,8 @@ mod oklab {
         (L, a, b)
     }
 
-    /// Convert Oklab to RGB color space
     #[allow(non_snake_case)]
     pub fn oklab_to_rgb(L: f32, a: f32, b: f32) -> Rgba {
-        // Oklab to LMS
         let l_ = L + 0.3963377774 * a + 0.2158037573 * b;
         let m_ = L - 0.1055613458 * a - 0.0638541728 * b;
         let s_ = L - 0.0894841775 * a - 1.2914855480 * b;
@@ -121,12 +91,10 @@ mod oklab {
         let m = m_ * m_ * m_;
         let s = s_ * s_ * s_;
 
-        // LMS to Linear RGB
         let lr = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
         let lg = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
         let lb = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
 
-        // Linear RGB to sRGB
         Rgba {
             r: from_linear(lr).clamp(0.0, 1.0),
             g: from_linear(lg).clamp(0.0, 1.0),
@@ -188,8 +156,7 @@ impl Colorize for Hsla {
         }
     }
 
-    /// Reference:
-    /// https://github.com/bevyengine/bevy/blob/85eceb022da0326b47ac2b0d9202c9c9f01835bb/crates/bevy_color/src/hsla.rs#L112
+    /// Ported from https://github.com/bevyengine/bevy/blob/85eceb022da0326b47ac2b0d9202c9c9f01835bb/crates/bevy_color/src/hsla.rs#L112
     fn mix(&self, other: Self, factor: f32) -> Self {
         let factor = factor.clamp(0.0, 1.0);
         let inv = 1.0 - factor;
@@ -213,10 +180,8 @@ impl Colorize for Hsla {
         let factor = factor.clamp(0.0, 1.0);
         let inv = 1.0 - factor;
 
-        // Interpolate alpha first
         let result_alpha = self.a * factor + other.a * inv;
 
-        // Handle the case where result alpha is zero
         if result_alpha == 0.0 {
             return Self {
                 h: 0.0,
@@ -226,20 +191,16 @@ impl Colorize for Hsla {
             };
         }
 
-        // Convert both colors to RGB
         let rgb1 = self.to_rgb();
         let rgb2 = other.to_rgb();
 
-        // Convert to Oklab color space
         let (l1, a1, b1) = oklab::rgb_to_oklab(rgb1);
         let (l2, a2, b2) = oklab::rgb_to_oklab(rgb2);
 
-        // Premultiply alpha in Oklab space (using alpha-premultiplied interpolation)
-        // This matches CSS color-mix behavior
+        // Alpha-premultiplied interpolation, matching CSS color-mix behavior.
         let alpha1 = self.a;
         let alpha2 = other.a;
 
-        // Premultiply
         let l1_pm = l1 * alpha1;
         let a1_pm = a1 * alpha1;
         let b1_pm = b1 * alpha1;
@@ -248,21 +209,17 @@ impl Colorize for Hsla {
         let a2_pm = a2 * alpha2;
         let b2_pm = b2 * alpha2;
 
-        // Interpolate premultiplied values
         let L_pm = l1_pm * factor + l2_pm * inv;
         let a_pm = a1_pm * factor + a2_pm * inv;
         let b_pm = b1_pm * factor + b2_pm * inv;
 
-        // Unpremultiply
         let L = L_pm / result_alpha;
         let a = a_pm / result_alpha;
         let b = b_pm / result_alpha;
 
-        // Convert back to RGB
         let mut rgb = oklab::oklab_to_rgb(L, a, b);
         rgb.a = result_alpha;
 
-        // Convert RGB to HSLA
         rgb.into()
     }
 
@@ -386,7 +343,6 @@ impl Display for ColorName {
     }
 }
 
-// Strict color name parser.
 impl TryFrom<&str> for ColorName {
     type Error = anyhow::Error;
     fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
@@ -425,7 +381,6 @@ impl TryFrom<SharedString> for ColorName {
 }
 
 impl ColorName {
-    /// Returns all available color names.
     pub fn all() -> [Self; 19] {
         [
             ColorName::Neutral,
@@ -450,10 +405,7 @@ impl ColorName {
         ]
     }
 
-    /// Returns the color for the given scale.
-    ///
-    /// The `scale` is any of `[50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950]`
-    /// falls back to 500 if out of range.
+    /// `scale` is one of 50..950 in steps of Tailwind's scale; falls back to 500 if out of range.
     pub fn scale(&self, scale: usize) -> Hsla {
         if self == &ColorName::White {
             return DEFAULT_COLORS.white.hsla;
@@ -551,7 +503,7 @@ pub(crate) struct ShadcnColor {
     pub(crate) hsla: Hsla,
 }
 
-/// Deserialize Hsla from a string in the format "210 40% 98%"
+/// Deserializes a string like "210 40% 98%" into an Hsla.
 fn from_hsl_channel<'de, D>(deserializer: D) -> Result<Hsla, D::Error>
 where
     D: Deserializer<'de>,
@@ -599,12 +551,7 @@ macro_rules! color_method {
 macro_rules! color_methods {
     ($color:tt) => {
         paste::paste! {
-            /// Get color by scale number.
-            ///
-            /// The possible scale numbers are:
-            /// 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950
-            ///
-            /// If the scale number is not found, it will return black color.
+            /// Falls back to black if `scale` is not found.
             #[inline]
             pub fn [<$color>](scale: usize) -> Hsla {
                 if let Some(color) = DEFAULT_COLORS.$color.get(&scale) {
@@ -660,20 +607,7 @@ color_methods!(fuchsia);
 color_methods!(pink);
 color_methods!(rose);
 
-/// Try to parse the color, HEX or [Tailwind Color](https://tailwindcss.com/docs/colors) expression.
-///
-/// # Parameter `color` should be one string value listed below:
-///
-/// - `#RRGGBB` - The HEX color string.
-/// - `#RRGGBBAA` - The HEX color string with alpha.
-///
-/// Or the Tailwind Color format:
-///
-/// - `name` - The color name `black`, `white`, or any other defined in `crate::color`.
-/// - `name-scale` - The color name with scale.
-/// - `name/opacity` - The color name with opacity, `opacity` should be an integer between 0 and 100.
-/// - `name-scale/opacity` - The color name with scale and opacity.
-///
+/// Accepts `#RRGGBB[AA]` hex, or Tailwind's `name[-scale][/opacity]` (opacity 0-100).
 pub fn try_parse_color(color: &str) -> Result<Hsla> {
     if color.starts_with("#") {
         let rgba = gpui::Rgba::try_from(color)?;
@@ -683,7 +617,7 @@ pub fn try_parse_color(color: &str) -> Result<Hsla> {
     let mut name = String::new();
     let mut scale = None;
     let mut opacity = None;
-    // 0: name, 1: scale, 2: opacity
+    // State: 0=name, 1=scale, 2=opacity.
     let mut state = 0;
     let mut part = String::new();
 
@@ -740,10 +674,7 @@ pub fn try_parse_color(color: &str) -> Result<Hsla> {
     Ok(hsla)
 }
 
-/// Try to parse a theme background value.
-///
-/// Supports all values accepted by [`try_parse_color`] and CSS-style two-stop
-/// `linear-gradient(...)` values.
+/// Supports everything [`try_parse_color`] does, plus CSS-style two-stop `linear-gradient(...)`.
 pub fn try_parse_background(background: &str) -> Result<Background> {
     if let Ok(color) = try_parse_color(background) {
         return Ok(color.into());
@@ -753,11 +684,7 @@ pub fn try_parse_background(background: &str) -> Result<Background> {
     Ok(linear_gradient(gradient.angle, gradient.from, gradient.to))
 }
 
-/// Parse a background, clamping every color stop's alpha to at most `max`.
-///
-/// Unlike [`Background::opacity`], which scales all stops by a single factor,
-/// this caps each gradient stop independently, so a bright `to` stop (or a
-/// transparent `from` stop) can never push the rendered highlight past `max`.
+/// Unlike `Background::opacity` (scales all stops by one factor), this caps each stop independently so no stop can push past `max`.
 pub(crate) fn try_parse_background_clamped(background: &str, max: f32) -> Result<Background> {
     if let Ok(color) = try_parse_color(background) {
         return Ok(color.alpha(color.a.min(max)).into());

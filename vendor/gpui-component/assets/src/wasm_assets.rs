@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use wasm_bindgen_futures::spawn_local;
 
-/// WASM implementation - download assets on-demand
+/// Downloads assets on demand.
 pub struct Assets {
     endpoint: SharedString,
     cache: Arc<RwLock<HashMap<String, Vec<u8>>>>,
@@ -35,14 +35,12 @@ impl AssetSource for Assets {
         }
 
         if path.starts_with("icons/") && path.ends_with(".svg") {
-            // Check if already cached
             if let Ok(cache) = self.cache.read() {
                 if let Some(data) = cache.get(path) {
                     return Ok(Some(Cow::Owned(data.clone())));
                 }
             }
 
-            // Check if download is already pending
             let is_pending = self
                 .pending
                 .read()
@@ -50,7 +48,6 @@ impl AssetSource for Assets {
                 .unwrap_or(false);
 
             if !is_pending {
-                // Mark as pending and start download
                 if let Ok(mut pending) = self.pending.write() {
                     pending.insert(path.to_string(), true);
                 }
@@ -87,14 +84,13 @@ impl AssetSource for Assets {
                         }
                     }
 
-                    // Remove from pending
                     if let Ok(mut pending) = pending.write() {
                         pending.remove(&path_clone);
                     }
                 });
             }
 
-            // Return error so GPUI will retry (but only log once per icon)
+            // Errors so GPUI retries; logging happens once per icon above, not on retry.
             Err(anyhow!("Wasm assets loading, will be available soon..."))
         } else {
             Ok(None)

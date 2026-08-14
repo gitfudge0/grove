@@ -5,56 +5,31 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
-/// Everything the tmux layer can fail with. Mirrors `git::GitError` and
-/// `storage::StoreError`: callers that only bubble errors upward keep working
-/// unchanged (`anyhow` converts any `std::error::Error` via `?`), while a
-/// caller that cares can match the specific failure instead of grepping a
-/// formatted string.
 #[derive(Debug, Error)]
 pub enum TmuxError {
-    /// An env var name handed to [`new_session`] is not a POSIX shell
-    /// identifier. Only values are shell-quoted, so a non-identifier key
-    /// could smuggle arbitrary shell into the session's command line.
+    /// Only values are shell-quoted, so a non-identifier key could smuggle arbitrary shell in.
     #[error("invalid env var name: {0:?}")]
     InvalidEnvKey(String),
-    /// A `tmux` subprocess ran but exited non-zero. `cmd` is the tmux
-    /// subcommand (e.g. `new-session`).
     #[error("tmux {cmd} failed")]
     Command { cmd: String },
-    /// Spawning `tmux` failed outright (not on PATH, fork failure, …).
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
 
-/// Shorthand for this module's fallible functions.
 pub type Result<T, E = TmuxError> = std::result::Result<T, E>;
 
-/// Private socket name. Keeps grove's tmux server isolated from the user's.
 pub const SOCKET: &str = "grove";
-
-/// Prefix on every tmux session grove owns. Used to filter discovery.
 pub const NAME_PREFIX: &str = "grove__";
 
 fn tmux() -> Command {
     let mut c = Command::new("tmux");
-    // `-u` forces UTF-8 handling even when the environment carries no UTF-8
-    // locale, and `LC_ALL` gives the tmux server itself one. Grove launches
-    // from a macOS .app bundle that inherits no `LANG`/`LC_*` from the shell;
-    // without this, tmux treats clients as non-UTF-8 and downgrades Unicode
-    // box-drawing to ACS line-drawing escapes (rendered as literal `q`/`x`).
+    // Grove launches from a macOS .app bundle with no LANG/LC_* — without -u/LC_ALL, tmux downgrades Unicode box-drawing to literal q/x.
     c.args(["-u", "-L", SOCKET]);
     c.env("LC_ALL", "en_US.UTF-8");
-    // Closed stdin is always safe; stdout/stderr are configured per-call so
-    // `.output()` callers can still capture, while `.status()` callers route
-    // both to /dev/null so tmux warnings do not leak into the parent process.
     c.stdin(Stdio::null());
     c
 }
 
-/// Run `cmd` to completion with stdout/stderr silenced. Use for tmux calls
-/// where we only care about the exit code. stderr is redirected to
-/// `/dev/null` above, so a failure can only be logged with the exit status,
-/// not captured stderr text.
 fn run_silent(mut cmd: Command) -> std::io::Result<std::process::ExitStatus> {
     tracing::debug!(
         args = ?cmd.get_args().collect::<Vec<_>>(),
@@ -69,29 +44,15 @@ fn run_silent(mut cmd: Command) -> std::io::Result<std::process::ExitStatus> {
     status
 }
 
-/// How long a cached [`available`] result stays valid. Short enough that a
-/// user who installs tmux (or a setting toggle that depends on it) is picked
-/// up without restarting the app; long enough that a render path calling
-/// `available()` every frame doesn't fork a `tmux -V` process 15-20 times a
-/// second.
+/// Short enough to pick up a fresh tmux install; long enough that a per-frame render path doesn't fork `tmux -V` 15-20 times a second.
 const AVAILABLE_CACHE_TTL: Duration = Duration::from_secs(5);
 
-/// Cached `(when it was checked, what it found)`, guarded by a mutex since
-/// `available()` can be called from any thread (it is polled from a render
-/// path).
 static AVAILABLE_CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
 
-/// True if `now` is still within `AVAILABLE_CACHE_TTL` of `checked_at`. Pulled
-/// out of [`available`] so the freshness rule can be unit-tested without
-/// spawning a process.
 fn cache_is_fresh(checked_at: Instant, now: Instant) -> bool {
     now.saturating_duration_since(checked_at) < AVAILABLE_CACHE_TTL
 }
 
-/// True if `tmux` is on PATH and runnable. Cached for [`AVAILABLE_CACHE_TTL`]
-/// so hot call sites (this is polled from a render path) don't fork a
-/// `tmux -V` process every call; a cache hit logs nothing; only an actual
-/// spawn does.
 pub fn available() -> bool {
     let now = Instant::now();
     {
@@ -147,8 +108,6 @@ fn sh_quote(s: &str) -> String {
     out
 }
 
-/// True when `key` is a POSIX shell environment-variable name:
-/// `[A-Za-z_][A-Za-z0-9_]*`.
 fn valid_env_key(key: &str) -> bool {
     let mut chars = key.chars();
     match chars.next() {
@@ -158,9 +117,7 @@ fn valid_env_key(key: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Create a detached tmux session running `program args...` in `cwd`, with
-/// `env` set for that process only (via a shell env-prefix, not a tmux
-/// session option — see `new_session`'s doc comment on `cmdline`).
+/// `env` is set via a shell env-prefix on the command line, not a tmux session option.
 pub fn new_session(
     name: &str,
     cwd: &str,
@@ -170,13 +127,9 @@ pub fn new_session(
     args: &[String],
     env: &[(String, String)],
 ) -> Result<()> {
-    // tmux runs a single-string command via the user's shell (`$SHELL -c
-    // <cmdline>`), so a leading `KEY='value' ...` env prefix is understood by
-    // any POSIX shell without needing tmux's own (3.2+-only) `-e` flag.
+    // Leading KEY='value' env prefix understood by any POSIX shell, avoiding tmux's 3.2+-only -e flag.
     let mut cmdline = String::new();
     for (k, v) in env {
-        // Only the value is shell-quoted below; the key is spliced in raw, so a
-        // key that isn't a plain identifier could smuggle in arbitrary shell.
         if !valid_env_key(k) {
             return Err(TmuxError::InvalidEnvKey(k.clone()));
         }
@@ -214,18 +167,11 @@ pub fn new_session(
     Ok(())
 }
 
-/// Configure a grove-owned tmux session so its attached client behaves like a
-/// transparent embedded terminal.
 pub fn configure_embedded_session(name: &str) {
-    // Hide the status bar and disable the prefix so the embedded view is just
-    // the agent's screen, with no tmux keybindings stealing input.
     for (key, value) in [
         ("status", "off"),
         ("prefix", "None"),
         ("mouse", "off"),
-        // The GUI reads session context from OSC window-title updates. Native
-        // sessions expose those directly; tmux needs to be told to forward the
-        // active pane title to the attached client.
         ("set-titles", "on"),
         ("set-titles-string", "#{pane_title}"),
     ] {
@@ -234,22 +180,11 @@ pub fn configure_embedded_session(name: &str) {
         let _ = run_silent(c);
     }
 
-    // Let agent CLIs update the tmux pane title from their own OSC title
-    // sequences. This is a window option, not a session option.
     let mut c = tmux();
     c.args(["set-window-option", "-t", name, "allow-rename", "on"]);
     let _ = run_silent(c);
 
-    // `tmux()` starts the grove server with no `-f`, so it loads the user's
-    // own ~/.tmux.conf — which on some machines sets `extended-keys on` /
-    // `xterm-keys on`. That makes tmux negotiate CSI-u/modifyOtherKeys with
-    // pane applications and query the outer terminal's capabilities to do
-    // so. Grove can't hold up either end of that: its input layer
-    // (src/terminal/keys.rs::key_to_bytes) only ever emits legacy key
-    // encodings, and its emulator never writes replies back to the PTY, so
-    // it can never answer tmux's capability queries. Force both off
-    // globally so the user's config can't leave tmux brokering a protocol
-    // neither side of grove speaks.
+    // tmux loads the user's own ~/.tmux.conf, which can enable extended-keys/xterm-keys — Grove's input layer can never answer those capability queries, so force both off globally.
     let mut c = tmux();
     c.args(["set-option", "-g", "extended-keys", "off"]);
     let _ = run_silent(c);
@@ -257,31 +192,15 @@ pub fn configure_embedded_session(name: &str) {
     c.args(["set-window-option", "-g", "xterm-keys", "off"]);
     let _ = run_silent(c);
 
-    // Server option (grove owns this socket): agent TUIs subscribe to focus
-    // reporting (mode 1004); with it off, Claude Code prints a "tmux
-    // focus-events off" notice into the pane a few seconds after each attach.
-    //
-    // NB: the claim that this notice's redraw is what leaves phantom blank
-    // rows in an agent's input box was DISPROVEN by direct experiment — 60
-    // rapid client resizes and a slow 35x99->22x95->48x95 replay against a
-    // live agent TUI both produced zero phantom rows. This option is kept
-    // only to suppress the notice itself; do not cite it as a phantom-row fix.
+    // Suppresses Claude Code's "tmux focus-events off" notice; NOT a fix for phantom input rows (disproven by direct experiment).
     let mut c = tmux();
     c.args(["set-option", "-s", "focus-events", "on"]);
     let _ = run_silent(c);
 }
 
-/// Drive an embedded tmux client's scrollback via copy-mode. The attached
-/// client renders on the alternate screen, so the real pane history lives in
-/// tmux's own buffer and is only reachable through copy-mode — grove's vt100
-/// scrollback is empty here. Wheel-up enters mouse copy-mode (`-e`, which
-/// auto-exits when scrolled back to the bottom) and walks the view up; wheel-
-/// down walks it back down. `lines` is the notch step.
+/// The attached client renders on the alternate screen, so real pane history lives in tmux's own buffer, reachable only through copy-mode.
 pub fn scroll(name: &str, up: bool, lines: usize) {
-    // NB: `copy-mode`/`send-keys` take a *pane* target, where the `=` exact-
-    // match prefix used by `exact()` is invalid ("can't find pane"). The plain
-    // session name resolves to the session's active pane — the agent — which is
-    // what we want for these single-pane embedded sessions.
+    // copy-mode/send-keys take a pane target — exact()'s `=` prefix is invalid here ("can't find pane").
     if up {
         let mut enter = tmux();
         enter.args(["copy-mode", "-e", "-t", name]);
@@ -293,8 +212,6 @@ pub fn scroll(name: &str, up: bool, lines: usize) {
     let _ = run_silent(c);
 }
 
-/// Leave copy-mode so subsequent keystrokes reach the agent again. A no-op if
-/// the client is not currently in copy-mode.
 pub fn cancel_copy_mode(name: &str) {
     let mut c = tmux();
     c.args(["send-keys", "-t", name, "-X", "cancel"]);
@@ -307,13 +224,7 @@ pub fn kill_session(name: &str) {
     let _ = run_silent(c);
 }
 
-/// PID of the pane's foreground process in tmux session `name` (i.e. the
-/// direct child of the tmux server for that pane — typically the agent
-/// process's shell, or the agent itself if exec'd directly). Used as the
-/// process-tree root for matching a session against `claude agents --json`
-/// rows in `claude_agents::Poller::status_for`. Returns `None` on any
-/// failure (tmux not running, session gone, unparsable output) — callers
-/// treat that as "no live signal" and fall back to other heuristics.
+/// Process-tree root used to match a session against `claude agents --json` rows; `None` on any failure means "no live signal".
 pub fn pane_pid(name: &str) -> Option<u32> {
     tracing::debug!(args = "list-panes -F #{pane_pid}", target = %name, "running tmux command");
     let out = tmux()
@@ -342,7 +253,6 @@ pub struct DiscoveredSession {
     pub agent: Agent,
 }
 
-/// Names of all grove-owned tmux sessions currently on the server.
 pub fn live_grove_session_names() -> Vec<String> {
     tracing::debug!(
         args = "list-sessions -F #{session_name}",
@@ -364,8 +274,7 @@ pub fn live_grove_session_names() -> Vec<String> {
         .collect()
 }
 
-/// Discover prior grove sessions by intersecting live tmux sessions with
-/// sidecar metadata files. Sidecars without a live tmux session are pruned.
+/// Intersects live tmux sessions with sidecar metadata files; sidecars without a live session are pruned.
 pub fn list_grove_sessions() -> Vec<DiscoveredSession> {
     let live = live_grove_session_names();
     session_meta::prune(&live);
@@ -383,11 +292,9 @@ pub fn list_grove_sessions() -> Vec<DiscoveredSession> {
         .collect()
 }
 
-/// Stable 16-hex-char hash of an arbitrary string. Used to fit a worktree path
-/// into a tmux session name (which can't contain `:` or `.`). Full 64 bits so
-/// two worktree paths can't realistically collide into the same session name.
+/// Fits a worktree path into a tmux session name, which can't contain `:` or `.`.
 pub fn short_hash(s: &str) -> String {
-    // FNV-1a 64-bit. Good enough for naming; not cryptographic.
+    // FNV-1a 64-bit; not cryptographic.
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.as_bytes() {
         h ^= *b as u64;
@@ -396,8 +303,7 @@ pub fn short_hash(s: &str) -> String {
     format!("{h:016x}")
 }
 
-/// Build a unique grove session name. `n` disambiguates multiple sessions
-/// against the same (wt, agent).
+/// `n` disambiguates multiple sessions against the same (wt, agent).
 pub fn make_name(wt_path: &str, agent: Agent, n: u32) -> String {
     format!(
         "{}{}__{}__{}",
@@ -408,7 +314,6 @@ pub fn make_name(wt_path: &str, agent: Agent, n: u32) -> String {
     )
 }
 
-/// Pick the smallest `n` such that `make_name(...)` isn't taken yet.
 pub fn next_free_n(wt_path: &str, agent: Agent) -> u32 {
     // Bounded so a wedged tmux server can't spin this forever.
     (0u32..1024)
@@ -428,11 +333,6 @@ mod tests {
     use super::*;
     use crate::agent::Agent;
 
-    // ── available caching ────────────────────────────────────────────────────
-
-    /// A cache entry younger than the TTL is fresh; one at or past the TTL is
-    /// not. This is the pure decision `available()` makes before deciding
-    /// whether to spawn `tmux -V` again.
     #[test]
     fn cache_is_fresh_respects_ttl_boundary() {
         let checked_at = Instant::now();
@@ -460,9 +360,6 @@ mod tests {
         );
     }
 
-    // ── short_hash ───────────────────────────────────────────────────────────
-
-    /// `short_hash` always produces exactly 16 hex characters.
     #[test]
     fn short_hash_is_16_hex_chars() {
         for s in &[
@@ -480,9 +377,6 @@ mod tests {
         }
     }
 
-    /// `short_hash` is deterministic: the same input always produces the same
-    /// output, and different inputs produce different outputs (FNV collisions
-    /// are astronomically unlikely for these controlled inputs).
     #[test]
     fn short_hash_deterministic_and_distinct() {
         let a = short_hash("/home/user/project/wt-a");
@@ -495,10 +389,6 @@ mod tests {
         assert_ne!(a, b, "different paths must produce different hashes");
     }
 
-    // ── make_name ────────────────────────────────────────────────────────────
-
-    /// `make_name` produces a string that starts with `NAME_PREFIX`, embeds the
-    /// hash and agent label, and ends with the disambiguator `n`.
     #[test]
     fn make_name_structure() {
         let path = "/repos/myproject/wt-feat";
@@ -520,25 +410,18 @@ mod tests {
             "session name must end with the disambiguator __0"
         );
 
-        // Different `n` → different name.
         let name1 = make_name(path, Agent::Claude, 1);
         assert_ne!(name, name1, "n=0 and n=1 must produce different names");
     }
 
-    // ── sh_quote ─────────────────────────────────────────────────────────────
-
-    /// `sh_quote` wraps the string in single quotes.
     #[test]
     fn sh_quote_wraps_in_single_quotes() {
         let q = sh_quote("hello world");
         assert_eq!(q, "'hello world'");
     }
 
-    /// A string containing a single quote must be escaped as `'\''` so the
-    /// shell receives the correct literal character.
     #[test]
     fn sh_quote_escapes_embedded_single_quote() {
-        // Input: a'b  → expected: 'a'\''b'
         let q = sh_quote("a'b");
         assert_eq!(
             q, "'a'\\''b'",
@@ -546,13 +429,11 @@ mod tests {
         );
     }
 
-    /// An empty string round-trips as `''`.
     #[test]
     fn sh_quote_empty_string() {
         assert_eq!(sh_quote(""), "''");
     }
 
-    /// Read a single tmux format value for a target on grove's socket.
     fn display(target: &str, fmt: &str) -> String {
         let out = tmux()
             .args(["display-message", "-p", "-t", target, fmt])
@@ -562,11 +443,7 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    // Drives the real copy-mode scroll path against a throwaway session on
-    // grove's socket. Verifies the wheel actually enters copy-mode and moves
-    // the view, and that cancel returns to the live screen — the regression
-    // that the `=`-prefixed pane target silently broke. Skipped when tmux is
-    // unavailable (e.g. minimal CI).
+    // Verifies the regression where the `=`-prefixed pane target silently broke wheel scroll. Skipped when tmux is unavailable.
     #[test]
     fn scroll_drives_copy_mode() {
         if !available() {
@@ -574,10 +451,8 @@ mod tests {
             return;
         }
         let name = "grove__selftest__scroll__0";
-        // Clean any leftover from a previous aborted run.
         kill_session(name);
 
-        // A 24-row pane printing 200 lines guarantees real scrollback history.
         let mut create = tmux();
         create.args([
             "new-session",
@@ -597,7 +472,6 @@ mod tests {
             "new-session failed"
         );
 
-        // Give the shell a moment to emit its output into the pane history.
         std::thread::sleep(std::time::Duration::from_millis(300));
 
         assert_eq!(display(name, "#{pane_in_mode}"), "0", "should start live");

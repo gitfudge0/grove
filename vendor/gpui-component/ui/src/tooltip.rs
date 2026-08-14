@@ -20,15 +20,11 @@ pub(crate) fn init(_cx: &mut App) {
     // No app-level init needed — TooltipOverlay is per-window via Root.
 }
 
-// ── Tooltip view (unchanged API) ────────────────────────────────────────────
-
 enum TooltipContext {
     Text(Text),
     Element(Box<dyn Fn(&mut Window, &mut App) -> AnyElement>),
 }
 
-/// A Tooltip element that can display text or custom content,
-/// with optional key binding information.
 pub struct Tooltip {
     style: StyleRefinement,
     content: TooltipContext,
@@ -37,7 +33,6 @@ pub struct Tooltip {
 }
 
 impl Tooltip {
-    /// Create a Tooltip with a text content.
     pub fn new(text: impl Into<Text>) -> Self {
         Self {
             style: StyleRefinement::default(),
@@ -47,7 +42,6 @@ impl Tooltip {
         }
     }
 
-    /// Create a Tooltip with a custom element.
     pub fn element<E, F>(builder: F) -> Self
     where
         E: IntoElement,
@@ -63,19 +57,16 @@ impl Tooltip {
         }
     }
 
-    /// Set Action to display key binding information for the tooltip if it exists.
     pub fn action(mut self, action: &dyn Action, context: Option<&str>) -> Self {
         self.action = Some((action.boxed_clone(), context.map(SharedString::new)));
         self
     }
 
-    /// Set KeyBinding information for the tooltip.
     pub fn key_binding(mut self, key_binding: Option<Kbd>) -> Self {
         self.key_binding = key_binding;
         self
     }
 
-    /// Build the tooltip and return it as an `AnyView`.
     pub fn build(self, _: &mut Window, cx: &mut App) -> AnyView {
         cx.new(|_| self).into()
     }
@@ -140,15 +131,10 @@ impl Render for Tooltip {
     }
 }
 
-// ── Managed tooltip system ──────────────────────────────────────────────────
-
-/// Grace period: if a tooltip was hidden within this time, skip delay for next show.
+/// If a tooltip was hidden within this time, skip the delay for the next show.
 const GRACE_PERIOD: Duration = Duration::from_millis(300);
-/// Delay before showing a tooltip when no tooltip is currently active.
 const SHOW_DELAY: Duration = Duration::from_millis(500);
-/// Duration of the slide-down enter animation.
 const ENTER_DURATION: Duration = Duration::from_millis(150);
-/// Duration of the position-slide animation when switching tooltips.
 const SLIDE_DURATION: Duration = Duration::from_millis(200);
 const TOOLTIP_WINDOW_MARGIN: Pixels = px(4.);
 
@@ -349,17 +335,13 @@ impl IntoElement for TooltipOverlayPositioner {
     }
 }
 
-/// Content for a managed tooltip.
 #[derive(Clone)]
 pub(crate) struct TooltipContent {
     pub build: Rc<dyn Fn(&mut Window, &mut App) -> AnyView>,
     pub trigger_bounds: Bounds<Pixels>,
 }
 
-/// Manages tooltip lifecycle: delay, grace period, animations, and rendering.
-///
-/// A single instance lives in [`Root`] per window. Components register hover
-/// via [`ManagedTooltipExt::managed_tooltip`] which calls into this overlay.
+/// A single instance lives in [`Root`] per window; components register hover via [`ManagedTooltipExt::managed_tooltip`].
 pub struct TooltipOverlay {
     content: Option<TooltipContent>,
     prev_trigger_bounds: Option<Bounds<Pixels>>,
@@ -391,8 +373,7 @@ impl TooltipOverlay {
         self.epoch
     }
 
-    /// Request showing a tooltip. If another tooltip is active or was recently
-    /// hidden, shows immediately with a slide animation. Otherwise starts a delay.
+    /// If another tooltip is active or was recently hidden, shows immediately with a slide animation; otherwise delays.
     pub(crate) fn request_show(
         &mut self,
         content: TooltipContent,
@@ -434,8 +415,7 @@ impl TooltipOverlay {
         }
     }
 
-    /// Request hiding the current tooltip. Starts a brief grace period so that
-    /// moving to another tooltip-bearing element feels instant.
+    /// Starts a brief grace period so moving to another tooltip-bearing element feels instant.
     pub(crate) fn request_hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Cancel any pending show
         self._show_task = None;
@@ -543,12 +523,7 @@ impl Render for TooltipOverlay {
     }
 }
 
-// ── Extension trait for managed tooltips ─────────────────────────────────────
-
-// ── Shared tooltip state for components ─────────────────────────────────────
-
-/// Shared tooltip state that components (Button, Switch, Checkbox, Radio, etc.)
-/// can embed to get `.tooltip()` support with minimal boilerplate.
+/// Embeddable by components (Button, Switch, Checkbox, Radio, etc.) to get `.tooltip()` with minimal boilerplate.
 #[derive(Default)]
 pub(crate) struct ComponentTooltip {
     pub text: Option<(
@@ -559,7 +534,6 @@ pub(crate) struct ComponentTooltip {
 }
 
 impl ComponentTooltip {
-    /// Apply this tooltip to a `Stateful<Div>` (or any `ManagedTooltipExt` element).
     pub fn apply<E: ManagedTooltipExt>(self, el: E) -> E {
         if let Some(builder) = self.builder {
             el.managed_tooltip(move |window, cx| builder(window, cx))
@@ -579,8 +553,6 @@ impl ComponentTooltip {
         }
     }
 }
-
-// ── Internal managed tooltip trait ──────────────────────────────────────────
 
 pub(crate) trait ManagedTooltipExt:
     StatefulInteractiveElement + crate::ElementExt + Sized

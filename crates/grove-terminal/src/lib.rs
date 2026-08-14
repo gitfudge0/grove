@@ -1,5 +1,4 @@
-//! Headless terminal model for Grove: an `alacritty_terminal` wrapper emitting
-//! token-space cells. Contains no gpui types and no theme resolution.
+//! Headless `alacritty_terminal` wrapper emitting token-space cells; no gpui types, no theme resolution.
 #![forbid(unsafe_code)]
 
 pub mod cell;

@@ -1,12 +1,5 @@
-//! `GroveTerm` — the headless terminal model.
-//!
-//! An `alacritty_terminal::Term` behind a `FairMutex`, driven by a single
-//! stateful `Processor`, exposing exactly the surface Grove needs in *token
-//! space*: no theme colors, no gpui types, no executor.
-//!
-//! Behavioral parity with the in-tree `vt100` parser is not aspirational — it
-//! is enforced by `tests/golden.rs`, which feeds recorded PTY streams to both
-//! and compares cell by cell.
+//! `GroveTerm` — the headless terminal model: an `alacritty_terminal::Term` exposing Grove's *token space* only (no theme colors, no gpui types, no executor).
+//! Behavioral parity with the in-tree `vt100` parser is enforced by `tests/golden.rs`, which feeds recorded PTY streams to both and compares cell by cell.
 
 use std::sync::{Arc, Mutex};
 
@@ -21,45 +14,33 @@ use alacritty_terminal::vte::ansi::{Color as AColor, NamedColor, Processor, StdS
 use crate::cell::{Cell, Snapshot};
 use crate::color::TermColor;
 
-/// Scrollback depth. Matches the value the deleted iced app's vt100 parser
-/// used, so the frozen golden dumps retain the same history.
+/// Matches the deleted iced app's vt100 parser, so the frozen golden dumps retain the same history.
 pub const SCROLLING_HISTORY: usize = 5000;
 
-/// How the inner app wants mouse events reported.
-///
-/// Deliberately crate-local rather than a re-export of `vt100`'s
-/// `MouseProtocolMode`: grove-terminal owns its vocabulary so the vt100
-/// dependency can be deleted in a later phase without touching callers.
+/// Crate-local rather than a re-export of `vt100`'s `MouseProtocolMode`, so the vt100 dependency can be deleted later without touching callers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MouseMode {
-    /// No mouse reporting.
     #[default]
     None,
-    /// Press/release only (`?1000`).
+    /// `?1000`.
     Normal,
-    /// Press/release plus motion while a button is held (`?1002`).
+    /// `?1002`.
     Button,
-    /// All motion (`?1003`).
+    /// `?1003`.
     Any,
 }
 
-/// How mouse reports are encoded on the wire.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MouseEncoding {
-    /// The original X10 byte encoding.
     #[default]
     Default,
-    /// SGR (`?1006`).
+    /// `?1006`.
     Sgr,
-    /// UTF-8 (`?1005`).
+    /// `?1005`.
     Utf8,
 }
 
-/// Geometry handed to `Term::new`/`Term::resize`.
-///
-/// A local type rather than `alacritty_terminal::term::test::TermSize`: that
-/// one lives in a module named `test`, and production code should not reach
-/// into a dependency's test helpers.
+/// Local rather than `alacritty_terminal::term::test::TermSize`: that lives in a module named `test`, which production code shouldn't reach into.
 #[derive(Clone, Copy, Debug)]
 struct GroveSize {
     columns: usize,
@@ -80,19 +61,14 @@ impl Dimensions for GroveSize {
 
 #[derive(Debug, Default)]
 struct ListenerState {
-    /// Monotonic BEL counter. Callers diff against their last-seen value, so
-    /// it must never reset — see `session.rs:930-938`.
+    /// Must never reset — callers diff against their last-seen value.
     bells: usize,
     title: Option<String>,
-    /// Bytes the emulator wants written back to the PTY in reply to a
-    /// terminal query (Device Attributes, cursor-position reports, …).
-    /// Drained by `GroveTerm::take_responses`.
+    /// Bytes the emulator wants written back to the PTY (Device Attributes, cursor-position reports, …), drained by `GroveTerm::take_responses`.
     responses: Vec<u8>,
 }
 
-/// Captures the two `Term` events Grove cares about. alacritty reports the
-/// window title through the event channel (vt100 exposes it as screen state
-/// instead), so the listener is the only place it can come from.
+/// alacritty reports the window title through the event channel, so this listener is the only source for it.
 #[derive(Clone, Debug, Default)]
 struct GroveListener {
     state: Arc<Mutex<ListenerState>>,
@@ -108,29 +84,17 @@ impl EventListener for GroveListener {
             Event::Title(t) => s.title = Some(t),
             Event::ResetTitle => s.title = None,
             Event::PtyWrite(text) => s.responses.extend_from_slice(text.as_bytes()),
-            // ponytail: `ColorRequest` (OSC 4/10/11) and `ClipboardLoad`
-            // (OSC 52 read) are still dropped, and a querier gets silence.
-            //
-            // `ColorRequest` needs a palette, which lives in the gpui theme
-            // layer, not here — answering it means plumbing theme colors down
-            // into this crate. Worth doing if something is seen stalling on a
-            // color query; until then the gap is recorded rather than guessed
-            // at with invented values.
-            //
-            // `ClipboardLoad` stays unanswered deliberately: replying would
-            // hand the user's clipboard to any program that asks.
+            // ColorRequest (needs the gpui theme layer, not here) and ClipboardLoad (would leak the clipboard to any asking program) stay unanswered.
             _ => {}
         }
     }
 }
 
-/// The headless terminal model.
 pub struct GroveTerm {
     term: FairMutex<Term<GroveListener>>,
     processor: Processor<StdSyncHandler>,
     listener: GroveListener,
-    /// Bumped whenever a `process` call reported any damage. Callers use it as
-    /// a cheap "did anything change" signal instead of diffing snapshots.
+    /// Bumped on damage; a cheap "did anything change" signal instead of diffing snapshots.
     damage_gen: u64,
     rows: u16,
     cols: u16,
@@ -159,9 +123,7 @@ impl GroveTerm {
         }
     }
 
-    /// Feed a chunk of PTY output. Chunk boundaries are irrelevant: the
-    /// `Processor` carries the escape-sequence state across calls
-    /// (`golden_chunking_invariance` guards it).
+    /// Chunk boundaries are irrelevant: `Processor` carries escape-sequence state across calls.
     pub fn process(&mut self, bytes: &[u8]) {
         let mut term = self.term.lock();
         self.processor.advance(&mut *term, bytes);
@@ -176,7 +138,6 @@ impl GroveTerm {
         }
     }
 
-    /// Monotonic damage counter; changes whenever `process` saw the grid move.
     pub fn damage_generation(&self) -> u64 {
         self.damage_gen
     }
@@ -185,11 +146,7 @@ impl GroveTerm {
         (self.rows, self.cols)
     }
 
-    /// The visible grid in token space.
-    ///
-    /// Italic, underline, dim and strikethrough are deliberately dropped: the
-    /// spec's parity decision is that Grove never drew them. Do not "fix" this
-    /// without changing the spec.
+    /// Italic, underline, dim and strikethrough are deliberately dropped — Grove never drew them; don't "fix" this without changing the spec.
     pub fn snapshot(&self) -> Snapshot {
         let term = self.term.lock();
         let grid = term.grid();
@@ -218,8 +175,7 @@ impl GroveTerm {
         }
     }
 
-    /// `(row, col, hidden)` in viewport coordinates. Adding the display offset
-    /// keeps a scrolled-back view lined up with vt100's `cursor_position`.
+    /// `(row, col, hidden)` in viewport coordinates.
     pub fn cursor(&self) -> (u16, u16, bool) {
         let term = self.term.lock();
         let grid = term.grid();
@@ -231,8 +187,7 @@ impl GroveTerm {
         (row, col, hidden)
     }
 
-    /// The current OSC 0/1/2 window title, trimmed; `None` when empty.
-    /// Semantics copied from `session.rs:871-881`.
+    /// OSC 0/1/2 window title, trimmed; `None` when empty.
     pub fn title(&self) -> Option<String> {
         let s = self.listener.state.lock().ok()?;
         let t = s.title.as_ref()?.trim().to_string();
@@ -243,14 +198,11 @@ impl GroveTerm {
         }
     }
 
-    /// Total BEL count seen on this stream. Monotonic; callers diff it.
     pub fn bell_count(&self) -> usize {
         self.listener.state.lock().map_or(0, |s| s.bells)
     }
 
-    /// Drain any replies the emulator produced while parsing (Device
-    /// Attributes, cursor-position reports, …). These are protocol replies,
-    /// NOT user input — the caller must write them straight to the PTY.
+    /// Protocol replies, NOT user input — the caller must write them straight to the PTY.
     pub fn take_responses(&mut self) -> Vec<u8> {
         self.listener
             .state
@@ -262,7 +214,6 @@ impl GroveTerm {
         self.term.lock().mode().contains(TermMode::APP_CURSOR)
     }
 
-    /// Mouse reporting mode requested by the inner app.
     pub fn mouse_mode(&self) -> MouseMode {
         let term = self.term.lock();
         let mode = *term.mode();
@@ -278,8 +229,7 @@ impl GroveTerm {
         }
     }
 
-    /// Wire encoding for mouse reports. SGR wins over UTF-8 when both are set,
-    /// matching how terminals resolve the overlap.
+    /// SGR wins over UTF-8 when both are set, matching how terminals resolve the overlap.
     pub fn encoding(&self) -> MouseEncoding {
         let term = self.term.lock();
         let mode = *term.mode();
@@ -293,7 +243,6 @@ impl GroveTerm {
         }
     }
 
-    /// Rows of scrollback currently scrolled above the live screen.
     pub fn history_size(&self) -> usize {
         self.term.lock().grid().history_size()
     }
@@ -302,8 +251,7 @@ impl GroveTerm {
         self.term.lock().grid().display_offset()
     }
 
-    /// Scroll so `n` rows of history sit above the viewport, clamped to the
-    /// configured scrollback — mirroring `session.rs:690-705`.
+    /// Clamped to the configured scrollback.
     pub fn scroll_to(&mut self, n: usize) {
         let mut term = self.term.lock();
         let history = term.grid().history_size();
@@ -316,12 +264,7 @@ impl GroveTerm {
         term.scroll_display(Scroll::Delta(delta));
     }
 
-    /// Last `n` rows of the *live* screen, newline-joined, for
-    /// `src/gui/activity.rs`'s classifier.
-    ///
-    /// The scroll offset is temporarily zeroed so a user scrolled into history
-    /// can't feed the classifier stale markers (or hide a fresh prompt at the
-    /// bottom). Ported semantically from `session.rs:883-928`.
+    /// Last `n` rows of the *live* screen, for the activity classifier. Scroll offset is temporarily zeroed so a scrolled-back user can't feed it stale markers.
     pub fn tail_contents(&mut self, n: usize) -> String {
         let mut term = self.term.lock();
         let orig = term.grid().display_offset();
@@ -329,11 +272,7 @@ impl GroveTerm {
             term.scroll_display(Scroll::Bottom);
         }
         let rows = term.grid().screen_lines();
-        // A 2n-row window rather than the whole grid: materializing hundreds of
-        // rows on every activity tick, for every session, is the cost this
-        // avoids. Trailing blank rows are trimmed here, so 2n rows normally
-        // still leave n real ones; only when they don't do we pay for the
-        // full screen.
+        // A 2n-row window, not the whole grid — avoids materializing hundreds of rows on every activity tick.
         let window = n.saturating_mul(2);
         let start = rows.saturating_sub(window);
         let mut out = tail_lines(&rows_to_string(&term, start, rows), n);
@@ -346,18 +285,8 @@ impl GroveTerm {
         out
     }
 
-    /// Resize the grid. Clamps to ≥1, no-ops when unchanged, and snaps the
-    /// scroll offset to the live screen first.
-    ///
-    /// The snap is unconditional: vt100 0.15.2 does not clamp its offset on
-    /// resize (`session.rs:957-963`), and snapping on both sides keeps the two
-    /// parsers starting from the same state.
-    ///
-    /// Note this **reflows** the primary screen — `Term::resize` hardcodes
-    /// `self.grid.resize(!is_alt, ..)` (`term/mod.rs:677`) with no config knob,
-    /// so the spec §3 sentence "reflow-on-resize is suppressed" is not
-    /// achievable without patching alacritty. See
-    /// `primary_screen_reflow_is_a_known_divergence` in `tests/golden_resize.rs`.
+    /// Clamps to >=1, no-ops when unchanged, snaps scroll to live screen first.
+    /// Note: this **reflows** the primary screen — unsuppressable without patching alacritty (see `golden_resize.rs`).
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let rows = rows.max(1);
         let cols = cols.max(1);
@@ -376,16 +305,9 @@ impl GroveTerm {
         });
     }
 
-    /// Text between two endpoints in scrollback-stable absolute coordinates
-    /// (`(abs_row, col)`, larger `abs_row` is older).
-    ///
-    /// Grove's selection is a plain cell rectangle, not alacritty's semantic
-    /// `Selection` (spec §3), so this walks the grid directly. Endpoint
-    /// ordering matches `src/gui/pty.rs:374-381`'s `normalize_selection`;
-    /// extraction and cleanup match `session.rs:802-869`.
-    /// Takes `&mut self` because reading rows that are scrolled off screen
-    /// is a viewport-moving operation on the oracle side (`set_scrollback`
-    /// then restore), and callers must not assume otherwise.
+    /// Text between two endpoints in scrollback-stable absolute coordinates (`(abs_row, col)`, larger `abs_row` is older).
+    /// Grove's selection is a plain cell rectangle, not alacritty's semantic `Selection`, so this walks the grid directly.
+    /// Takes `&mut self`: reading off-screen rows is a viewport-moving operation on the oracle side.
     pub fn selection_text(&mut self, p1: (usize, usize), p2: (usize, usize)) -> Option<String> {
         let term = self.term.lock();
         let grid = term.grid();
@@ -395,8 +317,7 @@ impl GroveTerm {
         }
         let cols = grid.columns();
         let offset = grid.display_offset();
-        // Viewport row for an absolute row at the current offset; may fall
-        // outside [0, h-1] when the row is scrolled off screen.
+        // Viewport row for an absolute row; may fall outside [0, h-1] when scrolled off screen.
         let vr = |a: usize| -> isize { (h as isize - 1) - (a as isize - offset as isize) };
         let (r1, r2) = (vr(p1.0), vr(p2.0));
         let (top, bot) = if (r1, p1.1) <= (r2, p2.1) {
@@ -406,15 +327,14 @@ impl GroveTerm {
         };
 
         if top.0 >= 0 && bot.0 < h as isize {
-            // Fully visible: one multi-row read, preserving soft-wrap joining.
+            // Fully visible: one multi-row read.
             let sc = top.1.min(cols);
             let ec = bot.1.saturating_add(1).min(cols);
             let raw = contents_between(&term, top.0 as usize, sc, bot.0 as usize, ec);
             return clean_selection(raw);
         }
 
-        // Off-screen: walk absolute rows, older first. On a row tie the
-        // smaller column starts.
+        // Off-screen: walk absolute rows, older first; smaller column starts on a row tie.
         let (a_top, c_top, a_bot, c_bot) =
             if (p1.0, std::cmp::Reverse(p1.1)) >= (p2.0, std::cmp::Reverse(p2.1)) {
                 (p1.0, p1.1, p2.0, p2.1)
@@ -424,9 +344,7 @@ impl GroveTerm {
         let history = grid.history_size();
         let mut lines: Vec<String> = Vec::new();
         for a in (a_bot..=a_top).rev() {
-            // Absolute row `a` is grid line `h - 1 - a`, independent of the
-            // display offset. Rows older than the retained history are skipped,
-            // matching vt100's clamp-then-skip behavior.
+            // Rows older than the retained history are skipped, matching vt100's clamp-then-skip behavior.
             let line = h as isize - 1 - a as isize;
             if line < -(history as isize) {
                 continue;
@@ -452,15 +370,7 @@ impl GroveTerm {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Cell/text helpers
-// ---------------------------------------------------------------------------
-
-/// The visible display char of a cell.
-///
-/// Wide characters live in their lead cell; the trailing `WIDE_CHAR_SPACER`
-/// (and the `LEADING_WIDE_CHAR_SPACER` a wide char at the line edge pushes out)
-/// render blank so the grid stays rectangular — the same layout vt100 produces.
+/// Wide chars live in their lead cell; the spacer cells render blank so the grid stays rectangular, matching vt100's layout.
 fn cell_char(cell: &ACell) -> char {
     if cell
         .flags
@@ -471,11 +381,7 @@ fn cell_char(cell: &ACell) -> char {
     cell.c
 }
 
-/// `vte::ansi::Color` → token space.
-///
-/// The 16 ANSI slots keep their raw index — bright variants stay at 8..=15
-/// rather than folding onto 0..=7, because `src/gui/pty.rs`'s `ansi_idx` does
-/// that folding at *paint* time and the index has to survive until then.
+/// The 16 ANSI slots keep their raw index (bright stays 8..=15) — folding onto 0..=7 happens at paint time, downstream.
 fn map_color(c: AColor) -> TermColor {
     match c {
         AColor::Named(n) => named_to_token(n),
@@ -503,9 +409,7 @@ fn named_to_token(n: NamedColor) -> TermColor {
         N::BrightMagenta => TermColor::Ansi(13),
         N::BrightCyan => TermColor::Ansi(14),
         N::BrightWhite => TermColor::Ansi(15),
-        // The DIM_* slots are alacritty's rendering of the DIM attribute over a
-        // named color; the underlying token is the base color, and DIM itself
-        // is one of the attributes Grove drops.
+        // DIM_* is alacritty's rendering of DIM over a named color; DIM itself is an attribute Grove drops.
         N::DimBlack => TermColor::Ansi(0),
         N::DimRed => TermColor::Ansi(1),
         N::DimGreen => TermColor::Ansi(2),
@@ -514,15 +418,12 @@ fn named_to_token(n: NamedColor) -> TermColor {
         N::DimMagenta => TermColor::Ansi(5),
         N::DimCyan => TermColor::Ansi(6),
         N::DimWhite => TermColor::Ansi(7),
-        // Foreground/Background/Cursor and their bright/dim variants are the
-        // terminal's *defaults* — vt100 calls this `Color::Default`.
+        // Foreground/Background/Cursor and variants are the terminal's defaults (vt100's `Color::Default`).
         _ => TermColor::Default,
     }
 }
 
-/// vt100's `Row::write_contents` (`vt100-0.15.2/src/row.rs:98-135`) ported to
-/// an alacritty row: emit occupied cells, pad gaps with spaces, stop at the
-/// last occupied column, and never emit a wide char's trailing spacer.
+/// Ports vt100's `Row::write_contents` to an alacritty row: emit occupied cells, pad gaps, stop at the last occupied column, skip wide-char spacers.
 fn write_row(
     out: &mut String,
     row: &alacritty_terminal::grid::Row<ACell>,
@@ -551,9 +452,7 @@ fn row_wrapped(row: &alacritty_terminal::grid::Row<ACell>) -> bool {
         .is_some_and(|c| c.flags.contains(Flags::WRAPLINE))
 }
 
-/// vt100's `Screen::contents_between` (`vt100-0.15.2/src/screen.rs:182-231`)
-/// over viewport rows: soft-wrapped rows are joined, hard-broken rows get a
-/// newline.
+/// Ports vt100's `Screen::contents_between` over viewport rows: soft-wrapped rows join, hard-broken rows get a newline.
 fn contents_between(
     term: &Term<GroveListener>,
     start_row: usize,
@@ -599,8 +498,7 @@ fn contents_between(
     }
 }
 
-/// Viewport rows `[start, end)` rendered as text, matching vt100's
-/// `Grid::write_contents`/`contents_between` newline rules.
+/// Matches vt100's `Grid::write_contents`/`contents_between` newline rules.
 fn rows_to_string(term: &Term<GroveListener>, start: usize, end: usize) -> String {
     if start + 1 >= end {
         let mut out = String::new();
@@ -620,14 +518,8 @@ fn rows_to_string(term: &Term<GroveListener>, start: usize, end: usize) -> Strin
     contents_between(term, start, 0, end - 1, cols)
 }
 
-/// `session.rs:888-896`'s `tail_lines`.
 fn tail_lines(contents: &str, n: usize) -> String {
-    // Each line is right-trimmed. vt100 records "written" per cell, so a
-    // written-but-blank cell at the end of a row survives its text extraction;
-    // alacritty records occupancy per row only (`Row::occ`, private) and cannot
-    // tell such a cell from an untouched one. Trailing spaces mean nothing to
-    // `src/gui/activity.rs`'s classifier, so both parsers normalize them away —
-    // the same shape as the golden harness's blank-cell normalization.
+    // Right-trimmed: alacritty can't distinguish a written-but-blank cell from an untouched one the way vt100 can, so both parsers normalize trailing spaces away.
     let mut lines: Vec<&str> = contents.lines().map(str::trim_end).collect();
     while lines.last().is_some_and(|l| l.trim().is_empty()) {
         lines.pop();
@@ -636,8 +528,7 @@ fn tail_lines(contents: &str, n: usize) -> String {
     lines[from..].join("\n")
 }
 
-/// `session.rs:970-990`'s `clean_selection`: trim trailing whitespace per line,
-/// drop trailing blank lines, `None` when nothing is left.
+/// Trims trailing whitespace per line, drops trailing blank lines, `None` when nothing is left.
 fn clean_selection(raw: String) -> Option<String> {
     let mut out = String::with_capacity(raw.len());
     for line in raw.split('\n') {
@@ -667,11 +558,7 @@ mod tests {
         (t.mouse_mode(), t.encoding())
     }
 
-    /// The expected values here were originally cross-checked against the
-    /// vt100 parser by a sibling test (`..._agree_with_the_vt100_oracle`),
-    /// deleted with vt100 in Plan 10 Task 7 Step 2. The table it validated is
-    /// what remains, and it is the assertion that matters: these are the DEC
-    /// private modes, independently derived, not a snapshot of `GroveTerm`.
+    /// These are the DEC private modes, independently derived — not a snapshot of `GroveTerm`.
     #[test]
     fn mouse_mode_and_encoding_track_the_dec_private_modes() {
         let cases: &[(&[u8], MouseMode, MouseEncoding)] = &[
@@ -707,9 +594,6 @@ mod tests {
 
     #[test]
     fn sgr_torture_fixture_toggles_the_alt_screen_without_enabling_the_mouse() {
-        // The committed `sgr-torture` fixture ends back on the primary screen
-        // and never enables mouse reporting; a change to the fixture that
-        // silently added mouse modes would be caught here.
         let bytes = fs_err::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/sgr-torture.bin"

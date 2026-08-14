@@ -4,14 +4,10 @@ use gpui::{Path, PathBuilder, Pixels, Point, px};
 
 use crate::plot::origin_point;
 
-/// Vertical offset, as a fraction of node height, applied to stagger runs of
-/// equal-height single-node columns so their otherwise-flat ribbons curve.
+/// Fraction of node height used to stagger equal-height single-node column runs so their otherwise-flat ribbons curve.
 const STAGGER_RATIO: f32 = 0.15;
 
-/// Horizontal alignment of nodes across layers.
-///
-/// Mirrors d3-sankey's `sankeyLeft` / `sankeyRight` / `sankeyCenter` /
-/// `sankeyJustify`.
+/// Mirrors d3-sankey's `sankeyLeft`/`sankeyRight`/`sankeyCenter`/`sankeyJustify`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SankeyAlign {
     Left,
@@ -21,10 +17,7 @@ pub enum SankeyAlign {
     Justify,
 }
 
-/// An input link of a Sankey diagram.
-///
-/// `source` and `target` are indices into the node list (d3-sankey's default
-/// `nodeId`), `value` is the flow amount.
+/// `source`/`target` are node-list indices (d3-sankey's default `nodeId`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SankeyLink {
     pub source: usize,
@@ -33,8 +26,6 @@ pub struct SankeyLink {
 }
 
 impl SankeyLink {
-    /// Create a link from the `source` node index to the `target` node index
-    /// carrying `value`.
     pub fn new(source: usize, target: usize, value: f64) -> Self {
         Self {
             source,
@@ -48,51 +39,36 @@ impl SankeyLink {
 #[derive(Clone, Debug, Default)]
 pub struct SankeyNodeLayout {
     pub index: usize,
-    /// The node's throughput in the layout's value space: max(sum of incoming,
-    /// sum of outgoing). With a non-linear [`SankeyValueScale`] this is in
-    /// scaled units, not raw values — read raw values from the input links.
+    /// max(sum of incoming, sum of outgoing), in scaled units under a non-linear [`SankeyValueScale`] — read raw values from the input links instead.
     pub value: f64,
-    /// Topological distance from any source node (longest path).
+    /// Longest-path distance from any source node.
     pub depth: usize,
-    /// Topological distance to any sink node (longest path).
+    /// Longest-path distance to any sink node.
     pub height: usize,
-    /// Horizontal column index after alignment.
     pub layer: usize,
     pub x0: f32,
     pub x1: f32,
     pub y0: f32,
     pub y1: f32,
-    /// Indices into [`SankeyGraph::links`] of the outgoing links.
+    /// Indices into [`SankeyGraph::links`].
     pub source_links: Vec<usize>,
-    /// Indices into [`SankeyGraph::links`] of the incoming links.
+    /// Indices into [`SankeyGraph::links`].
     pub target_links: Vec<usize>,
 }
 
-/// A link with computed layout.
-///
-/// Like d3-sankey, `y0` and `y1` are the vertical centers of the ribbon at
-/// the source and target end. Each end has its own width: the links of a
-/// node's side share the node height in proportion to their values, so both
-/// sides of every node are always fully covered. On a balanced graph
-/// (incoming sum == outgoing sum everywhere) the two ends are equal; on an
-/// imbalanced one (e.g. sqrt-compressed values) the ribbon transitions
-/// smoothly between the two widths.
+/// `y0`/`y1` are ribbon vertical centers at each end; each end has its own width, sharing the node height in proportion to link values so both sides of a node are always fully covered.
 #[derive(Clone, Debug)]
 pub struct SankeyLinkLayout {
     pub index: usize,
     pub source: usize,
     pub target: usize,
-    /// The flow value in the layout's value space (scaled by
-    /// [`SankeyValueScale`]; equals the raw input value under `Linear`).
+    /// Scaled by [`SankeyValueScale`]; equals the raw input value under `Linear`.
     pub value: f64,
     pub y0: f32,
     pub y1: f32,
-    /// The nominal width from the global value scale, used by the layout
-    /// relaxation; equals both end widths on a balanced graph.
+    /// The nominal width used by layout relaxation; equals both end widths on a balanced graph.
     pub width: f32,
-    /// The ribbon width at the source end.
     pub source_width: f32,
-    /// The ribbon width at the target end.
     pub target_width: f32,
 }
 
@@ -104,7 +80,6 @@ pub struct SankeyGraph {
 }
 
 impl SankeyGraph {
-    /// Number of layers (max layer + 1), 0 for an empty graph.
     pub fn layer_count(&self) -> usize {
         self.nodes
             .iter()
@@ -117,9 +92,7 @@ impl SankeyGraph {
 /// A reason a Sankey layout could not be computed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SankeyError {
-    /// A link references a node index out of range.
     MissingNode(usize),
-    /// The graph contains a circular link.
     CircularLink,
 }
 
@@ -137,12 +110,9 @@ impl std::error::Error for SankeyError {}
 /// How flow values map to node heights and ribbon widths.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SankeyValueScale {
-    /// Height is proportional to the value (standard sankey semantics).
     #[default]
     Linear,
-    /// Height is proportional to the square root of the value, compressing a
-    /// wide value range so a dominant flow doesn't dwarf the small ones (and
-    /// the small ones stay visible) without the caller pre-transforming data.
+    /// Compresses a wide value range so a dominant flow doesn't dwarf the small ones, without the caller pre-transforming data.
     Sqrt,
 }
 
@@ -150,7 +120,7 @@ impl SankeyValueScale {
     fn apply(self, value: f64) -> f64 {
         match self {
             Self::Linear => value,
-            // Guard against tiny negatives from bad data.
+            // Clamp guards against tiny negatives from bad data.
             Self::Sqrt => value.max(0.).sqrt(),
         }
     }
@@ -186,42 +156,35 @@ impl Default for Sankey {
 }
 
 impl Sankey {
-    /// Create a generator with the d3-sankey defaults (see [`Sankey::default`]).
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Set the node rectangle width. Defaults to 24.
     pub fn node_width(mut self, node_width: f32) -> Self {
         self.node_width = node_width;
         self
     }
 
-    /// Set the vertical gap between nodes in a column. Defaults to 8.
     pub fn node_padding(mut self, node_padding: f32) -> Self {
         self.node_padding = node_padding;
         self
     }
 
-    /// Set the node alignment. Defaults to [`SankeyAlign::Justify`].
     pub fn node_align(mut self, align: SankeyAlign) -> Self {
         self.align = align;
         self
     }
 
-    /// Set the number of relaxation passes. Defaults to 6.
     pub fn iterations(mut self, iterations: usize) -> Self {
         self.iterations = iterations;
         self
     }
 
-    /// Set how values map to heights. Defaults to [`SankeyValueScale::Linear`].
     pub fn value_scale(mut self, value_scale: SankeyValueScale) -> Self {
         self.value_scale = value_scale;
         self
     }
 
-    /// Set the layout bounds as `[[x0, y0], [x1, y1]]`. Defaults to `[[0, 0], [1, 1]]`.
     pub fn extent(mut self, x0: f32, y0: f32, x1: f32, y1: f32) -> Self {
         self.x0 = x0;
         self.y0 = y0;
@@ -230,19 +193,11 @@ impl Sankey {
         self
     }
 
-    /// Equivalent to `extent(0., 0., width, height)`.
     pub fn size(self, width: f32, height: f32) -> Self {
         self.extent(0., 0., width, height)
     }
 
-    /// Compute the topology only: node `value`, `depth`, `height`, `layer`
-    /// and horizontal positions, without the vertical placement. Much cheaper
-    /// than [`Sankey::layout`] when only the column structure is needed
-    /// (e.g. to measure labels before fixing the extent).
-    ///
-    /// `node_count` is the number of nodes; links reference nodes by index
-    /// (d3-sankey's default `nodeId`). Returns an error if a link references
-    /// a node out of range or the graph contains a cycle.
+    /// Topology only (no vertical placement); much cheaper than [`Sankey::layout`] when only the column structure is needed.
     pub fn topology(
         &self,
         node_count: usize,
@@ -271,10 +226,7 @@ impl Sankey {
                     index,
                     source: link.source,
                     target: link.target,
-                    // Layout works in scaled value space; all downstream math
-                    // (node values, widths, breadths) stays coherent because
-                    // it is additive in this space, so nodes remain exactly
-                    // filled by their ribbons regardless of the scale.
+                    // Downstream math is additive in this scaled space, so nodes stay exactly filled regardless of the scale.
                     value: self.value_scale.apply(link.value),
                     y0: 0.,
                     y1: 0.,
@@ -297,8 +249,7 @@ impl Sankey {
         Ok(graph)
     }
 
-    /// Compute the full layout: [`Sankey::topology`] plus the vertical node
-    /// placement and link breadths.
+    /// [`Sankey::topology`] plus the vertical node placement and link breadths.
     pub fn layout(
         &self,
         node_count: usize,
@@ -307,12 +258,7 @@ impl Sankey {
         Ok(self.layout_from(self.topology(node_count, links)?))
     }
 
-    /// Complete the layout for a graph produced by [`Sankey::topology`],
-    /// avoiding a second topology pass when the extent only becomes known
-    /// after measuring against the column structure (e.g. label margins).
-    ///
-    /// The topological fields are extent-independent; the horizontal and
-    /// vertical positions are recomputed for this generator's extent.
+    /// Completes a [`Sankey::topology`] graph, avoiding a second topology pass when the extent only becomes known later (e.g. after measuring label margins).
     pub fn layout_from(&self, mut graph: SankeyGraph) -> SankeyGraph {
         if graph.nodes.is_empty() {
             return graph;
@@ -333,21 +279,13 @@ impl Sankey {
         graph
     }
 
-    /// Vertically center each column's stack of nodes within the extent.
-    ///
-    /// When a crowded column forces a small scale, the sparser columns don't
-    /// fill the height and the relaxation aligns them to their flows' weighted
-    /// center, which leaves the trunk sitting high with empty space below.
-    /// d3-sankey doesn't correct this; centering each column (translating it,
-    /// so the relaxation's within-column arrangement and the ribbon fits are
-    /// preserved) keeps the diagram balanced on the canvas.
+    /// d3-sankey doesn't correct for a sparse column drifting off-center (sitting high with empty space below); this translates each column to fix it.
     fn center_columns(&self, graph: &mut SankeyGraph) {
         let layers = graph.layer_count();
         if layers == 0 {
             return;
         }
 
-        // Per-layer bounding box, then the offset that centers it.
         let mut lo = vec![f32::INFINITY; layers];
         let mut hi = vec![f32::NEG_INFINITY; layers];
         for node in &graph.nodes {
@@ -367,12 +305,7 @@ impl Sankey {
         apply_layer_offsets(graph, &offsets);
     }
 
-    /// Nudge runs of adjacent single-node columns of (near-)equal height off
-    /// the shared center line. Centering aligns such columns exactly, so the
-    /// ribbon between them is a flat rectangle; a small alternating stagger
-    /// turns it into a gentle S-curve. Only the flat single-node case is
-    /// touched, so multi-node or unequal columns (which already curve) are
-    /// left alone.
+    /// Turns the otherwise-flat ribbon between adjacent equal-height single-node columns into a gentle S-curve; multi-node/unequal columns already curve and are left alone.
     fn stagger_flat_columns(&self, graph: &mut SankeyGraph) {
         let layers = graph.layer_count();
         if layers < 2 {
@@ -396,8 +329,7 @@ impl Sankey {
             })
             .collect();
 
-        // Offset the odd columns of each flat run, leaving the even ones on
-        // the center line, so consecutive ribbons bend down then back up.
+        // Odd columns of each flat run are offset, even ones stay centered, so consecutive ribbons bend down then back up.
         let mut offsets = vec![0f32; layers];
         let mut run = 0usize;
         for l in 1..layers {
@@ -406,8 +338,7 @@ impl Sankey {
             if flat {
                 run += 1;
                 if run % 2 == 1 {
-                    // Bound the nudge by the slack so the node stays inside
-                    // the extent (a column that fills the height can't move).
+                    // Bounded by the slack so a column filling the height can't move.
                     let slack = (self.y1 - self.y0 - heights[l]).max(0.);
                     offsets[l] = (heights[l] * STAGGER_RATIO).min(slack / 2.);
                 }
@@ -493,8 +424,7 @@ impl Sankey {
     }
 
     fn initialize_node_breadths(&self, graph: &mut SankeyGraph, columns: &[Vec<usize>], py: f32) {
-        // Scale factor between flow value and pixels. d3 lets an over-crowded
-        // column produce a negative ky; clamp to zero so heights never invert.
+        // d3 lets an over-crowded column produce a negative ky; clamp to zero so heights never invert.
         let mut ky = f32::INFINITY;
         for column in columns {
             let value_sum: f64 = column.iter().map(|&index| graph.nodes[index].value).sum();
@@ -518,8 +448,7 @@ impl Sankey {
                 y = node.y1 + py;
             }
 
-            // Distribute the leftover vertical space evenly (d3 keeps this
-            // signed: an over-crowded column shifts nodes back up).
+            // Kept signed (d3): an over-crowded column shifts nodes back up.
             let leftover = (self.y1 - y + py) / (column.len() + 1) as f32;
             for (i, &index) in column.iter().enumerate() {
                 let node = &mut graph.nodes[index];
@@ -609,8 +538,7 @@ impl Sankey {
         }
     }
 
-    /// d3's middle-out collision resolution: push nodes away from the middle
-    /// node, then clamp the column against the extent edges.
+    /// d3's middle-out collision resolution.
     fn resolve_collisions(&self, graph: &mut SankeyGraph, column: &[usize], beta: f32, py: f32) {
         if column.is_empty() {
             return;
@@ -626,11 +554,9 @@ impl Sankey {
     }
 }
 
-/// Shift every node (and its attached link ends) by its layer's offset.
 /// Used by both column centering and flat-run staggering.
 fn apply_layer_offsets(graph: &mut SankeyGraph, offsets: &[f32]) {
-    // Precompute per-node offsets so the link loop doesn't borrow `nodes`
-    // while mutating `links`.
+    // Precomputed so the link loop doesn't borrow `nodes` while mutating `links`.
     let node_offset: Vec<f32> = graph.nodes.iter().map(|n| offsets[n.layer]).collect();
     for node in &mut graph.nodes {
         let dy = node_offset[node.index];
@@ -667,11 +593,7 @@ fn compute_node_values(graph: &mut SankeyGraph) {
     }
 }
 
-/// Assign topological ranks by BFS waves; later waves overwrite, yielding the
-/// longest-path rank. More waves than nodes means a cycle.
-///
-/// `forward` walks source links to their targets and writes `depth`;
-/// otherwise it walks target links to their sources and writes `height`.
+/// BFS waves, later overwriting earlier, yield the longest-path rank; more waves than nodes means a cycle. `forward` writes `depth`, else `height`.
 fn compute_node_ranks(graph: &mut SankeyGraph, forward: bool) -> Result<(), SankeyError> {
     let n = graph.nodes.len();
     let mut current: Vec<usize> = (0..n).collect();
@@ -711,8 +633,7 @@ fn compute_node_ranks(graph: &mut SankeyGraph, forward: bool) -> Result<(), Sank
 /// Sort a node's outgoing links by the target node's `y0` (then link index).
 fn sort_source_links(graph: &mut SankeyGraph, index: usize) {
     let mut links = std::mem::take(&mut graph.nodes[index].source_links);
-    // The link-index tie-break makes the order total, so an unstable sort
-    // is deterministic and avoids the stable sort's scratch allocation.
+    // Index tie-break makes the order total, so unstable sort is deterministic.
     links.sort_unstable_by(|&a, &b| {
         let ya = graph.nodes[graph.links[a].target].y0;
         let yb = graph.nodes[graph.links[b].target].y0;
@@ -736,11 +657,7 @@ fn sort_target_links(graph: &mut SankeyGraph, index: usize) {
     graph.nodes[index].target_links = links;
 }
 
-/// After a node moved, re-sort the link lists of its neighbors on the
-/// opposite ends (d3's reorderNodeLinks).
-///
-/// Iterates by position to avoid cloning the link lists on this hot path;
-/// the sorts only mutate the neighbors' lists, never the one being walked.
+/// d3's reorderNodeLinks; iterates by position to avoid cloning the link lists on this hot path.
 fn reorder_node_links(graph: &mut SankeyGraph, index: usize) {
     for i in 0..graph.nodes[index].target_links.len() {
         let link = graph.nodes[index].target_links[i];
@@ -789,9 +706,7 @@ fn push_up(graph: &mut SankeyGraph, column: &[usize], mut y: f32, alpha: f32, py
     }
 }
 
-/// The ideal `y0` for `target` so that its ribbon from `source` lines up
-/// with the slot the ribbon occupies in the source's outgoing stack
-/// (d3's targetTop).
+/// d3's targetTop.
 fn target_top(graph: &SankeyGraph, source: usize, target: usize, py: f32) -> f32 {
     let source_node = &graph.nodes[source];
     let mut y = source_node.y0 - source_node.source_links.len().saturating_sub(1) as f32 * py / 2.;
@@ -812,9 +727,7 @@ fn target_top(graph: &SankeyGraph, source: usize, target: usize, py: f32) -> f32
     y
 }
 
-/// The ideal `y0` for `source` so that its ribbon to `target` lines up with
-/// the slot the ribbon occupies in the target's incoming stack
-/// (d3's sourceTop).
+/// d3's sourceTop.
 fn source_top(graph: &SankeyGraph, source: usize, target: usize, py: f32) -> f32 {
     let target_node = &graph.nodes[target];
     let mut y = target_node.y0 - target_node.target_links.len().saturating_sub(1) as f32 * py / 2.;
@@ -835,11 +748,7 @@ fn source_top(graph: &SankeyGraph, source: usize, target: usize, py: f32) -> f32
     y
 }
 
-/// Assign each link's `y0`/`y1` (ribbon centers) and per-end widths by
-/// stacking the sorted link lists within each node. Each side shares the
-/// node height in proportion to the link values, so both sides of a node
-/// are fully covered even when the graph is imbalanced (equivalent to the
-/// nominal `width` stacking when it is balanced).
+/// Stacks the sorted link lists within each node so both sides stay fully covered even when the graph is imbalanced.
 fn compute_link_breadths(graph: &mut SankeyGraph) {
     for index in 0..graph.nodes.len() {
         let node = &graph.nodes[index];
@@ -885,10 +794,7 @@ fn compute_link_breadths(graph: &mut SankeyGraph) {
     }
 }
 
-/// Build the filled ribbon path for a link — the equivalent of d3-sankey's
-/// `sankeyLinkHorizontal()`: a horizontal cubic bezier with control points at
-/// the horizontal midpoint, thickened to the per-end link widths (clamped to
-/// `min_width` so tiny flows stay visible).
+/// Equivalent of d3-sankey's `sankeyLinkHorizontal()`; `min_width` keeps tiny flows visible.
 pub fn sankey_link_path(
     source: &SankeyNodeLayout,
     target: &SankeyNodeLayout,
@@ -1014,8 +920,7 @@ mod tests {
             assert_eq!(a.x0, b.x0);
         }
 
-        // Completing a unit-extent topology on the final extent (the chart's
-        // two-pass flow) matches a direct layout on that extent.
+        // Completing a unit-extent topology matches a direct layout on the same extent (the chart's two-pass flow).
         let topology = Sankey::new()
             .node_width(10.)
             .topology(3, &links(&[(0, 1, 5.), (1, 2, 5.)]))
@@ -1093,9 +998,7 @@ mod tests {
 
     #[test]
     fn test_sankey_imbalanced_link_widths() {
-        // A -> B (10) but B -> C (7): B is sized by its incoming flow, and
-        // its single outgoing ribbon is stretched to cover its outgoing side
-        // while the ribbon's target end matches C's height.
+        // A -> B (10), B -> C (7): B is sized by incoming flow; its ribbon's target end matches C's height.
         let graph = Sankey::new()
             .size(100., 100.)
             .layout(3, &links(&[(0, 1, 10.), (1, 2, 7.)]))
@@ -1116,9 +1019,7 @@ mod tests {
 
     #[test]
     fn test_sankey_sqrt_scale_fills_nodes() {
-        // With the sqrt scale, a node's children must still exactly fill it:
-        // the incoming and outgoing ribbon widths each sum to the node height
-        // (no gaps), and the diagram is compressed vs linear.
+        // With the sqrt scale, incoming/outgoing ribbon widths must still sum to node height exactly (no gaps).
         let links = links(&[(0, 1, 90.), (1, 2, 40.), (1, 3, 50.)]);
         let sqrt = Sankey::new()
             .value_scale(SankeyValueScale::Sqrt)
@@ -1146,8 +1047,7 @@ mod tests {
             }
         }
 
-        // Two leaf nodes (50 and 40) show the sqrt compression directly:
-        // their height ratio is sqrt(50/40), not the linear 50/40.
+        // Height ratio should be sqrt(50/40), not the linear 50/40.
         let ratio = (sqrt.nodes[3].y1 - sqrt.nodes[3].y0) / (sqrt.nodes[2].y1 - sqrt.nodes[2].y0);
         assert!((ratio - (50f32 / 40.).sqrt()).abs() < 0.02);
     }
@@ -1171,9 +1071,7 @@ mod tests {
 
     #[test]
     fn test_sankey_vertical_centering() {
-        // Each column's stack is centered in the extent: its midpoint equals
-        // the extent midpoint. Uses multi-node columns so the flat-run stagger
-        // (which only touches equal single-node columns) does not apply.
+        // Multi-node columns, so the flat-run stagger (single-node only) doesn't interfere.
         let graph = Sankey::new()
             .node_padding(20.)
             .extent(0., 10., 100., 90.)
@@ -1203,9 +1101,7 @@ mod tests {
 
     #[test]
     fn test_sankey_stagger_flat_columns() {
-        // Two equal single-node columns feeding a fan-out: the sparse trunk
-        // columns don't fill the height, so the equal pair is staggered off
-        // the center line to curve the otherwise-flat ribbon between them.
+        // Two equal single-node columns feed a fan-out; the sparse trunk should stagger them off-center.
         let graph = Sankey::new()
             .node_padding(20.)
             .size(100., 100.)
@@ -1221,9 +1117,6 @@ mod tests {
             )
             .unwrap();
 
-        // Nodes 0 and 1 are the equal single-node columns; one is nudged off
-        // center so their centers differ (the ribbon is no longer flat), but
-        // both stay within the extent.
         let c0 = (graph.nodes[0].y0 + graph.nodes[0].y1) / 2.;
         let c1 = (graph.nodes[1].y0 + graph.nodes[1].y1) / 2.;
         assert!((c0 - c1).abs() > EPSILON);
@@ -1232,10 +1125,7 @@ mod tests {
             assert!(node.y1 <= 100. + EPSILON);
         }
 
-        // After the stagger's per-layer shift, each ribbon end must still be
-        // attached to its node: `y0` centered on the source node's outgoing
-        // stack, `y1` on the target node's incoming stack. (Guards against a
-        // source/target mix-up in `apply_layer_offsets`.)
+        // Guards against a source/target mix-up in `apply_layer_offsets`.
         for node in &graph.nodes {
             let mut y = node.y0;
             for &l in &node.source_links {

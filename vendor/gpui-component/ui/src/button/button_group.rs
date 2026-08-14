@@ -13,7 +13,6 @@ use crate::{
     button::{Button, ButtonVariant, ButtonVariants},
 };
 
-/// A ButtonGroup element, to wrap multiple buttons in a group.
 #[derive(IntoElement)]
 pub struct ButtonGroup {
     id: ElementId,
@@ -40,7 +39,6 @@ impl Disableable for ButtonGroup {
 }
 
 impl ButtonGroup {
-    /// Creates a new ButtonGroup.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -57,52 +55,41 @@ impl ButtonGroup {
         }
     }
 
-    /// Adds a button as a child to the ButtonGroup.
     pub fn child(mut self, child: Button) -> Self {
         self.children.push(child.disabled(self.disabled));
         self
     }
 
-    /// Adds multiple buttons as children to the ButtonGroup.
     pub fn children(mut self, children: impl IntoIterator<Item = Button>) -> Self {
         self.children.extend(children);
         self
     }
 
-    /// With the multiple selection mode, default is false (single selection).
+    /// Default is false (single selection).
     pub fn multiple(mut self, multiple: bool) -> Self {
         self.multiple = multiple;
         self
     }
 
-    /// Set the layout of the button group. Default is `Axis::Horizontal`.
+    /// Default is `Axis::Horizontal`.
     pub fn layout(mut self, layout: Axis) -> Self {
         self.layout = layout;
         self
     }
 
-    /// With the compact mode for the ButtonGroup.
-    ///
     /// See also: [`Button::compact()`]
     pub fn compact(mut self) -> Self {
         self.compact = true;
         self
     }
 
-    /// With the outline mode for the ButtonGroup.
-    ///
     /// See also: [`Button::outline()`]
     pub fn outline(mut self) -> Self {
         self.outline = true;
         self
     }
 
-    /// Sets the on_click handler for the ButtonGroup.
-    ///
-    /// The handler first argument is a vector of the selected button indices.
-    ///
-    /// The `&Vec<usize>` is the indices of the clicked (selected in `multiple` mode) buttons.
-    /// For example: `[0, 2, 3]` is means the first, third and fourth buttons are clicked.
+    /// `&Vec<usize>` is the indices of the clicked (selected in `multiple` mode) buttons.
     ///
     /// ```ignore
     /// ButtonGroup::new("size-button")
@@ -178,7 +165,6 @@ impl RenderOnce for ButtonGroup {
                         let child = if children_len == 1 {
                             child
                         } else if child_index == 0 {
-                            // First
                             child
                                 .border_corners(Corners {
                                     top_left: true,
@@ -193,7 +179,6 @@ impl RenderOnce for ButtonGroup {
                                     bottom: true,
                                 })
                         } else if child_index == children_len - 1 {
-                            // Last
                             child
                                 .border_edges(Edges {
                                     left: vertical,
@@ -208,7 +193,6 @@ impl RenderOnce for ButtonGroup {
                                     bottom_right: true,
                                 })
                         } else {
-                            // Middle
                             child
                                 .border_corners(Corners {
                                     top_left: false,
