@@ -175,6 +175,18 @@ The one sanctioned violation in the tree is the modal panel's drop shadow —
 fixed black at α 0.35, because a shadow is an optical effect rather than a
 surface (`src/views/components.rs` — `modal_panel`).
 
+`PANEL_SHADOW()` must be black at an alpha, never a blend of the theme's own
+colours — a shadow is the absence of light, so tinting it with the palette
+would make it read as a glow instead. Dark themes use α 0.35, light themes
+α 0.18, paired with `PANEL_SHADOW_Y`/`PANEL_SHADOW_BLUR` geometry that also
+forks by `is_dark`. Dark-theme panel shadows must come out strictly heavier
+than light-theme shadows on all three axes at once — offset Y, blur radius,
+*and* alpha — checked against every bundled theme by
+`panel_shadow_is_heavier_in_dark_themes_than_light` (`src/theme.rs`, test
+module). Light-theme shadows must be lighter *and* tighter than dark-theme
+shadows for the same reason: a long soft shadow that reads as depth on a dark
+page reads as smudge on a bright one.
+
 ---
 
 ## 4. Colour tokens
@@ -233,11 +245,15 @@ still mix toward black, just at a shallower ratio (0.04 / 0.08 vs 0.18 / 0.32).
 
 | Token | Derivation | Role |
 |---|---|---|
-| `SCRIM()` | dark `mix(bg, black, 0.9)` @ α 0.16; light `mix(bg, fg, 0.9)` @ α 0.16 | Modal backdrop |
+| `SCRIM()` | dark `mix(bg, black, 0.9)` @ α 0.62; light `mix(bg, fg, 0.9)` @ α 0.7 | Modal backdrop |
 
 The light branch dims toward the *foreground*, not black, so the wash stays
 visible on near-white backgrounds (`src/theme.rs` — `SCRIM`). gpui has no backdrop
 blur at this rev, so this is a flat theme-derived wash.
+
+`SCRIM()`'s alpha bands, per the module's own derivation, are dark 0.62 and
+light 0.7 — both inside the requested α0.55–0.70 band, light stronger because
+a bright page reads through a wash more than a dark one at the same alpha.
 
 #### Text
 
@@ -261,6 +277,15 @@ blur at this rev, so this is a flat theme-derived wash.
 
 `amber_sits_between_yellow_and_red` (`src/theme.rs`, test module) asserts AMBER stays
 inside the yellow→red interval and nearer yellow.
+
+`FOCUS_RING()` is derived from `MAGENTA()` via `alpha()` — never a
+hand-written `Hsla` literal — so it tracks a theme swap exactly as `MAGENTA`
+does. Its alpha is 0.25 on dark themes, 0.35 on light themes: the same alpha
+on a near-white light surface would nearly disappear, so light gets a
+stronger tint rather than a second token (`src/theme.rs` — `FOCUS_RING`). A
+test enforces that `FOCUS_RING`'s hue/saturation/lightness never drift from
+`MAGENTA`'s and that its alpha matches these bands, checked across every
+bundled theme. See §10.1 for where the ring is drawn.
 
 #### Washes and selection
 
@@ -565,9 +590,17 @@ and it may never be sized by a wrapped integer either (`src/zoom.rs` —
 | `RADIUS_GROUP` | 6 | Segmented-control wrapper (`seg_group`), palette rows, the theme picker's edit row |
 | `RADIUS_PANEL` | 12 | Modal panels |
 | `RADIUS_FULL` | 999 | Dots and pills |
+| `SWATCH_RADIUS` | 2 | Theme-picker swatch chips |
 
 Rule of thumb: the bigger the surface, the bigger the radius. A control gets 4,
 a group of controls gets 6, a floating panel gets 12.
+
+`SWATCH_RADIUS` sits below `RADIUS_CONTROL` because the control radius applied
+to a 10px swatch chip reads as a circle, not a rounded square. It lives on this
+shared scale rather than as a private `theme_picker` constant so the full
+radius vocabulary is declared in one place: 2 for swatches, 4 for
+controls/cards, 6 for rows/groups/fields, 12 for the panel (`src/views/tokens.rs`
+— `SWATCH_RADIUS`).
 
 `RADIUS_FULL` and gpui's `rounded_full()` are **both acceptable and mean the
 same thing**; neither is preferred. The tree uses `rounded_full()` in
@@ -633,6 +666,14 @@ carry two lines of content.
 `CONTROL_H` (22) is the height of every flat icon/text button and equals
 `TILE_HEAD_H`, which is why a tile header and a chrome button read as the same
 weight.
+
+`FIELD_PY` (2.0) is a boxed field's own vertical padding — one tier removed
+from `CONTROL_H`. A boxed field stacks `FIELD_PY` on both edges around a
+`TEXT_BODY` mono run, plus the box's own 1px border on each edge; added up
+that measures roughly 22px tall, one control tier above `CONTROL_H` itself.
+That extra headroom is what lets a boxed field carry its own border and a
+focus ring without crowding the text inside it (`src/views/tokens.rs` —
+`FIELD_PY`).
 
 A settings row (App Settings and Project Settings both, since the
 Settings-modal unification gave them one shared row grid) is sized by
@@ -803,6 +844,61 @@ not a free win: palette rows carry both a title and a subtitle (a "project ·
 worktree" style label), so at the narrower 640px, long labels truncate sooner
 than they did at 760px.
 
+### 8.6 Sessions rail cards
+
+Every line of the sessions rail's card declares its own fixed height, because
+`TreeRow::height` is the single height source the list layout consults and it
+cannot measure text — a line that sized itself from its own content would let
+the list's layout and the card's paint disagree (`src/views/tokens.rs`).
+
+| Constant | Formula | Value | Owner |
+|---|---|---|---|
+| `CARD_LINE_H` | `= CONTROL_H` | 22 | `src/views/tokens.rs` — the card's headline line, which carries a control (the kill button) and so takes the control height rather than a type-derived one |
+| `SESSION_CARD_H` | `SPACE_LG*2.0 + CARD_LINE_H + ROW_LINE_GAP*CARD_SM_LINES + CARD_LINE_SM_H*CARD_SM_LINES + 1.0*2.0` | 82 | `src/views/tokens.rs` — the exact number `TreeRow::height` returns for a session card |
+
+`SESSION_CARD_H`'s arithmetic, term by term: `SPACE_LG*2.0` (8+8=16, top/bottom
+card padding) `+ CARD_LINE_H` (22, the headline) `+ ROW_LINE_GAP*CARD_SM_LINES`
+(6*2=12, the gap above each of two small lines) `+ CARD_LINE_SM_H*CARD_SM_LINES`
+(15*2=30, the two small lines themselves) `+ 1.0*2.0` (2, the card's own
+top/bottom hairline border) `= 16+22+12+30+2 = 82`. This must stay arithmetic
+on the card's real parts, never measured or guessed — the formula is the only
+place that states which downstream constants move if `ROW_LINE_GAP` or
+`CARD_LINE_SM_H` ever changes.
+
+`ATTENTION_BAR_W` (3, `src/views/tokens.rs`) is overlaid on a marked row or
+card rather than drawn as `border_l`, specifically so it never shifts the
+content it marks. It has two call sites — the tree session row and the rail
+session card — which is why it lives on the shared scale rather than inside
+`rows.rs`. The appbar draws its own separate 3px bar as a different visual
+idea; it is not the same token and must not be merged with it.
+
+### 8.7 Diff viewer layout
+
+| Constant | Value | Owner |
+|---|---|---|
+| `DIFF_FILE_LIST_W` | 240 | `src/views/tokens.rs` — floor only |
+| `DIFF_FILE_LIST_MAX_FRAC` | 0.4 | `src/views/tokens.rs` — ceiling, as a fraction of window width |
+| `DIVIDER_DRAG_HIT_W` | 6 | `src/views/tokens.rs` — shared drag-hit width |
+| `DIFF_BODY_LINE_H` | 15 | `src/views/tokens.rs` |
+
+`DIFF_FILE_LIST_W` is a floor only. The file-list column is sized dynamically
+to its widest visible row, clamped between this floor and
+`DIFF_FILE_LIST_MAX_FRAC` of the window's width — it is never fixed at 240
+anymore. `DIFF_FILE_LIST_MAX_FRAC` exists so that a long path in a deep tree
+cannot grow the file list wide enough to silently force unified diff mode by
+starving the body of width.
+
+`DIVIDER_DRAG_HIT_W` (6) must stay wider than the 1px hairline it draws so the
+resize cursor has room to land. It is shared by the sidebar/workspace divider
+(`SIDEBAR_DIVIDER_W`, §8.2) and the diff viewer's file-list divider — do not
+fork a second value per divider.
+
+`DIFF_BODY_LINE_H` derivation: `TEXT_SMALL (11) + SPACE_SM (4) = 15` — the same
+shape as `CARD_LINE_SM_H`. In split mode this keeps a filler row and a real
+code row aligned to the same grid; in unified mode it makes every row — line
+rows and hunk headers alike — uniform, which is what lets the body render as a
+`uniform_list`.
+
 ---
 
 ## 9. Components
@@ -862,7 +958,7 @@ It is consumed by `appbar`, `sidebar`, `rows`, `statusbar`, `grid`,
 | `flat_icon_btn(id, name, box_w, icon_size, on_click)` | Thin wrapper: `icon_btn` at `CONTROL_H`, `FG_DIM` rest, `BG_HOVER` hover, no ring | `h CONTROL_H` (22) | `box_w`, `icon_size` | default, hover |
 | `flat_text_btn(id, label, text_size, h_padding, on_click)` | Flat borderless text button in the same 22px shape | `h CONTROL_H`, `RADIUS_CONTROL`, mono `FG_DIM` | text size, h-padding | default, hover |
 | `flat_text_btn_tinted(id, label, text_size, h_padding, color, on_click)` | `flat_text_btn` with a colour axis, so a low-emphasis destructive action ("Archive project") has a component to be instead of a bare `ui()` run with a raw `on_mouse_down` — no button shape, no hover. A full `Danger` `modal_action` in that footer slot would compete with the footer's own Save/Primary button, which is why this stays flat rather than promoted to a weight | `h CONTROL_H`, `RADIUS_CONTROL` | text size, h-padding, `color` | default, hover |
-| `field_underline(focused: bool) -> Div` | The app-wide borderless text field shell: a `CONTROL_H` box, mono text vertically centred, 1px bottom rule, `MAGENTA` when focused / `BORDER_SOFT` at rest. §8.1 makes every in-row control `CONTROL_H`; this was the one control that wasn't — a bare text run with a rule crammed under it, open-coded twice inside `scripts_editor` before the unification. Takes only `focused`; the caller chains `.child(...)` on the returned `Div` to build the field. **Caller contract:** the wrapped `Input` must zero gpui-component's own `input_px`/`input_py` and claim its width, verbatim `.appearance(false).pl(px(0.0)).pr(px(0.0)).py(px(0.0)).w_full()` — `Input` applies that padding regardless of `.appearance(false)`, which drops only the border and fill, so an unzeroed inset is what breaks a field's left edge out of true against the rest of the panel, and `w_full()` is what stops the field collapsing to its content inside this shell's `min_w_0` flex row. Also `overflow_hidden()`, so a long value clips at the field's own right edge instead of running into the enclosing card's border | `h CONTROL_H`, `w_full`, `overflow_hidden`, `border_b_1` | — | default (`BORDER_SOFT`), focused (`MAGENTA`) |
+| `field_box(focused: bool) -> Div` | The app-wide boxed text field shell: a `CONTROL_H` box, mono text vertically centred, 1px border, and a zero-blur `FOCUS_RING_W`-spread outer `BoxShadow` in `FOCUS_RING` when focused (variant C1c). Retired `field_underline`'s bottom-rule shape, which was `CONTROL_H` and physically couldn't host a multi-row buffer. Takes only `focused`; the caller chains `.child(...)` on the returned `Div` to build the field. **Caller contract:** the wrapped `Input` must zero gpui-component's own `input_px`/`input_py` and claim its width, verbatim `.appearance(false).pl(px(0.0)).pr(px(0.0)).py(px(0.0)).w_full()` — `Input` applies that padding regardless of `.appearance(false)`, which drops only the border and fill, so an unzeroed inset is what breaks a field's left edge out of true against the rest of the panel, and `w_full()` is what stops the field collapsing to its content inside this shell's `min_w_0` flex row. Also `overflow_hidden()`, so a long value clips at the field's own right edge instead of running into the enclosing card's border | `h CONTROL_H`, `w_full`, `overflow_hidden`, `border_1` | — | default (`BORDER_SOFT`), focused (`FOCUS_RING` outer `BoxShadow`) |
 | `seg_button(id, label, active, side, danger, on_click)` | One segment of a two-way segmented control. Sized by `CONTROL_H` rather than by vertical padding, so a segment is the same 22px as every other in-row control (§8.1) — the same shape `flat_text_btn` uses; `py` would stack on top of the fixed height, so there is none | `h CONTROL_H`, `px SPACE_2XL`, mono `TEXT_SMALL` | `SegSide::{Left,Right}`, `danger` | default, hover, **active**, **inert** (`on_click: None`) |
 | `seg_button_content(id, content, active, side, danger, on_click)` | `seg_button`'s shell around arbitrary content, for glyph segments; `content` owns its padding | outer corners at `RADIUS_CONTROL` on `side` only | as above | as above |
 | `seg_text_color(active, danger)` | The label tint rule: active+danger → `RED`, active → `FG`, else `FG_DIM` | — | — | — |
@@ -876,6 +972,14 @@ It is consumed by `appbar`, `sidebar`, `rows`, `statusbar`, `grid`,
 | `Primary` | `FG` | `BORDER` | `BG_HL` | Default affirmative |
 | `Danger` | `RED` | `RED` | `BG_HL` | Affirmative with destructive consequences |
 | `Accent` | `FG` | `MAGENTA` α0.45 | `BG_HL` | Affirmative with emphasis; border goes to full `MAGENTA` on hover, applied inside the component per §9.1's hover restriction |
+
+`CHECKBOX_TICK` derivation: `CHECKBOX_BOX - 2.0 = 12` — the box's side less
+its 1px border on each edge, so the tick mark fills the box without crossing
+the stroke. It is a derived value in the `FOOTER_RADIUS` sense (§7.3): it
+moves with the box and is never chosen independently. It happens to land on
+`ICON_SM`, the list-density glyph tier. `CHECKBOX_BOX` (14) and `FOCUS_RING_W`
+(2) are both kept as module-local constants in `components.rs` rather than
+promoted to `tokens.rs`, because each has exactly one consumer (§14 rule 3).
 
 `Accent`'s rest alpha is the named constant `ACCENT_BORDER_REST_ALPHA` (0.45,
 `src/views/components.rs`): the accent is present at rest but held back, so the
@@ -1007,6 +1111,14 @@ all:
   `UpgradeState::Updating`) — Escape/Cancel is refused while an update is in
   flight.
 
+**The esc-hint vocabulary is exactly three words.** A modal's esc hint reads
+"cancel", "close", or "back" — never a fourth word, which would be a
+per-modal vocabulary the reader has to learn instead of one learned once for
+the whole app. There is exactly one sanctioned exception: Teardown's "skip &
+remove" (`src/views/modals/project.rs`, the `ArchiveProject` in-progress
+state), because there Escape performs a real, distinct semantic action — skip
+the running script and proceed to removal — not a dismiss.
+
 **The one rule after the header.** `divider_h()` sits directly under the
 header, and nowhere above the footer. `footer_container`'s `BG_STRIP` fill is
 already the visual edge of the footer zone — a lighter surface changing to a
@@ -1048,16 +1160,40 @@ there are none. A low-emphasis destructive action in the left cluster —
 cluster's Save reads as two calls to action instead of one primary action with
 an escape hatch beside it.
 
+**Buttons order secondary before affirmative, always.** Every `modal_footer`'s
+buttons vector orders `ModalBtn::Plain` before `ModalBtn::Primary`/`Danger`,
+left to right — Cancel before Save, Later before Restart, never the reverse.
+A primary-first footer reads as "the default action is on the left," which is
+backwards everywhere else in the app.
+
 **One scroll cap.** `MODAL_SCROLL_MAX_H` (§6) is the scroll-viewport cap for
 every scrolling modal body — Settings, Project Settings/ScriptsEditor, the
 command palette results list, the theme manager list, and any modal body added
 after this one. It is one constant, not a per-modal number to pick.
 
 **One multiline exception.** The ThemeManager JSON editor is the one field in
-the app that keeps a bordered box instead of `field_underline`, because
-`field_underline` is `CONTROL_H` (22px) tall and physically cannot host a
-multi-row text buffer. Every other single-line field in the app uses
-`field_underline`.
+the app that keeps a bordered box taller than `CONTROL_H` (22px), because a
+single-line field's `CONTROL_H` box physically cannot host a multi-row text
+buffer. Every other single-line field in the app uses `field_box`.
+
+**`field_underline` is retired in favour of `field_box`.** `field_box` is the
+boxed-plus-focus-ring field variant; the `field_underline` identifier must
+never reappear anywhere in the view layer, not even as a dangling doc-comment
+reference (`src/views/conformance.rs` — the check retiring it). Every
+`Input::new(...)` call site wrapped by `field_box` must chain, within 16
+lines, `.appearance(false)`, `.pl(px(0.0))`, `.pr(px(0.0))`, `.py(px(0.0))` and
+`.w_full()`. `Input` applies its own `input_px`/`input_py` padding — 10px/8px
+at `Size::Medium` — regardless of `.appearance(false)`, because
+`.appearance(false)` drops only the border and fill, not the padding. A
+missing zeroed inset breaks the field's left edge out of true against the
+rest of the panel; a missing `.appearance(false)` draws the third-party
+widget's own border inside the wrapping box, a double border no other rule
+catches. `w_full()` stops the field collapsing to its content inside the
+shell's `min_w_0` flex row.
+
+`field_box`'s focus ring is drawn as a zero-blur, `FOCUS_RING_W`-spread outer
+`BoxShadow`, not `border_2` — gpui's `Div` has no outline primitive at this
+rev, and `border_2` would grow the box and reflow the row on focus.
 
 **Selection lists.** Every selection list uses `card()` +
 `click_row(RowDensity::Card)`. `palette_row` (`PALETTE_ROW_H`, 54px — §9.1) is
@@ -1155,13 +1291,15 @@ This is the real vocabulary in the tree, not an aspirational one.
 | **Inert** | An already-active segment takes `on_click: None` — no hover, no pointer, no handler | `seg_button` / `seg_button_content` |
 | **Disabled** | `FG_MUTE` text and glyph, no pointer, no hover, no handler attached | `modal_checkbox` / `click_checkbox` only (§15) |
 
-**There is no focus-visible treatment, by decision.** Grove does not render
-focus rings, and there is no `FOCUS_RING` token. `FocusHandle` exists where
-keyboard routing needs it, but keyboard position is communicated by the
-*selection* treatment — the list's own tint-plus-ring — not by a separate focus
-affordance. A cyan ring would collide with the selection language it sits next
-to. **Do not add a one-off focus outline**, and do not describe the system as
-having one.
+**Focus rings exist, and are drawn only through `FOCUS_RING`.** `FOCUS_RING()`
+(§4.2/§4.1 palette derivations) is a `MAGENTA`-derived alpha tint, used for
+`field_box`'s zero-blur outer `BoxShadow` (§9.1.1) and nowhere else. `FocusHandle`
+exists where keyboard routing needs it, but outside `field_box`, keyboard
+position is still communicated by the *selection* treatment — the list's own
+tint-plus-ring — not by a separate focus affordance, because a cyan ring would
+collide with the selection language it sits next to. **Do not add a one-off
+focus outline outside `field_box`**, and do not describe the system as having
+none.
 
 The disabled pattern is worth naming because it is unusually clean: passing
 `None` for the handler *structurally* prevents interactivity, rather than
@@ -1372,7 +1510,8 @@ is shown by the selection treatment, not a focus ring (§10.1).
 2. If it genuinely is not, add it *in scale order*, with a doc comment naming
    its role and which tokens it sits between.
 3. **Never add a token with exactly one consumer.** That is a module constant
-   (`CHECKBOX_BOX`, `ICON_SLOT_W` and `AGENT_BTN` are the pattern).
+   (`CHECKBOX_BOX`, `ICON_SLOT_W`, `AGENT_BTN` and `FOCUS_RING_W` are the
+   pattern).
 4. A number belongs in `tokens.rs` only if it is **relational** — a notch on a
    scale with neighbours. Positional, singular geometry stays in its owning
    module (§8.4).
@@ -1417,7 +1556,12 @@ Four cases, and only four:
 3. **Optical corrections** — the modal panel's shadow, the palette scrim's 80px
    top drop, the appbar cog's 28px box and 15px glyph (at `CONTROL_H` its hover
    target clips against the window edge). Each one carries a comment saying
-   *why*.
+   *why*. The palette's 80px top drop (`PALETTE_TOP_DROP`) exists because the
+   palette is read top-down: dropping it to roughly the upper third of a
+   typical window keeps the eye near the input and the first result, instead
+   of centring it and making the eye travel down and back up. The figure
+   itself is carried over verbatim from the iced original, which recorded no
+   derivation, so it is preserved rather than re-derived.
 4. **Physical device-space math** — window bounds, mouse positions, PTY cell
    metrics.
 
@@ -1483,3 +1627,162 @@ Accurate as of this branch. Do not describe the system as covering these.
    scoped exception is a stronger signal than a rule that was never tested,
    and the next time someone reaches for a fifth type tier this is the
    precedent that says it was tried and undone.
+
+---
+
+## 16. The conformance suite
+
+`src/views/conformance.rs` (`cargo test`) is twenty rules, R1–R20, that check
+this document's claims against the tree mechanically rather than by review.
+Each rule's scope, its sanctioned exceptions, and — where one exists — its
+documented blind spot are recorded here because the code comments stating
+them are being removed; the tests themselves remain the enforcement, this
+section is the map of what they do and do not see.
+
+**R1 — no bare numeric literal in a styling setter.** Every
+`.px/.py/.p/.pl/.pr/.pt/.pb/.gap/.w/.h/.size/.text_size/.rounded/.max_h/.min_w/.mt/.mb/.mx/.my`
+call wrapped in `rpx(...)` must take a token from `tokens.rs`, never a bare
+number (§6.1, §13). Sanctioned exception: `appbar.rs`'s `.h(rpx(14.0))` for the
+segment divider — a named §14 case-3 optical correction, without which the
+segmented combo would read taller than the toggle it replaces.
+
+**R2 — one border weight.** The only border weight in the app is the 1px
+hairline, always `px(1.0)`, never `rpx`; a border literal or `border_width` of
+any other value is a violation. A state is signalled by tone (`BORDER`/
+`BORDER_SOFT`/`AMBER`), never by a heavier stroke (§7.2).
+
+**R3 — every `.text_size(` needs a nearby `.font(`.** A text run that sets
+`.text_size()` must have a `.font(` call pinning a family within 6 code lines
+(comments excluded) of the same element chain — otherwise it silently
+inherits the window default font instead of `UI_FAMILY`/`MONO_FAMILY` (§5.1,
+§5.2). `R3_KNOWN_VIOLATIONS` is deliberately kept empty: it exists only as the
+sanctioned mechanism for a *temporary* bypass with a human report attached,
+and any non-empty entry is a regression to fix, never an allow-list to grow
+silently.
+
+**R4 — display tiers never in chrome.** `TEXT_DISPLAY`/`ICON_DISPLAY` may
+appear only in `tokens.rs`'s own definitions and in the onboarding/empty-state
+screens of `add_project.rs` (§5.3, §13).
+
+**R5 — tracking is mono-only.** `ui(tracked(...))` may never be applied to
+sans text (§5.4).
+
+**R6 — icon/dot/modal-width sizes must be scale tokens even positionally.**
+Icon sizes, dot sizes and modal widths, though often passed as bare
+positional arguments rather than through a styling-setter call, must still be
+scale tokens (§5.3.1, §5.3.2, §8.5) — this category alone produced most of
+the violations in the original sweep, because R1 cannot see a positional
+argument. **Documented blind spots:** a size passed through a function not in
+`SIZE_FNS`; a size laundered through a local `let` binding or an arithmetic
+expression; a call whose arguments run past the rule's 24-line window; and R6
+cannot distinguish a good identifier from a bad, off-scale one — it checks
+shape, not value.
+
+**R7 — pictographic marks come from the sprite.** A pictographic character
+must never appear as a literal inside a `ui()`/`mono()` run; it must come from
+`icons::icon` instead, because the bundled fonts have no glyph coverage for
+Dingbats, Miscellaneous Symbols, Geometric Shapes, Box Drawing, Braille
+Patterns, or the dedicated check/cross-mark codepoints (U+2713/2714/2717/2718)
+— a literal silently falls back to a stand-in glyph. This is exactly the bug
+`modal_checkbox`'s old literal `"✓"` was (§9.3). The rule does not ban General
+Punctuation (U+2000–206F): U+2009 THIN SPACE is `tracked()`'s own building
+block, and that block also hosts ordinary prose marks with real font coverage.
+Real keyboard-key characters (`⏎`, arrows, `esc`/`cmd`/`alt` as ASCII words)
+are explicitly exempt.
+
+**R8 — flat buttons declare `CONTROL_H` in their own body.** `flat_icon_btn`,
+`flat_text_btn` and `seg_button` must each declare `CONTROL_H` (22) in their
+own function body — `seg_button` once regressed by sizing itself with
+vertical padding instead of the token.
+
+**R9 — `modal_panel`'s width is always a `MODAL_W_*` token.** Never a bare
+literal or a private constant derived outside the token scale — this is the
+regression class that let a private `PALETTE_W` (760) sit outside the
+four-notch width scale undetected (§8.5). **Documented blind spot:** shared
+with R6 — a width laundered through a local `let` or an arithmetic expression,
+or passed through a function outside the checked set, is invisible to the
+rule.
+
+**R10 — one rule after the header, never a second at the footer seam.**
+`divider_h()` must never appear on the same line as, or the line immediately
+before, a `modal_footer`/`modal_footer_hints` call — the footer's own top
+divider, drawn inside `footer_container`, is already the seam; a second
+`divider_h()` at the call site double-marks it. Conversely `footer_container`'s
+own body must always draw that divider — deleting it would make the
+call-site check vacuously pass while every modal footer silently loses its
+seam (§9.1.1).
+
+**R11 — modal headers use only MAGENTA or RED.** CYAN and AMBER are banned as
+modal-header colours; one accent per emphasis level, not a header-specific
+palette. Sole allowlisted exception: the archive-confirmation gate's AMBER
+(`arch-close`), a real caution accent for a semi-destructive action, not a
+header palette creeping back (§9.1.1's accent rule).
+
+**R12 — the `Input` zeroed-inset contract.** Every `Input::new(...)` call
+site (not just ones behind `field_box`) must chain, within 16 lines,
+`.appearance(false)`, `.pl(px(0...))`, `.pr(px(0...))`, `.py(px(0...))`,
+`.w_full()` — see §9.1.1's field discussion for why a missing inset or a
+missing `.appearance(false)` each fail differently.
+
+**R13 — `field_underline` is retired.** The identifier must never reappear
+anywhere in the view layer, not even as a dangling doc-comment reference
+(§9.1.1).
+
+**R14 — the esc-hint vocabulary is three words.** "cancel", "close", or
+"back", with Teardown's "skip & remove" as the sole allowlisted exception
+(§9.1.1).
+
+**R15 — footer buttons order Plain before Primary/Danger.** Always, left to
+right (§9.1.1).
+
+**R16 — `FOOTER_RADIUS` is retired as a re-rounding mechanism.** The footer
+strip may no longer re-round its own bottom corners (`rounded_bl`/`rounded_br`)
+or re-fill with `BG_STRIP()` — the panel's own `RADIUS_PANEL` (12, §7.3) is
+the only corner radius left, because the statusbar footer paints no fill for
+the old inner-corner notch to stay flush with. Reintroducing either would
+produce a square-cornered strip poking outside the panel's rounded corners.
+
+**R17 — radius calls use one of five sanctioned tokens.** Every
+`.rounded`/`.rounded_bl`/`.rounded_br`/`.rounded_tl`/`.rounded_tr` call taking
+an `rpx(...)` argument must use `RADIUS_CONTROL`, `RADIUS_GROUP`,
+`RADIUS_PANEL`, `RADIUS_FULL`, or `SWATCH_RADIUS` (§7.1) — never a bare number
+or an off-scale ALL-CAPS identifier. This extends R1/R6. **Documented blind
+spot:** the same three as R6 — a value laundered through a `let` or an
+arithmetic expression, a call past the line window, and an off-scale
+identifier the rule cannot distinguish from a real token by shape alone.
+
+**R18 — the retired overflow-window patterns must not reappear.** `DIR_ROWS`
+and a bare `.take(8)` are gone; `AddProject::dir_list`, `ThemePicker::picker`,
+`ThemePicker::manager`, and `Settings::shortcut_overlay` must each contain
+`MODAL_SCROLL_MAX_H` in their own function body — a whole-file "does the
+token appear anywhere" check would be satisfied by other capped surfaces in
+the same file even if one of these four regressed ("one overflow strategy").
+
+**R19 — `modal_header_row` stays private.** No view file other than
+`components.rs` may call it directly; it is `modal_header_slotted`'s internal
+row shell, not a second header primitive, and a direct caller would be a
+fourth fork rebuilding the header by hand.
+
+**R20 — themed shadows and no bordered in-body actions.** `modal_panel`'s
+drop shadow must always route through `c::PANEL_SHADOW()`, never a
+hard-coded `color:` literal — a hard-coded shadow was the one piece of panel
+chrome that never tracked a theme swap. `panel_surface`'s shadow *colour* is
+therefore passed in as a parameter rather than read internally, specifically
+so every panel still names `crate::theme::PANEL_SHADOW` at its own call site
+— a shape shared by two panels (modal panel + diff viewer) must not become
+the place a panel silently stops declaring its own themed shadow. And the
+three named in-body actions ("Change", "Kill all sessions...", "Browse...")
+must never be a bordered `click_action` shell; they route through
+`body_action`/`flat_text_btn_tinted` instead, because a bordered action
+inside a modal body reads as a second call to action competing with the
+footer's own.
+
+### The allow-list meta-rule
+
+Every allow-list entry across all twenty rules must carry a justification
+longer than 40 characters, naming the DESIGN.md or plan.md clause that
+sanctions it — enforced by its own test,
+`every_allow_list_entry_carries_a_justification`. A rule that passes because
+its allow-list was watered down is worse than no rule at all. **If a rule
+fires on legitimate code, the fix is a narrow, justified allow-list entry —
+never loosening the rule itself.**
