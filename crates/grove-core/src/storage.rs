@@ -280,6 +280,7 @@ pub struct Store {
     /// `false` = project → worktree → session tree, `true` = flat cross-project session list.
     #[serde(default)]
     pub rail_sessions: bool,
+    #[serde(default)]
     pub onboarded: bool,
     /// Unix seconds; gates the periodic (24h) update check.
     #[serde(default)]
@@ -703,7 +704,7 @@ pub(crate) mod tests {
             "grove_test_migrate_both_{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
+                .unwrap()
                 .as_nanos()
         ));
         let dir = base.join("grove");
