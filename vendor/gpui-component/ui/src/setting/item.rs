@@ -17,10 +17,8 @@ use crate::{
     v_flex,
 };
 
-/// Setting item.
 #[derive(Clone)]
 pub enum SettingItem {
-    /// A normal setting item with a title, description, and field.
     Item {
         title: SharedString,
         description: Option<Text>,
@@ -29,20 +27,16 @@ pub enum SettingItem {
         disabled: bool,
         field: Rc<dyn AnySettingField>,
     },
-    /// A full custom element to render.
     Element {
         disabled: bool,
         keywords: Vec<SharedString>,
-        /// Optional custom reset behavior. The first closure reports whether
-        /// the item is "dirty" (controls reset button visibility), the second
-        /// performs the reset.
+        /// First closure reports whether the item is dirty (reset button visibility); second performs the reset.
         reset_handler: Option<ResetHandler>,
         render: Rc<dyn Fn(&RenderOptions, &mut Window, &mut App) -> AnyElement + 'static>,
     },
 }
 
 impl SettingItem {
-    /// Create a new setting item.
     pub fn new<F>(title: impl Into<SharedString>, field: F) -> Self
     where
         F: AnySettingField + 'static,
@@ -57,7 +51,6 @@ impl SettingItem {
         }
     }
 
-    /// Create a new custom element setting item with a render closure.
     pub fn render<R, E>(render: R) -> Self
     where
         E: IntoElement,
@@ -73,14 +66,7 @@ impl SettingItem {
         }
     }
 
-    /// Provide custom reset behavior for a custom element item.
-    ///
-    /// Only applies to [`SettingItem::Element`] (created via
-    /// [`SettingItem::render`]). When set, the page-level reset button will
-    /// appear while `is_dirty` returns true, and clicking it invokes `reset`.
-    ///
-    /// - `is_dirty` reports whether the item differs from its default state.
-    /// - `reset` performs the reset.
+    /// Only applies to [`SettingItem::Element`]; the reset button shows while `is_dirty` is true and invokes `reset`.
     pub fn on_reset<D, R>(mut self, is_dirty: D, reset: R) -> Self
     where
         D: Fn(&App) -> bool + 'static,
@@ -90,8 +76,6 @@ impl SettingItem {
             SettingItem::Element { reset_handler, .. } => {
                 *reset_handler = Some((Rc::new(is_dirty), Rc::new(reset)));
             }
-            // `on_reset` is meaningless for a value-bearing item: use the
-            // field's own `default_value` / `SettingField::on_reset` instead.
             SettingItem::Item { .. } => {
                 debug_assert!(
                     false,
@@ -103,11 +87,7 @@ impl SettingItem {
         self
     }
 
-    /// Set additional keywords used only for search matching (not rendered).
-    ///
-    /// For example, an item titled "Enable Two-factor auth" can be made
-    /// searchable via "MFA". This is also useful for custom elements that
-    /// have no title/description but should still show up in search results.
+    /// Search-only, not rendered — e.g. "Enable Two-factor auth" made searchable via "MFA".
     pub fn keywords<I, S>(mut self, keywords: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -121,13 +101,7 @@ impl SettingItem {
         self
     }
 
-    /// Set whether the setting item is disabled, default is false.
-    ///
-    /// A disabled item is rendered with reduced opacity. For
-    /// [`SettingItem::Item`] the underlying field is also rendered in a
-    /// non-interactive state. For [`SettingItem::Element`] the `disabled` flag
-    /// is forwarded via [`RenderOptions::disabled`] so the custom renderer can
-    /// disable its interactive controls.
+    /// Renders with reduced opacity; for [`SettingItem::Element`] also forwarded via [`RenderOptions::disabled`].
     pub fn disabled(mut self, disabled: bool) -> Self {
         match &mut self {
             SettingItem::Item { disabled: d, .. } => *d = disabled,
@@ -136,8 +110,6 @@ impl SettingItem {
         self
     }
 
-    /// Set the description of the setting item.
-    ///
     /// Only applies to [`SettingItem::Item`].
     pub fn description(mut self, description: impl Into<Text>) -> Self {
         match &mut self {
@@ -149,8 +121,6 @@ impl SettingItem {
         self
     }
 
-    /// Set the layout of the setting item.
-    ///
     /// Only applies to [`SettingItem::Item`].
     pub fn layout(mut self, layout: Axis) -> Self {
         match &mut self {
@@ -177,7 +147,6 @@ impl SettingItem {
                         .map_or(false, |d| d.get_text(cx).to_lowercase().contains(q))
                     || keywords.iter().any(|s| s.to_lowercase().contains(q))
             }
-            // We need to show all custom elements when not searching.
             SettingItem::Element { keywords, .. } => {
                 let q = &query.to_lowercase();
                 query.is_empty() || keywords.iter().any(|s| s.to_lowercase().contains(q))

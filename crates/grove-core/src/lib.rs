@@ -1,8 +1,4 @@
-//! Grove's domain layer: git worktrees, tmux sessions, on-disk storage,
-//! themes, agent metadata, and self-upgrade — the pieces of Grove that have
-//! nothing to do with drawing pixels. This crate carries no UI-framework
-//! dependency, so the GUI/domain boundary is enforced by the compiler
-//! rather than by convention.
+//! Grove's domain layer (git worktrees, tmux, storage, themes, agents, self-upgrade); no UI-framework dependency, so the GUI/domain boundary is compiler-enforced.
 
 pub mod agent;
 pub mod attention;

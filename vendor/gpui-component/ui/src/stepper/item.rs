@@ -9,7 +9,6 @@ use crate::{
     stepper::trigger::StepperTrigger,
 };
 
-/// A step item within a [`Stepper`].
 #[derive(IntoElement)]
 pub struct StepperItem {
     step: usize,
@@ -42,17 +41,12 @@ impl StepperItem {
         }
     }
 
-    /// Set the icon of the stepper item.
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.icon = Some(icon.into());
         self
     }
 
-    /// Set disabled state of the stepper item.
-    ///
-    /// Will override the stepper's disabled state if set to true.
-    ///
-    /// Default is false.
+    /// Overrides the stepper's disabled state when `true`.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -163,8 +157,6 @@ impl RenderOnce for StepperItem {
     }
 }
 
-/// A separator between stepper items.
-///
 /// Default is `absolute` positioned.
 #[derive(IntoElement)]
 struct StepperSeparator {

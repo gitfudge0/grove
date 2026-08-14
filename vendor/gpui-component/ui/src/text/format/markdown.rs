@@ -12,7 +12,6 @@ use crate::text::{
     },
 };
 
-/// Parse Markdown into a tree of nodes.
 pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument, SharedString> {
     let options = cx.markdown_extensions.parse_options();
     markdown::to_mdast(&source, &options)
@@ -45,11 +44,7 @@ fn parse_table_cell(row: &mut node::TableRow, node: &mdast::TableCell, cx: &mut 
     row.children.push(table_cell);
 }
 
-/// Push a text run with its existing `marks` plus `new_mark` across the full
-/// run.
-///
-/// If the last mark already covers the full run, merge into it. Otherwise add a
-/// new full-run mark. Empty runs are skipped so callers can flush freely.
+/// Merges into the last mark if it already covers the full run, otherwise adds a new one; empty runs are skipped so callers can flush freely.
 fn push_merged(
     paragraph: &mut Paragraph,
     text: String,
@@ -73,13 +68,7 @@ fn push_merged(
     paragraph.push(node);
 }
 
-/// Parse `children` and apply `mark` across each emitted text run.
-///
-/// Nested child marks are kept and shifted to match the combined text for the
-/// current run, which lets nested emphasis like `**_x_**` render as both bold
-/// and italic. Inline images split the run and are emitted as sibling image
-/// nodes. The return value is the plain text from all children, for callers that
-/// need to pass text back to their parent node.
+/// Nested child marks are shifted to match the combined text so `**_x_**` renders as both bold and italic; inline images split the run and become sibling nodes.
 fn merge_children_with_mark(
     paragraph: &mut Paragraph,
     children: &[mdast::Node],
@@ -111,9 +100,7 @@ fn merge_children_with_mark(
                     image.link = Some(link_mark);
                 }
 
-                // GPUI InteractiveText does not support inline images, so
-                // flush the accumulated text run and emit the image as its
-                // own sibling InlineNode.
+                // gpui's InteractiveText doesn't support inline images, so flush the accumulated run and emit the image as its own sibling.
                 push_merged(
                     paragraph,
                     std::mem::take(&mut merged_text),

@@ -21,7 +21,6 @@ impl Parse for IconNameInput {
         let _comma = input.parse()?;
         let path = input.parse()?;
 
-        // Check if there's an optional derives list
         let derives = if input.peek(syn::Token![,]) {
             let comma = input.parse()?;
             let content;
@@ -46,10 +45,7 @@ pub fn derive_into_plot(input: TokenStream) -> TokenStream {
     derive_into_plot::derive_into_plot(input)
 }
 
-/// Convert an SVG filename to PascalCase identifier.
-///
-/// Strips `.svg` extension, splits on separators (`-`, `_`, `.`),
-/// and capitalizes each word following Rust naming conventions.
+/// Strips `.svg`, splits on `-`/`_`/`.`, capitalizes each word.
 ///
 /// # Examples
 ///
@@ -80,22 +76,7 @@ fn pascal_case(filename: &str) -> String {
         .collect()
 }
 
-/// Generate a custom icon enum and its `IconNamed` impl by scanning a directory of SVG files.
-///
-/// Accepts an enum name, a path, and optionally a list of additional derive traits.
-/// Each `.svg` file becomes an enum variant using PascalCase conversion.
-///
-/// The path may be either:
-///
-/// - **A literal path** (the common case), resolved relative to the calling crate's
-///   `CARGO_MANIFEST_DIR`. Use this when the icons live inside your own package.
-/// - **An env-var reference** of the form `"$NAME"`, where `NAME` names a build-time
-///   environment variable whose value is the absolute path to the icons directory.
-///   Use this when the icons live in *another* crate and the path is plumbed
-///   through cargo's `links` / `DEP_<X>_<KEY>` propagation mechanism. The default
-///   `IconName` enum in `gpui-component` uses this pattern to consume icons from
-///   `gpui-component-assets` without a sibling-crate reference, which would
-///   otherwise break `cargo vendor` and `cargo publish`.
+/// Scans a directory of SVGs into an icon enum. `"$NAME"` resolves as an env var (set by the caller's build.rs), avoiding a sibling-crate reference that would break `cargo vendor`/`publish`.
 ///
 /// # Example
 ///
@@ -120,8 +101,7 @@ pub fn icon_named(input: TokenStream) -> TokenStream {
 
     let raw_path = path.value();
 
-    // A leading `$` switches to env-var mode: the rest is an env var name (set by
-    // the caller's build.rs) holding the icons dir; otherwise resolve relative to CARGO_MANIFEST_DIR.
+    // A leading `$` means the rest is an env var name (set via the caller's build.rs) holding the absolute icons path.
     let icons_dir = if let Some(env_name) = raw_path.strip_prefix('$') {
         let env_value = std::env::var(env_name).unwrap_or_else(|_| {
             panic!(
@@ -165,7 +145,6 @@ pub fn icon_named(input: TokenStream) -> TokenStream {
         .collect();
     let paths: Vec<&str> = entries.iter().map(|(_, p)| p.as_str()).collect();
 
-    // Build derive list: always include IntoElement and Clone, then add custom derives
     let derive_attrs = if let Some((_, custom_derives)) = derives {
         let derives_vec: Vec<_> = custom_derives.iter().collect();
         quote! {

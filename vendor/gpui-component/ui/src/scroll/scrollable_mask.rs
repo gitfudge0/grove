@@ -9,16 +9,14 @@ use gpui::{Corners, Pixels};
 
 use crate::{AxisExt, StyledExt as _};
 
-/// A horizontal scroll viewport that only consumes horizontal wheel deltas,
-/// unlike GPUI's native `overflow_x_scroll`, which maps vertical wheel input onto horizontal scrolling; delegates wheel handling to [`ScrollableMask`].
+/// Delegates wheel input to [`ScrollableMask`] so vertical events keep bubbling, unlike gpui's native `overflow_x_scroll`.
 pub(crate) fn horizontal_scroll_area(
     id: impl Into<ElementId>,
     scroll_handle: &ScrollHandle,
     style: &StyleRefinement,
     child: impl IntoElement,
 ) -> impl IntoElement {
-    // The mask must be a sibling of the scrolled element, not a child: a
-    // child would slide away from the viewport as the content scrolls.
+    // The mask must be a sibling of the scrolled element, not a child, or it would slide away with the content as it scrolls.
     div()
         .w_full()
         .relative()
@@ -34,8 +32,7 @@ pub(crate) fn horizontal_scroll_area(
         .child(ScrollableMask::new(Axis::Horizontal, scroll_handle))
 }
 
-/// A mask covering the parent view that scrolls `scroll_handle` along `axis`
-/// on mouse wheel, handling only one axis. Consumes axis-dominant wheel events in the capture phase (so it wins over ancestor scrollers like `gpui::list`) and stays inert while occluded; at the scroll edge a vertical mask hands off to the ancestor, a horizontal mask keeps consuming (#2468).
+/// Consumes wheel events in the capture phase to win over ancestors like `gpui::list`; horizontal keeps consuming even at the edge (gpui bug #2468).
 pub struct ScrollableMask {
     axis: Axis,
     scroll_handle: ScrollHandle,
@@ -43,7 +40,6 @@ pub struct ScrollableMask {
 }
 
 impl ScrollableMask {
-    /// Create a new scrollable mask element.
     pub fn new(axis: Axis, scroll_handle: &ScrollHandle) -> Self {
         Self {
             scroll_handle: scroll_handle.clone(),
@@ -52,7 +48,6 @@ impl ScrollableMask {
         }
     }
 
-    /// Enable the debug border, to show the mask bounds.
     #[allow(dead_code)]
     pub fn debug(mut self) -> Self {
         self.debug = Some(gpui::yellow());
@@ -88,7 +83,6 @@ impl Element for ScrollableMask {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
-        // Set the layout style relative to the table view to get same size.
         style.position = Position::Absolute;
         style.flex_grow = 1.0;
         style.flex_shrink = 1.0;
@@ -107,7 +101,6 @@ impl Element for ScrollableMask {
         window: &mut Window,
         _: &mut App,
     ) -> Self::PrepaintState {
-        // Move y to bounds height to cover the parent view.
         let cover_bounds = Bounds {
             origin: Point {
                 x: bounds.origin.x,
@@ -151,8 +144,7 @@ impl Element for ScrollableMask {
                 let hitbox_id = hitbox.id;
 
                 move |event: &ScrollWheelEvent, phase, window, cx| {
-                    // Handle in the capture phase: ancestor scrollers like
-                    // `gpui::list` register after their children, so in bubble phase they'd run first. `should_handle_scroll` also keeps the mask inert while occluded.
+                    // Capture phase, since `gpui::list` registers listeners after children and would consume first in bubble phase.
                     if !(phase.capture() && hitbox_id.should_handle_scroll(window)) {
                         return;
                     }
@@ -160,8 +152,7 @@ impl Element for ScrollableMask {
                     let mut offset = scroll_handle.offset();
                     let mut delta = event.delta.pixel_delta(line_height);
 
-                    // One-way scrolling only: a MacBook touchpad may give both
-                    // x and y delta, so only the dominant axis is allowed.
+                    // Only one axis scrolls at a time; a trackpad can deliver both x and y, so keep the larger.
                     if !delta.x.is_zero() && !delta.y.is_zero() {
                         if delta.x.abs() > delta.y.abs() {
                             delta.y = px(0.);
@@ -171,13 +162,11 @@ impl Element for ScrollableMask {
                     }
 
                     if !is_horizontal {
-                        // Must clamp the current offset too: a bubbled event's
-                        // own listener can push it beyond the edge unclamped (div only clamps on prepaint), which would read as "room to scroll".
+                        // Must clamp here too, or a bubbled unclamped offset reads as "room to scroll".
                         let axis_max = scroll_handle.max_offset().y.max(px(0.));
                         let current = offset.y.clamp(-axis_max, px(0.));
                         let new_offset = (current + delta.y).clamp(-axis_max, px(0.));
                         if new_offset == current {
-                            // At the edge or no overflow: bubble to the parent.
                             return;
                         }
 
@@ -190,8 +179,7 @@ impl Element for ScrollableMask {
 
                     offset.x += delta.x;
 
-                    // NOTE: `set_offset` does not clamp (clamping happens in
-                    // the div's prepaint), so even at the scroll edge the event is consumed rather than turned into a parent scroll.
+                    // `set_offset` doesn't clamp, so even at the edge this consumes rather than bubbling.
                     if offset != scroll_handle.offset() {
                         scroll_handle.set_offset(offset);
                         cx.notify(view_id);
@@ -250,8 +238,7 @@ mod tests {
         assert_eq!(scroll_handle.offset().x, px(0.));
     }
 
-    /// Reproduces the markdown table case: the scroll area lives inside a
-    /// `gpui::list` item, whose wheel listener (registered after its items paint) would otherwise consume `delta.y` of every trackpad swipe first.
+    /// Reproduces the markdown table case: `gpui::list` would consume `delta.y` first in bubble phase.
     struct ListWithHorizontalAreaTest {
         scroll_handle: ScrollHandle,
         list_state: ListState,
@@ -279,7 +266,6 @@ mod tests {
                 .h_full(),
             );
             if self.occluded {
-                // An overlay above the list, like an open dialog or menu.
                 root = root.child(div().absolute().top_0().left_0().size_full().occlude());
             }
             root
@@ -314,17 +300,13 @@ mod tests {
         let list_state = ListState::new(10, ListAlignment::Top, px(0.));
         let cx = setup_list_test(cx, &scroll_handle, &list_state, false);
 
-        // A trackpad swipe is rarely axis-pure: horizontal dominant with a
-        // small vertical component.
         cx.simulate_event(ScrollWheelEvent {
             position: point(px(10.), px(10.)),
             delta: ScrollDelta::Pixels(point(px(-40.), px(-10.))),
             ..Default::default()
         });
 
-        // The area consumes the horizontal delta...
         assert_eq!(scroll_handle.offset().x, px(-40.));
-        // ...and the outer list must not scroll vertically.
         let scroll_top = list_state.logical_scroll_top();
         assert_eq!((scroll_top.item_ix, scroll_top.offset_in_item), (0, px(0.)));
     }
@@ -341,7 +323,6 @@ mod tests {
             ..Default::default()
         });
 
-        // Vertical dominant: the list scrolls, the area does not.
         assert_eq!(scroll_handle.offset().x, px(0.));
         let scroll_top = list_state.logical_scroll_top();
         assert_ne!((scroll_top.item_ix, scroll_top.offset_in_item), (0, px(0.)));
@@ -353,14 +334,12 @@ mod tests {
         let list_state = ListState::new(10, ListAlignment::Top, px(0.));
         let cx = setup_list_test(cx, &scroll_handle, &list_state, false);
 
-        // Scroll the area to the middle, then repaint.
         scroll_handle.set_offset(point(px(-150.), px(0.)));
         cx.update(|window, cx| {
             _ = window.draw(cx);
         });
 
-        // Swipe over the right side of the viewport. The mask must still
-        // cover it — it must not slide away with the scrolled content.
+        // The mask must still cover the viewport, not slide away with the scrolled content.
         cx.simulate_event(ScrollWheelEvent {
             position: point(px(90.), px(10.)),
             delta: ScrollDelta::Pixels(point(px(-40.), px(-10.))),
@@ -378,7 +357,6 @@ mod tests {
         let list_state = ListState::new(10, ListAlignment::Top, px(0.));
         let cx = setup_list_test(cx, &scroll_handle, &list_state, false);
 
-        // Scroll the area to its right edge (300 - 100 = 200).
         scroll_handle.set_offset(point(px(-200.), px(0.)));
         cx.update(|window, cx| {
             _ = window.draw(cx);
@@ -390,8 +368,6 @@ mod tests {
             ..Default::default()
         });
 
-        // A horizontal mask consumes even at the edge: a bubbled horizontal
-        // delta would be axis-mapped onto the vertical list (#2468).
         let scroll_top = list_state.logical_scroll_top();
         assert_eq!((scroll_top.item_ix, scroll_top.offset_in_item), (0, px(0.)));
     }
@@ -408,8 +384,6 @@ mod tests {
             ..Default::default()
         });
 
-        // An overlay (dialog, context menu) occludes the area: the area
-        // must not scroll underneath it.
         assert_eq!(scroll_handle.offset().x, px(0.));
     }
 
@@ -437,8 +411,7 @@ mod tests {
         assert_eq!(scroll_handle.offset().x, px(-40.));
     }
 
-    /// Reproduces the DataTable case: a vertically scrollable element
-    /// nested inside an outer vertical scroller.
+    /// Reproduces the DataTable case: a scrollable element nested inside an outer vertical scroller.
     struct NestedVerticalScrollTest {
         outer_handle: ScrollHandle,
         inner_handle: ScrollHandle,
@@ -506,7 +479,6 @@ mod tests {
             ..Default::default()
         });
 
-        // The inner scroller consumes the event; the outer one must not move.
         assert_eq!(inner_handle.offset().y, px(-40.));
         assert_eq!(outer_handle.offset().y, px(0.));
     }
@@ -517,7 +489,6 @@ mod tests {
         let inner_handle = ScrollHandle::new();
         let cx = setup_nested_vertical_test(cx, &outer_handle, &inner_handle, px(300.));
 
-        // Scroll the inner element to its bottom edge (300 - 60 = 240).
         inner_handle.set_offset(point(px(0.), px(-240.)));
         cx.update(|window, cx| {
             _ = window.draw(cx);
@@ -529,9 +500,7 @@ mod tests {
             ..Default::default()
         });
 
-        // At the edge the event bubbles: the outer scroller takes over.
         assert_eq!(outer_handle.offset().y, px(-40.));
-        // The inner offset is clamped back to the edge on the next prepaint.
         cx.update(|window, cx| {
             _ = window.draw(cx);
         });
@@ -542,7 +511,6 @@ mod tests {
     fn vertical_mask_bubbles_when_no_overflow(cx: &mut TestAppContext) {
         let outer_handle = ScrollHandle::new();
         let inner_handle = ScrollHandle::new();
-        // Inner content (40) fits its 60px viewport: nothing to scroll.
         let cx = setup_nested_vertical_test(cx, &outer_handle, &inner_handle, px(40.));
 
         cx.simulate_event(ScrollWheelEvent {
@@ -569,8 +537,7 @@ mod tests {
             _ = window.draw(cx);
         });
 
-        // Two wheel events at the edge with no redraw between: the first
-        // leaves the inner offset unclamped, which must not swallow the second event.
+        // Two events with no redraw between: the first leaves the offset unclamped past the edge, which must not swallow the second.
         for _ in 0..2 {
             cx.simulate_event(ScrollWheelEvent {
                 position: point(px(10.), px(10.)),
@@ -586,8 +553,7 @@ mod tests {
         assert_eq!(inner_handle.offset().y, px(-240.));
     }
 
-    /// The vertical mask nested in a `gpui::list` ancestor: only a
-    /// capture-phase mask can stop the list scrolling on the same event.
+    /// Only a capture-phase mask can stop `gpui::list` scrolling on the same event.
     struct ListWithVerticalAreaTest {
         scroll_handle: ScrollHandle,
         list_state: ListState,
@@ -646,7 +612,6 @@ mod tests {
             ..Default::default()
         });
 
-        // The inner scroller consumes the event; the list must not scroll.
         assert_eq!(scroll_handle.offset().y, px(-40.));
         let scroll_top = list_state.logical_scroll_top();
         assert_eq!((scroll_top.item_ix, scroll_top.offset_in_item), (0, px(0.)));

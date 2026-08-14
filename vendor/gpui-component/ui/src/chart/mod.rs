@@ -21,10 +21,7 @@ use crate::plot::{
     scale::{Scale, ScaleBand, ScalePoint},
 };
 
-/// Build x-axis labels for point-based scales (`LineChart`, `AreaChart`).
-///
-/// Point scales place items at evenly spaced positions. The first label is
-/// left-aligned, the last is right-aligned, and the rest are centered.
+/// For point-based scales (`LineChart`, `AreaChart`); first label left-aligned, last right-aligned, rest centered.
 pub(crate) fn build_point_x_labels<T, X>(
     data: &[T],
     x_fn: &dyn Fn(&T) -> X,
@@ -49,19 +46,13 @@ where
                     i if i == data_len - 1 => TextAlign::Right,
                     _ => TextAlign::Center,
                 };
-                // Call x_fn again to get an owned value for the label text.
                 AxisText::new(x_fn(d).into(), x_tick, color).align(align)
             })
         })
         .collect()
 }
 
-/// Build axis labels for band-based scales (`BarChart`, `CandlestickChart`).
-///
-/// Band scales place items in evenly sized bands. The returned `tick`
-/// coordinate is the centre of each band along the band axis; the caller
-/// decides whether to feed the result to `PlotAxis::x_label` (vertical
-/// charts) or `PlotAxis::y_label` (horizontal charts).
+/// For band-based scales (`BarChart`, `CandlestickChart`); returned `tick` is each band's centre.
 pub(crate) fn build_band_labels<T, X>(
     data: &[T],
     x_fn: &dyn Fn(&T) -> X,
@@ -80,7 +71,6 @@ where
                 return None;
             }
             x_scale.tick(&x_fn(d)).map(|x_tick| {
-                // Call x_fn again to get an owned value for the label text.
                 AxisText::new(x_fn(d).into(), x_tick + band_width / 2., color)
                     .align(TextAlign::Center)
             })
