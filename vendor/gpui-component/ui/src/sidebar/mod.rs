@@ -28,20 +28,15 @@ const DEFAULT_WIDTH: Pixels = px(255.);
 const COLLAPSED_WIDTH: Pixels = px(48.);
 const SIDEBAR_TRANSITION_DURATION: Duration = Duration::from_millis(200);
 
-/// The way a [`Sidebar`] behaves when it is collapsed.
-///
-/// This follows the shadcn/ui sidebar modes:
-/// - [`SidebarCollapsible::Icon`] collapses the sidebar to icon width.
-/// - [`SidebarCollapsible::Offcanvas`] slides the sidebar out and releases its layout width.
-/// - [`SidebarCollapsible::None`] keeps the sidebar expanded and ignores collapsed state.
+/// Follows the shadcn/ui sidebar modes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SidebarCollapsible {
-    /// Collapse the sidebar to icon width.
+    /// Collapses to icon width.
     #[default]
     Icon,
-    /// Collapse the sidebar completely out of the layout.
+    /// Slides out and releases its layout width.
     Offcanvas,
-    /// Disable sidebar collapse.
+    /// Ignores collapsed state.
     None,
 }
 
@@ -223,18 +218,14 @@ pub struct Sidebar<E: SidebarItem + 'static> {
     id: ElementId,
     style: StyleRefinement,
     content: Vec<E>,
-    /// header view
     header: Option<AnyElement>,
-    /// footer view
     footer: Option<AnyElement>,
-    /// The side of the sidebar
     side: Side,
     collapsible: SidebarCollapsible,
     collapsed: bool,
 }
 
 impl<E: SidebarItem> Sidebar<E> {
-    /// Create a new Sidebar with the given ID.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -248,56 +239,44 @@ impl<E: SidebarItem> Sidebar<E> {
         }
     }
 
-    /// Set the side of the sidebar.
-    ///
-    /// Default is `Side::Left`.
+    /// Default `Side::Left`.
     pub fn side(mut self, side: Side) -> Self {
         self.side = side;
         self
     }
 
-    /// Set how the sidebar collapses.
-    ///
-    /// Passing `true` keeps the previous behavior and maps to
-    /// [`SidebarCollapsible::Icon`]. Passing `false` maps to
-    /// [`SidebarCollapsible::None`].
+    /// `true` maps to [`SidebarCollapsible::Icon`] (previous behavior), `false` to [`SidebarCollapsible::None`].
     pub fn collapsible(mut self, collapsible: impl Into<SidebarCollapsible>) -> Self {
         self.collapsible = collapsible.into();
         self
     }
 
-    /// Set the sidebar to be collapsed
     pub fn collapsed(mut self, collapsed: bool) -> Self {
         self.collapsed = collapsed;
         self
     }
 
-    /// Set the header of the sidebar.
     pub fn header(mut self, header: impl IntoElement) -> Self {
         self.header = Some(header.into_any_element());
         self
     }
 
-    /// Set the footer of the sidebar.
     pub fn footer(mut self, footer: impl IntoElement) -> Self {
         self.footer = Some(footer.into_any_element());
         self
     }
 
-    /// Add a child element to the sidebar, the child must implement `Collapsible`
     pub fn child(mut self, child: E) -> Self {
         self.content.push(child);
         self
     }
 
-    /// Add multiple children to the sidebar, the children must implement `Collapsible`
     pub fn children(mut self, children: impl IntoIterator<Item = E>) -> Self {
         self.content.extend(children);
         self
     }
 }
 
-/// Toggle button to collapse/expand the [`Sidebar`].
 #[derive(IntoElement)]
 pub struct SidebarToggleButton {
     btn: Button,
@@ -307,7 +286,6 @@ pub struct SidebarToggleButton {
 }
 
 impl SidebarToggleButton {
-    /// Create a new SidebarToggleButton.
     pub fn new() -> Self {
         Self {
             btn: Button::new("collapse").ghost().small(),
@@ -317,21 +295,17 @@ impl SidebarToggleButton {
         }
     }
 
-    /// Set the side of the toggle button.
-    ///
-    /// Default is `Side::Left`.
+    /// Default `Side::Left`.
     pub fn side(mut self, side: Side) -> Self {
         self.side = side;
         self
     }
 
-    /// Set the collapsed state of the toggle button.
     pub fn collapsed(mut self, collapsed: bool) -> Self {
         self.collapsed = collapsed;
         self
     }
 
-    /// Add a click handler to the toggle button.
     pub fn on_click(
         mut self,
         on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -395,15 +369,12 @@ impl<E: SidebarItem> RenderOnce for Sidebar<E> {
             list_state.reset(content_len);
         }
 
-        // Determine effective expanded width from user's custom style or default.
-        // Non-pixel widths still render correctly, but cannot use pixel width transitions.
+        // Non-pixel widths render correctly but can't use pixel-width transitions.
         let expanded_width = sidebar_expanded_width(&self.style);
         let layout =
             SidebarLayout::new(self.collapsible, self.collapsed, expanded_width, self.side);
 
-        // Sidebar content renders at its target width immediately. A wrapper
-        // div animates clip-width for smooth transitions without re-laying out
-        // sidebar content each animation frame.
+        // Content renders at its target width; a wrapper div animates clip-width so content isn't re-laid-out each animation frame.
         let sidebar = v_flex()
             .id(id.clone())
             .flex_shrink_0()
@@ -493,13 +464,7 @@ impl<E: SidebarItem> RenderOnce for Sidebar<E> {
             SidebarWrapperLayout::Animated { target_width } => target_width,
         };
 
-        // Store animation state in keyed state so it remains stable across
-        // re-renders (GPUI re-renders the whole tree on each animation frame).
-        // The target width is derived from the current layout, so changes to
-        // collapsible mode or expanded width are handled even if `collapsed`
-        // itself does not change. Offcanvas keeps content mounted while the
-        // close transition runs, then unmounts it so hidden controls leave the
-        // tab order.
+        // Offcanvas keeps content mounted during the close transition, then unmounts it so hidden controls leave the tab order.
         let animation_state = window.use_keyed_state(format!("{}-anim-w", id), cx, |_, _| {
             SidebarAnimationState::new(target_width, !layout.offcanvas_collapsed)
         });

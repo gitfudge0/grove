@@ -1,11 +1,5 @@
-//! Settings, the registry-generated ShortcutOverlay, the ScriptsEditor and
-//! the Updating/changelog shells — plus the click routing every Task 4-6
-//! modal shares.
-//!
-//! Ports `src/gui/view/modals/settings.rs:130-625` (Settings, with the
-//! archived-projects row at :305 and the tmux setting at :325), `:626-790`
-//! (the overlay), `src/gui/scripts_editor.rs:63-335` and
-//! `src/gui/view/modals/upgrade.rs:16-97,98-182`.
+//! Settings, ShortcutOverlay, ScriptsEditor and the Updating/changelog shells.
+//! Ports `src/gui/view/modals/settings.rs:130-790`, `src/gui/scripts_editor.rs:63-335`, `src/gui/view/modals/upgrade.rs:16-182`.
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -32,21 +26,11 @@ use crate::views::components::{
 use crate::views::workspace::Workspace;
 use crate::zoom::{ZoomState, ZOOM_DEFAULT, ZOOM_STEP};
 
-// ── local layout geometry (§8.4: layout constants live in the owning module) ──
-//
-// ROW_PX, ROW_PY, ROW_LINE_GAP, ROW_MIN_H, MODAL_SCROLL_MAX_H,
-// FIELD_LABEL_COL_W, STATUS_DOT_COL_W, ICON_BTN_W, ICON_BTN_W_SM,
-// STEPPER_BTN_W and CARD_LABEL_INDENT now live in `tokens.rs` (via the
-// `use ... tokens::*` above) — both modals in this file share them.
-
-/// The trailing "Set default" / "Default" column in a Tools row. Fixed so the
-/// rows do not reflow when the pill swaps for the button (§13).
+/// Fixed so rows don't reflow when the pill swaps for the button.
 const TOOL_ACTION_W: f32 = 84.0;
 
-/// The chord column in the shortcut overlay.
 const CHORD_COL_W: f32 = 150.0;
-/// The static rows' chord column: the same grid, one gutter wider, because
-/// their literal chords (`cmd+c / cmd+v`) are longer than any registry chord.
+/// Wider than CHORD_COL_W: static chords (`cmd+c / cmd+v`) are longer than any registry chord.
 const STATIC_CHORD_COL_W: f32 = CHORD_COL_W + SPACE_XL * 2.0;
 
 /// The current value shown on a settings row.
@@ -88,7 +72,6 @@ fn on_off(v: bool) -> String {
 }
 
 impl ModalLayer {
-    /// The clicks Tasks 5-6's modals raise.
     pub(super) fn on_late_click(
         &mut self,
         click: ModalClick,
@@ -132,10 +115,6 @@ impl ModalLayer {
             }
             ModalClick::OpenThemeManager => self.open_theme_manager(cx),
             ModalClick::OpenChangelog => {
-                // The changelog closes Settings on the way in and reopens it on
-                // the way out; the round trip is already a passing state-machine
-                // test, so this only supplies the data
-                // (`src/gui/update/upgrade.rs:127-149`).
                 self.upgrade.update(cx, Upgrade::fetch_changelog);
                 self.open(
                     Modal::Changelog {
@@ -186,8 +165,6 @@ impl ModalLayer {
     }
 
     fn toggle_setting(&mut self, t: SettingToggle, cx: &mut Context<Self>) {
-        // Every control persists immediately; there is no apply/cancel footer
-        // (recorded ambiguity 5).
         match t {
             SettingToggle::Tmux => {
                 let on = cx
@@ -214,8 +191,7 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// The Settings tmux row: same persistence as the TmuxChoice modal, but
-    /// it never closes the Settings modal behind it.
+    /// Same persistence as the TmuxChoice modal, but never closes Settings behind it.
     fn choose_tmux_setting(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if enabled && !grove_core::tmux::available() {
             self.toast.update(cx, |t, cx| {
@@ -226,14 +202,12 @@ impl ModalLayer {
         SettingsState::update(cx, move |store| store.tmux_enabled = Some(enabled));
         SettingsState::flush_now(cx);
         if enabled {
-            // The re-scan the workspace owns (`src/app/mod.rs:288-292`).
             cx.emit(super::ModalEvent::TmuxEnabled);
         }
         cx.notify();
     }
 
-    /// A settings row activated from the palette drill-in. Toggles flip in
-    /// place; enum rows open their own modal.
+    /// Toggles flip in place from the palette drill-in; enum rows open their own modal.
     pub(super) fn activate_setting(
         &mut self,
         row: SettingRow,
@@ -256,24 +230,16 @@ impl ModalLayer {
                     !SettingsState::telemetry_enabled(&cx.global::<SettingsState>().store);
                 SettingsState::update(cx, |store| store.telemetry_enabled = Some(enabled));
                 SettingsState::flush_now(cx);
-                // Takes effect immediately, not at the next launch
-                // (`src/app/mod.rs:339-344`).
                 crate::telemetry::set_enabled(enabled);
                 cx.notify();
             }
             SettingRow::Chrome => self.toggle_setting(SettingToggle::Chrome, cx),
             SettingRow::Backend => self.toggle_setting(SettingToggle::Tmux, cx),
             SettingRow::Permissions => self.toggle_setting(SettingToggle::SkipPermissions, cx),
-            // A **manual** check, not a modal that claims to be one
-            // (`src/gui/update/upgrade.rs:26-32`).
             SettingRow::CheckUpdates => self.upgrade.update(cx, |u, cx| u.check(true, cx)),
-            // The app-size and default-agent panes are the Settings modal's
-            // own rows.
             SettingRow::AppSize | SettingRow::DefaultAgent => self.open(Modal::Settings, cx),
         }
     }
-
-    // ── ScriptsEditor ───────────────────────────────────────────────────
 
     fn scripts_project_index(&self, cx: &App) -> Option<usize> {
         let Some(Modal::ScriptsEditor(st)) = self.slot.get() else {
@@ -286,8 +252,7 @@ impl ModalLayer {
             .position(|p| p.path == st.project_path)
     }
 
-    /// Save with the empty→`None` normalization and the save-failure `Message`
-    /// modal (`src/gui/scripts_editor.rs:79-107`).
+    /// Empty script buffers normalize to `None`; save failure shows a `Message` modal.
     pub(super) fn save_scripts(&mut self, cx: &mut Context<Self>) {
         self.sync_wizard_buffers(cx);
         let Some(Modal::ScriptsEditor(st)) = self.slot.get() else {
@@ -301,10 +266,7 @@ impl ModalLayer {
         let (setup, run, teardown) = (norm(&st.setup), norm(&st.run), norm(&st.teardown));
         let path = st.project_path.clone();
         let new_name = st.name.trim().to_string();
-        // Reject a rename that collides (case-insensitively) with another
-        // project's name: `RecentLaunch.project` and `grid_order` are keyed
-        // by name (see below), so two projects sharing a name would silently
-        // merge each other's recents and saved tile order.
+        // Case-insensitive collision check: RecentLaunch.project/grid_order are keyed by name, so a collision would silently merge two projects' recents/tile order.
         if !new_name.is_empty() {
             let collides = cx
                 .global::<SettingsState>()
@@ -320,10 +282,7 @@ impl ModalLayer {
                 return;
             }
         }
-        // Read back outside the closure: `SettingsState::update`'s closure is
-        // `move` and its `old_name` is local to it, but the sidecar/registry
-        // propagation below needs both names once the store mutation (and its
-        // own empty/unchanged short-circuit) has actually happened.
+        // Read outside the closure: the update closure is `move` with a local `old_name`, but sidecar/registry propagation below needs both names after the mutation.
         let renamed_from = cx
             .global::<SettingsState>()
             .store
@@ -342,24 +301,13 @@ impl ModalLayer {
             store.projects[idx].scripts.setup = setup;
             store.projects[idx].scripts.run = run;
             store.projects[idx].scripts.teardown = teardown;
-            // Empty or unchanged: leave the persisted name untouched (no error
-            // UI — see the module's Task 4 note). `path` stays the identity
-            // key either way.
             if new_name.is_empty() || new_name == old_name {
                 return;
             }
-            // Freeze the grove-managed worktree DIRECTORY at the name it was
-            // created under before the name moves out from under it. Without
-            // this the rename orphans every existing worktree directory (rule
-            // 2 of `project_for_worktree_path` stops matching) and new
-            // worktrees land in a second directory under the new name.
-            // Metadata only — nothing on disk is moved.
+            // Pin worktree_dir at the old name before it moves, or the rename orphans every existing worktree dir (storage.rs project_for_worktree_path rule 2).
             grove_core::storage::pin_worktree_dir_on_rename(&mut store.projects[idx], &old_name);
             store.projects[idx].name.clone_from(&new_name);
-            // `RecentLaunch.project` and `grid_order` are keyed by project
-            // NAME (not path — storage.rs:58, storage.rs:132), so a rename
-            // must migrate both or the palette's recents list and the grid's
-            // saved tile order silently orphan themselves.
+            // RecentLaunch.project/grid_order are keyed by name, not path — must migrate both or they orphan.
             for r in &mut store.recent_launches {
                 if r.project == old_name {
                     r.project.clone_from(&new_name);
@@ -378,11 +326,7 @@ impl ModalLayer {
             self.open(Modal::Message("Scripts could not be saved.".into()), cx);
             return;
         }
-        // The rename committed to the settings store above; propagate it to
-        // session metadata so a name lookup can't cross-wire to the wrong
-        // project (`crates/grove-core/src/session_meta.rs` rot this closes).
-        // Persisted sidecars first, then the live in-memory registry — a
-        // running app must not keep showing the old name until restart.
+        // Propagate the rename to session metadata: persisted sidecars first, then the live registry, so a running app doesn't keep showing the old name.
         if let Some(old_name) = renamed_from {
             grove_core::session_meta::rename_project(&old_name, &new_name);
             self.registry
@@ -393,9 +337,7 @@ impl ModalLayer {
         self.close(cx);
     }
 
-    /// Pencil: enter rename mode and hand the caret to field 0 (the name).
-    /// Fields are not rebuilt — `renaming` only changes which one the header
-    /// renders — so the three script buffers keep their in-progress text.
+    /// Enters rename mode without rebuilding fields, so the script buffers keep their in-progress text.
     pub(super) fn scripts_rename_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(Modal::ScriptsEditor(st)) = self.slot.get_mut() {
             st.renaming = true;
@@ -406,10 +348,7 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// Check: accept the typed name **locally** into `st.name` — the header
-    /// switches back to display mode showing it, but nothing is written to
-    /// disk until the modal's own Save (`save_scripts` above), so Cancel/Esc
-    /// on the modal still undoes it in one story.
+    /// Accepts the typed name locally only; nothing writes to disk until `save_scripts`, so Cancel/Esc still undoes it.
     pub(super) fn scripts_rename_commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_wizard_buffers(cx);
         if let Some(Modal::ScriptsEditor(st)) = self.slot.get_mut() {
@@ -421,9 +360,7 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// X: discard the typed name, reseeding field 0 from the store's current
-    /// `Project::name` (not `st.name`, which the buffer may have already
-    /// diverged from), and leave rename mode.
+    /// Discards the typed name, reseeding from the store's current name (not `st.name`, which may have diverged).
     pub(super) fn scripts_rename_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let current_name = match self.slot.get() {
             Some(Modal::ScriptsEditor(st)) => cx
@@ -452,9 +389,7 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// "Project theme" from the scripts editor: the documented `open_child`
-    /// exception — the picker carries the editor's unsaved buffers through and
-    /// hands them back on cancel (`modals.rs:660-668`).
+    /// The `open_child` exception: the picker carries the editor's unsaved buffers through and hands them back on cancel.
     fn open_project_theme_from_scripts(&mut self, cx: &mut Context<Self>) {
         self.sync_wizard_buffers(cx);
         let Some(Modal::ScriptsEditor(st)) = self.slot.get() else {
@@ -475,8 +410,6 @@ impl ModalLayer {
             cx,
         );
     }
-
-    // ── ThemeManager helpers ────────────────────────────────────────────
 
     fn duplicate_theme(&mut self, i: usize, cx: &mut Context<Self>) {
         let themes = grove_core::theme::all_custom_themes();
@@ -504,25 +437,18 @@ impl ModalLayer {
     }
 }
 
-// ── the views ────────────────────────────────────────────────────────────
-
-/// One row of the Settings → Tools section (`src/gui/state.rs`'s `ToolStatus`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolStatus {
     pub agent: Agent,
     pub installed: bool,
     pub version: Option<String>,
-    /// Drives the "Detecting…" placeholder while the off-thread scan runs.
     pub detecting: bool,
 }
 
-/// The tools shown, in display order. `Terminal` is omitted — always
-/// available, no version (`src/gui/update/upgrade.rs:154-157`).
+/// `Terminal` is omitted: always available, no version.
 pub const SETTINGS_TOOLS: [Agent; 3] = [Agent::Claude, Agent::Codex, Agent::OpenCode];
 
-/// The status text and whether it reads as a live value (a version) or as
-/// muted status. Pure, so the three states are testable without a subprocess
-/// (`src/gui/view/modals/settings.rs:441-452`).
+/// Whether the text reads as a live value (a version) or as muted status.
 #[must_use]
 pub fn tool_status_text(st: &ToolStatus) -> (String, bool) {
     if st.detecting {
@@ -540,11 +466,7 @@ pub fn tool_status_text(st: &ToolStatus) -> (String, bool) {
 }
 
 impl ModalLayer {
-    /// Mark every Tools row as detecting and dispatch the off-thread
-    /// availability + version scan (`detect_tools_task`,
-    /// `src/gui/update/upgrade.rs:158-191`). `--version` is a short
-    /// subprocess, but running three of them on the UI thread is still three
-    /// too many.
+    /// Marks every row as detecting and runs the availability+version scan off-thread — three subprocesses is still too many for the UI thread.
     pub(super) fn detect_tools(&mut self, cx: &mut Context<Self>) {
         self.tools = SETTINGS_TOOLS
             .iter()
@@ -580,8 +502,6 @@ impl ModalLayer {
         }));
     }
 
-    /// Copy the offered release's URL and raise the oracle's toast
-    /// (`src/gui/update/upgrade.rs:77-82`).
     pub(super) fn copy_release_url(&mut self, cx: &mut Context<Self>) {
         let Some(url) = self
             .upgrade
@@ -613,14 +533,7 @@ pub fn render(
     }
 }
 
-/// The shared grid every Settings row is laid out on: a growing label column,
-/// the row's own control cluster (control, then the drill-in chevron if any),
-/// and — when a sublabel is present — a second line below the label+control
-/// line that never affects the control's vertical position.
-///
-/// Returns the row's inner content only; [`setting_row_static`] and
-/// [`setting_row_link`] add the padding and height that make it a row, since
-/// the clickable case gets those from [`click_row`]'s own box.
+/// Returns the row's inner content only; callers add the padding/height that make it a row.
 fn setting_row_grid(
     label: &'static str,
     sublabel: Option<(&'static str, SublabelTone)>,
@@ -652,10 +565,7 @@ fn setting_row_grid(
         col = col.child(row_sublabel(sub, tone));
     }
 
-    // `items_start`, deliberately: a tall sublabel must not drag the row's
-    // cross-axis alignment around. [`status_gutter`] is fixed at `CONTROL_H`
-    // and centres its own mark inside that height, which is what actually
-    // puts the mark on the label line — not this container's alignment.
+    // items_start deliberately: a tall sublabel must not drag cross-axis alignment; status_gutter centers its own mark independently.
     div()
         .flex()
         .items_start()
@@ -664,14 +574,7 @@ fn setting_row_grid(
         .child(col)
 }
 
-/// A non-interactive row — the control itself (checkbox, segmented group,
-/// stepper) carries the interaction, so the row box stays inert rather than
-/// gaining a second, larger hit target over the same setting. Every row leads
-/// with a [`status_gutter`] (empty here — no static row carries a status
-/// mark) so labels align with the rows that do. Sized by [`ROW_PX`]/[`ROW_PY`]
-/// padding around its content, with [`ROW_MIN_H`] as a floor only — never a
-/// fixed height (§9.1's `RowDensity::Card` precedent, applied to every
-/// settings row rather than treating them as the exception).
+/// Non-interactive: the control itself carries interaction, so the row box stays inert rather than a second hit target.
 fn setting_row_static(
     label: &'static str,
     sublabel: Option<(&'static str, SublabelTone)>,
@@ -686,13 +589,7 @@ fn setting_row_static(
         .child(setting_row_grid(label, sublabel, control, false, None))
 }
 
-/// A drill-in row: the whole row is the hit target because the row *is* the
-/// control (App theme / Manage themes… / Archived projects). `RowDensity::Card`
-/// gives it the card's square, full-bleed hover fill rather than a rounded
-/// rect floating inside the card; its `px`/`py` are restated at [`ROW_PX`]/
-/// [`ROW_PY`] (the row padding contract) since `RowDensity::Card`'s own
-/// defaults — `SPACE_XL` px, no py, content decides height — are the shared
-/// shape other `Card`/`Manager` rows outside Settings still want.
+/// A drill-in row: the whole row is the hit target because the row *is* the control.
 fn setting_row_link(
     id: &'static str,
     label: &'static str,
@@ -714,13 +611,7 @@ fn setting_row_link(
     .py(rpx(ROW_PY))
 }
 
-/// A settings row carrying an underline-style input (matching the
-/// rename-title field's shape) rather than a segmented control or checkbox —
-/// the three lifecycle-script rows. Stacked
-/// top-to-bottom rather than the two-column gutter layout other rows use: a
-/// single title line carrying the label and its sublabel side by side, then
-/// the full-width input — all left-aligned to the row's own [`ROW_PX`]/
-/// [`ROW_PY`] padding with no extra indent.
+/// The three lifecycle-script rows: an underline-style input stacked below a title line, rather than the two-column gutter layout other rows use.
 fn setting_row_field(
     label: &'static str,
     sublabel: Option<(&'static str, SublabelTone)>,
@@ -747,9 +638,6 @@ fn setting_row_field(
     div().w_full().px(rpx(ROW_PX)).py(rpx(ROW_PY)).child(col)
 }
 
-/// A [`card`] plus the small uppercase label that names it. The label is
-/// [`section_header`] at [`CARD_LABEL_INDENT`] — it used to be a local `ui()`
-/// fork, which put a sans run where §5.2 wants mono.
 fn settings_card_block(label: &'static str, body: Div) -> Div {
     div()
         .flex()
@@ -758,12 +646,7 @@ fn settings_card_block(label: &'static str, body: Div) -> Div {
         .child(body)
 }
 
-/// A checkbox row wired to a raw persist-and-repaint closure rather than a
-/// [`ModalClick`] — for the two boolean rows (`ProjectThemes`, `Telemetry`)
-/// whose toggle path lives in [`ModalLayer::activate_setting`] but has no
-/// [`SettingToggle`] variant of its own. `cx.refresh_windows()` stands in for
-/// the entity's own `cx.notify()`, which this closure's `&mut App` has no
-/// access to.
+/// For the two boolean rows with no `SettingToggle` variant of their own; `cx.refresh_windows()` stands in for `cx.notify()`, unavailable to this closure's `&mut App`.
 fn raw_checkbox(
     id: &'static str,
     label: &'static str,
@@ -782,9 +665,6 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let tmux_on = store.tmux_enabled.unwrap_or(false);
     let skip_perms_on = store.dangerously_skip_permissions_enabled.unwrap_or(false);
 
-    // ── header: title, close, and the version string riding the header's
-    // meta slot — the interactive update/restart actions moved into the body
-    // as flat `body_action`s (the left footer slot retired, plan.md §2). ────
     let current_ver = env!("CARGO_PKG_VERSION");
     let header = modal_header_slotted(
         Some("set-close"),
@@ -795,7 +675,6 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         Some(dispatch),
     );
 
-    // ── appearance ───────────────────────────────────────────────────────
     let zoom_pct = format!("{:.0}%", cx.global::<ZoomState>().zoom * 100.0);
     let app_size_stepper = seg_group(
         div()
@@ -841,9 +720,6 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                 ModalClick::OpenThemePicker,
             )
             .into_any_element(),
-            // Not in the iced original (`settings_iced.rs`) — the gpui-only
-            // entry point into `ThemeManager` (custom-theme CRUD), kept here
-            // since nothing else in Settings opens it.
             setting_row_link(
                 "set-manage-themes",
                 "Manage themes…",
@@ -892,7 +768,6 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         ]),
     );
 
-    // ── agents / terminal ────────────────────────────────────────────────
     let backend_seg = seg_group(
         div()
             .flex()
@@ -999,10 +874,6 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         ]),
     );
 
-    // ── tools ────────────────────────────────────────────────────────────
-    // The refresh action rides the card's own header strip rather than the
-    // micro-label above it, so it reads as belonging to the detected-agent
-    // list it reloads.
     let tools_head = div()
         .flex()
         .items_center()
@@ -1025,11 +896,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     tools_rows.extend(layer.tools.iter().map(|st| tool_row(st, dispatch, cx)));
     let tools_section = settings_card_block("TOOLS", card(tools_rows));
 
-    // ── data & projects ──────────────────────────────────────────────────
-    // Archived projects is shown with "0" rather than hidden when nothing is
-    // archived (see the iced original's comment at `settings.rs:299-302`): a
-    // row that only appears after the first archive makes the feature
-    // undiscoverable at exactly the moment the user needs it.
+    // Archived projects shows "0" rather than being hidden — a row that appears only after the first archive is undiscoverable when needed.
     let data_projects = settings_card_block(
         "DATA & PROJECTS",
         card(vec![
@@ -1056,8 +923,6 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                             store.telemetry_enabled = Some(enabled);
                         });
                         SettingsState::flush_now(cx);
-                        // Takes effect immediately, not at the next launch
-                        // (`src/app/mod.rs:339-344`).
                         crate::telemetry::set_enabled(enabled);
                         cx.refresh_windows();
                     },
@@ -1067,7 +932,6 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         ]),
     );
 
-    // ── the scrolling body: cards above the updates strip ─────────────────
     let sections = div()
         .flex()
         .flex_col()
@@ -1083,11 +947,6 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         .overflow_y_scroll()
         .child(sections);
 
-    // ── the update status/refresh row: used to live in the footer's left
-    // slot, which retired (plan.md §2). The version string moved to the
-    // header's meta slot; this row keeps the status text, the interactive
-    // "check updates" action (now a flat `body_action`) and the save-story
-    // caption, all in the body. ─────────────────────────────────────────
     let updates_row = div()
         .flex()
         .items_center()
@@ -1111,8 +970,6 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         .child(updates_row);
     body_zone = body_zone.children(update_actions(layer, dispatch, cx));
 
-    // ── footer: statusbar scheme — the esc hint left, the one affirmative
-    // button right (plan.md §2). ────────────────────────────────────────
     let footer = modal_footer(
         &[("esc", "close")],
         vec![
@@ -1135,17 +992,12 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     .into_any_element()
 }
 
-/// One Tools row: a status dot that carries its state by **shape** as well as
-/// colour (filled for installed, hollow for missing, so it survives
-/// grayscale), the agent, its version, and the default-agent selector
-/// (`src/gui/view/modals/settings.rs:396-482`).
+/// The status dot carries state by shape as well as colour so it survives grayscale.
 fn tool_row(st: &ToolStatus, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     let (status, is_value) = tool_status_text(st);
     let label_color = if st.installed { c::FG() } else { c::FG_DIM() };
     let status_color = if is_value { c::FG_DIM() } else { c::FG_MUTE() };
     let is_default = cx.global::<SettingsState>().store.default_agent == Some(st.agent);
-    // Installed reads as a filled dot, missing as a hollow ring — the shape
-    // difference is what survives grayscale (§2.3).
     let dot = if st.installed {
         status_dot(DOT_MD, c::GREEN())
     } else {
@@ -1157,9 +1009,6 @@ fn tool_row(st: &ToolStatus, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
         .gap(rpx(SPACE_LG))
         .w_full()
         .px(rpx(ROW_PX))
-        // `ROW_PY` like every other row in every card. A denser roster inside
-        // the same card grammar is the drift the unification removed: two
-        // vertical rhythms in one panel read as a mistake, not as a density.
         .py(rpx(ROW_PY))
         .min_h(rpx(ROW_MIN_H))
         .child(status_gutter(Some(dot.into_any_element())))
@@ -1187,7 +1036,6 @@ fn tool_row(st: &ToolStatus, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     row.into_any_element()
 }
 
-/// Capitalize an agent label for display (`cap`, `view/modals/settings.rs`).
 fn cap(s: &str) -> String {
     let mut chars = s.chars();
     chars.next().map_or_else(String::new, |first| {
@@ -1195,8 +1043,6 @@ fn cap(s: &str) -> String {
     })
 }
 
-/// The Updates status line — the same six sentences iced shows
-/// (`src/gui/view/modals/settings.rs:505-526`).
 fn update_status_line(layer: &ModalLayer, cx: &App) -> AnyElement {
     let (text, color) = match layer.upgrade.read(cx).state() {
         UpgradeState::Idle => ("Not checked yet".to_string(), c::FG_MUTE()),
@@ -1204,7 +1050,6 @@ fn update_status_line(layer: &ModalLayer, cx: &App) -> AnyElement {
         UpgradeState::UpToDate => ("Up to date".to_string(), c::FG_DIM()),
         UpgradeState::Error(e) => (format!("Check failed: {e}"), c::FG_MUTE()),
         UpgradeState::Available(r) => (format!("Update available: {}", r.tag), c::GREEN()),
-        // Updating/Updated/UpdateFailed live in the progress modal.
         _ => ("Updating…".to_string(), c::FG_DIM()),
     };
     ui(text, TEXT_SMALL, color)
@@ -1213,10 +1058,7 @@ fn update_status_line(layer: &ModalLayer, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// Update / Skip / Copy URL, plus the release-note preview — shown only when a
-/// release is on offer. `Update now` is withheld for an unclassifiable install
-/// (`InstallMethod::Unknown` cannot self-apply), matching the palette's
-/// `update_available_actions` guard.
+/// Shown only when a release is on offer. `Update now` is withheld when `InstallMethod::Unknown` (cannot self-apply).
 fn update_actions(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Vec<AnyElement> {
     let upgrade = layer.upgrade.read(cx);
     let Some(release) = upgrade.available() else {
@@ -1263,8 +1105,6 @@ fn update_actions(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Vec
             .take(300)
             .collect();
         out.push(
-            // Release-note prose, so sans (§5.2) — matching the full changelog
-            // list, which renders the same field with `ui`.
             ui(preview, TEXT_SMALL, c::FG_MUTE())
                 .px(rpx(SPACE_LG))
                 .pt(rpx(SPACE_SM))
@@ -1274,15 +1114,14 @@ fn update_actions(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Vec
     out
 }
 
-/// Generated from `keymap::SHORTCUTS`, filtered by the current screen, plus
-/// exactly two static rows (recorded ambiguity 6).
+/// Generated from `keymap::SHORTCUTS`, filtered by the current screen, plus two static rows.
 fn shortcut_overlay(screen: keymap::Screen, dispatch: &ModalDispatch) -> AnyElement {
     let visible: Vec<&ShortcutDef> = SHORTCUTS
         .iter()
         .filter(|d| !d.display_keys.is_empty())
         .filter(|d| scope_allows(d, screen))
         .collect();
-    // Group only when the visible set spans Global AND screen scopes.
+    // Group only when the visible set spans both Global and Screen scopes.
     let has_global = visible.iter().any(|d| d.scopes.contains(&Scope::Global));
     let has_screen = visible
         .iter()
@@ -1329,7 +1168,6 @@ fn shortcut_overlay(screen: keymap::Screen, dispatch: &ModalDispatch) -> AnyElem
             body = body.child(row(d));
         }
     }
-    // The two static rows (`settings.rs:665-669`).
     body = body
         .child(section_header("EDITING", SPACE_2XL, SPACE_XL, SPACE_SM))
         .child(static_row(
@@ -1392,9 +1230,7 @@ pub fn scope_allows(def: &ShortcutDef, screen: keymap::Screen) -> bool {
         .any(|s| matches!(s, Scope::Global) || matches!(s, Scope::Screen(sc) if *sc == screen))
 }
 
-/// The chord label: the platform modifier prepended, with the alt-chord rule
-/// (`cmd+alt+n` / `ctrl+alt+n`, never `ctrl+shift+alt+n`) and `literal` rows
-/// shown verbatim.
+/// Alt-chord rule: `cmd+alt+n`/`ctrl+alt+n`, never `ctrl+shift+alt+n`; `literal` rows show verbatim.
 pub fn chord_label(def: &ShortcutDef) -> String {
     if def.literal {
         return def.display_keys.to_string();
@@ -1407,14 +1243,7 @@ pub fn chord_label(def: &ShortcutDef) -> String {
     format!("{prefix}{}", def.display_keys)
 }
 
-/// Project Settings — the "editable header" layout, unified onto the same
-/// row/card grammar App Settings uses (see the module doc and the
-/// modal-unification spec). The project name doubles as the header title (no
-/// separate NAME section, no `Project Settings — {name}` title); the path
-/// sits under it as a mono second line; the theme row and the three lifecycle
-/// buffers each become `settings_card_block`s on the shared row grid; and the
-/// footer's left cluster carries the destructive action, mirroring
-/// `settings_modal`'s footer contract.
+/// The project name doubles as the header title (no separate NAME section); the path is a mono second line.
 fn scripts_editor(
     layer: &ModalLayer,
     st: &ScriptsEditorState,
@@ -1426,37 +1255,20 @@ fn scripts_editor(
     let project = store.projects.iter().find(|p| p.path == st.project_path);
     let project_name = project.map_or_else(|| st.project_path.clone(), |p| p.name.clone());
     let themes_enabled = store.project_themes_enabled;
-    // While Project themes is off nothing actually applies the pin, so the
-    // displayed value must show "Default" rather than the stale pinned name
-    // (which would otherwise look active when it isn't).
+    // While Project themes is off, show "Default" rather than a stale pinned name that would look active.
     let pinned_name = if themes_enabled {
         project.and_then(|p| p.theme.as_deref())
     } else {
         None
     };
     let value_text = pinned_name.unwrap_or("Default (follow app)").to_string();
-    // §14: the pinned value is FG_DIM whether or not a theme is pinned — the
-    // wording ("Default (follow app)" versus a theme name) is already the
-    // carrier, so this is the only accented value in either modal and it
-    // loses its CYAN tint.
+    // The wording already carries the distinction, so this value stays FG_DIM regardless of pin state.
     let value_color = c::FG_DIM();
 
-    // ── Header: the project name IS the header title. Display mode is a
-    // MAGENTA TEXT_TITLE run plus a header-tier pencil button; rename is a
-    // deliberate, reversible sub-state (`st.renaming`, mirroring
-    // `Modal::ThemeManager`'s `rename`) entered by the pencil and left by
-    // check (accept, locally) or X (discard) — save/cancel/discard all still
-    // flow through `sync_wizard_buffers`/the modal's own Save, so this is a
-    // rendering change plus the explicit affordance, not a behavior change.
-    // A close button sits at the far right, and the path is a mono TEXT_SMALL
-    // second line — the same shape App Settings' header now has (title +
-    // subtitle + close). ──
     let name_field = layer.fields.first();
     let name_focused = st.renaming
         && name_field.is_some_and(|f| f.state().read(cx).focus_handle(cx).is_focused(window));
-    // The same focused/BORDER_SOFT rule the lifecycle rows use, not a
-    // dedicated always-on rule, so toggling pencil↔check never reflows the
-    // header (DESIGN.md §2.4) — both modes measure to the same line height.
+    // Same focused/BORDER_SOFT rule the lifecycle rows use so toggling pencil<->check never reflows the header.
     let title_rule = if name_focused {
         c::MAGENTA()
     } else {
@@ -1476,12 +1288,7 @@ fn scripts_editor(
             .child(
                 gpui_component::input::Input::new(f.state())
                     .appearance(false)
-                    // `Input` applies its own `input_px`/`input_py` (10px/8px
-                    // at the default `Size::Medium`) regardless of
-                    // `.appearance(false)` — that inset, not the surrounding
-                    // divs, was what broke the title's left edge against the
-                    // rest of the panel. Zeroed here rather than compensated
-                    // for elsewhere.
+                    // Input's own input_px/input_py inset survives `.appearance(false)` and breaks the title's left edge; zeroed here.
                     .pl(gpui::px(0.0))
                     .pr(gpui::px(0.0))
                     .py(gpui::px(0.0))
@@ -1538,13 +1345,7 @@ fn scripts_editor(
         .child(title_controls)
         .into_any_element();
 
-    // The rename-capable title (an `Input` swapped in for the plain string,
-    // with its own pencil/check/discard controls) cannot ride
-    // `modal_header_slotted`'s plain-`SharedString` title slot, so it rides
-    // `modal_header_slotted_custom`'s `title_content` slot instead — the
-    // header's own close button (`dispatch: Some`) renders once, at the same
-    // position every other modal uses, rather than a second one embedded in
-    // this row.
+    // The rename-capable title can't ride modal_header_slotted's plain-SharedString slot, so it uses title_content instead.
     let header = modal_header_slotted_custom(
         None,
         title_row,
@@ -1553,10 +1354,7 @@ fn scripts_editor(
         Some(dispatch),
     );
 
-    // ── Project theme: a settings_card_block on the shared row grid. Enabled
-    // is a setting_row_link (the same drill-in shape "App theme" uses);
-    // disabled drops the chevron and the interaction, moving FG_MUTE and the
-    // reason to a sublabel rather than an opacity fade (§11/§14).
+    // Disabled drops the chevron/interaction, moving the reason to a sublabel rather than an opacity fade.
     let theme_row: AnyElement = if themes_enabled {
         setting_row_link(
             "se-theme-row",
@@ -1582,13 +1380,7 @@ fn scripts_editor(
 
     let project_theme_section = settings_card_block("PROJECT THEME", card(vec![theme_row]));
 
-    // ── Lifecycle scripts: three divider-separated setting_row_fields inside
-    // a settings_card_block, each carrying its description as a row_sublabel
-    // rather than a hover-only tooltip — a sublabel is visible without a
-    // pointer and does not duplicate an existing component (§13). The three
-    // buffers are genuine `ModalInput::single_line` fields (they used to be
-    // `multi_line` textareas) — see `views/modals/mod.rs`'s `ScriptsEditor`
-    // arm for why a `multi_line` buffer squeezed into one row broke typing.
+    // These are single_line fields, not multi_line — a multi_line buffer squeezed into one row broke typing (see ScriptsEditor arm in views/modals/mod.rs).
     let script_row = |i: usize, label: &'static str, desc: &'static str| -> AnyElement {
         let Some(f) = layer.fields.get(i) else {
             return div().into_any_element();
@@ -1610,10 +1402,7 @@ fn scripts_editor(
             .child(
                 gpui_component::input::Input::new(f.state())
                     .appearance(false)
-                    // Zero `Input`'s own `input_px`/`input_py` inset (see the
-                    // title field's comment above) so the mono text sits
-                    // flush against the field's bottom rule rather than
-                    // floating inside a hidden box.
+                    // Zeroed like the title field above, so text sits flush against the bottom rule.
                     .pl(gpui::px(0.0))
                     .pr(gpui::px(0.0))
                     .py(gpui::px(0.0))
@@ -1649,13 +1438,6 @@ fn scripts_editor(
         c::FG_MUTE(),
     );
 
-    // ── the scrolling body: the same MODAL_SCROLL_MAX_H cap App Settings
-    // uses, so a project with a long theme list still fits a laptop
-    // viewport. ─────────────────────────────────────────────────────────────
-    // The footer's left slot retired (plan.md §2) — "Archive project" moves
-    // into the body as a red-tinted flat `body_action`, sitting under the
-    // lifecycle caption where a destructive, subordinate action reads as
-    // such rather than competing with the footer's Cancel/Save pair.
     let archive_action = body_action(
         "se-archive",
         "Archive project",
@@ -1679,11 +1461,7 @@ fn scripts_editor(
         .overflow_y_scroll()
         .child(sections);
 
-    // ── Footer: statusbar scheme — the esc hint left, Cancel/Save right
-    // (§9.1.1). The two save models stay different — this modal keeps its
-    // explicit Cancel/Save rather than adopting App Settings' autosave. The
-    // hint reads "cancel" (not "discard"): the same escape gesture the
-    // Cancel button already names, so hint and button agree. ───────────────
+    // This modal keeps explicit Cancel/Save rather than App Settings' autosave; hint reads "cancel" to agree with the button.
     let footer = modal_footer(
         &[("esc", "cancel")],
         vec![
@@ -1717,10 +1495,7 @@ fn scripts_editor(
     .into_any_element()
 }
 
-/// The apply-in-progress modal. Escape is genuinely refused while a stage is
-/// in flight (`escape_closes`), so the footer only offers a hint once the
-/// apply has landed — exactly as iced does
-/// (`src/gui/view/modals/upgrade.rs:16-97`).
+/// Escape is genuinely refused while a stage is in flight; the footer only offers a hint once the apply has landed.
 fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     use grove_core::upgrade::Stage;
 
@@ -1742,31 +1517,20 @@ fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                 .child(body_text(label))
                 .into_any_element()
         }
-        // The Restart/Later pair moved to the footer (§9.1.1) — the body now
-        // carries only the sentence.
         UpgradeState::Updated => {
             body_text("Update installed. Restart Grove to apply").into_any_element()
         }
-        // The Close button moved to the footer (§9.1.1) — the body now
-        // carries only the message and the error text.
         UpgradeState::UpdateFailed(e) => div()
             .flex()
             .flex_col()
             .gap(rpx(SPACE_MD))
             .child(body_text("Update failed"))
-            // `UpgradeError`'s own `Display`, deliberately unchanged
-            // (recorded ambiguity 7).
             .child(ui(e.clone(), TEXT_SMALL, c::FG_MUTE()))
             .into_any_element(),
         _ => div().child(body_text("Updating…")).into_any_element(),
     };
 
-    // ── header: the one named exception to "every panel gets a close X"
-    // (§9.1.1) — `Updating(_)` genuinely refuses Escape while a stage is in
-    // flight (`escape_closes`), so a close X there would be a dead control.
-    // Every other state (`Updated`, `UpdateFailed`, and any rare fallback)
-    // gets one; `"up-header-close"` stays distinct from the `UpdateFailed`
-    // body's own `"up-close"` button id. ────────────────────────────────────
+    // The one exception to "every panel gets a close X": Updating(_) refuses Escape, so a close X there would be dead.
     let header = match &state {
         UpgradeState::Updating(_) => {
             modal_header_slotted(None, "Updating Grove", c::MAGENTA(), None, None, None)
@@ -1786,12 +1550,7 @@ fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
         .child(divider_h())
         .child(modal_body(body));
     let panel = match &state {
-        // No footer while it runs: the key is refused, and a footer that
-        // says otherwise would be a lie.
         UpgradeState::Updating(_) => panel,
-        // Later (Plain) first, Restart (Primary) last — the app's only
-        // primary-first footer until now (plan.md, "Fix Updating(Updated)
-        // button order").
         UpgradeState::Updated => panel.child(modal_footer(
             &[("esc", "close")],
             vec![
@@ -1829,9 +1588,7 @@ fn updating_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     modal_panel(MODAL_W_SM, panel).into_any_element()
 }
 
-/// Overlays Settings and returns to it on dismiss (carried decision 4). The
-/// round trip is the state machine's; this renders `ChangelogState`'s three
-/// states (`src/gui/view/modals/upgrade.rs:98-182`).
+/// Overlays Settings and returns to it on dismiss; renders `ChangelogState`'s three states.
 fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     let body = match layer.upgrade.read(cx).changelog() {
         ChangelogState::Idle | ChangelogState::Loading => {
@@ -1917,8 +1674,6 @@ fn changelog_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> An
 mod tests {
     use super::*;
 
-    /// `Terminal` is not a Tools row: it is always available and has no
-    /// version (`src/gui/update/upgrade.rs:154-157`).
     #[test]
     fn the_tools_list_omits_the_plain_terminal() {
         assert_eq!(
@@ -1928,8 +1683,6 @@ mod tests {
         assert!(!SETTINGS_TOOLS.contains(&Agent::Terminal));
     }
 
-    /// The three Tools states, and which of them reads as a live value rather
-    /// than as muted status.
     #[test]
     fn a_tool_row_reports_detecting_then_missing_or_its_version() {
         let base = ToolStatus {
@@ -1957,7 +1710,6 @@ mod tests {
         };
         assert_eq!(tool_status_text(&installed), ("1.2.3".to_string(), true));
 
-        // Installed but version-less still reads as installed, never blank.
         let versionless = ToolStatus {
             installed: true,
             detecting: false,
@@ -1976,9 +1728,7 @@ mod tests {
         assert_eq!(cap(""), "");
     }
 
-    /// Drift guard (Task 6 Step 2): every registry row with a display label
-    /// appears in the overlay for at least one screen. The registry is the
-    /// single source of truth (spec §5) and this is what proves it stayed so.
+    /// Drift guard: every registry row with a display label appears on at least one screen.
     #[test]
     fn every_registry_row_with_a_label_appears_on_some_screen() {
         for def in SHORTCUTS {
@@ -2000,7 +1750,6 @@ mod tests {
         }
     }
 
-    /// The alt-chord label rule: `{mod}+alt+n`, never `ctrl+shift+alt+n`.
     #[test]
     fn alt_chords_never_render_the_shift_prefixed_modifier() {
         for def in SHORTCUTS.iter().filter(|d| d.requires_alt && !d.literal) {

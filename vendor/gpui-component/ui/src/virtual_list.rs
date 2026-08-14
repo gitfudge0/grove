@@ -1,15 +1,5 @@
-//! Virtual List for render a large number of differently sized rows/columns.
-//!
-//! > NOTE: This must ensure each column width or row height.
-//!
-//! Only visible range are rendered for performance reasons.
-//!
-//! Inspired by `gpui::uniform_list`.
-//! https://github.com/zed-industries/zed/blob/0ae1603610ab6b265bdfbee7b8dbc23c5ab06edc/crates/gpui/src/elements/uniform_list.rs
-//!
-//! Unlike the `uniform_list`, the each item can have different size.
-//!
-//! This is useful for more complex layout, for example, a table with different row height.
+//! Renders a large number of differently sized rows/columns, only the visible range.
+//! Inspired by `gpui::uniform_list` (zed-industries/zed uniform_list.rs) but each item can have a different size — useful for e.g. a table with different row heights.
 use std::{
     cell::RefCell,
     cmp,
@@ -34,9 +24,6 @@ struct VirtualListScrollHandleState {
     pub deferred_scroll_to_item: Option<DeferredScrollToItem>,
 }
 
-/// A scroll handle for [`VirtualList`].
-///
-/// See also [`ScrollHandle`].
 #[derive(Clone)]
 pub struct VirtualListScrollHandle {
     state: Rc<RefCell<VirtualListScrollHandleState>>,
@@ -80,7 +67,6 @@ impl Deref for VirtualListScrollHandle {
 }
 
 impl VirtualListScrollHandle {
-    /// Create a new VirtualListScrollHandle.
     pub fn new() -> Self {
         VirtualListScrollHandle {
             state: Rc::new(RefCell::new(VirtualListScrollHandleState {
@@ -92,17 +78,14 @@ impl VirtualListScrollHandle {
         }
     }
 
-    /// Get the base scroll handle.
     pub fn base_handle(&self) -> &ScrollHandle {
         &self.base_handle
     }
 
-    /// Scroll to the item at the given index.
     pub fn scroll_to_item(&self, ix: usize, strategy: ScrollStrategy) {
         self.scroll_to_item_with_offset(ix, strategy, 0);
     }
 
-    /// Scroll to the item at the given index, with an additional offset items.
     fn scroll_to_item_with_offset(&self, ix: usize, strategy: ScrollStrategy, offset: usize) {
         let mut state = self.state.borrow_mut();
         state.deferred_scroll_to_item = Some(DeferredScrollToItem {
@@ -113,22 +96,13 @@ impl VirtualListScrollHandle {
         });
     }
 
-    /// Scrolls to the bottom of the list.
     pub fn scroll_to_bottom(&self) {
         let items_count = self.state.borrow().items_count;
         self.scroll_to_item(items_count.saturating_sub(1), ScrollStrategy::Top);
     }
 }
 
-/// Create a [`VirtualList`] in vertical direction.
-///
-/// This is like `uniform_list` in GPUI, but support two axis.
-///
-/// The `item_sizes` is the size of each row. Only the `height` is used; `width` is inferred
-/// by measuring the item selected with [`VirtualList::with_item_to_measure_index`], defaulting
-/// to the first item.
-///
-/// See also [`h_virtual_list`]
+/// `item_sizes` is the height of each row; width is inferred by measuring the item at [`VirtualList::with_item_to_measure_index`] (defaults to the first).
 #[inline]
 pub fn v_virtual_list<R, V>(
     view: Entity<V>,
@@ -143,13 +117,7 @@ where
     virtual_list(view, id, Axis::Vertical, item_sizes, f)
 }
 
-/// Create a [`VirtualList`] in horizontal direction.
-///
-/// The `item_sizes` is the size of each column. Only the `width` is used; `height` is inferred
-/// by measuring the item selected with [`VirtualList::with_item_to_measure_index`], defaulting
-/// to the first item.
-///
-/// See also [`v_virtual_list`]
+/// `item_sizes` is the width of each column; height is inferred the same way as [`v_virtual_list`].
 #[inline]
 pub fn h_virtual_list<R, V>(
     view: Entity<V>,
@@ -203,7 +171,6 @@ where
     }
 }
 
-/// VirtualList component for rendering a large number of differently sized items.
 pub struct VirtualList {
     id: ElementId,
     axis: Axis,
@@ -231,21 +198,18 @@ impl VirtualList {
         self
     }
 
-    /// Set the sizing behavior for the list.
     pub fn with_sizing_behavior(mut self, behavior: ListSizingBehavior) -> Self {
         self.sizing_behavior = behavior;
         self
     }
 
-    /// Set the item index used to infer the list's cross-axis size.
+    /// Used to infer the list's cross-axis size.
     pub fn with_item_to_measure_index(mut self, index: usize) -> Self {
         self.item_to_measure_index = index;
         self
     }
 
-    /// Specify for table.
-    ///
-    /// Table is special, because the `scroll_handle` is based on Table head (That is not a virtual list).
+    /// Table's `scroll_handle` is based on its head, which isn't a virtual list.
     pub(crate) fn with_scroll_handle(mut self, scroll_handle: &VirtualListScrollHandle) -> Self {
         self.base = div().id(self.id.clone()).size_full();
         self.scroll_handle = scroll_handle.clone();
@@ -280,7 +244,7 @@ impl VirtualList {
                 }
             }
             _ => {
-                // Ref: https://github.com/zed-industries/zed/blob/0d145289e0867a8d5d63e5e1397a5ca69c9d49c3/crates/gpui/src/elements/div.rs#L3026
+                // Ref: zed-industries/zed div.rs (element scroll-into-view clamping).
                 if self.axis.is_vertical() {
                     if bounds.top() + scroll_offset.y < content_bounds.top() {
                         scroll_offset.y = content_bounds.top() - bounds.top()
@@ -300,7 +264,7 @@ impl VirtualList {
         scroll_offset
     }
 
-    /// Ref from: https://github.com/zed-industries/zed/blob/83f9f9d9e3f5914392cab9a09e3472711a1d7b38/crates/gpui/src/elements/uniform_list.rs#L660
+    /// Ref: zed-industries/zed uniform_list.rs.
     fn measure_item(
         &self,
         list_width: Option<Pixels>,
@@ -326,9 +290,7 @@ impl VirtualList {
     }
 }
 
-/// Frame state used by the [VirtualItem].
 pub struct VirtualListFrameState {
-    /// Visible items to be painted.
     items: SmallVec<[AnyElement; 32]>,
     size_layout: ItemSizeLayout,
 }
@@ -385,7 +347,7 @@ impl Element for VirtualList {
                     |state: Option<ItemSizeLayout>, _window| {
                         let mut state = state.unwrap_or(ItemSizeLayout::default());
 
-                        // Including the gap between items for calculate the item size
+                        // Include the gap between items in the item size calc.
                         let gap = style
                             .gap
                             .along(self.axis)
@@ -393,7 +355,6 @@ impl Element for VirtualList {
 
                         if state.items_sizes != self.item_sizes {
                             state.items_sizes = self.item_sizes.clone();
-                            // Prepare each item's size by axis
                             state.sizes = self
                                 .item_sizes
                                 .iter()
@@ -408,7 +369,6 @@ impl Element for VirtualList {
                                 })
                                 .collect::<Vec<_>>();
 
-                            // Prepare each item's origin by axis
                             state.origins = state
                                 .sizes
                                 .iter()
@@ -555,7 +515,6 @@ impl Element for VirtualList {
                 ),
         );
 
-        // Update scroll_handle with the item bounds
         let items_bounds = item_origins
             .iter()
             .enumerate()

@@ -1,8 +1,4 @@
-//! File drag-and-drop and the Wayland file-URI paste fallback.
-//!
-//! Wholesale port of `src/gui/drop.rs` — `parse_uri_list`, `percent_decode`,
-//! `shell_escape`, `dropped_path_text` — with its tests. Behavior is
-//! byte-identical; only the module path changed.
+//! File drag-and-drop and the Wayland file-URI paste fallback. Ported from `src/gui/drop.rs`, behavior byte-identical.
 
 use std::path::{Path, PathBuf};
 

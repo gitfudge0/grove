@@ -1,9 +1,5 @@
 //! Anonymous product telemetry (PostHog). No-ops until an API key is set.
-//!
-//! A behavior-verbatim port of the iced app's `src/telemetry.rs`.
-//! Deliberately **not** hoisted into grove-core: iced is deleted in
-//! Plan 10, and a two-month-old shared module is not worth the amendment
-//! (rewrite Constraint 3, foreseen candidate 2). No gpui types live here.
+//! Deliberately not hoisted into grove-core: no gpui types live here, and iced (the only other consumer) is being deleted.
 
 // Supplied at build time via `GROVE_POSTHOG_KEY`; telemetry no-ops when unset.
 const POSTHOG_API_KEY: Option<&str> = option_env!("GROVE_POSTHOG_KEY");
@@ -14,15 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Starts `false` so nothing is transmitted before the stored
-/// `telemetry_enabled` preference has been read; `set_enabled` flips it on at
-/// startup once the store is loaded.
+/// Starts `false` so nothing sends before the stored preference is read; `set_enabled` flips it once the store loads.
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static ID: OnceLock<String> = OnceLock::new();
 
-/// Whether telemetry should currently be sent: requires a compiled-in API
-/// key, respects the `GROVE_TELEMETRY=off` escape hatch, and the runtime
-/// opt-out toggle in settings.
+/// Requires a compiled-in API key, respects `GROVE_TELEMETRY=off`, and the runtime opt-out toggle.
 pub fn enabled() -> bool {
     if api_key().is_none() {
         return false;
@@ -36,8 +28,7 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// The compiled-in PostHog key, if one was baked in. `None` (or an empty
-/// value) turns every send path into a no-op.
+/// `None` (or empty) turns every send path into a no-op.
 fn api_key() -> Option<&'static str> {
     POSTHOG_API_KEY.filter(|k| !k.is_empty())
 }
@@ -46,8 +37,7 @@ pub fn set_enabled(v: bool) {
     ENABLED.store(v, Ordering::Relaxed);
 }
 
-/// A random per-install id, persisted to `~/.config/grove/telemetry_id`
-/// (or generated in memory only, if that can't be read/written).
+/// Persisted to `~/.config/grove/telemetry_id`, or memory-only if that can't be read/written.
 pub fn distinct_id() -> String {
     ID.get_or_init(|| {
         if let Some(path) = telemetry_id_path() {
@@ -72,7 +62,7 @@ pub fn distinct_id() -> String {
 }
 
 fn telemetry_id_path() -> Option<std::path::PathBuf> {
-    // Routed through grove-core so `GROVE_CONFIG_DIR` is honored.
+    // Through grove-core so `GROVE_CONFIG_DIR` is honored.
     grove_core::storage::config_dir()
         .ok()
         .map(|d| d.join("telemetry_id"))
@@ -87,12 +77,7 @@ fn generate_id() -> String {
     format!("{nanos:x}{pid:x}")
 }
 
-/// Strip filesystem identity out of a string before it leaves the machine
-/// (used on the panic *location*, never on the panic message — the free-text
-/// payload is never transmitted): the user's home directory collapses to `~`,
-/// and any other
-/// absolute path is replaced wholesale with `<path>`. Relative paths — which
-/// is what panic locations look like (`src/app/mod.rs:12:5`) — are kept.
+/// Used only on the panic *location*, never the free-text message. Home collapses to `~`; other absolute paths become `<path>`; relative paths (e.g. `src/app/mod.rs:12:5`) are kept.
 pub fn scrub_paths(msg: &str) -> String {
     let home = dirs::home_dir().and_then(|h| h.to_str().map(str::to_string));
     let mut out = String::with_capacity(msg.len());
@@ -105,8 +90,7 @@ pub fn scrub_paths(msg: &str) -> String {
     out
 }
 
-/// A token is path-looking if it starts with `/` or with the home directory
-/// (possibly behind common punctuation such as a quote or an opening paren).
+/// Path-looking if it starts with `/` or the home dir, possibly behind quote/paren punctuation.
 fn scrub_token(token: &str, home: Option<&str>) -> String {
     let lead = token.len() - token.trim_start_matches(['"', '\'', '`', '(', '[']).len();
     let (prefix, rest) = token.split_at(lead);
@@ -123,7 +107,6 @@ fn scrub_token(token: &str, home: Option<&str>) -> String {
     token.to_string()
 }
 
-/// Fire-and-forget: send `event` with `props` on a detached thread.
 pub fn track(event: &'static str, props: Vec<(&'static str, serde_json::Value)>) {
     if !enabled() {
         return;
@@ -131,8 +114,7 @@ pub fn track(event: &'static str, props: Vec<(&'static str, serde_json::Value)>)
     std::thread::spawn(move || send(event, props));
 }
 
-/// Same as `track`, but sends synchronously on the calling thread. Used from
-/// the panic hook, where a spawned thread might not get to run before exit.
+/// Synchronous `track`, for the panic hook where a spawned thread might not run before exit.
 pub fn track_blocking(event: &'static str, props: Vec<(&'static str, serde_json::Value)>) {
     if !enabled() {
         return;
@@ -168,7 +150,7 @@ fn send(event: &str, props: Vec<(&'static str, serde_json::Value)>) {
         .send_string(&body.to_string());
 }
 
-// ponytail: hourly ping, PostHog dedupes into DAU; no need for day-boundary logic
+// Hourly ping; PostHog dedupes into DAU, so no day-boundary logic needed.
 pub fn start_heartbeat() {
     std::thread::spawn(|| loop {
         std::thread::sleep(Duration::from_hours(1));
@@ -176,12 +158,7 @@ pub fn start_heartbeat() {
     });
 }
 
-/// The scrubbing panic hook (`src/main.rs:11-30`). Installed from `main`
-/// **before** `app::boot`, so a panic inside boot is still reported.
-///
-/// The panic *message* never leaves the machine — it is logged locally and
-/// only the scrubbed `file:line:col` location is transmitted. `track_blocking`
-/// because a thread spawned from a panicking process may never get to run.
+/// Installed from `main` before `app::boot`, so a panic inside boot is still reported. The panic message never leaves the machine — only the scrubbed location is transmitted, via `track_blocking`.
 pub fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -238,9 +215,7 @@ mod tests {
         assert_eq!(scrub("/home/tester2/x"), "<path>");
     }
 
-    /// Three gates, and the first one is a compile-time constant: no key is
-    /// baked into a test build, so nothing can leave the machine no matter
-    /// what the runtime toggle says (carried decision 3).
+    /// No key is baked into a test build, so nothing leaves the machine regardless of the runtime toggle.
     #[test]
     fn nothing_is_transmitted_without_a_compiled_in_key() {
         assert!(super::api_key().is_none());

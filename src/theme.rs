@@ -1,35 +1,14 @@
-//! GUI color tokens, derived live from the active [`grove_core::theme`].
-//!
-//! A direct port of `src/gui/palette.rs` — same function names, same blend
-//! ratios, same dark/light branches — returning `gpui::Hsla` instead of
-//! `iced::Color`. Matching names are what keep the Plan 04-07 ports mechanical
-//! and reviewable side-by-side against the iced originals.
-//!
-//! The shared theme exposes a flat `Theme` with `bg / bg_highlight / fg /
-//! fg_dark / comment` plus six accents. The GUI uses a richer surface
-//! vocabulary (rail, strip, hover, two border weights), so the missing tokens
-//! are synthesized by blending the base theme colors at fixed ratios.
-//!
-//! All accessors read the active theme on each call, so swapping themes at
-//! runtime takes effect on the next frame. Reads go through
-//! `theme::with_current`, which serves a per-thread snapshot guarded by a
-//! generation counter — a token call costs an atomic load, not a lock.
-//!
-//! **Blending happens component-wise on 0..1 sRGB floats (`gpui::Rgba`),
-//! exactly as `palette.rs` does it, and only converts to `Hsla` at the end of
-//! each token function.** Blending in HSL space would shift hues and visibly
-//! change ~40 themes at once.
+//! GUI color tokens derived live from the active [`grove_core::theme`]. Missing surfaces are synthesized by blending the base colors.
+//! Blending happens in sRGB (`gpui::Rgba`), converting to `Hsla` only at the end — blending in HSL space would shift hues across every theme.
 
 #![allow(non_snake_case)]
-// File-level by design: this module is the colour-role vocabulary. A role is
-// declared because the palette defines it, not because a widget happens to draw
-// it today, so unused roles are expected rather than dead.
+// File-level: this module is the colour-role vocabulary — a role is declared because the palette defines it, not because a widget draws it today.
 #![allow(dead_code)]
 
 use gpui::{BorrowAppContext as _, Hsla, Rgba, WindowAppearance};
 use grove_core::theme;
 
-/// Grove's defaults when the store names no theme (`src/app/theme_picker.rs:8-9`).
+/// Grove's defaults when the store names no theme.
 pub const DEFAULT_DARK_THEME: &str = "tokyonight-storm";
 pub const DEFAULT_LIGHT_THEME: &str = "tokyonight-day";
 
@@ -40,8 +19,7 @@ const BLACK: Rgba = Rgba {
     a: 1.0,
 };
 
-/// grove-core `Color` → sRGB floats. Public so a theme editor can render
-/// arbitrary draft-theme swatches without going through `theme::current()`.
+/// Public so a theme editor can render draft-theme swatches without going through `theme::current()`.
 pub fn ic(c: theme::Color) -> Rgba {
     match c {
         theme::Color::Rgb(r, g, b) => Rgba {
@@ -53,7 +31,7 @@ pub fn ic(c: theme::Color) -> Rgba {
     }
 }
 
-/// Component-wise lerp on sRGB floats — never in HSL space (see module docs).
+/// Component-wise lerp on sRGB floats — never in HSL space.
 fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     let t = t.clamp(0.0, 1.0);
     Rgba {
@@ -68,14 +46,7 @@ fn alpha_rgba(c: Rgba, a: f32) -> Rgba {
     Rgba { a, ..c }
 }
 
-/// Overrides a token's alpha and nothing else — hue, saturation and lightness
-/// are untouched, so the result still tracks a theme swap.
-///
-/// This is the **sanctioned** way to tint a tier-2 token at a call site. Prefer
-/// it to writing `Hsla { a: .., ..c::TOKEN() }` inline: the struct-update form
-/// is the same operation spelled ad-hoc, and it hides tint sites from a grep.
-/// If two or more call sites want the *same* alpha on the same token, promote
-/// it to a named token here instead (§14.3).
+/// The sanctioned way to tint a token — prefer over an inline `Hsla { a: .., ..c::TOKEN() }`, which hides tint sites from a grep.
 pub fn alpha(c: Hsla, a: f32) -> Hsla {
     Hsla { a, ..c }
 }
@@ -87,29 +58,22 @@ fn base_fg() -> Rgba {
     theme::with_current(|t| ic(t.fg))
 }
 
-// ── surfaces ─────────────────────────────────────────────────────────────
-
 pub fn BG() -> Hsla {
     base_bg().into()
 }
 
-/// Rail / sidebar — slightly darker than BG on dark themes, slightly
-/// off-white on light themes.
 pub fn BG_RAIL() -> Hsla {
     theme::with_current(bg_rail_of).into()
 }
 
-/// Outer strip / chrome edge — darker than rail.
 pub fn BG_STRIP() -> Hsla {
     theme::with_current(bg_strip_of).into()
 }
 
-/// Hover surface — partway between bg and bg_highlight.
 pub fn BG_HOVER() -> Hsla {
     theme::with_current(bg_hover_of).into()
 }
 
-/// Active / selected row.
 pub fn BG_HL() -> Hsla {
     theme::with_current(|t| ic(t.bg_highlight)).into()
 }
@@ -121,19 +85,7 @@ pub fn BORDER_SOFT() -> Hsla {
     theme::with_current(|t| mix(ic(t.bg), ic(t.fg), 0.07)).into()
 }
 
-// ── overlays ─────────────────────────────────────────────────────────────
-
-/// Modal scrim: a translucent wash derived from the theme rather than a
-/// fixed black. Dark themes dim toward black; light themes dim toward the
-/// foreground so the wash stays visible on near-white backgrounds.
-///
-/// Shared by every modal (`scrim`/`scrim_top_drop`, `views/components.rs`),
-/// so this is a global bump rather than a modal-local override: every modal
-/// benefits from the background actually receding instead of just the one
-/// under review. `0.16` read as barely-there — PTY text stayed fully legible
-/// through it — so both tones sit inside the requested α0.55-0.70 band, with
-/// light themes a touch stronger since a bright page reads through a wash
-/// more than a dark one does at the same alpha.
+/// Dark themes dim toward black; light themes dim toward the foreground so the wash stays visible on near-white backgrounds.
 pub fn SCRIM() -> Hsla {
     theme::with_current(|t| {
         let dark = is_dark_of(t);
@@ -144,29 +96,15 @@ pub fn SCRIM() -> Hsla {
     .into()
 }
 
-/// The drop shadow every floating panel casts (plan.md §3's last bullet). Was
-/// a hard-coded `rgba(0,0,0,.35)` inside `modal_panel`, which is why a light
-/// theme's panel wore a dark theme's shadow: a bright page needs a lighter,
-/// tighter shadow or the panel reads as cut out of the page rather than lifted
-/// off it. The *geometry* that goes with each weight is
-/// [`PANEL_SHADOW_Y`](crate::views::tokens::PANEL_SHADOW_Y) and friends,
-/// selected by [`is_dark`].
-///
-/// Black at an alpha, not a blend of the theme's colors: a shadow is absence of
-/// light, so tinting it with the palette would make it read as a glow.
+/// Black at an alpha, not a theme-color blend — a shadow tinted with the palette would read as a glow.
 pub fn PANEL_SHADOW() -> Hsla {
     theme::with_current(|t| alpha_rgba(BLACK, if is_dark_of(t) { 0.35 } else { 0.18 })).into()
 }
 
-/// Whether the active theme is a dark one — the view layer's read-only handle
-/// on the same question [`is_dark_of`] answers for a borrowed theme. Views pick
-/// *geometry* by it (the panel shadow's offset and blur); colour forks stay
-/// inside this module.
+/// Views pick geometry (shadow offset/blur) by this; colour forks stay inside this module.
 pub fn is_dark() -> bool {
     theme::with_current(is_dark_of)
 }
-
-// ── text ─────────────────────────────────────────────────────────────────
 
 pub fn FG() -> Hsla {
     base_fg().into()
@@ -178,8 +116,6 @@ pub fn FG_MUTE() -> Hsla {
     theme::with_current(|t| ic(t.comment)).into()
 }
 
-// ── accents ──────────────────────────────────────────────────────────────
-
 pub fn BLUE() -> Hsla {
     theme::with_current(|t| ic(t.blue)).into()
 }
@@ -189,14 +125,7 @@ pub fn CYAN() -> Hsla {
 pub fn MAGENTA() -> Hsla {
     theme::with_current(|t| ic(t.magenta)).into()
 }
-/// The keyboard-focus ring: MAGENTA held back to a tint, drawn *outside* a
-/// focused control's own 1px magenta border (plan.md §1, variant C1c). One
-/// token, two weights: a dark theme reads a 25% magenta wash on a dark surface
-/// clearly, while the same alpha over a near-white light surface all but
-/// disappears, so light themes get a stronger tint rather than a second token.
-///
-/// Derived with [`alpha`] rather than a hand-written `Hsla` literal so the ring
-/// tracks a theme swap exactly as MAGENTA does (§14.3).
+/// Drawn outside a focused control's own 1px magenta border. Light themes get a stronger alpha (0.35 vs 0.25) or the same wash disappears on a near-white surface.
 pub fn FOCUS_RING() -> Hsla {
     let a = theme::with_current(|t| if is_dark_of(t) { 0.25 } else { 0.35 });
     alpha(MAGENTA(), a)
@@ -205,21 +134,14 @@ pub fn FOCUS_RING() -> Hsla {
 pub fn GREEN() -> Hsla {
     theme::with_current(|t| ic(t.green)).into()
 }
-/// Attention amber — the "needs input" accent. Warmer than YELLOW so it
-/// reads as a call to action next to green/working.
+/// The "needs input" accent — warmer than YELLOW so it reads as a call to action next to green/working.
 pub fn AMBER() -> Hsla {
     amber_rgba().into()
 }
 fn amber_rgba() -> Rgba {
     theme::with_current(|t| mix(ic(t.yellow), ic(t.red), 0.25))
 }
-/// AMBER at α 0.12 — the fill behind a row whose session is waiting on you.
-/// Faint enough that the row's text keeps its contrast, strong enough to pick
-/// the row out of a list at a glance; the *glyph* is what names the state
-/// (§2.3), this only locates it. Shared by the sidebar's waiting row
-/// (`src/views/rows.rs`) and the launcher's waiting row
-/// (`src/views/modals/launcher.rs`), which is why it is a token and not a
-/// module constant (§14.3).
+/// Fill behind a row whose session is waiting on you; shared by the sidebar and launcher waiting rows, hence a token not a module constant.
 pub fn AMBER_ROW_TINT() -> Hsla {
     alpha(AMBER(), 0.12)
 }
@@ -230,40 +152,27 @@ pub fn RED() -> Hsla {
     theme::with_current(|t| ic(t.red)).into()
 }
 
-/// A 16% wash of RED over BG — the active fill for a danger-flavored
-/// segmented control (e.g. "skip permissions"), distinct from the neutral
-/// `BG_HL()` used by ordinary active segments.
+/// Active fill for a danger-flavored segmented control (e.g. "skip permissions"), distinct from the neutral `BG_HL()`.
 pub fn RED_WASH() -> Hsla {
     theme::with_current(|t| mix(ic(t.red), ic(t.bg), 0.84)).into()
 }
 
-/// The diff viewer's added-line background: GREEN held back to a 12% wash so
-/// the row's text keeps its contrast. Derived with [`alpha`] so it tracks a
-/// theme swap exactly as GREEN does (§14.3).
 pub fn DIFF_ADD_BG() -> Hsla {
     alpha(GREEN(), 0.12)
 }
-/// The diff viewer's removed-line background, RED's counterpart to
-/// [`DIFF_ADD_BG`].
 pub fn DIFF_DEL_BG() -> Hsla {
     alpha(RED(), 0.12)
 }
 
-/// [`DIFF_ADD_BG`] at the stronger 26% weight used for intraline emphasis
-/// (the word-level highlight within an added line).
+/// [`DIFF_ADD_BG`] at 26%, for word-level intraline emphasis.
 pub fn DIFF_ADD_BG_STRONG() -> Hsla {
     alpha(GREEN(), 0.26)
 }
-/// [`DIFF_DEL_BG`] at the stronger 26% weight, [`DIFF_ADD_BG_STRONG`]'s
-/// counterpart for a removed line's intraline emphasis.
 pub fn DIFF_DEL_BG_STRONG() -> Hsla {
     alpha(RED(), 0.26)
 }
 
-// ── syntax highlighting (diff viewer) ───────────────────────────────────────
-// Seven semantic scopes syntect spans are projected onto — never syntect's
-// own theme colours.
-
+// Seven semantic scopes syntect spans are projected onto — never syntect's own theme colours.
 pub fn CODE_KEYWORD() -> Hsla {
     MAGENTA()
 }
@@ -286,36 +195,21 @@ pub fn CODE_PUNCT() -> Hsla {
     FG_DIM()
 }
 
-// ── selection (focused Miller column) ──────────────────────────────────────
-// A selected row is marked with a flat cyan tint plus a cyan ring, in two
-// weights. Derived from the theme's cyan so the treatment tracks theme swaps.
-
 fn cyan_rgba() -> Rgba {
     theme::with_current(|t| ic(t.cyan))
 }
 
-/// Fill for a row in edit/rename mode — one weight up from plain selection.
 pub fn SEL_TINT_STRONG() -> Hsla {
     alpha_rgba(cyan_rgba(), 0.22).into()
 }
-/// Fill for an ordinary selected row (palette rows, modal lists).
 pub fn SEL_TINT_SOFT() -> Hsla {
     alpha_rgba(cyan_rgba(), 0.10).into()
 }
-/// Ring outlining a selected row at either weight.
 pub fn SEL_RING() -> Hsla {
     alpha_rgba(cyan_rgba(), 0.5).into()
 }
 
-// ── theme-parameterized variants ────────────────────────────────────────────
-// Used to render PTY *content* (background fill, default fg, cursor, ANSI
-// 0-15) under a per-project "Project theme" override, decoupled from the
-// global `theme::current()` that the accessors above read. App chrome always
-// uses the plain accessors above and is unaffected by a project's pinned theme.
-//
-// These return `Rgba` (not `Hsla`) because they are blend inputs to each
-// other; callers that paint convert with `.into()`.
-
+// Renders PTY content under a per-project theme override, decoupled from the global `theme::current()`. Return Rgba (not Hsla) since they're blend inputs to each other.
 fn is_dark_of(t: &theme::Theme) -> bool {
     matches!(t.kind, theme::ThemeKind::Dark)
 }
@@ -348,14 +242,12 @@ pub fn red_of(t: &theme::Theme) -> Rgba {
     ic(t.red)
 }
 
-/// Themed variant of `BG_RAIL`. Same ratios as `BG_RAIL`, which delegates here.
 pub fn bg_rail_of(t: &theme::Theme) -> Rgba {
     let d = if is_dark_of(t) { 0.18 } else { 0.04 };
     mix(ic(t.bg), BLACK, d)
 }
 
-/// Themed variant of `BG_STRIP` — used for ANSI color 0 inside PTY content
-/// rendered under a per-project override theme.
+/// Used for ANSI color 0 inside PTY content rendered under a per-project override theme.
 pub fn bg_strip_of(t: &theme::Theme) -> Rgba {
     let bg = ic(t.bg);
     if is_dark_of(t) {
@@ -365,46 +257,28 @@ pub fn bg_strip_of(t: &theme::Theme) -> Rgba {
     }
 }
 
-/// Themed variant of `BG_HL`.
-///
-/// **Reserved, no consumer yet.** Part of the PTY-content contract (§4.4): it
-/// exists so a per-project theme can tint selected/highlighted PTY regions
-/// without reaching for the global accessor. Nothing paints with it today —
-/// it is a contract ahead of its consumer (§15.4), not dead code to delete.
-/// `bg_hover_of` below does read it.
+/// Reserved, no consumer yet — exists so a per-project theme can tint selected/highlighted PTY regions later; not dead code. `bg_hover_of` does read it.
 pub fn bg_hl_of(t: &theme::Theme) -> Rgba {
     ic(t.bg_highlight)
 }
-/// Themed variant of `BG_HOVER`.
 pub fn bg_hover_of(t: &theme::Theme) -> Rgba {
     mix(bg_of(t), bg_hl_of(t), 0.55)
 }
-/// Themed variant of `BORDER`.
 pub fn border_of(t: &theme::Theme) -> Rgba {
     mix(bg_of(t), fg_of(t), 0.16)
 }
-/// Themed variant of `SEL_RING`.
-///
-/// **Reserved, no consumer yet.** Same status as `bg_hl_of`: it is here so a
-/// future PTY selection outline can be drawn in the project's pinned theme
-/// rather than the global one (§4.4). Chrome selection uses `SEL_RING()`.
+/// Reserved, no consumer yet — for a future PTY selection outline in the project's pinned theme; chrome selection uses `SEL_RING()`.
 pub fn sel_ring_of(t: &theme::Theme) -> Rgba {
     alpha_rgba(cyan_of(t), 0.5)
 }
 
-// ── the Global ───────────────────────────────────────────────────────────
-
-/// Theme *resolution policy* — the colors themselves are not stored here.
-/// grove-core's `theme::ACTIVE` remains the single source of truth and the
-/// token functions above read it, exactly as the iced app does.
+/// Resolution policy only — the colors themselves live in `grove_core::theme::ACTIVE`.
 pub struct ThemeState {
     pub follow_system: bool,
     pub dark_name: String,
     pub light_name: String,
-    /// Seeded from the window on the first frame, updated on observation.
     pub system_mode: WindowAppearance,
-    /// Bumped on every change; Plan 04's terminal element uses it as a
-    /// repaint/cache key.
+    /// Bumped on every change; the terminal element uses it as a repaint/cache key.
     pub generation: u64,
 }
 
@@ -421,9 +295,7 @@ impl ThemeState {
         }
     }
 
-    /// The theme name this appearance resolves to under the current policy.
-    /// Port of `resolve_system_theme_name` (`src/app/theme_picker.rs:193-206`):
-    /// anything that isn't explicitly light resolves dark.
+    /// Anything that isn't explicitly light resolves dark.
     pub fn resolve_system_theme_name(&self, mode: WindowAppearance) -> &str {
         match mode {
             WindowAppearance::Light | WindowAppearance::VibrantLight => &self.light_name,
@@ -431,8 +303,7 @@ impl ThemeState {
         }
     }
 
-    /// Applies `name` and bumps the generation. Unknown names are ignored by
-    /// grove-core, so the previous theme stays active.
+    /// Unknown names are ignored by grove-core, so the previous theme stays active.
     pub fn set_by_name(cx: &mut gpui::App, name: &str) {
         if grove_core::theme::set_by_name(name) {
             cx.update_global::<Self, _>(|this, _| this.generation += 1);
@@ -440,9 +311,7 @@ impl ThemeState {
         }
     }
 
-    /// Re-applies the active theme from `system_mode` when following the OS
-    /// setting. No-op otherwise. Port of `apply_system_theme`
-    /// (`src/app/theme_picker.rs:210-217`).
+    /// No-op unless `follow_system` is set.
     pub fn apply_system_theme(cx: &mut gpui::App) {
         let name = cx.global::<Self>();
         if !name.follow_system {
@@ -452,23 +321,16 @@ impl ThemeState {
         Self::set_by_name(cx, &name);
     }
 
-    /// Records a new OS appearance and re-resolves. Called once with the
-    /// window's `appearance()` on the first frame — seeding it there rather
-    /// than waiting for the first OS notification is why follow-system looks
-    /// correct immediately (`src/gui/mod.rs:63-68`).
+    /// Called once with the first frame's `appearance()` — seeding it there is why follow-system looks correct immediately.
     pub fn set_system_mode(cx: &mut gpui::App, mode: WindowAppearance) {
         cx.update_global::<Self, _>(|this, _| this.system_mode = mode);
         Self::apply_system_theme(cx);
     }
 }
 
-// ── custom-theme management (Plan 08 Task 6 Step 4) ──────────────────────
-//
-// Every mutation goes through `grove_core::theme_file::save` and then
-// `load_custom`, so `theme::CUSTOM` and `themes.json` can never disagree.
-// grove-core stays the owner of the file format; nothing here reimplements it.
+// Every mutation goes through `grove_core::theme_file::save` then `load_custom`, so `theme::CUSTOM` and `themes.json` can never disagree.
 
-/// A blank custom theme, as the paste-first editor's starting buffer.
+/// The paste-first editor's starting buffer.
 pub fn new_theme_template() -> String {
     let base = theme::by_name(DEFAULT_DARK_THEME)
         .or_else(|| theme::BUILTINS.first().cloned())
@@ -519,9 +381,7 @@ pub fn duplicate_custom_theme(name: &str) -> Result<(), String> {
     persist_custom(&themes)
 }
 
-/// Save the paste-first editor's buffer. The buffer is `to_named_lines`'
-/// output (or a pasted equivalent), so it round-trips through
-/// `theme_file::parse_paste` onto a draft derived from the default theme.
+/// The buffer is `to_named_lines`' output (or a pasted equivalent), round-tripped through `theme_file::parse_paste` onto a draft derived from the default theme.
 pub fn save_custom_theme_json(buffer: &str) -> Result<(), String> {
     let parsed = grove_core::theme_file::parse_paste(buffer)?;
     let base = theme::by_name(DEFAULT_DARK_THEME).unwrap_or_else(|| theme::BUILTINS[0].clone());
@@ -553,14 +413,10 @@ mod tests {
         lum_rgba(c.into())
     }
 
-    /// Serializes tests that mutate the global active theme
-    /// (`grove_core::theme::set`) — nothing else in this crate touches it,
-    /// but a test that temporarily swaps it must not race a concurrently
-    /// running test that reads the default (e.g.
-    /// `default_theme_is_tokyonight_dark`).
+    /// Serializes tests that mutate the global active theme, so a swap can't race a concurrent default-reader.
     static ACTIVE_THEME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Restores whatever theme was active before the test ran, even on panic.
+    /// Restores the pre-test active theme, even on panic.
     struct ActiveThemeGuard(theme::Theme);
     impl ActiveThemeGuard {
         fn capture() -> Self {
@@ -631,12 +487,9 @@ mod tests {
         assert_eq!((bg.b * 255.0).round() as u8, 0x26);
     }
 
-    /// AMBER is `mix(yellow, red, 0.25)` — inside the yellow→red interval on
-    /// every channel, and nearer yellow on every channel. Checked against every
-    /// bundled theme, since the ratio must hold whatever yellow and red are.
+    /// AMBER is `mix(yellow, red, 0.25)`, checked against every bundled theme.
     #[test]
     fn amber_sits_between_yellow_and_red() {
-        // Guard against a vacuous pass if BUILTINS ever ships empty.
         assert!(theme::BUILTINS.len() > 30, "expected the full bundled set");
         for t in theme::BUILTINS {
             let (y, r) = (yellow_of(t), red_of(t));
@@ -652,13 +505,11 @@ mod tests {
                     "theme '{}': amber {ch} {ac} not in [{lo},{hi}]",
                     t.name
                 );
-                // 25% toward red, so it stays nearer yellow than red.
                 assert!(
                     (ac - yc).abs() <= (ac - rc).abs() + 1e-6,
                     "theme '{}': amber {ch} {ac} is nearer red {rc} than yellow {yc}",
                     t.name
                 );
-                // The derivation itself, component-wise.
                 let expected = yc + (rc - yc) * 0.25;
                 assert!(
                     (ac - expected).abs() < 1e-6,
@@ -667,15 +518,12 @@ mod tests {
                 );
             }
         }
-        // The live accessor agrees with the parameterized derivation.
         let (y, r, a) = theme::with_current(|t| (ic(t.yellow), ic(t.red), amber_rgba()));
         let want = mix(y, r, 0.25);
         assert!((a.r - want.r).abs() < 1e-6 && (a.g - want.g).abs() < 1e-6);
     }
 
-    /// The chrome stack depends on this ordering: strip is the darkest
-    /// surface, then the rail, then the body. DESIGN.md §4.2 claims it holds
-    /// on light themes too, so every bundled theme is checked.
+    /// Chrome stack: strip is darkest, then rail, then body — checked on every bundled theme, including light.
     #[test]
     fn chrome_surfaces_get_progressively_darker() {
         assert!(theme::BUILTINS.len() > 30, "expected the full bundled set");
@@ -696,17 +544,11 @@ mod tests {
                 t.name
             );
         }
-        // The live accessors agree with the parameterized variants.
         assert!(lum(BG_STRIP()) < lum(BG_RAIL()));
         assert!(lum(BG_RAIL()) < lum(BG()));
     }
 
-    /// FOCUS_RING is MAGENTA with only its alpha overridden (plan.md §1):
-    /// hue/saturation/lightness must be bit-identical to MAGENTA's, and alpha
-    /// must be exactly 0.25 on a dark theme / 0.35 on a light one — the two
-    /// weights `FOCUS_RING`'s doc comment names. Checked against every
-    /// bundled theme, following the same template as
-    /// `amber_sits_between_yellow_and_red`.
+    /// FOCUS_RING must be hue/sat/lightness-identical to MAGENTA, alpha exactly 0.25 dark / 0.35 light.
     #[test]
     fn focus_ring_derives_from_magenta_at_the_theme_relative_alpha() {
         assert!(theme::BUILTINS.len() > 30, "expected the full bundled set");
@@ -717,14 +559,11 @@ mod tests {
 
         let (mut saw_dark, mut saw_light) = (0u32, 0u32);
         for t in theme::BUILTINS {
-            // Independent, per-theme expectation — built from the theme's
-            // raw magenta, not from anything the live accessor touches.
+            // Built from the theme's raw magenta, independent of the live accessor.
             let m: Hsla = magenta_of(t).into();
             let want_a = if is_dark_of(t) { 0.25 } else { 0.35 };
             let expected = alpha(m, want_a);
 
-            // The live accessor, exercised for real by making this theme
-            // the active one — not re-derived by hand a second time.
             theme::set(t.clone());
             let live = FOCUS_RING();
 
@@ -751,23 +590,14 @@ mod tests {
         assert!(saw_light > 0, "no light theme was exercised");
     }
 
-    /// PANEL_SHADOW is heavier on dark themes than light (plan.md §3's last
-    /// bullet): both the colour's alpha and the accompanying
-    /// `PANEL_SHADOW_Y`/`PANEL_SHADOW_BLUR` geometry must be strictly larger
-    /// on the dark branch, in every bundled theme, or a light panel inherits
-    /// a dark-theme shadow that reads as cut out of the page rather than
-    /// lifted off it.
+    /// PANEL_SHADOW's alpha and geometry (Y/BLUR) must both be strictly larger on dark, or a light panel inherits a dark-theme shadow.
     #[test]
     fn panel_shadow_is_heavier_in_dark_themes_than_light() {
         use crate::views::tokens::{
             PANEL_SHADOW_BLUR, PANEL_SHADOW_BLUR_LIGHT, PANEL_SHADOW_Y, PANEL_SHADOW_Y_LIGHT,
         };
         assert!(theme::BUILTINS.len() > 30, "expected the full bundled set");
-        // `black_box` defeats constant folding so clippy's
-        // `assertions_on_constants` doesn't flag comparing two `const`
-        // tokens whose relationship is exactly what this test exists to
-        // pin — the values themselves are still read from the real tokens,
-        // not duplicated as literals.
+        // black_box defeats constant folding, so clippy's assertions_on_constants doesn't flag this intentional comparison.
         let (y, y_light) = (
             std::hint::black_box(PANEL_SHADOW_Y),
             std::hint::black_box(PANEL_SHADOW_Y_LIGHT),
@@ -797,11 +627,9 @@ mod tests {
 
         let (mut saw_dark, mut saw_light) = (0u32, 0u32);
         for t in theme::BUILTINS {
-            // Independent, per-theme expectation.
             let want = if is_dark_of(t) { 0.35 } else { 0.18 };
             let expected: Rgba = alpha_rgba(BLACK, want);
 
-            // The live accessor, exercised for real under this theme.
             theme::set(t.clone());
             let live: Rgba = PANEL_SHADOW().into();
 
@@ -818,7 +646,6 @@ mod tests {
                 live.a,
                 expected.a
             );
-            // Never the pre-C2g hard-coded literal on a light theme.
             if !is_dark_of(t) {
                 assert!(
                     (live.a - 0.35).abs() > 1e-6,

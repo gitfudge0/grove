@@ -1,19 +1,9 @@
 //! The click-intent vocabulary the view layer's leaf components speak.
-//!
-//! These types sit *below* both [`crate::views::components`] and
-//! [`crate::views::modals`] so the app-wide component library can wire a button
-//! to an intent without depending on the modal layer. The modal layer is what
-//! interprets them — see [`crate::views::modals::ModalLayer::dispatcher`] — but
-//! nothing here knows that.
+//! Sits below `components` and `modals` so a button can wire to an intent without depending on the modal layer, which interprets them.
 
 use gpui::{App, Window};
 
-/// Every mouse-driven intent a modal's chrome can raise. Buttons and
-/// checkboxes only own a `&mut Window, &mut App`, so they cannot touch the
-/// layer entity directly; they raise one of these through [`ModalDispatch`],
-/// a weak-entity closure built by [`crate::views::modals::ModalLayer::dispatcher`].
-/// This is the mouse half of the keyboard verdict table — iced's modals are
-/// fully clickable and so are these.
+/// Buttons/checkboxes only own `&mut Window, &mut App`, so they raise one of these through [`ModalDispatch`] rather than touching the layer entity directly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModalClick {
     /// Route through `ModalSlot::cancel` — the same path Escape takes.
@@ -35,8 +25,7 @@ pub enum ModalClick {
     ThemePickerTab(bool),
     ThemePickerToggleFollowSystem,
     ThemePickerUseDefault,
-    /// The picker's own body-level "Apply" — the same commit path
-    /// `ModalAction::ThemePickerSubmit` reaches from the keyboard.
+    /// Same commit path `ModalAction::ThemePickerSubmit` reaches from the keyboard.
     ThemePickerApply,
     /// ScriptsEditor / ThemeManager / Settings buttons.
     Save,
@@ -95,13 +84,11 @@ pub enum ModalClick {
     ToggleDiffTreeDir {
         path: String,
     },
-    /// Diff viewer: mouse-down on the file-list/body divider — starts (or, on
-    /// a double-click, releases) a width drag on [`crate::views::modals::ModalLayer`].
+    /// Diff viewer: mouse-down on the file-list/body divider — starts (or, on double-click, releases) a width drag.
     DiffFileListDividerPress,
 }
 
-/// The boolean settings the Settings modal flips, each persisted immediately
-/// (`src/gui/view/modals/settings.rs:130-625`; recorded ambiguity 5).
+/// Each persisted immediately.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingToggle {
     Tmux,

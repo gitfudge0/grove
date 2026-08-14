@@ -67,23 +67,19 @@ impl Render for DragPanel {
 pub struct TabPanel {
     focus_handle: FocusHandle,
     dock_area: WeakEntity<DockArea>,
-    /// The stock_panel can be None, if is None, that means the panels can't be split or move
+    /// `None` means panels can't be split or moved.
     stack_panel: Option<WeakEntity<StackPanel>>,
     pub(crate) panels: Vec<Arc<dyn PanelView>>,
     pub(crate) active_ix: usize,
-    /// If this is true, the Panel closable will follow the active panel's closable,
-    /// otherwise this TabPanel will not able to close
-    ///
-    /// This is used for Dock to limit the last TabPanel not able to close, see [`super::Dock::new`].
+    /// If true, closable follows the active panel's; if false, this TabPanel can never close (used by Dock to pin the last TabPanel, see [`super::Dock::new`]).
     pub(crate) closable: bool,
 
     tab_bar_scroll_handle: ScrollHandle,
     pending_scroll_to_ix: Option<usize>,
     zoomed: bool,
     collapsed: bool,
-    /// When drag move, will get the placement of the panel to be split
+    /// Placement the dragged panel would split into.
     will_split_placement: Option<Placement>,
-    /// Is TabPanel used in Tiles.
     in_tiles: bool,
 }
 
@@ -103,8 +99,7 @@ impl Panel for TabPanel {
             return false;
         }
 
-        // 1. When is the final panel in the dock, it will not able to close.
-        // 2. When is in the Tiles, it will always able to close (by active panel state).
+        // The final panel in the dock can't close; in Tiles it always can (by active panel state).
         if !self.draggable(cx) && !self.in_tiles {
             return false;
         }
@@ -182,7 +177,6 @@ impl TabPanel {
         }
     }
 
-    /// Mark the TabPanel as being used in Tiles.
     pub(super) fn set_in_tiles(&mut self, in_tiles: bool) {
         self.in_tiles = in_tiles;
     }
@@ -191,7 +185,6 @@ impl TabPanel {
         self.stack_panel = Some(view);
     }
 
-    /// Return current active_panel View
     pub fn active_panel(&self, cx: &App) -> Option<Arc<dyn PanelView>> {
         let panel = self.panels.get(self.active_ix);
 
@@ -199,7 +192,6 @@ impl TabPanel {
             if panel.visible(cx) {
                 Some(panel.clone())
             } else {
-                // Return the first visible panel
                 self.visible_panels(cx).next()
             }
         } else {
@@ -222,7 +214,6 @@ impl TabPanel {
         self.pending_scroll_to_ix = Some(ix);
         self.focus_active_panel(window, cx);
 
-        // Sync the active state to all panels
         cx.spawn_in(window, async move |view, cx| {
             _ = cx.update(|window, cx| {
                 _ = view.update(cx, |view, cx| {
@@ -241,7 +232,6 @@ impl TabPanel {
         cx.notify();
     }
 
-    /// Add a panel to the end of the tabs
     pub fn add_panel(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -274,7 +264,6 @@ impl TabPanel {
 
         panel.on_added_to(cx.entity().downgrade(), window, cx);
         self.panels.push(panel);
-        // set the active panel to the new panel
         if active {
             self.set_active_ix(self.panels.len() - 1, window, cx);
         }
@@ -282,7 +271,6 @@ impl TabPanel {
         cx.notify();
     }
 
-    /// Add panel to try to split
     pub fn add_panel_at(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -328,7 +316,6 @@ impl TabPanel {
         cx.notify();
     }
 
-    /// Remove a panel from the tab panel
     pub fn remove_panel(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -355,7 +342,6 @@ impl TabPanel {
         }
     }
 
-    /// Check to remove self from the parent StackPanel, if there is no panel left
     fn remove_self_if_empty(&self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.panels.is_empty() {
             return;
@@ -398,11 +384,7 @@ impl TabPanel {
         self.stack_panel.is_none()
     }
 
-    /// Return true if self or parent only have last panel.
-    ///
-    /// Only visible panels are counted, so a hidden panel does not keep the
-    /// last visible panel draggable/closable (which could otherwise leave the
-    /// dock visually empty and undroppable).
+    /// Only visible panels count, so a hidden panel can't keep the last visible one draggable/closable.
     fn is_last_panel(&self, cx: &App) -> bool {
         if let Some(parent) = &self.stack_panel {
             if let Some(stack_panel) = parent.upgrade() {
@@ -415,7 +397,6 @@ impl TabPanel {
         self.visible_panels(cx).count() <= 1
     }
 
-    /// Return all visible panels
     fn visible_panels<'a>(&'a self, cx: &'a App) -> impl Iterator<Item = Arc<dyn PanelView>> + 'a {
         self.panels.iter().filter_map(|panel| {
             if panel.visible(cx) {
@@ -426,16 +407,11 @@ impl TabPanel {
         })
     }
 
-    /// Return true if the tab panel is draggable.
-    ///
-    /// E.g. if the parent and self only have one panel, it is not draggable.
+    /// Not draggable if the parent and self only have one panel.
     fn draggable(&self, cx: &App) -> bool {
         !self.is_locked(cx) && !self.is_last_panel(cx)
     }
 
-    /// Return true if the tab panel is droppable.
-    ///
-    /// E.g. if the tab panel is locked, it is not droppable.
     fn droppable(&self, cx: &App) -> bool {
         !self.is_locked(cx)
     }
@@ -545,7 +521,6 @@ impl TabPanel {
         let view_entity_id = cx.entity().entity_id();
         let toggle_button_panels = dock_area.toggle_button_panels;
 
-        // Check if current TabPanel's entity_id matches the one stored in DockArea for this placement
         if !match placement {
             DockPlacement::Left => {
                 dock_area.left_dock.is_some() && toggle_button_panels.left == Some(view_entity_id)
@@ -718,7 +693,7 @@ impl TabPanel {
                     h_flex()
                         .items_center()
                         .top_0()
-                        // Right -1 for avoid border overlap with the first tab
+                        // -1 to avoid border overlap with the first tab.
                         .right(-px(1.))
                         .border_r_1()
                         .border_b_1()
@@ -738,7 +713,7 @@ impl TabPanel {
                     return None;
                 }
 
-                // Always not show active tab style, if the panel is collapsed
+                // Never show the active-tab style while collapsed.
                 if self.collapsed {
                     active = false;
                 }
@@ -761,7 +736,6 @@ impl TabPanel {
                             move |view, _, window, cx| {
                                 view.set_active_ix(ix, window, cx);
 
-                                // Open dock if clicked on the collapsed bottom dock
                                 if is_bottom_dock && is_collapsed {
                                     _ = dock_area.update(cx, |dock_area, cx| {
                                         dock_area.toggle_dock(DockPlacement::Bottom, window, cx);
@@ -797,7 +771,7 @@ impl TabPanel {
                 )
             }))
             .last_empty_space(
-                // empty space to allow move to last tab right
+                // Lets a drop land after the last tab.
                 div()
                     .id("tab-bar-empty-space")
                     .h_full()
@@ -911,7 +885,6 @@ impl TabPanel {
             .into_any_element()
     }
 
-    /// Calculate the split direction based on the current mouse position
     fn on_panel_drag_move(
         &mut self,
         drag: &DragMoveEvent<DragPanel>,
@@ -921,7 +894,6 @@ impl TabPanel {
         let bounds = drag.bounds;
         let position = drag.event.position;
 
-        // Check the mouse position to determine the split direction
         if position.x < bounds.left() + bounds.size.width * 0.35 {
             self.will_split_placement = Some(Placement::Left);
         } else if position.x > bounds.left() + bounds.size.width * 0.65 {
@@ -931,15 +903,13 @@ impl TabPanel {
         } else if position.y > bounds.top() + bounds.size.height * 0.65 {
             self.will_split_placement = Some(Placement::Bottom);
         } else {
-            // center to merge into the current tab
+            // Center: merge into the current tab.
             self.will_split_placement = None;
         }
         cx.notify()
     }
 
-    /// Handle the drop event when dragging a panel
-    ///
-    /// - `active` - When true, the panel will be active after the drop
+    /// `active`: whether the panel is active after the drop.
     fn on_drop(
         &mut self,
         drag: &DragPanel,
@@ -951,7 +921,7 @@ impl TabPanel {
         let panel = drag.panel.clone();
         let is_same_tab = drag.tab_panel == cx.entity();
 
-        // If target is same tab, and it is only one panel, do nothing.
+        // Same tab with only one panel: no-op.
         if is_same_tab && ix.is_none() {
             if self.will_split_placement.is_none() {
                 return;
@@ -962,10 +932,7 @@ impl TabPanel {
             }
         }
 
-        // Here is looks like remove_panel on a same item, but it difference.
-        //
-        // We must to split it to remove_panel, unless it will be crash by error:
-        // Cannot update ui::dock::tab_panel::TabPanel while it is already being updated
+        // Looks like remove_panel but isn't: splitting the detach out avoids "Cannot update TabPanel while it is already being updated".
         if is_same_tab {
             self.detach_panel(panel.clone(), window, cx);
         } else {
@@ -975,7 +942,6 @@ impl TabPanel {
             });
         }
 
-        // Insert into new tabs
         if let Some(placement) = self.will_split_placement {
             self.split_panel(panel, placement, None, window, cx);
         } else {
@@ -990,7 +956,6 @@ impl TabPanel {
         cx.emit(PanelEvent::LayoutChanged);
     }
 
-    /// Add panel with split placement
     fn split_panel(
         &self,
         panel: Arc<dyn PanelView>,
@@ -1000,7 +965,6 @@ impl TabPanel {
         cx: &mut Context<Self>,
     ) {
         let dock_area = self.dock_area.clone();
-        // wrap the panel in a TabPanel
         let new_tab_panel = cx.new(|cx| Self::new(None, dock_area.clone(), window, cx));
         new_tab_panel.update(cx, |view, cx| {
             view.add_panel(panel, window, cx);
@@ -1043,13 +1007,10 @@ impl TabPanel {
                 );
             });
         } else {
-            // 1. Create new StackPanel with new axis
-            // 2. Move cx.entity() from parent StackPanel to the new StackPanel
-            // 3. Add the new TabPanel to the new StackPanel at the correct index
-            // 4. Add new StackPanel to the parent StackPanel at the correct index
+            // Create a StackPanel with the new axis, move this entity into it, add the new TabPanel, then reattach to the parent.
             let tab_panel = cx.entity().clone();
 
-            // Try to use the old stack panel, not just create a new one, to avoid too many nested stack panels
+            // Reuse the old stack panel when possible, to avoid too many nested stack panels.
             let new_stack_panel = if stack_panel.read(cx).panels_len() <= 1 {
                 stack_panel.update(cx, |view, cx| {
                     view.remove_all_panels(window, cx);
@@ -1158,8 +1119,7 @@ impl TabPanel {
             self.remove_panel(panel, window, cx);
         }
 
-        // Remove self from the parent DockArea.
-        // This is ensure to remove from Tiles
+        // Ensures removal from Tiles too.
         if self.panels.is_empty() && self.in_tiles {
             let tab_panel = Arc::new(cx.entity());
             window.defer(cx, {
@@ -1173,7 +1133,6 @@ impl TabPanel {
         }
     }
 
-    // Bind actions to the tab panel, only when the tab panel is not collapsed.
     fn bind_actions(&self, cx: &mut Context<Self>) -> Div {
         v_flex().when(!self.collapsed, |this| {
             this.on_action(cx.listener(Self::on_action_toggle_zoom))

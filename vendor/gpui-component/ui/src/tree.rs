@@ -25,13 +25,6 @@ pub(crate) fn init(cx: &mut App) {
     ]);
 }
 
-/// Create a [`Tree`].
-///
-/// # Arguments
-///
-/// * `state` - The shared state managing the tree items.
-/// * `render_item` - A closure to render each tree item.
-///
 /// ```ignore
 /// let state = cx.new(|_| {
 ///     TreeState::new().items(vec![
@@ -59,7 +52,6 @@ struct TreeItemState {
     disabled: bool,
 }
 
-/// A tree item with a label, children, and an expanded state.
 #[derive(Clone)]
 pub struct TreeItem {
     pub id: SharedString,
@@ -68,7 +60,6 @@ pub struct TreeItem {
     state: Rc<RefCell<TreeItemState>>,
 }
 
-/// A flat representation of a tree item with its depth.
 #[derive(Clone)]
 pub struct TreeEntry {
     item: TreeItem,
@@ -76,13 +67,11 @@ pub struct TreeEntry {
 }
 
 impl TreeEntry {
-    /// Get the source tree item.
     #[inline]
     pub fn item(&self) -> &TreeItem {
         &self.item
     }
 
-    /// The depth of this item in the tree.
     #[inline]
     pub fn depth(&self) -> usize {
         self.depth
@@ -93,13 +82,11 @@ impl TreeEntry {
         self.depth == 0
     }
 
-    /// Whether this item is a folder (has children).
     #[inline]
     pub fn is_folder(&self) -> bool {
         self.item.is_folder()
     }
 
-    /// Return true if the item is expanded.
     #[inline]
     pub fn is_expanded(&self) -> bool {
         self.item.is_expanded()
@@ -111,23 +98,14 @@ impl TreeEntry {
     }
 }
 
-/// Event emitted by [`TreeState`] when user-visible state changes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TreeEvent {
-    /// A tree node was expanded.
     Expanded(SharedString),
-    /// A tree node was collapsed.
     Collapsed(SharedString),
 }
 
 impl TreeItem {
-    /// Create a new tree item with the given label.
-    ///
-    /// - The `id` for you to uniquely identify this item, then later you can use it for selection or other purposes.
-    /// - The `label` is the text to display for this item.
-    ///
-    /// For example, the `id` is the full file path, and the `label` is the file name.
-    ///
+    /// `id` uniquely identifies the item (e.g. a full file path); `label` is display text (e.g. the file name).
     /// ```ignore
     /// TreeItem::new("src/ui/button.rs", "button.rs")
     /// ```
@@ -143,42 +121,35 @@ impl TreeItem {
         }
     }
 
-    /// Add a child item to this tree item.
     pub fn child(mut self, child: TreeItem) -> Self {
         self.children.push(child);
         self
     }
 
-    /// Add multiple child items to this tree item.
     pub fn children(mut self, children: impl IntoIterator<Item = TreeItem>) -> Self {
         self.children.extend(children);
         self
     }
 
-    /// Set expanded state for this tree item.
     pub fn expanded(self, expanded: bool) -> Self {
         self.state.borrow_mut().expanded = expanded;
         self
     }
 
-    /// Set disabled state for this tree item.
     pub fn disabled(self, disabled: bool) -> Self {
         self.state.borrow_mut().disabled = disabled;
         self
     }
 
-    /// Whether this item is a folder (has children).
     #[inline]
     pub fn is_folder(&self) -> bool {
         self.children.len() > 0
     }
 
-    /// Return true if the item is disabled.
     pub fn is_disabled(&self) -> bool {
         self.state.borrow().disabled
     }
 
-    /// Return true if the item is expanded.
     #[inline]
     pub fn is_expanded(&self) -> bool {
         self.state.borrow().expanded
@@ -200,7 +171,6 @@ impl TreeItem {
     }
 }
 
-/// State for managing tree items.
 pub struct TreeState {
     focus_handle: FocusHandle,
     entries: Vec<TreeEntry>,
@@ -216,7 +186,6 @@ pub struct TreeState {
 impl EventEmitter<TreeEvent> for TreeState {}
 
 impl TreeState {
-    /// Create a new empty tree state.
     pub fn new(cx: &mut App) -> Self {
         Self {
             selected_ix: None,
@@ -229,7 +198,6 @@ impl TreeState {
         }
     }
 
-    /// Set the tree items.
     pub fn items(mut self, items: impl Into<Vec<TreeItem>>) -> Self {
         let items = items.into();
         self.entries.clear();
@@ -239,7 +207,6 @@ impl TreeState {
         self
     }
 
-    /// Set the tree items.
     pub fn set_items(&mut self, items: impl Into<Vec<TreeItem>>, cx: &mut Context<Self>) {
         let items = items.into();
         self.entries.clear();
@@ -251,18 +218,15 @@ impl TreeState {
         cx.notify();
     }
 
-    /// Get the currently selected index, if any.
     pub fn selected_index(&self) -> Option<usize> {
         self.selected_ix
     }
 
-    /// Set the selected index, or `None` to clear selection.
     pub fn set_selected_index(&mut self, ix: Option<usize>, cx: &mut Context<Self>) {
         self.selected_ix = ix;
         cx.notify();
     }
 
-    /// Set the selected index by tree item, or `None` to clear selection.
     pub fn set_selected_item(&mut self, item: Option<&TreeItem>, cx: &mut Context<Self>) {
         if let Some(item) = item {
             let ix = self
@@ -284,7 +248,6 @@ impl TreeState {
         cx.notify();
     }
 
-    /// Get the currently selected tree item, if any.
     pub fn selected_item(&self) -> Option<&TreeItem> {
         self.selected_ix
             .and_then(|ix| self.entries.get(ix).map(|entry| &entry.item))
@@ -294,13 +257,11 @@ impl TreeState {
         self.scroll_handle.scroll_to_item(ix, strategy);
     }
 
-    /// Find the flat index of the entry whose `item.id` matches, if present.
     pub(crate) fn index_of(&self, id: &SharedString) -> Option<usize> {
         self.entries.iter().position(|e| &e.item.id == id)
     }
 
-    /// Expand all ancestors of the node with `id` and scroll it into view.
-    /// No-op if `id` is not found. Does not change the selected index.
+    /// No-op if `id` is not found; does not change the selected index.
     pub fn reveal_item(
         &mut self,
         id: &SharedString,
@@ -313,7 +274,6 @@ impl TreeState {
         }
     }
 
-    /// Get the currently selected entry, if any.
     pub fn selected_entry(&self) -> Option<&TreeEntry> {
         self.selected_ix.and_then(|ix| self.entries.get(ix))
     }
@@ -549,7 +509,6 @@ impl Render for TreeState {
     }
 }
 
-/// A tree view element that displays hierarchical data.
 #[derive(IntoElement)]
 pub struct Tree {
     id: ElementId,
@@ -577,12 +536,7 @@ impl Tree {
         }
     }
 
-    /// Add a context menu to the tree.
-    ///
-    /// The closure receives:
-    /// - `ix`: the index of the right-clicked entry
-    /// - `entry`: the right-clicked tree entry
-    /// - `menu`: the popup menu builder
+    /// Closure receives the right-clicked entry's index, the entry, and the popup menu builder.
     pub fn context_menu<F>(mut self, f: F) -> Self
     where
         F: Fn(usize, &TreeEntry, PopupMenu, &mut Window, &mut Context<TreeState>) -> PopupMenu
@@ -822,7 +776,7 @@ mod tests {
         let state = cx.new(|cx| TreeState::new(cx).items(items));
         let collector = cx.new(|cx| TestCollector::new(&state, cx));
 
-        // Toggle the child at index 1 ("src/ui"), event payload should be the id not the index.
+        // Payload should be the id, not the index.
         state.update(cx, |state, cx| {
             state.toggle_expand(1, cx);
         });

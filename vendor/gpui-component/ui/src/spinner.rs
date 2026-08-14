@@ -5,7 +5,6 @@ use gpui::{
 };
 use instant::Duration;
 
-/// A cycling loading spinner.
 #[derive(IntoElement)]
 pub struct Spinner {
     size: Size,
@@ -16,7 +15,6 @@ pub struct Spinner {
 }
 
 impl Spinner {
-    /// Create a new loading spinner.
     pub fn new() -> Self {
         Self {
             size: Size::Medium,
@@ -27,23 +25,17 @@ impl Spinner {
         }
     }
 
-    /// Set specified icon for the spinner.
-    ///
-    /// Default is [`IconName::Loader`].
-    ///
-    /// Please ensure the icon used is suitable for a loading spinner.
+    /// Default [`IconName::Loader`]; ensure the icon is suitable for a spinner.
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.icon = icon.into();
         self
     }
 
-    /// Set the icon color.
     pub fn color(mut self, color: Hsla) -> Self {
         self.color = Some(color);
         self
     }
 
-    /// Set the easing function.
     pub fn ease(mut self, easing: impl Fn(f32) -> f32 + 'static) -> Self {
         self.easing = Box::new(easing);
         self

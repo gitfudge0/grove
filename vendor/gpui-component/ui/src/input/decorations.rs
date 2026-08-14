@@ -6,10 +6,7 @@ use sum_tree::Bias;
 
 use super::{InputState, RopeExt as _};
 
-/// A presentation style applied to a UTF-8 byte range in an input.
-///
-/// This is the GPUI [`HighlightStyle`] counterpart of Monaco's
-/// [`IModelDeltaDecoration`](https://microsoft.github.io/monaco-editor/typedoc/interfaces/editor_editor_api.editor.IModelDeltaDecoration.html).
+/// GPUI counterpart of Monaco's `IModelDeltaDecoration`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextDecoration {
     pub range: Range<usize>,
@@ -17,7 +14,6 @@ pub struct TextDecoration {
 }
 
 impl TextDecoration {
-    /// Create a text decoration from a UTF-8 byte range and a GPUI style.
     pub fn new(range: Range<usize>, style: HighlightStyle) -> Self {
         Self { range, style }
     }
@@ -26,10 +22,7 @@ impl TextDecoration {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct TextDecorationCollectionId(usize);
 
-/// An independently managed collection of [`TextDecoration`]s.
-///
-/// This is the GPUI Component counterpart of Monaco's
-/// [`IEditorDecorationsCollection`](https://microsoft.github.io/monaco-editor/typedoc/interfaces/editor_editor_api.editor.IEditorDecorationsCollection.html).
+/// GPUI Component counterpart of Monaco's `IEditorDecorationsCollection`.
 #[derive(Clone, Debug)]
 pub struct TextDecorationCollection {
     state: WeakEntity<InputState>,
@@ -37,10 +30,7 @@ pub struct TextDecorationCollection {
 }
 
 impl TextDecorationCollection {
-    /// Replace all decorations in this collection.
-    ///
-    /// This corresponds to Monaco's
-    /// [`IEditorDecorationsCollection.set`](https://microsoft.github.io/monaco-editor/typedoc/interfaces/editor_editor_api.editor.IEditorDecorationsCollection.html#set).
+    /// Monaco's `IEditorDecorationsCollection.set`.
     pub fn set(&self, decorations: Vec<TextDecoration>, cx: &mut App) {
         let _ = self.state.update(cx, |state, cx| {
             let decorations = normalize(&state.text, decorations);
@@ -50,10 +40,7 @@ impl TextDecorationCollection {
         });
     }
 
-    /// Add decorations to this collection.
-    ///
-    /// This corresponds to Monaco's
-    /// [`IEditorDecorationsCollection.append`](https://microsoft.github.io/monaco-editor/typedoc/interfaces/editor_editor_api.editor.IEditorDecorationsCollection.html#append).
+    /// Monaco's `IEditorDecorationsCollection.append`.
     pub fn append(&self, decorations: Vec<TextDecoration>, cx: &mut App) {
         let _ = self.state.update(cx, |state, cx| {
             let decorations = normalize(&state.text, decorations);
@@ -63,18 +50,12 @@ impl TextDecorationCollection {
         });
     }
 
-    /// Remove all decorations from this collection.
-    ///
-    /// This corresponds to Monaco's
-    /// [`IEditorDecorationsCollection.clear`](https://microsoft.github.io/monaco-editor/typedoc/interfaces/editor_editor_api.editor.IEditorDecorationsCollection.html#clear).
+    /// Monaco's `IEditorDecorationsCollection.clear`.
     pub fn clear(&self, cx: &mut App) {
         self.set(Vec::new(), cx);
     }
 
-    /// Return the UTF-8 byte ranges in this collection.
-    ///
-    /// This corresponds to Monaco's
-    /// [`IEditorDecorationsCollection.getRanges`](https://microsoft.github.io/monaco-editor/typedoc/interfaces/editor_editor_api.editor.IEditorDecorationsCollection.html#getRanges).
+    /// Monaco's `IEditorDecorationsCollection.getRanges`.
     pub fn get_ranges(&self, cx: &App) -> Vec<Range<usize>> {
         self.state
             .read_with(cx, |state, _| {
@@ -217,22 +198,7 @@ fn normalize(text: &Rope, decorations: Vec<TextDecoration>) -> Vec<TextDecoratio
 }
 
 impl InputState {
-    /// Create an independently managed collection of text decorations.
-    ///
-    /// This follows Monaco's
-    /// [`createDecorationsCollection`](https://microsoft.github.io/monaco-editor/typedoc/interfaces/editor_editor_api.editor.ICodeEditor.html#createDecorationsCollection)
-    /// ownership model. Ranges use UTF-8 byte offsets into [`Self::value`].
-    ///
-    /// Decoration ranges follow text edits and do not need to be set again
-    /// after each change. Insertions at a range boundary do not expand the
-    /// range, matching Monaco's
-    /// [`NeverGrowsWhenTypingAtEdges`](https://microsoft.github.io/monaco-editor/typedoc/enums/editor_editor_api.editor.TrackedRangeStickiness.html#NeverGrowsWhenTypingAtEdges)
-    /// behavior. Decorations are not rendered while the input is masked.
-    /// Collections live until their [`InputState`] is dropped.
-    ///
-    /// Collections are layered in insertion order; the first collection wins
-    /// when overlapping decorations set the same [`HighlightStyle`] property.
-    /// Callers should avoid conflicting overlaps within one collection.
+    /// Follows Monaco's `createDecorationsCollection` model; ranges auto-follow edits (boundary inserts don't grow the range). First collection wins on overlap.
     pub fn create_decorations_collection(
         &mut self,
         decorations: Vec<TextDecoration>,

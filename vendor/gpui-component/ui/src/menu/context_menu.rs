@@ -9,12 +9,8 @@ use gpui::{
 
 use crate::menu::PopupMenu;
 
-/// A extension trait for adding a context menu to an element.
 pub trait ContextMenuExt: InteractiveElement + ParentElement + Styled {
-    /// Add a context menu to the element.
-    ///
-    /// This will changed the element to be `relative` positioned, and add a child `ContextMenu` element.
-    /// Because the `ContextMenu` element is positioned `absolute`, it will not affect the layout of the parent element.
+    /// Makes the element `relative` and adds a child `ContextMenu`; the menu is `absolute`, so it doesn't affect the parent's layout.
     #[track_caller]
     fn context_menu(
         mut self,
@@ -23,8 +19,7 @@ pub trait ContextMenuExt: InteractiveElement + ParentElement + Styled {
     where
         Self: Sized,
     {
-        // The ID must be stable across renders, otherwise the element state
-        // (open menu) is lost on every re-render.
+        // Must be stable across renders, or the open-menu state is lost on every re-render.
         let caller = std::panic::Location::caller();
         let id = self
             .interactivity()
@@ -38,18 +33,16 @@ pub trait ContextMenuExt: InteractiveElement + ParentElement + Styled {
 
 impl<E: InteractiveElement + ParentElement + Styled> ContextMenuExt for E {}
 
-/// A context menu that can be shown on right-click.
 pub struct ContextMenu<E: ParentElement + Styled + Sized> {
     id: ElementId,
     element: Option<E>,
     menu: Option<Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>>,
-    // This is not in use, just for style refinement forwarding.
+    /// Unused; only exists for style-refinement forwarding.
     _ignore_style: StyleRefinement,
     anchor: Anchor,
 }
 
 impl<E: ParentElement + Styled> ContextMenu<E> {
-    /// Create a new context menu with the given ID.
     pub fn new(id: impl Into<ElementId>, element: E) -> Self {
         Self {
             id: id.into(),
@@ -60,7 +53,6 @@ impl<E: ParentElement + Styled> ContextMenu<E> {
         }
     }
 
-    /// Build the context menu using the given builder function.
     #[must_use]
     fn menu<F>(mut self, builder: F) -> Self
     where
@@ -194,7 +186,6 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                                                 .snap_to_window_with_margin(px(8.))
                                                 .anchor(anchor)
                                                 .when_some(menu_view, |this, menu| {
-                                                    // Focus the menu, so that can be handle the action.
                                                     if !menu
                                                         .focus_handle(cx)
                                                         .contains_focused(window, cx)
@@ -262,7 +253,7 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
             element.paint(window, cx);
         }
 
-        // Take the builder before setting up element state to avoid borrow issues
+        // Taken before element state setup to avoid borrow issues.
         let builder = self.menu.clone();
 
         self.with_element_state(
@@ -273,14 +264,12 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                 let shared_state = state.shared_state.clone();
 
                 let hitbox = hitbox.clone();
-                // When right mouse click, to build content menu, and show it at the mouse position.
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                     if phase.bubble()
                         && event.button == MouseButton::Right
                         && hitbox.is_hovered(window)
                     {
-                        // Capture the focused element to restore focus to on dismiss.
-                        // If focus is still on the previous menu, keep its captured focus.
+                        // Capture focus to restore on dismiss; if focus is still on the previous menu, keep its captured focus instead.
                         let previous_focus_handle = window.focused(cx).and_then(|focused| {
                             let shared_state = shared_state.borrow();
                             match shared_state.menu_view.as_ref() {
@@ -293,15 +282,14 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
 
                         {
                             let mut shared_state = shared_state.borrow_mut();
-                            // Clear any existing menu view to allow immediate replacement
-                            // Set the new position and open the menu
+                            // Clear any existing menu view for immediate replacement.
                             shared_state.menu_view = None;
                             shared_state._subscription = None;
                             shared_state.position = event.position;
                             shared_state.open = true;
                         }
 
-                        // Use defer to build the menu in the next frame, avoiding race conditions
+                        // Deferred to the next frame to avoid race conditions.
                         window.defer(cx, {
                             let shared_state = shared_state.clone();
                             let builder = builder.clone();
@@ -316,7 +304,6 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                                     menu.set_previous_focus(previous_focus_handle, cx);
                                 });
 
-                                // Set up the subscription for dismiss handling
                                 let _subscription = window.subscribe(&menu, cx, {
                                     let shared_state = shared_state.clone();
                                     move |_, _: &DismissEvent, window, _cx| {
@@ -325,7 +312,6 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                                     }
                                 });
 
-                                // Update the shared state with the built menu and subscription
                                 {
                                     let mut state = shared_state.borrow_mut();
                                     state.menu_view = Some(menu.clone());
@@ -353,9 +339,7 @@ mod tests {
 
     actions!(context_menu_test, [RemoveTab]);
 
-    /// The regression shape: the action handler lives on the trigger's
-    /// ancestor (like an action bar), which is NOT on the focus path while
-    /// focus is in the content area.
+    /// Regression shape: the action handler lives on the trigger's ancestor (an action bar), which is NOT on the focus path while focus is in the content area.
     struct TestRoot {
         content_focus: FocusHandle,
         received: Rc<Cell<bool>>,
@@ -413,7 +397,6 @@ mod tests {
             _ = window.draw(cx);
         });
 
-        // Right-click inside the tab to open the context menu.
         cx.simulate_event(MouseDownEvent {
             button: MouseButton::Right,
             position: point(px(50.), px(70.)),
@@ -421,23 +404,18 @@ mod tests {
             click_count: 1,
             first_mouse: false,
         });
-        // The menu entity is built in a deferred callback, then rendered
-        // (which also focuses it) on the next draw.
+        // Menu entity builds in a deferred callback, then renders (and focuses) on the next draw.
         cx.run_until_parked();
         cx.update(|window, cx| {
             _ = window.draw(cx);
         });
 
-        // Select "Close" and confirm. Keyboard confirm and mouse click share
-        // the same `confirm` path in `PopupMenu`.
+        // Keyboard confirm and mouse click share the same `confirm` path in `PopupMenu`.
         cx.simulate_keystrokes("down enter");
         cx.run_until_parked();
 
-        // The action must reach the handler on the trigger's ancestor chain,
-        // even though the action bar was never on the focus path.
         assert!(received.get());
-        // And dismiss must restore focus to where it was before the menu
-        // opened, keeping the dangling-focus fix (#2614).
+        // Dismiss must restore focus to before the menu opened (dangling-focus fix #2614).
         cx.update(|window, cx| {
             assert_eq!(window.focused(cx).as_ref(), Some(&content_focus));
         });
