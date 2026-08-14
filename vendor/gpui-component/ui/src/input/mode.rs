@@ -22,24 +22,20 @@ pub(super) struct PendingBackgroundParse {
 
 #[derive(Clone)]
 pub(crate) enum InputMode {
-    /// A plain text input mode.
     PlainText {
         multi_line: bool,
         tab: TabSize,
         rows: usize,
     },
-    /// An auto grow input mode.
     AutoGrow {
         rows: usize,
         min_rows: usize,
         max_rows: usize,
     },
-    /// A code editor input mode.
     CodeEditor {
         multi_line: bool,
         tab: TabSize,
         rows: usize,
-        /// Show line number
         line_number: bool,
         language: SharedString,
         indent_guides: bool,
@@ -58,7 +54,6 @@ impl Default for InputMode {
 
 #[allow(unused)]
 impl InputMode {
-    /// Create a plain input mode with default settings.
     pub(super) fn plain_text() -> Self {
         InputMode::PlainText {
             multi_line: false,
@@ -67,7 +62,6 @@ impl InputMode {
         }
     }
 
-    /// Create a code editor input mode with default settings.
     pub(super) fn code_editor(language: impl Into<SharedString>) -> Self {
         InputMode::CodeEditor {
             rows: 2,
@@ -83,7 +77,6 @@ impl InputMode {
         }
     }
 
-    /// Create an auto grow input mode with given min and max rows.
     pub(super) fn auto_grow(min_rows: usize, max_rows: usize) -> Self {
         InputMode::AutoGrow {
             rows: min_rows,
@@ -111,7 +104,6 @@ impl InputMode {
         matches!(self, InputMode::CodeEditor { .. })
     }
 
-    /// Return true if the mode is code editor and `folding: true`, `multi_line: true`.
     #[inline]
     pub(crate) fn is_folding(&self) -> bool {
         if cfg!(target_family = "wasm") {
@@ -169,7 +161,6 @@ impl InputMode {
         self.set_rows(wrapped_lines);
     }
 
-    /// At least 1 row be return.
     pub(super) fn rows(&self) -> usize {
         if !self.is_multi_line() {
             return 1;
@@ -183,7 +174,6 @@ impl InputMode {
         .max(1)
     }
 
-    /// At least 1 row be return.
     #[allow(unused)]
     pub(super) fn min_rows(&self) -> usize {
         match self {
@@ -205,7 +195,6 @@ impl InputMode {
         }
     }
 
-    /// Return false if the mode is not [`InputMode::CodeEditor`].
     #[inline]
     pub(super) fn line_number(&self) -> bool {
         match self {
@@ -218,11 +207,7 @@ impl InputMode {
         }
     }
 
-    /// Update the syntax highlighter with new text.
-    ///
-    /// Returns `Some(PendingBackgroundParse)` when the synchronous parse
-    /// timed out and the caller should dispatch a background parse.
-    /// Returns `None` when parsing completed (or no highlighter is active).
+    /// `Some(PendingBackgroundParse)` when the sync parse timed out and the caller should dispatch a background one.
     pub(super) fn update_highlighter(
         &mut self,
         selected_range: &Range<usize>,
@@ -246,7 +231,6 @@ impl InputMode {
 
                 let mut highlighter_ref = highlighter.borrow_mut();
                 if highlighter_ref.is_none() {
-                    // Do not create a highlighter if the language has no grammar.
                     let has_grammar = LanguageRegistry::singleton()
                         .language(language)
                         .is_some_and(|config| config.has_grammar());
@@ -265,7 +249,7 @@ impl InputMode {
                 let edit = replacement_input_edit(old_text, new_text, selected_range, change_text);
 
                 const SYNC_PARSE_TIMEOUT: Duration = Duration::from_millis(2);
-                // Skip parsing in the foreground above this threshold
+                // Skip foreground parsing above this size.
                 const SYNC_PARSE_MAX_BYTES: usize = 256 * 1024;
                 let completed = if new_text.len() > SYNC_PARSE_MAX_BYTES {
                     h.edit_tree(Some(edit), new_text);
@@ -274,11 +258,9 @@ impl InputMode {
                     h.update(Some(edit), new_text, Some(SYNC_PARSE_TIMEOUT))
                 };
                 if completed {
-                    // Sync parse succeeded, cancel any pending background parse.
                     parse_task.borrow_mut().take();
                     None
                 } else {
-                    // Timed out. Return the data needed for background parsing.
                     let pending = PendingBackgroundParse {
                         language: h.language().clone(),
                         text: new_text.clone(),
@@ -309,7 +291,6 @@ impl InputMode {
         }
     }
 
-    /// Get a reference to the highlighter (if available)
     pub(super) fn highlighter(&self) -> Option<&Rc<RefCell<Option<SyntaxHighlighter>>>> {
         match self {
             InputMode::CodeEditor { highlighter, .. } => Some(highlighter),
@@ -318,10 +299,7 @@ impl InputMode {
     }
 }
 
-/// Builds the tree-sitter edit for a text replacement.
-///
-/// Byte offsets and positions for `start`/`old_end` come from `old_text`;
-/// `new_end` byte/position come from the post-edit `text`.
+/// `start`/`old_end` come from `old_text`; `new_end` comes from the post-edit `text`.
 fn replacement_input_edit(
     old_text: &Rope,
     new_text: &Rope,

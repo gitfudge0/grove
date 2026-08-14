@@ -9,7 +9,6 @@ use gpui::{
 };
 use std::{rc::Rc, time::Duration};
 
-/// A Switch element that can be toggled on or off.
 #[derive(IntoElement)]
 pub struct Switch {
     id: ElementId,
@@ -25,7 +24,6 @@ pub struct Switch {
 }
 
 impl Switch {
-    /// Create a new Switch element.
     pub fn new(id: impl Into<ElementId>) -> Self {
         let id: ElementId = id.into();
         Self {
@@ -42,19 +40,16 @@ impl Switch {
         }
     }
 
-    /// Set the checked state of the switch.
     pub fn checked(mut self, checked: bool) -> Self {
         self.checked = checked;
         self
     }
 
-    /// Set the label of the switch.
     pub fn label(mut self, label: impl Into<Text>) -> Self {
         self.label = Some(label.into());
         self
     }
 
-    /// Add a click handler for the switch.
     pub fn on_click<F>(mut self, handler: F) -> Self
     where
         F: Fn(&bool, &mut Window, &mut App) + 'static,
@@ -63,14 +58,12 @@ impl Switch {
         self
     }
 
-    /// Set the background color of the switch when checked.
     /// Defaults to `cx.theme().primary`.
     pub fn color(mut self, color: impl Into<Hsla>) -> Self {
         self.color = Some(color.into());
         self
     }
 
-    /// Set tooltip text for the switch.
     pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
         self.tooltip.text = Some((tooltip.into(), None));
         self
@@ -146,7 +139,6 @@ impl RenderOnce for Switch {
                 .items_start()
                 .when(self.label_side.is_left(), |this| this.flex_row_reverse())
                 .child(
-                    // Switch Bar
                     div()
                         .id(self.id.clone())
                         .w(bg_width)
@@ -159,7 +151,6 @@ impl RenderOnce for Switch {
                         .bg(bg)
                         .map(|this| self.tooltip.apply(this))
                         .child(
-                            // Switch Toggle
                             div()
                                 .rounded(radius)
                                 .bg(toggle_bg)

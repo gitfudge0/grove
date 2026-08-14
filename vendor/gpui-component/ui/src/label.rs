@@ -9,7 +9,6 @@ use crate::{ActiveTheme, StyledExt};
 
 const MASKED: &'static str = "•";
 
-/// Represents the type of match for highlighting text in a label.
 #[derive(Clone)]
 pub enum HighlightsMatch {
     Prefix(SharedString),
@@ -48,7 +47,6 @@ impl From<SharedString> for HighlightsMatch {
     }
 }
 
-/// A text label element with optional secondary text, masking, and highlighting capabilities.
 #[derive(IntoElement)]
 pub struct Label {
     style: StyleRefinement,
@@ -59,7 +57,6 @@ pub struct Label {
 }
 
 impl Label {
-    /// Create a new label with the main label.
     pub fn new(label: impl Into<SharedString>) -> Self {
         let label: SharedString = label.into();
         Self {
@@ -71,20 +68,17 @@ impl Label {
         }
     }
 
-    /// Set the secondary text for the label,
-    /// the secondary text will be displayed after the label text with `muted` color.
+    /// Displayed after the label text with `muted` color.
     pub fn secondary(mut self, secondary: impl Into<SharedString>) -> Self {
         self.secondary = Some(secondary.into());
         self
     }
 
-    /// Set whether to mask the label text.
     pub fn masked(mut self, masked: bool) -> Self {
         self.masked = masked;
         self
     }
 
-    /// Set for matching text to highlight in the label.
     pub fn highlights(mut self, text: impl Into<HighlightsMatch>) -> Self {
         self.highlights_text = Some(text.into());
         self
@@ -113,12 +107,10 @@ impl Label {
                 let full_text_lower = full_text.to_lowercase();
 
                 if matched.is_prefix() {
-                    // For prefix matching, only check if the text starts with the search term
                     if full_text_lower.starts_with(&search_lower) {
                         ranges.push(0..matched_str.len());
                     }
                 } else {
-                    // For full matching, find all occurrences
                     let mut search_start = 0;
                     while let Some(pos) = full_text_lower[search_start..].find(&search_lower) {
                         let match_start = search_start + pos;

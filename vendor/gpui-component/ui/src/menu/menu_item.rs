@@ -20,7 +20,6 @@ pub(crate) struct MenuItemElement {
 }
 
 impl MenuItemElement {
-    /// Create a new MenuItem with the given ID and group name.
     pub(crate) fn new(id: impl Into<ElementId>, group_name: impl Into<SharedString>) -> Self {
         let id: ElementId = id.into();
         Self {
@@ -36,25 +35,21 @@ impl MenuItemElement {
         }
     }
 
-    /// Set ListItem as the selected item style.
     pub(crate) fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
         self
     }
 
-    /// Set the accessible label for the menu item.
     pub(crate) fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
         self.aria_label = Some(label.into());
         self
     }
 
-    /// Set the disabled state of the MenuItem.
     pub(crate) fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
-    /// Set a handler for when the MenuItem is clicked.
     pub(crate) fn on_click(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -63,7 +58,6 @@ impl MenuItemElement {
         self
     }
 
-    /// Set a handler for when the mouse enters the MenuItem.
     #[allow(unused)]
     pub fn on_hover(mut self, handler: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
         self.on_hover = Some(Box::new(handler));

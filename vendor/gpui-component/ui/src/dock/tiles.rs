@@ -218,7 +218,6 @@ impl Tiles {
         items.into_iter().map(|(_, item)| item).collect()
     }
 
-    /// Return the index of the panel.
     #[inline]
     pub(crate) fn index_of(&self, id: &EntityId) -> Option<usize> {
         self.panels.iter().position(|p| &p.id == id)
@@ -229,7 +228,6 @@ impl Tiles {
         self.panels.iter().find(|p| &p.id == id)
     }
 
-    /// Remove panel from the children.
     pub fn remove(&mut self, panel: Arc<dyn PanelView>, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(ix) = self.index_of(&panel.panel_id(cx)) {
             self.panels.remove(ix);
@@ -238,14 +236,12 @@ impl Tiles {
         }
     }
 
-    /// Calculate magnetic snap position for the dragging panel
     fn calculate_magnetic_snap(
         &self,
         dragging_bounds: Bounds<Pixels>,
         item_ix: usize,
         snap_threshold: Pixels,
     ) -> (Option<Pixels>, Option<Pixels>) {
-        // Only check nearby panels
         let search_bounds = Bounds {
             origin: Point {
                 x: dragging_bounds.left() - snap_threshold,
@@ -262,7 +258,6 @@ impl Tiles {
         let mut min_x_dist = snap_threshold;
         let mut min_y_dist = snap_threshold;
 
-        // Pre-calculate dragging bounds edges to avoid repeated method calls
         let drag_left = dragging_bounds.left();
         let drag_right = dragging_bounds.right();
         let drag_top = dragging_bounds.top();
@@ -270,24 +265,20 @@ impl Tiles {
         let drag_width = dragging_bounds.size.width;
         let drag_height = dragging_bounds.size.height;
 
-        // Check for edge snapping first (top and left boundaries)
         let edge_snap_pos = px(0.);
 
-        // Snap to top edge
         let top_dist = drag_top.abs();
         if top_dist < snap_threshold {
             snap_y = Some(edge_snap_pos);
             min_y_dist = top_dist;
         }
 
-        // Snap to left edge
         let left_dist = drag_left.abs();
         if left_dist < snap_threshold {
             snap_x = Some(edge_snap_pos);
             min_x_dist = left_dist;
         }
 
-        // If both edges are snapped, return early
         if snap_x.is_some() && snap_y.is_some() {
             return (snap_x, snap_y);
         }
@@ -297,13 +288,11 @@ impl Tiles {
                 continue;
             }
 
-            // Pre-calculate other bounds edges
             let other_left = other.bounds.left();
             let other_right = other.bounds.right();
             let other_top = other.bounds.top();
             let other_bottom = other.bounds.bottom();
 
-            // Skip panels that are far away
             if other_right < search_bounds.left()
                 || other_left > search_bounds.right()
                 || other_bottom < search_bounds.top()
@@ -312,7 +301,6 @@ impl Tiles {
                 continue;
             }
 
-            // Horizontal snapping (X axis) - find closest snap point
             if snap_x.is_none() {
                 let candidates = [
                     ((drag_left - other_left).abs(), other_left),
@@ -329,7 +317,6 @@ impl Tiles {
                 }
             }
 
-            // Vertical snapping (Y axis) - find closest snap point
             if snap_y.is_none() {
                 let candidates = [
                     ((drag_top - other_top).abs(), other_top),
@@ -349,7 +336,6 @@ impl Tiles {
                 }
             }
 
-            // Early exit if both axes are snapped
             if snap_x.is_some() && snap_y.is_some() {
                 break;
             }
@@ -358,14 +344,12 @@ impl Tiles {
         (snap_x, snap_y)
     }
 
-    /// Apply boundary constraints to the panel origin
     fn apply_boundary_constraints(&self, mut origin: Point<Pixels>) -> Point<Pixels> {
-        // Top boundary
         if origin.y < px(0.) {
             origin.y = px(0.);
         }
 
-        // Left boundary (allow partial off-screen but keep 64px visible)
+        // Allow partial off-screen but keep 64px visible.
         let min_left = -self.dragging_initial_bounds.size.width + px(64.);
         if origin.x < min_left {
             origin.x = min_left;
@@ -388,7 +372,6 @@ impl Tiles {
         let delta = adjusted_position - self.dragging_initial_mouse;
         let mut new_origin = self.dragging_initial_bounds.origin + delta;
 
-        // Apply magnetic snap before boundary checks
         let snap_threshold = cx.theme().tile_grid_size;
         let dragging_bounds = Bounds {
             origin: new_origin,
@@ -398,7 +381,6 @@ impl Tiles {
         let (snap_x, snap_y) =
             self.calculate_magnetic_snap(dragging_bounds, item_ix, snap_threshold);
 
-        // Apply snapping
         if let Some(x) = snap_x {
             new_origin.x = x;
         }
@@ -406,10 +388,9 @@ impl Tiles {
             new_origin.y = y;
         }
 
-        // Apply boundary constraints after snapping
         new_origin = self.apply_boundary_constraints(new_origin);
 
-        // Update position without grid rounding (smooth dragging)
+        // No grid rounding here for smooth dragging.
         if new_origin != previous_bounds.origin {
             self.panels[item_ix].bounds.origin = new_origin;
             let item = &self.panels[item_ix];
@@ -444,7 +425,7 @@ impl Tiles {
         };
 
         let grid_size = cx.theme().tile_grid_size;
-        // Neighbor bounds drive magnetic edge snapping (exclude the resizing panel).
+        // Drives magnetic edge snapping; excludes the resizing panel itself.
         let other_bounds: Vec<Bounds<Pixels>> = self
             .panels
             .iter()
@@ -467,7 +448,6 @@ impl Tiles {
             grid_size,
         );
 
-        // Only push to history if the geometry actually changed.
         if new_bounds.origin.x != previous_bounds.origin.x
             || new_bounds.origin.y != previous_bounds.origin.y
             || new_bounds.size.width != previous_bounds.size.width
@@ -475,7 +455,6 @@ impl Tiles {
         {
             item.bounds = new_bounds;
 
-            // Only push if not during history operations
             if !self.history.ignore {
                 self.history.push(TileChange {
                     tile_id: item.panel.view().entity_id(),
@@ -512,7 +491,6 @@ impl Tiles {
             let dock_area = dock_area.clone();
 
             move |window, cx| {
-                // Subscribe to the panel's layout change event.
                 _ = dock_area.update(cx, |this, cx| {
                     if let Ok(tab_panel) = panel.view().downcast::<TabPanel>() {
                         this.subscribe_panel(&tab_panel, window, cx);
@@ -531,7 +509,6 @@ impl Tiles {
         self.resizing_id = None;
     }
 
-    /// Bring the panel of target_index to front, returns (old_index, new_index) if successful
     fn bring_to_front(
         &mut self,
         target_id: Option<EntityId>,
@@ -561,7 +538,6 @@ impl Tiles {
         None
     }
 
-    /// Handle the undo action
     pub fn undo(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.history.ignore = true;
 
@@ -588,7 +564,6 @@ impl Tiles {
         cx.notify();
     }
 
-    /// Handle the redo action
     pub fn redo(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.history.ignore = true;
 
@@ -615,7 +590,6 @@ impl Tiles {
         cx.notify();
     }
 
-    /// Returns the active panel, if any.
     pub fn active_panel(&self, cx: &App) -> Option<Arc<dyn PanelView>> {
         self.panels.last().and_then(|item| {
             if let Ok(tab_panel) = item.panel.view().downcast::<TabPanel>() {
@@ -628,7 +602,6 @@ impl Tiles {
         })
     }
 
-    /// Produce a vector of AnyElement representing the three possible resize handles
     fn render_resize_handles(
         &mut self,
         _: &mut Window,
@@ -642,7 +615,6 @@ impl Tiles {
 
         let mut elements = Vec::new();
 
-        // Left resize handle
         elements.push(
             div()
                 .id("left-resize-handle")
@@ -698,7 +670,6 @@ impl Tiles {
                 .into_any_element(),
         );
 
-        // Right resize handle
         elements.push(
             div()
                 .id("right-resize-handle")
@@ -753,7 +724,6 @@ impl Tiles {
                 .into_any_element(),
         );
 
-        // Top resize handle
         elements.push(
             div()
                 .id("top-resize-handle")
@@ -809,7 +779,6 @@ impl Tiles {
                 .into_any_element(),
         );
 
-        // Bottom resize handle
         elements.push(
             div()
                 .id("bottom-resize-handle")
@@ -864,7 +833,6 @@ impl Tiles {
                 .into_any_element(),
         );
 
-        // Anchor resize handle
         elements.push(
             div()
                 .child(
@@ -969,7 +937,6 @@ impl Tiles {
         cx.stop_propagation();
     }
 
-    /// Produce the drag-bar element for the given panel item
     fn render_drag_bar(
         &mut self,
         _: &mut Window,
@@ -1049,7 +1016,7 @@ impl Tiles {
                     this.dragging_id = Some(item_id);
                 }),
             )
-            // Here must be mouse up for avoid conflict with Drag event
+            // Must be mouse-up, not click, to avoid conflicting with the Drag event.
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
@@ -1061,22 +1028,18 @@ impl Tiles {
             )
     }
 
-    /// Handle the mouse up event to finalize drag or resize operations
     fn on_mouse_up(&mut self, _: &mut Window, cx: &mut Context<'_, Tiles>) {
-        // Check if a drag or resize was active
         if self.dragging_id.is_some()
             || self.resizing_id.is_some()
             || self.resizing_drag_data.is_some()
         {
             let mut changes_to_push = vec![];
 
-            // Handle dragging
             if let Some(dragging_id) = self.dragging_id {
                 if let Some(idx) = self.panels.iter().position(|p| p.id == dragging_id) {
                     let initial_bounds = self.dragging_initial_bounds;
                     let current_bounds = self.panels[idx].bounds;
 
-                    // Apply grid alignment to final position
                     let aligned_origin = round_point_to_nearest_ten(current_bounds.origin, cx);
 
                     if initial_bounds.origin != aligned_origin
@@ -1096,7 +1059,6 @@ impl Tiles {
                 }
             }
 
-            // Handle resizing
             if let Some(resizing_id) = self.resizing_id {
                 if let Some(drag_data) = &self.resizing_drag_data {
                     if let Some(item) = self.panel(&resizing_id) {
@@ -1116,14 +1078,12 @@ impl Tiles {
                 }
             }
 
-            // Push changes to history if any
             if !changes_to_push.is_empty() {
                 for change in changes_to_push {
                     self.history.push(change);
                 }
             }
 
-            // Reset drag and resize state
             self.reset_current_index();
             self.resizing_drag_data = None;
             cx.emit(PanelEvent::LayoutChanged);
@@ -1147,16 +1107,7 @@ fn snap_edge(edge: Pixels, candidates: &[Pixels], threshold: Pixels) -> Option<P
     best
 }
 
-/// Compute the final bounds for a resize, applying magnetic edge snapping to
-/// neighboring panels and falling back to grid rounding when no neighbor edge
-/// is within `grid_size`.
-///
-/// Which edges move is inferred from the provided `Option`s, mirroring
-/// `Tiles::resize`:
-/// - `new_x` set                  => left edge moves (right edge pinned)
-/// - `new_width` set, `new_x` not => right edge moves (left edge pinned)
-/// - `new_y` set                  => top edge moves (bottom edge pinned)
-/// - `new_height` set, `new_y` not => bottom edge moves (top edge pinned)
+/// Which edge moves is inferred from the provided `Option`s, mirroring `Tiles::resize`.
 fn compute_resized_bounds(
     previous: Bounds<Pixels>,
     new_x: Option<Pixels>,
@@ -1166,7 +1117,6 @@ fn compute_resized_bounds(
     other_bounds: &[Bounds<Pixels>],
     grid_size: Pixels,
 ) -> Bounds<Pixels> {
-    // Candidate snap edges from neighbouring panels.
     let mut x_edges = Vec::with_capacity(other_bounds.len() * 2);
     let mut y_edges = Vec::with_capacity(other_bounds.len() * 2);
     for bounds in other_bounds {
@@ -1179,9 +1129,8 @@ fn compute_resized_bounds(
     let prev_right = previous.origin.x + previous.size.width;
     let prev_bottom = previous.origin.y + previous.size.height;
 
-    // --- X axis ---
     let (final_x, final_width) = if let Some(x) = new_x {
-        // Left edge moving; right edge pinned. Canvas-left (0) is also a target.
+        // Left edge moving, right pinned; canvas-left (0) is also a snap target.
         let raw_left = x.max(px(0.));
         let mut candidates = x_edges.clone();
         candidates.push(px(0.));
@@ -1190,7 +1139,6 @@ fn compute_resized_bounds(
         let width = (prev_right - snapped_left).max(MINIMUM_SIZE.width);
         (snapped_left, width)
     } else if let Some(width) = new_width {
-        // Right edge moving; left edge pinned.
         let raw_right = previous.origin.x + width;
         let snapped_right = snap_edge(raw_right, &x_edges, grid_size)
             .unwrap_or_else(|| round_to_nearest_ten_with(raw_right, grid_size));
@@ -1200,9 +1148,8 @@ fn compute_resized_bounds(
         (previous.origin.x, previous.size.width)
     };
 
-    // --- Y axis ---
     let (final_y, final_height) = if let Some(y) = new_y {
-        // Top edge moving; bottom edge pinned. Canvas-top (0) is also a target.
+        // Top edge moving, bottom pinned; canvas-top (0) is also a snap target.
         let raw_top = y.max(px(0.));
         let mut candidates = y_edges.clone();
         candidates.push(px(0.));
@@ -1211,7 +1158,6 @@ fn compute_resized_bounds(
         let height = (prev_bottom - snapped_top).max(MINIMUM_SIZE.height);
         (snapped_top, height)
     } else if let Some(height) = new_height {
-        // Bottom edge moving; top edge pinned.
         let raw_bottom = previous.origin.y + height;
         let snapped_bottom = snap_edge(raw_bottom, &y_edges, grid_size)
             .unwrap_or_else(|| round_to_nearest_ten_with(raw_bottom, grid_size));

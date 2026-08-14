@@ -27,10 +27,9 @@ pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", Cancel, Some(CONTEXT))])
 }
 
-/// The settings for sheets.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SheetSettings {
-    /// The margin top for the sheet, default is [`TITLE_BAR_HEIGHT`].
+    /// Default is [`TITLE_BAR_HEIGHT`].
     pub margin_top: Pixels,
 }
 
@@ -42,7 +41,6 @@ impl Default for SheetSettings {
     }
 }
 
-/// Sheet component that slides in from the side of the window.
 #[derive(IntoElement)]
 pub struct Sheet {
     pub(crate) focus_handle: FocusHandle,
@@ -59,7 +57,6 @@ pub struct Sheet {
 }
 
 impl Sheet {
-    /// Creates a new Sheet.
     pub fn new(_: &mut Window, cx: &mut App) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
@@ -76,43 +73,37 @@ impl Sheet {
         }
     }
 
-    /// Sets the title of the sheet.
     pub fn title(mut self, title: impl IntoElement) -> Self {
         self.title = Some(title.into_any_element());
         self
     }
 
-    /// Set the footer of the sheet.
     pub fn footer(mut self, footer: impl IntoElement) -> Self {
         self.footer = Some(footer.into_any_element());
         self
     }
 
-    /// Sets the size of the sheet, default is 350px.
+    /// Default is 350px.
     pub fn size(mut self, size: impl Into<DefiniteLength>) -> Self {
         self.size = size.into();
         self
     }
 
-    /// Sets whether the sheet is resizable, default is `true`.
     pub fn resizable(mut self, resizable: bool) -> Self {
         self.resizable = resizable;
         self
     }
 
-    /// Set whether the sheet should have an overlay, default is `true`.
     pub fn overlay(mut self, overlay: bool) -> Self {
         self.overlay = overlay;
         self
     }
 
-    /// Set whether the sheet should be closable by clicking the overlay, default is `true`.
     pub fn overlay_closable(mut self, overlay_closable: bool) -> Self {
         self.overlay_closable = overlay_closable;
         self
     }
 
-    /// Listen to the close event of the sheet.
     pub fn on_close(
         mut self,
         on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -210,7 +201,6 @@ impl RenderOnce for Sheet {
                             .shadow_xl()
                             .refine_style(&self.style)
                             .map(|this| {
-                                // Set the size of the sheet.
                                 if placement.is_horizontal() {
                                     this.w(self.size)
                                 } else {
@@ -226,7 +216,6 @@ impl RenderOnce for Sheet {
                                 Placement::Left => this.top(top).left_0().bottom_0().border_r_1(),
                             })
                             .child(
-                                // TitleBar
                                 h_flex()
                                     .justify_between()
                                     .pl_4()
@@ -248,7 +237,6 @@ impl RenderOnce for Sheet {
                             )
                             .child(
                                 div().flex_1().overflow_hidden().child(
-                                    // Body
                                     v_flex()
                                         .size_full()
                                         .overflow_y_scrollbar()
@@ -258,7 +246,6 @@ impl RenderOnce for Sheet {
                                 ),
                             )
                             .when_some(self.footer, |this, footer| {
-                                // Footer
                                 this.child(
                                     h_flex()
                                         .justify_between()

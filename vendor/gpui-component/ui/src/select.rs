@@ -20,17 +20,14 @@ use crate::{
     v_flex,
 };
 
-// MARK: Public re-exports for back-compat
-
-/// Re-exported for backward compatibility. New code should prefer [`SearchableGroup`].
+/// Back-compat; new code should prefer [`SearchableGroup`].
 pub use crate::searchable_list::SearchableGroup as SelectGroup;
-/// Re-exported for backward compatibility. New code should prefer [`SearchableListDelegate`].
+/// Back-compat; new code should prefer [`SearchableListDelegate`].
 pub use crate::searchable_list::SearchableListDelegate as SelectDelegate;
-/// Re-exported for backward compatibility. New code should prefer [`SearchableListItem`].
+/// Back-compat; new code should prefer [`SearchableListItem`].
 pub use crate::searchable_list::SearchableListItem as SelectItem;
-/// Re-exported for backward compatibility. New code should prefer [`SearchableListItemElement`].
+/// Back-compat; new code should prefer [`SearchableListItemElement`].
 pub use crate::searchable_list::SearchableListItemElement as SelectListItem;
-/// Re-exported for backward compatibility.
 pub use crate::searchable_list::SearchableVec;
 
 #[derive(IntoElement)]
@@ -40,12 +37,10 @@ pub struct Caret {
 }
 
 impl Caret {
-    /// Create a select caret sized for its trigger.
     pub fn new(size: Size) -> Self {
         Self { size, color: None }
     }
 
-    /// Set the caret color.
     pub fn text_color(mut self, color: Hsla) -> Self {
         self.color = Some(color);
         self
@@ -80,15 +75,12 @@ pub(crate) fn init(cx: &mut App) {
     ])
 }
 
-/// Events emitted by [`SelectState`].
 pub enum SelectEvent<D: SearchableListDelegate + 'static>
 where
     <D::Item as SearchableListItem>::Value: PartialEq + Clone,
 {
     Confirm(Option<<D::Item as SearchableListItem>::Value>),
 }
-
-// MARK: SelectOptions (builder only — applied to SearchableListState during render)
 
 struct SelectOptions {
     style: StyleRefinement,
@@ -122,22 +114,17 @@ impl Default for SelectOptions {
     }
 }
 
-// MARK: SelectState
-
-/// State of the [`Select`] component.
 pub struct SelectState<D: SearchableListDelegate + 'static>
 where
     <D::Item as SearchableListItem>::Value: PartialEq + Clone,
 {
     pub(crate) state: SearchableListState<D>,
 
-    // Select-specific fields
     searchable: bool,
     icon: Option<Icon>,
     title_prefix: Option<SharedString>,
 }
 
-/// A Select element.
 #[derive(IntoElement)]
 pub struct Select<D: SearchableListDelegate + 'static>
 where
@@ -154,7 +141,6 @@ where
     D: SearchableListDelegate + 'static,
     <D::Item as SearchableListItem>::Value: PartialEq + Clone,
 {
-    /// Create a new Select state.
     pub fn new(
         delegate: D,
         selected_index: Option<IndexPath>,
@@ -171,7 +157,6 @@ where
         let state = SearchableListState::new(
             delegate,
             selected_indices,
-            // on_confirm — commit the selection
             move |selected_index, _secondary, window, cx| {
                 cx.defer_in(window, {
                     let weak_confirm = weak_confirm.clone();
@@ -194,8 +179,7 @@ where
                             changes
                         };
 
-                        // on_will_change is called directly — entity-handle access would
-                        // re-enter the ListState lock that defer_in holds for this callback.
+                        // Called directly: entity-handle access would re-enter the ListState lock defer_in holds.
                         list_state
                             .delegate_mut()
                             .delegate
@@ -215,7 +199,7 @@ where
                             this.state.selection.clone()
                         });
 
-                        // Sync snapshot and fire on_confirm directly — same re-entrancy guard.
+                        // Same re-entrancy guard as above.
                         if let Ok(new_selection) = new_selection {
                             list_state
                                 .delegate_mut()
@@ -228,7 +212,6 @@ where
                     }
                 });
             },
-            // on_cancel — restore cursor to committed index, close
             move |_final_selected_index, window, cx| {
                 cx.defer_in(window, {
                     let weak_cancel = weak_cancel.clone();
@@ -246,7 +229,6 @@ where
                     }
                 });
             },
-            // on_render_empty
             move |window, cx| {
                 if let Some(empty) = weak_empty
                     .upgrade()
@@ -275,15 +257,11 @@ where
         }
     }
 
-    /// Sets whether the dropdown menu is searchable, default is `false`.
-    ///
-    /// When `true`, a search input appears at the top of the dropdown menu.
     pub fn searchable(mut self, searchable: bool) -> Self {
         self.searchable = searchable;
         self
     }
 
-    /// Set the selected index for the select.
     pub fn set_selected_index(
         &mut self,
         selected_index: Option<IndexPath>,
@@ -305,10 +283,7 @@ where
         self.state.sync_snapshot(cx);
     }
 
-    /// Set selected value for the select.
-    ///
-    /// Looks up the position from the delegate and sets the selected index accordingly.
-    /// Passes `None` when the value is not found.
+    /// Passes `None` to `set_selected_index` when the value is not found in the delegate.
     pub fn set_selected_value(
         &mut self,
         selected_value: &<D::Item as SearchableListItem>::Value,
@@ -326,7 +301,6 @@ where
         self.set_selected_index(selected_index, window, cx);
     }
 
-    /// Replace the delegate (item data) for the select state.
     pub fn set_items(&mut self, items: D, _: &mut Window, cx: &mut Context<Self>)
     where
         D: SearchableListDelegate + 'static,
@@ -336,17 +310,14 @@ where
         });
     }
 
-    /// Get the current selected index.
     pub fn selected_index(&self, cx: &App) -> Option<IndexPath> {
         self.state.list.read(cx).selected_index()
     }
 
-    /// Get the current selected value.
     pub fn selected_value(&self) -> Option<&<D::Item as SearchableListItem>::Value> {
         self.state.selection.first().map(|(_, i)| i.value())
     }
 
-    /// Focus the select trigger input.
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         self.state.focus_handle.focus(window, cx);
     }
@@ -629,57 +600,47 @@ where
         }
     }
 
-    /// Set the width of the dropdown menu, default: `Length::Auto`.
     pub fn menu_width(mut self, width: impl Into<Length>) -> Self {
         self.options.menu_width = width.into();
         self
     }
 
-    /// Set the max height of the dropdown menu, default: 20rem.
     pub fn menu_max_h(mut self, max_h: impl Into<Length>) -> Self {
         self.options.menu_max_h = max_h.into();
         self
     }
 
-    /// Set the placeholder shown when no value is selected.
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.options.placeholder = Some(placeholder.into());
         self
     }
 
-    /// Override the trailing icon, replacing the default chevron.
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.options.icon = Some(icon.into());
         self
     }
 
-    /// Set a label prefix shown before the selected title in the trigger.
-    ///
-    /// e.g. `title_prefix("Country: ")` → "Country: United States"
+    /// E.g. `title_prefix("Country: ")` -> "Country: United States".
     pub fn title_prefix(mut self, prefix: impl Into<SharedString>) -> Self {
         self.options.title_prefix = Some(prefix.into());
         self
     }
 
-    /// Show a clear button when a value is selected.
     pub fn cleanable(mut self, cleanable: bool) -> Self {
         self.options.cleanable = cleanable;
         self
     }
 
-    /// Set the placeholder text for the search input.
     pub fn search_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.options.search_placeholder = Some(placeholder.into());
         self
     }
 
-    /// Set the disabled state.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.options.disabled = disabled;
         self
     }
 
-    /// Set a custom closure that renders the empty-state element.
     pub fn empty<E: IntoElement + 'static>(
         mut self,
         builder: impl Fn(&mut Window, &App) -> E + 'static,
@@ -690,7 +651,6 @@ where
         self
     }
 
-    /// Control whether the trigger shows a border and background (`true` by default).
     pub fn appearance(mut self, appearance: bool) -> Self {
         self.options.appearance = appearance;
         self
@@ -789,8 +749,6 @@ where
             .child(self.state)
     }
 }
-
-// MARK: Tests
 
 #[cfg(test)]
 mod tests {

@@ -14,9 +14,7 @@ use crate::{
 
 #[derive(Debug, Copy, Clone)]
 pub struct TabSize {
-    /// Default is 2
     pub tab_size: usize,
-    /// Set true to use `\t` as tab indent, default is false
     pub hard_tabs: bool,
 }
 
@@ -38,7 +36,6 @@ impl TabSize {
         }
     }
 
-    /// Count the indent size of the line in spaces.
     pub fn indent_count(&self, line: &RopeSlice) -> usize {
         let mut count = 0;
         for ch in line.chars() {
@@ -87,7 +84,6 @@ impl InputMode {
 }
 
 impl TextElement {
-    /// Measure the indent width in pixels for given column count.
     fn measure_indent_width(&self, style: &TextStyle, column: usize, window: &Window) -> Pixels {
         let font_size = style.font_size.to_pixels(window.rem_size());
         let layout = window.text_system().shape_line(
@@ -170,9 +166,7 @@ impl TextElement {
 }
 
 impl InputState {
-    /// Set whether to show indent guides in code editor mode, default is true.
-    ///
-    /// Only for [`InputMode::CodeEditor`] mode.
+    /// Only for [`InputMode::CodeEditor`] mode. Default is true.
     pub fn indent_guides(mut self, indent_guides: bool) -> Self {
         debug_assert!(self.mode.is_code_editor() && self.mode.is_multi_line());
         if let InputMode::CodeEditor {
@@ -184,8 +178,6 @@ impl InputState {
         self
     }
 
-    /// Set indent guides in code editor mode.
-    ///
     /// Only for [`InputMode::CodeEditor`] mode.
     pub fn set_indent_guides(
         &mut self,
@@ -203,8 +195,6 @@ impl InputState {
         cx.notify();
     }
 
-    /// Set the tab size for the input.
-    ///
     /// Only for [`InputMode::PlainText`] and [`InputMode::CodeEditor`] mode with multi_line.
     pub fn tab_size(mut self, tab: TabSize) -> Self {
         debug_assert!(self.mode.is_multi_line() || self.mode.is_code_editor());
@@ -222,7 +212,6 @@ impl InputState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // First, try to accept inline completion if present
         if self.accept_inline_completion(window, cx) {
             return;
         }
@@ -294,7 +283,6 @@ impl InputState {
                     (selected_range.start + added_len..selected_range.end + added_len).into();
             }
         } else {
-            // Selected none
             let offset = self.selected_range.start;
             self.replace_text_in_range_silent(
                 Some(self.range_to_utf16(&(offset..offset))),

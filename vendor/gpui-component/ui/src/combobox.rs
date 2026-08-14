@@ -41,8 +41,6 @@ pub(crate) fn init(cx: &mut App) {
     ])
 }
 
-// MARK: ComboboxTriggerCtx
-
 /// Context passed to the `render_trigger` closure on [`Combobox`].
 pub struct ComboboxTriggerCtx<'a, D: SearchableListDelegate + 'static> {
     pub selection: &'a [(IndexPath, D::Item)],
@@ -52,12 +50,8 @@ pub struct ComboboxTriggerCtx<'a, D: SearchableListDelegate + 'static> {
     pub size: Size,
 }
 
-// MARK: ComboboxChange
-
 /// Back-compat alias — new code should use [`SearchableListChange`] directly.
 pub type ComboboxChange = SearchableListChange;
-
-// MARK: ComboboxOptions
 
 struct ComboboxOptions {
     style: StyleRefinement,
@@ -91,16 +85,12 @@ impl Default for ComboboxOptions {
     }
 }
 
-// MARK: ComboboxState
-
-/// State of the [`Combobox`] component.
 pub struct ComboboxState<D: SearchableListDelegate + 'static>
 where
     <D::Item as SearchableListItem>::Value: PartialEq + Clone,
 {
     pub(crate) state: SearchableListState<D>,
 
-    // Combobox-specific fields
     multiple: bool,
     searchable: bool,
     trigger_icon: Option<Icon>,
@@ -110,12 +100,10 @@ where
     footer: Option<Box<dyn Fn(&mut Window, &mut App) -> AnyElement + 'static>>,
 }
 
-/// Events emitted by [`ComboboxState`].
 pub enum ComboboxEvent<D: SearchableListDelegate + 'static>
 where
     <D::Item as SearchableListItem>::Value: PartialEq + Clone,
 {
-    /// Emitted on every toggle (item added or removed).
     Change(Vec<<D::Item as SearchableListItem>::Value>),
     /// Emitted when the popover closes.
     Confirm(Vec<<D::Item as SearchableListItem>::Value>),
@@ -126,7 +114,6 @@ where
     D: SearchableListDelegate + 'static,
     <D::Item as SearchableListItem>::Value: PartialEq + Clone,
 {
-    /// Create a new `Combobox` state.
     pub fn new(
         delegate: D,
         selected_indices: Vec<IndexPath>,
@@ -169,8 +156,7 @@ where
                         let before_indices: Vec<IndexPath> =
                             selection.iter().map(|(ix, _)| *ix).collect();
 
-                        // on_will_change is called directly — entity-handle access would
-                        // re-enter the ListState lock that defer_in holds for this callback.
+                        // Called directly: entity-handle access would re-enter the ListState lock defer_in holds.
                         list_state
                             .delegate_mut()
                             .delegate
@@ -198,7 +184,7 @@ where
                             this.state.selection.clone()
                         });
 
-                        // Sync snapshot and fire on_confirm directly — same re-entrancy guard.
+                        // Same re-entrancy guard as above.
                         if let Ok(new_selection) = new_selection {
                             list_state
                                 .delegate_mut()
@@ -214,7 +200,6 @@ where
                     }
                 });
             },
-            // on_cancel — close and emit Confirm with current values
             move |_final_selected_index, window, cx| {
                 cx.defer_in(window, {
                     let weak_cancel = weak_cancel.clone();
@@ -227,7 +212,6 @@ where
                     }
                 });
             },
-            // on_render_empty
             move |window, cx| {
                 if let Some(empty) = weak_empty
                     .upgrade()
@@ -259,43 +243,31 @@ where
         }
     }
 
-    /// Enable multi-select mode.
-    ///
-    /// When `true`, clicking an item toggles it in the selection and the popover stays open.
-    /// When `false` (default), clicking an item replaces the selection and closes the popover.
+    /// `true`: clicking toggles and the popover stays open. `false` (default): clicking replaces and closes it.
     pub fn multiple(mut self, multiple: bool) -> Self {
         self.multiple = multiple;
         self
     }
 
-    /// Enable or disable the search input at the top of the dropdown.
     pub fn searchable(mut self, searchable: bool) -> Self {
         self.searchable = searchable;
         self
     }
 
-    /// Return the currently selected values.
     pub fn selected_values(&self) -> Vec<<D::Item as SearchableListItem>::Value> {
         self.state.selected_values()
     }
 
-    /// Return the first selected value, or `None` when nothing is selected.
-    ///
     /// Convenience for single-select mode (`.multiple(false)`).
     pub fn selected_value(&self) -> Option<<D::Item as SearchableListItem>::Value> {
         self.state.selected_values().into_iter().next()
     }
 
-    /// Return the currently selected `(IndexPath, Item)` pairs.
     pub fn selection(&self) -> &[(IndexPath, D::Item)] {
         self.state.selection()
     }
 
-    /// Replace the entire selection set by item values.
-    ///
-    /// Values are resolved through the current delegate. Values that cannot be resolved are
-    /// ignored. This updates the committed selection and snapshot without emitting a
-    /// [`ComboboxEvent`].
+    /// Unresolvable values are ignored; updates selection and snapshot without emitting a [`ComboboxEvent`].
     pub fn set_selected_values(
         &mut self,
         values: &[<D::Item as SearchableListItem>::Value],
@@ -315,7 +287,6 @@ where
         self.set_selected_indices(selected_indices, window, cx);
     }
 
-    /// Replace the entire selection set.
     pub fn set_selected_indices(
         &mut self,
         indices: impl IntoIterator<Item = IndexPath>,
@@ -327,7 +298,6 @@ where
         cx.notify();
     }
 
-    /// Add a single index to the selection, if not already present, returning whether it was added.
     pub fn add_selected_index(&mut self, index: IndexPath, cx: &mut Context<Self>) -> bool {
         let added = self.state.add_selected_index(index, cx);
 
@@ -339,7 +309,6 @@ where
         added
     }
 
-    /// Remove a single index from the selection, returning whether it was removed.
     pub fn remove_selected_index(&mut self, index: IndexPath, cx: &mut Context<Self>) -> bool {
         let removed = self.state.remove_selected_index(index);
 
@@ -350,7 +319,6 @@ where
         removed
     }
 
-    /// Clear all selected values.
     pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
         self.state.selection.clear();
         self.state.sync_snapshot(cx);
@@ -358,14 +326,12 @@ where
         cx.notify();
     }
 
-    /// Replace the underlying delegate (item data source).
     pub fn set_items(&mut self, items: D, _: &mut Window, cx: &mut Context<Self>) {
         self.state.list.update(cx, |list, _| {
             list.delegate_mut().delegate = items;
         });
     }
 
-    /// Focus the trigger.
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         self.state.focus_handle.focus(window, cx);
     }
@@ -396,9 +362,6 @@ where
         }
     }
 
-    /// Process an item click: single-select replaces the selection and closes; multi-select toggles.
-    ///
-    /// Calls `delegate.on_will_change` before committing and `delegate.on_confirm` when closing.
     #[allow(dead_code)]
     pub(crate) fn handle_item_select(
         &mut self,
@@ -729,12 +692,7 @@ where
     }
 }
 
-// MARK: Combobox element
-
-/// A combo box with support for single and multi-select.
-///
-/// Clicking an item toggles it in the selection; the dropdown stays open until the user
-/// presses Escape or clicks outside.
+/// Clicking an item toggles it; the dropdown stays open until Escape or a click outside.
 #[derive(IntoElement)]
 pub struct Combobox<D: SearchableListDelegate + 'static>
 where
@@ -765,55 +723,46 @@ where
         }
     }
 
-    /// Set the width of the dropdown menu.
     pub fn menu_width(mut self, width: impl Into<Length>) -> Self {
         self.options.menu_width = width.into();
         self
     }
 
-    /// Set the maximum height of the dropdown menu.
     pub fn menu_max_h(mut self, max_h: impl Into<Length>) -> Self {
         self.options.menu_max_h = max_h.into();
         self
     }
 
-    /// Set the placeholder text shown when no items are selected.
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.options.placeholder = Some(placeholder.into());
         self
     }
 
-    /// Override the trigger chevron icon.
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.options.trigger_icon = Some(icon.into());
         self
     }
 
-    /// Override the trailing check icon shown next to selected items.
     pub fn check_icon(mut self, icon: impl Into<Icon>) -> Self {
         self.options.check_icon = Some(icon.into());
         self
     }
 
-    /// Set the placeholder text for the search input.
     pub fn search_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.options.search_placeholder = Some(placeholder.into());
         self
     }
 
-    /// Show a clear button when at least one item is selected.
     pub fn cleanable(mut self, cleanable: bool) -> Self {
         self.options.cleanable = cleanable;
         self
     }
 
-    /// Set the disabled state.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.options.disabled = disabled;
         self
     }
 
-    /// Set a custom closure that renders the empty-state element.
     pub fn empty<E: IntoElement + 'static>(
         mut self,
         builder: impl Fn(&mut Window, &App) -> E + 'static,
@@ -824,13 +773,11 @@ where
         self
     }
 
-    /// Control whether the trigger shows a border and background.
     pub fn appearance(mut self, appearance: bool) -> Self {
         self.options.appearance = appearance;
         self
     }
 
-    /// Override the entire trigger element.
     pub fn render_trigger<E: IntoElement + 'static>(
         mut self,
         f: impl Fn(&ComboboxTriggerCtx<D>, &mut Window, &mut App) -> E + 'static,
@@ -841,7 +788,6 @@ where
         self
     }
 
-    /// Render an element below a separator at the bottom of the dropdown.
     pub fn footer<E: IntoElement + 'static>(
         mut self,
         f: impl Fn(&mut Window, &mut App) -> E + 'static,
@@ -924,9 +870,6 @@ where
     }
 }
 
-// MARK: Rendering helpers
-
-/// Renders the styled trigger container.
 #[allow(clippy::too_many_arguments)]
 fn render_trigger_container(
     disabled: bool,
@@ -979,7 +922,6 @@ fn render_trigger_container(
         .on_prepaint(prepaint_handler)
 }
 
-/// Renders the deferred anchored popup shell containing the searchable list and optional footer.
 #[allow(clippy::too_many_arguments)]
 fn render_popup_shell<D: SearchableListDelegate + 'static>(
     list: &Entity<ListState<SearchableListAdapter<D>>>,
@@ -1036,8 +978,6 @@ fn render_popup_shell<D: SearchableListDelegate + 'static>(
         )
         .into_any_element()
 }
-
-// MARK: Tests
 
 #[cfg(test)]
 mod tests {
