@@ -106,10 +106,7 @@ impl Default for FocusTrapManager {
     }
 }
 
-/// A wrapper element that implements focus trap behavior.
-///
-/// This element wraps another element and registers it as a focus trap container.
-/// Focus will automatically cycle within the container when Tab/Shift-Tab is pressed.
+/// Wraps an element as a focus trap: Tab/Shift-Tab cycles focus within the container.
 pub struct FocusTrapContainer<E: InteractiveElement + ParentElement + Styled + Element> {
     id: ElementId,
     focus_handle: FocusHandle,

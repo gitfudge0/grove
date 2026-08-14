@@ -151,9 +151,7 @@ pub struct CodeActionMenu {
 }
 
 impl CodeActionMenu {
-    /// Creates a new `CompletionMenu` with the given offset and completion items.
-    ///
-    /// NOTE: This element should not call from InputState::new, unless that will stack overflow.
+    /// Creates a new `CompletionMenu` with the given offset and completion items. NOTE: This element should not call from InputState::new, unless that will stack overflow.
     pub(crate) fn new(
         state: Entity<InputState>,
         window: &mut Window,

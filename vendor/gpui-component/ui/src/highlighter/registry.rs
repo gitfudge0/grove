@@ -104,9 +104,7 @@ impl LanguageConfig {
     }
 }
 
-/// Theme for Tree-sitter Highlight
-///
-/// https://docs.rs/tree-sitter-highlight/0.26.8/tree_sitter_highlight/
+/// Theme for Tree-sitter Highlight https://docs.rs/tree-sitter-highlight/0.26.8/tree_sitter_highlight/
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, JsonSchema, Serialize, Deserialize)]
 pub struct SyntaxColors {
     pub attribute: Option<ThemeStyle>,
@@ -444,8 +442,7 @@ pub struct HighlightThemeStyle {
     pub editor_active_line_number: Option<Hsla>,
     #[serde(rename = "editor.invisible")]
     pub editor_invisible: Option<Hsla>,
-    /// Optional background color for the gutter (line-number column).
-    /// Falls back to [`Self::editor_background`] when unset.
+    /// Optional background color for the gutter (line-number column). Falls back to [`Self::editor_background`] when unset.
     #[serde(rename = "editor.gutter.background")]
     pub editor_gutter_background: Option<Hsla>,
     #[serde(flatten)]
@@ -454,11 +451,7 @@ pub struct HighlightThemeStyle {
     pub syntax: SyntaxColors,
 }
 
-/// Theme for Tree-sitter Highlight from JSON theme file.
-///
-/// This json is compatible with the Zed theme format.
-///
-/// https://zed.dev/docs/extensions/languages#syntax-highlighting
+/// Theme for Tree-sitter Highlight from JSON theme file. This json is compatible with the Zed theme format. https://zed.dev/docs/extensions/languages#syntax-highlighting
 #[derive(Debug, Clone, PartialEq, Eq, Hash, JsonSchema, Serialize, Deserialize)]
 pub struct HighlightTheme {
     pub name: String,
@@ -518,8 +511,7 @@ impl LanguageRegistry {
 
     /// Returns the language configuration for the given language name.
     pub fn language(&self, name: &str) -> Option<LanguageConfig> {
-        // Try to get by name first, there may have a custom language registered
-        // Then try to get built-in language to support short language names, e.g. "js" for "javascript"
+        // Try to get by name first, there may have a custom language registered Then try to get built-in language to support short language names, e.g. "js" for "javascript"
         let languages = self.languages.lock().unwrap();
         languages.get(name).cloned().or_else(|| {
             Language::from_name(name).and_then(|language| languages.get(language.name()).cloned())
