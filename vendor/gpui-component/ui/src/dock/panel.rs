@@ -52,7 +52,7 @@ impl PanelControl {
 /// The Panel trait used to define the panel.
 #[allow(unused_variables)]
 pub trait Panel: EventEmitter<PanelEvent> + Render + Focusable {
-    /// The name of the panel used to serialize, deserialize and identify the panel. This is used to identify the panel when deserializing the panel. Once you have defined a panel name, this must not be changed.
+    /// Identifies the panel for (de)serialization; once defined, must never change.
     fn panel_name(&self) -> &'static str;
 
     /// The name of the tab of the panel, default is `None`. Used to display in the already collapsed tab panel.

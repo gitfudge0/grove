@@ -1,4 +1,4 @@
-/// WrapMap: Soft-wrapping layer (Buffer → Wrap rows). This module wraps the existing TextWrapper and provides: - BufferPoint ↔ WrapPoint mapping - Efficient buffer_line → wrap_row queries via prefix sum cache - Incremental updates when text or layout changes
+/// Soft-wrapping layer (Buffer → Wrap rows): point mapping, prefix-sum row queries, incremental updates.
 use std::ops::Range;
 
 use gpui::{App, Font, Pixels};

@@ -1,4 +1,4 @@
-//! WASM stub implementation for highlighter module. Provides empty/no-op implementations since tree-sitter is not available in WASM. Note: diagnostics.rs is available in WASM, only syntax highlighting requires stubs.
+//! No-op highlighter stubs for WASM, where tree-sitter isn't available; diagnostics.rs itself works fine in WASM.
 
 use gpui::{HighlightStyle, SharedString};
 use std::ops::Range;

@@ -1,4 +1,4 @@
-//! The `SESSBAR_H` session bar above the terminal body: label, branch, the OSC context title, and the 3-dot in-progress animation. Port of `src/gui/view/terminal.rs:487-560` (+ `:480-485` for the hairline). **Built here, not in Plan 07** (recorded ambiguity 1): Appendix A's *Attention/activity* row "3-dot `(tick/5)%3`" is an exit-gate row for this phase, and the only place that animation exists is this bar's in-progress context; the bar also carries this phase's OSC deliverable. It is written **parameterized by session**, not by "the active session", so Plan 07 can reuse the same renderer for grid tile headers.
+//! The session bar: label, branch, OSC title, 3-dot animation. Port of `terminal.rs:487-560,480-485`; parameterized by session so grid tiles can reuse it.
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -40,7 +40,7 @@ pub struct ToolCluster {
     pub dispatch: ToolDispatch,
 }
 
-/// A labelled tool button (`src/gui/widgets/buttons.rs:340-410`'s `tool_btn`/`tool_btn_toggle`). `active` renders the cyan "on" state the `term` toggle uses; `danger` turns the hover red.
+/// Port of `tool_btn`/`tool_btn_toggle` (`src/gui/widgets/buttons.rs:340-410`); `active` is the cyan "on" state, `danger` turns the hover red.
 pub fn tool_btn(
     id: &'static str,
     icon_name: &'static str,
@@ -142,7 +142,7 @@ pub struct SessionHeaderData {
     pub icon_name: &'static str,
     /// Whether the session's process is still alive.
     pub running: bool,
-    /// The worktree's uncommitted diff against `HEAD`: `(added, removed)` lines. `None` before the first poll lands (or for a branchless session with no worktree to poll) — see [`rows::diff_chips`].
+    /// `None` before the first poll lands, or for a branchless session — see [`rows::diff_chips`].
     pub diff: Option<(u32, u32)>,
 }
 
@@ -168,7 +168,7 @@ pub fn truncate_middle(s: &str, max: usize) -> String {
     format!("{prefix}…{suffix}")
 }
 
-/// Which of the three dots is lit (`terminal.rs:540` — `(tick/5)%3`). Shares the single animation counter with the cursor and the spinner, so the phases stay in the same relationship the iced build has.
+/// Which dot is lit (`terminal.rs:540`); shares the single animation counter with the cursor and spinner.
 #[must_use]
 pub fn in_progress_phase(tick: u64) -> u64 {
     dots(tick)
@@ -184,7 +184,7 @@ fn label_text(content: impl Into<gpui::SharedString>, size: f32, color: Hsla, bo
     }
 }
 
-/// The bar plus its `BORDER_SOFT()` hairline beneath. `cluster` is `None` for bars with no tools (Plan 06's call sites); Plan 07's session bar passes one.
+/// The bar plus its `BORDER_SOFT()` hairline beneath; `cluster` is `None` for bars with no tools.
 pub fn session_header(
     data: &SessionHeaderData,
     tick: u64,
@@ -280,7 +280,7 @@ pub fn session_header(
                         let chips = div()
                             .flex_none()
                             .child(crate::views::rows::diff_chips(data.diff));
-                        // The chip pair is one click target with a hover state, wired only when a tool cluster exists to dispatch through — the tile-header call sites that pass `cluster: None` keep the chip inert rather than opening a diff viewer with no session to resolve a worktree from.
+                        // Only wired when a tool cluster exists; `cluster: None` call sites keep the chip inert.
                         d.child(match cluster {
                             Some(cluster) => {
                                 let dispatch = cluster.dispatch.clone();
@@ -358,7 +358,7 @@ mod tests {
         assert!(data.branch.trim().is_empty());
     }
 
-    /// [`SessionHeaderData::diff`] draws nothing before the first poll lands, distinguishing an unknown diff from a *known* clean one — the same rule [`rows::diff_chips`] enforces for the card.
+    /// An unknown diff must stay distinct from a known-clean one — same rule [`rows::diff_chips`] enforces for the card.
     #[test]
     fn an_unknown_header_diff_is_distinguished_from_a_known_clean_one() {
         assert_eq!(
@@ -380,7 +380,7 @@ mod tests {
         assert_ne!(unknown.diff, clean.diff);
     }
 
-    /// The 3-dot walk replaces the title only while the session is *running* (`terminal.rs:494`): a dead agent with a frozen "in progress" title shows the text, not a live animation.
+    /// Only replaces the title while running (`terminal.rs:494`); a dead agent shows the frozen text, not the animation.
     #[test]
     fn a_dead_session_does_not_animate_its_stale_in_progress_title() {
         let title = "migration in progress";

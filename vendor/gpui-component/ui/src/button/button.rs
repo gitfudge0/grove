@@ -43,52 +43,43 @@ pub struct ButtonCustomVariant {
 pub trait ButtonVariants: Sized {
     fn with_variant(self, variant: ButtonVariant) -> Self;
 
-    /// With the primary style for the Button.
     fn primary(self) -> Self {
         self.with_variant(ButtonVariant::Primary)
     }
 
-    /// With the secondary style for the Button.
     fn secondary(self) -> Self {
         self.with_variant(ButtonVariant::Secondary)
     }
 
-    /// With the danger style for the Button.
     fn danger(self) -> Self {
         self.with_variant(ButtonVariant::Danger)
     }
 
-    /// With the warning style for the Button.
     fn warning(self) -> Self {
         self.with_variant(ButtonVariant::Warning)
     }
 
-    /// With the success style for the Button.
     fn success(self) -> Self {
         self.with_variant(ButtonVariant::Success)
     }
 
-    /// With the info style for the Button.
     fn info(self) -> Self {
         self.with_variant(ButtonVariant::Info)
     }
 
-    /// With the ghost style for the Button.
     fn ghost(self) -> Self {
         self.with_variant(ButtonVariant::Ghost)
     }
 
-    /// With the link style for the Button.
     fn link(self) -> Self {
         self.with_variant(ButtonVariant::Link)
     }
 
-    /// With the text style for the Button, it will no padding look like a normal text.
+    /// No padding — looks like plain text.
     fn text(self) -> Self {
         self.with_variant(ButtonVariant::Text)
     }
 
-    /// With the custom style for the Button.
     fn custom(self, style: ButtonCustomVariant) -> Self {
         self.with_variant(ButtonVariant::Custom(style))
     }
@@ -257,25 +248,21 @@ impl Button {
         }
     }
 
-    /// Set the outline style of the Button.
     pub fn outline(mut self) -> Self {
         self.outline = true;
         self
     }
 
-    /// Set the border radius of the Button.
     pub fn rounded(mut self, rounded: impl Into<ButtonRounded>) -> Self {
         self.rounded = rounded.into();
         self
     }
 
-    /// Set the border corners side of the Button.
     pub(crate) fn border_corners(mut self, corners: impl Into<Corners<bool>>) -> Self {
         self.border_corners = corners.into();
         self
     }
 
-    /// Set the border edges of the Button.
     pub(crate) fn border_edges(mut self, edges: impl Into<Edges<bool>>) -> Self {
         self.border_edges = edges.into();
         self
@@ -328,7 +315,6 @@ impl Button {
         self
     }
 
-    /// Add click handler.
     pub fn on_click(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -361,7 +347,6 @@ impl Button {
         self
     }
 
-    /// Set to show a dropdown caret icon at the end of the button.
     pub fn dropdown_caret(mut self, dropdown_caret: bool) -> Self {
         self.dropdown_caret = dropdown_caret;
         self
@@ -1177,27 +1162,22 @@ mod tests {
 
     #[gpui::test]
     fn test_button_clickable_logic(_cx: &mut gpui::TestAppContext) {
-        // Button with click handler should be clickable
         let clickable = Button::new("test").on_click(|_, _, _| {});
         assert!(clickable.clickable());
 
-        // Disabled button should not be clickable
         let disabled = Button::new("test").disabled(true).on_click(|_, _, _| {});
         assert!(!disabled.clickable());
 
-        // Loading button should not be clickable
         let loading = Button::new("test").loading(true).on_click(|_, _, _| {});
         assert!(!loading.clickable());
     }
 
     #[gpui::test]
     fn test_button_variant_methods(_cx: &mut gpui::TestAppContext) {
-        // Test variant check methods
         assert!(ButtonVariant::Link.is_link());
         assert!(ButtonVariant::Text.is_text());
         assert!(ButtonVariant::Ghost.is_ghost());
 
-        // Test no_padding logic
         assert!(ButtonVariant::Link.no_padding());
         assert!(ButtonVariant::Text.no_padding());
         assert!(!ButtonVariant::Ghost.no_padding());

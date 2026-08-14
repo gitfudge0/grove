@@ -1,4 +1,4 @@
-//! `ModalInput` — the one place both S2 workarounds live (carried decision 2). A thin wrapper around a `gpui_component::input::InputState` plus a policy saying which keys the *hosting modal* claims from the field. # How the interception actually works at this gpui rev The plan called for **capture-phase interception**. That is not available at ZED_REV `1a246ef`: `Window::dispatch_key_event` (`gpui/src/window.rs:4948-4988`) matches and dispatches **key bindings first**, and only calls `finish_dispatch_key_event` → `dispatch_key_down_up_event` — which is where `capture_key_down` listeners run — if propagation survived. A capture-phase listener therefore fires *after* `MoveLeft` has already moved the caret, so it cannot pre-empt it. The mechanism that does work is gpui's own binding resolution, and it is the idiomatic one. `Keymap::bindings_for_input` (`gpui/src/keymap.rs:164-189`) sorts matched bindings by `KeyBindingContextPredicate::depth_of` descending, then by registration index descending. A **descendant predicate** — `"ModalSessionLauncher > Input"` — matches at the very same node as gpui-component's plain `"Input"` binding (`depth_of` returns the deepest matching depth for both, `keymap/context.rs:260-268`), so the tie is broken by registration order and the **later-registered binding wins**. Grove binds its modal keys after `gpui_component::init(cx)`, so Grove wins, the action fires, and `dispatch_action_on_node` stops propagation before `MoveLeft` is reached. The vendored `movement.rs` is **not patched** — a vendored patch is a fork with extra steps and would silently diverge from the recorded rev. # The three contracts - `wants_arrows` — Left/Right belong to the modal, not the caret (the palette's `PALETTE_OPEN` carve-out, `pty_input.rs:353-356`). When clear, the caret gets them, exactly as iced's non-palette fields do. - `wants_tab` — same mechanism for Tab, used by Onboarding's single-line field alternation. Multiline buffers leave it clear so Tab indents (`indent.rs:219-232`; `is_indentable()` is true for multiline). - **Never** `clean_on_escape`: `InputState::escape()` calls `cx.propagate()` (`input/state.rs:1685`) unless that flag is set, which is the whole reason Escape reaches the modal layer from inside a focused field.
+//! `ModalInput` pairs an `InputState` with a policy for which keys the modal steals. Capture-phase interception doesn't work here; see `override_context`.
 
 use gpui::{App, AppContext as _, Entity, Window};
 use gpui_component::input::InputState;
@@ -19,7 +19,7 @@ pub struct InputPolicy {
 impl InputPolicy {
     /// The policy a given modal's field runs under, derived from the pure state machine so the two can never disagree.
     pub fn for_modal(kind: ModalKind) -> Self {
-        // `ScriptsEditor`'s name field and its three lifecycle buffers are all genuinely single-line since the "Variant D" redesign (`views/modals/mod.rs`'s `ScriptsEditor` field-construction arm) — `ThemeManager`'s editor buffer is the only survivor here.
+        // ThemeManager's editor buffer is the only multi-line field left; ScriptsEditor's are all single-line now.
         let multi_line = matches!(kind, ModalKind::ThemeManager);
         Self {
             wants_arrows: kind.wants_arrows(),
@@ -127,7 +127,6 @@ mod tests {
         assert!(!p.wants_tab, "{kind:?} must let Tab indent");
     }
 
-    /// `ScriptsEditor`'s name field and its three lifecycle buffers are all genuinely single-line since the "Variant D" redesign, so its fields get the same `Enter`/`Up`/`Down` bindings any other single-line-only modal gets (`modal_input_bindings` in `src/keymap.rs` skips a `kind` entirely while `multi_line` is set).
     #[test]
     fn scripts_editor_is_no_longer_multi_line() {
         assert!(!InputPolicy::for_modal(ModalKind::ScriptsEditor).multi_line);

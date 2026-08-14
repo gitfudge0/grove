@@ -7,7 +7,7 @@ use crate::{IndexPath, Size, list::ListState, searchable_list::adapter::Searchab
 
 use super::delegate::{SearchableListDelegate, SearchableListItem};
 
-/// Shared infrastructure for all searchable-list-based components (`SelectState`, `ComboBoxState`). This struct is a plain nested value inside a GPUI entity — it has no entity context of its own and cannot call `cx.notify()` or `cx.emit()`. Callers are responsible for those after calling mutable methods.
+/// Shared infra for `SelectState`/`ComboBoxState`; a plain nested value with no entity context — callers must `cx.notify()`/`cx.emit()` themselves.
 pub struct SearchableListState<D: SearchableListDelegate + 'static>
 where
     <D::Item as SearchableListItem>::Value: PartialEq + Clone,
@@ -38,7 +38,7 @@ impl<D: SearchableListDelegate + 'static> SearchableListState<D>
 where
     <D::Item as SearchableListItem>::Value: PartialEq + Clone,
 {
-    /// Create a new `SearchableListState`, creating the list entity in the given parent context. `on_confirm`, `on_cancel`, and `on_render_empty` are forwarded to the underlying adapter. `on_blur` is a function pointer invoked on the parent entity when focus leaves any of the list's focus handles.
+    /// `on_confirm`/`on_cancel`/`on_render_empty` forward to the adapter; `on_blur` fires when focus leaves any of the list's handles.
     #[allow(clippy::too_many_arguments)]
     pub fn new<P: 'static>(
         delegate: D,

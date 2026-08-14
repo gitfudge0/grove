@@ -74,7 +74,7 @@ impl Styled for StatusBar {
 
 impl RenderOnce for StatusBar {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        // The center aligns by which ends are pinned: centered with both left and right, end-aligned with only left, otherwise start-aligned (only right, or neither) — so a bar with just `child`s reads like a container.
+        // Center alignment follows which ends are pinned, so a bar with just `child`s reads like a plain container.
         let has_left = !self.left.is_empty();
         let has_right = !self.right.is_empty();
         let region = || h_flex().overflow_hidden().items_center().gap_2();
