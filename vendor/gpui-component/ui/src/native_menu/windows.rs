@@ -28,15 +28,10 @@ use windows::core::{PCSTR, PCWSTR};
 
 use super::{NativeMenuItem, resolve_icon_image};
 
-/// Side length (in **logical pixels**) menu item images are scaled to. The
-/// physical bitmap size is this multiplied by the window's scale factor (see
-/// [`show`]), so images stay sharp on the HiDPI displays.
+/// Logical pixels; the physical bitmap is this times the window's scale factor, so images stay sharp on HiDPI.
 const MENU_IMAGE_SIZE: u32 = 16;
 
-/// Show a native popup menu and dispatch the selected item's action.
-///
-/// The Win32 tracking loop (`TrackPopupMenuEx`) blocks, so — like macOS — it is
-/// run from a foreground task to avoid re-entering GPUI while it is borrowed.
+/// `TrackPopupMenuEx` blocks, so — like macOS — this runs from a foreground task to avoid re-entering GPUI while it's borrowed.
 pub(super) fn show(
     items: Vec<NativeMenuItem>,
     asset_source: Arc<dyn AssetSource>,
@@ -52,11 +47,8 @@ pub(super) fn show(
     let scale = window.scale_factor();
     let client_x = (f32::from(position.x) * scale).round() as i32;
     let client_y = (f32::from(position.y) * scale).round() as i32;
-    // The menu draws item bitmaps at their native pixel size, so rasterize them
-    // at the device pixel size to keep them sharp on HiDPI displays.
     let image_px = (MENU_IMAGE_SIZE as f32 * scale).round().max(1.0) as u32;
-    // Inherent `Window::window_handle` (GPUI's `AnyWindowHandle`), not the
-    // `raw_window_handle::HasWindowHandle` trait method in scope below.
+    // GPUI's `AnyWindowHandle`, not the `HasWindowHandle` trait method in scope below.
     let handle = Window::window_handle(window);
 
     cx.spawn(async move |cx| {
@@ -80,8 +72,6 @@ pub(super) fn show(
     .detach();
 }
 
-/// Build the menu (recursively, including submenus), show it, and return the
-/// selected item's action.
 fn run_menu(
     hwnd: isize,
     items: &[NativeMenuItem],
@@ -93,15 +83,11 @@ fn run_menu(
 ) -> Option<Box<dyn Action>> {
     let hwnd = HWND(hwnd as *mut c_void);
 
-    // SAFETY: Win32 menu calls on a live window owned by the calling (main)
-    // thread. The menu (and its submenus) is destroyed before returning.
+    // SAFETY: Win32 menu calls on a live window owned by the calling (main) thread; the menu is destroyed before returning.
     unsafe {
-        // Start GDI+ so item images can be loaded into bitmaps. If it fails, the menu is still
-        // built (images are skipped).
         let gdiplus = GdiplusSession::start();
         let mut actions: Vec<&Box<dyn Action>> = Vec::new();
 
-        // Bitmaps attached to menu items must outlive the menu; freed below.
         let mut bitmaps: Vec<HBITMAP> = Vec::new();
         let menu = build_menu(items, asset_source, &mut actions, &mut bitmaps, image_px)?;
 
@@ -116,16 +102,14 @@ fn run_menu(
 
         let flags = TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY;
         let selected = TrackPopupMenuEx(menu, flags.0, point.x, point.y, hwnd, None);
-        // Destroying the top menu also destroys its attached submenus.
         let _ = DestroyMenu(menu);
 
-        // The menu no longer references the bitmaps, so they can be freed.
         for bitmap in &bitmaps {
             let _ = DeleteObject(HGDIOBJ(bitmap.0));
         }
         drop(gdiplus);
 
-        // Ids are 1-based (0 means "no selection"); map back to `actions`.
+        // Ids are 1-based (0 means "no selection").
         match selected.0 {
             id if id > 0 => actions
                 .get((id - 1) as usize)
@@ -135,11 +119,7 @@ fn run_menu(
     }
 }
 
-/// Make Win32 popup menus follow the application's theme.
-///
-/// Windows does not expose a documented dark-mode API for `HMENU`. These
-/// dynamically resolved uxtheme entry points are used by Windows itself and
-/// degrade to the normal system menu when unavailable.
+/// No documented dark-mode API for `HMENU`; these dynamically resolved uxtheme entry points degrade to the normal system menu when unavailable.
 unsafe fn apply_menu_theme(hwnd: HWND, dark_mode: bool) {
     type AllowDarkModeForWindow = unsafe extern "system" fn(HWND, BOOL) -> BOOL;
     type SetPreferredAppMode = unsafe extern "system" fn(i32) -> i32;
@@ -176,12 +156,7 @@ unsafe fn apply_menu_theme(hwnd: HWND, dark_mode: bool) {
     }
 }
 
-/// Recursively create an `HMENU`. Each actionable leaf gets a 1-based id equal
-/// to its index in `actions` plus one, so the returned id maps back to its action.
-///
-/// Any bitmaps created for item images are pushed onto `bitmaps`; the caller
-/// must free them after destroying the menu with `DeleteObject`. Item images
-/// are sized to `image_px` (physical pixels).
+/// Each actionable leaf gets a 1-based id (index into `actions` + 1); bitmaps pushed onto `bitmaps` must be freed by the caller after destroying the menu.
 ///
 /// # Safety
 /// Win32 menu creation; the returned `HMENU` must be destroyed by the caller.
@@ -194,8 +169,7 @@ unsafe fn build_menu<'a>(
 ) -> Option<HMENU> {
     let menu = unsafe { CreatePopupMenu() }.ok()?;
 
-    // 0-based position of the next item appended, used to attach bitmaps by position (separators
-    // and submenus advance it too).
+    // Used to attach bitmaps by position; separators and submenus advance it too.
     let mut position: u32 = 0;
     for item in items {
         match item {
@@ -218,7 +192,6 @@ unsafe fn build_menu<'a>(
                     flags |= MF_CHECKED;
                 }
                 let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
-                // Actionable, enabled items get an id; others use 0.
                 let id = match action {
                     Some(action) if !*disabled => {
                         actions.push(action);
@@ -258,7 +231,7 @@ unsafe fn build_menu<'a>(
                     flags |= MF_GRAYED;
                 }
                 let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
-                // For MF_POPUP, the id parameter is the submenu handle.
+                // For MF_POPUP, the id is the submenu handle.
                 let _ =
                     unsafe { AppendMenuW(menu, flags, submenu.0 as usize, PCWSTR(wide.as_ptr())) };
                 position += 1;
@@ -269,16 +242,12 @@ unsafe fn build_menu<'a>(
     Some(menu)
 }
 
-/// RAII guard for a GDI+ session (`GdiplusStartup` / `GdiplusShutdown`).
-///
-/// Loading image files into bitmaps requires GDI+ to be initialized. A `None` token means startup
-/// failed; image loading is then skipped gracefully.
+/// RAII guard for a GDI+ session; `None` means startup failed and image loading is skipped gracefully.
 struct GdiplusSession {
     token: usize,
 }
 
 impl GdiplusSession {
-    /// Start GDI+. Returns a guard whose `Drop` calls `GdiplusShutdown`.
     unsafe fn start() -> Option<Self> {
         let input = GdiplusStartupInput {
             GdiplusVersion: 1,
@@ -303,18 +272,10 @@ impl Drop for GdiplusSession {
     }
 }
 
-/// Load an image into an `HBITMAP`, scaled to `image_px` square so it
-/// doesn't overflow the menu row.
-///
-/// SVG files are rasterized with `resvg` (see [`rasterize_svg`]); GDI+ has no
-/// SVG codec. Every other format (PNG, JPEG, BMP, ...) is decoded by GDI+, which
-/// must already be initialized (see [`GdiplusSession`]).
-///
-/// Returns `None` if the file can't be read or decoded. The returned bitmap
-/// must be freed with `DeleteObject`.
+/// SVG is rasterized with `resvg` ([`rasterize_svg`]); other formats decode via GDI+ ([`GdiplusSession`] must already be initialized). `None` if unreadable/undecodable; caller must `DeleteObject` the result.
 ///
 /// # Safety
-/// Calls GDI+ /GDI flat APIs; the returned handle is owned by the caller.
+/// Calls GDI+/GDI flat APIs; the returned handle is owned by the caller.
 unsafe fn load_hbitmap(
     path: &SharedString,
     asset_source: &dyn AssetSource,
@@ -340,7 +301,7 @@ unsafe fn load_hbitmap(
 }
 
 unsafe fn thumbnail_hbitmap(gp_bitmap: *mut GpBitmap, image_px: u32) -> Option<HBITMAP> {
-    // Scale to a menu icon sized thumbnail; GDI+ does not resize on display.
+    // GDI+ does not resize on display, so scale to a thumbnail here.
     let mut thumb: *mut GpImage = std::ptr::null_mut();
     let status = unsafe {
         GdipGetImageThumbnail(
@@ -359,7 +320,7 @@ unsafe fn thumbnail_hbitmap(gp_bitmap: *mut GpBitmap, image_px: u32) -> Option<H
     }
 
     let mut hbitmap = HBITMAP::default();
-    // ARGB background 0 (fully transparent) for the alpha conversion.
+    // ARGB background 0 (fully transparent).
     let status = unsafe { GdipCreateHBITMAPFromBitmap(thumb.cast(), &mut hbitmap, 0) };
 
     unsafe { GdipDisposeImage(thumb) };
@@ -391,7 +352,6 @@ unsafe fn stream_from_bytes(bytes: &[u8]) -> Option<windows::Win32::System::Com:
     }
 }
 
-/// Extract the Win32 `HWND` (as an `isize`) from the window's raw handle.
 fn hwnd_ptr(window: &Window) -> Option<isize> {
     let handle = HasWindowHandle::window_handle(window).ok()?;
     let RawWindowHandle::Win32(handle) = handle.as_raw() else {
@@ -400,12 +360,7 @@ fn hwnd_ptr(window: &Window) -> Option<isize> {
     Some(handle.hwnd.get())
 }
 
-/// Rasterize SVG bytes into an `HBITMAP`, scaled to `image_px` square.
-///
-/// GDI+ has no SVG codec, so SVG data is rendered with `resvg` and wrapped in a
-/// 32-bit DIB section. The SVG is scaled uniformly to fit the square and centered.
-/// Returns `None` if the SVG can't be parsed. The returned bitmap must be freed
-/// with `DeleteObject`.
+/// GDI+ has no SVG codec, so this renders via `resvg` into a 32-bit DIB section, scaled uniformly and centered. `None` if unparsable; caller must `DeleteObject` the result.
 ///
 /// # Safety
 /// Creates a GDI DIB section; the returned handle is owned by the caller.
@@ -417,7 +372,6 @@ unsafe fn rasterize_svg(data: &[u8], image_px: u32) -> Option<HBITMAP> {
     let size = image_px;
     let mut pixmap = tiny_skia::Pixmap::new(size, size)?;
 
-    // Fit the SVG into square without distortion, then center it.
     let svg = tree.size();
     let scale = (size as f32 / svg.width()).min(size as f32 / svg.height());
     let tx = (size as f32 - svg.width() * scale) / 2.0;
@@ -426,9 +380,7 @@ unsafe fn rasterize_svg(data: &[u8], image_px: u32) -> Option<HBITMAP> {
 
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
-    // tiny-skia produces premultiplied RGBA; a 32 bit DIB is laid out RGBA, so
-    // swap the red and blue channels in place. The alpha is already
-    // premultiplied, which is what the menu's alpha blending expects.
+    // Swap red/blue: tiny-skia produces premultiplied RGBA but a 32-bit DIB expects BGRA.
     let mut pixels = pixmap.take();
     for px in pixels.chunks_exact_mut(4) {
         px.swap(0, 2)
@@ -437,13 +389,10 @@ unsafe fn rasterize_svg(data: &[u8], image_px: u32) -> Option<HBITMAP> {
     unsafe { create_dib(&pixels, size, size) }
 }
 
-/// Wrap premultiplied-RGBA `pixels` (top-down, `width` x `height`) in a 32-bit
-/// DIB section `HBITMAP`. Returns `None` if creation fails; the returned bitmap
-/// must be freed with `DeleteObject`.
+/// `pixels` is top-down, premultiplied BGRA, `width` x `height`. `None` if creation fails; caller must `DeleteObject` the result.
 ///
 /// # Safety
-/// Calls GDI flat APIs and copies `pixels` into the section's backing store,
-/// which must be `width * height * 4` bytes.
+/// Calls GDI flat APIs and copies `pixels` into the section's backing store, which must be `width * height * 4` bytes.
 unsafe fn create_dib(pixels: &[u8], width: u32, height: u32) -> Option<HBITMAP> {
     let info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
@@ -461,7 +410,7 @@ unsafe fn create_dib(pixels: &[u8], width: u32, height: u32) -> Option<HBITMAP> 
     };
 
     let mut bits: *mut c_void = std::ptr::null_mut();
-    // A null `HDC` is fine with `DIB_RGB_COLORS` (no palette to resolve).
+    // A null HDC is fine with DIB_RGB_COLORS (no palette to resolve).
     let hbitmap = unsafe {
         CreateDIBSection(
             HDC::default(),

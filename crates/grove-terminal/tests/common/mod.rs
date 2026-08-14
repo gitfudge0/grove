@@ -1,54 +1,7 @@
-//! Shared test scaffolding: the fixture corpus loader, the neutral
-//! `ScreenDump` comparison value, and the **frozen expected-dump** serializer.
-//!
-//! # Why the expected dumps are committed text files (Plan 10 Task 4)
-//!
-//! The vt100 oracle is what gives these fixtures their authority: it is an
-//! independent implementation, so "alacritty agrees with vt100" is a real
-//! parity statement. Plan 10 Phase C deletes vt100 from the workspace. Freezing
-//! the dumps **now**, from the oracle, while it is still here, is what turns
-//! spec §10.11's "keep golden fixtures as grove-terminal regression tests" into
-//! a genuine regression test instead of a self-snapshot.
-//!
-//! The alternatives were considered and rejected. The reasoning is recorded
-//! here because it is the only thing that stops a future reader from
-//! "simplifying" it back:
-//!
-//! - **Keep vt100 as a dev-dependency forever.** Rejected: spec §1 and the
-//!   master standing rules say vt100 leaves at Plan 10, and a dev-dep still
-//!   pins a parser the product no longer uses.
-//! - **Bless the dumps from `GroveTerm` after the delete.** Rejected:
-//!   circular. The test would then assert only "alacritty behaves the way
-//!   alacritty behaved yesterday", which is a change-detector, not a parity
-//!   test — it cannot detect a regression that was already present at bless
-//!   time.
-//! - **Assert hand-written invariants instead of dumps.** Rejected: the
-//!   fixtures' value is exactly their cell-by-cell density; summarizing them
-//!   throws away the coverage Plan 02 paid for.
-//!
-//! The format is text, not bincode/JSON, so a diff is reviewable in a PR. The
-//! blank-cell normalization ([`normalize_cell_text`]) and the INVERSE swap
-//! ([`apply_inverse`]) are applied before serialization, so the frozen text is
-//! the *same* neutral dump the two parsers already agreed on.
-//!
-//! # The vt100 bug the oracle had to work around (Plan 10 Task 7 Step 2)
-//!
-//! The oracle (`tests/common/oracle.rs`) is deleted, and with it the only
-//! written record of a real vt100 defect. It is preserved here because it is a
-//! fact about a third-party crate, not about our code, and it must not vanish
-//! silently:
-//!
-//! > **vt100 0.15.2 panics on deep scrollback.** `grid.rs:125`'s `visible_rows`
-//! > computes `rows_len - scrollback_offset` without a guard, so an offset
-//! > larger than the number of retained rows underflows. The oracle worked
-//! > around it by clamping the scrollback offset before every read.
-//!
-//! **No further action is needed.** vt100 leaves the tree with this commit; the
-//! note exists so that a future reader who reintroduces vt100 — as an oracle or
-//! otherwise — knows the workaround was deliberate and why.
-//!
-//! Every item here is used by at least one integration test target, but not by
-//! all of them, so `dead_code` is allowed module-wide.
+//! Shared test scaffolding: the fixture corpus loader, the neutral `ScreenDump` comparison value, and the frozen expected-dump serializer.
+//! Dumps are frozen from the vt100 oracle before its Plan 10 Phase C deletion, so parity stays a real regression test rather than a self-snapshot re-blessed from `GroveTerm`.
+//! vt100 0.15.2 panics on deep scrollback (`grid.rs:125`'s `visible_rows` underflows without a guard); the oracle clamped the offset before every read — preserved here as the only record, since the oracle itself is deleted.
+//! Every item here is used by at least one integration test target, but not all, so `dead_code` is allowed module-wide.
 #![allow(dead_code)]
 #![allow(
     clippy::unwrap_used,
@@ -66,9 +19,7 @@ pub struct Fixture {
     pub bytes: Vec<u8>,
     pub rows: u16,
     pub cols: u16,
-    /// True when the stream is expected to spend its life on the alternate
-    /// screen (tmux/vim). Primary-screen fixtures reflow on resize; see the
-    /// known-divergence test.
+    /// Primary-screen fixtures reflow on resize instead; see the known-divergence test.
     pub alt_screen: bool,
 }
 
@@ -76,9 +27,7 @@ pub fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
-/// Load every `*.bin` in `tests/fixtures` together with its `*.meta.json`
-/// sidecar. Fixtures are raw bytes — never text — so escape sequences survive
-/// round-tripping.
+/// Fixtures are raw bytes, never text, so escape sequences survive round-tripping.
 pub fn load_all() -> Vec<Fixture> {
     let dir = fixtures_dir();
     let mut out = Vec::new();
@@ -122,15 +71,7 @@ pub fn fixture(label: &str) -> Fixture {
         .unwrap_or_else(|| panic!("no fixture labelled {label}"))
 }
 
-/// Shared selection probe rectangles, in scrollback-absolute coordinates
-/// (larger row = older), covering: same-row, multi-row, reversed endpoints, a
-/// full-screen span, and a mid-screen multi-row span.
-///
-/// Deliberately confined to the visible screen. Selections that reach into
-/// scrollback are covered separately by [`scrollback_selection_probes`], on a
-/// fixture whose history the two parsers agreed on — see
-/// `ed2_scrollback_retention_is_a_known_divergence` in `tests/divergence.rs`
-/// for why a shared deep-scrollback probe could not exist.
+/// Confined to the visible screen; scrollback-crossing spans are [`scrollback_selection_probes`] instead — see `ed2_scrollback_retention_is_a_known_divergence` in `tests/divergence.rs`.
 pub fn selection_probes(rows: u16) -> Vec<((usize, usize), (usize, usize))> {
     let r = rows as usize;
     vec![
@@ -142,16 +83,9 @@ pub fn selection_probes(rows: u16) -> Vec<((usize, usize), (usize, usize))> {
     ]
 }
 
-/// The resize script the frozen `__resize<rows>x<cols>` cases replay.
 pub const RESIZE_SCRIPT: &[(u16, u16)] = &[(20, 60), (40, 140), (34, 120), (10, 200)];
 
-/// Chunk boundaries `golden_chunking_invariance` and the frozen
-/// `__chunk<size>` cases feed a fixture at.
 pub const CHUNK_SIZES: &[usize] = &[1, 7, 64, 4096];
-
-// ---------------------------------------------------------------------------
-// The neutral comparison value
-// ---------------------------------------------------------------------------
 
 use grove_terminal::TermColor;
 
@@ -177,10 +111,7 @@ pub struct ScreenDump {
     pub app_cursor: bool,
 }
 
-/// vt100 reports a blank cell as `""` while alacritty reports `' '`. Neither is
-/// wrong; they are the same visual cell. Normalize once, here, so both dumps
-/// speak the same language and the difference can never masquerade as a real
-/// mismatch.
+/// vt100 reports a blank cell as `""`, alacritty as `' '` — the same visual cell; normalize once so the difference can't masquerade as a mismatch.
 pub fn normalize_cell_text(s: &str) -> String {
     if s.is_empty() {
         " ".to_string()
@@ -189,8 +120,7 @@ pub fn normalize_cell_text(s: &str) -> String {
     }
 }
 
-/// INVERSE is recorded by swapping fg/bg — applied identically by both sides
-/// via this one helper, so the semantics cannot drift apart.
+/// Applied identically by both sides via this one helper, so the semantics cannot drift apart.
 pub fn apply_inverse(fg: TermColor, bg: TermColor, inverse: bool) -> (TermColor, TermColor) {
     if inverse {
         (bg, fg)
@@ -199,7 +129,6 @@ pub fn apply_inverse(fg: TermColor, bg: TermColor, inverse: bool) -> (TermColor,
     }
 }
 
-/// Render a dump's cells as plain text rows, for readable mismatch reports.
 pub fn render_rows(d: &ScreenDump) -> Vec<String> {
     (0..d.rows as usize)
         .map(|r| {
@@ -210,13 +139,10 @@ pub fn render_rows(d: &ScreenDump) -> Vec<String> {
         .collect()
 }
 
-/// First differing cell index between two dumps of the same geometry.
 pub fn first_cell_diff(a: &ScreenDump, b: &ScreenDump) -> Option<usize> {
     a.cells.iter().zip(b.cells.iter()).position(|(x, y)| x != y)
 }
 
-/// A readable report of the first cell-level difference: coordinates, both
-/// cells, and a ±3-row text rendering of each side.
 pub fn describe_cell_mismatch(label: &str, a: &ScreenDump, b: &ScreenDump) -> String {
     use std::fmt::Write as _;
     let mut s = String::new();
@@ -252,38 +178,17 @@ pub fn describe_cell_mismatch(label: &str, a: &ScreenDump, b: &ScreenDump) -> St
     s
 }
 
-// ---------------------------------------------------------------------------
-// The frozen expected dumps (Plan 10 Task 4)
-// ---------------------------------------------------------------------------
-
-/// A selection probe: the two scrollback-absolute endpoints and the text the
-/// parser returned for them (`None` when the span yields nothing).
+/// `(endpoints, selection text)`; `None` when the span yields nothing.
 pub type SelectionProbe = (((usize, usize), (usize, usize)), Option<String>);
 
-/// The probe outputs the harness compares alongside the cell grid. Empty for
-/// the chunk/resize cases, which only re-assert the screen.
+/// Empty for the chunk/resize cases, which only re-assert the screen.
 #[derive(Debug, Default)]
 pub struct Probes {
-    /// `(n, tail_contents(n))`.
     pub tails: Vec<(usize, String)>,
-    /// `((a, b), selection_text(a, b))`.
     pub selections: Vec<SelectionProbe>,
 }
 
-/// The one and only enumeration of frozen cases. Both the freeze/compare
-/// harness and the drift guard read it, so a case can never exist without a
-/// file or a file without a case.
-///
-/// Cases:
-/// - `<fixture>__base` — the whole stream fed in one blob
-/// - `<fixture>__chunk<size>` — the same stream split at each [`CHUNK_SIZES`]
-///   boundary (a stateful parser bug at a chunk edge shows up nowhere else)
-/// - `<fixture>__resize<rows>x<cols>` — alt-screen fixtures only, walked
-///   through [`RESIZE_SCRIPT`] cumulatively. The primary screen is excluded
-///   because it reflows in alacritty and not in vt100 — see the
-///   `__DIVERGENCE` case.
-/// - `resize-storm-primary__reflow34x40__DIVERGENCE` — blessed from
-///   `GroveTerm`, not the oracle.
+/// Both the freeze/compare harness and the drift guard read this, so a case can never exist without a file or vice versa. See `__base`/`__chunk<size>`/`__resize<rows>x<cols>`/`__DIVERGENCE` naming below.
 pub fn expected_cases() -> Vec<String> {
     let mut out = Vec::new();
     for f in load_all() {
@@ -303,23 +208,13 @@ pub fn expected_cases() -> Vec<String> {
     out
 }
 
-/// The one asserted divergence that has a screen dump. Blessed from
-/// `GroveTerm`, because the oracle is by definition wrong here.
-///
-/// (The other asserted divergence — alacritty retaining an `ED 2`-cleared
-/// screen in scrollback — is a scalar history-size assertion, not a screen, so
-/// it has no `.dump` file. It stays asserted in `tests/divergence.rs`.)
+/// The one asserted divergence with a screen dump, blessed from `GroveTerm` because the oracle is by definition wrong here.
 pub const DIVERGENCE_REFLOW_CASE: &str = "resize-storm-primary__reflow34x40__DIVERGENCE";
 
-/// The scrollback-crossing selection probes, frozen from the oracle (Plan 10
-/// Task 7 Step 2). `selection_into_scrollback_matches_where_history_agrees` was
-/// a pure oracle comparison; freezing its probe outputs is what lets it survive
-/// the oracle's deletion as a real regression test rather than be dropped.
+/// Frozen from the oracle so `selection_into_scrollback_matches_where_history_agrees` survives the oracle's deletion as a real regression test.
 pub const SCROLLBACK_SELECTION_CASE: &str = "resize-storm-primary__scrollback_selection";
 
-/// The probe rectangles for [`SCROLLBACK_SELECTION_CASE`]: spans that start in
-/// scrollback (row index > the visible height) and end on the visible screen,
-/// including one with reversed endpoints.
+/// Spans that start in scrollback and end on the visible screen, including one with reversed endpoints.
 pub fn scrollback_selection_probes(rows: u16) -> Vec<((usize, usize), (usize, usize))> {
     let r = rows as usize;
     vec![
@@ -330,8 +225,7 @@ pub fn scrollback_selection_probes(rows: u16) -> Vec<((usize, usize), (usize, us
     ]
 }
 
-/// Probe-only serialization, for cases that freeze selection text without a
-/// screen (the screen itself is already frozen by the `__base` case).
+/// For cases that freeze selection text without a screen (frozen already by `__base`).
 pub fn serialize_selection_probes(probes: &[SelectionProbe]) -> String {
     use std::fmt::Write as _;
     let mut s = String::new();
@@ -353,25 +247,18 @@ pub fn expected_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/expected")
 }
 
-/// `GROVE_TERM_BLESS=1` regenerates the expected files instead of comparing
-/// against them. Gated so a stale expectation can never be papered over by an
-/// accidental re-run.
+/// Gated so a stale expectation can never be papered over by an accidental re-run.
 pub fn blessing() -> bool {
     std::env::var("GROVE_TERM_BLESS").as_deref() == Ok("1")
 }
 
-/// Deterministic text serialization of a dump.
-///
-/// One line per **cell run** — consecutive cells in a row sharing fg/bg/bold
-/// are collapsed, which is what keeps a 34×120 screen reviewable:
+/// One line per cell run (consecutive cells sharing fg/bg/bold collapse), keeping a 34×120 screen reviewable:
 ///
 /// ```text
 /// r{row} c{col} "{text}" fg={TermColor:?} bg={TermColor:?} bold={bool}
 /// ```
 ///
-/// followed by a trailer block of the non-cell state and the probe outputs.
-/// The text is escaped so a control character or a quote can never break a
-/// line, and so the file stays diffable.
+/// Followed by a trailer block of non-cell state and probe outputs; text is escaped so it stays diffable.
 pub fn serialize_dump(d: &ScreenDump, probes: &Probes) -> String {
     use std::fmt::Write as _;
     let mut s = String::new();
@@ -433,8 +320,6 @@ pub fn serialize_dump(d: &ScreenDump, probes: &Probes) -> String {
     s
 }
 
-/// Escape so every serialized value stays on one line and quotes cannot
-/// terminate a field early.
 fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
@@ -453,12 +338,7 @@ fn escape(s: &str) -> String {
     out
 }
 
-/// Compare `text` against `tests/expected/<case>.dump`, or write the file when
-/// `GROVE_TERM_BLESS=1`.
-///
-/// `header` is prepended as `# `-prefixed lines when blessing; it is how a
-/// `__DIVERGENCE` file records which side it came from and why. A reader must
-/// never have to guess.
+/// `header` is prepended as `# `-lines when blessing — how a `__DIVERGENCE` file records which side it came from and why.
 pub fn assert_expected(case: &str, text: &str, header: &[&str]) {
     let path = expected_dir().join(format!("{case}.dump"));
     let mut body = String::new();
@@ -487,8 +367,7 @@ pub fn assert_expected(case: &str, text: &str, header: &[&str]) {
     if want == body {
         return;
     }
-    // First differing line, so the failure names a cell rather than a 4000-line
-    // wall of text.
+    // Names the first differing line, not a 4000-line wall of text.
     let (mut wl, mut gl) = (want.lines(), body.lines());
     let mut n = 0usize;
     loop {
