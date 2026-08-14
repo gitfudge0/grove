@@ -91,8 +91,6 @@ where
         self
     }
 
-    /// Show or hide the x-axis line and labels.
-    ///
     /// Default is true.
     pub fn x_axis(mut self, x_axis: bool) -> Self {
         self.x_axis = x_axis;
@@ -125,13 +123,11 @@ where
         let axis_gap = if self.x_axis { AXIS_GAP } else { 0. };
         let height = bounds.size.height.as_f32() - axis_gap;
 
-        // X scale
         let x = ScaleBand::new(self.data.iter().map(|v| x_fn(v)).collect(), vec![0., width])
             .padding_inner(0.4)
             .padding_outer(0.2);
         let band_width = x.band_width();
 
-        // Y scale
         let all_values: Vec<Y> = self
             .data
             .iter()
@@ -139,7 +135,6 @@ where
             .collect();
         let y = ScaleLinear::new(all_values, vec![height, 10.]);
 
-        // Draw X axis
         let mut axis = PlotAxis::new().stroke(cx.theme().border);
         if self.x_axis {
             let labels = build_band_labels(
@@ -154,7 +149,6 @@ where
         }
         axis.paint(&bounds, window, cx);
 
-        // Draw grid
         if self.grid {
             Grid::new()
                 .y((0..=3).map(|i| height * i as f32 / 4.0).collect())
@@ -163,7 +157,6 @@ where
                 .paint(&bounds, window);
         }
 
-        // Draw candlesticks
         let origin = bounds.origin;
         let x_fn = x_fn.clone();
         let open_fn = open_fn.clone();
@@ -177,13 +170,11 @@ where
                 continue;
             };
 
-            // Get OHLC values for the current data point
             let open = open_fn(d);
             let high = high_fn(d);
             let low = low_fn(d);
             let close = close_fn(d);
 
-            // Convert values to pixel coordinates
             let open_y = y.tick(&open);
             let high_y = y.tick(&high);
             let low_y = y.tick(&low);
@@ -195,7 +186,6 @@ where
                 continue;
             };
 
-            // Determine if bullish (close > open) or bearish (close < open)
             let is_bullish = close > open;
             let color: Hsla = if is_bullish {
                 cx.theme().chart_bullish
@@ -203,13 +193,11 @@ where
                 cx.theme().chart_bearish
             };
 
-            // Calculate candlestick body dimensions
             let center_x = x_tick + band_width / 2.;
             let body_width = band_width * self.body_width_ratio;
             let body_left = center_x - body_width / 2.;
             let body_right = center_x + body_width / 2.;
 
-            // Draw wick (high to low line)
             let mut wick_builder = PathBuilder::stroke(px(1.));
             wick_builder.move_to(origin_point(px(center_x), px(high_y), origin));
             wick_builder.line_to(origin_point(px(center_x), px(low_y), origin));
@@ -218,9 +206,7 @@ where
                 window.paint_path(path, color);
             }
 
-            // Draw body (open to close rectangle)
-            // For bullish: top is close, bottom is open
-            // For bearish: top is open, bottom is close
+            // Bullish: top is close, bottom is open. Bearish: reversed.
             let (top, bottom) = if is_bullish {
                 (close_y, open_y)
             } else {

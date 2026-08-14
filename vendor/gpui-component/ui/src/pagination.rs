@@ -35,7 +35,6 @@ enum PageItem {
 }
 
 impl Pagination {
-    /// Create a new Pagination component with the given ID.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -50,15 +49,12 @@ impl Pagination {
         }
     }
 
-    /// Set the current page number (1-based).
-    ///
-    /// The value will be clamped between 1 and total_pages when total_pages is set.
+    /// 1-based; clamped to total_pages when set.
     pub fn current_page(mut self, page: usize) -> Self {
         self.current_page = page.max(1);
         self
     }
 
-    /// Set the total number of pages.
     pub fn total_pages(mut self, pages: usize) -> Self {
         self.total_pages = pages.max(1);
         if self.current_page > self.total_pages {
@@ -67,10 +63,6 @@ impl Pagination {
         self
     }
 
-    /// Set the handler for page change (when clicking on page numbers, prev, or next).
-    ///
-    /// This handler receives the new page number to navigate to.
-    ///
     /// # Examples
     ///
     /// ```ignore
@@ -86,15 +78,12 @@ impl Pagination {
         self
     }
 
-    /// Set to display as compact style.
-    ///
-    /// If true, only the prev, next buttons with only icon.
+    /// If true, only prev/next icon-only buttons.
     pub fn compact(mut self) -> Self {
         self.compact = true;
         self
     }
 
-    /// Set viewable maximum number of page buttons, default
     pub fn visible_pages(mut self, max: usize) -> Self {
         self.visible_pages = max;
         self

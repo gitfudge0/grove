@@ -69,8 +69,6 @@ pub struct TextViewState {
     pub(super) auto_scroll: AutoScroll,
 
     pub(super) parsed_content: ParsedContent,
-    /// Content format (markdown / html), used to parse synchronously on the
-    /// main thread for full-replace updates.
     format: TextViewFormat,
     text: String,
     revision: usize,
@@ -115,9 +113,7 @@ impl TextViewState {
                                 state.parsed_error = Some(err);
                             }
                         }
-                        // Don't interrupt an active drag-selection; the stored
-                        // positions remain valid for append-only updates and will
-                        // self-correct on the next mouse-move event.
+                        // Don't interrupt an active drag-selection; positions self-correct on the next mouse-move.
                         if !state.is_selecting {
                             state.reset_selection();
                         }
@@ -138,10 +134,7 @@ impl TextViewState {
             select_all: false,
             selectable: false,
             scrollable: false,
-            // Measure all blocks (not just visible ones) so the scrollbar
-            // thumb size stays stable. Without this, off-screen blocks count
-            // as zero height until scrolled into view, which makes the
-            // scrollbar jitter as more blocks get measured during scrolling.
+            // measure_all so off-screen blocks don't count as zero height and jitter the scrollbar.
             list_state: ListState::new(0, gpui::ListAlignment::Top, px(1000.)).measure_all(),
             text_view_style: TextViewStyle::default(),
             code_block_actions: None,
@@ -161,30 +154,25 @@ impl TextViewState {
         this
     }
 
-    /// Get the text content.
     pub(crate) fn source(&self) -> SharedString {
         self.parsed_content.document.source.clone()
     }
 
-    /// Set whether the text is selectable, default false.
     pub fn selectable(mut self, selectable: bool) -> Self {
         self.selectable = selectable;
         self
     }
 
-    /// Set whether the text is selectable, default false.
     pub fn set_selectable(&mut self, selectable: bool, cx: &mut Context<Self>) {
         self.selectable = selectable;
         cx.notify();
     }
 
-    /// Set whether the text is selectable, default false.
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
         self
     }
 
-    /// Set whether the text is selectable, default false.
     pub fn set_scrollable(&mut self, scrollable: bool, cx: &mut Context<Self>) {
         if !scrollable {
             self.reset_selection();
@@ -193,7 +181,6 @@ impl TextViewState {
         cx.notify();
     }
 
-    /// Set the text content.
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         if self.text.as_str() == text {
             return;
@@ -205,7 +192,6 @@ impl TextViewState {
         self.increment_update(text, false, cx);
     }
 
-    /// Append partial text content to the existing text.
     pub fn push_str(&mut self, new_text: &str, cx: &mut Context<Self>) {
         if new_text.is_empty() {
             return;
@@ -230,7 +216,6 @@ impl TextViewState {
         }
     }
 
-    /// Return the selected text.
     pub fn selected_text(&self) -> String {
         if self.select_all {
             return self.parsed_content.document.text();
@@ -252,15 +237,8 @@ impl TextViewState {
             markdown_extensions: self.markdown_extensions.clone(),
         };
 
-        // Full-replace updates (initial content / `set_text`) parse
-        // synchronously on the main thread so the first layout already has the
-        // correct height. Otherwise parsing finishes later on a background task
-        // and the first layout sees an empty `parsed_content` (~0 height); when
-        // this `TextView` is an item inside an outer `list` with `measure_all`,
-        // off-screen items get measured at that empty height and the total
-        // content height keeps growing as items scroll into view; the scrollbar
-        // thumb jitters. Streaming appends stay async to avoid re-parsing the
-        // whole document on every chunk.
+        // Full-replace updates parse synchronously so the first layout has the correct height,
+        // or measure_all items grow the scrollbar as they scroll in. Streaming appends stay async.
         if !append {
             match parse_content(self.format, ParsedContent::default(), &update_options) {
                 Ok(content) => {
@@ -281,7 +259,6 @@ impl TextViewState {
         _ = self.tx.try_send(update_options);
     }
 
-    /// Save bounds and unselect if bounds changed.
     pub(super) fn update_bounds(&mut self, bounds: Bounds<Pixels>) {
         if self.bounds.size != bounds.size {
             self.reset_selection();
@@ -293,8 +270,7 @@ impl TextViewState {
         self.bounds
     }
 
-    /// Whether this view has a view-local selection (select-all, multi-click, or override),
-    /// independent of the window-level selection.
+    /// Independent of the window-level selection.
     pub(super) fn has_view_selection(&self) -> bool {
         self.select_all
             || self.multi_click_selection.is_some()
@@ -311,13 +287,10 @@ impl TextViewState {
         self.select_all = false;
         self.is_selecting = false;
         self.auto_scroll.stop();
-        // Clear the inline selection state synchronously, so offscreen
-        // (virtualized) views that won't repaint don't leak stale selection
-        // text into a new cross-view copy.
+        // Synchronous, so virtualized views that won't repaint don't leak stale selection text.
         self.parsed_content.document.clear_selection();
     }
 
-    /// Clear the current text selection.
     pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
         self.reset_selection();
         cx.notify();
@@ -331,7 +304,6 @@ impl TextViewState {
         }
     }
 
-    /// Select all rendered text in this view.
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
         self.multi_click_selection = None;
         self.selected_text_override = None;
@@ -363,12 +335,7 @@ impl TextViewState {
         });
     }
 
-    /// Return the window selection (anchor, cursor) in window coordinates if
-    /// this view participates in it.
-    ///
-    /// Single-view fast path: when both endpoints are anchored inside one
-    /// TextView, only that view participates (identical to the previous
-    /// per-view behavior).
+    /// `None` if this view doesn't participate in the window-level selection.
     pub(crate) fn selection_points(
         &self,
         window: &Window,

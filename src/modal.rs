@@ -1,57 +1,32 @@
 //! The pure modal state machine: the single slot, the per-modal Escape
 //! verdicts, the key-context strings, and the quit-confirm clobber rule.
+//! Ported from `src/app/modal.rs:5-186` and `src/gui/update/modals.rs:69-336,645-702`.
 //!
-//! No gpui types live here. `views::modals` translates gpui keystrokes into
-//! [`ModalKey`]/[`ModalMods`], asks this module for a [`ModalKeyVerdict`], and
-//! performs it. Ported from `src/app/modal.rs:5-186` (the variant set) and
-//! `src/gui/update/modals.rs:69-336,645-702` (the lifecycle and the keyboard
-//! table).
-//!
-//! # `should_forward`, `MODAL_OPEN` and `PALETTE_OPEN` have no counterpart here
-//!
-//! The iced front end needs three statics and an event-forwarding predicate
-//! (`src/gui/update/pty_input.rs:299-362`) because a focused `text_input`
-//! captures keys and never tells the app. gpui's dispatch is structural
-//! instead, so all three of `should_forward`'s carve-outs are paid for by
-//! construction and **neither static is ported** (carried decision 3):
-//!
-//! | iced carve-out | gpui replacement |
-//! |---|---|
-//! | Escape, forwarded despite capture (`pty_input.rs:349-352`) | `InputState::escape()` calls `cx.propagate()` (vendored `input/state.rs:1685`) unless `clean_on_escape` is set. `ModalInput` **never** sets it, so Escape reaches the layer from inside a focused field. |
-//! | A global-mods chord while a modal is open (`pty_input.rs:357-359`) | Each modal declares its own `key_context` (see [`ModalKind::key_context`]) and binds its chords there as gpui **actions**. An action never arrives at the `Input` as text. |
-//! | ←/→ while the palette is open (`pty_input.rs:353-356`) | A `"<ModalContext> > Input"` descendant binding registered **after** `gpui_component::init`, which out-ranks gpui-component's plain `"Input"` binding at the same dispatch node. Enabled per modal by `wants_arrows`. (The plan called for capture-phase interception; that does not work at this gpui rev — see `views::modals::input`'s module doc for the dispatch-order proof.) |
-//!
-//! The drift guard [`bound_chords`] + its test is what keeps the second row
-//! honest: a context may not bind a chord this module's verdict table ignores.
-
-// ── the payload types ported from `src/app/modal.rs` ─────────────────────
+//! gpui's structural dispatch replaces the iced `should_forward`/`MODAL_OPEN`/`PALETTE_OPEN`
+//! statics entirely (carried decision 3): Escape propagates from `InputState::escape()` unless
+//! `clean_on_escape` is set (never set by `ModalInput`); per-modal chords are bound as gpui
+//! actions via [`ModalKind::key_context`]; ←/→ capture uses a `"<ModalContext> > Input"`
+//! descendant binding gated by `wants_arrows`, since capture-phase interception doesn't work at
+//! this gpui rev. [`bound_chords`]'s test guards that every bound chord is claimed by [`key_verdict`].
 
 /// What a `Confirm` modal is actually confirming (`src/app/modal.rs:177-186`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfirmKind {
-    // TODO(unwired): `views::modals::confirm` handles this arm
-    // (`open_remove_project`), but nothing ever raises it — the live
-    // remove-project flow opens `Modal::RemoveProject` directly. A handled
-    // confirm with no producer is an unwired path, not dead code.
+    // TODO(unwired): handled by views::modals::confirm but nothing raises it; live flow uses Modal::RemoveProject directly.
     #[allow(dead_code)]
     RemoveProject(usize),
-    /// Worktree path.
     RemoveWorktree(String),
     InitAndAddWorktree {
         name: String,
     },
-    /// Close grove despite running native sessions.
     Quit,
 }
 
 /// Stage of an in-progress worktree teardown (`src/app/modal.rs:152-161`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TeardownStage {
-    /// The teardown script is running in the modal's embedded PTY.
     RunningScript,
-    /// Script finished; `git worktree remove` is executing.
     Removing,
-    /// Done — `failed` is set if removal failed.
     Done { failed: bool },
 }
 
@@ -72,7 +47,6 @@ impl OnboardStep {
         OnboardStep::Session,
     ];
 
-    /// The wizard's fixed step sequence.
     pub fn flow() -> &'static [OnboardStep] {
         &Self::ALL
     }
@@ -85,7 +59,6 @@ impl OnboardStep {
         self.index_in().checked_sub(1).map(|i| Self::flow()[i])
     }
 
-    /// Short label shown in the progress rail.
     pub fn label(self) -> &'static str {
         match self {
             OnboardStep::Welcome => "welcome",
@@ -96,66 +69,39 @@ impl OnboardStep {
     }
 }
 
-/// Whether a theme picker edits the app theme or one project's pinned theme
-/// (`src/app/theme_picker.rs:17-23`). Keyed by project **name**, not index —
-/// indices shift under add/remove, names do not.
+/// Keyed by project **name** (`src/app/theme_picker.rs:17-23`) — indices shift under add/remove.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThemePickerScope {
     App,
     Project(String),
 }
 
-/// The scripts editor's three buffers. Pure `String`s, so they survive the
-/// ScriptsEditor → ThemePicker → ScriptsEditor round trip inside the slot
-/// itself (the documented `open_child` exception, `modals.rs:660-668`); the
-/// gpui `InputState`s are re-seeded from them on re-mount.
+/// Pure `String`s so they survive the ScriptsEditor → ThemePicker → ScriptsEditor round trip (`modals.rs:660-668`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScriptsEditorState {
     pub project_path: String,
-    /// Live edit buffer for the project's display name, seeded from
-    /// `Project::name` on open. Saved (and every name-keyed reference
-    /// migrated) in `save_scripts` if it changed.
     pub name: String,
     pub setup: String,
     pub run: String,
     pub teardown: String,
-    /// Whether the header's name field is in its editable sub-state (pencil
-    /// clicked). Modelled after `Modal::ThemeManager`'s `rename: Option<…>`
-    /// (`:819-826`) — a focused rename field nested inside a modal that has
-    /// its own keyboard. `Default` = false so the field-0/field-1 focus tail
-    /// and the round trip through `ThemePicker` both start in display mode.
     pub renaming: bool,
 }
 
-/// Where a `ThemePicker` goes when it closes (`src/app/modal.rs:79-82` plus
-/// the ScriptsEditor round trip).
+/// Where a `ThemePicker` goes when it closes (`src/app/modal.rs:79-82` plus the ScriptsEditor round trip).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThemePickerReturn {
-    /// Close outright.
     Close,
-    /// Reopen `Settings` — the picker was entered from the Appearance section.
     Settings,
-    /// Reopen the scripts editor with its buffers intact.
     ScriptsEditor(Box<ScriptsEditorState>),
 }
 
-// ── the slot's variant set ───────────────────────────────────────────────
-
-/// One variant per modal, carrying exactly the state that variant needs.
-///
-/// Unlike iced's `Modal`, the `Grove`-owned child state (`add_project`,
-/// `launcher`, `scripts_editor`, `theme_manager_editor`) lives **inline** here.
-/// That turns `set_modal`'s clear-by-default discipline (`modals.rs:645-651`)
-/// into a type property: replacing the slot drops the old state and forgetting
-/// to clear it is impossible (carried decision 4).
+/// One variant per modal. Unlike iced's `Modal`, child state lives **inline** here so replacing
+/// the slot drops the old state automatically (carried decision 4).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Modal {
-    /// Single-field text prompt; today only the worktree-name input.
     Input {
         title: String,
         buffer: String,
-        /// Inline validation message, shown in red under the field. Cleared on
-        /// the next edit.
         note: Option<String>,
     },
     Confirm {
@@ -164,15 +110,11 @@ pub enum Modal {
         destructive: bool,
         kind: ConfirmKind,
     },
-    /// Two-step add-project wizard (Task 4 owns the inner state).
     AddProject(Box<AddProjectState>),
-    /// Two-stage project removal: confirmation (with the optional
-    /// "also delete worktrees on disk" checkbox) then a progress view.
     RemoveProject {
         idx: usize,
         name: String,
         project_path: String,
-        /// Non-main worktree paths discovered when the modal opened.
         worktrees: Vec<String>,
         also_remove_worktrees: bool,
         in_progress: bool,
@@ -180,15 +122,11 @@ pub enum Modal {
         current: String,
         errors: Vec<String>,
     },
-    /// Blocking archive gate. `sessions` is one row per SESSION (never per
-    /// worktree — a single worktree can hold several), deliberately NOT
-    /// filtered to running sessions so the gate's count can never disagree
-    /// with what `kill_sessions_for_project` would kill, and recomputed after
-    /// every kill (`modals.rs:703-745`).
+    /// `sessions` is one row per SESSION, not per worktree, and deliberately not filtered to
+    /// running ones so the count can't disagree with `kill_sessions_for_project` (`modals.rs:703-745`).
     ArchiveProject {
         idx: usize,
         name: String,
-        /// `(worktree display name, agent label, is_running)`.
         sessions: Vec<(String, String, bool)>,
     },
     /// Marker: every row derives live from `store.archived_projects()`.
@@ -200,73 +138,44 @@ pub enum Modal {
         wt_path: String,
         sel: usize,
     },
-    /// The recents-first command palette (Task 5 owns the inner state).
     SessionLauncher(Box<LauncherSlotState>),
     ThemePicker {
         sel_dark: usize,
         sel_light: usize,
-        /// `true` = the dark tab is showing.
         dark_tab: bool,
-        /// Theme name to restore if the picker is cancelled.
         original: String,
         follow_system: bool,
         scope: ThemePickerScope,
-        /// Project scope only: the "Default (follow app)" row is selected.
         project_use_default: bool,
         return_to: ThemePickerReturn,
     },
-    /// Custom-theme management. The paste-first editor sub-view is open
-    /// whenever `editor` is `Some`.
     ThemeManager {
-        /// Index into `theme::all_custom_themes()`.
         selected: usize,
-        /// Inline rename in progress: `(original_name, live_buffer)`.
         rename: Option<(String, String)>,
-        /// Inline error under the row being renamed (e.g. a name collision).
         rename_error: Option<String>,
-        /// Custom theme pending a delete confirmation, by name.
         pending_delete: Option<String>,
-        /// The multiline editor's buffer, when the editor sub-view is showing.
         editor: Option<String>,
     },
-    /// Every control persists immediately; there is no apply/cancel footer.
     Settings,
-    /// Registry-generated shortcut reference. Esc or its own chord closes.
     ShortcutOverlay,
-    /// Worktree teardown. The live PTY lives on the view; only the stage and
-    /// the paths are pure.
     Teardown {
         wt_path: String,
         project_path: String,
         stage: TeardownStage,
         message: String,
-        /// Set once the blocking `git worktree remove` has been kicked off, so
-        /// a `Removing` frame paints before the removal runs
-        /// (`src/app/modal.rs:171-174`). In gpui the removal is on the
-        /// background executor, which makes this a paint-ordering detail
-        /// rather than a hack — kept so the stage sequence stays observable.
+        /// Set once `git worktree remove` has been kicked off, so a `Removing` frame paints before it runs.
         removal_started: bool,
     },
-    /// Per-project lifecycle-scripts editor.
     ScriptsEditor(Box<ScriptsEditorState>),
-    /// Apply-in-progress overlay, driven by the live `UpgradeState`.
     Updating,
-    /// Release notes. Overlays Settings and returns to it on dismiss
-    /// (`src/gui/update/upgrade.rs:127-149`).
     Changelog {
         return_to_settings: bool,
     },
-    /// The uncommitted-diff viewer for one worktree. The file list, the
-    /// per-file patch cache and the loading flag live on the gpui side
-    /// (`views::modals::diff_viewer::DiffViewerState`) since loading a diff
-    /// runs on the background executor — this variant only names *which*
-    /// worktree is open, exactly as [`Modal::AgentPicker`] names its worktree
-    /// without owning the picker's async state.
+    /// File list, patch cache and loading flag live on the gpui side; this only names which worktree is open.
     DiffViewer {
         wt_path: String,
     },
-    /// First-run onboarding wizard. Rendered full-viewport as a screen
-    /// replacement, never through the scrim (`view/modals/mod.rs:107-110`).
+    /// Rendered full-viewport as a screen replacement, never through the scrim.
     Onboarding {
         step: OnboardStep,
         path: String,
@@ -275,14 +184,11 @@ pub enum Modal {
         note: Option<String>,
         added_proj: Option<usize>,
         agent_sel: usize,
-        /// `true` = skip permission prompts. "safe" (`false`) is preselected.
         perms_skip: bool,
-        /// Project step only: `false` = the path field has focus.
         name_focused: bool,
     },
 }
 
-/// The add-project wizard's two steps (`src/gui/add_project.rs`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AddProjectStep {
     #[default]
@@ -290,63 +196,43 @@ pub enum AddProjectStep {
     Details,
 }
 
-/// Placeholder for the add-project wizard's state; Task 4 fills it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddProjectState {
     pub step: AddProjectStep,
     /// Step 1: the typed path buffer. Step 2: the canonicalized folder.
     pub path: String,
-    /// Directory-match cursor for the step-1 autocomplete list.
     pub dir_sel: usize,
-    /// Project-name override. Left empty, the folder basename is used.
     pub name: String,
-    /// Inline validation message, cleared on the next edit.
     pub note: Option<String>,
-    /// "Initialize git repository" checkbox (meaningful only when the probe
-    /// said the folder is not a repo).
     pub init_git: bool,
-    /// The upfront git probe, encoded: `Some(branch)` = a repo on that branch,
-    /// `None` = not a repo. Re-probed on every folder choice, never persisted.
+    /// `Some(branch)` = a repo on that branch, `None` = not a repo; re-probed on every folder choice, never persisted.
     pub git_branch: Option<String>,
 }
 
 /// Which list state the palette is showing (`session_launcher/state.rs:13-58`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LauncherView {
-    /// Recents + actions.
     #[default]
     Root,
-    /// Every project x worktree combo, fuzzy-filtered by the query.
     BrowseAll,
-    /// The switch-to-session drill-in: sessions, then home terminals.
     Switch,
-    /// The Tab-revealed row-action strip.
     RowActions,
-    /// The scoped settings drill-in.
     Settings,
 }
 
-/// The palette's slot-side state. The row model and the ranking live in
-/// [`crate::launcher`], which is pure and gpui-free.
+/// Row model and ranking live in [`crate::launcher`], which is pure and gpui-free.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LauncherSlotState {
     pub query: String,
     pub sel: usize,
     pub view: LauncherView,
-    /// The row the drill-ins act on, by identity rather than index — a query
-    /// edit or a recency re-sort must not activate a different row
-    /// (`session_launcher/state.rs:28-48`).
+    /// By identity, not index — a query edit or re-sort must not activate a different row.
     pub anchor: Option<crate::launcher::RowIdentity>,
-    /// Selected agent index in the RowActions strip.
     pub agent_sel: usize,
-    /// What this palette instance is allowed to list. The rail's Sessions-mode
-    /// `+` opens it at [`crate::launcher::PaletteScope::WorktreesOnly`]; every
-    /// other entry point takes the default, `All`.
     pub scope: crate::launcher::PaletteScope,
 }
 
-/// The slot's discriminant — what the key table, the key contexts and the
-/// drift guard are indexed by.
+/// The slot's discriminant — what the key table, key contexts and drift guard index by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ModalKind {
     Input,
@@ -372,7 +258,6 @@ pub enum ModalKind {
 }
 
 impl ModalKind {
-    /// Every kind, for the table-driven tests and the drift guards.
     pub const ALL: [ModalKind; 20] = [
         ModalKind::Input,
         ModalKind::Confirm,
@@ -396,8 +281,7 @@ impl ModalKind {
         ModalKind::Onboarding,
     ];
 
-    /// The gpui key-context string this modal's root element declares
-    /// (spec §4: each modal is its own entity with its own context).
+    /// The gpui key-context string this modal's root element declares.
     pub fn key_context(self) -> &'static str {
         match self {
             ModalKind::Input => "ModalInput",
@@ -423,26 +307,20 @@ impl ModalKind {
         }
     }
 
-    /// Onboarding is rendered as a **screen replacement**: full-viewport, no
-    /// sidebar, no statusbar, no scrim (`view/modals/mod.rs:107-110`).
     pub fn is_screen_replacement(self) -> bool {
         matches!(self, ModalKind::Onboarding)
     }
 
-    /// The palette top-drops instead of centering
-    /// (`view/modals/mod.rs:114-121`).
     pub fn top_drops(self) -> bool {
         matches!(self, ModalKind::SessionLauncher)
     }
 
-    /// Whether this modal's text field claims ←/→ (carried decision 2: the
-    /// `PALETTE_OPEN` carve-out). Everything else lets the caret have them.
+    /// Carried decision 2 (`PALETTE_OPEN` carve-out); everything else lets the caret have ←/→.
     pub fn wants_arrows(self) -> bool {
         matches!(self, ModalKind::SessionLauncher | ModalKind::AddProject)
     }
 
-    /// Whether this modal claims Tab from its single-line fields. Multiline
-    /// buffers leave it clear and Tab indents (carried decision 2).
+    /// Multiline buffers leave Tab clear so it indents (carried decision 2).
     pub fn wants_tab(self) -> bool {
         matches!(
             self,
@@ -477,9 +355,7 @@ impl Modal {
         }
     }
 
-    /// The quit confirm, built from the running **native** session count
-    /// (`modals.rs:338-366`). tmux-backed sessions survive grove and are not
-    /// counted by the caller.
+    /// Built from the running **native** session count; tmux-backed sessions survive grove and aren't counted.
     pub fn quit_confirm(native_running: usize) -> Modal {
         let noun = if native_running == 1 {
             "session"
@@ -494,15 +370,7 @@ impl Modal {
         }
     }
 
-    /// The first-run wizard in its opening state: step one, nothing typed,
-    /// every choice on its documented default ("safe" permissions, the first
-    /// agent, the path field focused). The iced original seeds the same thing
-    /// when it starts the flow (`src/app/onboarding.rs:37-42`'s step sequence
-    /// begins at `Welcome`).
-    ///
-    /// A constructor rather than a literal at the call site because the
-    /// variant has nine fields and exactly one legitimate initial value;
-    /// `Workspace::render`'s first-run gate is the only caller.
+    /// A constructor since the variant has nine fields and exactly one legitimate initial value.
     pub fn onboarding() -> Modal {
         Modal::Onboarding {
             step: OnboardStep::Welcome,
@@ -518,10 +386,7 @@ impl Modal {
     }
 }
 
-// ── the pure key alphabet ────────────────────────────────────────────────
-
-/// The subset of keystrokes the modal table reasons about. The layer maps
-/// gpui's `Keystroke` onto this; anything unmapped is `FallThrough`.
+/// The subset of keystrokes the modal table reasons about; anything unmapped is `FallThrough`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModalKey {
     Escape,
@@ -535,8 +400,7 @@ pub enum ModalKey {
     Char(char),
 }
 
-/// Modifier snapshot. `platform` is the global-shortcut modifier (Cmd on
-/// macOS, Ctrl+Shift elsewhere) already resolved by the caller.
+/// `platform` is the global-shortcut modifier (Cmd on macOS, Ctrl+Shift elsewhere), pre-resolved by the caller.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModalMods {
     pub ctrl: bool,
@@ -546,9 +410,7 @@ pub struct ModalMods {
 }
 
 impl ModalMods {
-    // Both constants are `#[cfg(test)]`-only spellings of a chord's modifier
-    // state, used by this crate's verdict-table assertions; the live path
-    // builds `ModalMods` from a real `gpui::Modifiers`.
+    // Test-only chord spellings for verdict-table assertions; the live path builds ModalMods from gpui::Modifiers.
     #[allow(dead_code)]
     pub const NONE: ModalMods = ModalMods {
         ctrl: false,
@@ -568,48 +430,34 @@ impl ModalMods {
 /// Extra facts the verdict needs that the slot does not own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KeyCtx {
-    /// An upgrade is mid-flight, so `Updating`'s Escape is refused
-    /// (`modals.rs:250-256`).
     pub update_in_flight: bool,
-    /// This keystroke *is* the shortcut overlay's own registry chord
-    /// (`modals.rs:301-308`).
+    /// This keystroke *is* the shortcut overlay's own registry chord.
     pub is_shortcut_overlay_chord: bool,
 }
 
 /// What the layer must do with a keystroke.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModalKeyVerdict {
-    /// Route through [`ModalSlot::cancel`] — which is *not* always "close"
-    /// (Teardown, RemoveProject).
+    /// Routes through [`ModalSlot::cancel`], which is *not* always "close" (Teardown, RemoveProject).
     Close,
-    /// The modal's primary action (Enter on `Input`, `AgentPicker`).
     Submit,
-    /// Move the modal's selection cursor by `n` rows.
     Move(i32),
-    /// A modal-specific action the view performs.
     Custom(ModalAction),
-    /// Claimed by this modal and deliberately does nothing.
     Ignore,
-    /// Not claimed: the modal's own sub-widget (a delegate wizard, the
-    /// palette, the multiline editor) or the focused `Input` gets it.
+    /// Not claimed: the modal's own sub-widget or the focused `Input` gets it.
     FallThrough,
 }
 
 /// The modal-specific half of [`ModalKeyVerdict::Custom`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModalAction {
-    /// `Confirm`: resolve yes/no.
     Confirm(bool),
-    /// `ArchiveProject`: `y` routes through the gate re-check so it cannot
-    /// bypass a disabled Archive button (`modals.rs:148-160`).
+    /// `y` routes through the gate re-check so it cannot bypass a disabled Archive button.
     ArchiveConfirm,
-    /// `RemoveProject`: `y` starts the removal.
     RemoveProjectConfirm,
-    /// `RemoveProject`: Space toggles the delete-worktrees checkbox.
     ToggleRemoveWorktrees,
-    /// `TmuxChoice`: an explicit pick, which is the only thing that persists.
+    /// An explicit pick, which is the only thing that persists.
     ChooseTmux(bool),
-    /// `AgentPicker`: Space toggles "make this the default agent".
     ToggleDefaultAgent,
     ThemePickerSubmit,
     ThemePickerSwitchTab,
@@ -617,42 +465,26 @@ pub enum ModalAction {
     ThemeManagerDeleteCancel,
     ThemeManagerRenameSubmit,
     ThemeManagerRenameCancel,
-    /// `ScriptsEditor`: the pencil starts renaming the project name.
-    // TODO(unwired): this is the *keyboard* half of a live feature —
-    // `ModalClick::ScriptsRenameStart` fires from the pencil and is handled, but
-    // `key_verdict` never produces this action, so there is no key for it.
+    // TODO(unwired): keyboard half of ScriptsRenameStart — ModalClick fires it but key_verdict never produces this action.
     #[allow(dead_code)]
     ScriptsRenameStart,
-    /// `ScriptsEditor`: check accepts the typed name locally (no disk write).
     ScriptsRenameCommit,
-    /// `ScriptsEditor`: X restores the name from disk and leaves rename mode.
     ScriptsRenameCancel,
     OnboardSkip,
     OnboardAdvance,
-    /// `Onboarding`: Tab alternates path/name focus on the Project step.
     OnboardToggleFocus,
-    /// `DiffViewer`: Enter moves keyboard focus from the file list to the
-    /// scrolling body.
+    /// Moves keyboard focus from the file list to the scrolling body.
     DiffFocusBody,
-    /// `DiffViewer`: Tab flips Unified/Split — the same commit path the
-    /// header's segmented control reaches from a click, including
-    /// persistence. A no-op when the narrow-window fallback has Split
-    /// disabled.
+    /// A no-op when the narrow-window fallback has Split disabled.
     DiffToggleMode,
 }
-
-// ── the slot ─────────────────────────────────────────────────────────────
 
 /// The result of [`ModalSlot::cancel`] — cancel is not a synonym for close.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CancelOutcome {
-    /// The slot is now empty.
     Closed,
-    /// Teardown only: skip the still-running script and proceed to removal.
     SkippedTeardownScript,
-    /// Refused: an in-flight removal cannot be interrupted.
     Refused,
-    /// The slot was repointed at the modal this one returns to.
     ReturnedTo(ModalKind),
 }
 
@@ -683,28 +515,21 @@ impl ModalSlot {
         self.modal.as_mut()
     }
 
-    /// Open `modal`, **replacing** whatever was there and dropping its state.
-    /// There is no stack and no restore (carried decision 4).
+    /// **Replaces** whatever was there and drops its state — no stack, no restore (carried decision 4).
     pub fn open(&mut self, modal: Modal) {
         self.modal = Some(modal);
     }
 
-    /// Force the slot empty, ignoring every per-modal cancel rule. Only for
-    /// paths that already decided (a confirm resolving, a wizard finishing).
+    /// Force the slot empty, ignoring every per-modal cancel rule.
     pub fn close(&mut self) {
         self.modal = None;
     }
 
-    /// Cancel the current modal. Port of `cancel_modal` (`modals.rs:677-702`)
-    /// plus the two documented return trips.
+    /// Port of `cancel_modal` (`modals.rs:677-702`) plus the two documented return trips.
     pub fn cancel(&mut self) -> CancelOutcome {
         match self.modal.as_mut() {
             None => CancelOutcome::Closed,
-            // Teardown repurposes cancel: skip a still-running script (proceed
-            // to removal), dismiss once removal has finished, and do nothing
-            // mid-removal — an in-flight `git worktree remove` cannot be
-            // safely interrupted, and there is no button for that stage
-            // either.
+            // Teardown repurposes cancel: skip a running script, dismiss once done, refuse mid-removal.
             Some(Modal::Teardown { stage, .. }) => match *stage {
                 TeardownStage::Done { .. } => {
                     self.modal = None;
@@ -713,8 +538,6 @@ impl ModalSlot {
                 TeardownStage::RunningScript => CancelOutcome::SkippedTeardownScript,
                 TeardownStage::Removing => CancelOutcome::Refused,
             },
-            // `handle_remove_project_key` returns early while busy, so cancel
-            // is refused for the same reason.
             Some(Modal::RemoveProject { in_progress, .. }) if *in_progress => {
                 CancelOutcome::Refused
             }
@@ -734,8 +557,6 @@ impl ModalSlot {
                         self.modal = Some(Modal::Settings);
                         CancelOutcome::ReturnedTo(ModalKind::Settings)
                     }
-                    // The documented `open_child` exception (`modals.rs:660-668`):
-                    // the editor's buffers ride through the picker and come back.
                     ThemePickerReturn::ScriptsEditor(state) => {
                         self.modal = Some(Modal::ScriptsEditor(state));
                         CancelOutcome::ReturnedTo(ModalKind::ScriptsEditor)
@@ -750,32 +571,25 @@ impl ModalSlot {
     }
 }
 
-/// The per-modal keyboard verdict — a table, one row per arm of
-/// `handle_modal_key` (`modals.rs:94-336`) and `handle_remove_project_key`
-/// (`modals.rs:69-93`).
+/// One row per arm of `handle_modal_key` (`modals.rs:94-336`) and `handle_remove_project_key` (`modals.rs:69-93`).
 pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -> ModalKeyVerdict {
     use ModalAction as A;
     use ModalKey as K;
     use ModalKeyVerdict as V;
 
-    /// `Key::Character` matching in iced is case-insensitive across the `y`/`n`
-    /// style arms (`"y" | "Y"`); fold once here so every arm below can use the
-    /// lowercase form.
+    /// Folds `y`/`Y`-style case-insensitive arms to lowercase once.
     fn ch(key: ModalKey) -> Option<char> {
         match key {
             ModalKey::Char(c) => Some(c.to_ascii_lowercase()),
             _ => None,
         }
     }
-    /// Ctrl+C cancels the `Input` prompt and either add-project step
-    /// (`modals.rs:100-104,120-131`).
     fn ctrl_c(key: ModalKey, mods: ModalMods) -> bool {
         mods.ctrl && ch(key) == Some('c')
     }
 
     match modal {
-        // Text entry, caret movement, selection and paste belong to the
-        // focused `Input`; only the lifecycle keys are claimed here.
+        // Only the lifecycle keys are claimed here; the rest belongs to the focused Input.
         Modal::Input { .. } => match key {
             K::Escape => V::Close,
             K::Enter => V::Submit,
@@ -783,9 +597,7 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
             _ => V::FallThrough,
         },
 
-        // Esc from the pick-source step and Ctrl+C from either step cancel the
-        // whole wizard; everything else is the wizard delegate's
-        // (`modals.rs:117-136`).
+        // Esc from pick-source and Ctrl+C from either step cancel the wizard; everything else is the delegate's.
         Modal::AddProject(st) => {
             let cancels =
                 ctrl_c(key, mods) || (key == K::Escape && st.step == AddProjectStep::PickSource);
@@ -804,8 +616,7 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
             _ => V::Ignore,
         },
 
-        // y/n mirrors the destructive-confirm convention. `y` routes through
-        // the gate's own re-check so it cannot bypass a disabled button.
+        // `y` routes through the gate's own re-check so it cannot bypass a disabled button.
         Modal::ArchiveProject { .. } => match (key, ch(key)) {
             (K::Escape, _) => V::Close,
             (_, Some('y')) => V::Custom(A::ArchiveConfirm),
@@ -813,9 +624,7 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
             _ => V::Ignore,
         },
 
-        // Esc/n cancel, y confirms (Enter deliberately does not), Space
-        // toggles the checkbox — all ignored while removal is in flight
-        // (`handle_remove_project_key`, `modals.rs:69-93`).
+        // All ignored while removal is in flight (handle_remove_project_key, modals.rs:69-93).
         Modal::RemoveProject { in_progress, .. } => {
             if *in_progress {
                 return V::Ignore;
@@ -837,8 +646,7 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
         Modal::TmuxChoice => match (key, ch(key)) {
             (K::Enter, _) | (_, Some('t' | 'y')) => V::Custom(A::ChooseTmux(true)),
             (_, Some('n')) => V::Custom(A::ChooseTmux(false)),
-            // Esc dismisses without persisting, so the choice is re-asked on
-            // the next launch. Only explicit picks record a backend.
+            // Esc dismisses without persisting; only explicit picks record a backend.
             (K::Escape, _) => V::Close,
             _ => V::Ignore,
         },
@@ -861,9 +669,7 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
             _ => V::Ignore,
         },
 
-        // Three nested sub-states, in this precedence order: the editor
-        // sub-view delegates wholesale, then the delete confirm, then the
-        // inline rename, then the plain list (`modals.rs:186-228`).
+        // Precedence: editor sub-view, then delete confirm, then inline rename, then the plain list.
         Modal::ThemeManager {
             rename,
             pending_delete,
@@ -873,8 +679,7 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
             if editor.is_some() {
                 V::FallThrough
             } else if pending_delete.is_some() {
-                // Enter works here too (unlike `confirm_modal`), since this
-                // dialog has no other use for it.
+                // Enter works here too (unlike confirm_modal); this dialog has no other use for it.
                 match (key, ch(key)) {
                     (K::Enter, _) | (_, Some('y')) => V::Custom(A::ThemeManagerDeleteConfirm),
                     (K::Escape, _) | (_, Some('n')) => V::Custom(A::ThemeManagerDeleteCancel),
@@ -884,7 +689,6 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
                 match key {
                     K::Enter => V::Custom(A::ThemeManagerRenameSubmit),
                     K::Escape => V::Custom(A::ThemeManagerRenameCancel),
-                    // The rename buffer is a focused field; text is its own.
                     _ => V::FallThrough,
                 }
             } else {
@@ -897,7 +701,6 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
             }
         }
 
-        // The palette owns its whole keyboard (`handle_session_launcher_key`).
         Modal::SessionLauncher(_) => V::FallThrough,
 
         Modal::Settings | Modal::ArchivedProjects => match key {
@@ -905,32 +708,23 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
             _ => V::Ignore,
         },
 
-        // Two sub-states, mirroring `Modal::ThemeManager`'s rename arm above.
-        // The previous single-arm version routed every character key to
-        // `V::Ignore`, which reaches `cx.stop_propagation()`
-        // (`views/modals/mod.rs`) before the platform input handler ever
-        // inserts text into the focused `Input` — typing was dead in both
-        // modes. `V::FallThrough` lets the focused field see the key first.
+        // V::FallThrough lets the focused field see the key first, or typing is dead in both sub-states.
         Modal::ScriptsEditor(st) => {
             if st.renaming {
                 match key {
                     K::Enter => V::Custom(A::ScriptsRenameCommit),
                     K::Escape => V::Custom(A::ScriptsRenameCancel),
-                    // The rename buffer is a focused field; text is its own.
                     _ => V::FallThrough,
                 }
             } else {
                 match key {
                     K::Escape => V::Close,
                     K::Enter => V::Submit,
-                    // Text belongs to the focused script field.
                     _ => V::FallThrough,
                 }
             }
         }
 
-        // Cancel is gated by stage inside `ModalSlot::cancel`; there is no
-        // separate refusal here.
         Modal::Teardown { .. } => match key {
             K::Escape => V::Close,
             _ => V::Ignore,
@@ -946,17 +740,13 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
             _ => V::Ignore,
         },
 
-        // Escape **or** the overlay's own registry chord closes it
-        // (`modals.rs:301-308`).
         Modal::ShortcutOverlay => match key {
             K::Escape => V::Close,
             _ if ctx.is_shortcut_overlay_chord => V::Close,
             _ => V::Ignore,
         },
 
-        // File-list navigation and body focus are the whole keyboard surface;
-        // everything else (typing into a filter, say) has nowhere to go yet
-        // and is swallowed rather than reaching a PTY behind the modal.
+        // Everything unclaimed is swallowed rather than reaching a PTY behind the modal.
         Modal::DiffViewer { .. } => match (key, ch(key)) {
             (K::Escape, _) => V::Close,
             (K::Enter, _) => V::Custom(A::DiffFocusBody),
@@ -980,10 +770,7 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
     }
 }
 
-/// Whether Escape has something to dismiss when **no** modal is open. `false`
-/// means Escape must reach the PTY — many TUI programs need it, and
-/// swallowing it unconditionally would regress that. Port of
-/// `escape_should_dismiss` (`pty_input.rs:364-378`).
+/// `false` means Escape must reach the PTY, since many TUI programs need it. Port of `escape_should_dismiss` (`pty_input.rs:364-378`).
 pub fn escape_should_dismiss(
     pending_kill: bool,
     pending_kill_terminal: bool,
@@ -993,11 +780,8 @@ pub fn escape_should_dismiss(
     pending_kill || pending_kill_terminal || agent_menu_open || attention_open
 }
 
-/// A chord bound as a gpui **action** in a modal's own key context (carried
-/// decision 3, second row of the module-doc table).
-// The drift guard and its table are consumed by `#[cfg(test)]` code only —
-// `keyboard_matrix` and this module's own tests assert every bound chord is
-// claimed by `key_verdict`. Nothing in the render path reads them.
+/// A chord bound as a gpui action in a modal's own key context (carried decision 3).
+// Consumed only by #[cfg(test)] drift-guard code asserting every bound chord is claimed by key_verdict.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModalChord {
@@ -1005,15 +789,10 @@ pub struct ModalChord {
     pub mods: ModalMods,
 }
 
-/// The chords each modal's key context binds as actions. The drift guard test
-/// asserts every one of them is claimed by [`key_verdict`]; a context that
-/// binds a chord the table ignores would silently swallow it.
+/// A context binding a chord the table ignores would silently swallow it.
 #[allow(dead_code)]
 pub fn bound_chords(kind: ModalKind) -> &'static [ModalChord] {
     match kind {
-        // The overlay closes on Escape **or** its own registry chord
-        // (`modals.rs:301-308`). The chord is bound in this context so it
-        // arrives as an action rather than as text.
         ModalKind::ShortcutOverlay => &[ModalChord {
             key: ModalKey::Char('/'),
             mods: ModalMods {
@@ -1093,15 +872,12 @@ mod tests {
         }
     }
 
-    // ── Step 1: the slot's invariants ────────────────────────────────────
-
     #[test]
     fn opening_a_modal_replaces_the_open_one_and_drops_its_state() {
         let mut slot = ModalSlot::new();
         slot.open(Modal::ScriptsEditor(Box::new(scripts("echo hi"))));
         slot.open(Modal::Settings);
         assert_eq!(slot.kind(), Some(ModalKind::Settings));
-        // There is no stack: cancelling the replacement leaves nothing behind.
         assert_eq!(slot.cancel(), CancelOutcome::Closed);
         assert_eq!(slot.kind(), None);
     }
@@ -1110,10 +886,7 @@ mod tests {
     fn quit_confirm_clobbers_the_open_modal_and_cancelling_leaves_none() {
         let mut slot = ModalSlot::new();
         slot.open(Modal::Settings);
-        // The window's close request: the quit confirm clobbers any open modal
-        // and cancelling does not restore it — a deliberately preserved gap
-        // (`modals.rs:350-354`). This is the same call `Workspace`'s
-        // close-request handler makes.
+        // Cancelling does not restore the clobbered modal — a deliberately preserved gap (modals.rs:350-354).
         slot.open(Modal::quit_confirm(2));
         let Some(Modal::Confirm { kind, prompt, .. }) = slot.get() else {
             unreachable!()
@@ -1121,7 +894,6 @@ mod tests {
         assert_eq!(*kind, ConfirmKind::Quit);
         assert!(prompt.contains("2 running sessions"));
         assert_eq!(slot.cancel(), CancelOutcome::Closed);
-        // NOT the clobbered Settings modal — the preserved gap.
         assert_eq!(slot.kind(), None);
     }
 
@@ -1194,7 +966,6 @@ mod tests {
     fn scripts_editor_to_theme_picker_and_back_preserves_the_buffers() {
         let mut slot = ModalSlot::new();
         slot.open(Modal::ScriptsEditor(Box::new(scripts("cargo build"))));
-        // The round trip carries the editor state through the picker.
         let Some(Modal::ScriptsEditor(state)) = slot.get() else {
             unreachable!()
         };
@@ -1209,8 +980,6 @@ mod tests {
         };
         assert_eq!(state.setup, "cargo build");
     }
-
-    // ── Step 2: the per-modal keyboard verdicts ──────────────────────────
 
     fn v(modal: &Modal, key: ModalKey) -> ModalKeyVerdict {
         key_verdict(modal, key, ModalMods::NONE, KeyCtx::default())
@@ -1357,7 +1126,6 @@ mod tests {
             ModalKeyVerdict::Custom(ModalAction::ThemeManagerDeleteCancel)
         );
 
-        // Rename: Enter/Escape only.
         let m = theme_manager(Some(("a".into(), "b".into())), None, None);
         assert_eq!(
             v(&m, ModalKey::Enter),
@@ -1367,10 +1135,8 @@ mod tests {
             v(&m, ModalKey::Escape),
             ModalKeyVerdict::Custom(ModalAction::ThemeManagerRenameCancel)
         );
-        // The rename buffer keeps its own text keys.
         assert_eq!(v(&m, ModalKey::Char('x')), ModalKeyVerdict::FallThrough);
 
-        // The plain list.
         let m = theme_manager(None, None, None);
         assert_eq!(v(&m, ModalKey::Escape), ModalKeyVerdict::Close);
         assert_eq!(v(&m, ModalKey::Down), ModalKeyVerdict::Move(1));
@@ -1462,7 +1228,6 @@ mod tests {
         );
         assert_eq!(v(&m, ModalKey::Down), ModalKeyVerdict::Move(1));
 
-        // Every other step ignores Tab and the arrows.
         let m = onboard(OnboardStep::Welcome);
         assert_eq!(v(&m, ModalKey::Tab), ModalKeyVerdict::Ignore);
         assert_eq!(v(&m, ModalKey::Down), ModalKeyVerdict::Ignore);
@@ -1474,11 +1239,6 @@ mod tests {
 
     #[test]
     fn escape_only_modals() {
-        // `Modal::ScriptsEditor` used to sit in this same list — it has real
-        // text fields, so grouping it with `Settings`/`ArchivedProjects`
-        // (which have none) is exactly how every character key ended up
-        // routed to `V::Ignore` and typing broke. It now falls through like
-        // `Modal::Input`; see `scripts_editor_typing_falls_through_to_the_field`.
         for m in [
             &Modal::Settings,
             &Modal::ArchivedProjects,
@@ -1489,22 +1249,12 @@ mod tests {
         }
     }
 
-    /// The name field and the three lifecycle buffers are all single-line
-    /// (redesign "Variant D"), so Enter submits like it does for every other
-    /// bare single-line entry field (`Modal::Input`) rather than doing
-    /// nothing — but only while `renaming == false`; mid-rename Enter commits
-    /// the rename instead (`scripts_editor_rename_mode_keys` below).
     #[test]
     fn scripts_editor_enter_submits() {
         let m = Modal::ScriptsEditor(Box::new(scripts("")));
         assert_eq!(v(&m, ModalKey::Enter), ModalKeyVerdict::Submit);
     }
 
-    /// A char key must fall through to the focused field, not be swallowed
-    /// by `V::Ignore` (the root cause: `Ignore` reaches
-    /// `cx.stop_propagation()` in `views/modals/mod.rs` before the platform
-    /// input handler ever inserts text into the focused `Input`, so every
-    /// keystroke used to die at the modal layer).
     #[test]
     fn scripts_editor_typing_falls_through_to_the_field() {
         let m = Modal::ScriptsEditor(Box::new(scripts("")));
@@ -1512,10 +1262,6 @@ mod tests {
         assert_eq!(v(&m, ModalKey::Tab), ModalKeyVerdict::FallThrough);
     }
 
-    /// Rename mode (`st.renaming`) is a sub-state exactly like
-    /// `Modal::ThemeManager`'s `rename`: Enter/Escape commit/cancel the
-    /// rename rather than submitting/closing the whole modal, and a char key
-    /// still falls through to the focused name field.
     #[test]
     fn scripts_editor_rename_mode_keys() {
         let mut st = scripts("");
@@ -1545,10 +1291,8 @@ mod tests {
             v(&m, ModalKey::Space),
             ModalKeyVerdict::Custom(ModalAction::ToggleRemoveWorktrees)
         );
-        // Enter deliberately does not confirm (`modals.rs:66-68`).
         assert_eq!(v(&m, ModalKey::Enter), ModalKeyVerdict::Ignore);
 
-        // Busy: every key is ignored, Escape included.
         let m = remove_project(true);
         for k in [
             ModalKey::Escape,
@@ -1572,7 +1316,6 @@ mod tests {
 
         st.step = AddProjectStep::Details;
         let m = Modal::AddProject(Box::new(st));
-        // Escape on the details step belongs to the wizard delegate.
         assert_eq!(v(&m, ModalKey::Escape), ModalKeyVerdict::FallThrough);
         assert_eq!(
             key_verdict(&m, ModalKey::Char('c'), ModalMods::CTRL, KeyCtx::default()),
@@ -1593,8 +1336,6 @@ mod tests {
         }
     }
 
-    // ── Step 5: the drift guard ──────────────────────────────────────────
-
     #[test]
     fn no_modal_context_binds_a_chord_its_verdict_table_ignores() {
         for kind in ModalKind::ALL {
@@ -1602,8 +1343,6 @@ mod tests {
                 let modal = sample_modal(kind);
                 let ctx = KeyCtx {
                     update_in_flight: false,
-                    // The overlay's own chord is the only registry chord bound
-                    // in a modal context today.
                     is_shortcut_overlay_chord: kind == ModalKind::ShortcutOverlay,
                 };
                 let verdict = key_verdict(&modal, chord.key, chord.mods, ctx);
