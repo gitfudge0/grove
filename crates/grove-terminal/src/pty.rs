@@ -1,9 +1,4 @@
-//! PTY spawning and the blocking reader thread.
-//!
-//! Deliberately executor-free: chunks land in a `std::sync::mpsc::Receiver`,
-//! not a future. Picking an async runtime is the UI layer's call — the gpui
-//! shell bridges this receiver into `cx.spawn`, and nothing here forces that
-//! choice on other callers.
+//! PTY spawning and the blocking reader thread; deliberately executor-free.
 
 use std::io::{Read, Write};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
@@ -17,21 +12,16 @@ fn io_err(e: impl std::fmt::Display) -> std::io::Error {
     std::io::Error::other(e.to_string())
 }
 
-/// A spawned child on its own PTY.
-///
-/// Dropping the handle kills and reaps the child (see the `Drop` impl below),
-/// then drops the master, which closes the PTY and ends the reader thread.
+/// Dropping the handle kills and reaps the child, then drops the master, which closes the PTY and ends the reader thread.
 pub struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     rx: Receiver<Vec<u8>>,
-    /// Set once [`PtyHandle::take_receiver`] has handed the channel away.
     rx_taken: bool,
 }
 
 impl PtyHandle {
-    /// Spawn `cmd` on a fresh PTY of the given size and start reading it.
     pub fn spawn(cmd: CommandBuilder, rows: u16, cols: u16) -> std::io::Result<Self> {
         let size = PtySize {
             rows: rows.max(1),
@@ -41,8 +31,7 @@ impl PtyHandle {
         };
         let pair = native_pty_system().openpty(size).map_err(io_err)?;
         let child = pair.slave.spawn_command(cmd).map_err(io_err)?;
-        // The slave fd must not outlive the spawn, or the reader never sees EOF
-        // when the child exits.
+        // The slave fd must not outlive the spawn, or the reader never sees EOF when the child exits.
         drop(pair.slave);
 
         let writer = pair.master.take_writer().map_err(io_err)?;
@@ -54,9 +43,7 @@ impl PtyHandle {
                 let mut buf = vec![0u8; READ_CHUNK];
                 loop {
                     match reader.read(&mut buf) {
-                        // EOF, or the child went away.
                         Ok(0) | Err(_) => break,
-                        // A closed receiver means the handle was dropped.
                         Ok(n) => {
                             if tx.send(buf[..n].to_vec()).is_err() {
                                 break;
@@ -75,40 +62,23 @@ impl PtyHandle {
         })
     }
 
-    /// Take ownership of the output channel, once.
-    ///
-    /// [`PtyHandle::drain`] is the non-blocking API, which forces a consumer to
-    /// poll. A UI that wants **zero idle wakeups** needs to *block* on the
-    /// channel from its own thread instead — and it cannot, because
-    /// [`PtyHandle::receiver`] only lends a `&Receiver` and `Receiver` is
-    /// `!Sync`, so the borrow cannot cross a thread boundary while the handle
-    /// itself stays here for `write`/`resize`. Handing the `Receiver` over by
-    /// value is the minimum that makes a blocking reader expressible.
-    ///
-    /// Afterwards this handle's own channel is disconnected: `receiver()`
-    /// yields a dead channel and `drain()` reports the PTY as closed. The
-    /// caller that took the receiver owns EOF detection from then on
-    /// (`recv()` returning `Err` means the child went away).
-    ///
-    /// Returns `None` on every call after the first.
+    /// By value, so a caller can block on it from its own thread; `receiver()`/`drain()` then report closed. `None` after the first call.
     pub fn take_receiver(&mut self) -> Option<Receiver<Vec<u8>>> {
         if self.rx_taken {
             return None;
         }
         self.rx_taken = true;
-        // The paired sender is dropped immediately, so the replacement channel
-        // reads as disconnected — which is exactly the truth for this handle.
+        // The paired sender is dropped immediately, so the replacement channel reads as disconnected.
         let (_dead_tx, dead_rx) = channel::<Vec<u8>>();
         Some(std::mem::replace(&mut self.rx, dead_rx))
     }
 
-    /// Send input to the child.
     pub fn write(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         self.writer.write_all(bytes)?;
         self.writer.flush()
     }
 
-    /// Tell the child the window changed size (raises `SIGWINCH`).
+    /// Raises `SIGWINCH`.
     pub fn resize(&self, rows: u16, cols: u16) -> std::io::Result<()> {
         self.master
             .resize(PtySize {
@@ -120,14 +90,12 @@ impl PtyHandle {
             .map_err(io_err)
     }
 
-    /// The channel carrying output chunks. Drain it from the caller's own
-    /// event loop; a disconnected channel means the PTY reached EOF.
+    /// A disconnected channel means the PTY reached EOF.
     pub fn receiver(&self) -> &Receiver<Vec<u8>> {
         &self.rx
     }
 
-    /// Take every chunk currently queued, in order. Returns `None` once the
-    /// PTY has closed *and* the queue is drained.
+    /// `None` once the PTY has closed and the queue is drained.
     pub fn drain(&self) -> Option<Vec<Vec<u8>>> {
         let mut out = Vec::new();
         loop {
@@ -141,19 +109,11 @@ impl PtyHandle {
         }
     }
 
-    /// The child's process id.
-    ///
-    /// Needed by the gpui shell's attention classifier: the native-agent
-    /// poller keys on the session's process-tree root, and the native backend
-    /// now runs the agent itself rather than a login shell. `None` only when
-    /// the platform cannot report one — note that `portable_pty` keeps
-    /// reporting the id **after** the child is reaped, so a caller that cares
-    /// about liveness must ask [`PtyHandle::try_wait`] as well.
+    /// Still reported after the child is reaped; check [`PtyHandle::try_wait`] for liveness.
     pub fn child_pid(&self) -> Option<u32> {
         self.child.process_id()
     }
 
-    /// Whether the child has exited, without blocking.
     pub fn try_wait(&mut self) -> std::io::Result<bool> {
         self.child.try_wait().map(|s| s.is_some())
     }
@@ -163,20 +123,7 @@ impl PtyHandle {
     }
 }
 
-/// Kill and reap the child before the handle's other fields (master, writer)
-/// drop.
-///
-/// `portable_pty` 0.9.0's `UnixMasterWriter::drop` writes `b"\n\x04"` into the
-/// PTY — a canonical-mode EOF for a shell reading line-buffered input. Our
-/// tmux `attach` client runs the pane raw, so if it is still alive when the
-/// writer drops, those two bytes are forwarded verbatim to the tmux server as
-/// keystrokes and land in the agent's pane: Ctrl-J is a newline, dropped
-/// straight into Claude Code's input box (the "phantom row" regression).
-/// Killing and reaping the child first means the farewell bytes land in a PTY
-/// nobody is reading. This mirrors `main`'s `Session::Drop`
-/// (`grove-core/src/session.rs`): the tmux attach client dies, the backing
-/// tmux session survives server-side; native agents and teardown-modal
-/// scripts are meant to die with grove anyway.
+/// `portable_pty`'s writer drop writes `b"\n\x04"` into the PTY — kill the child first or those bytes land as keystrokes (the "phantom row" bug).
 impl Drop for PtyHandle {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -184,7 +131,6 @@ impl Drop for PtyHandle {
     }
 }
 
-/// Convenience wrapper mirroring the spec's `spawn(cmd, rows, cols)`.
 pub fn spawn(cmd: CommandBuilder, rows: u16, cols: u16) -> std::io::Result<PtyHandle> {
     PtyHandle::spawn(cmd, rows, cols)
 }
@@ -196,7 +142,6 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    /// A live child reports a stable, non-zero pid.
     #[test]
     fn child_pid_is_reported_while_the_child_lives() {
         let mut cmd = CommandBuilder::new("sleep");
@@ -208,8 +153,6 @@ mod tests {
         handle.kill().expect("kill");
     }
 
-    /// Dropping the handle kills the child, rather than leaving it to receive
-    /// portable-pty's farewell bytes on a PTY nobody reads.
     #[test]
     fn dropping_the_handle_kills_the_child() {
         let mut cmd = CommandBuilder::new("sleep");
@@ -233,8 +176,6 @@ mod tests {
         assert!(!is_alive(), "child {pid} survived dropping its PtyHandle");
     }
 
-    /// End-to-end smoke test: a real child on a real PTY, its output arriving
-    /// through the channel, feeding a real `GroveTerm`.
     #[test]
     fn spawn_reads_child_output_into_the_model() {
         let mut cmd = CommandBuilder::new("echo");
@@ -268,8 +209,6 @@ mod tests {
         let _ = handle.kill();
     }
 
-    /// The taken receiver carries the child's output and reports EOF itself;
-    /// the handle it came from is left disconnected, and a second take fails.
     #[test]
     fn take_receiver_hands_the_channel_over_exactly_once() {
         let mut cmd = CommandBuilder::new("echo");
@@ -289,7 +228,6 @@ mod tests {
             "a handle whose channel was taken reports itself closed"
         );
 
-        // Blocking reads on the taken channel see the output, then EOF.
         let mut term = crate::GroveTerm::new(24, 80);
         while let Ok(chunk) = rx.recv_timeout(Duration::from_secs(10)) {
             term.process(&chunk);

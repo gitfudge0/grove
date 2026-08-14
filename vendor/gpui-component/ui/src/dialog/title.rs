@@ -5,7 +5,6 @@ use gpui::{
 
 use crate::StyledExt as _;
 
-/// Title element for a dialog header.
 #[derive(IntoElement)]
 pub struct DialogTitle {
     style: StyleRefinement,

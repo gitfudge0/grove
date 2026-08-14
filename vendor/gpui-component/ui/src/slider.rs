@@ -35,12 +35,7 @@ pub enum SliderEvent {
     Release(SliderValue),
 }
 
-/// The value of the slider, can be a single value or a range of values.
-///
-/// - Can from a f32 value, which will be treated as a single value.
-/// - Or from a (f32, f32) tuple, which will be treated as a range of values.
-///
-/// The default value is `SliderValue::Single(0.0)`.
+/// A single value, or a range — default `SliderValue::Single(0.0)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SliderValue {
     Single(f32),
@@ -81,7 +76,6 @@ impl Default for SliderValue {
 }
 
 impl SliderValue {
-    /// Clamp the value to the given range.
     pub fn clamp(self, min: f32, max: f32) -> Self {
         match self {
             SliderValue::Single(value) => SliderValue::Single(value.clamp(min, max)),
@@ -91,19 +85,16 @@ impl SliderValue {
         }
     }
 
-    /// Check if the value is a single value.
     #[inline]
     pub fn is_single(&self) -> bool {
         matches!(self, SliderValue::Single(_))
     }
 
-    /// Check if the value is a range of values.
     #[inline]
     pub fn is_range(&self) -> bool {
         matches!(self, SliderValue::Range(_, _))
     }
 
-    /// Get the start value.
     pub fn start(&self) -> f32 {
         match self {
             SliderValue::Single(value) => *value,
@@ -111,7 +102,6 @@ impl SliderValue {
         }
     }
 
-    /// Get the end value.
     pub fn end(&self) -> f32 {
         match self {
             SliderValue::Single(value) => *value,
@@ -136,24 +126,11 @@ impl SliderValue {
     }
 }
 
-/// The scale mode of the slider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SliderScale {
-    /// Linear scale where values change uniformly across the slider range.
-    /// This is the default mode.
     #[default]
     Linear,
-    /// Logarithmic scale where the distance between values increases exponentially.
-    ///
-    /// This is useful for parameters that have a large range of values where smaller
-    /// changes are more significant at lower values. Common examples include:
-    ///
-    /// - Volume controls (human hearing perception is logarithmic)
-    /// - Frequency controls (musical notes follow a logarithmic scale)
-    /// - Zoom levels
-    /// - Any parameter where you want finer control at lower values
-    ///
-    /// # For example
+    /// Distance between values increases exponentially — finer control at lower values (volume, frequency, zoom).
     ///
     /// ```
     /// use gpui_component::slider::{SliderState, SliderScale};
@@ -163,10 +140,6 @@ pub enum SliderScale {
     ///     .max(1000.0)
     ///     .scale(SliderScale::Logarithmic);
     /// ```
-    ///
-    /// - Moving the slider 1/3 of the way will yield ~10
-    /// - Moving it 2/3 of the way will yield ~100
-    /// - The full range covers 3 orders of magnitude evenly
     Logarithmic,
 }
 
@@ -182,24 +155,20 @@ impl SliderScale {
     }
 }
 
-/// State of the [`Slider`].
 pub struct SliderState {
     min: f32,
     max: f32,
     step: f32,
     value: SliderValue,
-    /// When is single value mode, only `end` is used, the start is always 0.0.
+    /// In single-value mode, only `end` is used; start is always 0.0.
     percentage: Range<f32>,
-    /// The bounds of the slider after rendered.
     bounds: Bounds<Pixels>,
     scale: SliderScale,
-    /// Tracks whether the user is currently interacting with the slider so we
-    /// only emit [`SliderEvent::Release`] after a real press/drag.
+    /// Tracks a real press/drag, so [`SliderEvent::Release`] only fires after one.
     dragging: bool,
 }
 
 impl SliderState {
-    /// Create a new [`SliderState`].
     pub fn new() -> Self {
         Self {
             min: 0.0,
@@ -213,7 +182,7 @@ impl SliderState {
         }
     }
 
-    /// Set the minimum value of the slider, default: 0.0
+    /// Default: 0.0
     pub fn min(mut self, min: f32) -> Self {
         if self.scale.is_logarithmic() {
             assert!(
@@ -230,7 +199,7 @@ impl SliderState {
         self
     }
 
-    /// Set the maximum value of the slider, default: 100.0
+    /// Default: 100.0
     pub fn max(mut self, max: f32) -> Self {
         if self.scale.is_logarithmic() {
             assert!(
@@ -243,13 +212,11 @@ impl SliderState {
         self
     }
 
-    /// Set the step value of the slider, default: 1.0
     pub fn step(mut self, step: f32) -> Self {
         self.step = step;
         self
     }
 
-    /// Set the scale of the slider, default: [`SliderScale::Linear`].
     pub fn scale(mut self, scale: SliderScale) -> Self {
         if scale.is_logarithmic() {
             assert!(
@@ -266,14 +233,12 @@ impl SliderState {
         self
     }
 
-    /// Set the default value of the slider, default: 0.0
     pub fn default_value(mut self, value: impl Into<SliderValue>) -> Self {
         self.value = value.into();
         self.update_thumb_pos();
         self
     }
 
-    /// Set the value of the slider.
     pub fn set_value(
         &mut self,
         value: impl Into<SliderValue>,
@@ -285,43 +250,33 @@ impl SliderState {
         cx.notify();
     }
 
-    /// Get the value of the slider.
     pub fn value(&self) -> SliderValue {
         self.value
     }
 
-    /// Get the minimum value.
     pub fn min_value(&self) -> f32 {
         self.min
     }
 
-    /// Get the maximum value.
     pub fn max_value(&self) -> f32 {
         self.max
     }
 
-    /// Get the step value.
     pub fn step_value(&self) -> f32 {
         self.step
     }
 
-    /// Converts a value between 0.0 and 1.0 to a value between the minimum and maximum value,
-    /// depending on the chosen scale.
     fn percentage_to_value(&self, percentage: f32) -> f32 {
         match self.scale {
             SliderScale::Linear => self.min + (self.max - self.min) * percentage,
             SliderScale::Logarithmic => {
-                // when percentage is 0, this simplifies to (max/min)^0 * min = 1 * min = min
-                // when percentage is 1, this simplifies to (max/min)^1 * min = (max*min)/min = max
-                // we clamp just to make sure we don't have issue with floating point precision
+                // Clamped for floating point precision; percentage 0/1 map exactly to min/max.
                 let base = self.max / self.min;
                 (base.powf(percentage) * self.min).clamp(self.min, self.max)
             }
         }
     }
 
-    /// Converts a value between the minimum and maximum value to a value between 0.0 and 1.0,
-    /// depending on the chosen scale.
     fn value_to_percentage(&self, value: f32) -> f32 {
         match self.scale {
             SliderScale::Linear => {
@@ -354,7 +309,6 @@ impl SliderState {
         }
     }
 
-    /// Update value by mouse position
     fn update_value_by_position(
         &mut self,
         axis: Axis,
@@ -395,8 +349,7 @@ impl SliderState {
         cx.notify();
     }
 
-    /// Emit [`SliderEvent::Release`] if the user was actively interacting
-    /// with the slider. Called on mouse-up both inside and outside the slider.
+    /// Called on mouse-up both inside and outside the slider.
     fn handle_release(&mut self, cx: &mut Context<Self>) {
         if !self.dragging {
             return;
@@ -408,7 +361,6 @@ impl SliderState {
 
 impl EventEmitter<SliderEvent> for SliderState {}
 
-/// A Slider element.
 #[derive(IntoElement)]
 pub struct Slider {
     state: Entity<SliderState>,
@@ -419,7 +371,6 @@ pub struct Slider {
 }
 
 impl Slider {
-    /// Create a new [`Slider`] element bind to the [`SliderState`].
     pub fn new(state: &Entity<SliderState>) -> Self {
         Self {
             axis: Axis::Horizontal,
@@ -430,33 +381,22 @@ impl Slider {
         }
     }
 
-    /// As a horizontal slider.
     pub fn horizontal(mut self) -> Self {
         self.axis = Axis::Horizontal;
         self
     }
 
-    /// As a vertical slider.
     pub fn vertical(mut self) -> Self {
         self.axis = Axis::Vertical;
         self
     }
 
-    /// Set the disabled state of the slider, default: false
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
-    /// Reverse the filled (highlighted) side of the track, default: false.
-    ///
-    /// By default the track is filled from the min end to the thumb. With
-    /// `reverse`, the fill goes from the thumb to the max end instead — useful
-    /// when the slider represents a remaining amount (e.g. time left).
-    ///
-    /// This only changes the visual fill; values, events and interactions are
-    /// unaffected. It applies to single-value sliders and is ignored for
-    /// range sliders.
+    /// Fills from the thumb to the max end instead of min-to-thumb; single-value sliders only.
     pub fn reverse(mut self) -> Self {
         self.reverse = true;
         self
@@ -521,7 +461,6 @@ impl Slider {
                                 return;
                             }
 
-                            // set value by mouse position
                             view.update_value_by_position(
                                 axis,
                                 e.event.position,

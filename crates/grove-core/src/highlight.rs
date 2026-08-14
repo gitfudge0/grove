@@ -1,12 +1,4 @@
-//! Whole-file syntax highlighting for the diff viewer, pure and
-//! gpui-free: a file's text goes in, one `Vec<Span>` per line comes out, each
-//! span carrying a [`CodeScope`] rather than a colour — Grove's palette
-//! (`src/theme.rs`'s seven `CODE_*` colours) is the only place colour is
-//! decided, never syntect's own themes.
-//!
-//! We use syntect purely for its parser (`SyntaxSet`, `ParseState`,
-//! `ScopeStack`) and never touch its `highlighting`/`Theme` machinery — there
-//! is no `Theme` in this module at all.
+//! Whole-file syntax highlighting: text in, `Vec<Span>` per line out, each span carrying a [`CodeScope`] rather than a colour.
 
 use std::sync::OnceLock;
 
@@ -15,8 +7,7 @@ use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 
 use crate::diff::{DIFF_MAX_BYTES, DIFF_MAX_LINES};
 
-/// The seven `CODE_*` theme targets, plus `Plain` for text no rule below
-/// claims (including any scope on an unrecognised file extension).
+/// The seven `CODE_*` theme targets, plus `Plain` for anything no rule below claims.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CodeScope {
     Keyword,
@@ -29,9 +20,7 @@ pub enum CodeScope {
     Plain,
 }
 
-/// One highlighted run of a line. `start`/`len` are **char offsets**, not
-/// byte offsets, so a view slicing multibyte text (CJK, emoji) by these
-/// bounds can never land mid-character and panic.
+/// `start`/`len` are char offsets, not byte offsets, so slicing multibyte text by these bounds never lands mid-character.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,
@@ -39,62 +28,34 @@ pub struct Span {
     pub scope: CodeScope,
 }
 
-/// The bundled syntax definitions, parsed once and reused for every call —
-/// `SyntaxSet::load_defaults_newlines` walks and compiles a sizeable bundled
-/// dump, so paying that cost per file would make highlighting far more
-/// expensive than the git shelling it rides alongside.
+/// Parsed once and reused — `load_defaults_newlines` compiles a sizeable dump, too costly to pay per file.
 fn syntax_set() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
     SET.get_or_init(SyntaxSet::load_defaults_newlines)
 }
 
-/// Map one syntect scope selector onto Grove's semantic vocabulary. Checked
-/// top-of-stack-down (most specific scope first) so a nested rule (e.g. a
-/// number literal inside a string interpolation) wins over its container.
-/// Each arm's comment says why the sublime-syntax convention maps where it
-/// does:
+/// Checked most-specific-first so a nested rule wins over its container.
 fn map_scope(scope: Scope) -> Option<CodeScope> {
     let name = scope.build_string();
-    // `keyword.*` (control flow, `let`/`fn`/...) and `storage.*` (type/
-    // modifier keywords like `struct`, `const`, `static`) both read as
-    // "reserved word" to a reader, so both map to Keyword.
     if name.starts_with("keyword.operator") || name.starts_with("punctuation") {
-        // Operators and punctuation are visually closer to structural noise
-        // than to a reserved word — kept as their own Punct scope rather
-        // than folding into Keyword, checked before the general
-        // `keyword.*` rule below since `keyword.operator` also starts with
-        // `keyword.`.
+        // Checked before the general `keyword.*` rule below since `keyword.operator` also starts with `keyword.`.
         return Some(CodeScope::Punct);
     }
     if name.starts_with("keyword") || name.starts_with("storage") {
         return Some(CodeScope::Keyword);
     }
-    // `string.*` covers quoted literals in every bundled syntax, including
-    // multi-line and interpolated forms.
     if name.starts_with("string") {
         return Some(CodeScope::StringLit);
     }
-    // `constant.numeric.*` is numbers; `constant.language`/`constant.other`
-    // (booleans, `nil`, named constants) read more like keywords than
-    // numbers to a reader, so those fall through to the generic
-    // `constant` case below... but sublime-syntax has no bare "constant"
-    // scope used alone in practice, so treat non-numeric constants as
-    // Keyword (`true`/`false`/`null` sit with the other reserved words).
     if name.starts_with("constant.numeric") {
         return Some(CodeScope::Number);
     }
     if name.starts_with("constant") {
         return Some(CodeScope::Keyword);
     }
-    // `comment.*` — line and block comments, and their punctuation.
     if name.starts_with("comment") {
         return Some(CodeScope::Comment);
     }
-    // Type names: declared types/classes (`entity.name.type`,
-    // `entity.name.class`) and referenced/built-in types
-    // (`support.type`, `support.class`, `storage.type` is *already*
-    // Keyword above since it covers the `struct`/`class` keyword itself,
-    // not the name that follows it).
     if name.starts_with("entity.name.type")
         || name.starts_with("entity.name.class")
         || name.starts_with("entity.other.inherited-class")
@@ -103,17 +64,13 @@ fn map_scope(scope: Scope) -> Option<CodeScope> {
     {
         return Some(CodeScope::Type);
     }
-    // Function/method names, declared or called, plus built-in functions.
     if name.starts_with("entity.name.function") || name.starts_with("support.function") {
         return Some(CodeScope::Func);
     }
     None
 }
 
-/// Pick the innermost (top-of-stack) scope in `stack` that [`map_scope`]
-/// recognises, falling back to [`CodeScope::Plain`] when nothing in the
-/// stack maps to anything — including an entirely unrecognised language,
-/// whose only scope is the syntax's own root.
+/// Innermost scope that [`map_scope`] recognises, falling back to [`CodeScope::Plain`].
 fn scope_for_stack(stack: &ScopeStack) -> CodeScope {
     stack
         .as_slice()
@@ -123,13 +80,7 @@ fn scope_for_stack(stack: &ScopeStack) -> CodeScope {
         .unwrap_or(CodeScope::Plain)
 }
 
-/// Highlight one line given the ops syntect's parser produced for it,
-/// coalescing adjacent same-scope regions into one [`Span`] each. `line`
-/// includes its trailing newline (`ScopeRegionIterator`'s byte offsets are
-/// relative to exactly the string `parse_line` was called with); the
-/// trailing `\n`/`\r\n` is then trimmed off the *char* count so the returned
-/// spans cover only `visible_len` chars — the line's own text, without the
-/// terminator.
+/// Coalesces adjacent same-scope regions into one [`Span`] each; `visible_len` excludes the line's trailing `\n`/`\r\n`.
 fn spans_for_line(
     line: &str,
     visible_len: usize,
@@ -139,11 +90,7 @@ fn spans_for_line(
     let mut spans: Vec<Span> = Vec::new();
     let mut char_pos = 0usize;
     for (text, op) in ScopeRegionIterator::new(ops, line) {
-        // `ScopeRegionIterator` pairs each text region with the op that
-        // takes it *into* scope — the op must be applied before reading the
-        // stack for this region, not after (verified against syntect
-        // 5.3.0's own behaviour: the `Push` yielded alongside a token's text
-        // is the push that puts that very token inside the new scope).
+        // The op must be applied before reading the stack for this region, not after.
         let _ = stack.apply(op);
         if !text.is_empty() && char_pos < visible_len {
             let scope = scope_for_stack(stack);
@@ -164,13 +111,7 @@ fn spans_for_line(
     spans
 }
 
-/// Highlight every line of `text`, choosing a language by `path`'s
-/// extension; an unrecognised extension (or no extension) highlights every
-/// line as entirely [`CodeScope::Plain`] rather than guessing. Files over
-/// [`DIFF_MAX_LINES`] / [`DIFF_MAX_BYTES`] return an empty vector — no
-/// highlighting — matching the diff viewer's existing oversize-guard stub
-/// behaviour, since a file that large never reaches the point of rendering
-/// content lines at all.
+/// An unrecognised extension highlights everything as Plain; oversize files return empty, matching the diff viewer's guard.
 pub fn highlight_file(text: &str, path: &str) -> Vec<Vec<Span>> {
     if text.len() as u64 > DIFF_MAX_BYTES {
         return Vec::new();
@@ -191,8 +132,6 @@ pub fn highlight_file(text: &str, path: &str) -> Vec<Vec<Span>> {
     let syntax = set.find_syntax_by_extension(ext);
 
     let Some(syntax) = syntax else {
-        // Unknown extension: every line entirely Plain, one span each,
-        // still char-offset-correct.
         return text
             .lines()
             .map(|l| {
@@ -224,18 +163,7 @@ pub fn highlight_file(text: &str, path: &str) -> Vec<Vec<Span>> {
     result
 }
 
-// ── projection onto diff lines ──────────────────────────────────────────
-
-/// Attach the right line's spans to a diff [`crate::diff::Line`]: a `Del`
-/// line (only exists on the old side) gets `old_spans`, an `Add` line (only
-/// exists on the new side) gets `new_spans`, and a `Context` line (present
-/// on both, same text) reads from `new_spans` — an arbitrary but consistent
-/// choice, since the two sides highlight identical text.
-///
-/// Line numbers are 1-based in [`crate::diff::Line`]; `old_spans`/
-/// `new_spans` are 0-indexed per-line vectors from [`highlight_file`]. Out of
-/// range (a stale index, or highlighting was skipped by the oversize guard)
-/// yields no spans rather than panicking.
+/// `Context` lines read from `new_spans` — arbitrary but consistent, since both sides highlight identical text. Out-of-range indices yield no spans rather than panicking.
 pub fn line_spans(
     line: &crate::diff::Line,
     old_spans: &[Vec<Span>],
@@ -283,11 +211,7 @@ mod tests {
 
     #[test]
     fn javascript_sample_finds_keyword_and_string() {
-        // syntect's bundled `load_defaults_newlines` set has no TypeScript
-        // definition (only the Sublime "default" package, which stops at
-        // JavaScript) — a `.ts` file falls back to all-Plain, correctly, per
-        // `unknown_extension_is_all_plain` below. JavaScript is bundled, so
-        // it stands in as the "web/TS-family" language sample.
+        // No bundled TypeScript definition; JavaScript stands in as the web/TS-family sample.
         let src = "function greet(name) {\n  return `hi ${name}`;\n}\n";
         let lines = highlight_file(src, "sample.js");
         assert_eq!(lines.len(), 3);
@@ -299,7 +223,6 @@ mod tests {
         let src = "{\n  \"a\": 1,\n  \"b\": \"two\"\n}\n";
         let lines = highlight_file(src, "sample.json");
         assert_eq!(lines.len(), 4);
-        // Every non-empty line reconstructs to its own char length.
         for (line, spans) in src.lines().zip(&lines) {
             assert_eq!(total_len(spans), line.chars().count());
         }
@@ -337,20 +260,10 @@ mod tests {
         assert_eq!(lines.len(), 2);
         for (line, spans) in src.lines().zip(&lines) {
             assert_eq!(total_len(spans), line.chars().count());
-            // Every span's start must itself be a valid char index (i.e.
-            // within char count range) — proven simply by successfully
-            // reconstructing the exact char length above, since a
-            // byte-offset bug would over/under count against multibyte
-            // text.
         }
     }
 
-    /// Table-driven coverage of [`spans_for_line`]'s coalescing, exercised
-    /// through the ops-free path (`unknown_extension`'s all-Plain branch and
-    /// the syntect-parsed path below), asserting each line's spans (a) never
-    /// have two adjacent same-scope spans and (b) cover the line exactly
-    /// (no gaps, no overlaps, in order) — merging must never drop or
-    /// duplicate a char.
+    /// Asserts spans have no adjacent same-scope pair and cover the line exactly (no gaps/overlaps).
     fn assert_spans_are_merged_and_exact(spans: &[Span], visible_len: usize) {
         let mut expected_start = 0usize;
         for pair in spans.windows(2) {
@@ -371,17 +284,10 @@ mod tests {
 
     #[test]
     fn merge_table_all_same_scope_line_yields_a_single_span() {
-        // A comment *body* — deliberately excluding the `//` marker, which
-        // Rust's sublime-syntax tags as its own
-        // `punctuation.definition.comment` scope ahead of the comment text
-        // itself — must coalesce to exactly one span, not one per syntect
-        // token.
         let src = "this whole line is one comment scope end to end\n";
         let lines = highlight_file(&format!("// {src}"), "sample.rs");
         assert_eq!(lines.len(), 1);
-        // `Punct` for the `//` marker, `Comment` for everything after —
-        // exactly two merged spans, proving same-scope runs within each
-        // collapse to one while genuinely different adjacent scopes do not.
+        // `Punct` for the `//` marker, `Comment` for everything after.
         assert_eq!(
             lines[0].len(),
             2,
@@ -398,9 +304,6 @@ mod tests {
 
     #[test]
     fn merge_table_alternating_scopes_yields_one_span_per_change() {
-        // keyword, plain space, type name, plain punctuation... — scope
-        // changes several times, so several spans are expected, but no two
-        // adjacent ones may share a scope.
         let src = "fn main() -> Vec<u32> { 42 }\n";
         let lines = highlight_file(src, "sample.rs");
         assert_eq!(lines.len(), 1);
@@ -458,10 +361,6 @@ mod tests {
 
     #[test]
     fn adjacent_spans_never_share_a_scope() {
-        // syntect splits a line like this into many regions inside one
-        // `CodeScope` (e.g. several `punctuation.*`/`keyword.*` regions in a
-        // row); `spans_for_line`'s coalescing must fold each run into a
-        // single span, so no two neighbours can carry the same scope.
         let src = "fn main() {\n    let v: Vec<(u32, u32)> = vec![(1, 2), (3, 4)];\n}\n";
         let lines = highlight_file(src, "sample.rs");
         for spans in &lines {
@@ -499,8 +398,6 @@ mod tests {
         let src = "a".repeat(DIFF_MAX_BYTES as usize + 1);
         assert!(highlight_file(&src, "sample.rs").is_empty());
     }
-
-    // ── line_spans projection ────────────────────────────────────────────
 
     fn line(kind: LineKind, old_no: Option<u32>, new_no: Option<u32>) -> Line {
         Line {

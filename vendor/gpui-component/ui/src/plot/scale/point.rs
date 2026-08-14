@@ -4,10 +4,7 @@ use itertools::Itertools;
 
 use super::Scale;
 
-/// Point scale maps discrete domain values to continuous range positions.
-///
-/// Points are evenly distributed across the range, with the first and last points
-/// aligned to the range boundaries.
+/// Maps discrete domain values to continuous range positions, evenly distributed with the first/last points aligned to the range boundaries.
 #[derive(Clone)]
 pub struct ScalePoint<T> {
     domain: Vec<T>,
@@ -19,8 +16,6 @@ impl<T> ScalePoint<T>
 where
     T: PartialEq,
 {
-    /// Creates a new point scale with the given domain and range.
-    ///
     /// # Examples
     ///
     /// ```ignore
@@ -129,44 +124,38 @@ mod tests {
     fn test_least_index_basic() {
         let scale = ScalePoint::new(vec![1, 2, 3], vec![0., 100.]);
 
-        // Exact positions
         assert_eq!(scale.least_index(0.), 0);
         assert_eq!(scale.least_index(50.), 1);
         assert_eq!(scale.least_index(100.), 2);
 
-        // Between positions (should round to nearest)
-        assert_eq!(scale.least_index(24.), 0); // closer to 0
-        assert_eq!(scale.least_index(25.), 1); // equidistant, rounds to 1
-        assert_eq!(scale.least_index(26.), 1); // closer to 50
-        assert_eq!(scale.least_index(74.), 1); // closer to 50
-        assert_eq!(scale.least_index(75.), 2); // equidistant, rounds to 2
-        assert_eq!(scale.least_index(76.), 2); // closer to 100
+        assert_eq!(scale.least_index(24.), 0);
+        assert_eq!(scale.least_index(25.), 1);
+        assert_eq!(scale.least_index(26.), 1);
+        assert_eq!(scale.least_index(74.), 1);
+        assert_eq!(scale.least_index(75.), 2);
+        assert_eq!(scale.least_index(76.), 2);
 
-        // Outside range
-        assert_eq!(scale.least_index(-10.), 0); // below min
-        assert_eq!(scale.least_index(150.), 2); // above max
+        assert_eq!(scale.least_index(-10.), 0);
+        assert_eq!(scale.least_index(150.), 2);
     }
 
     #[test]
     fn test_least_index_with_offset() {
         let scale = ScalePoint::new(vec![1, 2, 3], vec![40., 80.]);
 
-        // Exact positions: 40, 60, 80
         assert_eq!(scale.least_index(40.), 0);
         assert_eq!(scale.least_index(60.), 1);
         assert_eq!(scale.least_index(80.), 2);
 
-        // Between positions
-        assert_eq!(scale.least_index(49.), 0); // closer to 40
-        assert_eq!(scale.least_index(50.), 1); // equidistant, rounds to 1
-        assert_eq!(scale.least_index(51.), 1); // closer to 60
-        assert_eq!(scale.least_index(69.), 1); // closer to 60
-        assert_eq!(scale.least_index(70.), 2); // equidistant, rounds to 2
-        assert_eq!(scale.least_index(71.), 2); // closer to 80
+        assert_eq!(scale.least_index(49.), 0);
+        assert_eq!(scale.least_index(50.), 1);
+        assert_eq!(scale.least_index(51.), 1);
+        assert_eq!(scale.least_index(69.), 1);
+        assert_eq!(scale.least_index(70.), 2);
+        assert_eq!(scale.least_index(71.), 2);
 
-        // Outside range
-        assert_eq!(scale.least_index(30.), 0); // below min
-        assert_eq!(scale.least_index(100.), 2); // above max
+        assert_eq!(scale.least_index(30.), 0);
+        assert_eq!(scale.least_index(100.), 2);
     }
 
     #[test]

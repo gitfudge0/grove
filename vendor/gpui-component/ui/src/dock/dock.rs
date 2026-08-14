@@ -1,4 +1,4 @@
-//! Dock is a fixed container that places at left, bottom, right of the Windows.
+//! A fixed container placed at left, bottom, or right of the window.
 
 use std::{ops::Deref, sync::Arc};
 
@@ -59,21 +59,16 @@ impl DockPlacement {
     }
 }
 
-/// The Dock is a fixed container that places at left, bottom, right of the Windows.
-///
-/// This is unlike Panel, it can't be move or add any other panel.
+/// Unlike Panel, a Dock can't be moved and takes no other panels.
 pub struct Dock {
     pub(super) placement: DockPlacement,
     dock_area: WeakEntity<DockArea>,
     pub(crate) panel: DockItem,
-    /// The size is means the width or height of the Dock, if the placement is left or right, the size is width, otherwise the size is height.
+    /// Width if placement is left/right, height if bottom.
     pub(super) size: Pixels,
     pub(super) open: bool,
-    /// Whether the Dock is collapsible, default: true
     pub(super) collapsible: bool,
 
-    // Runtime state
-    /// Whether the Dock is resizing
     resizing: bool,
 }
 
@@ -134,9 +129,7 @@ impl Dock {
         Self::new(dock_area, DockPlacement::Right, window, cx)
     }
 
-    /// Update the Dock to be collapsible or not.
-    ///
-    /// And if the Dock is not collapsible, it will be open.
+    /// A non-collapsible Dock is always open.
     pub fn set_collapsible(&mut self, collapsible: bool, _: &mut Window, cx: &mut Context<Self>) {
         self.collapsible = collapsible;
         if !collapsible {
@@ -223,9 +216,7 @@ impl Dock {
                     }
                 });
             }
-            DockItem::Panel { .. } => {
-                // Not supported
-            }
+            DockItem::Panel { .. } => {}
         }
     }
 
@@ -246,20 +237,15 @@ impl Dock {
         self.set_open(!self.open, window, cx);
     }
 
-    /// Returns the size of the Dock, the size is means the width or height of
-    /// the Dock, if the placement is left or right, the size is width,
-    /// otherwise the size is height.
     pub fn size(&self) -> Pixels {
         self.size
     }
 
-    /// Set the size of the Dock.
     pub fn set_size(&mut self, size: Pixels, _: &mut Window, cx: &mut Context<Self>) {
         self.size = size.max(PANEL_MIN_SIZE);
         cx.notify();
     }
 
-    /// Set the open state of the Dock.
     pub fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.open = open;
         let item = self.panel.clone();
@@ -269,7 +255,6 @@ impl Dock {
         cx.notify();
     }
 
-    /// Add item to the Dock.
     pub fn add_panel(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -281,7 +266,6 @@ impl Dock {
         cx.notify();
     }
 
-    /// Remove item from the Dock.
     pub fn remove_panel(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -329,7 +313,6 @@ impl Dock {
         let mut left_dock_size = px(0.0);
         let mut right_dock_size = px(0.0);
 
-        // Get the size of the left dock if it's open and not the current dock
         if let Some(left_dock) = &dock_area.left_dock {
             if left_dock.entity_id() != cx.entity().entity_id() {
                 let left_dock_read = left_dock.read(cx);
@@ -339,7 +322,6 @@ impl Dock {
             }
         }
 
-        // Get the size of the right dock if it's open and not the current dock
         if let Some(right_dock) = &dock_area.right_dock {
             if right_dock.entity_id() != cx.entity().entity_id() {
                 let right_dock_read = right_dock.read(cx);
@@ -397,7 +379,7 @@ impl Render for Dock {
                 DockPlacement::Bottom => this.w_full().h(self.size),
                 DockPlacement::Center => unreachable!(),
             })
-            // Bottom Dock should keep the title bar, then user can click the Toggle button
+            // Bottom Dock keeps the title bar so the Toggle button stays clickable.
             .when(!self.open && self.placement.is_bottom(), |this| {
                 this.h(px(29.))
             })
@@ -405,7 +387,6 @@ impl Render for Dock {
                 DockItem::Split { view, .. } => this.child(view.clone()),
                 DockItem::Tabs { view, .. } => this.child(view.clone()),
                 DockItem::Panel { view, .. } => this.child(view.clone().view().cached(cache_style)),
-                // Not support to render Tiles and Tile into Dock
                 DockItem::Tiles { .. } => this,
             })
             .child(self.render_resize_handle(window, cx))
@@ -486,7 +467,6 @@ impl Element for DockElement {
             }
         });
 
-        // When any mouse up, stop dragging
         window.on_mouse_event({
             let view = self.view.clone();
             move |_: &MouseUpEvent, phase, window, cx| {

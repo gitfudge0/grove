@@ -1,36 +1,23 @@
-//! Pre-baked render rows for the diff viewer: the diff arithmetic of
-//! [`crate::diff`] composed once with the syntax spans of
-//! [`crate::highlight`] and the intraline word runs of
-//! [`crate::diff::word_runs`], so the view's render path is a pure lookup.
-//!
-//! Like the rest of this crate, nothing here touches a UI framework or the
-//! filesystem — a [`Patch`] plus its two span tables go in, a flat row
-//! vector comes out. The view used to derive these every frame; building
-//! them once per patch load is the whole point of this module.
+//! Pre-baked render rows for the diff viewer, so the view's render path is a pure lookup instead of deriving rows every frame.
 
 use crate::diff::{Line, LineKind, PairedRow, Patch, Run, UnifiedRow};
 use crate::highlight::{line_spans, Span};
 
-/// One unified-mode row, ready to render: a hunk separator, or a line with
-/// its syntax spans already attached.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UnifiedRenderRow {
     HunkHeader(String),
     Line { line: Line, spans: Vec<Span> },
 }
 
-/// One side of a split-mode row: the line, its syntax spans, and its
-/// intraline word runs when the row is a real Del/Add pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SplitCell {
     pub line: Line,
     pub spans: Vec<Span>,
-    /// Intraline word-diff runs; `Some` only for a real Del/Add pair.
+    /// `Some` only for a real Del/Add pair.
     pub runs: Option<Vec<Run>>,
 }
 
-/// One split-mode row: a hunk separator, or up to one [`SplitCell`] per
-/// side (a half-empty row leaves the shorter side `None`).
+/// A half-empty row leaves the shorter side `None`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SplitRenderRow {
     HunkHeader(String),
@@ -40,13 +27,9 @@ pub enum SplitRenderRow {
     },
 }
 
-/// The `"@@ "` prefix the view prints before a hunk header's own text, so a
-/// header's rendered width is its text plus these three chars.
+/// The `"@@ "` prefix the view prints before a hunk header's text.
 const HUNK_HEADER_PREFIX_CHARS: usize = 3;
 
-/// Bake every unified row of `patch` once, attaching
-/// [`crate::highlight::line_spans`] to each line row. Order and count match
-/// [`Patch::unified_rows`] exactly.
 pub fn unified_render_rows(
     patch: &Patch,
     old_spans: &[Vec<Span>],
@@ -65,11 +48,7 @@ pub fn unified_render_rows(
         .collect()
 }
 
-/// Bake every split row of `patch` once. Order and count match
-/// [`Patch::paired_rows`] exactly. Intraline word runs are computed only for
-/// a real Del/Add pair — never for a context line (which pairs with itself)
-/// nor for a half-empty row — matching what the view drew before these rows
-/// were pre-baked.
+/// Intraline word runs are computed only for a real Del/Add pair, never a context line or half-empty row.
 pub fn split_render_rows(
     patch: &Patch,
     old_spans: &[Vec<Span>],
@@ -106,12 +85,7 @@ pub fn split_render_rows(
         .collect()
 }
 
-/// How far the split body's shared pan offset may travel, in pixels: the
-/// wider of the two sides' content widths minus one half's viewport width,
-/// floored at `0`. The wider side governs because both halves pan off **one**
-/// shared offset — if the narrower side capped the extent, the wider side
-/// could never reach its own right edge. `0` means neither side overflows and
-/// panning is a no-op. NaN-safe: any non-finite input yields `0`.
+/// The wider side governs, since both halves pan off one shared offset — otherwise the wider side could never reach its own right edge. NaN-safe: non-finite input yields `0`.
 pub fn split_pan_extent(left_content_w: f32, right_content_w: f32, half_w: f32) -> f32 {
     let widest = left_content_w.max(right_content_w);
     let extent = widest - half_w;
@@ -122,11 +96,7 @@ pub fn split_pan_extent(left_content_w: f32, right_content_w: f32, half_w: f32) 
     }
 }
 
-/// Clamp a stored pan offset into `0..=split_pan_extent(..)`. Called on every
-/// read rather than on every write, so a pan carried across a file switch (or
-/// a window resize) collapses to whatever the new layout can actually show
-/// instead of leaving a half scrolled into empty space. NaN-safe: a
-/// non-finite `pan_x` clamps to `0`.
+/// Called on every read rather than write, so a pan carried across a file switch collapses to what the new layout can show.
 pub fn clamp_split_pan(pan_x: f32, left_content_w: f32, right_content_w: f32, half_w: f32) -> f32 {
     let extent = split_pan_extent(left_content_w, right_content_w, half_w);
     if pan_x.is_finite() {
@@ -136,14 +106,7 @@ pub fn clamp_split_pan(pan_x: f32, left_content_w: f32, right_content_w: f32, ha
     }
 }
 
-/// The widest line of text on one side (`is_old` selects old/new) across
-/// every [`SplitRenderRow::Lines`] row — `""` if `rows` has no such row on
-/// that side. Each half of the split body is a fixed-width, clipped viewport
-/// whose inner content row sits at its own natural text width and slides
-/// inside it; this text's real painted width (measured in the view, which
-/// needs a `Window`, so it can't happen in this UI-framework-free crate) is
-/// what sets that natural width — and hence the pan extent, via
-/// [`split_pan_extent`]. See `views::modals::diff_viewer::split_content_w`.
+/// `""` if `rows` has no row on that side. Measuring the real painted width needs a `Window`, so it happens in the view (see `views::modals::diff_viewer::split_content_w`), not here.
 pub fn widest_split_side_text(rows: &[SplitRenderRow], is_old: bool) -> &str {
     rows.iter()
         .filter_map(|row| match row {
@@ -157,8 +120,6 @@ pub fn widest_split_side_text(rows: &[SplitRenderRow], is_old: bool) -> &str {
         .unwrap_or("")
 }
 
-/// Rendered width of one row's text in chars — the measure both
-/// `widest_*` helpers rank on.
 fn unified_row_width(row: &UnifiedRenderRow) -> usize {
     match row {
         UnifiedRenderRow::HunkHeader(h) => h.chars().count() + HUNK_HEADER_PREFIX_CHARS,
@@ -166,16 +127,11 @@ fn unified_row_width(row: &UnifiedRenderRow) -> usize {
     }
 }
 
-/// Index of the widest unified row, measured in `chars().count()` — `0` for
-/// an empty slice. The caller feeds this to gpui's
-/// `uniform_list::with_width_from_item`, which measures exactly one item to
-/// decide the horizontal scroll extent, so the *truly* widest row matters.
+/// Feeds gpui's `uniform_list::with_width_from_item`, which measures exactly one item, so the truly widest row matters.
 pub fn widest_unified_row(rows: &[UnifiedRenderRow]) -> usize {
     widest_by(rows, unified_row_width)
 }
 
-/// Shared "index of the max, first one wins" scan for `widest_unified_row`;
-/// `0` on an empty slice.
 fn widest_by<T>(rows: &[T], width: impl Fn(&T) -> usize) -> usize {
     rows.iter()
         .enumerate()
@@ -263,7 +219,6 @@ mod tests {
         }
     }
 
-    /// The `runs` on both cells of row `ix`, for the pair/lone assertions.
     fn runs_at(rows: &[SplitRenderRow], ix: usize) -> (bool, bool) {
         let SplitRenderRow::Lines { old, new } = &rows[ix] else {
             panic!("row {ix} is not a Lines row");
@@ -338,8 +293,7 @@ mod tests {
 
     #[test]
     fn widest_is_measured_in_chars_not_bytes() {
-        // "日本語のコメントです" is 10 chars / 30 bytes; the ASCII line is
-        // 20 chars / 20 bytes. Measured in bytes the CJK line would win.
+        // Measured in bytes the CJK line would win; in chars, the ASCII line does.
         let patch = text_patch(vec![
             line(LineKind::Context, "日本語のコメントです", Some(1), Some(1)),
             line(LineKind::Context, "abcdefghijklmnopqrst", Some(2), Some(2)),
@@ -406,8 +360,6 @@ mod tests {
 
     #[test]
     fn pan_extent_never_negative_on_a_degenerate_layout() {
-        // A zero-width (or NaN) half is what a first frame / collapsed
-        // window hands us; it must not produce a negative extent.
         assert_eq!(split_pan_extent(0.0, 0.0, 0.0), 0.0);
         assert_eq!(split_pan_extent(100.0, 100.0, f32::NAN), 0.0);
         assert_eq!(split_pan_extent(f32::NAN, 0.0, 400.0), 0.0);
@@ -423,8 +375,6 @@ mod tests {
 
     #[test]
     fn a_stored_pan_collapses_once_content_no_longer_overflows() {
-        // Switching to a narrow file (or widening the window) keeps the
-        // stored offset, but reading it re-clamps to a zero extent.
         let stored = 480.0;
         assert_eq!(clamp_split_pan(stored, 900.0, 500.0, 400.0), 480.0);
         assert_eq!(clamp_split_pan(stored, 300.0, 200.0, 400.0), 0.0);
