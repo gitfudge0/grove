@@ -9,10 +9,6 @@ use crate::{
     h_flex,
 };
 
-/// Footer section of a dialog, typically contains action buttons.
-///
-/// # Examples
-///
 /// ```ignore
 /// DialogFooter::new()
 ///     .child(DialogClose::new().child(Button::new("cancel").label("Cancel")))

@@ -6,7 +6,7 @@ use gpui::{
 };
 use smallvec::SmallVec;
 
-/// A cubic bezier function like CSS `cubic-bezier`. Builder: https://cubic-bezier.com
+/// Like CSS `cubic-bezier`; build curves at https://cubic-bezier.com
 pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> impl Fn(f32) -> f32 {
     move |t: f32| {
         let one_t = 1.0 - t;
@@ -14,7 +14,7 @@ pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> impl Fn(f32) -> f32 {
         let t2 = t * t;
         let t3 = t2 * t;
 
-        // The Bezier curve function for x and y, where x0 = 0, y0 = 0, x3 = 1, y3 = 1
+        // x0 = 0, y0 = 0, x3 = 1, y3 = 1.
         let _x = 3.0 * x1 * one_t2 * t + 3.0 * x2 * one_t * t2 + t3;
         let y = 3.0 * y1 * one_t2 * t + 3.0 * y2 * one_t * t2 + t3;
 
@@ -22,21 +22,19 @@ pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> impl Fn(f32) -> f32 {
     }
 }
 
-// ── Easing presets ──────────────────────────────────────────────────────────
-
-/// Cubic ease-out — fast start, slow end. Good for enter animations.
+/// Fast start, slow end — good for enter animations.
 pub fn ease_out_cubic(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
 }
 
-/// Cubic ease-in — slow start, fast end. Good for exit animations.
+/// Slow start, fast end — good for exit animations.
 pub fn ease_in_cubic(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * t
 }
 
-/// Cubic ease-in-out — slow start and end. Good for position transitions.
+/// Slow start and end — good for position transitions.
 pub fn ease_in_out_cubic(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     if t < 0.5 {
@@ -46,9 +44,6 @@ pub fn ease_in_out_cubic(t: f32) -> f32 {
     }
 }
 
-// ── Lerp trait ──────────────────────────────────────────────────────────────
-
-/// Trait for types that support linear interpolation.
 pub trait Lerp: Clone {
     fn lerp(&self, target: &Self, t: f32) -> Self;
 }
@@ -77,9 +72,7 @@ impl Lerp for Point<Pixels> {
 }
 
 impl Lerp for Hsla {
-    /// Interpolate each channel linearly. Intended for transitions between
-    /// near-grayscale UI colors (e.g. text colors), where hue interpolation is
-    /// irrelevant.
+    /// Linear per-channel; fine for near-grayscale UI colors where hue interpolation doesn't matter.
     fn lerp(&self, target: &Self, t: f32) -> Self {
         Hsla {
             h: self.h.lerp(&target.h, t),
@@ -90,12 +83,6 @@ impl Lerp for Hsla {
     }
 }
 
-// ── Transition combinator ───────────────────────────────────────────────────
-
-/// A composable transition that describes animated style changes.
-///
-/// # Example
-///
 /// ```ignore
 /// Transition::new(Duration::from_millis(150))
 ///     .ease(ease_out_cubic)
@@ -128,43 +115,36 @@ impl Transition {
         }
     }
 
-    /// Set the easing function.
     pub fn ease(mut self, easing: impl Fn(f32) -> f32 + 'static) -> Self {
         self.easing = Rc::new(easing);
         self
     }
 
-    /// Animate vertical offset from `from` to `to`.
     pub fn slide_y(mut self, from: Pixels, to: Pixels) -> Self {
         self.effects.push(TransitionEffect::SlideY(from, to));
         self
     }
 
-    /// Animate horizontal offset from `from` to `to`.
     pub fn slide_x(mut self, from: Pixels, to: Pixels) -> Self {
         self.effects.push(TransitionEffect::SlideX(from, to));
         self
     }
 
-    /// Animate opacity from `from` to `to`.
     pub fn fade(mut self, from: f32, to: f32) -> Self {
         self.effects.push(TransitionEffect::Fade(from, to));
         self
     }
 
-    /// Animate width from `from` to `to`.
     pub fn width(mut self, from: Pixels, to: Pixels) -> Self {
         self.effects.push(TransitionEffect::Width(from, to));
         self
     }
 
-    /// Animate height from `from` to `to`.
     pub fn height(mut self, from: Pixels, to: Pixels) -> Self {
         self.effects.push(TransitionEffect::Height(from, to));
         self
     }
 
-    /// Apply this transition to a Styled element, returning an AnimationElement.
     pub fn apply<E: IntoElement + Styled + 'static>(
         self,
         element: E,

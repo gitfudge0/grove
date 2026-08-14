@@ -32,7 +32,7 @@ pub struct SearchMatcher {
 
     pub(super) matched_ranges: Rc<Vec<Range<usize>>>,
     pub(super) current_match_ix: usize,
-    /// Is in replacing mode, if true, the next update will update the current match index based on matched ranges.
+    /// When true, the next update reclamps current_match_ix against the new matched ranges.
     replacing: bool,
 }
 
@@ -47,7 +47,6 @@ impl SearchMatcher {
         }
     }
 
-    /// Update source text and re-match
     pub(crate) fn update(&mut self, text: &Rope) {
         if self.text.eq(text) {
             return;
@@ -61,7 +60,6 @@ impl SearchMatcher {
         let mut new_ranges = Vec::new();
         if let Some(query) = &self.query {
             let text = self.text.to_string();
-            // FIXME: Use stream find
             let matches = query.stream_find_iter(text.as_bytes());
 
             for query_match in matches.into_iter() {
@@ -80,7 +78,6 @@ impl SearchMatcher {
         self.replacing = false;
     }
 
-    /// Update the search query and reset the current match index.
     pub fn update_query(&mut self, query: &str, case_insensitive: bool) {
         if query.len() > 0 {
             self.query = Some(
@@ -95,7 +92,6 @@ impl SearchMatcher {
         self.update_matches();
     }
 
-    /// Returns the number of matches found.
     #[allow(unused)]
     #[inline]
     fn len(&self) -> usize {
@@ -128,7 +124,6 @@ impl SearchMatcher {
         format!("{}/{}", self.current_match_ix + 1, self.len())
     }
 
-    /// Update the current match index based on the given offset.
     fn update_cursor_by_offset(&mut self, offset: usize) {
         for (ix, range) in self.matched_ranges.iter().enumerate() {
             self.current_match_ix = ix;
@@ -180,7 +175,6 @@ pub(super) struct SearchPanel {
 }
 
 impl InputState {
-    /// Update the search matcher when text changes.
     pub(super) fn update_search(&mut self, cx: &mut App) {
         let Some(search_panel) = self.search_panel.as_ref() else {
             return;
@@ -251,7 +245,6 @@ impl SearchPanel {
             let _subscriptions =
                 vec![
                     cx.subscribe(&search_input, |this: &mut Self, _, ev: &InputEvent, cx| {
-                        // Handle search input changes
                         match ev {
                             InputEvent::Change => {
                                 this.update_search_query(cx);
@@ -290,7 +283,6 @@ impl SearchPanel {
 
         self.search_input.update(cx, |this, cx| {
             if selected_text.len() > 0 {
-                // Set value will emit to update_search_query
                 this.set_value(selected_text.to_string(), window, cx);
             }
             this.select_all(&super::SelectAll, window, cx);
@@ -430,7 +422,7 @@ impl SearchPanel {
         cx.spawn_in(window, async move |_, cx| {
             cx.update(|window, cx| {
                 editor.update(cx, |state, cx| {
-                    // Replace from the end to avoid messing up the ranges.
+                    // Replaces from the end so earlier ranges stay valid.
                     let mut rope = state.text.clone();
                     for range in ranges.iter().rev() {
                         rope.replace(range.clone(), new_text.as_str());

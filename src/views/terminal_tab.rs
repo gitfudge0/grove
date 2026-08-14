@@ -1,10 +1,5 @@
-//! The home-terminal tab (Plan 07 Task 5 Step 3). Port of
-//! `src/gui/view/terminal.rs:398-485` — `terminal_workspace` and
-//! `home_terminal_bar`.
-//!
-//! Unlike the session bar there is **no kill action**: the home terminal is
-//! permanent. Only a restart, which relaunches the shell at `~` in place, and
-//! the zen toggle.
+//! The home-terminal tab. Unlike the session bar there is no kill action —
+//! the home terminal is permanent, only a restart or the zen toggle.
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -18,11 +13,9 @@ use crate::views::grid::{PTY_PAD_H, PTY_PAD_W};
 use crate::views::session_header::{tool_btn, SESSBAR_H};
 use crate::views::terminal_view::TerminalView;
 
-/// What the terminal tab's chrome asks the workspace to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TerminalTabAction {
-    /// Replace the active shell in its slot, keeping its label
-    /// (`src/app/terminals.rs:38-53`).
+    /// Replaces the active shell in its slot, keeping its label.
     Restart,
     ToggleZen,
 }
@@ -33,16 +26,13 @@ pub struct TerminalTabCtx {
     /// `None` when every home terminal has been closed.
     pub view: Option<Entity<TerminalView>>,
     pub running: bool,
-    /// The OSC context title, already sanitized; defaults to `~`.
+    /// OSC context title, already sanitized; defaults to `~`.
     pub context: Option<String>,
     /// Drives the zen button's tooltip label only.
     pub chrome_visible: bool,
     pub dispatch: TabDispatch,
 }
 
-/// Shown in the terminal tab when every home terminal has been closed
-/// (`primitives.rs:279-320`'s `empty_terminals_workspace`): the same
-/// `empty_state` chrome, plus a mod+t keycap hint.
 fn empty_terminals_state() -> AnyElement {
     let keycap_content: AnyElement = if cfg!(target_os = "macos") {
         div()
@@ -81,7 +71,6 @@ fn empty_terminals_state() -> AnyElement {
         .into_any_element()
 }
 
-/// The bar plus the active home terminal's PTY.
 pub fn terminal_tab(ctx: &TerminalTabCtx) -> AnyElement {
     let Some(view) = ctx.view.clone() else {
         return empty_terminals_state();
@@ -93,10 +82,7 @@ pub fn terminal_tab(ctx: &TerminalTabCtx) -> AnyElement {
         .bg(c::BG())
         .child(home_terminal_bar(ctx))
         .child(
-            // Same `pty()` padding as the single-session body: iced routes
-            // both through `self.pty(PtyPane::Agent, …)`
-            // (`src/gui/view/terminal.rs:189`, `:401`), so the tab's grid
-            // must match it too. See `views::grid::PTY_PAD_W`.
+            // Matches the single-session body's pty() padding.
             div()
                 .flex()
                 .flex_1()
@@ -109,7 +95,6 @@ pub fn terminal_tab(ctx: &TerminalTabCtx) -> AnyElement {
         .into_any_element()
 }
 
-/// The status/context/tools bar (`terminal.rs:420-485`).
 fn home_terminal_bar(ctx: &TerminalTabCtx) -> AnyElement {
     let (dot_color, status_label) = if ctx.running {
         (c::GREEN(), "running")
@@ -164,7 +149,6 @@ fn home_terminal_bar(ctx: &TerminalTabCtx) -> AnyElement {
         .child(div().flex_shrink_0().child(tool_btn(
             "home-term-zen",
             "zen",
-            // In zen the bar is the only way back out by mouse.
             if ctx.chrome_visible {
                 "zen"
             } else {
@@ -187,17 +171,12 @@ fn home_terminal_bar(ctx: &TerminalTabCtx) -> AnyElement {
 #[cfg(test)]
 mod tests {
 
-    /// `terminal.rs:447-449` — the context defaults to `~`; no char cap is
-    /// applied (the title element truncates visually via `.truncate()` and
-    /// reveals the full string in a tooltip, mirroring `session_header.rs`).
     #[test]
     fn the_context_defaults_to_tilde_and_is_not_char_capped() {
         let none: Option<String> = None;
         assert_eq!(none.as_deref().unwrap_or("~"), "~");
     }
 
-    /// `terminal.rs:466-473` — the zen tool's label flips while the chrome is
-    /// hidden, because in zen this bar is the only mouse route back out.
     #[test]
     fn the_zen_tool_label_flips_in_zen() {
         let label = |chrome_visible: bool| {

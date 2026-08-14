@@ -6,7 +6,6 @@ use gpui::{
 
 use crate::{ActiveTheme as _, AxisExt, Icon, Size, StyleSized, StyledExt as _};
 
-/// The trigger part of a stepper item.
 #[derive(IntoElement)]
 pub(super) struct StepperTrigger {
     step: usize,

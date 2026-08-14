@@ -10,7 +10,6 @@ use gpui::{
     Styled, Toggled, Window, div, prelude::FluentBuilder as _, px, relative, rems, svg,
 };
 
-/// A Checkbox element.
 #[derive(IntoElement)]
 pub struct Checkbox {
     id: ElementId,
@@ -28,7 +27,6 @@ pub struct Checkbox {
 }
 
 impl Checkbox {
-    /// Create a new Checkbox with the given id.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -46,39 +44,32 @@ impl Checkbox {
         }
     }
 
-    /// Set tooltip text for the checkbox.
     pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
         self.tooltip.text = Some((tooltip.into(), None));
         self
     }
 
-    /// Set the label for the checkbox.
     pub fn label(mut self, label: impl Into<Text>) -> Self {
         self.label = Some(label.into());
         self
     }
 
-    /// Set the checked state for the checkbox.
     pub fn checked(mut self, checked: bool) -> Self {
         self.checked = checked;
         self
     }
 
-    /// Set the click handler for the checkbox.
-    ///
-    /// The `&bool` parameter indicates the new checked state after the click.
+    /// `&bool` is the new checked state after the click.
     pub fn on_click(mut self, handler: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Rc::new(handler));
         self
     }
 
-    /// Set the tab stop for the checkbox, default is true.
     pub fn tab_stop(mut self, tab_stop: bool) -> Self {
         self.tab_stop = tab_stop;
         self
     }
 
-    /// Set the tab index for the checkbox, default is 0.
     pub fn tab_index(mut self, tab_index: isize) -> Self {
         self.tab_index = tab_index;
         self
@@ -311,7 +302,6 @@ impl RenderOnce for Checkbox {
                 )
             })
             .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
-                // Avoid focus on mouse down.
                 window.prevent_default();
             })
             .when(!self.disabled, |this| {
