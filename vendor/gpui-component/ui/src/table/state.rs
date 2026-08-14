@@ -45,7 +45,6 @@ impl SelectionMode {
     }
 }
 
-/// The Table event.
 #[derive(Clone)]
 pub enum TableEvent {
     SelectRow(usize),

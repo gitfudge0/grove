@@ -398,8 +398,7 @@ unsafe fn create_dib(pixels: &[u8], width: u32, height: u32) -> Option<HBITMAP> 
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
             biWidth: width as i32,
-            // Negative height selects a top-down DIB (origin at top-left), matching
-            // tiny-skia's row order.
+            // Negative height selects a top-down DIB (origin at top-left), matching tiny-skia's row order.
             biHeight: -(height as i32),
             biPlanes: 1,
             biBitCount: 32,

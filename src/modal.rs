@@ -1,13 +1,8 @@
-//! The pure modal state machine: the single slot, the per-modal Escape
-//! verdicts, the key-context strings, and the quit-confirm clobber rule.
+//! The pure modal state machine: the single slot, the per-modal Escape verdicts, the key-context strings, and the quit-confirm clobber rule.
 //! Ported from `src/app/modal.rs:5-186` and `src/gui/update/modals.rs:69-336,645-702`.
 //!
-//! gpui's structural dispatch replaces the iced `should_forward`/`MODAL_OPEN`/`PALETTE_OPEN`
-//! statics entirely (carried decision 3): Escape propagates from `InputState::escape()` unless
-//! `clean_on_escape` is set (never set by `ModalInput`); per-modal chords are bound as gpui
-//! actions via [`ModalKind::key_context`]; ←/→ capture uses a `"<ModalContext> > Input"`
-//! descendant binding gated by `wants_arrows`, since capture-phase interception doesn't work at
-//! this gpui rev. [`bound_chords`]'s test guards that every bound chord is claimed by [`key_verdict`].
+//! gpui's structural dispatch replaces the iced `should_forward`/`MODAL_OPEN`/`PALETTE_OPEN` statics (carried decision 3); per-modal chords bind via [`ModalKind::key_context`].
+//! ←/→ capture uses a descendant binding gated by `wants_arrows` since capture-phase interception doesn't work at this gpui rev; [`bound_chords`]'s test guards every bound chord is claimed by [`key_verdict`].
 
 /// What a `Confirm` modal is actually confirming (`src/app/modal.rs:177-186`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,8 +90,7 @@ pub enum ThemePickerReturn {
     ScriptsEditor(Box<ScriptsEditorState>),
 }
 
-/// One variant per modal. Unlike iced's `Modal`, child state lives **inline** here so replacing
-/// the slot drops the old state automatically (carried decision 4).
+/// Unlike iced's `Modal`, child state lives inline here so replacing the slot drops old state automatically (carried decision 4).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Modal {
     Input {
@@ -122,8 +116,7 @@ pub enum Modal {
         current: String,
         errors: Vec<String>,
     },
-    /// `sessions` is one row per SESSION, not per worktree, and deliberately not filtered to
-    /// running ones so the count can't disagree with `kill_sessions_for_project` (`modals.rs:703-745`).
+    /// `sessions` is one row per SESSION, not per worktree, and not filtered to running ones so the count can't disagree with `kill_sessions_for_project` (`modals.rs:703-745`).
     ArchiveProject {
         idx: usize,
         name: String,

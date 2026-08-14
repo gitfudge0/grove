@@ -1,7 +1,7 @@
 //! Pure grid math for the tile grid; every function here ports an iced original (see each function's doc for its `src/gui/...` origin).
 //!
-//! Deviation: `tile_order` is `Vec<SessionId>` here (stable ids), not an index into a sessions vec, so removing a session can't silently re-point a stored order. [`reconcile_tile_order`] still operates on `Store::grid_order`'s persisted string keys, yielding positions the caller maps to ids.
-//! Deviation: `slide_progress`'s `EaseOutCubic` easing is written out arithmetically since `iced::animation::Easing` must not become a grove-gpui dependency.
+//! Deviation: `tile_order` is `Vec<SessionId>` (stable ids), not a sessions-vec index, so removing a session can't silently re-point a stored order.
+//! Deviation: `slide_progress`'s `EaseOutCubic` is arithmetic since `iced::animation::Easing` must not become a dep.
 
 use std::time::{Duration, Instant};
 
@@ -19,7 +19,6 @@ pub fn grid_layout(n: usize) -> (usize, usize) {
     (cols, rows)
 }
 
-/// Tiles are numbered row-major but rendered into per-column containers that skip `tile_idx >= n`, so a short column just stacks what it has.
 /// Vertical moves require the naive target index to exist (no "nearest in column" fallback); horizontal moves clamp the row downward to the largest row with a tile in the target column.
 #[must_use]
 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
@@ -307,8 +306,7 @@ mod tests {
         assert!(q > 0.5 && q < 0.62, "quarter was {q}");
     }
 
-    /// `src/gui/update/layout.rs:363-377`. Called post-swap, so each entry's
-    /// offset points back at where that tile came from.
+    /// `src/gui/update/layout.rs:363-377`. Called post-swap, so each entry's offset points back where the tile came from.
     #[test]
     fn slide_offsets_point_each_tile_back_where_it_came_from() {
         // 4 tiles → 2 cols. Horizontal swap 0 <-> 1 (same row).

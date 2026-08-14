@@ -1490,7 +1490,6 @@ impl Element for TextElement {
             (&text, fg)
         };
 
-        // Calculate the width of the line numbers
         let (line_number_width, line_number_len) =
             Self::layout_line_numbers(&state, &text, text_size, &text_style, window);
 
@@ -1627,7 +1626,6 @@ impl Element for TextElement {
             .lsp
             .document_colors_for_range(&text, &last_layout.visible_range);
 
-        // Create shaped lines for whitespace indicators before layout
         let whitespace_indicators =
             Self::layout_whitespace_indicators(&state, text_size, &text_style, window, cx);
 
@@ -2050,14 +2048,12 @@ impl Element for TextElement {
                     offset_y += line_height;
                 }
 
-                // Add ghost line height after cursor row for line numbers alignment
                 if !prepaint.ghost_lines.is_empty() && prepaint.current_row == Some(buffer_line) {
                     offset_y += prepaint.ghost_lines_height;
                 }
             }
         }
 
-        // Paint fold icons (only visible on hover or for current line)
         self.paint_fold_icons(
             &mut prepaint.fold_icon_layout,
             prepaint.current_row,
@@ -2082,7 +2078,6 @@ impl Element for TextElement {
             window.set_cursor_style(gpui::CursorStyle::PointingHand, &hitbox);
         }
 
-        // Paint inline completion first line suffix (after cursor on same line)
         if focused {
             if let Some(first_line) = &prepaint.ghost_first_line {
                 if let (Some(cursor_bounds), Some(cursor_row_y)) =
@@ -2091,11 +2086,9 @@ impl Element for TextElement {
                     let first_line_x = cursor_bounds.origin.x + cursor_bounds.size.width;
                     let p = point(first_line_x, cursor_row_y);
 
-                    // Paint background to cover any existing text
                     let bg_bounds = Bounds::new(p, size(first_line.width + px(4.), line_height));
                     window.paint_quad(fill(bg_bounds, editor_background));
 
-                    // Paint first line completion text
                     _ = first_line.paint(p, line_height, text_align, None, window, cx);
                 }
             }

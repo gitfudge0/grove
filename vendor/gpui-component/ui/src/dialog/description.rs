@@ -5,15 +5,6 @@ use gpui::{
 
 use crate::{ActiveTheme as _, StyledExt as _};
 
-/// Description element for a dialog header.
-///
-/// Typically used inside a DialogHeader component to provide additional context.
-///
-/// # Examples
-///
-/// ```ignore
-/// DialogDescription::new("This action cannot be undone.")
-/// ```
 #[derive(IntoElement)]
 pub struct DialogDescription {
     style: StyleRefinement,

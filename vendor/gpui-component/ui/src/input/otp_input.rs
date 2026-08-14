@@ -23,16 +23,13 @@ pub struct OtpState {
 }
 
 impl OtpState {
-    /// Create a new [`OtpState`] with the specified length.
     pub fn new(length: usize, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let blink_cursor = cx.new(|_| BlinkCursor::new());
         let input_state = cx.new(|cx| InputState::new(window, cx));
 
         let _subscriptions = vec![
-            // Observe the blink cursor to repaint the view when it changes.
             cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
-            // Blink the cursor when the window is active, pause when it's not.
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
                     let focus_handle = this.focus_handle.clone();
@@ -58,13 +55,11 @@ impl OtpState {
         }
     }
 
-    /// Set default value of the OTP Input.
     pub fn default_value(mut self, value: impl Into<SharedString>) -> Self {
         self.value = value.into();
         self
     }
 
-    /// Set value of the OTP Input.
     pub fn set_value(
         &mut self,
         value: impl Into<SharedString>,
@@ -83,24 +78,20 @@ impl OtpState {
         });
     }
 
-    /// Return the value of the OTP Input.
     pub fn value(&self) -> &SharedString {
         &self.value
     }
 
-    /// Set masked to true use masked input.
     pub fn masked(mut self, masked: bool) -> Self {
         self.masked = masked;
         self
     }
 
-    /// Set masked to true use masked input.
     pub fn set_masked(&mut self, masked: bool, _: &mut Window, cx: &mut Context<Self>) {
         self.masked = masked;
         cx.notify();
     }
 
-    /// Focus the OTP Input.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
     }
@@ -243,7 +234,6 @@ pub struct OtpInput {
 }
 
 impl OtpInput {
-    /// Create a new [`OtpInput`] element bind to the [`OtpState`].
     pub fn new(state: &Entity<OtpState>) -> Self {
         Self {
             state: state.clone(),
@@ -253,7 +243,6 @@ impl OtpInput {
         }
     }
 
-    /// Set number of groups in the OTP Input.
     pub fn groups(mut self, n: usize) -> Self {
         self.number_of_groups = n;
         self

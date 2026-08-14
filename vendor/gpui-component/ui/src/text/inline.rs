@@ -17,7 +17,7 @@ use crate::{
     text::TextViewMultiClickKind, text::node::LinkMark, text::selection::word_range_at,
 };
 
-/// A inline element used to render a inline text and support selectable. All text in TextView (including the CodeBlock) used this for text rendering.
+/// All text in TextView (including the CodeBlock) uses this for text rendering.
 pub(super) struct Inline {
     id: ElementId,
     text: SharedString,
@@ -28,17 +28,15 @@ pub(super) struct Inline {
     state: Arc<Mutex<InlineState>>,
 }
 
-/// The inline text state, used RefCell to keep the selection state.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct InlineState {
     hovered_index: Option<usize>,
-    /// The text that actually rendering, matched with selection.
+    /// The text actually rendered, matched against selection ranges.
     pub(super) text: SharedString,
     pub(super) selection: Option<Selection>,
 }
 
 impl InlineState {
-    /// Save actually rendered text for selected text to use.
     pub(crate) fn set_text(&mut self, text: SharedString) {
         self.text = text;
     }
@@ -66,7 +64,6 @@ impl Inline {
         }
     }
 
-    /// Get link at given mouse position.
     fn link_for_position(
         layout: &TextLayout,
         links: &Vec<(Range<usize>, LinkMark)>,
@@ -82,7 +79,6 @@ impl Inline {
         None
     }
 
-    /// Paint selected bounds for debug.
     #[allow(unused)]
     fn paint_selected_bounds(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         window.paint_quad(gpui::PaintQuad {
@@ -234,7 +230,6 @@ impl Inline {
         line_bounds
     }
 
-    /// Paint the selection background.
     fn paint_selection(
         selection: &Selection,
         text_layout: &TextLayout,
@@ -497,7 +492,6 @@ impl Element for Inline {
         });
 
         if !is_selection {
-            // click to open link
             window.on_mouse_event({
                 let links = self.links.clone();
                 let text_layout = text_layout.clone();

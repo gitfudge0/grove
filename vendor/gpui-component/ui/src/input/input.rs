@@ -32,7 +32,6 @@ pub(crate) fn input_style(disabled: bool, cx: &App) -> (Hsla, Hsla) {
     }
 }
 
-/// A text input element bind to an [`InputState`].
 #[derive(IntoElement)]
 pub struct Input {
     state: Entity<InputState>,
@@ -52,9 +51,6 @@ pub struct Input {
     content_type: Option<InputContentType>,
     role: Option<Role>,
 
-    /// An optional context menu builder to allow a custom context menu on the input.
-    ///
-    /// If set, this overrides the built-in context menu.
     context_menu_builder: Option<Rc<dyn Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu>>,
 }
 
@@ -77,7 +73,6 @@ impl Selectable for Input {
 }
 
 impl Input {
-    /// Create a new [`Input`] element bind to the [`InputState`].
     pub fn new(state: &Entity<InputState>) -> Self {
         Self {
             state: state.clone(),
@@ -110,80 +105,65 @@ impl Input {
         self
     }
 
-    /// Set full height of the input (Multi-line only).
     pub fn h_full(mut self) -> Self {
         self.height = Some(relative(1.));
         self
     }
 
-    /// Set height of the input (Multi-line only).
     pub fn h(mut self, height: impl Into<DefiniteLength>) -> Self {
         self.height = Some(height.into());
         self
     }
 
-    /// Set the appearance of the input field, if false the input field will no border, background.
+    /// If false, the input field has no border or background.
     pub fn appearance(mut self, appearance: bool) -> Self {
         self.appearance = appearance;
         self
     }
 
-    /// Set the bordered for the input, default: true
     pub fn bordered(mut self, bordered: bool) -> Self {
         self.bordered = bordered;
         self
     }
 
-    /// Set focus border for the input, default is true.
     pub fn focus_bordered(mut self, bordered: bool) -> Self {
         self.focus_bordered = bordered;
         self
     }
 
-    /// Set whether to show the clear button when the input field is not empty, default is false.
     pub fn cleanable(mut self, cleanable: bool) -> Self {
         self.cleanable = cleanable;
         self
     }
 
-    /// Set to enable toggle button for password mask state.
     pub fn mask_toggle(mut self) -> Self {
         self.mask_toggle = true;
         self
     }
 
-    /// Set the semantic content type for password managers and autofill.
-    ///
-    /// This is a component-level semantic hint. It does not change the text
-    /// value or masked rendering state.
+    /// A component-level semantic hint for password managers/autofill; does not change the value or masked rendering.
     pub fn content_type(mut self, content_type: InputContentType) -> Self {
         self.content_type = Some(content_type);
         self
     }
 
-    /// Override the accessible role for the input.
-    ///
     /// If unset, the role is inferred from multi-line mode and content type.
     pub fn role(mut self, role: Role) -> Self {
         self.role = Some(role);
         self
     }
 
-    /// Set to disable the input field.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
-    /// Set the tab index for the input, default is 0.
     pub fn tab_index(mut self, index: isize) -> Self {
         self.tab_index = index;
         self
     }
 
-    /// Sets a custom context menu builder for the input, shown as a native OS menu.
-    ///
-    /// If set, this overrides the built-in right-click context menu.
+    /// Shown as a native OS menu; overrides the built-in right-click context menu.
     pub fn context_menu(
         mut self,
         f: impl Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu + 'static,

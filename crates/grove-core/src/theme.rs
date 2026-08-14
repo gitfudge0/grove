@@ -139,8 +139,6 @@ pub fn contrast_ratio(a: Color, b: Color) -> f64 {
     }
 }
 
-// ---------------- Dark themes ----------------
-
 pub const TOKYONIGHT: Theme = Theme {
     name: Cow::Borrowed("tokyonight"),
     kind: ThemeKind::Dark,
@@ -284,8 +282,6 @@ pub const GITHUB_DARK: Theme = Theme {
     yellow: rgb(0xd2, 0x99, 0x22),
     red: rgb(0xf8, 0x51, 0x49),
 };
-
-// ---------------- Light themes ----------------
 
 pub const GITHUB_LIGHT: Theme = Theme {
     name: Cow::Borrowed("github-light"),

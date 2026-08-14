@@ -38,22 +38,17 @@ pub(crate) fn init(cx: &mut App) {
     ]);
 }
 
-/// The content format of the text view.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum TextViewFormat {
-    /// Markdown view
     Markdown,
-    /// HTML view
     Html,
 }
 
-/// The state of a TextView.
 pub struct TextViewState {
     pub(super) focus_handle: FocusHandle,
     pub(super) entity_id: gpui::EntityId,
     pub(super) list_state: ListState,
 
-    /// The bounds of the text view
     bounds: Bounds<Pixels>,
 
     pub(super) selectable: bool,
@@ -79,17 +74,14 @@ pub struct TextViewState {
 }
 
 impl TextViewState {
-    /// Create a Markdown TextViewState.
     pub fn markdown(text: &str, cx: &mut Context<Self>) -> Self {
         Self::new(TextViewFormat::Markdown, text, cx)
     }
 
-    /// Create a HTML TextViewState.
     pub fn html(text: &str, cx: &mut Context<Self>) -> Self {
         Self::new(TextViewFormat::Html, text, cx)
     }
 
-    /// Create a new TextViewState.
     fn new(format: TextViewFormat, text: &str, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let entity_id = cx.entity_id();

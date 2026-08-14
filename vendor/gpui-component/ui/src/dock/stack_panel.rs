@@ -58,7 +58,6 @@ impl StackPanel {
         let state = cx.new(|_| ResizableState::default());
 
         let _subscriptions = vec![
-            // Bubble up the resize event.
             cx.subscribe(&state, |_, _, _: &ResizablePanelEvent, cx| {
                 cx.emit(PanelEvent::LayoutChanged)
             }),
@@ -74,12 +73,10 @@ impl StackPanel {
         }
     }
 
-    /// The first level of the stack panel is root, will not have a parent.
     fn is_root(&self) -> bool {
         self.parent.is_none()
     }
 
-    /// Return true if self or parent only have last panel.
     pub(super) fn is_last_panel(&self, cx: &App) -> bool {
         if self.panels.len() > 1 {
             return false;
@@ -98,7 +95,6 @@ impl StackPanel {
         self.panels.len()
     }
 
-    /// Return the index of the panel.
     pub(crate) fn index_of_panel(&self, panel: Arc<dyn PanelView>) -> Option<usize> {
         self.panels.iter().position(|p| p == &panel)
     }
@@ -111,11 +107,7 @@ impl StackPanel {
         );
     }
 
-    /// Add a panel at the end of the stack.
-    ///
-    /// If `size` is `None`, the panel will be given the average size of all panels in the stack.
-    ///
-    /// The `panel` must be a [`TabPanel`] or [`StackPanel`].
+    /// If `size` is `None`, the panel is given the average size of all panels in the stack.
     pub fn add_panel(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -127,9 +119,6 @@ impl StackPanel {
         self.insert_panel(panel, self.panels.len(), size, dock_area, window, cx);
     }
 
-    /// Add a panel at the [`Placement`].
-    ///
-    /// The `panel` must be a [`TabPanel`] or [`StackPanel`].
     pub fn add_panel_at(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -150,9 +139,6 @@ impl StackPanel {
         );
     }
 
-    /// Insert a panel at the index.
-    ///
-    /// The `panel` must be a [`TabPanel`] or [`StackPanel`].
     #[allow(clippy::too_many_arguments)]
     pub fn insert_panel_at(
         &mut self,
@@ -174,9 +160,6 @@ impl StackPanel {
         }
     }
 
-    /// Insert a panel at the index.
-    ///
-    /// The `panel` must be a [`TabPanel`] or [`StackPanel`].
     pub fn insert_panel_before(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -189,9 +172,6 @@ impl StackPanel {
         self.insert_panel(panel, ix, size, dock_area, window, cx);
     }
 
-    /// Insert a panel after the index.
-    ///
-    /// The `panel` must be a [`TabPanel`] or [`StackPanel`].
     pub fn insert_panel_after(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -215,7 +195,6 @@ impl StackPanel {
     ) {
         self.assert_panel_is_valid(&panel);
 
-        // If the panel is already in the stack, return.
         if let Some(_) = self.index_of_panel(panel.clone()) {
             return;
         }
@@ -225,7 +204,6 @@ impl StackPanel {
             let panel = panel.clone();
 
             move |window, cx| {
-                // If the panel is a TabPanel, set its parent to this.
                 if let Ok(tab_panel) = panel.view().downcast::<TabPanel>() {
                     tab_panel.update(cx, |tab_panel, _| tab_panel.set_parent(view.downgrade()));
                 } else if let Ok(stack_panel) = panel.view().downcast::<Self>() {
@@ -234,7 +212,6 @@ impl StackPanel {
                     });
                 }
 
-                // Subscribe to the panel's layout change event.
                 _ = dock_area.update(cx, |this, cx| {
                     if let Ok(tab_panel) = panel.view().downcast::<TabPanel>() {
                         this.subscribe_panel(&tab_panel, window, cx);
@@ -251,7 +228,6 @@ impl StackPanel {
             ix
         };
 
-        // Get avg size of all panels to insert new panel, if size is None.
         let size = match size {
             Some(size) => size,
             None => {
@@ -268,9 +244,6 @@ impl StackPanel {
         cx.notify();
     }
 
-    /// Remove panel from the stack.
-    ///
-    /// If `ix` is not found, do nothing.
     pub fn remove_panel(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -290,7 +263,6 @@ impl StackPanel {
         self.remove_self_if_empty(window, cx);
     }
 
-    /// Replace the old panel with the new panel at same index.
     pub(super) fn replace_panel(
         &mut self,
         old_panel: Arc<dyn PanelView>,
@@ -309,7 +281,6 @@ impl StackPanel {
         }
     }
 
-    /// If children is empty, remove self from parent view.
     pub(crate) fn remove_self_if_empty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_root() {
             return;
@@ -330,7 +301,6 @@ impl StackPanel {
         cx.notify();
     }
 
-    /// Find the first top left in the stack.
     pub(super) fn left_top_tab_panel(
         &self,
         check_parent: bool,
@@ -358,7 +328,6 @@ impl StackPanel {
         }
     }
 
-    /// Find the first top right in the stack.
     pub(super) fn right_top_tab_panel(
         &self,
         check_parent: bool,
@@ -391,7 +360,6 @@ impl StackPanel {
         }
     }
 
-    /// Remove all panels from the stack.
     pub(super) fn remove_all_panels(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.panels.clear();
         self.state.update(cx, |state, cx| {
@@ -400,7 +368,6 @@ impl StackPanel {
         });
     }
 
-    /// Change the axis of the stack panel.
     pub(super) fn set_axis(&mut self, axis: Axis, _: &mut Window, cx: &mut Context<Self>) {
         self.axis = axis;
         cx.notify();

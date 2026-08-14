@@ -746,9 +746,7 @@ pub fn flat_text_btn(
     h_padding: f32,
     on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
 ) -> gpui::Stateful<Div> {
-    // Delegates to `flat_text_btn_tinted`, which is the one that writes
-    // `.h(rpx(CONTROL_H))` — see its body for the §8.1 declaration this
-    // function shares.
+    // Delegates to `flat_text_btn_tinted`, which is the one that writes `.h(rpx(CONTROL_H))`.
     flat_text_btn_tinted(id, label, text_size, h_padding, c::FG_DIM(), on_click)
 }
 

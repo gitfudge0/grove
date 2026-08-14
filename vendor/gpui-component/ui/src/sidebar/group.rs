@@ -4,7 +4,6 @@ use gpui::{
     prelude::FluentBuilder as _,
 };
 
-/// A group of items in the [`super::Sidebar`].
 #[derive(Clone)]
 pub struct SidebarGroup<E: SidebarItem + 'static> {
     label: SharedString,
@@ -13,7 +12,6 @@ pub struct SidebarGroup<E: SidebarItem + 'static> {
 }
 
 impl<E: SidebarItem> SidebarGroup<E> {
-    /// Create a new [`SidebarGroup`] with the given label.
     pub fn new(label: impl Into<SharedString>) -> Self {
         Self {
             label: label.into(),
@@ -22,15 +20,11 @@ impl<E: SidebarItem> SidebarGroup<E> {
         }
     }
 
-    /// Add a child to the sidebar group, the child should implement [`SidebarItem`].
     pub fn child(mut self, child: E) -> Self {
         self.children.push(child);
         self
     }
 
-    /// Add multiple children to the sidebar group.
-    ///
-    /// See also [`SidebarGroup::child`].
     pub fn children(mut self, children: impl IntoIterator<Item = E>) -> Self {
         self.children.extend(children);
         self

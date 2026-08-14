@@ -1,10 +1,5 @@
-//! The recents-first command palette: the three list states, the drill-ins,
-//! and the live project-theme preview. The pure half (row building, fuzzy
-//! ranking, identity resolution, recents ordering) lives in [`crate::launcher`];
-//! this module is the view plus keyboard/click glue. Ported from
-//! `src/gui/session_launcher/{palette.rs,view/*}` and `keys.rs:26+`.
-//!
-//! The canonical `wants_arrows` modal (carried decision 2): ←/→ never move the caret here.
+//! View plus keyboard/click glue; the pure half lives in [`crate::launcher`]. Ported from `src/gui/session_launcher/{palette.rs,view/*}` and `keys.rs:26+`.
+//! The canonical `wants_arrows` modal: ←/→ never move the caret here.
 
 use crate::views::rpx;
 use crate::views::tokens::*;

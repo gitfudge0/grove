@@ -13,7 +13,6 @@ use gpui::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// The width of the scrollbar (THUMB_ACTIVE_INSET * 2 + THUMB_ACTIVE_WIDTH)
 const WIDTH: Pixels = px(4. * 2. + 8.);
 const MIN_THUMB_SIZE: f32 = 48.;
 
@@ -28,15 +27,11 @@ const THUMB_ACTIVE_INSET: Pixels = px(4.);
 const FADE_OUT_DURATION: f32 = 3.0;
 const FADE_OUT_DELAY: f32 = 2.0;
 
-/// Scrollbar show mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash, Default, JsonSchema)]
 pub enum ScrollbarShow {
-    /// Show scrollbar when scrolling, will fade out after idle.
     #[default]
     Scrolling,
-    /// Show scrollbar on hover.
     Hover,
-    /// Always show scrollbar.
     Always,
 }
 
@@ -50,17 +45,12 @@ impl ScrollbarShow {
     }
 }
 
-/// A trait for scroll handles that can get and set offset.
 pub trait ScrollbarHandle: 'static {
-    /// Get the current offset of the scroll handle.
     fn offset(&self) -> Point<Pixels>;
-    /// Set the offset of the scroll handle.
     fn set_offset(&self, offset: Point<Pixels>);
     /// The full size of the content, including padding.
     fn content_size(&self) -> Size<Pixels>;
-    /// Called when start dragging the scrollbar thumb.
     fn start_drag(&self) {}
-    /// Called when end dragging the scrollbar thumb.
     fn end_drag(&self) {}
 }
 
@@ -128,7 +118,6 @@ struct ScrollbarStateInner {
     drag_pos: Point<Pixels>,
     last_scroll_offset: Point<Pixels>,
     last_scroll_time: Option<Instant>,
-    // Last update offset
     last_update: Instant,
     idle_timer_scheduled: bool,
 }
@@ -225,7 +214,6 @@ impl ScrollbarStateInner {
     }
 
     fn is_scrollbar_visible(&self) -> bool {
-        // On drag
         if self.dragged_axis.is_some() {
             return true;
         }
@@ -239,14 +227,10 @@ impl ScrollbarStateInner {
     }
 }
 
-/// Scrollbar axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollbarAxis {
-    /// Vertical scrollbar.
     Vertical,
-    /// Horizontal scrollbar.
     Horizontal,
-    /// Show both vertical and horizontal scrollbars.
     Both,
 }
 
@@ -260,31 +244,26 @@ impl From<Axis> for ScrollbarAxis {
 }
 
 impl ScrollbarAxis {
-    /// Return true if the scrollbar axis is vertical.
     #[inline]
     pub fn is_vertical(&self) -> bool {
         matches!(self, Self::Vertical)
     }
 
-    /// Return true if the scrollbar axis is horizontal.
     #[inline]
     pub fn is_horizontal(&self) -> bool {
         matches!(self, Self::Horizontal)
     }
 
-    /// Return true if the scrollbar axis is both vertical and horizontal.
     #[inline]
     pub fn is_both(&self) -> bool {
         matches!(self, Self::Both)
     }
 
-    /// Return true if the scrollbar has vertical axis.
     #[inline]
     pub fn has_vertical(&self) -> bool {
         matches!(self, Self::Vertical | Self::Both)
     }
 
-    /// Return true if the scrollbar has horizontal axis.
     #[inline]
     pub fn has_horizontal(&self) -> bool {
         matches!(self, Self::Horizontal | Self::Both)
@@ -295,8 +274,7 @@ impl ScrollbarAxis {
         match self {
             Self::Vertical => vec![Axis::Vertical],
             Self::Horizontal => vec![Axis::Horizontal],
-            // This should keep Horizontal first, Vertical is the primary axis
-            // if Vertical not need display, then Horizontal will not keep right margin.
+            // Horizontal first: if Vertical isn't shown, Horizontal keeps no right margin for it.
             Self::Both => vec![Axis::Horizontal, Axis::Vertical],
         }
     }
@@ -309,17 +287,12 @@ pub struct Scrollbar {
     scrollbar_show: Option<ScrollbarShow>,
     scroll_handle: Rc<dyn ScrollbarHandle>,
     scroll_size: Option<Size<Pixels>>,
-    /// Maximum frames per second for scrolling by drag. Default is 120 FPS.
-    ///
-    /// This is used to limit the update rate of the scrollbar when it is
-    /// being dragged for some complex interactions for reducing CPU usage.
+    /// Maximum frames per second for scrolling by drag; limits update rate to reduce CPU usage. Default 120 FPS.
     max_fps: usize,
 }
 
 impl Scrollbar {
-    /// Create a new scrollbar.
-    ///
-    /// This will have both vertical and horizontal scrollbars.
+    /// Both vertical and horizontal scrollbars.
     #[track_caller]
     pub fn new<H: ScrollbarHandle + Clone>(scroll_handle: &H) -> Self {
         let caller = Location::caller();
@@ -333,57 +306,44 @@ impl Scrollbar {
         }
     }
 
-    /// Create with horizontal scrollbar.
     #[track_caller]
     pub fn horizontal<H: ScrollbarHandle + Clone>(scroll_handle: &H) -> Self {
         Self::new(scroll_handle).axis(ScrollbarAxis::Horizontal)
     }
 
-    /// Create with vertical scrollbar.
     #[track_caller]
     pub fn vertical<H: ScrollbarHandle + Clone>(scroll_handle: &H) -> Self {
         Self::new(scroll_handle).axis(ScrollbarAxis::Vertical)
     }
 
-    /// Set a specific element id, default is the [`Location::caller`].
-    ///
-    /// NOTE: In most cases, you don't need to set a specific id for scrollbar.
+    /// Default is the [`Location::caller`]; most callers don't need to override it.
     pub fn id(mut self, id: impl Into<ElementId>) -> Self {
         self.id = id.into();
         self
     }
 
-    /// Set the scrollbar show mode [`ScrollbarShow`], if not set use the `cx.theme().scrollbar_show`.
     pub fn scrollbar_show(mut self, scrollbar_show: ScrollbarShow) -> Self {
         self.scrollbar_show = Some(scrollbar_show);
         self
     }
 
-    /// Set a special scroll size of the content area, default is None.
-    ///
-    /// Default will sync the `content_size` from `scroll_handle`.
+    /// Default (`None`) syncs `content_size` from `scroll_handle`.
     pub fn scroll_size(mut self, scroll_size: Size<Pixels>) -> Self {
         self.scroll_size = Some(scroll_size);
         self
     }
 
-    /// Set scrollbar axis.
     pub fn axis(mut self, axis: impl Into<ScrollbarAxis>) -> Self {
         self.axis = axis.into();
         self
     }
 
-    /// Set maximum frames per second for scrolling by drag. Default is 120 FPS.
-    ///
-    /// If you have very high CPU usage, consider reducing this value to improve performance.
-    ///
-    /// Available values: 30..120
+    /// Clamped to 30..120.
     pub(crate) fn max_fps(mut self, max_fps: usize) -> Self {
         self.max_fps = max_fps.clamp(30, 120);
         self
     }
 
-    // Get the width of the scrollbar.
     pub(crate) const fn width() -> Pixels {
         WIDTH
     }
@@ -480,7 +440,6 @@ pub struct AxisPrepaintState {
     bg: Hsla,
     border: Hsla,
     thumb_bounds: Bounds<Pixels>,
-    // Bounds of thumb to be rendered.
     thumb_fill_bounds: Bounds<Pixels>,
     thumb_bg: Background,
     scroll_size: Pixels,
@@ -558,14 +517,13 @@ impl Element for Scrollbar {
                 )
             };
 
-            // The horizontal scrollbar is set avoid overlapping with the vertical scrollbar, if the vertical scrollbar is visible.
+            // Avoids overlapping the vertical scrollbar when it's visible.
             let margin_end = if has_both && !is_vertical {
                 WIDTH
             } else {
                 px(0.)
             };
 
-            // Hide scrollbar, if the scroll area is smaller than the container.
             if scroll_area_size <= container_size {
                 has_both = false;
                 continue;
@@ -668,7 +626,6 @@ impl Element for Scrollbar {
                     idle_state
                 };
 
-            // The clickable area of the thumb
             let thumb_length = thumb_end - thumb_start - inset * 2;
             let thumb_bounds = if is_vertical {
                 Bounds::from_anchor_and_size(
@@ -684,7 +641,6 @@ impl Element for Scrollbar {
                 )
             };
 
-            // The actual render area of the thumb
             let thumb_fill_bounds = if is_vertical {
                 Bounds::from_anchor_and_size(
                     Anchor::TopRight,
@@ -744,7 +700,6 @@ impl Element for Scrollbar {
         let is_visible = scrollbar_state.get().is_scrollbar_visible() || scrollbar_show.is_always();
         let is_hover_to_show = scrollbar_show.is_hover();
 
-        // Update last_scroll_time when offset is changed.
         if self.scroll_handle.offset() != scrollbar_state.get().last_scroll_offset {
             scrollbar_state.set(
                 scrollbar_state
@@ -835,7 +790,6 @@ impl Element for Scrollbar {
                                     cx.stop_propagation();
 
                                     if thumb_bounds.contains(&event.position) {
-                                        // click on the thumb bar, set the drag position
                                         let pos = event.position - thumb_bounds.origin;
 
                                         scroll_handle.start_drag();
@@ -843,8 +797,7 @@ impl Element for Scrollbar {
 
                                         cx.notify(view_id);
                                     } else {
-                                        // click on the scrollbar, jump to the position
-                                        // Set the thumb bar center to the click position
+                                        // Jump to position: center the thumb on the click point.
                                         let offset = scroll_handle.offset();
                                         let percentage = if is_vertical {
                                             (event.position.y - thumb_size / 2. - bounds.origin.y)
@@ -881,10 +834,7 @@ impl Element for Scrollbar {
 
                         move |event: &MouseMoveEvent, _, _, cx| {
                             let mut notify = false;
-                            // When is hover to show mode or it was visible,
-                            // we need to update the hovered state and increase the last_scroll_time.
                             let need_hover_to_update = is_hover_to_show || is_visible;
-                            // Update hovered state for scrollbar
                             if bounds.contains(&event.position) && need_hover_to_update {
                                 state.set(state.get().with_hovered(Some(axis)));
 
@@ -900,7 +850,6 @@ impl Element for Scrollbar {
                                 }
                             }
 
-                            // Update hovered state for scrollbar thumb
                             if thumb_bounds.contains(&event.position) {
                                 if state.get().hovered_on_thumb != Some(axis) {
                                     state.set(state.get().with_hovered_on_thumb(Some(axis)));
@@ -913,13 +862,11 @@ impl Element for Scrollbar {
                                 }
                             }
 
-                            // Move thumb position on dragging
                             if state.get().dragged_axis == Some(axis) && event.dragging() {
-                                // Stop the event propagation to avoid selecting text or other side effects.
+                                // Avoids selecting text or other side effects.
                                 cx.stop_propagation();
 
-                                // drag_pos is the position of the mouse down event
-                                // We need to keep the thumb bar still at the origin down position
+                                // The mouse-down position, kept fixed so the thumb tracks from its original grab point.
                                 let drag_pos = state.get().drag_pos;
 
                                 let percentage = (if is_vertical {
@@ -948,7 +895,6 @@ impl Element for Scrollbar {
                                 if (scroll_handle.offset().y - offset.y).abs() > px(1.)
                                     || (scroll_handle.offset().x - offset.x).abs() > px(1.)
                                 {
-                                    // Limit update rate
                                     if state.get().last_update.elapsed() > max_fps_duration {
                                         scroll_handle.set_offset(offset);
                                         state.set(state.get().with_last_update(Instant::now()));

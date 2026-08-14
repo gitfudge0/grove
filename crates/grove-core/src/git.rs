@@ -226,7 +226,7 @@ pub fn remove_worktree(project_path: &str, wt_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// `--git-common-dir` (not `--git-dir`) yields the owning repo's real `.git`, whose parent is the main checkout — correct even when the worktree lives far from the repo, as grove-managed ones do.
+/// `--git-common-dir` (not `--git-dir`) yields the owning repo's real `.git`; correct even when the worktree lives far from the repo.
 pub fn worktree_owner_repo(wt_path: &str) -> Option<PathBuf> {
     tracing::debug!(
         args = "rev-parse --path-format=absolute --git-common-dir",

@@ -33,11 +33,7 @@ impl InputState {
         self.preferred_column = Some((pos.x, point.column));
     }
 
-    /// Move the cursor to the given offset.
-    ///
-    /// The offset is the UTF-8 offset.
-    ///
-    /// Ensure the offset use self.next_boundary or self.previous_boundary to get the correct offset.
+    /// `offset` is a UTF-8 byte offset — use `self.next_boundary`/`previous_boundary` to get a valid one.
     pub(crate) fn move_to(
         &mut self,
         offset: usize,
@@ -55,9 +51,7 @@ impl InputState {
         cx.notify()
     }
 
-    /// Move the cursor vertically by one line (up or down) while preserving the column if possible.
-    ///
-    /// move_lines: Number of lines to move vertically (positive for down, negative for up).
+    /// `move_lines` is positive for down, negative for up; preserves the column where possible.
     pub(super) fn move_vertical(
         &mut self,
         move_lines: isize,

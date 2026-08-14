@@ -8,7 +8,6 @@ use crate::{
 use gpui::{App, ElementId, Entity, Window};
 use std::rc::Rc;
 
-/// Extension trait for [`Window`] to add dialog, sheet .. functionality.
 pub trait WindowExt: Sized {
     fn open_sheet<F>(&mut self, cx: &mut App, build: F)
     where

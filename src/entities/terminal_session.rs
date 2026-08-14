@@ -250,9 +250,6 @@ impl TerminalSession {
                 |_| {
                     cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
                         while let Some(chunk) = chunks.next().await {
-                            // Coalesce everything already queued into the same
-                            // frame: a burst of output must cost one repaint,
-                            // not one per 8 KiB chunk.
                             // Coalesce everything already queued: a burst of output costs one repaint, not one per chunk.
                             let mut batch = vec![chunk];
                             while let Ok(more) = chunks.try_recv() {

@@ -1,14 +1,8 @@
-//! tmux sidecar reconciliation — pure, and decided before any tmux runs.
-//!
-//! Input: what `grove_core::tmux::list_grove_sessions` discovered, plus the
-//! registry's current metadata. Output: which discovered sessions to attach,
-//! in the order the tree expects. Nothing here shells out, touches gpui, or
+//! tmux sidecar reconciliation — pure, and decided before any tmux runs. Nothing here shells out, touches gpui, or
 //! knows what a PTY is.
 //!
-//! Startup and the Settings tmux-toggle re-scan are the **same** call, exactly
-//! as iced runs `discover_sessions` from `App::new` (`src/app/mod.rs:219-224`)
-//! and again from `discover_tmux_sessions` (`:347-366`). That is only sound
-//! because of the first rule below.
+//! Startup and the Settings tmux-toggle re-scan are the same call, as iced runs `discover_sessions` from both
+//! `App::new` (`src/app/mod.rs:219-224`) and `discover_tmux_sessions` (`:347-366`) — sound only because of rule 1 below.
 
 use grove_core::agent::Agent;
 use grove_core::tmux::DiscoveredSession;
@@ -19,34 +13,22 @@ use crate::entities::session_registry::SessionMeta;
 #[derive(Debug, Clone)]
 pub struct Reattach {
     pub session: DiscoveredSession,
-    /// Index to insert at, in the registry's insertion order, computed against
-    /// the order as it will be **after** the preceding entries of the same
-    /// plan have been inserted.
+    /// Index in the registry's insertion order, computed after the preceding entries of the same plan are inserted.
     pub at: usize,
 }
 
-/// The reconciliation. Rules, in order:
+/// Rules: (1) a tmux name already live in the registry is skipped, making the re-scan idempotent; (2) placement
+/// groups by project and follows the project's worktree order (`session_insert_index`, `src/app/spawn.rs:52-80`),
+/// unknown appends; (3) total — an unknown project or deleted worktree path places at the end rather than panicking.
 ///
-/// 1. a discovered session whose tmux name is already live in the registry is
-///    skipped — this is what makes the re-scan idempotent (`:352-358`);
-/// 2. placement groups by project and, within a project, follows the
-///    project's worktree order where one is known (`session_insert_index`,
-///    `src/app/spawn.rs:52-80`); an unknown project appends;
-/// 3. an empty discovery list is a no-op;
-/// 4. it is total — an unknown project or a worktree path that no longer
-///    exists on disk places at the end rather than panicking. The sidecar
-///    outlives the checkout, so that case is normal, not exceptional.
-///
-/// `wt_order` maps a project name to its worktree paths in tree order (empty
-/// or missing = unknown, which appends).
+/// `wt_order` maps a project name to its worktree paths in tree order (empty or missing = unknown, which appends).
 #[must_use]
 pub fn plan(
     discovered: &[DiscoveredSession],
     existing: &[SessionMeta],
     wt_order: &dyn Fn(&str) -> Vec<String>,
 ) -> Vec<Reattach> {
-    // Only the fields placement reads, so the plan can be simulated as it
-    // grows without constructing `SessionMeta`s.
+    // Only the fields placement reads, so the plan can be simulated without constructing `SessionMeta`s.
     let mut order: Vec<(String, String)> = existing
         .iter()
         .map(|m| (m.project.clone(), m.wt_path.clone()))
@@ -58,10 +40,7 @@ pub fn plan(
 
     let mut out = Vec::new();
     for d in discovered {
-        // Home terminals and panel shells are never tmux-backed
-        // (`SpawnTarget::use_tmux`); a discovery claiming to be one is a
-        // leaked home terminal from a run before that fix, not a real agent
-        // session — skip it rather than reimporting it as a grid tile.
+        // Home terminals/panel shells are never tmux-backed; a discovery claiming to be one is a leaked pre-fix terminal.
         if d.agent == Agent::Terminal {
             continue;
         }
@@ -78,8 +57,7 @@ pub fn plan(
     out
 }
 
-/// Port of `App::session_insert_index` (`src/app/spawn.rs:52-80`): group by
-/// project, and inside a project follow the project's own worktree order.
+/// Port of `App::session_insert_index` (`src/app/spawn.rs:52-80`).
 fn insert_index(
     order: &[(String, String)],
     project: &str,
@@ -100,8 +78,7 @@ fn insert_index(
     };
     let paths = wt_order(project);
     let Some(new_pos) = paths.iter().position(|p| p == wt_path) else {
-        // A worktree the project no longer lists (deleted on disk while the
-        // tmux session lived on): it still belongs to its project's block.
+        // A worktree the project no longer lists still belongs to its project's block.
         return last + 1;
     };
     for &i in &block {
@@ -169,7 +146,7 @@ mod tests {
             plan(&d, &existing, &order_of).is_empty(),
             "the re-scan must not double-insert"
         );
-        // …but a *different* session in the same worktree still attaches.
+        // A different session in the same worktree still attaches.
         let d2 = [discovered("grove-y", "alpha", "/a/one")];
         assert_eq!(plan(&d2, &existing, &order_of).len(), 1);
     }

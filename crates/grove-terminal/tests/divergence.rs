@@ -48,7 +48,7 @@ fn dump(t: &GroveTerm) -> ScreenDump {
     }
 }
 
-/// Known divergence: `Term::resize` hardcodes primary-screen rewrap on the alternate-screen-never path (`alacritty_terminal/src/term/mod.rs:677`); vt100 never rewraps either. Benign since Grove runs agents on the alternate screen.
+/// Known divergence: `Term::resize` hardcodes primary-screen rewrap (`alacritty_terminal/src/term/mod.rs:677`); vt100 never rewraps. Benign — Grove runs agents on the alternate screen.
 #[test]
 fn primary_screen_reflow_is_a_known_divergence() {
     let f = common::fixture("resize-storm-primary");

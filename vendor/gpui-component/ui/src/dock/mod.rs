@@ -172,7 +172,6 @@ impl DockItem {
         Self::split(Axis::Vertical, items, dock_area, window, cx)
     }
 
-    /// Create DockItem with horizontal split layout.
     pub fn h_split(
         items: Vec<DockItem>,
         dock_area: &WeakEntity<DockArea>,
@@ -571,22 +570,18 @@ impl DockArea {
         &self.center
     }
 
-    /// Return the left dock item.
     pub fn left_dock(&self) -> Option<&Entity<Dock>> {
         self.left_dock.as_ref()
     }
 
-    /// Return the bottom dock item.
     pub fn bottom_dock(&self) -> Option<&Entity<Dock>> {
         self.bottom_dock.as_ref()
     }
 
-    /// Return the right dock item.
     pub fn right_dock(&self) -> Option<&Entity<Dock>> {
         self.right_dock.as_ref()
     }
 
-    /// Remove the left dock.
     pub fn remove_left_dock(&mut self, _: &mut Window, _: &mut Context<Self>) {
         self.left_dock = None;
     }
@@ -875,7 +870,6 @@ impl DockArea {
         cx.notify();
     }
 
-    /// Remove a panel from all docks.
     pub fn remove_panel_from_all_docks(
         &mut self,
         panel: Arc<dyn PanelView>,

@@ -108,7 +108,7 @@ fn find_on_path(name: &str) -> Option<std::path::PathBuf> {
 fn query_login_path() -> Option<String> {
     let shell = login_shell();
 
-    // Formatting is handed off to `/bin/sh` rather than printed directly in the login shell: fish/nushell store `$PATH` as a space-joined list, which would corrupt the value; the exported env var a child `sh` inherits is always colon-separated.
+    // Handed off to `/bin/sh` rather than printed directly: fish/nushell store `$PATH` space-joined, which would corrupt it.
     let script = format!("/bin/sh -c 'printf \"{PATH_START}%s{PATH_END}\" \"$PATH\"'");
     let mut child = Command::new(&shell)
         .args(["-lic", &script])

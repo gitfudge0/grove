@@ -27,7 +27,7 @@ const GIT_POLL_INTERVAL_UNFOCUSED: Duration = Duration::from_mins(1);
 #[derive(Default)]
 pub struct ProjectTree {
     worktrees: Vec<Worktree>,
-    /// Which TRUE project index `worktrees` belongs to; must be checked before treating `worktrees` as `active_proj`'s list, or a skipped hand-off renders one project's worktrees under another's header.
+    /// Which TRUE project index `worktrees` belongs to; check before treating it as `active_proj`'s list.
     active_idx: Option<usize>,
     /// Every other project's worktrees, keyed by TRUE project index.
     wt_cache: HashMap<usize, Vec<Worktree>>,
@@ -66,7 +66,7 @@ impl ProjectTree {
         }
     }
 
-    /// Every writer of `worktrees` must go through here (or `switch_active_project`) so `active_idx` never drifts from what the list actually holds.
+    /// Every writer of `worktrees` must go through here (or `switch_active_project`), or `active_idx` drifts.
     pub fn set_active_worktrees(&mut self, proj: usize, worktrees: Vec<Worktree>) {
         self.worktrees = worktrees;
         self.active_idx = Some(proj);
@@ -84,7 +84,7 @@ impl ProjectTree {
         self.active_idx = Some(new);
     }
 
-    /// Heals a stale `active_idx` before `snapshot` reads it, for paths that legitimately move `proj_idx` without the `switch_active_project` hand-off. An out-of-range `active_proj` still gets stamped (with an empty list) rather than left unset, or this would re-shell out to `git` every frame.
+    /// Heals a stale `active_idx`; out-of-range still gets stamped (empty list) or this re-shells `git` every frame.
     pub fn ensure_active(&mut self, active_proj: usize, store: &Store) {
         if self.active_idx == Some(active_proj) {
             return;
@@ -133,7 +133,7 @@ impl ProjectTree {
         }
     }
 
-    // TODO(unwired): built and complete, but no caller ever pre-warms the worktree cache — see `sweep_wt_cache` below.
+    // TODO(unwired): no caller pre-warms the worktree cache — see `sweep_wt_cache` below.
     #[allow(dead_code)]
     pub fn ensure_wt_cached(&mut self, proj: usize, active_proj: usize, store: &Store) {
         if proj == active_proj || self.wt_cache.contains_key(&proj) {
@@ -151,8 +151,7 @@ impl ProjectTree {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Discards the sweep if the generation moved while it ran.
-    // Reached in production only from `sweep_wt_cache`, itself unwired; #[cfg(test)] exercises the discard guard.
+    /// Discards the sweep if the generation moved while it ran (reached in production only from unwired `sweep_wt_cache`).
     #[allow(dead_code)]
     pub fn apply_sweep(&mut self, generation: u64, swept: HashMap<usize, Vec<Worktree>>) -> bool {
         if generation != self.generation {
@@ -162,7 +161,7 @@ impl ProjectTree {
         true
     }
 
-    // TODO(unwired): background pre-warm of the worktree cache — nothing calls it yet.
+    // TODO(unwired): nothing calls this yet.
     #[allow(dead_code)]
     pub fn sweep_wt_cache(&mut self, store: &Store, active_proj: usize, cx: &mut Context<Self>) {
         let generation = self.generation;
@@ -192,10 +191,7 @@ impl ProjectTree {
         }));
     }
 
-    // ── is_repo memo ────────────────────────────────────────────────────
-
-    /// `git::is_repo` memoized for [`IS_REPO_TTL`] (`view/sidebar.rs:40-54`).
-    /// `now` is injected so the expiry is testable without sleeping.
+    /// `git::is_repo` memoized for [`IS_REPO_TTL`]; `now` is injected so expiry is testable without sleeping.
     pub fn is_repo_cached(&mut self, path: &str, now: Instant) -> bool {
         if let Some((answer, at)) = self.is_repo_memo.get(path) {
             if now.duration_since(*at) < IS_REPO_TTL {
@@ -207,17 +203,12 @@ impl ProjectTree {
         answer
     }
 
-    /// Test seam: seed the memo without touching the filesystem.
     #[cfg(test)]
     fn seed_is_repo(&mut self, path: &str, answer: bool, at: Instant) {
         self.is_repo_memo.insert(path.to_string(), (answer, at));
     }
 
-    // ── the 5s git-state poll ───────────────────────────────────────────
-
-    /// Rendered dirty/ahead/behind text per worktree path, for the flattened
-    /// worktree rows. `git_state_suffix` returning `None` means "nothing worth
-    /// showing", so that worktree simply has no suffix.
+    /// `None` from `git_state_suffix` means "nothing worth showing", so that worktree has no suffix.
     #[must_use]
     pub fn git_suffixes(&self) -> HashMap<String, String> {
         self.git_state
@@ -226,8 +217,7 @@ impl ProjectTree {
             .collect()
     }
 
-    /// The raw cached git state per worktree path, including the uncommitted
-    /// diff counts that `git_suffixes` deliberately does not render.
+    /// Includes the uncommitted diff counts that `git_suffixes` deliberately does not render.
     #[must_use]
     pub fn git_states(&self) -> HashMap<String, WorktreeGitState> {
         self.git_state.clone()
@@ -241,7 +231,7 @@ impl ProjectTree {
         }
     }
 
-    /// Stamps `last_git_poll` as a side effect when it returns true — callers needing another check first (see [`Self::poll_decision`]) must not call this and discard the result, since that still consumes the throttle window.
+    /// Stamps `last_git_poll` as a side effect when true — a caller must not call and discard, that still burns the window.
     pub fn git_poll_due(&mut self, now: Instant, focused: bool) -> bool {
         let interval = if focused {
             GIT_POLL_INTERVAL
@@ -274,7 +264,7 @@ impl ProjectTree {
         paths
     }
 
-    /// `Sessions` mode renders every session regardless of collapse state, so it polls the set backing live sessions instead of [`Self::visible_worktree_paths`]'s tree-visible set.
+    /// `Sessions` mode polls the set backing live sessions instead of [`Self::visible_worktree_paths`]'s tree-visible set.
     #[must_use]
     pub fn polled_worktree_paths(
         &self,
@@ -297,7 +287,7 @@ impl ProjectTree {
         }
     }
 
-    /// Empty-paths check must come before `git_poll_due`, or its side-effect stamp burns the throttle window before there's anything to poll, delaying the first real poll by a further `GIT_POLL_INTERVAL`. Do not collapse into one `||`.
+    /// Empty check must come before `git_poll_due`, or its side-effect stamp burns the window before there's anything to poll.
     fn poll_decision(&mut self, now: Instant, focused: bool, paths_empty: bool) -> bool {
         if paths_empty {
             return false;

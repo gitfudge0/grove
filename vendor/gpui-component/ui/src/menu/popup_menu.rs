@@ -275,7 +275,7 @@ pub struct PopupMenu {
     scroll_handle: ScrollHandle,
     submenu_anchor: (Anchor, Pixels),
 
-    /// Top-level menu starts at 1, each nested submenu increments it, fixing background content bleeding through multi-level submenus that share the same paint order. Each submenu is deferred once in `render_item` with `priority + 1` (GPUI caps nested deferred depth; see `prepaint_deferred_draws`).
+    /// Top-level starts at 1, each nested submenu increments it, fixing paint-order bleed; deferred at `priority + 1`.
     priority: usize,
 
     _subscriptions: Vec<Subscription>,
@@ -1288,7 +1288,7 @@ impl Render for PopupMenu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.update_submenu_menu_anchor(window);
 
-        // Submenus attached via `item()` + `PopupMenuItem::submenu()` have no parent wired at construction; wire them here so dismiss/click-outside/keyboard nav treat them like `submenu()`-built children.
+        // Submenus attached via `item()` + `submenu()` have no parent wired at construction; wire it here.
         let parent = cx.entity().downgrade();
         let parent_priority = self.priority;
         for item in &self.menu_items {

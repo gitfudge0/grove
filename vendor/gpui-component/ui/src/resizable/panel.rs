@@ -28,7 +28,6 @@ impl Render for DragPanel {
     }
 }
 
-/// A group of resizable panels.
 #[derive(IntoElement)]
 pub struct ResizablePanelGroup {
     id: ElementId,
@@ -40,7 +39,6 @@ pub struct ResizablePanelGroup {
 }
 
 impl ResizablePanelGroup {
-    /// Create a new resizable panel group.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),

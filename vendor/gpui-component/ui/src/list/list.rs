@@ -36,11 +36,8 @@ pub(crate) fn init(cx: &mut App) {
 
 #[derive(Clone)]
 pub enum ListEvent {
-    /// Move to select item.
     Select(IndexPath),
-    /// Click on item or pressed Enter.
     Confirm(IndexPath),
-    /// Pressed ESC to deselect the item.
     Cancel,
 }
 
@@ -64,9 +61,7 @@ impl Default for ListOptions {
     }
 }
 
-/// The state for List.
-///
-/// List required all items has the same height.
+/// Requires all items to have the same height.
 pub struct ListState<D: ListDelegate> {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) query_input: Entity<InputState>,
@@ -119,7 +114,7 @@ where
         }
     }
 
-    /// When `true`, adds a search input at the top of the list. Default `false`.
+    /// Adds a search input at the top of the list. Default `false`.
     pub fn searchable(mut self, searchable: bool) -> Self {
         self.searchable = searchable;
         self
@@ -135,7 +130,7 @@ where
         self
     }
 
-    /// Sets whether the list is selectable, default is true.
+    /// Default is true.
     pub fn set_selectable(&mut self, selectable: bool, cx: &mut Context<Self>) {
         self.selectable = selectable;
         cx.notify();

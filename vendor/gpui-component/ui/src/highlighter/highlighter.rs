@@ -15,16 +15,14 @@ use tree_sitter::{
     InputEdit, ParseOptions, Parser, Point, Query, QueryCursor, StreamingIterator, Tree,
 };
 
-/// When a node spans more than this many bytes beyond the requested query
-/// range, we recurse into its children instead of querying it directly.
+/// Beyond this many bytes past the query range, recurse into children instead of querying the node directly.
 const LARGE_NODE_THRESHOLD: usize = 8 * 1024;
 const MAX_INJECTION_RANGES: usize = 4096;
 const MAX_INJECTION_BYTES: usize = 512 * 1024;
 const MAX_INJECTION_LANGUAGE_BYTES: usize = 64;
 const INJECTION_PARSE_TIMEOUT: Duration = Duration::from_millis(20);
 
-/// A syntax highlighter that supports incremental parsing, multiline text,
-/// and caching of highlight results.
+/// Supports incremental parsing, multiline text, and caching of highlight results.
 #[allow(unused)]
 pub struct SyntaxHighlighter {
     language: SharedString,

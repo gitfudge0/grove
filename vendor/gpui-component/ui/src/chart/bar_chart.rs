@@ -91,8 +91,7 @@ where
         self
     }
 
-    /// Closure receives the datum, the bar's bounds, the chart's bounds (both pixel-space, same
-    /// coordinate system), and the bar's alignment. Clears any previously set [`BarChart::fill_gradient`].
+    /// Closure receives the datum, the bar's and chart's bounds (both pixel-space), and the alignment; clears [`BarChart::fill_gradient`].
     pub fn fill<Bg>(
         mut self,
         fill: impl Fn(&T, Bounds<f32>, Bounds<f32>, BarAlignment) -> Bg + 'static,
@@ -484,8 +483,7 @@ where
     }
 }
 
-/// gpui's renderer would clamp an out-of-range stop and lose the gradient effect; this instead
-/// replaces it with the color sampled at 0.0/1.0 along the line through both stops.
+/// gpui would clamp an out-of-range stop and lose the gradient effect; sample the color at 0.0/1.0 along the line instead.
 fn clip_stops_to_bar(stops: [LinearColorStop; 2]) -> [LinearColorStop; 2] {
     let [a, b] = stops;
     let p0 = a.percentage;

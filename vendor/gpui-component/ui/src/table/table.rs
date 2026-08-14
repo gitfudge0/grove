@@ -99,7 +99,6 @@ impl RenderOnce for Table {
     }
 }
 
-/// The header section of a [`Table`], wrapping header rows.
 #[derive(IntoElement)]
 pub struct TableHeader {
     ix: usize,
@@ -173,7 +172,6 @@ impl RenderOnce for TableHeader {
     }
 }
 
-/// The body section of a [`Table`], wrapping data rows.
 #[derive(IntoElement)]
 pub struct TableBody {
     ix: usize,
@@ -243,7 +241,6 @@ impl RenderOnce for TableBody {
     }
 }
 
-/// The footer section of a [`Table`], wrapping footer rows.
 #[derive(IntoElement)]
 pub struct TableFooter {
     ix: usize,
@@ -316,7 +313,6 @@ impl RenderOnce for TableFooter {
     }
 }
 
-/// A row in a [`Table`].
 #[derive(IntoElement)]
 pub struct TableRow {
     ix: usize,
@@ -391,7 +387,6 @@ impl RenderOnce for TableRow {
     }
 }
 
-/// A header cell in a [`TableRow`].
 #[derive(IntoElement)]
 pub struct TableHead {
     ix: usize,
@@ -482,7 +477,6 @@ impl RenderOnce for TableHead {
     }
 }
 
-/// A data cell in a [`TableRow`].
 #[derive(IntoElement)]
 pub struct TableCell {
     ix: usize,
@@ -573,7 +567,6 @@ impl RenderOnce for TableCell {
     }
 }
 
-/// A caption displayed below the [`Table`].
 #[derive(IntoElement)]
 pub struct TableCaption {
     ix: usize,

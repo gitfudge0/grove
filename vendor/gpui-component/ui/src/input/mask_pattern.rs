@@ -623,8 +623,7 @@ mod tests {
         assert_eq!(mask.is_valid("1.2.3"), false);
         assert_eq!(mask.is_valid("1.."), false);
 
-        // A bare leading dot is kept as-is (not completed to "0."), so that
-        // deleting the integer part of "1.2" keeps ".2" and stays editable.
+        // A bare leading dot is kept as-is (not completed to "0."), so deleting the integer part of "1.2" keeps ".2" editable.
         assert_eq!(mask.mask("."), ".");
         assert_eq!(mask.mask(".5"), ".5");
         assert_eq!(mask.mask("-.5"), "-.5");

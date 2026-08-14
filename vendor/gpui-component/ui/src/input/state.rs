@@ -315,7 +315,6 @@ impl LastLayout {
     }
 }
 
-/// InputState to keep editing state of the [`super::Input`].
 pub struct InputState {
     pub(super) focus_handle: FocusHandle,
     pub(super) mode: InputMode,
@@ -329,16 +328,13 @@ pub struct InputState {
     pub(super) search_panel: Option<Entity<SearchPanel>>,
     pub(super) searchable: bool,
     pub(super) replaceable: bool,
-    /// Range for save the selected word, use to keep word range when drag move.
     pub(super) selected_word_range: Option<Selection>,
     pub(super) selection_reversed: bool,
     /// The marked range is the temporary insert text on IME typing.
     pub(super) ime_marked_range: Option<Selection>,
     pub(super) last_layout: Option<LastLayout>,
     pub(super) last_cursor: Option<usize>,
-    /// The input container bounds
     pub(super) input_bounds: Bounds<Pixels>,
-    /// The text bounds
     pub(super) last_bounds: Option<Bounds<Pixels>>,
     pub(super) last_selected_range: Option<Selection>,
     pub(super) selecting: bool,
@@ -348,39 +344,29 @@ pub struct InputState {
     pub(super) clean_on_escape: bool,
     pub(super) submit_on_enter: bool,
     pub(super) soft_wrap: bool,
-    /// See [`Self::scroll_beyond_last_line`].
     pub(super) scroll_beyond_last_line: Option<usize>,
-    /// See [`Self::cursor_surrounding_lines`].
     pub(super) cursor_surrounding_lines: Option<usize>,
     pub(super) show_whitespaces: bool,
     /// This flag tells the renderer to prefer the end of the current visual line.
     pub(crate) cursor_line_end_affinity: bool,
     pub(super) pattern: Option<regex::Regex>,
     pub(super) validate: Option<Box<dyn Fn(&str, &mut Context<Self>) -> bool + 'static>>,
-    /// The step strategy for [`super::NumberInput`] to increment/decrement.
     pub(super) number_step: Option<NumberStep>,
-    /// The minimum value for [`super::NumberInput`]. See [`Self::min`].
     pub(super) number_min: Option<f64>,
-    /// The maximum value for [`super::NumberInput`]. See [`Self::max`].
     pub(super) number_max: Option<f64>,
     pub(crate) scroll_handle: ScrollHandle,
-    /// The deferred scroll offset to apply on next layout.
     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
-    /// The size of the scrollable content.
     pub(crate) scroll_size: gpui::Size<Pixels>,
     pub(super) editor_scrollbar_paddings: Cell<Edges<Pixels>>,
     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
     pub(super) text_align: TextAlign,
     pub(super) decorations: DecorationCollections,
 
-    /// The mask pattern for formatting the input text
     pub(crate) mask_pattern: MaskPattern,
-    /// Whether the `mask_pattern` was explicitly set (via [`Self::mask_pattern`]
     pub(super) mask_pattern_set: bool,
     pub(super) placeholder: SharedString,
 
     diagnostic_popover: Option<Entity<DiagnosticPopover>>,
-    /// Completion/CodeAction context menu
     pub(super) context_menu_content: Option<ContextMenu>,
 
     /// If set, overrides the built-in context menu (and ignores [`Self::enable_context_menu`]).
@@ -391,10 +377,8 @@ pub struct InputState {
     /// Ignored if a context menu builder is defined in [`Self::context_menu_builder`].
     pub(super) enable_context_menu: bool,
 
-    /// A flag to indicate if we are currently inserting a completion item.
     pub(super) completion_inserting: bool,
     pub(super) hover_popover: Option<Entity<HoverPopover>>,
-    /// The LSP definitions locations for "Go to Definition" feature.
     pub(super) hover_definition: HoverDefinition,
 
     pub lsp: Lsp,
@@ -403,7 +387,6 @@ pub struct InputState {
     _pending_update: bool,
     /// A flag to indicate if we should ignore the next completion event.
     pub(super) silent_replace_text: bool,
-    /// A flag to indicate if we should emit InputEvents.
     pub(super) emit_events: bool,
 
     /// Preferred column for move up/down: (x-coordinate, column) — x preferred, column as fallback.
@@ -419,7 +402,6 @@ pub struct InputState {
 impl EventEmitter<InputEvent> for InputState {}
 
 impl InputState {
-    /// Create an Input state with default [`InputMode::SingleLine`] mode.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle().tab_stop(true);
         let blink_cursor = cx.new(|_| BlinkCursor::new());
@@ -520,7 +502,6 @@ impl InputState {
         self
     }
 
-    /// Set Input to use [`InputMode::AutoGrow`] mode with min, max rows limit.
     pub fn auto_grow(mut self, min_rows: usize, max_rows: usize) -> Self {
         self.mode = InputMode::auto_grow(min_rows, max_rows);
         self
@@ -553,7 +534,6 @@ impl InputState {
         self
     }
 
-    /// Set placeholder
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = placeholder.into();
         self
@@ -616,7 +596,6 @@ impl InputState {
         self
     }
 
-    /// Set highlighter language for for [`InputMode::CodeEditor`] mode.
     pub fn set_highlighter(
         &mut self,
         new_language: impl Into<SharedString>,
@@ -663,7 +642,6 @@ impl InputState {
         self.mode.diagnostics_mut()
     }
 
-    /// Set placeholder
     pub fn set_placeholder(
         &mut self,
         placeholder: impl Into<SharedString>,
@@ -674,7 +652,6 @@ impl InputState {
         cx.notify();
     }
 
-    /// Find which line and sub-line the given offset belongs to, and its position within the sub-line.
     pub(super) fn line_and_position_for_offset(
         &self,
         offset: usize,
@@ -699,7 +676,6 @@ impl InputState {
         (0, 0, None)
     }
 
-    /// Set the text of the input field.
     pub fn set_value(
         &mut self,
         value: impl Into<SharedString>,
@@ -735,7 +711,6 @@ impl InputState {
         cx.notify();
     }
 
-    /// Insert text at the current cursor position.
     pub fn insert(
         &mut self,
         text: impl Into<SharedString>,
@@ -751,7 +726,6 @@ impl InputState {
         self.disabled = was_disabled;
     }
 
-    /// Replace text at the current cursor position.
     pub fn replace(
         &mut self,
         text: impl Into<SharedString>,
@@ -806,34 +780,29 @@ impl InputState {
         }
     }
 
-    /// Set with disabled mode.
     #[allow(unused)]
     pub(crate) fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
-    /// Set with password masked state.
     pub fn masked(mut self, masked: bool) -> Self {
         debug_assert!(self.mode.is_single_line());
         self.masked = masked;
         self
     }
 
-    /// Set the password masked state of the input field.
     pub fn set_masked(&mut self, masked: bool, _: &mut Window, cx: &mut Context<Self>) {
         debug_assert!(self.mode.is_single_line());
         self.masked = masked;
         cx.notify();
     }
 
-    /// Set true to clear the input by pressing Escape key.
     pub fn clean_on_escape(mut self) -> Self {
         self.clean_on_escape = true;
         self
     }
 
-    /// Set true to treat `Enter` as a submit action in multi-line mode,
     pub fn submit_on_enter(mut self, submit: bool) -> Self {
         self.submit_on_enter = submit;
         self
@@ -846,7 +815,6 @@ impl InputState {
         self
     }
 
-    /// Set whether to show whitespace characters.
     pub fn show_whitespaces(mut self, show: bool) -> Self {
         self.show_whitespaces = show;
         self
@@ -874,19 +842,16 @@ impl InputState {
         cx.notify();
     }
 
-    /// Update whether to show whitespace characters.
     pub fn set_show_whitespaces(&mut self, show: bool, _: &mut Window, cx: &mut Context<Self>) {
         self.show_whitespaces = show;
         cx.notify();
     }
 
-    /// Empty rows reserved below the last line of content ("scroll
     pub fn scroll_beyond_last_line(mut self, rows: Option<usize>) -> Self {
         self.scroll_beyond_last_line = rows;
         self
     }
 
-    /// Update [`Self::scroll_beyond_last_line`] after construction.
     pub fn set_scroll_beyond_last_line(
         &mut self,
         rows: Option<usize>,
@@ -900,13 +865,11 @@ impl InputState {
         cx.notify();
     }
 
-    /// Minimum number of lines the cursor is kept clear of the viewport's
     pub fn cursor_surrounding_lines(mut self, lines: Option<usize>) -> Self {
         self.cursor_surrounding_lines = lines;
         self
     }
 
-    /// Update [`Self::cursor_surrounding_lines`] after construction.
     pub fn set_cursor_surrounding_lines(
         &mut self,
         lines: Option<usize>,
@@ -927,7 +890,6 @@ impl InputState {
         self
     }
 
-    /// Set the regular expression pattern of the input field with reference.
     pub fn set_pattern(
         &mut self,
         pattern: regex::Regex,
@@ -938,7 +900,6 @@ impl InputState {
         self.pattern = Some(pattern);
     }
 
-    /// Set the validation function of the input field.
     pub fn validate(mut self, f: impl Fn(&str, &mut Context<Self>) -> bool + 'static) -> Self {
         debug_assert!(self.mode.is_single_line());
         self.validate = Some(Box::new(f));
@@ -952,21 +913,7 @@ impl InputState {
         self
     }
 
-    /// Set a function to calculate the step value from the current value and
-    /// direction on stepping, e.g. a step size that varies by range.
-    ///
-    /// The current value is the value before stepping; an empty or invalid
-    /// value is treated as 0. The [`StepAction`] tells whether the value is
-    /// being incremented or decremented, useful when the step differs by
-    /// direction at a range boundary.
-    ///
-    /// This is a shorthand of `step(NumberStep::by_value(f))`. See also [`Self::step`].
-    ///
-    /// The closure receives a [`Context<Self>`] to read or update other
-    /// entities while computing the step, but must not re-enter the owning
-    /// [`InputState`] (it is mutably borrowed during stepping).
-    ///
-    /// # Example
+    /// Empty/invalid current value is treated as 0. Closure must not re-enter the owning `InputState`, which is mutably borrowed during stepping.
     ///
     /// ```ignore
     /// // At the boundary 1.0 the step is 0.1 going down and 0.5 going up.
@@ -984,21 +931,19 @@ impl InputState {
         self
     }
 
-    /// Set the minimum value of the [`super::NumberInput`].
     pub fn min(mut self, min: f64) -> Self {
         debug_assert!(self.mode.is_single_line());
         self.number_min = Some(min);
         self
     }
 
-    /// Set the maximum value of the [`super::NumberInput`].
     pub fn max(mut self, max: f64) -> Self {
         debug_assert!(self.mode.is_single_line());
         self.number_max = Some(max);
         self
     }
 
-    /// Update the step value after construction; `None` falls back to emitting [`super::NumberInputEvent::Step`] (if `min`/`max` are unset). See [`Self::step`] and [`Self::step_by`].
+    /// `None` falls back to emitting `NumberInputEvent::Step` if `min`/`max` are unset.
     pub fn set_step(
         &mut self,
         step: impl Into<Option<NumberStep>>,
@@ -1009,26 +954,22 @@ impl InputState {
         self.number_step = step.into();
     }
 
-    /// Update the minimum value after construction. See [`Self::min`].
     pub fn set_min(&mut self, min: Option<f64>, _: &mut Window, _: &mut Context<Self>) {
         debug_assert!(self.mode.is_single_line());
         self.number_min = min;
     }
 
-    /// Update the maximum value after construction. See [`Self::max`].
     pub fn set_max(&mut self, max: Option<f64>, _: &mut Window, _: &mut Context<Self>) {
         debug_assert!(self.mode.is_single_line());
         self.number_max = max;
     }
 
-    /// Set true to show spinner at the input right.
     pub fn set_loading(&mut self, loading: bool, _: &mut Window, cx: &mut Context<Self>) {
         debug_assert!(self.mode.is_single_line());
         self.loading = loading;
         cx.notify();
     }
 
-    /// Set the default value of the input field.
     pub fn default_value(mut self, value: impl Into<SharedString>) -> Self {
         let text: SharedString = value.into();
         self.text = Rope::from(self.normalize_input(&text).as_ref());
@@ -1040,33 +981,27 @@ impl InputState {
         self
     }
 
-    /// Return the value of the input field.
     pub fn value(&self) -> SharedString {
         SharedString::new(self.text.to_string())
     }
 
-    /// Return the portion of the value within the input field that is selected by the user.
     pub fn selected_value(&self) -> SharedString {
         SharedString::new(self.selected_text().to_string())
     }
 
-    /// Return the value without mask.
     pub fn unmask_value(&self) -> SharedString {
         self.mask_pattern.unmask(&self.text.to_string()).into()
     }
 
-    /// Return the text [`Rope`] of the input field.
     pub fn text(&self) -> &Rope {
         &self.text
     }
 
-    /// Return the (0-based) [`Position`] of the cursor.
     pub fn cursor_position(&self) -> Position {
         let offset = self.cursor();
         self.text.offset_to_position(offset)
     }
 
-    /// Set (0-based) [`Position`] of the cursor.
     pub fn set_cursor_position(
         &mut self,
         position: impl Into<Position>,
@@ -1081,7 +1016,6 @@ impl InputState {
         self.focus(window, cx);
     }
 
-    /// Focus the input field.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
         self.blink_cursor.update(cx, |cursor, cx| {
@@ -1089,12 +1023,7 @@ impl InputState {
         });
     }
 
-    /// Refresh the input, so the next render re-runs syntax highlighting and
-    /// the LSP providers, not just a redraw.
-    ///
-    /// Assigning the `lsp` providers (or other render-affecting state) at
-    /// runtime does not take effect until the text next changes. Call this
-    /// afterwards to force the refresh on the next render.
+    /// Force LSP/syntax-highlight recompute on next render; assigning `lsp` providers alone doesn't take effect until text next changes.
     ///
     /// ```ignore
     /// input.update(cx, |state, cx| {
@@ -1195,7 +1124,6 @@ impl InputState {
         self.select_to(offset, cx);
     }
 
-    /// Return the start offset of the previous word.
     pub(super) fn previous_start_of_word(&mut self) -> usize {
         let offset = self.selected_range.start;
         let offset = self.offset_from_utf16(self.offset_to_utf16(offset));
@@ -1208,7 +1136,6 @@ impl InputState {
             .unwrap_or(0)
     }
 
-    /// Return the next end offset of the next word.
     pub(super) fn next_end_of_word(&mut self) -> usize {
         let offset = self.cursor();
         let offset = self.offset_from_utf16(self.offset_to_utf16(offset));
@@ -1220,7 +1147,6 @@ impl InputState {
             .unwrap_or(self.text.len())
     }
 
-    /// Get start of line byte offset of cursor.
     pub(super) fn start_of_line(&self) -> usize {
         if self.mode.is_single_line() {
             return 0;
@@ -1244,7 +1170,6 @@ impl InputState {
         logical_start
     }
 
-    /// Get end of line byte offset of cursor.
     pub(super) fn end_of_line(&self) -> usize {
         if self.mode.is_single_line() {
             return self.text.len();
@@ -1269,7 +1194,6 @@ impl InputState {
         logical_end
     }
 
-    /// Get start line of selection start or end (The min value).
     pub(super) fn start_of_line_of_selection(
         &mut self,
         window: &mut Window,
@@ -1294,7 +1218,6 @@ impl InputState {
         line
     }
 
-    /// Get indent string of next line.
     pub(super) fn indent_of_next_line(&mut self) -> String {
         if self.mode.is_single_line() {
             return "".into();
@@ -1501,7 +1424,6 @@ impl InputState {
         cx.propagate();
     }
 
-    /// Show the right-click context menu as a native OS menu.
     pub(crate) fn handle_right_click_menu(
         &mut self,
         position: Point<Pixels>,
@@ -1893,7 +1815,6 @@ impl InputState {
         self.history.ignore = false;
     }
 
-    /// Get byte offset of the cursor.
     pub fn cursor(&self) -> usize {
         if let Some(ime_marked_range) = &self.ime_marked_range {
             return ime_marked_range.end;
@@ -1911,12 +1832,10 @@ impl InputState {
         self.last_layout.as_ref().map(|l| l.visible_range.clone())
     }
 
-    /// Current scroll offset of the editor viewport.
     pub fn scroll_offset(&self) -> gpui::Point<gpui::Pixels> {
         self.scroll_handle.offset()
     }
 
-    /// Set scroll offset of the editor viewport.
     pub fn set_scroll_offset(&mut self, offset: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
         self.deferred_scroll_offset = Some(offset);
         cx.notify();
@@ -2006,7 +1925,6 @@ impl InputState {
         self.text.len()
     }
 
-    /// Returns a y offsetted point for the line origin.
     pub(crate) fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.clear_inline_completion(cx);
 
@@ -2036,7 +1954,6 @@ impl InputState {
         cx.notify()
     }
 
-    /// Unselects the currently selected text.
     pub fn unselect(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let offset = self.cursor();
         self.selected_range = (offset..offset).into();
@@ -2111,7 +2028,6 @@ impl InputState {
         self.clamp_offset_to_visible_forward(offset)
     }
 
-    /// Returns the true to let InputElement to render cursor, when Input is focused and current BlinkCursor is visible.
     pub(crate) fn show_cursor(&self, window: &Window, cx: &App) -> bool {
         (self.focus_handle.is_focused(window) || self.is_context_menu_open(cx))
             && !self.disabled
@@ -2355,7 +2271,6 @@ impl InputState {
         ))
     }
 
-    /// Replace text in range in silent.
     pub(crate) fn replace_text_in_range_silent(
         &mut self,
         range_utf16: Option<Range<usize>>,
@@ -2587,7 +2502,6 @@ impl EntityInputHandler for InputState {
         self.ime_marked_range = None;
     }
 
-    /// Replace text in range.
     fn replace_text_in_range(
         &mut self,
         range_utf16: Option<Range<usize>>,
@@ -2891,7 +2805,6 @@ mod tests {
         window_handle: gpui::WindowHandle<Root>,
     }
 
-    /// Helper to create an InputState in a window for testing
     impl InputView {
         pub fn new(cx: &mut TestAppContext) -> Self {
             Self::build(cx, |state| state.code_editor("sql"))
@@ -3034,7 +2947,6 @@ ORDER BY id
         );
     }
 
-    /// Regression test: `scroll_to` at end-of-buffer must produce a deferred
     #[gpui::test]
     fn test_scroll_to_eob_does_not_overshoot_safe_range(cx: &mut TestAppContext) {
         let input_view = InputView::new(cx);
@@ -3315,7 +3227,6 @@ ORDER BY id
         });
     }
 
-    /// After `set_value` on a single-line input the caret sits at the end (like
     #[gpui::test]
     fn test_set_value_single_line_caret_at_end_view_at_start(cx: &mut TestAppContext) {
         let input_view = InputView::build(cx, |state| state);
@@ -3468,7 +3379,6 @@ ORDER BY id
         });
     }
 
-    /// Unlike `set_value`, `replace_all` records the change so the user can
     #[gpui::test]
     fn test_replace_all_preserves_undo_history(cx: &mut TestAppContext) {
         let input_view = InputView::build(cx, |state| state);
@@ -3499,7 +3409,6 @@ ORDER BY id
         });
     }
 
-    /// `replace_all` on a code editor marks a pending update and resets LSP
     #[gpui::test]
     fn test_replace_all_code_editor(cx: &mut TestAppContext) {
         let input_view = InputView::new(cx);

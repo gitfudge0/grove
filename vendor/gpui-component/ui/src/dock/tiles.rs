@@ -81,7 +81,6 @@ struct ResizeDrag {
     last_bounds: Bounds<Pixels>,
 }
 
-/// TileItem is a moveable and resizable panel that can be added to a Tiles view.
 #[derive(Clone)]
 pub struct TileItem {
     id: EntityId,
@@ -128,7 +127,6 @@ impl AnyDrag {
     }
 }
 
-/// Tiles is a canvas that can contain multiple panels, each of which can be dragged and resized.
 pub struct Tiles {
     focus_handle: FocusHandle,
     pub(crate) panels: Vec<TileItem>,
@@ -198,7 +196,7 @@ impl Tiles {
         }
     }
 
-    /// Set the scrollbar show mode [`ScrollbarShow`], if not set use the `cx.theme().scrollbar_show`.
+    /// If unset, uses `cx.theme().scrollbar_show`.
     pub fn set_scrollbar_show(
         &mut self,
         scrollbar_show: Option<ScrollbarShow>,

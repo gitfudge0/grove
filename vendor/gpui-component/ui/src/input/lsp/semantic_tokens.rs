@@ -9,8 +9,7 @@ use ropey::Rope;
 use crate::highlighter::HighlightTheme;
 use crate::input::{InputState, Lsp, RopeExt};
 
-/// Layered on the built-in tree-sitter highlighter, not a replacement — LSP's `textDocument/semanticTokens/range` counterpart.
-/// Tokens are delta-encoded; the editor resolves each type name against the active theme at paint time, so a theme switch recolors with no provider cooperation. Modifiers aren't mapped to styles yet.
+/// Layered on the built-in tree-sitter highlighter, not a replacement. Type names resolve against the active theme at paint time, so a theme switch recolors with no provider cooperation; modifiers aren't mapped to styles yet.
 pub trait DocumentRangeSemanticTokensProvider {
     fn legend(&self) -> SemanticTokensLegend;
 
@@ -103,18 +102,12 @@ impl Lsp {
     }
 }
 
-/// Decode the LSP delta-encoding of `tokens` into absolute
-/// (position-range, type-name) pairs, sorted by start position.
-///
-/// The type name is looked up in `legend.token_types`; tokens whose
-/// `token_type` index is out of bounds are skipped. Color resolution is
-/// deferred to paint time so theme switches take effect without a refetch.
+/// Decodes the LSP delta-encoding into absolute (range, type-name) pairs, sorted by start; out-of-bounds `token_type` indices are skipped.
 fn decode_semantic_tokens(
     tokens: &SemanticTokens,
     legend: &SemanticTokensLegend,
 ) -> Vec<(lsp_types::Range, SharedString)> {
-    // Resolve the legend names once; tokens then share them via cheap
-    // ref-counted clones instead of allocating a String per token.
+    // Resolved once; tokens then share names via cheap ref-counted clones instead of allocating a String per token.
     let names: Vec<SharedString> = legend
         .token_types
         .iter()
@@ -262,8 +255,7 @@ mod tests {
             })
             .collect();
 
-        // Only line 50 visible ("foo" at bytes 400..403). The binary-search
-        // window must return exactly that one token out of 100.
+        // Only line 50 visible: the binary-search window must return exactly that one token out of 100.
         let line_bytes = "foo bar\n".len();
         let start = 50 * line_bytes;
         let styles = lsp.semantic_tokens_for_range(&text, &(start..start + 3), &theme);
