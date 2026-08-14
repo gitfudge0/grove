@@ -11,7 +11,6 @@ use crate::{dock::DockPlacement, ActiveTheme as _, AxisExt as _};
 pub(crate) const HANDLE_PADDING: Pixels = px(4.);
 pub(crate) const HANDLE_SIZE: Pixels = px(1.);
 
-/// Create a resize handle for a resizable panel.
 pub(crate) fn resize_handle<T: 'static, E: 'static + Render>(
     id: impl Into<ElementId>,
     axis: Axis,
@@ -125,8 +124,7 @@ impl<T: 'static, E: 'static + Render> Element for ResizeHandle<T, E> {
                 })
                 .map(|this| match self.placement {
                     Some(DockPlacement::Left) => {
-                        // Special for Left Dock
-                        //  FIXME: Improve this to let the scroll bar have px(HANDLE_PADDING)
+                        // FIXME: improve this to let the scroll bar have px(HANDLE_PADDING) for the left dock.
                         this.cursor_col_resize()
                             .top_0()
                             .right(px(1.))

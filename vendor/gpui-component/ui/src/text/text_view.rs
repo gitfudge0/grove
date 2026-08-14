@@ -15,12 +15,12 @@ use crate::text::node::CodeBlock;
 use crate::text::state::TextViewState;
 use crate::{global_state::GlobalState, text::TextViewStyle};
 
-/// Type for code block actions generator function.
 pub(crate) type CodeBlockActionsFn =
     dyn Fn(&CodeBlock, &mut Window, &mut App) -> AnyElement + Send + Sync;
 
-/// A text view that renders Markdown (GFM) or simple HTML (Safari Reader
-/// Mode-like, no CSS) — a content reader, not an editor or full HTML viewer. See also [`MarkdownElement`], [`HtmlElement`].
+/// A text view that renders Markdown (GFM) or simple Reader-Mode-style HTML; not a full editor/viewer or CSS-capable HTML renderer.
+///
+/// See also [`MarkdownElement`], [`HtmlElement`]
 #[derive(Clone)]
 pub struct TextView {
     id: ElementId,
@@ -35,7 +35,6 @@ pub struct TextView {
     markdown_extensions: Arc<MarkdownExtensions>,
 }
 
-/// A plugin that can configure a [`TextView`].
 pub trait TextViewPlugin {
     fn setup(self, text_view: TextView) -> TextView;
 }
@@ -59,7 +58,6 @@ impl Styled for TextView {
 }
 
 impl TextView {
-    /// Create new TextView with managed state.
     pub fn new(state: &Entity<TextViewState>) -> Self {
         Self {
             id: ElementId::Name(state.entity_id().to_string().into()),
@@ -75,7 +73,6 @@ impl TextView {
         }
     }
 
-    /// Create a new markdown text view.
     pub fn markdown(id: impl Into<ElementId>, markdown: impl Into<SharedString>) -> Self {
         Self {
             id: id.into(),
@@ -91,7 +88,6 @@ impl TextView {
         }
     }
 
-    /// Create a new html text view.
     pub fn html(id: impl Into<ElementId>, html: impl Into<SharedString>) -> Self {
         Self {
             id: id.into(),
@@ -107,27 +103,23 @@ impl TextView {
         }
     }
 
-    /// Set [`TextViewStyle`].
     pub fn style(mut self, style: TextViewStyle) -> Self {
         self.text_view_style = style;
         self
     }
 
-    /// Set the text view to be selectable, default is false.
     pub fn selectable(mut self, selectable: bool) -> Self {
         self.selectable = selectable;
         self
     }
 
-    /// Set the text view to be scrollable, default is false. If true, shows
-    /// a scrollbar but requires a fixed-height parent and [`gpui::list`] virtualization; if false, expands to fit all content with no scrollbar.
+    /// `true`: virtualized scrolling for large content, requires a fixed-height parent. `false`: expands to fit all content, no scrollbar.
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
         self
     }
 
-    /// Set custom block actions for code blocks; the closure receives the
-    /// [`CodeBlock`] and returns an element to display.
+    /// The closure receives the [`CodeBlock`] and returns an element to display.
     pub fn code_block_actions<F, E>(mut self, f: F) -> Self
     where
         F: Fn(&CodeBlock, &mut Window, &mut App) -> E + Send + Sync + 'static,
@@ -139,22 +131,19 @@ impl TextView {
         self
     }
 
-    /// Replace the Markdown extension registry.
     pub fn markdown_extensions(mut self, extensions: MarkdownExtensions) -> Self {
         self.markdown_extensions = Arc::new(extensions);
         self
     }
 
-    /// Enable MDX JSX/expression parsing; disables raw HTML parsing, since
-    /// `markdown-rs` gives HTML priority over MDX when both are enabled.
+    /// Disables raw HTML parsing, since `markdown-rs` gives HTML priority over MDX when both are enabled.
     pub fn markdown_mdx(mut self) -> Self {
         let extensions = Arc::make_mut(&mut self.markdown_extensions);
         *extensions = extensions.clone().mdx();
         self
     }
 
-    /// Register a custom block-level Markdown parser; it runs during AST
-    /// conversion and must be independent of [`Window`]/[`App`]. Store parsed data in [`MarkdownNode`] and render it with [`Self::markdown_block_renderer`].
+    /// Runs during AST conversion and must be independent of [`Window`]/[`App`]; store parsed data in [`MarkdownNode`] and render later via [`Self::markdown_block_renderer`].
     pub fn markdown_block_parser<F>(mut self, parser: F) -> Self
     where
         F: for<'a> Fn(
@@ -169,7 +158,6 @@ impl TextView {
         self
     }
 
-    /// Register a renderer for a custom block-level Markdown node name.
     pub fn markdown_block_renderer<F, E>(
         mut self,
         name: impl Into<SharedString>,
@@ -183,7 +171,6 @@ impl TextView {
         self
     }
 
-    /// Apply a reusable text view plugin.
     pub fn plugin<P>(self, plugin: P) -> Self
     where
         P: TextViewPlugin,
@@ -309,8 +296,7 @@ impl Element for TextView {
     ) {
         let state = &request_layout.state;
         if self.selectable {
-            // Register before painting children so this frame's Inline paint can
-            // repopulate the text bounds after stale ones are cleared.
+            // Registered before painting children so this frame's Inline paint can repopulate bounds after stale ones are cleared.
             crate::Root::register_selectable_text_view(state, hitbox, window, cx);
         }
 
@@ -600,8 +586,7 @@ mod tests {
         assert_eq!(selected_text.trim(), "quick select value");
     }
 
-    // Regression: markdown `TextView` items in an outer `gpui::list` with
-    // `measure_all` must keep a stable total content height while scrolling (previously off-screen views were first measured empty, jittering the scrollbar thumb).
+    // Regression: before synchronous full-replace parsing, off-screen markdown views were measured empty and the scrollbar thumb jittered as height grew.
     #[gpui::test]
     fn outer_list_content_total_stable_while_scrolling(cx: &mut TestAppContext) {
         use gpui::{ListAlignment, ListState, list};

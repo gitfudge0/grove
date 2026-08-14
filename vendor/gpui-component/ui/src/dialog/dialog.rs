@@ -32,7 +32,6 @@ pub(crate) fn init(cx: &mut App) {
     ]);
 }
 
-/// Dialog button props.
 #[derive(Clone)]
 pub struct DialogButtonProps {
     pub(crate) ok_text: Option<SharedString>,
@@ -61,39 +60,35 @@ impl Default for DialogButtonProps {
 }
 
 impl DialogButtonProps {
-    /// Sets the text of the OK button. Default is `OK`.
+    /// Default is `OK`.
     pub fn ok_text(mut self, ok_text: impl Into<SharedString>) -> Self {
         self.ok_text = Some(ok_text.into());
         self
     }
 
-    /// Sets the variant of the OK button. Default is `ButtonVariant::Primary`.
+    /// Default is `ButtonVariant::Primary`.
     pub fn ok_variant(mut self, ok_variant: ButtonVariant) -> Self {
         self.ok_variant = ok_variant;
         self
     }
 
-    /// Sets the text of the Cancel button. Default is `Cancel`.
+    /// Default is `Cancel`.
     pub fn cancel_text(mut self, cancel_text: impl Into<SharedString>) -> Self {
         self.cancel_text = Some(cancel_text.into());
         self
     }
 
-    /// Sets the variant of the Cancel button. Default is `ButtonVariant::default()`.
     pub fn cancel_variant(mut self, cancel_variant: ButtonVariant) -> Self {
         self.cancel_variant = cancel_variant;
         self
     }
 
-    /// Sets whether to show the Cancel button. Default is `false`.
     pub fn show_cancel(mut self, show_cancel: bool) -> Self {
         self.show_cancel = show_cancel;
         self
     }
 
-    /// Sets the callback for when the dialog is has been confirmed.
-    ///
-    /// The callback should return `true` to close the dialog, if return `false` the dialog will not be closed.
+    /// Return `true` to close the dialog, `false` to keep it open.
     pub fn on_ok(
         mut self,
         on_ok: impl Fn(&ClickEvent, &mut Window, &mut App) -> bool + 'static,
@@ -102,9 +97,7 @@ impl DialogButtonProps {
         self
     }
 
-    /// Sets the callback for when the dialog is has been canceled.
-    ///
-    /// The callback should return `true` to close the dialog, if return `false` the dialog will not be closed.
+    /// Return `true` to close the dialog, `false` to keep it open.
     pub fn on_cancel(
         mut self,
         on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) -> bool + 'static,
@@ -198,7 +191,6 @@ impl Default for DialogProps {
     }
 }
 
-/// A modal to display content in a dialog box.
 #[derive(IntoElement)]
 pub struct Dialog {
     pub(crate) style: StyleRefinement,
@@ -213,7 +205,6 @@ pub struct Dialog {
 
     button_props: DialogButtonProps,
 
-    /// This will be change when open the dialog, the focus handle is create when open the dialog.
     pub(crate) focus_handle: FocusHandle,
     pub(crate) layer_ix: usize,
 }
@@ -227,7 +218,6 @@ pub(crate) fn overlay_color(overlay: bool, cx: &App) -> Hsla {
 }
 
 impl Dialog {
-    /// Create a new dialog.
     pub fn new(cx: &mut App) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
@@ -245,15 +235,12 @@ impl Dialog {
         }
     }
 
-    /// Sets the trigger element for the dialog.
-    ///
-    /// When a trigger is set, the dialog will render as a trigger button that opens the dialog when clicked.
+    /// Renders as a trigger button that opens the dialog when clicked.
     pub fn trigger(mut self, trigger: impl IntoElement) -> Self {
         self.trigger = Some(trigger.into_any_element());
         self
     }
 
-    /// Sets the content of the dialog.
     pub fn content<F>(mut self, builder: F) -> Self
     where
         F: Fn(DialogContent, &mut Window, &mut App) -> DialogContent + 'static,
@@ -262,7 +249,6 @@ impl Dialog {
         self
     }
 
-    /// Sets the title of the dialog.
     pub fn title(mut self, title: impl IntoElement) -> Self {
         self.title = Some(title.into_any_element());
         self
@@ -276,15 +262,12 @@ impl Dialog {
         self
     }
 
-    /// Sets the footer of the dialog, the footer will render at the bottom of the dialog, usually for action buttons.
-    ///
-    /// When you set the footer, the `button_props` will be ignored, you need to render the action buttons by yourself.
+    /// Ignores `button_props`; you render the action buttons yourself.
     pub fn footer(mut self, footer: impl IntoElement) -> Self {
         self.footer = Some(footer.into_any_element());
         self
     }
 
-    /// Set the button props of the dialog.
     pub fn button_props(mut self, button_props: DialogButtonProps) -> Self {
         self.button_props = button_props;
         self
@@ -295,9 +278,7 @@ impl Dialog {
         self
     }
 
-    /// Sets the callback for when the dialog is closed.
-    ///
-    /// Called after [`Self::on_ok`] or [`Self::on_cancel`] callback.
+    /// Called after [`Self::on_ok`] or [`Self::on_cancel`].
     pub fn on_close(
         mut self,
         on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -306,9 +287,7 @@ impl Dialog {
         self
     }
 
-    /// Sets the callback for when the dialog is has been confirmed.
-    ///
-    /// The callback should return `true` to close the dialog, if return `false` the dialog will not be closed.
+    /// Return `true` to close the dialog, `false` to keep it open.
     pub fn on_ok(
         mut self,
         on_ok: impl Fn(&ClickEvent, &mut Window, &mut App) -> bool + 'static,
@@ -317,9 +296,7 @@ impl Dialog {
         self
     }
 
-    /// Sets the callback for when the dialog is has been canceled.
-    ///
-    /// The callback should return `true` to close the dialog, if return `false` the dialog will not be closed.
+    /// Return `true` to close the dialog, `false` to keep it open.
     pub fn on_cancel(
         mut self,
         on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) -> bool + 'static,
@@ -328,53 +305,45 @@ impl Dialog {
         self
     }
 
-    /// Sets the false to hide close icon, default: true
+    /// Default: true.
     pub fn close_button(mut self, close_button: bool) -> Self {
         self.props.close_button = close_button;
         self
     }
 
-    /// Set the top offset of the dialog, defaults to None, will use the 1/10 of the viewport height.
+    /// Defaults to 1/10 of the viewport height.
     pub fn margin_top(mut self, margin_top: impl Into<Pixels>) -> Self {
         self.props.margin_top = Some(margin_top.into());
         self
     }
 
-    /// Sets the width of the dialog, defaults to 448px.
-    ///
-    /// See also [`Self::width`]
+    /// Defaults to 448px.
     pub fn w(mut self, width: impl Into<Pixels>) -> Self {
         self.props.width = width.into();
         self
     }
 
-    /// Sets the width of the dialog, defaults to 448px.
+    /// Defaults to 448px.
     pub fn width(mut self, width: impl Into<Pixels>) -> Self {
         self.props.width = width.into();
         self
     }
 
-    /// Set the maximum width of the dialog, defaults to `None`.
     pub fn max_w(mut self, max_width: impl Into<Pixels>) -> Self {
         self.props.max_width = Some(max_width.into());
         self
     }
 
-    /// Set the overlay of the dialog, defaults to `true`.
     pub fn overlay(mut self, overlay: bool) -> Self {
         self.props.overlay = overlay;
         self
     }
 
-    /// Set the overlay closable of the dialog, defaults to `true`.
-    ///
-    /// When the overlay is clicked, the dialog will be closed.
     pub fn overlay_closable(mut self, overlay_closable: bool) -> Self {
         self.props.overlay_closable = overlay_closable;
         self
     }
 
-    /// Set whether to support keyboard esc to close the dialog, defaults to `true`.
     pub fn keyboard(mut self, keyboard: bool) -> Self {
         self.props.keyboard = keyboard;
         self
@@ -502,7 +471,6 @@ impl RenderOnce for Dialog {
                         this.bg(overlay_color(self.props.overlay, cx))
                     })
                     .when(self.props.overlay, |this| {
-                        // Only the last dialog owns the `mouse down - close dialog` event.
                         if (self.layer_ix + 1) != Root::read(window, cx).active_dialogs.len() {
                             return this;
                         }
@@ -550,11 +518,6 @@ impl RenderOnce for Dialog {
                                     let on_cancel = on_cancel.clone();
                                     let on_close = on_close.clone();
                                     move |_: &CancelDialog, window, cx| {
-                                        // FIXME:
-                                        //
-                                        // Here some Dialog have no focus_handle, so it will not work will Escape key.
-                                        // But by now, we `cx.close_dialog()` going to close the last active model,
-                                        // so the Escape is unexpected to work.
                                         if on_cancel(&ClickEvent::default(), window, cx) {
                                             window.close_dialog(cx);
                                             on_close(&ClickEvent::default(), window, cx);
@@ -572,7 +535,6 @@ impl RenderOnce for Dialog {
                                     }
                                 })
                             })
-                            // There style is high priority, can't be overridden.
                             .absolute()
                             .occlude()
                             .relative()
@@ -614,7 +576,6 @@ impl RenderOnce for Dialog {
                                     .when(!self.children.is_empty(), |this| {
                                         this.child(
                                             div().flex_1().overflow_hidden().child(
-                                                // Body
                                                 v_flex()
                                                     .size_full()
                                                     .overflow_y_scrollbar()
@@ -650,7 +611,6 @@ impl RenderOnce for Dialog {
                                     })
                             }))
                             .with_animation("slide-down", animation.clone(), move |this, delta| {
-                                // This is equivalent to `shadow_xl` with an extra opacity.
                                 let shadow = vec![
                                     BoxShadow {
                                         color: hsla(0., 0., 0., 0.1 * delta),

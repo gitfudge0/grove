@@ -1,6 +1,5 @@
 //! User-defined ("custom") theme storage: `dirs::config_dir()/grove/themes.json`.
-//! Mirrors `storage.rs`'s atomic-write convention but is kept separate since
-//! it's a distinct file with its own schema and validation rules.
+//! Kept separate from `storage.rs` since it's a distinct file with its own schema.
 
 use crate::theme::{Color, Theme, ThemeKind};
 use fs_err as fs;
@@ -8,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::path::PathBuf;
 
-/// On-disk DTO for a single theme. Field names match `Theme`'s color fields;
-/// colors are `#rrggbb` hex strings.
+/// On-disk DTO; colors are `#rrggbb` hex strings.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ThemeDef {
     pub name: String,
@@ -38,21 +36,14 @@ struct ThemeFile {
     themes: Vec<ThemeDef>,
 }
 
-/// A theme entry that was skipped while loading `themes.json`, with a
-/// human-readable reason. `name` is `None` only for whole-file failures
-/// (e.g. corrupt JSON).
+/// `name` is `None` only for whole-file failures (e.g. corrupt JSON).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThemeLoadError {
     pub name: Option<String>,
     pub reason: String,
 }
 
-/// One-line summary of `errors` for a non-blocking notice, matching the
-/// mock's toast copy exactly: `themes.json: skipped '<name>' — <reason>`,
-/// or `themes.json: <reason>` when the entry had no name (a whole-file
-/// failure). Any further errors beyond the first are summarized as
-/// `(+N more)` rather than listed in full. `None` when `errors` is empty —
-/// callers use that to skip showing a notice at all.
+/// One-line toast summary: `themes.json: skipped '<name>' — <reason>` (or without a name), further errors summarized as `(+N more)`. `None` when `errors` is empty.
 pub fn summarize_errors(errors: &[ThemeLoadError]) -> Option<String> {
     let first = errors.first()?;
     let head = match &first.name {
@@ -69,11 +60,7 @@ pub fn summarize_errors(errors: &[ThemeLoadError]) -> Option<String> {
 /// Parses `#rrggbb` (leading `#` optional, case-insensitive) into a `Color`.
 pub fn parse_hex(s: &str) -> Result<Color, String> {
     let s = s.strip_prefix('#').unwrap_or(s);
-    // The length check below is byte-based, and the slicing after it
-    // (`&s[i..i+2]`) indexes by byte offset too — both are only safe once
-    // every byte is confirmed ASCII (a single non-ASCII char, e.g. multibyte
-    // UTF-8, can make `s.len()` land on 6 while still slicing mid-character
-    // and panicking). Rejecting non-hexdigit bytes up front guarantees ASCII.
+    // Byte-based length/slicing below is only safe once every byte is confirmed ASCII (a multibyte char could make `len()` land on 6 while slicing mid-character).
     if s.len() != 6 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!("invalid hex color \"{s}\" (expected #rrggbb)"));
     }
@@ -100,8 +87,6 @@ fn parse_kind(s: &str) -> Result<ThemeKind, String> {
     }
 }
 
-/// Validates and converts a single `ThemeDef` into a `Theme`, or an error
-/// reason if it's malformed.
 fn convert(def: ThemeDef) -> Result<Theme, String> {
     if def.name.trim().is_empty() {
         return Err("empty name".to_string());
@@ -126,17 +111,11 @@ fn convert(def: ThemeDef) -> Result<Theme, String> {
 }
 
 fn config_path() -> Option<PathBuf> {
-    // Routed through `storage::config_dir()` so `GROVE_CONFIG_DIR` and the
-    // legacy `work-manager` migration both apply here too.
+    // Routed through `storage::config_dir()` so `GROVE_CONFIG_DIR` and the legacy migration apply here too.
     Some(crate::storage::config_dir().ok()?.join("themes.json"))
 }
 
-/// Loads custom themes from `themes.json`. Missing file yields an empty,
-/// error-free result. Corrupt top-level JSON yields a single error and an
-/// empty result, without deleting or otherwise touching the file. Per-entry
-/// problems (bad hex, missing field, empty name, unknown kind, duplicate
-/// name, or a name shadowing a builtin) cause that entry to be skipped with
-/// a recorded reason; first occurrence of a duplicate name wins.
+/// Missing/corrupt file yields an empty result (corrupt JSON also yields one error) without touching the file; per-entry problems skip just that entry, first duplicate name wins.
 pub fn load() -> (Vec<Theme>, Vec<ThemeLoadError>) {
     let Some(path) = config_path() else {
         return (Vec::new(), Vec::new());
@@ -234,29 +213,20 @@ pub fn save(themes: &[Theme]) -> std::io::Result<()> {
             .collect(),
     };
     let json = serde_json::to_string_pretty(&file)?;
-    // `storage::write_atomic` rather than a hand-rolled `.json.tmp` sibling:
-    // its temp name is unique per write, so two concurrent writers can't
-    // rename a half-written mix into place.
+    // `write_atomic`'s temp name is unique per write, so two concurrent writers can't rename a half-written mix into place.
     crate::storage::write_atomic(&path, json.as_bytes()).map_err(std::io::Error::other)?;
     Ok(())
 }
 
-/// Canonical field order used by the bare-hex paste format and by
-/// [`PastedColors`]'s iteration helpers. This is just `Theme::FIELD_NAMES`
-/// under this module's own established name — an alias rather than a second
-/// copy of the same 11 strings, so the two can never drift out of sync.
+/// Alias for `Theme::FIELD_NAMES` so this and `theme.rs` can never drift out of sync.
 pub use crate::theme::FIELD_NAMES as FIELD_ORDER;
 
-/// Result of successfully parsing a pasted palette: a name/kind (only present
-/// when the paste was full-`ThemeDef` JSON and included them) plus whichever
-/// of the 11 color fields were present in the paste — a subset for the named-
-/// lines format, always all 11 for the bare-hex format.
+/// A subset of the 11 color fields for named-lines format, always all 11 for bare-hex.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct PastedColors {
     pub name: Option<String>,
     pub kind: Option<ThemeKind>,
-    /// `(field_name, color)` pairs, in `FIELD_ORDER` order, deduplicated so
-    /// each field appears at most once (last write wins).
+    /// Deduplicated, in `FIELD_ORDER` order; last write wins.
     pub colors: Vec<(&'static str, Color)>,
 }
 
@@ -279,11 +249,7 @@ impl PastedColors {
     }
 }
 
-/// Applies a parsed paste to `draft`: every field `applied` carries is
-/// written into `draft` (a subset updates only those fields, everything else
-/// on `draft` is untouched); `applied.name`/`applied.kind`, when present,
-/// overwrite `draft.name`/`draft.kind` too. Used by `Modal::ThemeManager`'s
-/// editor "Apply" action after a successful `parse_paste`.
+/// A subset updates only those fields on `draft`; everything else is untouched.
 pub fn apply_pasted_colors(draft: &mut Theme, applied: &PastedColors) {
     for (i, field) in FIELD_ORDER.iter().enumerate() {
         if let Some(color) = applied.get(field) {
@@ -298,12 +264,7 @@ pub fn apply_pasted_colors(draft: &mut Theme, applied: &PastedColors) {
     }
 }
 
-/// Serializes `theme`'s 11 colors as canonical `field #hex` lines, one per
-/// field in `FIELD_ORDER`, using `to_hex`'s lowercase `#rrggbb` formatting —
-/// the exact named-lines shape `parse_paste` accepts, so this round-trips.
-/// Used to prefill `Modal::ThemeManager`'s editor paste box with the draft's
-/// current values (a copyable reference and an editable starting point,
-/// rather than an empty box with just a placeholder).
+/// One `field #hex` line per field, in the exact shape `parse_paste` accepts, so this round-trips.
 pub fn to_named_lines(theme: &Theme) -> String {
     FIELD_ORDER
         .iter()
@@ -318,16 +279,7 @@ fn canonical_field(name: &str) -> Option<&'static str> {
     FIELD_ORDER.iter().copied().find(|f| *f == lower)
 }
 
-/// Parses a pasted palette in one of three auto-detected formats, applying a
-/// SUBSET of fields is valid for the JSON and named-lines formats; the
-/// bare-hex format always supplies all 11.
-///
-/// Detection order:
-/// 1. JSON `ThemeDef` (full, or `{"colors": {...}}` only) — leading `{`.
-/// 2. Named lines — every non-blank line looks like `field #hex` or
-///    `field: hex` (field names case-insensitive, `#` optional).
-/// 3. Bare hex — exactly 11 whitespace/comma-separated hex values, applied
-///    in `FIELD_ORDER`.
+/// Auto-detects one of three formats: leading `{` for JSON, `field #hex`/`field: hex` lines for named lines, else 11 whitespace/comma-separated hex values in `FIELD_ORDER`.
 pub fn parse_paste(input: &str) -> Result<PastedColors, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -351,20 +303,15 @@ fn looks_like_named_line(line: &str) -> bool {
     split_named_line(line).is_some()
 }
 
-/// Splits a `field #hex` / `field: hex` / `field: #hex` line into
-/// `(field, hex)`, or `None` if it doesn't have that shape at all (used both
-/// to detect the format and to parse it).
+/// Splits a `field #hex`/`field: hex` line into `(field, hex)`, or `None` if it doesn't have that shape.
 fn split_named_line(line: &str) -> Option<(&str, &str)> {
     let line = line.trim();
-    // Split on the first run of whitespace and/or a single ':'.
     let colon_or_space = line.find(|c: char| c == ':' || c.is_whitespace())?;
     let (field, rest) = line.split_at(colon_or_space);
     let rest = rest.trim_start_matches(':').trim();
     if field.trim().is_empty() || rest.is_empty() {
         return None;
     }
-    // The value must look like a hex color (optionally `#`-prefixed, 6 hex
-    // digits) for this to count as a named line at all.
     let hex = rest.strip_prefix('#').unwrap_or(rest);
     if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
         Some((field.trim(), rest))
@@ -421,12 +368,10 @@ fn parse_paste_json(trimmed: &str) -> Result<PastedColors, String> {
         Some(v) => v
             .as_object()
             .ok_or_else(|| "\"colors\" must be an object".to_string())?,
-        None => obj, // no nested "colors" key: allow bare top-level fields too
+        None => obj,
     };
     for (key, value) in colors_obj {
         let Some(canonical) = canonical_field(key) else {
-            // Ignore JSON keys that aren't color fields (name/kind/etc. at
-            // the top level fall through here harmlessly).
             continue;
         };
         let hex = value
@@ -470,9 +415,7 @@ mod tests {
         assert!(parse_hex("").is_err());
     }
 
-    /// A multibyte character can make `s.len()` (byte length) land on 6
-    /// while the string has fewer than 6 chars — slicing `&s[i..i+2]` at
-    /// those byte offsets used to panic instead of returning `Err`.
+    /// A multibyte char used to panic here instead of returning `Err`.
     #[test]
     fn parse_hex_rejects_multibyte_without_panicking() {
         assert!(parse_hex("aéaab").is_err());
@@ -481,10 +424,7 @@ mod tests {
         assert!(parse_hex("#aébbcc").is_err());
     }
 
-    /// Mirrors the theme editor's live per-keystroke validation
-    /// (`Grove::theme_manager_editor_hex_changed`): every partial state while
-    /// typing a full `#rrggbb` is invalid until the final character lands,
-    /// and any one bad hex digit anywhere keeps it invalid.
+    /// Mirrors the theme editor's live per-keystroke validation.
     #[test]
     fn parse_hex_incremental_typing_states() {
         let full = "#a1b2c3";
@@ -657,10 +597,6 @@ mod tests {
     fn parse_paste_named_lines_bad_hex_errors_with_line_number() {
         let input = "bg: #111111\nfg: notahex";
         let err = parse_paste(input);
-        // "fg: notahex" doesn't look like a named line at all (value isn't
-        // hex-shaped), so this falls through to bare-hex parsing and fails
-        // there instead — both are acceptable rejections, just confirm it
-        // errors.
         assert!(err.is_err());
     }
 

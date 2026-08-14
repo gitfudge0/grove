@@ -1,15 +1,5 @@
-//! Asserted, documented divergences between `alacritty_terminal` and `vt100`,
-//! plus the scrollback-selection coverage the shared golden probes cannot carry.
-//!
-//! A divergence recorded here is a **deliverable**, not a bug to fix: each one
-//! is a place where the two parsers cannot be made to agree without patching a
-//! dependency, so it is pinned down by a test that fails loudly if the behavior
-//! ever changes.
-//!
-//! Plan 10 Task 7 Step 2 deleted the vt100 oracle. What vt100 *did* survives as
-//! prose in each test's doc comment plus the frozen dumps blessed from it; what
-//! remains executable is the `GroveTerm` side, which is the side that can still
-//! regress.
+//! Asserted, documented divergences between `alacritty_terminal` and `vt100`; each is a deliverable, not a bug to fix, pinned down so a behavior change fails loudly.
+//! The vt100 oracle was deleted; what vt100 did survives as doc-comment prose and blessed dumps, and only the `GroveTerm` side remains executable.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -58,18 +48,7 @@ fn dump(t: &GroveTerm) -> ScreenDump {
     }
 }
 
-/// **Known divergence: the primary screen reflows on resize.**
-///
-/// The gpui spec §3 says "reflow-on-resize is suppressed". There is no config
-/// knob for it: `Term::resize` hardcodes `self.grid.resize(!is_alt, ..)`
-/// (`alacritty_terminal/src/term/mod.rs:677`), so the primary screen *always*
-/// rewraps and the alternate screen *never* does. vt100 never rewraps either
-/// screen. This plan does not patch alacritty; it pins the difference down.
-///
-/// Practically this is benign — Grove's terminals run agents inside tmux, i.e.
-/// on the alternate screen, where the two parsers agreed (that is what the
-/// frozen `__resize*` cases in `tests/golden.rs` cover). The spec sentence is
-/// amended by this test rather than implemented.
+/// Known divergence: `Term::resize` hardcodes primary-screen rewrap on the alternate-screen-never path (`alacritty_terminal/src/term/mod.rs:677`); vt100 never rewraps either. Benign since Grove runs agents on the alternate screen.
 #[test]
 fn primary_screen_reflow_is_a_known_divergence() {
     let f = common::fixture("resize-storm-primary");
@@ -79,15 +58,10 @@ fn primary_screen_reflow_is_a_known_divergence() {
     );
 
     let mut t = grove(&f.bytes, f.rows, f.cols);
-    // Narrow enough that every recorded line must wrap.
     t.resize(34, 40);
     let got = dump(&t);
 
-    // The specific shape: vt100 truncated each logical line at the new width, so
-    // every non-blank row still started a fresh line. alacritty rewraps, so
-    // continuation rows carrying the tail of the previous line appear. With the
-    // oracle gone only the alacritty half is executable — but that is the half
-    // that can regress, and a continuation row is exactly what "reflowed" means.
+    // vt100 truncated at the new width; alacritty rewraps, so a continuation row is exactly what "reflowed" means.
     let al_rows = common::render_rows(&got);
     assert!(
         al_rows
@@ -97,9 +71,7 @@ fn primary_screen_reflow_is_a_known_divergence() {
          knob, adopt it and delete this test: {al_rows:?}"
     );
 
-    // Plan 10 Task 4: freeze the *reflowed* screen too. This is the one dump
-    // case blessed from `GroveTerm` rather than from the oracle, because here
-    // the oracle is by definition wrong — see the file's own header.
+    // The one dump case blessed from `GroveTerm` rather than the oracle, since here the oracle is by definition wrong.
     common::assert_expected(
         common::DIVERGENCE_REFLOW_CASE,
         &common::serialize_dump(&got, &common::Probes::default()),
@@ -120,24 +92,12 @@ fn primary_screen_reflow_is_a_known_divergence() {
     );
 }
 
-/// **Known divergence: alacritty keeps an `ED 2`-cleared screen in scrollback.**
-///
-/// `\x1b[2J` scrolls the erased screen into history in alacritty; vt100 drops
-/// it. After the `activity-snippets` stream (nine screens, each preceded by a
-/// clear) alacritty holds a screen's worth of scrollback and vt100 holds none.
-///
-/// Consequence: a selection whose rows live in scrollback cannot be compared
-/// across the two parsers on a fixture built out of clears — which is why
-/// `common::selection_probes` stays inside the visible screen and
-/// `selection_into_scrollback_matches_where_history_agrees` covers the
-/// scrollback path on a fixture whose history the parsers do agree on.
+/// Known divergence: `\x1b[2J` scrolls the erased screen into alacritty's history; vt100 drops it — so scrollback selections can't be compared on a clears-built fixture.
 #[test]
 fn ed2_scrollback_retention_is_a_known_divergence() {
     let f = common::fixture("activity-snippets");
     let t = grove(&f.bytes, f.rows, f.cols);
 
-    // vt100 held 0 rows of history here (measured while the oracle was in the
-    // tree, Plan 10 Task 7 Step 2); alacritty holds a screen's worth.
     assert!(
         t.history_size() > 0,
         "alacritty stopped retaining ED-2 cleared screens; this divergence is \
@@ -145,10 +105,7 @@ fn ed2_scrollback_retention_is_a_known_divergence() {
     );
 }
 
-/// Scrollback-crossing selections, on the one fixture whose history both
-/// parsers agreed on (a bare shell streaming 500 lines — no clears, so the
-/// `ED 2` divergence above never bites). The expected texts were frozen from
-/// the oracle before it was deleted, so this remains a real regression test.
+/// Uses the one fixture whose history both parsers agreed on (no clears, so the `ED 2` divergence above never bites); expected texts were frozen from the oracle before it was deleted.
 #[test]
 fn selection_into_scrollback_matches_where_history_agrees() {
     let f = common::fixture("resize-storm-primary");

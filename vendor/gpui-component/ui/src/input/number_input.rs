@@ -28,7 +28,6 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
-/// A number input element with increment and decrement buttons.
 #[derive(IntoElement)]
 pub struct NumberInput {
     state: Entity<InputState>,
@@ -42,7 +41,6 @@ pub struct NumberInput {
 }
 
 impl NumberInput {
-    /// Create a new [`NumberInput`] element bind to the [`InputState`].
     pub fn new(state: &Entity<InputState>) -> Self {
         Self {
             state: state.clone(),
@@ -56,25 +54,22 @@ impl NumberInput {
         }
     }
 
-    /// Set the placeholder text of the number input.
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = placeholder.into();
         self
     }
 
-    /// Set the prefix element of the number input.
     pub fn prefix(mut self, prefix: impl IntoElement) -> Self {
         self.prefix = Some(prefix.into_any_element());
         self
     }
 
-    /// Set the suffix element of the number input.
     pub fn suffix(mut self, suffix: impl IntoElement) -> Self {
         self.suffix = Some(suffix.into_any_element());
         self
     }
 
-    /// Set the appearance of the number input, if false will no border and background.
+    /// `false` removes border and background.
     pub fn appearance(mut self, appearance: bool) -> Self {
         self.appearance = appearance;
         self
@@ -121,8 +116,6 @@ impl InputState {
             return;
         }
 
-        // By default NumberInput steps the value internally with step 1. To opt out
-        // and emit `NumberInputEvent::Step` instead, call `state.set_step(None, ..)`.
         if let Some(step) = self.number_step.clone() {
             let value = self.unmask_value();
             let current = value.trim().parse::<f64>().unwrap_or(0.);
@@ -130,16 +123,12 @@ impl InputState {
             if let Some(new_value) =
                 step_value(&value, action, step, self.number_min, self.number_max)
             {
-                // The stepped value must pass the `pattern`/`validate` check,
-                // otherwise fall back to emit the event to let the caller handle it.
                 if self.is_valid_input(&new_value, cx) {
                     let range = self.range_to_utf16(&(0..self.text.len()));
                     self.replace_text_in_range_silent(Some(range), &new_value, window, cx);
                     return;
                 }
             } else {
-                // Stepping cannot move the value in this direction (e.g.
-                // Decrement on a below-min value), do nothing.
                 return;
             }
         }
@@ -148,26 +137,21 @@ impl InputState {
     }
 }
 
-/// The step strategy of the [`NumberInput`] for increment/decrement.
 /// See also [`InputState::step`] and [`InputState::step_by`].
 #[derive(Clone)]
 pub enum NumberStep {
-    /// A fixed step value.
     Fixed(f64),
-    /// Calculate the step value from the current value and direction.
     ByValue(Rc<dyn Fn(f64, StepAction, &mut Context<InputState>) -> f64>),
 }
 
 impl NumberStep {
-    /// Create a step that computes the step value from the current value (empty/invalid
-    /// treated as 0) and [`StepAction`]. Must not re-enter the owning [`InputState`].
+    /// The closure must not re-enter the owning [`InputState`] — it is mutably borrowed during stepping.
     pub fn by_value(
         f: impl Fn(f64, StepAction, &mut Context<InputState>) -> f64 + 'static,
     ) -> Self {
         Self::ByValue(Rc::new(f))
     }
 
-    /// Return the step value for the given current value and direction.
     pub(super) fn value(
         &self,
         current: f64,
@@ -187,8 +171,7 @@ impl From<f64> for NumberStep {
     }
 }
 
-/// Step the `value` by `step` and clamp to the `min`/`max` range. Returns `None`
-/// if stepping cannot move the value in the given direction (already at the boundary).
+/// `None` if stepping can't move the value in the given direction (already at the boundary). Keeps max fraction digits to avoid float precision issues (`0.1 + 0.2 -> 0.3`).
 fn step_value(
     value: &str,
     action: StepAction,
@@ -219,8 +202,6 @@ fn step_value(
         }
     }
 
-    // Web behavior: stepping must move the value in the pressed direction, so a
-    // Decrement below min does nothing rather than clamping up (empty/invalid always steps in).
     if let Some(current) = current {
         let moved = match action {
             StepAction::Increment => new_value > current,
@@ -265,12 +246,6 @@ impl Styled for NumberInput {
 
 impl RenderOnce for NumberInput {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        // Default to use `MaskPattern::Number` to limit the input to a valid
-        // number (optional leading sign, digits and a single dot), and to
-        // normalize full-width number characters, e.g. `12。5` -> `12.5`.
-        //
-        // Only when the user has not set a `mask_pattern` explicitly, so that
-        // `set_mask_pattern(MaskPattern::None)` can be used to opt out.
         if !self.state.read(cx).mask_pattern_set {
             self.state.update(cx, |state, _| {
                 state.mask_pattern = MaskPattern::Number {
@@ -379,8 +354,6 @@ impl RenderOnce for NumberInput {
 mod tests {
     use super::{StepAction, step_value};
 
-    // `test_number_step` lives in `state::tests` because `NumberStep::value`
-    // now needs a `Context<InputState>` to invoke the `by_value` closure.
 
     #[test]
     fn test_step_value() {

@@ -1,7 +1,5 @@
-//! The startup sequence — the single ordered boot every later plan appends to.
-//!
-//! Ported from `src/app/mod.rs:176-215` and `src/gui/mod.rs:50-68`. The order
-//! is load-bearing; each step says why.
+//! The startup sequence — the single ordered boot every later plan appends to. Order is load-bearing; each step says why.
+//! Ported from `src/app/mod.rs:176-215` and `src/gui/mod.rs:50-68`.
 
 use grove_core::storage::{self, Store};
 use grove_core::theme;
@@ -10,15 +8,8 @@ use crate::settings::SettingsState;
 use crate::theme::{ThemeState, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME};
 use crate::zoom::{ZoomState, ZOOM_DEFAULT, ZOOM_MAX, ZOOM_MIN};
 
-/// Rewrites any of `store.theme`/`theme_dark`/`theme_light` that names a theme
-/// `theme::by_name` can no longer resolve (a builtin dropped from a later
-/// curated set, or a custom theme deleted outside the app) to
-/// `DEFAULT_DARK_THEME`. Returns whether anything changed, so the caller only
-/// re-persists when needed.
-///
-/// **Copied** from `src/app/theme_picker.rs:34-49` rather than hoisted into
-/// grove-core: the spec reuses grove-core *unchanged*, so the glue lives on
-/// the UI side of the line, in both UIs, until iced is deleted (Plan 10).
+/// Rewrites any unresolvable theme name to `DEFAULT_DARK_THEME`; returns whether anything changed.
+/// Copied from `src/app/theme_picker.rs:34-49` rather than hoisted into grove-core, since grove-core stays UI-unaware until iced is deleted.
 pub fn migrate_stale_theme_names(store: &mut Store) -> bool {
     let mut changed = false;
     for slot in [
@@ -36,8 +27,7 @@ pub fn migrate_stale_theme_names(store: &mut Store) -> bool {
     changed
 }
 
-/// Clamp a persisted zoom into the supported range (`src/app/mod.rs` reads
-/// `store.ui_zoom` the same way).
+/// Clamps a persisted zoom into the supported range.
 pub fn resolve_zoom(store: &Store) -> f32 {
     store
         .ui_zoom
@@ -45,22 +35,14 @@ pub fn resolve_zoom(store: &Store) -> f32 {
         .clamp(ZOOM_MIN, ZOOM_MAX)
 }
 
-/// Runs the whole startup sequence and installs every global. Called once,
-/// before the window opens.
 pub fn boot(cx: &mut gpui::App) {
-    // 1. When launched from Finder/Launchpad/.desktop the process inherits a
-    //    minimal PATH; recover the login PATH before anything spawns
-    //    (`src/gui/mod.rs:52-54`).
+    // 1. Finder/Launchpad/.desktop launches inherit a minimal PATH; recover the login PATH before anything spawns.
     grove_core::env_path::ensure_login_path();
 
-    // 2. Stale attention-state GC, before any session id can be reused
-    //    (`src/gui/update/mod.rs:90-93`).
+    // 2. Stale attention-state GC, before any session id can be reused.
     grove_core::attention::cleanup_stale_files();
 
-    // 3. Settings. A failure here is genuinely unrecoverable — there is no UI
-    //    to report into yet. The iced app hard-fails deliberately; this is the
-    //    same decision without a panic, since `expect_used` is denied on
-    //    production paths.
+    // 3. A settings-load failure is unrecoverable (no UI to report into yet); exit rather than panic since `expect_used` is denied on production paths.
     let mut store = match storage::load() {
         Ok(s) => s,
         Err(e) => {
@@ -70,31 +52,14 @@ pub fn boot(cx: &mut gpui::App) {
         }
     };
 
-    // 3a2. Adopt worktree directories under `worktrees_root()` that no project
-    //      claims — the residue of the era when that directory was keyed off
-    //      the mutable project name, so a rename orphaned it (see
-    //      `storage::adopt_orphaned_worktree_dirs`). Metadata only: it pins
-    //      `Project::worktree_dir` and never touches a directory. It must run
-    //      BEFORE the session-meta repair below, because that repair resolves
-    //      ownership through `project_for_worktree_path`, which now keys off
-    //      the pinned dir. One-shot startup pass — never a render path.
+    // 3a2. Adopts orphaned worktree dirs (metadata only) — must run before the session-meta repair below, which resolves ownership off the now-pinned dir.
     let adopted = storage::adopt_orphaned_worktree_dirs(&mut store.projects);
     if adopted > 0 {
         tracing::info!(adopted, "grove-gpui: adopted orphaned worktree directories");
         storage::persist(&store);
     }
 
-    // 3b. Repair session sidecars whose `project` names a project that no
-    //     longer exists under the just-loaded list — the rot
-    //     `session_meta.rs`'s module doc describes (a rename that predates
-    //     this propagation, or a project deleted/recreated while sessions
-    //     from the old one were still parked). One pass, right after the
-    //     project list is known and before anything else reads a sidecar
-    //     (`grove_core::tmux::list_grove_sessions`, called from
-    //     `Workspace::discover_tmux_sessions` on startup, does exactly that).
-    //     Path→project resolution is deliberately not reimplemented here —
-    //     `grove_core::storage::project_for_worktree_path` is the one source
-    //     of truth for that rule.
+    // 3b. Repairs session sidecars naming a now-gone project; must run before anything else reads a sidecar.
     let known_projects: Vec<(String, String)> = store
         .projects
         .iter()
@@ -107,21 +72,15 @@ pub fn boot(cx: &mut gpui::App) {
         tracing::info!(repaired, "grove-gpui: repaired stale session-meta projects");
     }
 
-    // 4. User themes must exist before a persisted custom name is resolved,
-    //    or a valid custom selection silently falls back on the first frame.
+    // 4. User themes must exist before a persisted custom name is resolved, or selection falls back on the first frame.
     let _ = theme::load_custom();
 
-    // 5. One-time migration of dead theme names, so a stale name neither
-    //    lingers in store.json nor leaves `theme::ACTIVE` on its static
-    //    initializer (TOKYONIGHT, not DEFAULT_DARK_THEME) unnoticed.
+    // 5. One-time migration so a stale theme name doesn't linger unnoticed.
     if migrate_stale_theme_names(&mut store) {
         storage::persist(&store);
     }
 
-    // 6. Resolve the active theme. In follow-system mode the real OS
-    //    appearance only arrives once a window exists, but that first frame
-    //    still needs a concrete theme — seed from the saved dark theme and
-    //    let `ThemeState::set_system_mode` correct it (`src/app/mod.rs:180-207`).
+    // 6. Follow-system mode's real OS appearance arrives only once a window exists; seed the dark theme for the first frame and let `set_system_mode` correct it.
     let follow_system = store.theme_follow_system;
     let dark_name = store
         .theme_dark
@@ -141,14 +100,10 @@ pub fn boot(cx: &mut gpui::App) {
         }
     }
 
-    // 7. Zoom, clamped — a hand-edited store.json must not be able to make the
-    //    chrome unusable.
+    // 7. Clamped so a hand-edited store.json can't make the chrome unusable.
     let zoom = resolve_zoom(&store);
 
-    // 7b. Telemetry, in the order `Grove::new` makes the same three calls
-    //     (`src/gui/update/mod.rs:102-118`): the stored preference gates the
-    //     runtime atomic first, so `app_launched` cannot transmit for a user
-    //     who opted out. The panic hook is installed earlier still, in `main`.
+    // 7b. The stored preference gates the runtime atomic first, so `app_launched` can't transmit for an opted-out user.
     crate::telemetry::set_enabled(SettingsState::telemetry_enabled(&store));
     crate::telemetry::track(
         "app_launched",
@@ -170,26 +125,14 @@ pub fn boot(cx: &mut gpui::App) {
     );
     crate::telemetry::start_heartbeat();
 
-    // 8. Globals, in dependency order.
+    // 8. In dependency order.
     cx.set_global(SettingsState::new(store));
     cx.set_global(ThemeState::new(follow_system, dark_name, light_name));
     cx.set_global(ZoomState::new(zoom));
     cx.set_global(crate::zoom::CurrentPtyDims::default());
 
-    // 9. gpui-component's globals and its `"Input"`-context bindings, from the
-    //    vendored copy (`vendor/gpui-component/README.md`). This MUST run
-    //    before `keymap::bindings()`: a modal's `"<Modal…> > Input"` binding
-    //    and gpui-component's plain `"Input"` binding match at the same
-    //    dispatch node, so the tie is broken by registration order and the
-    //    later one wins (`gpui/src/keymap.rs:187-189`). Registering Grove's
-    //    keys second is what lets a modal claim ←/→ and Tab back from the
-    //    caret — see `views::modals::input`'s module doc.
-    //
-    //    Grove does NOT mount gpui-component's `Root` view. `Root` binds
-    //    `ctrl-c` to its own `Copy` action in the `"Root"` context
-    //    (`vendor/gpui-component/ui/src/root.rs:24-32`), which would shadow
-    //    the PTY's Ctrl+C for every terminal in the window. Nothing Grove
-    //    uses (Sheet/Dialog/Notification/tooltip overlays) needs `Root`.
+    // 9. Must run before `keymap::bindings()`: a modal's Input binding and gpui-component's plain "Input" binding tie-break by registration order, and Grove must win to claim ←/→/Tab back from the caret.
+    // Grove does NOT mount gpui-component's `Root` view, which binds ctrl-c to its own Copy action and would shadow the PTY's Ctrl+C.
     gpui_component::init(cx);
 
     cx.bind_keys(crate::keymap::bindings());
