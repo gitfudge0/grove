@@ -6,17 +6,10 @@ pub use progress_circle::ProgressCircle;
 
 use std::cell::Cell;
 
-/// Shared state for progress components.
-///
-/// Tracks the animation "from" value (`value`) and the latest target
-/// (`target`). `target` uses `Cell` so it can be updated immediately
-/// during render without triggering a re-render notification.
+/// `target` uses `Cell` so it can be updated immediately during render without triggering a re-render notification.
 pub(crate) struct ProgressState {
-    /// The "from" value for the current animation; updated by the async
-    /// timer once the animation completes.
+    /// The animation "from" value; updated by the async timer once the animation completes.
     pub(crate) value: f32,
-    /// The latest animation target, updated immediately via interior
-    /// mutability so stale timers always read the up-to-date target.
     target: Cell<f32>,
 }
 

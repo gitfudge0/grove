@@ -1,20 +1,4 @@
-//! The live upgrade flow: the three check triggers, the changelog fetch, and
-//! apply with its stage stream.
-//!
-//! Every decision here is [`crate::entities::upgrade_state`]'s, already tested
-//! without a network. Every network call is `grove_core::upgrade`'s — this
-//! entity owns *when*, never *how*, and writes no second HTTP client.
-//!
-//! **The blocking/async boundary is gpui's background executor, not a raw
-//! thread** (carried decision 2). iced runs `latest()`/`releases()` on the
-//! tokio executor and `apply()` on a hand-rolled thread whose
-//! `Arc<Mutex<UpgradeProgress>>` the 60ms tick drains
-//! (`src/gui/update/upgrade.rs:84-113`, `src/gui/update/tick.rs:78-96`). Here
-//! all three are `background_spawn` awaited from `cx.spawn`, and `apply`'s
-//! `Stage` callback posts down a channel the foreground task reads — the
-//! tick-driven mutex drain is not ported. The observable contract is
-//! unchanged: stages arrive in order, `Done`/failure lands exactly once, and
-//! the UI thread never blocks.
+//! The live upgrade flow. Carried decision 2: the blocking/async boundary is gpui's background executor, not iced's hand-rolled thread + mutex drain.
 
 use std::time::Duration;
 
@@ -28,14 +12,10 @@ use crate::entities::upgrade_state::{
 };
 use crate::settings::SettingsState;
 
-/// How long after startup the launch check fires (`src/gui/mod.rs:56-63`). The
-/// delay exists so the first frame is up before the network round-trip; do not
-/// shorten it.
+/// Exists so the first frame is up before the network round-trip; do not shorten it (`src/gui/mod.rs:56-63`).
 pub const LAUNCH_CHECK_DELAY: Duration = Duration::from_secs(3);
 
-/// The periodic trigger's granularity. The *check* is 24h (`check_due`); this
-/// is only how often that question gets asked, and it deliberately is not the
-/// `AnimationClock` (recorded ambiguity 2).
+/// The check itself is 24h (`check_due`); this is only how often that question gets asked (recorded ambiguity 2).
 pub const PERIODIC_TICK: Duration = Duration::from_secs(1);
 
 /// How many releases the changelog fetches (`src/gui/update/upgrade.rs:227`).
@@ -44,10 +24,8 @@ pub const CHANGELOG_LIMIT: usize = 10;
 pub struct Upgrade {
     state: UpgradeState,
     changelog: ChangelogState,
-    /// Resolved once, at construction (`src/gui/update/mod.rs:198`).
     method: InstallMethod,
-    /// The launch and periodic timers. Held, never read: dropping a `Task`
-    /// cancels it, so this field *is* the timers' lifetime.
+    /// Held, never read: dropping a `Task` cancels it, so this field *is* the timers' lifetime.
     _timers: Vec<Task<()>>,
     check_task: Option<Task<()>>,
     changelog_task: Option<Task<()>>,
@@ -89,9 +67,7 @@ impl Upgrade {
         self.method
     }
 
-    /// The periodic and refocus triggers ask the same question
-    /// (`maybe_check_updates_due`, `src/gui/update/upgrade.rs:193-207`): the
-    /// refocus path exists because an idle unfocused window stops ticking.
+    /// Refocus path exists because an idle unfocused window stops ticking (`src/gui/update/upgrade.rs:193-207`).
     pub fn check_if_due(&mut self, cx: &mut Context<Self>) {
         let last = cx.global::<SettingsState>().store.last_update_check;
         if check_due(last, now_unix(), &self.state) {
@@ -99,9 +75,7 @@ impl Upgrade {
         }
     }
 
-    /// Start a check. `manual` only selects the error policy — a manual check
-    /// surfaces its error inline, a launch/periodic one stays quiet. All three
-    /// triggers route through `begin_check`, so a duplicate is impossible.
+    /// `manual` only selects the error policy; all three triggers route through `begin_check`, so a duplicate is impossible.
     pub fn check(&mut self, manual: bool, cx: &mut Context<Self>) {
         if !begin_check(&self.state) {
             return;
@@ -112,9 +86,7 @@ impl Upgrade {
         self.check_task = Some(cx.spawn(async move |this, cx| {
             let result = fetch.await;
             let _ = this.update(cx, |this, cx| {
-                // Recorded ambiguity 3: the timestamp is written on **every**
-                // outcome, so a network-down machine backs off for 24h instead
-                // of retrying forever. Persist first, then branch.
+                // Recorded ambiguity 3: written on every outcome, so a network-down machine backs off instead of retrying forever.
                 SettingsState::update(cx, |store| store.last_update_check = Some(now_unix()));
                 let skipped = cx.global::<SettingsState>().store.skipped_version.clone();
                 this.state = apply_check_result(
@@ -128,9 +100,6 @@ impl Upgrade {
         }));
     }
 
-    /// The changelog fetch. The modal round trip (Settings → Changelog →
-    /// Settings) is already a passing state-machine test; this only supplies
-    /// the data.
     pub fn fetch_changelog(&mut self, cx: &mut Context<Self>) {
         self.changelog = ChangelogState::Loading;
         cx.notify();
@@ -149,7 +118,6 @@ impl Upgrade {
         }));
     }
 
-    /// The release currently on offer, if any.
     pub fn available(&self) -> Option<&Release> {
         match &self.state {
             UpgradeState::Available(r) => Some(r),
@@ -157,8 +125,6 @@ impl Upgrade {
         }
     }
 
-    /// Skip the offered tag: persist it and report it declined
-    /// (`src/gui/update/upgrade.rs:65-75`).
     pub fn skip(&mut self, cx: &mut Context<Self>) {
         let (tag, next) = skip_version(&self.state);
         if let Some(tag) = tag {
@@ -170,10 +136,7 @@ impl Upgrade {
         cx.notify();
     }
 
-    /// Start the apply. The `Stage` callback posts down a channel the
-    /// foreground task drains; the channel closing is what orders the last
-    /// stage before the finish, so a late stage can never resurrect
-    /// `Updating`.
+    /// The channel closing orders the last stage before finish, so a late stage can never resurrect `Updating`.
     pub fn start_update(&mut self, cx: &mut Context<Self>) {
         let Some(release) = self.available().cloned() else {
             return;
@@ -214,7 +177,6 @@ impl Upgrade {
     }
 }
 
-/// Seconds since the epoch (`src/gui/update/mod.rs`'s `now_unix`).
 fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -225,9 +187,7 @@ fn now_unix() -> i64 {
 mod tests {
     use super::*;
 
-    /// The launch delay and the changelog limit are the oracle's, not a
-    /// convenient round number: 3s so the first frame is up before the
-    /// round-trip, 10 releases (`src/gui/update/upgrade.rs:227`).
+    /// These are the oracle's numbers, not convenient round ones (`src/gui/update/upgrade.rs:227`).
     #[test]
     fn the_ported_constants_match_the_oracle() {
         assert_eq!(LAUNCH_CHECK_DELAY, Duration::from_secs(3));
@@ -235,8 +195,6 @@ mod tests {
         assert_eq!(PERIODIC_TICK, Duration::from_secs(1));
     }
 
-    /// `now_unix` is monotonic enough to feed `check_due`, and never panics on
-    /// a clock behind the epoch.
     #[test]
     fn now_unix_is_sane() {
         assert!(now_unix() > 1_700_000_000);

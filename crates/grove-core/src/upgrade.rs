@@ -1,6 +1,4 @@
-//! In-place self-update for Grove. Pure logic with no `iced` dependency so it
-//! unit-tests standalone; the gui layer orchestrates it. Named `upgrade` (not
-//! `update`) to avoid confusion with `gui::update`, the iced message loop.
+//! In-place self-update for Grove. Named `upgrade`, not `update`, to avoid confusion with `gui::update`.
 
 use fs_err as fs;
 use std::path::Path;
@@ -8,10 +6,6 @@ use std::process::Command;
 use std::time::Duration;
 use thiserror::Error;
 
-/// Everything the self-update path can fail with. Mirrors `git::GitError` /
-/// `storage::StoreError`: each variant is one real failure site below, and
-/// the `Display` text matches what the previous `anyhow` context produced, so
-/// the strings surfaced in the upgrade modal are unchanged.
 #[derive(Debug, Error)]
 pub enum UpgradeError {
     #[error("parse release json")]
@@ -45,8 +39,7 @@ pub enum UpgradeError {
     MissingBuildTools,
     #[error("create temp dir")]
     CreateTempDir(#[source] std::io::Error),
-    /// The release names an immutable commit, but the clone landed elsewhere
-    /// — a tag was moved between the API response and the clone.
+    /// A tag was moved between the API response and the clone.
     #[error(
         "release {tag} points at commit {expected} but the clone is at {actual} — refusing to build"
     )]
@@ -89,55 +82,40 @@ pub enum UpgradeError {
     ReadMountedVolume(#[source] std::io::Error),
     #[error("no .app found in mounted dmg")]
     NoAppInDmg,
-    /// A subprocess could not be spawned at all. `what` names the command
-    /// (e.g. `git clone`).
     #[error("failed to spawn {what}")]
     Spawn {
         what: String,
         #[source]
         source: std::io::Error,
     },
-    /// A subprocess ran but exited non-zero; `stderr` is its trimmed output.
     #[error("{what} failed: {stderr}")]
     Command { what: String, stderr: String },
 }
 
-/// Shorthand for this module's fallible functions.
 pub type Result<T, E = UpgradeError> = std::result::Result<T, E>;
 
-/// How the running binary was installed. Determines the apply strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallMethod {
-    /// `cargo install --path .` into `~/.cargo/bin` (a manual/legacy install). Rebuild from source.
     Source,
-    /// macOS `.app` bundle from the release `.dmg`. Replace the bundle.
     Dmg,
-    /// Linux `.deb`. Upgraded via the same source-rebuild path as `Source`.
+    /// Upgraded via the same source-rebuild path as `Source`.
     Deb,
-    /// Unclassifiable — notify only, no apply.
     Unknown,
 }
 
-/// A GitHub release resolved from the `/releases/latest` endpoint.
 #[derive(Debug, Clone)]
 pub struct Release {
     pub version: semver::Version,
     pub tag: String,
     pub html_url: String,
     pub body: String,
-    /// `browser_download_url` of the first `.dmg` asset, if any.
     pub dmg_url: Option<String>,
-    /// `browser_download_url` of the sibling `<dmg name>.sha256` asset, if the
-    /// release publishes one. `None` means the release has no checksum to
-    /// verify against (see `apply_dmg`).
+    /// `None` means the release has no checksum to verify against (see `apply_dmg`).
     pub dmg_sha256_url: Option<String>,
-    /// The release's `target_commitish` verbatim. A 40-char hex SHA is
-    /// verified against the cloned HEAD in `apply_source`; a branch name is
-    /// not (see there).
+    /// A 40-char hex SHA is verified against the cloned HEAD in `apply_source`; a branch name is not.
     pub target_commitish: String,
 }
 
-/// Apply progress stages, reported through the `apply` callback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     Downloading,
@@ -146,7 +124,7 @@ pub enum Stage {
     Done,
 }
 
-/// Classify an executable path. Pure and platform-injected so it tests on any host.
+/// Pure and platform-injected so it tests on any host.
 fn classify_path(exe: &Path, target_os: &str) -> InstallMethod {
     let s = exe.to_string_lossy();
     if s.contains("/.cargo/bin/") {
@@ -160,7 +138,6 @@ fn classify_path(exe: &Path, target_os: &str) -> InstallMethod {
     }
 }
 
-/// Classify the running install from `current_exe()`.
 pub fn detect() -> InstallMethod {
     match std::env::current_exe() {
         Ok(p) => {
@@ -171,7 +148,6 @@ pub fn detect() -> InstallMethod {
     }
 }
 
-/// Parse a GitHub `/releases/latest` JSON body into a `Release`.
 fn parse_release(json: &str) -> Result<Release> {
     let v: serde_json::Value =
         serde_json::from_str(json).map_err(UpgradeError::ParseReleaseJson)?;
@@ -217,8 +193,7 @@ fn parse_release(json: &str) -> Result<Release> {
         name.ends_with(".dmg").then(|| name.to_string())
     });
     let dmg_url = dmg_name.as_deref().and_then(url_of);
-    // A checksum asset only counts when it sits beside the exact file we're
-    // about to download — `<dmg name>.sha256`.
+    // Only counts when it sits beside the exact file we're about to download.
     let dmg_sha256_url = dmg_name
         .as_deref()
         .and_then(|n| url_of(&format!("{n}.sha256")));
@@ -233,8 +208,6 @@ fn parse_release(json: &str) -> Result<Release> {
     })
 }
 
-/// True when `release` is strictly newer than `current` and is not the skipped tag.
-/// A release newer than the skipped tag has a different tag, so it surfaces again.
 pub fn update_available(current: &str, release: &Release, skipped: Option<&str>) -> bool {
     let Ok(cur) = semver::Version::parse(current.trim_start_matches('v')) else {
         return false;
@@ -248,7 +221,6 @@ pub fn update_available(current: &str, release: &Release, skipped: Option<&str>)
     true
 }
 
-/// Query the GitHub releases API and return the latest stable release.
 /// Blocks the calling thread — call from a background thread, never the UI thread.
 pub fn latest() -> Result<Release> {
     let agent = ureq::AgentBuilder::new()
@@ -276,8 +248,7 @@ pub fn latest() -> Result<Release> {
     release
 }
 
-/// Perform the upgrade for the detected install method, reporting stage
-/// transitions through `progress`. Runs on a background thread (blocking).
+/// Runs on a background thread (blocking).
 pub fn apply(
     method: InstallMethod,
     release: &Release,
@@ -296,7 +267,6 @@ pub fn apply(
     result
 }
 
-/// True if `bin` is runnable (used to fail fast with a clear message).
 fn have(bin: &str) -> bool {
     Command::new(bin)
         .arg("--version")
@@ -310,10 +280,7 @@ fn apply_source(release: &Release, progress: &(dyn Fn(Stage) + Send + Sync)) -> 
         return Err(UpgradeError::MissingBuildTools);
     }
 
-    // A fresh 0700 directory with an unpredictable name, created exclusively:
-    // a predictable `/tmp/grove-upgrade-{pid}` path is pre-creatable (and
-    // symlink-swappable) by any other local user. `TempDir` also removes the
-    // directory on drop, so we never `remove_dir_all` a path we didn't make.
+    // Unpredictable name: a predictable `/tmp/grove-upgrade-{pid}` path is pre-creatable by any other local user.
     let tmp_dir = tempfile::Builder::new()
         .prefix("grove-upgrade-")
         .tempdir()
@@ -334,9 +301,7 @@ fn apply_source(release: &Release, progress: &(dyn Fn(Stage) + Send + Sync)) -> 
             "git clone",
         )?;
 
-        // A tag is mutable on the server: whoever can move `release.tag` can
-        // point this clone at code the release JSON never described. When the
-        // release names an immutable commit, pin to it.
+        // A tag is mutable on the server, so when the release names an immutable commit, pin to it.
         if let Some(expected) = commit_to_verify(&release.target_commitish) {
             let head = capture(
                 Command::new("git").args(["-C", &tmp.to_string_lossy(), "rev-parse", "HEAD"]),
@@ -361,31 +326,22 @@ fn apply_source(release: &Release, progress: &(dyn Fn(Stage) + Send + Sync)) -> 
         progress(Stage::Done);
         Ok(())
     })();
-    // `tmp_dir` removes the directory tree on drop.
     result
 }
 
-/// The commit a release pins to, when `target_commitish` is one. GitHub sets
-/// this field to a branch name (`main`) for releases cut from a branch, which
-/// says nothing about which commit the tag resolves to — there is nothing to
-/// verify against, so those are skipped rather than failed.
+/// A branch name (e.g. `main`) says nothing about which commit the tag resolves to, so those are skipped rather than failed.
 fn commit_to_verify(target_commitish: &str) -> Option<&str> {
     let s = target_commitish.trim();
     (s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())).then_some(s)
 }
 
-/// Hosts we accept a release asset download from. GitHub serves release assets
-/// from `github.com`, which redirects to its S3-backed object host; anything
-/// else means the release JSON was tampered with (or points somewhere we don't
-/// trust) and must not be fetched, let alone installed.
+/// GitHub serves release assets from `github.com`, which redirects to its S3-backed object host.
 const ALLOWED_ASSET_HOSTS: [&str; 2] = ["github.com", "objects.githubusercontent.com"];
 
-/// Host component of an `https://` URL, lowercased and stripped of any
-/// userinfo and port. `None` for anything that isn't plain `https://`.
+/// `None` for anything that isn't plain `https://`.
 fn https_host(url: &str) -> Option<String> {
     let rest = url.strip_prefix("https://")?;
     let authority = rest.split(['/', '?', '#']).next()?;
-    // `user:pass@host` — the host is what follows the last '@'.
     let host = authority.rsplit('@').next()?;
     let host = host.split(':').next()?;
     if host.is_empty() {
@@ -395,7 +351,6 @@ fn https_host(url: &str) -> Option<String> {
     }
 }
 
-/// Reject an asset URL that isn't https on a host we trust.
 fn check_asset_url(url: &str) -> Result<()> {
     let host = https_host(url).ok_or_else(|| UpgradeError::AssetUrlNotHttps(url.to_string()))?;
     if !ALLOWED_ASSET_HOSTS.contains(&host.as_str()) {
@@ -404,16 +359,9 @@ fn check_asset_url(url: &str) -> Result<()> {
     Ok(())
 }
 
-/// Maximum redirect hops we follow ourselves. GitHub's asset URLs take one
-/// (github.com → objects.githubusercontent.com); the slack is for extra hops
-/// on their side, not for chasing a chain somewhere else.
 const MAX_REDIRECTS: usize = 5;
 
-/// Fetch `url` into memory, following redirects MANUALLY so every hop is
-/// re-checked against the host allowlist. `ureq`'s own redirect follower does
-/// not consult `check_asset_url`, so a `Location` header pointing anywhere at
-/// all would be fetched — the allowlist would only ever have covered the first
-/// URL, which is the one we already trusted least.
+/// Follows redirects manually so every hop is re-checked against the host allowlist (`ureq`'s own follower doesn't).
 fn download_checked(url: &str, timeout_read: Duration) -> Result<Vec<u8>> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
@@ -445,9 +393,7 @@ fn download_checked(url: &str, timeout_read: Duration) -> Result<Vec<u8>> {
     Err(UpgradeError::TooManyRedirects)
 }
 
-/// Resolve a `Location` header against the URL it came from. Only absolute
-/// URLs and root-relative paths occur in practice; anything else is returned
-/// verbatim so `check_asset_url` rejects it on the next hop.
+/// Anything besides an absolute URL or root-relative path is returned verbatim so the next hop's check rejects it.
 fn resolve_location(base: &str, location: &str) -> String {
     if location.contains("://") {
         return location.to_string();
@@ -460,7 +406,6 @@ fn resolve_location(base: &str, location: &str) -> String {
     location.to_string()
 }
 
-/// Lowercase hex SHA-256 of `bytes`.
 fn sha256_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
 
@@ -471,8 +416,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     })
 }
 
-/// Pull the digest out of a `.sha256` file: either a bare hex digest or the
-/// `sha256sum` format (`<digest>  <filename>`).
+/// Either a bare hex digest or the `sha256sum` format (`<digest>  <filename>`).
 fn parse_sha256_file(raw: &str) -> Result<String> {
     let token = raw
         .split_whitespace()
@@ -484,12 +428,8 @@ fn parse_sha256_file(raw: &str) -> Result<String> {
     Ok(token.to_ascii_lowercase())
 }
 
-/// Download the `.dmg`, mount it, copy the `.app` over the running bundle, detach.
 fn apply_dmg(release: &Release, progress: &(dyn Fn(Stage) + Send + Sync)) -> Result<()> {
     let url = release.dmg_url.as_deref().ok_or(UpgradeError::NoDmgAsset)?;
-    // TODO: verify published checksum once releases include one. Until they
-    // publish a sibling `<asset>.sha256`, the download below is verified only
-    // by TLS to an allowlisted host; when one IS published we verify it.
     check_asset_url(url)?;
 
     // Resolve the running .app bundle: strip "/Contents/MacOS/<bin>".
@@ -503,8 +443,7 @@ fn apply_dmg(release: &Release, progress: &(dyn Fn(Stage) + Send + Sync)) -> Res
         .ok_or_else(|| UpgradeError::NoAppBundle(exe_str.to_string()))?
         .to_string();
 
-    // Same reasoning as `apply_source`: an unpredictable 0700 directory we own,
-    // holding both the downloaded image and the mount point.
+    // Same reasoning as `apply_source`: unpredictable, holds both the image and the mount point.
     let tmp_dir = tempfile::Builder::new()
         .prefix("grove-upgrade-")
         .tempdir()
@@ -517,9 +456,7 @@ fn apply_dmg(release: &Release, progress: &(dyn Fn(Stage) + Send + Sync)) -> Res
         let payload = download_checked(url, Duration::from_mins(5))
             .map_err(|e| UpgradeError::DownloadDmg(Box::new(e)))?;
 
-        // Verify against the published checksum when the release has one. The
-        // digest is fetched through the same allowlisted, redirect-checked
-        // path as the payload, so it is no weaker a link than the download.
+        // The digest is fetched through the same allowlisted, redirect-checked path as the payload.
         if let Some(sha_url) = release.dmg_sha256_url.as_deref() {
             let raw = download_checked(sha_url, Duration::from_secs(30))
                 .map_err(|e| UpgradeError::DownloadDmgChecksum(Box::new(e)))?;
@@ -581,7 +518,6 @@ fn apply_dmg(release: &Release, progress: &(dyn Fn(Stage) + Send + Sync)) -> Res
     result
 }
 
-/// A single release's notes, for the in-app changelog screen.
 #[derive(Debug, Clone)]
 pub struct ReleaseNote {
     pub tag: String,
@@ -590,9 +526,7 @@ pub struct ReleaseNote {
     pub body: String,
 }
 
-/// Parse a GitHub `/releases` JSON array into up to `limit` `ReleaseNote`s,
-/// preserving GitHub's newest-first order. Elements missing `tag_name` are
-/// skipped rather than failing the whole list.
+/// Elements missing `tag_name` are skipped rather than failing the whole list.
 fn parse_releases(json: &str, limit: usize) -> Result<Vec<ReleaseNote>> {
     let v: serde_json::Value =
         serde_json::from_str(json).map_err(UpgradeError::ParseReleasesJson)?;
@@ -633,7 +567,6 @@ fn parse_releases(json: &str, limit: usize) -> Result<Vec<ReleaseNote>> {
     Ok(out)
 }
 
-/// Fetch up to `limit` recent releases from GitHub for the changelog screen.
 /// Blocks the calling thread — call from a background thread, never the UI thread.
 pub fn releases(limit: usize) -> Result<Vec<ReleaseNote>> {
     let agent = ureq::AgentBuilder::new()
@@ -652,9 +585,7 @@ pub fn releases(limit: usize) -> Result<Vec<ReleaseNote>> {
     parse_releases(&body, limit)
 }
 
-/// Light, dependency-free Markdown cleanup for display: strip ATX headings,
-/// normalize unordered-list markers to `• `, trim trailing whitespace, and
-/// collapse runs of blank lines. Inline markup is left untouched.
+/// Strips ATX headings, normalizes list markers to `• `, trims whitespace, collapses blank runs. No inline markup.
 pub fn clean_markdown(input: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut prev_blank = false;

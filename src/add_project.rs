@@ -1,16 +1,10 @@
-//! The add-project wizard's PURE half, ported from `src/gui/add_project.rs`
-//! plus the three helpers it leans on in `src/app/util.rs` (`cycle` :5-10,
-//! `path_basename` :23-29, `list_dirs` :31-71, `shellexpand_tilde` :73-85).
-//!
-//! No gpui types. The directory match list is a pure function of the typed
-//! path, so it is tested against a temp tree, never against `$HOME`.
+//! The add-project wizard's pure half, ported from `src/gui/add_project.rs` plus its `src/app/util.rs` helpers.
 
 use fs_err as fs;
 
 use crate::modal::{AddProjectState, AddProjectStep};
 
-/// Result of probing the chosen folder for a git repository
-/// (`add_project.rs:47-51`). Transient wizard state, never persisted.
+/// Transient wizard state, never persisted (`add_project.rs:47-51`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum GitProbe {
     Repo {
@@ -52,10 +46,7 @@ pub fn shellexpand_tilde(s: &str) -> String {
     s.to_string()
 }
 
-/// Directories matching the typed buffer, sorted case-insensitively
-/// (`src/app/util.rs:31-71`). A trailing `/` lists the directory itself;
-/// otherwise the last segment is a prefix filter. Dotfiles are hidden unless
-/// the prefix itself starts with a dot.
+/// A trailing `/` lists the directory itself; otherwise the last segment is a prefix filter (`src/app/util.rs:31-71`).
 pub fn list_dirs(buffer: &str) -> Vec<String> {
     let expanded = shellexpand_tilde(buffer);
     let (dir, prefix) = if expanded.is_empty() {
@@ -111,10 +102,7 @@ pub fn opened() -> AddProjectState {
     }
 }
 
-/// Live edit of the step-1 path buffer (`add_project.rs:146-155`). Guarded to
-/// the pick-source step, and it resets the match cursor and clears the note.
-// Exercised only by this module's `#[cfg(test)]` step-guard assertions; the live
-// wizard edits its buffers through gpui-component's own `InputState`.
+// Exercised only by tests; the live wizard edits its buffers through gpui-component's own `InputState`.
 #[allow(dead_code)]
 pub fn set_path(st: &mut AddProjectState, s: String) {
     if st.step == AddProjectStep::PickSource {
@@ -137,8 +125,7 @@ pub fn dir_move(st: &mut AddProjectState, delta: i32) {
     st.dir_sel = cycle(st.dir_sel, delta, entries.len());
 }
 
-/// `add_project.rs:179-195`. Picking a row rewrites the buffer to that
-/// directory **with a trailing slash**, so the next list is its contents.
+/// Rewrites the buffer to the picked directory with a trailing slash, so the next list is its contents (`add_project.rs:179-195`).
 pub fn dir_pick(st: &mut AddProjectState) {
     if st.step != AddProjectStep::PickSource {
         return;
@@ -159,9 +146,7 @@ pub enum ChooseOutcome {
     Rejected,
 }
 
-/// Step-1 Enter: feed the typed buffer into the choose funnel
-/// (`add_project.rs:196-209`). Guarded to the pick-source step so a doubled
-/// Enter cannot fall through and submit the details step.
+/// Guarded to the pick-source step so a doubled Enter can't fall through and submit the details step.
 pub fn choose_typed(st: &mut AddProjectState) -> ChooseOutcome {
     if st.step != AddProjectStep::PickSource {
         return ChooseOutcome::Rejected;
@@ -170,9 +155,7 @@ pub fn choose_typed(st: &mut AddProjectState) -> ChooseOutcome {
     choose(st, &pb)
 }
 
-/// The single funnel for all three folder sources (native picker, drop, typed
-/// path): validate, canonicalize, probe git upfront, advance
-/// (`add_project.rs:210-242`).
+/// The single funnel for all three folder sources (native picker, drop, typed path) (`add_project.rs:210-242`).
 pub fn choose(st: &mut AddProjectState, pb: &std::path::Path) -> ChooseOutcome {
     if !pb.is_dir() {
         st.note = Some("not a folder; choose a directory".into());
@@ -198,15 +181,13 @@ pub fn choose(st: &mut AddProjectState, pb: &std::path::Path) -> ChooseOutcome {
     ChooseOutcome::Advanced(probe)
 }
 
-/// "change" from the details step: back to pick-source. The (possibly edited)
-/// name is kept so a round trip does not lose it (`add_project.rs:243-255`).
+/// The (possibly edited) name is kept so a round trip does not lose it (`add_project.rs:243-255`).
 pub fn change_source(st: &mut AddProjectState) {
     st.step = AddProjectStep::PickSource;
     st.note = None;
 }
 
-/// What [`validate_submit`] decided. The caller performs the effects; nothing
-/// here touches the store or the filesystem beyond the git probe it is given.
+/// The caller performs the effects; nothing here touches the store or filesystem beyond the given git probe.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubmitOutcome {
     /// Register `(name, path)`; run `git init` first if `init_git`.
@@ -219,9 +200,7 @@ pub enum SubmitOutcome {
     Rejected,
 }
 
-/// Final submit from the details step (`add_project.rs:256-304`). The name
-/// field is a pure override: left empty, the folder's basename is used.
-/// Nothing is persisted until every check has passed.
+/// Nothing is persisted until every check passes; an empty name field falls back to the folder's basename (`add_project.rs:256-304`).
 pub fn validate_submit(
     st: &mut AddProjectState,
     probe: &GitProbe,

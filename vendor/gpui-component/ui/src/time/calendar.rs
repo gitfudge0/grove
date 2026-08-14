@@ -17,13 +17,10 @@ use crate::{
 
 use super::utils::days_in_month;
 
-/// Events emitted by the calendar.
 pub enum CalendarEvent {
-    /// The user selected a date.
     Selected(Date),
 }
 
-/// The date of the calendar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Date {
     Single(Option<NaiveDate>),
@@ -56,7 +53,6 @@ impl From<(NaiveDate, NaiveDate)> for Date {
 }
 
 impl Date {
-    /// Check if the date is set.
     pub fn is_some(&self) -> bool {
         match self {
             Self::Single(Some(_)) | Self::Range(Some(_), _) => true,
@@ -64,7 +60,6 @@ impl Date {
         }
     }
 
-    /// Check if the date is complete.
     pub fn is_complete(&self) -> bool {
         match self {
             Self::Range(Some(_), Some(_)) => true,
@@ -73,7 +68,6 @@ impl Date {
         }
     }
 
-    /// Get the start date.
     pub fn start(&self) -> Option<NaiveDate> {
         match self {
             Self::Single(Some(date)) => Some(*date),
@@ -82,7 +76,6 @@ impl Date {
         }
     }
 
-    /// Get the end date.
     pub fn end(&self) -> Option<NaiveDate> {
         match self {
             Self::Range(_, Some(end)) => Some(*end),
@@ -90,7 +83,6 @@ impl Date {
         }
     }
 
-    /// Return formatted date string.
     pub fn format(&self, format: &str) -> Option<SharedString> {
         match self {
             Self::Single(Some(date)) => Some(date.format(format).to_string().into()),
@@ -153,31 +145,23 @@ impl ViewMode {
     }
 }
 
-/// Matcher to match dates before and after the interval.
 pub struct IntervalMatcher {
     before: Option<NaiveDate>,
     after: Option<NaiveDate>,
 }
 
-/// Matcher to match dates within the range.
 pub struct RangeMatcher {
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
 }
 
-/// Matcher to match dates.
 pub enum Matcher {
-    /// Match declared days of the week, e.g. `Matcher::DayOfWeek(vec![0, 6])`
-    /// matches Sunday and Saturday.
+    /// E.g. `vec![0, 6]` matches Sunday and Saturday.
     DayOfWeek(Vec<u32>),
-    /// Match the included days, except those before/after the interval,
-    /// e.g. matches days outside 2020-01-02..2020-01-03.
+    /// Matches days outside `[before, after]`.
     Interval(IntervalMatcher),
-    /// Match the days within the range, e.g. matches days between
-    /// 2020-01-01 and 2020-01-03.
+    /// Matches days inside `[from, to]`.
     Range(RangeMatcher),
-    /// Match dates using a custom function, e.g. `|date| date.day0() < 5`
-    /// matches the first 5 days of each month.
     Custom(Box<dyn Fn(&NaiveDate) -> bool + Send + Sync>),
 }
 
@@ -197,17 +181,14 @@ where
 }
 
 impl Matcher {
-    /// Create a new interval matcher.
     pub fn interval(before: Option<NaiveDate>, after: Option<NaiveDate>) -> Self {
         Matcher::Interval(IntervalMatcher { before, after })
     }
 
-    /// Create a new range matcher.
     pub fn range(from: Option<NaiveDate>, to: Option<NaiveDate>) -> Self {
         Matcher::Range(RangeMatcher { from, to })
     }
 
-    /// Create a new custom matcher.
     pub fn custom<F>(f: F) -> Self
     where
         F: Fn(&NaiveDate) -> bool + Send + Sync + 'static,
@@ -215,7 +196,6 @@ impl Matcher {
         Matcher::Custom(Box::new(f))
     }
 
-    /// Check if the date matches the matcher.
     pub fn is_match(&self, date: &Date) -> bool {
         match date {
             Date::Single(Some(date)) => self.matched(date),
@@ -248,11 +228,9 @@ pub struct Calendar {
     size: Size,
     state: Entity<CalendarState>,
     style: StyleRefinement,
-    /// Number of the months view to show.
     number_of_months: usize,
 }
 
-/// Use to store the state of the calendar.
 pub struct CalendarState {
     focus_handle: FocusHandle,
     view_mode: ViewMode,
@@ -262,13 +240,11 @@ pub struct CalendarState {
     years: Vec<Vec<i32>>,
     year_page: i32,
     today: NaiveDate,
-    /// Number of the months view to show.
     number_of_months: usize,
     pub(crate) disabled_matcher: Option<Rc<Matcher>>,
 }
 
 impl CalendarState {
-    /// Create a new calendar state.
     pub fn new(_: &mut Window, cx: &mut Context<Self>) -> Self {
         let today = Local::now().naive_local().date();
         Self {
@@ -286,13 +262,11 @@ impl CalendarState {
         .year_range((today.year() - 50, today.year() + 50))
     }
 
-    /// Set the disabled matcher of the calendar state.
     pub fn disabled_matcher(mut self, matcher: impl Into<Matcher>) -> Self {
         self.disabled_matcher = Some(Rc::new(matcher.into()));
         self
     }
 
-    /// Set the disabled matcher of the calendar; disables days matching it.
     pub fn set_disabled_matcher(
         &mut self,
         disabled: impl Into<Matcher>,
@@ -302,8 +276,7 @@ impl CalendarState {
         self.disabled_matcher = Some(Rc::new(disabled.into()));
     }
 
-    /// Set the date of the calendar; setting a range date automatically
-    /// switches the mode to `Mode::Range`.
+    /// Setting a range date automatically sets the mode to `Mode::Range`.
     pub fn set_date(&mut self, date: impl Into<Date>, _: &mut Window, cx: &mut Context<Self>) {
         let date = date.into();
 
@@ -332,12 +305,10 @@ impl CalendarState {
         cx.notify()
     }
 
-    /// Get the date of the calendar.
     pub fn date(&self) -> Date {
         self.date
     }
 
-    /// Set number of months to show.
     pub fn set_number_of_months(
         &mut self,
         number_of_months: usize,
@@ -348,14 +319,12 @@ impl CalendarState {
         cx.notify();
     }
 
-    /// Set the year range of the calendar, default 50 years before/after
-    /// current; ideally divided into 20-year chunks (each year page holds 20 years).
+    /// Default is 50 years before/after current; each year page holds 20 years.
     pub fn year_range(mut self, range: (i32, i32)) -> Self {
         self.apply_year_range(range);
         self
     }
 
-    /// Set the year range of the calendar.
     pub fn set_year_range(&mut self, range: (i32, i32), cx: &mut Context<Self>) {
         self.apply_year_range(range);
         cx.notify();
@@ -374,7 +343,6 @@ impl CalendarState {
             .unwrap_or(0) as i32;
     }
 
-    /// Get year and month by offset month.
     fn offset_year_month(&self, offset_month: usize) -> (i32, u32) {
         let mut month = self.current_month as i32 + offset_month as i32;
         let mut year = self.current_year;
@@ -390,7 +358,6 @@ impl CalendarState {
         (year, month as u32)
     }
 
-    /// Returns the days of the month in a 2D vector to render on calendar.
     fn days(&self) -> Vec<Vec<NaiveDate>> {
         (0..self.number_of_months)
             .flat_map(|offset| {
@@ -511,7 +478,6 @@ impl Render for CalendarState {
 }
 
 impl Calendar {
-    /// Create a new calendar element with [`CalendarState`].
     pub fn new(state: &Entity<CalendarState>) -> Self {
         Self {
             id: ("calendar", state.entity_id()).into(),
@@ -522,7 +488,6 @@ impl Calendar {
         }
     }
 
-    /// Set number of months to show, default is 1.
     pub fn number_of_months(mut self, number_of_months: usize) -> Self {
         self.number_of_months = number_of_months;
         self

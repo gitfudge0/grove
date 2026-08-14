@@ -1,7 +1,4 @@
-//! HTML5 markup minifier.
-//!
-//! This is a fork of the `html5minify` crate.
-//! https://github.com/martingallagher/html5minify
+//! HTML5 markup minifier — a fork of the `html5minify` crate (https://github.com/martingallagher/html5minify).
 
 use std::{cell::RefCell, io, rc::Rc, str};
 
@@ -11,25 +8,12 @@ use html5ever::{
 };
 use markup5ever_rcdom::{Node, NodeData, RcDom};
 
-/// Defines the minify trait.
 #[allow(dead_code)]
 pub(crate) trait Minify {
-    /// Minifies the source returning the minified HTML5.
-    ///
-    /// # Errors
-    ///
-    /// Will return `Err` if unable to read from the input reader or unable to
-    /// write to the output writer.
     fn minify(&self) -> Result<Vec<u8>, io::Error>;
 }
 
-/// Minifies the HTML input to the destination writer.
-/// Outputs HTML5; non-HTML5 input will be transformed to HTML5.
-///
-/// # Errors
-///
-/// Will return `Err` if unable to read from the input reader or unable to write
-/// to the output writer.
+/// Non-HTML5 input will be transformed to HTML5.
 #[inline]
 #[allow(dead_code)]
 pub(crate) fn minify<R: io::Read, W: io::Write>(mut r: &mut R, w: &mut W) -> io::Result<()> {
@@ -50,7 +34,6 @@ where
     }
 }
 
-/// Minifier implementation for `io::Write`.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Minifier<'a, W: io::Write> {
     w: &'a mut W,
@@ -60,7 +43,6 @@ pub struct Minifier<'a, W: io::Write> {
     preceding_whitespace: bool,
 }
 
-/// Holds node positional context.
 struct Context<'a> {
     parent: &'a Node,
     parent_context: Option<&'a Context<'a>>,
@@ -69,8 +51,6 @@ struct Context<'a> {
 }
 
 impl<'a> Context<'a> {
-    /// Determine whether to trim whitespace.
-    /// Uses naive HTML5 whitespace collapsing rules.
     fn trim(&self, preceding_whitespace: bool) -> (bool, bool) {
         (preceding_whitespace || self.trim_left(), self.trim_right())
     }
@@ -122,7 +102,6 @@ impl<'a, W> Minifier<'a, W>
 where
     W: io::Write,
 {
-    /// Creates a new `Minifier` instance.
     #[inline]
     pub fn new(w: &'a mut W) -> Self {
         Self {
@@ -134,7 +113,6 @@ where
         }
     }
 
-    /// Collapse whitespace between elements and in text when whitespace isn't preserved by default.
     /// Enabled by default.
     #[inline]
     #[allow(dead_code)]
@@ -143,7 +121,6 @@ where
         self
     }
 
-    /// Omit writing the HTML5 doctype.
     /// Disabled by default.
     #[inline]
     #[allow(dead_code)]
@@ -152,7 +129,6 @@ where
         self
     }
 
-    /// Preserve HTML comments.
     /// Disabled by default.
     #[inline]
     #[allow(dead_code)]
@@ -161,11 +137,6 @@ where
         self
     }
 
-    /// Minifies the given reader input.
-    ///
-    /// # Errors
-    ///
-    /// Will return `Err` if unable to write to the output writer.
     #[inline]
     #[allow(dead_code)]
     pub fn minify<R: io::Read>(&mut self, mut r: &mut R) -> io::Result<()> {
@@ -183,7 +154,6 @@ where
     fn minify_node<'b>(&mut self, ctx: &'b Option<Context>, node: &'b Node) -> io::Result<()> {
         match &node.data {
             NodeData::Text { contents } => {
-                // Check if whitespace collapsing disabled
                 let contents = contents.borrow();
                 let contents = contents.as_ref();
 
@@ -191,7 +161,6 @@ where
                     return self.w.write_all(contents.as_bytes());
                 }
 
-                // Check if parent is whitespace preserving element or contains code (<script>, <style>)
                 let (skip_collapse_whitespace, contains_code) =
                     ctx.as_ref().map_or((false, false), |ctx| {
                         if let NodeData::Element { name, .. } = &ctx.parent.data {
@@ -213,7 +182,6 @@ where
                         .write_all(contents.trim_matches(is_ascii_whitespace).as_bytes());
                 }
 
-                // Early exit if empty to forego expensive trim logic
                 if contents.is_empty() {
                     return io::Result::Ok(());
                 }
@@ -228,9 +196,7 @@ where
                     _ => contents,
                 };
 
-                // Second empty check after trimming whitespace
                 if !contents.is_empty() {
-                    // replace \n, \r to ' '
                     let contents = contents
                         .bytes()
                         .map(|c| if matches!(c, b'\n' | b'\r') { b' ' } else { c })
@@ -292,7 +258,6 @@ where
             .find_map(|node| match &node.data {
                 NodeData::Text { contents } => {
                     if self.collapse_whitespace && is_whitespace(contents) {
-                        // Blocks of whitespace are skipped
                         None
                     } else {
                         Some(false)
@@ -318,7 +283,6 @@ where
         }
     }
 
-    /// Determines if start and end tags can be omitted.
     /// Whitespace rules are ignored if `collapse_whitespace` is enabled.
     #[allow(clippy::too_many_lines)]
     fn omit_tags(
@@ -559,8 +523,6 @@ where
         self.w.write_all(quote)
     }
 
-    /// Efficiently writes blocks of content, e.g. a string with no collapsed
-    /// whitespace would result in a single write.
     fn write_collapse_whitespace(
         &mut self,
         b: &[u8],

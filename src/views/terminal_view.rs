@@ -1,19 +1,4 @@
-//! The focusable wrapper around [`TerminalElement`]: every input path into the
-//! terminal lives here.
-//!
-//! Dispatch order in `on_key_down` is the **observable contract**, mirroring
-//! `src/gui/update/mod.rs:780-880`:
-//!
-//! 1. any key press kills the selection and any in-progress drag,
-//! 2. copy shortcut → clipboard, consumed,
-//! 3. paste shortcut → file-URI paths, else bracketed paste, consumed,
-//! 4. `keyboard_scroll_intent` → `scroll_lines`, consumed,
-//! 5. otherwise `key_to_bytes` → `send`.
-//!
-//! Actions declared in Plan 03's keymap take precedence automatically through
-//! gpui's key-context dispatch — that is the entire point of replacing iced's
-//! `should_forward` carve-outs, so `should_forward`, `MODAL_OPEN` and
-//! `PALETTE_OPEN` are deliberately **not** ported.
+//! The focusable wrapper around [`TerminalElement`]: every input path into the terminal lives here.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -42,28 +27,18 @@ struct PtyDrag {
 
 pub struct TerminalView {
     session: Entity<TerminalSession>,
-    /// Project this session belongs to; `None` for home terminals. Passed
-    /// straight through to the element's pinned content-theme lookup.
+    /// `None` for home terminals.
     project: Option<String>,
     focus: FocusHandle,
     clock: Entity<AnimationClock>,
     selection: Option<(AbsCell, AbsCell)>,
     drag: Option<PtyDrag>,
-    /// `pty_press_focused` (`pty_input.rs:36-39,104-108`): the press that gave
-    /// this element focus swallows its own release, so refocusing never moves
-    /// the caret (a second click does). Load-bearing as of Plan 05 (a click
-    /// that switches focus from the sidebar or another session must not move
-    /// the caret) and more so since Plan 07, where several views — grid tiles,
-    /// the agent and the panel shell — are focusable at the same time.
+    /// The press that gave this element focus swallows its own release, so refocusing never moves the caret.
     press_focused: bool,
     scroll: ScrollAccum,
-    /// The element's post-layout bounds, published by `prepaint` so pointer
-    /// events (which arrive in window coordinates) can be made element-local.
+    /// Published by `prepaint` so pointer events (window coordinates) can be made element-local.
     bounds: Rc<Cell<Bounds<Pixels>>>,
-    /// The workspace state bare Escape consults before the key reaches the PTY
-    /// (`WorkspaceState::escape_dismiss`). `None` for terminals that live
-    /// outside the workspace (the onboarding teardown preview), which have
-    /// nothing to dismiss.
+    /// `None` for terminals outside the workspace (the onboarding teardown preview), which have nothing to dismiss.
     chrome: Option<Entity<crate::entities::workspace_state::WorkspaceState>>,
     _observers: Vec<gpui::Subscription>,
 }
@@ -75,8 +50,7 @@ impl Focusable for TerminalView {
 }
 
 impl TerminalView {
-    /// Takes its session by handle: the view no longer spawns anything, so
-    /// switching between sessions cannot respawn one (Plan 05 Task 2).
+    /// Takes its session by handle: the view never spawns anything, so switching sessions can't respawn one.
     pub fn new(
         session: Entity<TerminalSession>,
         project: Option<String>,
@@ -84,10 +58,8 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> Self {
         let observers = vec![
-            // The terminal repaints when its model changes…
             cx.observe(&session, |_, _, cx| cx.notify()),
-            // …and on every clock tick, which drives both the cursor blink and
-            // the drag autoscroll. No second timer (carried amendment 5).
+            // Drives cursor blink and drag autoscroll off the shared clock; no second timer (carried amendment 5).
             cx.observe(&clock, |this: &mut Self, _, cx| {
                 this.tick_drag_autoscroll(cx);
                 cx.notify();
@@ -108,9 +80,7 @@ impl TerminalView {
         }
     }
 
-    /// Gives this terminal the workspace state bare Escape dismisses against
-    /// (see [`Self::chrome`]). Builder-style so the views outside the
-    /// workspace keep constructing with `new` alone.
+    /// Builder-style so views outside the workspace keep constructing with `new` alone.
     #[must_use]
     pub fn with_chrome(
         mut self,
@@ -120,10 +90,7 @@ impl TerminalView {
         self
     }
 
-    // ── helpers ──────────────────────────────────────────────────────────
-
-    /// Window coordinates → element-local pixels, clamped into the element
-    /// (`src/gui/pty.rs:132-141`'s `local`).
+    /// Window coordinates → element-local pixels, clamped into the element (`src/gui/pty.rs:132-141`'s `local`).
     fn local(&self, position: Point<Pixels>) -> (f32, f32) {
         let bounds = self.bounds.get();
         let x = f32::from(position.x - bounds.origin.x);
@@ -139,8 +106,7 @@ impl TerminalView {
         (zoom.cell_w(), zoom.cell_h())
     }
 
-    /// `(viewport rows, scrollback offset)` — `pty_view_geom`
-    /// (`pty_input.rs:235-241`).
+    /// `(viewport rows, scrollback offset)` — `pty_view_geom` (`pty_input.rs:235-241`).
     fn view_geom(&self, cx: &App) -> (usize, usize) {
         let session = self.session.read(cx);
         (usize::from(session.dims().0), session.display_offset())
@@ -157,24 +123,14 @@ impl TerminalView {
         self.drag = None;
     }
 
-    // ── keyboard ─────────────────────────────────────────────────────────
-
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
 
-        // 1. Any key press kills the selection and any in-progress drag. The
-        //    copy path below still needs what was selected, so it is taken
-        //    rather than merely dropped.
+        // The copy path below still needs what was selected, so it's taken rather than merely dropped.
         let selected = self.selection.take();
         self.drag = None;
 
-        // 1b. Bare Escape's carve-out, ahead of everything else exactly as in
-        //     iced (`update/mod.rs:789-804`): with a kill-confirm armed, the
-        //     agent menu open or the attention dropdown showing, Escape
-        //     dismisses them and is consumed. With none of those active it
-        //     falls straight through to the PTY below — TUI programs need a
-        //     real Escape. Bare only: Alt+Escape is a readline chord and must
-        //     reach the PTY as ESC ESC even while something is armed.
+        // Bare Escape's carve-out (`update/mod.rs:789-804`); Alt+Escape is a readline chord and must reach the PTY.
         if keystroke.key == "escape" && !keystroke.modifiers.modified() {
             if let Some(chrome) = self.chrome.clone() {
                 let dismissed = chrome.update(cx, |s, cx| {
@@ -191,7 +147,6 @@ impl TerminalView {
             }
         }
 
-        // 2. Copy.
         if keys::is_copy_shortcut(keystroke) {
             if let Some(text) = selected.and_then(|(a, head)| {
                 self.session
@@ -203,10 +158,7 @@ impl TerminalView {
             return;
         }
 
-        // 3. Paste. Wayland has no native file drag-and-drop (a winit gap), so
-        //    a clipboard holding file URIs — "Copy" from a file manager — types
-        //    their paths exactly as a drop would, and only otherwise falls
-        //    through to a text paste.
+        // Wayland has no native file drag-and-drop, so a clipboard holding file URIs types their paths like a drop.
         if keys::is_paste_shortcut(keystroke) {
             let paths = file_drop::clipboard_paths();
             if !paths.is_empty() {
@@ -223,7 +175,6 @@ impl TerminalView {
             return;
         }
 
-        // 4. Keyboard scrollback chords.
         if let Some((up, amount)) = keys::keyboard_scroll_intent(keystroke) {
             self.session.update(cx, |session, cx| {
                 let lines = match amount {
@@ -236,8 +187,7 @@ impl TerminalView {
             return;
         }
 
-        // 5. Straight to the PTY. Escape gets here whenever step 1b found
-        //    nothing to dismiss — that function's documented `false` branch.
+        // Escape reaches here whenever nothing above dismissed it.
         let app_cursor = self.session.read(cx).app_cursor();
         if let Some(bytes) = keys::key_to_bytes(keystroke, app_cursor) {
             self.session.update(cx, |session, cx| {
@@ -247,18 +197,13 @@ impl TerminalView {
         }
     }
 
-    // ── scroll ───────────────────────────────────────────────────────────
-
     fn on_scroll_wheel(
         &mut self,
         event: &ScrollWheelEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Pinch-to-zoom: the pinned rev's `ScrollDelta` has exactly two
-        // variants (`Pixels` / `Lines`) and there is **no distinguishable
-        // pinch/magnify event**, so this is modifier+wheel only — recorded in
-        // the Plan 04 report.
+        // Pinch-to-zoom: `ScrollDelta` has no distinguishable pinch/magnify event, so this is modifier+wheel only.
         if event.modifiers.platform || event.modifiers.control {
             let dy = match event.delta {
                 ScrollDelta::Pixels(p) => f32::from(p.y),
@@ -295,20 +240,13 @@ impl TerminalView {
         });
     }
 
-    // ── pointer ──────────────────────────────────────────────────────────
-
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // As of Plan 07 there are many `TerminalView`s alive at once — a tile
-        // per grid session, the agent, the panel shell — so a press here may
-        // be taking focus from any of them, not just from the window or the
-        // sidebar. The rule is unchanged and now load-bearing for all of
-        // them: the press that *gives* this element focus is focus-only, and
-        // its release is swallowed below so refocusing never moves the caret.
+        // A press that *gives* this element focus is focus-only; its release is swallowed below so refocusing never moves the caret.
         self.press_focused = !self.focus.is_focused(window);
         window.focus(&self.focus, cx);
 
@@ -359,14 +297,10 @@ impl TerminalView {
         }
         self.selection = None;
         if press_focused {
-            // The press that focused this element is focus-only; swallow its
-            // release so refocusing never moves the caret.
             cx.notify();
             return;
         }
-        // No drag happened — click-to-move-caret, but only while scrolled to
-        // the live screen: clicking history must be inert
-        // (`pty_input.rs:113-121`).
+        // Click-to-move-caret, but only while scrolled to the live screen: clicking history must be inert (`pty_input.rs:113-121`).
         let (h, sb) = self.view_geom(cx);
         if sb == 0 && h > 0 {
             let row = u16::try_from((h - 1).saturating_sub(a.a_row)).unwrap_or(u16::MAX);
@@ -377,10 +311,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// `pty_input.rs:261-285`. Hangs off the **AnimationClock** tick, not a new
-    /// timer: while a drag is held with the pointer within one cell of the
-    /// top/bottom edge, scroll one step and extend the head over the revealed
-    /// line — but only if the scroll actually moved the view.
+    /// Hangs off the `AnimationClock` tick, not a new timer (`pty_input.rs:261-285`).
     fn tick_drag_autoscroll(&mut self, cx: &mut Context<Self>) {
         let Some(d) = self.drag else { return };
         let (_, cell_h) = Self::cell_metrics(cx);
@@ -404,11 +335,7 @@ impl TerminalView {
         }
     }
 
-    // ── file drop ────────────────────────────────────────────────────────
-
-    /// A dropped file types its shell-escaped path plus one trailing space into
-    /// the session and clears the selection (`sessions.rs:336-341`). The
-    /// modal-aware branches of `on_file_dropped` are Plan 08.
+    /// Types the shell-escaped path plus one trailing space into the session and clears the selection (`sessions.rs:336-341`).
     fn on_drop(&mut self, paths: &ExternalPaths, cx: &mut Context<Self>) {
         self.session.update(cx, |session, _| {
             for path in paths.paths() {
@@ -423,10 +350,7 @@ impl TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let zoom = cx.global::<ZoomState>().zoom;
-        // Only the focused PTY blinks a cursor. With two terminals side by side
-        // (agent + side panel, or several grid tiles) the cursor is the one
-        // unambiguous signal for *where the keystrokes go*, so an unfocused
-        // pane must not draw one.
+        // Only the focused PTY blinks a cursor — it's the one unambiguous signal for where keystrokes go.
         let cursor_visible = self.focus.is_focused(window)
             && animation_clock::cursor_visible(self.clock.read(cx).tick());
 

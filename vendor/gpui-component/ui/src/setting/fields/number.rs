@@ -16,11 +16,11 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub struct NumberFieldOptions {
-    /// The minimum value for the number input, default is `f64::MIN`.
+    /// Default is `f64::MIN`.
     pub min: f64,
-    /// The maximum value for the number input, default is `f64::MAX`.
+    /// Default is `f64::MAX`.
     pub max: f64,
-    /// The step value for the number input, default is `1.0`.
+    /// Default is `1.0`.
     pub step: f64,
 }
 
@@ -143,7 +143,6 @@ impl SettingFieldRender for NumberField {
             },
         );
 
-        // Sync the displayed value when the underlying setting changed externally
         state_entity.update(cx, |state, cx| {
             if state.initial_value != value {
                 state.initial_value = value;
