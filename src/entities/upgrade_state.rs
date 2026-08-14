@@ -1,13 +1,5 @@
-//! The upgrade machine, as pure functions.
-//!
-//! Every decision the iced orchestration layer makes in `src/gui/update/upgrade.rs`
-//! lives here without a network call, a timer or a gpui type in sight: when a
-//! check is due, whether one may start, what an answer means, and how apply
-//! progress folds into the state.
-//!
-//! The network itself is `grove_core::upgrade` — this module owns *policy*,
-//! never transport, and never re-implements semver comparison
-//! (`grove_core::upgrade::update_available` decides Available vs UpToDate).
+//! The upgrade machine, as pure functions ported from `src/gui/update/upgrade.rs`, with no network/timer/gpui type in sight.
+//! Owns policy only; `grove_core::upgrade` owns transport and semver comparison.
 
 use grove_core::upgrade::{update_available, Release, ReleaseNote, Stage};
 
@@ -36,9 +28,7 @@ pub enum ChangelogState {
 /// The periodic check's cadence (`src/gui/update/upgrade.rs:199`).
 pub const CHECK_INTERVAL_SECS: i64 = 24 * 60 * 60;
 
-/// Whether the 24h periodic check is due. `None` is **not** due: the 3s launch
-/// check seeds the timestamp, and firing here as well would double-check at
-/// boot (`src/gui/update/upgrade.rs:197-207`).
+/// `None` is not due: the 3s launch check seeds the timestamp, so firing here too would double-check at boot.
 #[must_use]
 pub fn check_due(last_update_check: Option<i64>, now: i64, state: &UpgradeState) -> bool {
     let due = match last_update_check {
@@ -48,17 +38,13 @@ pub fn check_due(last_update_check: Option<i64>, now: i64, state: &UpgradeState)
     due && matches!(state, UpgradeState::Idle | UpgradeState::UpToDate)
 }
 
-/// The in-flight guard: a second check while one is running is refused
-/// (`src/gui/update/upgrade.rs:26-32`). All three triggers route through this,
-/// so a duplicate is impossible by construction.
+/// All three check triggers route through this, so a duplicate is impossible by construction.
 #[must_use]
 pub fn begin_check(state: &UpgradeState) -> bool {
     !matches!(state, UpgradeState::Checking)
 }
 
-/// Fold a check's answer into a state. `manual` selects the error policy:
-/// a manual check surfaces the error inline, a launch/periodic one falls back
-/// to `Idle` with no badge and no modal (`:52-61`).
+/// `manual` selects the error policy: manual surfaces the error inline, launch/periodic falls back to `Idle` silently.
 #[must_use]
 pub fn apply_check_result(
     result: Result<Release, String>,
@@ -85,8 +71,7 @@ pub fn apply_check_result(
     }
 }
 
-/// Skip the offered release: the tag to persist into `Store::skipped_version`
-/// (`None` when nothing is on offer) and the state to land on (`:65-75`).
+/// `None` tag when nothing was on offer.
 #[must_use]
 pub fn skip_version(state: &UpgradeState) -> (Option<String>, UpgradeState) {
     match state {
@@ -95,11 +80,7 @@ pub fn skip_version(state: &UpgradeState) -> (Option<String>, UpgradeState) {
     }
 }
 
-/// A progress stage from the apply callback. Only an apply that is still
-/// running accepts one — a stage that arrives *after* the finish must not
-/// resurrect `Updating` (`src/gui/update/tick.rs:87-95`, which reads both
-/// fields under one lock and is ordering-safe by construction; the channel
-/// port has to be too).
+/// A stage arriving after the finish must not resurrect `Updating`.
 #[must_use]
 pub fn apply_progress(state: &UpgradeState, stage: Stage) -> UpgradeState {
     match state {
@@ -120,16 +101,13 @@ pub fn apply_finished(state: &UpgradeState, result: Result<(), String>) -> Upgra
     }
 }
 
-/// The cog's green dot (`src/gui/view/appbar.rs:29`): an offered release, and
-/// nothing else — not a check in flight, not a failed apply.
+/// True only for an offered release — not a check in flight, not a failed apply.
 #[must_use]
 pub fn upgrade_available(state: &UpgradeState) -> bool {
     matches!(state, UpgradeState::Available(_))
 }
 
-/// Whether Escape may dismiss the Updating modal. Refused while an apply is in
-/// flight; this is the `KeyCtx::update_in_flight` input the keyboard matrix
-/// already asserts against (`src/keyboard_matrix.rs:502-519`).
+/// Refused while an apply is in flight.
 #[must_use]
 pub fn escape_closes(state: &UpgradeState) -> bool {
     !matches!(state, UpgradeState::Updating(_))
@@ -246,12 +224,10 @@ mod tests {
         let running = UpgradeState::Updating(Stage::Installing);
         let done = apply_finished(&running, Ok(()));
         assert!(matches!(done, UpgradeState::Updated));
-        // A stage that raced the finish is dropped.
         assert!(matches!(
             apply_progress(&done, Stage::Building),
             UpgradeState::Updated
         ));
-        // A second finish is dropped too.
         assert!(matches!(
             apply_finished(&done, Err("late".into())),
             UpgradeState::Updated

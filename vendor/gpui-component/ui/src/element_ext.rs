@@ -15,7 +15,6 @@ pub trait ChildElement: Sizable + IntoElement {
     fn with_ix(mut self, ix: usize) -> Self;
 }
 
-/// A type-erased element that can accept a [`AnyChildElementOptions`] before being rendered.
 pub struct AnyChildElement(Box<dyn FnOnce(ChildElementOptions) -> AnyElement>);
 
 impl AnyChildElement {
@@ -30,15 +29,8 @@ impl AnyChildElement {
     }
 }
 
-/// A trait to extend [`gpui::Element`] with additional functionality.
 pub trait ElementExt: ParentElement + Sized {
-    /// Add a prepaint callback to the element.
-    ///
-    /// This is a helper method to get the bounds of the element after paint.
-    ///
-    /// The first argument is the bounds of the element in pixels.
-    ///
-    /// See also [`gpui::canvas`].
+    /// Helper to get the element's bounds (in pixels) after paint. See also [`gpui::canvas`].
     fn on_prepaint<F>(self, f: F) -> Self
     where
         F: FnOnce(Bounds<Pixels>, &mut Window, &mut App) + 'static,

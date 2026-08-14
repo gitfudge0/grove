@@ -6,12 +6,8 @@ use gpui::{
 };
 use gpui_component_macros::icon_named;
 
-/// Types implementing this trait can automatically be converted to [`Icon`].
-///
-/// This allows you to implement a custom version of [`IconName`] that functions as a drop-in
-/// replacement for other UI components.
+/// Lets you implement a custom [`IconName`] drop-in replacement for other UI components.
 pub trait IconNamed {
-    /// Returns the embedded path of the icon.
     fn path(self) -> SharedString;
 }
 
@@ -21,15 +17,10 @@ impl<T: IconNamed> From<T> for Icon {
     }
 }
 
-// Generate `IconName` from the icons that `gpui-component-assets` ships.
-// The `$VAR` form resolves to the absolute path published by the assets
-// crate's `build.rs` (via cargo's `links` mechanism) and re-exported by
-// our own `build.rs`. See `gpui_component_macros::icon_named!`'s doc
-// comment for the full mechanism.
+// Generates `IconName` from gpui-component-assets' icons; `$VAR` resolves via cargo's `links` mechanism.
 icon_named!(IconName, "$GPUI_COMPONENT_DEFAULT_ICONS_DIR");
 
 impl IconName {
-    /// Return the icon as a Entity<Icon>
     pub fn view(self, cx: &mut App) -> Entity<Icon> {
         Icon::build(self).view(cx)
     }
@@ -90,9 +81,7 @@ impl Icon {
         Self::default().path(name.path())
     }
 
-    /// Set the icon path of the Assets bundle
-    ///
-    /// For example: `icons/foo.svg`
+    /// e.g. `icons/foo.svg`.
     pub fn path(mut self, path: impl Into<SharedString>) -> Self {
         self.path = path.into();
         self
@@ -103,7 +92,6 @@ impl Icon {
         &self.path
     }
 
-    /// Create a new view for the icon
     pub fn view(self, cx: &mut App) -> Entity<Icon> {
         cx.new(|_| self)
     }
@@ -117,7 +105,6 @@ impl Icon {
         Self::default()
     }
 
-    /// Rotate the icon by the given angle
     pub fn rotate(mut self, radians: impl Into<Radians>) -> Self {
         self.base = self
             .base

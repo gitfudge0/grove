@@ -1,29 +1,17 @@
-//! Uncommitted-diff computation for the diff viewer: which files changed in a
-//! worktree relative to `HEAD`, and the parsed unified-diff content of each.
-//! Pure `&str -> struct` parsing lives next to the `git`-shelling wrappers
-//! that feed it, exactly like [`crate::git`]'s `parse_shortstat` /
-//! `worktree_diff_stat` split — the parsers are unit-testable without a
-//! repo, the wrappers are not.
+//! Uncommitted-diff computation for the diff viewer.
+//! Pure parsing lives next to the `git`-shelling wrappers that feed it, so the parsers are unit-testable without a repo.
 
 use fs_err as fs;
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 
-/// A file is too large to load fully once its uncommitted change exceeds
-/// either bound — whichever trips first. Counted against the *change*
-/// (added + removed lines) for tracked files, and against the file itself
-/// for untracked ones, so a single enormous generated file can't stall the
-/// modal or blow up highlighting.
+/// Oversize guard: whichever of this and [`DIFF_MAX_BYTES`] trips first stalls loading.
 pub const DIFF_MAX_LINES: u32 = 3000;
-/// Byte-size guard alongside [`DIFF_MAX_LINES`] — a file can be short on
-/// lines and still huge (e.g. one long minified line).
+/// Byte-size guard alongside [`DIFF_MAX_LINES`] — a file can be short on lines yet huge (one long minified line).
 pub const DIFF_MAX_BYTES: u64 = 1024 * 1024;
 
-/// How a path differs from `HEAD`, mirroring the letters `git status`
-/// already prints, plus the two states `git` doesn't have a status letter
-/// for (`Untracked` files never show as `A` until staged; `Binary` is a
-/// property of the *content*, not the change).
+/// How a path differs from `HEAD`, plus two states `git status` has no letter for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
     Added,
@@ -34,8 +22,6 @@ pub enum Status {
     Binary,
 }
 
-/// One row of the diff viewer's file list: a changed path plus its
-/// shortstat-style counts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileChange {
     pub path: String,
@@ -51,9 +37,7 @@ pub enum LineKind {
     Del,
 }
 
-/// One physical line of a hunk. `old_no`/`new_no` are `None` on the side a
-/// line doesn't exist on (an `Add` line has no old line number, a `Del`
-/// line has no new one); a `Context` line carries both.
+/// `old_no`/`new_no` are `None` on the side a line doesn't exist on; a `Context` line carries both.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line {
     pub kind: LineKind,
@@ -62,13 +46,11 @@ pub struct Line {
     pub new_no: Option<u32>,
 }
 
-/// One `@@ -old_start,old_len +new_start,new_len @@ header` block.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hunk {
     pub old_start: u32,
     pub new_start: u32,
-    /// The optional trailing text on the `@@` line (git's "which function
-    /// is this hunk in" heuristic). Empty when git didn't print one.
+    /// Git's "which function is this hunk in" heuristic; empty when git didn't print one.
     pub header: String,
     pub lines: Vec<Line>,
 }
@@ -80,8 +62,7 @@ pub enum Patch {
         hunks: Vec<Hunk>,
         no_newline_at_eof: bool,
     },
-    /// Oversize guard tripped ([`DIFF_MAX_LINES`] / [`DIFF_MAX_BYTES`]) —
-    /// counts only, no content was read.
+    /// Oversize guard tripped — counts only, no content was read.
     TooLarge {
         added: u32,
         removed: u32,
@@ -96,8 +77,7 @@ pub enum UnifiedRow {
     Line(Line),
 }
 
-/// One row of the split-view render: a hunk separator, or up to one line
-/// from each side. See [`Patch::paired_rows`] for the pairing rule.
+/// See [`Patch::paired_rows`] for the pairing rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PairedRow {
     HunkHeader(String),
@@ -108,9 +88,7 @@ pub enum PairedRow {
 }
 
 impl Patch {
-    /// Unified-mode rows: hunks in order, each line in file order. The view
-    /// does no diff arithmetic — this is the only place unified layout is
-    /// decided.
+    /// The only place unified layout is decided; the view does no diff arithmetic.
     pub fn unified_rows(&self) -> Vec<UnifiedRow> {
         let Patch::Text { hunks, .. } = self else {
             return vec![];
@@ -123,12 +101,7 @@ impl Patch {
         rows
     }
 
-    /// Split-mode rows. Within a hunk, a run of consecutive `Del` lines
-    /// pairs positionally with the run of consecutive `Add` lines that
-    /// immediately follows it; whichever run is longer leaves half-empty
-    /// rows on the shorter side. `Context` lines always pair with
-    /// themselves (same text, both line numbers already present on the
-    /// single `Line`).
+    /// Split-mode rows: consecutive `Del` lines pair positionally with the `Add` run right after them; the longer run leaves half-empty rows on the shorter side.
     pub fn paired_rows(&self) -> Vec<PairedRow> {
         let Patch::Text { hunks, .. } = self else {
             return vec![];
@@ -173,9 +146,6 @@ impl Patch {
     }
 }
 
-// ── numstat parsing ─────────────────────────────────────────────────────
-
-/// One line of `git diff --numstat -M HEAD` output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct NumstatLine {
     /// `None` marks a binary file (`-` in both count columns).
@@ -185,9 +155,7 @@ struct NumstatLine {
     rename_from: Option<String>,
 }
 
-/// Split a numstat path field into `(old, new)` when it names a rename,
-/// handling both formats git emits: a full replacement (`old.rs => new.rs`)
-/// and a common-affix abbreviation (`src/{old.rs => new.rs}`).
+/// Splits a numstat rename field into `(old, new)`; handles both git formats, full replacement and common-affix abbreviation.
 fn split_rename_path(field: &str) -> Option<(String, String)> {
     if let Some(brace_start) = field.find('{') {
         let brace_end = field[brace_start..].find('}')? + brace_start;
@@ -205,11 +173,7 @@ fn split_rename_path(field: &str) -> Option<(String, String)> {
         .map(|(old, new)| (old.to_string(), new.to_string()))
 }
 
-/// Parse `git diff --numstat -M HEAD` output into one entry per changed
-/// path. Lines that don't have the expected three tab-separated fields (or
-/// whose count columns are neither digits nor `-`) are skipped rather than
-/// failing the whole parse — a single odd line shouldn't blank the file
-/// list.
+/// Malformed lines are skipped rather than failing the whole parse.
 fn parse_numstat(out: &str) -> Vec<NumstatLine> {
     let mut result = Vec::new();
     for line in out.lines() {
@@ -238,8 +202,7 @@ fn parse_numstat(out: &str) -> Vec<NumstatLine> {
                 Err(_) => continue,
             }
         };
-        // A binary file's marker must be symmetric; treat one-sided "-" as
-        // malformed rather than guessing.
+        // A binary marker must be symmetric; a one-sided "-" is malformed.
         if added.is_none() != removed.is_none() {
             continue;
         }
@@ -262,9 +225,6 @@ fn parse_numstat(out: &str) -> Vec<NumstatLine> {
     result
 }
 
-// ── status porcelain parsing (untracked files) ──────────────────────────
-
-/// One line of `git status --porcelain -uall` output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct StatusLine {
     x: char,
@@ -272,11 +232,7 @@ struct StatusLine {
     path: String,
 }
 
-/// Parse `git status --porcelain -uall`. Only the `??` (untracked) lines
-/// are used by [`changed_files`] today — tracked-file status comes from
-/// `--numstat -M` instead, since that's the call that already carries the
-/// rename detection — but this keeps the porcelain parser generic and
-/// tested on its own.
+/// Only the `??` (untracked) lines are used by [`changed_files`]; tracked-file status comes from `--numstat -M` instead.
 fn parse_status_porcelain(out: &str) -> Vec<StatusLine> {
     let mut result = Vec::new();
     for line in out.lines() {
@@ -290,9 +246,7 @@ fn parse_status_porcelain(out: &str) -> Vec<StatusLine> {
         let Some(path) = rest.strip_prefix(' ') else {
             continue;
         };
-        // Renames/copies print "old -> new"; only the destination matters
-        // for an untracked-file caller, but keep whichever half git listed
-        // last.
+        // Renames/copies print "old -> new"; keep the destination half.
         let path = path.rsplit(" -> ").next().unwrap_or(path);
         result.push(StatusLine {
             x,
@@ -303,9 +257,7 @@ fn parse_status_porcelain(out: &str) -> Vec<StatusLine> {
     result
 }
 
-/// Count the lines of an untracked file for its all-added `FileChange`,
-/// honouring the oversize guard: a file over [`DIFF_MAX_BYTES`] is not read
-/// at all, so a huge untracked file can't stall the file list.
+/// A file over [`DIFF_MAX_BYTES`] is not read at all.
 fn count_lines_guarded(full_path: &Path) -> u32 {
     let Ok(meta) = fs::metadata(full_path) else {
         return 0;
@@ -319,11 +271,7 @@ fn count_lines_guarded(full_path: &Path) -> u32 {
     content.lines().count().try_into().unwrap_or(u32::MAX)
 }
 
-/// List every path that differs from `HEAD` in the worktree at `wt`,
-/// tracked and untracked alike: one `git diff --numstat -M HEAD` for
-/// tracked changes (which already carries rename detection and binary
-/// markers) plus one `git status --porcelain -uall` for untracked files,
-/// merged and sorted by path.
+/// Merges tracked (`--numstat -M`) and untracked (`status --porcelain -uall`) changes, sorted by path.
 pub fn changed_files(wt: &str) -> Vec<FileChange> {
     tracing::debug!(args = "diff --numstat -M HEAD", cwd = %wt, "running git command");
     let numstat_out = Command::new("git")
@@ -396,13 +344,7 @@ pub fn changed_files(wt: &str) -> Vec<FileChange> {
     result
 }
 
-// ── unified-diff parsing ────────────────────────────────────────────────
-
-/// Parse a `@@ -old_start,old_len +new_start,new_len @@ header` line's tail
-/// (everything after the leading `@@ `) into `(old_start, new_start,
-/// header)`. Malformed input (missing markers, non-numeric counts,
-/// overflowing counts) returns `None` so the caller can skip the hunk
-/// rather than panic or fabricate numbers.
+/// Malformed input returns `None` so the caller can skip the hunk rather than panic or fabricate numbers.
 fn parse_hunk_header(rest: &str) -> Option<(u32, u32, String)> {
     let (ranges, header) = match rest.split_once(" @@") {
         Some((r, h)) => (r, h.trim_start().to_string()),
@@ -416,12 +358,7 @@ fn parse_hunk_header(rest: &str) -> Option<(u32, u32, String)> {
     Some((old_start, new_start, header))
 }
 
-/// Parse the output of `git diff -U3 -M HEAD -- <path>` (or a synthesised
-/// all-added patch, see [`synthesize_added_patch`]) into a [`Patch::Text`].
-/// Preamble lines (`diff --git`, `index`, `---`, `+++`) are skipped by
-/// virtue of appearing before any `@@` line has opened a hunk. `Binary
-/// files ... differ` short-circuits to [`Patch::Binary`] before any of that
-/// matters.
+/// Preamble lines are skipped by virtue of appearing before any `@@` line opens a hunk.
 fn parse_patch(diff_text: &str) -> Patch {
     if diff_text.contains("Binary files") {
         return Patch::Binary;
@@ -492,8 +429,6 @@ fn parse_patch(diff_text: &str) -> Patch {
     }
 }
 
-/// Build the all-added [`Patch`] shown for an untracked file: one hunk
-/// spanning the whole file, every line an `Add`.
 fn synthesize_added_patch(content: &str) -> Patch {
     let no_newline_at_eof = !content.is_empty() && !content.ends_with('\n');
     let lines: Vec<Line> = content
@@ -517,9 +452,6 @@ fn synthesize_added_patch(content: &str) -> Patch {
     }
 }
 
-/// Read the working-tree file's content for an untracked path and build its
-/// all-added [`Patch`], honouring the oversize guard before reading. Tracked
-/// files go through [`file_patch`] instead.
 fn untracked_patch(wt: &str, path: &str) -> Patch {
     let full_path = Path::new(wt).join(path);
     let Ok(meta) = fs::metadata(&full_path) else {
@@ -545,11 +477,7 @@ fn untracked_patch(wt: &str, path: &str) -> Patch {
     synthesize_added_patch(&content)
 }
 
-/// Full patch content for one changed file: `git diff -U3 -M HEAD --
-/// <path>` for tracked files, or a synthesised all-added patch read
-/// straight off disk for untracked ones. The oversize/binary guard is
-/// checked before any content is read or the full diff is generated — a
-/// cheap `--numstat` probe supplies the counts for the `TooLarge` stub.
+/// The oversize/binary guard is checked before the full diff is generated — a cheap `--numstat` probe supplies the `TooLarge` counts.
 pub fn file_patch(wt: &str, path: &str, status: &Status) -> Patch {
     if let Status::Binary = status {
         return Patch::Binary;
@@ -617,10 +545,7 @@ pub fn file_patch(wt: &str, path: &str, status: &Status) -> Patch {
     }
 }
 
-/// The `HEAD` version of `path`, for the old side of highlighting. `None`
-/// covers every reason there isn't one — the file is new, the path doesn't
-/// exist at `HEAD`, or `git` failed — rather than distinguishing them, since
-/// callers treat all three the same way (nothing to highlight against).
+/// `None` covers every reason there isn't a `HEAD` version — callers treat them all the same.
 pub fn head_blob(wt: &str, path: &str) -> Option<String> {
     tracing::debug!(
         args = format!("show HEAD:{path}"),
@@ -642,28 +567,17 @@ pub fn head_blob(wt: &str, path: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The current working-tree content of `path`, for the new side of
-/// highlighting. `None` if it can't be read (deleted, permissions, not
-/// valid UTF-8).
 pub fn working_file(wt: &str, path: &str) -> Option<String> {
     fs::read_to_string(Path::new(wt).join(path)).ok()
 }
 
-// ── word-level (intraline) diff ─────────────────────────────────────────
-
-/// One run of a line, marked changed or unchanged relative to its counterpart.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Run {
     pub text: String,
     pub changed: bool,
 }
 
-/// Split a line into word/separator tokens on `char` boundaries so a marked
-/// span always lands on a word boundary rather than mid-character. A "word"
-/// is a maximal run of alphanumeric chars (any script); everything else
-/// (whitespace, punctuation, symbols, emoji) is its own maximal run of
-/// non-alphanumeric chars. Concatenating the tokens always reproduces the
-/// input exactly.
+/// Splits on `char` boundaries into word/separator tokens so a marked span always lands on a word boundary; concatenation reproduces the input exactly.
 fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -682,8 +596,7 @@ fn tokenize(text: &str) -> Vec<String> {
     tokens
 }
 
-/// Coalesce adjacent tokens that share the same `changed` flag into one
-/// `Run`, so the caller emits a single styled span per contiguous region.
+/// Coalesces adjacent same-`changed` tokens into one `Run` per contiguous region.
 fn coalesce(tokens: &[String], changed: &[bool]) -> Vec<Run> {
     let mut runs: Vec<Run> = Vec::new();
     for (token, &is_changed) in tokens.iter().zip(changed) {
@@ -698,15 +611,7 @@ fn coalesce(tokens: &[String], changed: &[bool]) -> Vec<Run> {
     runs
 }
 
-/// Word-level intraline diff of a paired Del/Add line: returns the old line's
-/// runs and the new line's runs, with the differing runs marked `changed`.
-///
-/// Algorithm: tokenise each side into words-plus-separators, trim the common
-/// prefix and common suffix of the two token sequences, and mark whatever
-/// remains in the middle of each side as changed. This is what `git
-/// --word-diff` effectively shows for a single line pair, runs in O(n), and
-/// never needs a full LCS — the view only needs to emphasise "what's
-/// different here", not a minimal edit script.
+/// Trims the common token prefix/suffix and marks the remaining middle changed; O(n), never needs a full LCS since only emphasis, not a minimal edit script, is required.
 pub fn word_runs(old: &str, new: &str) -> (Vec<Run>, Vec<Run>) {
     if old == new {
         let mut runs = Vec::new();
@@ -754,29 +659,14 @@ pub fn word_runs(old: &str, new: &str) -> (Vec<Run>, Vec<Run>) {
     )
 }
 
-// ── live-update reconciliation ──────────────────────────────────────────
-
-/// The result of folding a fresh [`changed_files`] result into the diff
-/// viewer's live state: which path should stay selected, and which cached
-/// patches are now for files that are no longer changed and should be
-/// dropped from the cache.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reconciled {
-    /// Selection always follows the *path*, never the index: a path that was
-    /// selected stays selected even if `new_files` no longer names it (the
-    /// caller shows "No longer changed" in place rather than snapping
-    /// elsewhere). Only when nothing was selected yet does a first file (if
-    /// any) get picked, so a newly-appeared file can never steal selection
-    /// out from under an existing one.
+    /// Selection always follows the *path*, never the index, so it survives `new_files` reordering; a newly-appeared file can never steal it.
     pub selected: Option<String>,
-    /// Paths present in `old_files` but absent from `new_files` — the caller
-    /// evicts their cache entries so a long-running session's patch cache
-    /// cannot grow unbounded.
+    /// Paths dropped from `new_files` — the caller evicts their cache entries so the patch cache cannot grow unbounded.
     pub evicted: Vec<String>,
 }
 
-/// Pure reconciliation of one live-update tick, kept free of gpui/cache types
-/// so it is unit-testable on its own. See [`Reconciled`] for the rules.
 #[must_use]
 pub fn reconcile(
     old_files: &[FileChange],
@@ -797,17 +687,10 @@ pub fn reconcile(
     Reconciled { selected, evicted }
 }
 
-// ── tree-mode flattening ─────────────────────────────────────────────────
-
-/// One visible row of the file list's tree presentation: a directory (with
-/// its own disclosure state) or a file, each carrying its nesting `depth` for
-/// indentation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TreeNode {
     Dir {
-        /// The directory's full path from the worktree root (no trailing
-        /// slash) — the key the tree toggle uses to flip an entry in this
-        /// function's `collapsed` set.
+        /// No trailing slash — the key the tree toggle uses in the `collapsed` set.
         path: String,
         name: String,
         depth: usize,
@@ -819,17 +702,7 @@ pub enum TreeNode {
     },
 }
 
-/// Flatten a sorted [`changed_files`] list into the tree presentation's
-/// visible rows, collapsing any directory named in `collapsed` — directories
-/// default to expanded (brief decision 7), so a directory is shown expanded
-/// unless its path is explicitly in `collapsed`. A collapsed directory still
-/// renders its own row (so it can be reopened) but hides every row nested
-/// under it, files and subdirectories alike.
-///
-/// `files` must already be sorted by path (as [`changed_files`] returns it) —
-/// this walks it in one pass, tracking which directory prefixes are
-/// currently "open" on a stack, rather than building an intermediate nested
-/// tree.
+/// `files` must already be sorted by path; this walks it in one pass tracking open directory prefixes on a stack, rather than building a nested tree.
 #[must_use]
 pub fn flatten_file_tree<S: std::hash::BuildHasher>(
     files: &[FileChange],
@@ -841,9 +714,6 @@ pub fn flatten_file_tree<S: std::hash::BuildHasher>(
         let parts: Vec<&str> = file.path.split('/').collect();
         let dir_parts = &parts[..parts.len().saturating_sub(1)];
 
-        // How much of the current directory stack this file's own directory
-        // path shares with the previous file's — the rest gets closed by
-        // simply not being extended.
         let mut common = 0;
         while common < open_dirs.len() && common < dir_parts.len() {
             let expected = dir_parts[..=common].join("/");
@@ -857,9 +727,7 @@ pub fn flatten_file_tree<S: std::hash::BuildHasher>(
 
         for (i, part) in dir_parts.iter().enumerate().skip(common) {
             let path = dir_parts[..=i].join("/");
-            // A directory renders only if none of its own ancestors (already
-            // on the stack) are collapsed — a collapsed directory hides
-            // every descendant, not just its immediate children.
+            // A collapsed directory hides every descendant, not just its immediate children.
             let ancestor_hidden = open_dirs.iter().any(|d| collapsed.contains(d));
             if !ancestor_hidden {
                 rows.push(TreeNode::Dir {
@@ -889,7 +757,6 @@ mod tests {
 
     use super::*;
 
-    // ── parse_numstat ────────────────────────────────────────────────────
 
     #[test]
     fn numstat_common_case() {
@@ -952,13 +819,10 @@ mod tests {
 
     #[test]
     fn numstat_lopsided_dash_is_malformed() {
-        // A single-sided "-" (no matching binary marker on the other
-        // column) is not a shape git ever emits; skip it rather than guess.
         let out = "-\t3\tweird.bin\n";
         assert_eq!(parse_numstat(out).len(), 0);
     }
 
-    // ── parse_status_porcelain ───────────────────────────────────────────
 
     #[test]
     fn status_porcelain_untracked() {
@@ -984,7 +848,6 @@ mod tests {
         assert_eq!(parse_status_porcelain("\n").len(), 0);
     }
 
-    // ── parse_hunk_header / parse_patch ──────────────────────────────────
 
     #[test]
     fn patch_single_hunk_common_case() {
@@ -1105,7 +968,6 @@ Binary files a/x.png and b/x.png differ\n";
         assert!(!no_newline_at_eof);
     }
 
-    // ── synthesize_added_patch (untracked) ───────────────────────────────
 
     #[test]
     fn synthesize_added_patch_all_lines_added() {
@@ -1119,7 +981,6 @@ Binary files a/x.png and b/x.png differ\n";
         assert_eq!(hunks[0].lines[2].new_no, Some(3));
     }
 
-    // ── unified_rows / paired_rows ────────────────────────────────────────
 
     fn line(kind: LineKind, text: &str, old_no: Option<u32>, new_no: Option<u32>) -> Line {
         Line {
@@ -1275,11 +1136,7 @@ Binary files a/x.png and b/x.png differ\n";
         assert_eq!(new.as_ref().unwrap().text, "a1");
     }
 
-    // ── word_runs ────────────────────────────────────────────────────────
 
-    /// Every case asserts the reconstruction property (concatenating a
-    /// side's runs reproduces its input exactly) alongside the expected
-    /// `changed` shape, since that property must hold unconditionally.
     fn reconstruct(runs: &[Run]) -> String {
         runs.iter().map(|r| r.text.as_str()).collect()
     }
@@ -1300,7 +1157,6 @@ Binary files a/x.png and b/x.png differ\n";
         assert_eq!(reconstruct(&new), "let x = 2;");
         assert!(old.iter().any(|r| r.changed && r.text == "1"));
         assert!(new.iter().any(|r| r.changed && r.text == "2"));
-        // The common prefix/suffix around the changed token stay unchanged.
         assert!(old.iter().any(|r| !r.changed && r.text.starts_with("let")));
     }
 
@@ -1310,7 +1166,6 @@ Binary files a/x.png and b/x.png differ\n";
         assert_eq!(reconstruct(&old), "world");
         assert_eq!(reconstruct(&new), "hello world");
         assert!(old.iter().all(|r| !r.changed));
-        // "hello" and the separator space coalesce into one changed run.
         assert!(new[0].changed && new[0].text == "hello ");
         assert!(!new.last().unwrap().changed);
     }
@@ -1377,10 +1232,6 @@ Binary files a/x.png and b/x.png differ\n";
 
     #[test]
     fn word_runs_cjk_multibyte_does_not_panic_and_reconstructs() {
-        // The whole string is one contiguous "word" token on each side (no
-        // separator run splits it), so word-level tokenisation can only mark
-        // it changed as a whole — this asserts the no-panic / reconstruction
-        // guarantees hold for multibyte text, not a particular split.
         let (old, new) = word_runs("日本語のテキスト", "日本語のテキストです");
         assert_eq!(reconstruct(&old), "日本語のテキスト");
         assert_eq!(reconstruct(&new), "日本語のテキストです");
@@ -1399,8 +1250,6 @@ Binary files a/x.png and b/x.png differ\n";
 
     #[test]
     fn word_runs_marks_land_on_word_boundaries_not_mid_character() {
-        // A single differing character inside a word must still surface the
-        // whole word as one changed run, not a byte/char-level splice.
         let (old, new) = word_runs("changed", "chunged");
         assert_eq!(reconstruct(&old), "changed");
         assert_eq!(reconstruct(&new), "chunged");
@@ -1410,7 +1259,6 @@ Binary files a/x.png and b/x.png differ\n";
         assert!(new[0].changed && new[0].text == "chunged");
     }
 
-    // ── reconcile (live update) ──────────────────────────────────────────
 
     fn fc(path: &str) -> FileChange {
         FileChange {
@@ -1473,7 +1321,6 @@ Binary files a/x.png and b/x.png differ\n";
         assert_eq!(r.selected.as_deref(), Some("a.rs"));
     }
 
-    // ── flatten_file_tree ────────────────────────────────────────────────
 
     fn dirs(rows: &[TreeNode]) -> Vec<(&str, usize, bool)> {
         rows.iter()
@@ -1544,16 +1391,13 @@ Binary files a/x.png and b/x.png differ\n";
         let mut collapsed = HashSet::new();
         collapsed.insert("src".to_string());
         let rows = flatten_file_tree(&files_in, &collapsed);
-        // "src" itself still renders (so it can be reopened), but neither its
-        // direct file nor its nested subdirectory/file do.
+        // "src" itself still renders (so it can be reopened); its children do not.
         assert_eq!(dirs(&rows), vec![("src", 0, false)]);
         assert_eq!(files(&rows), vec!["top.rs"]);
     }
 
     #[test]
     fn flatten_collapsing_a_shared_ancestor_reuses_the_stack_correctly() {
-        // Two files under the same collapsed directory, with a third sibling
-        // directory that must still render normally.
         let files_in = vec![fc("a/one.rs"), fc("a/two.rs"), fc("b/three.rs")];
         let mut collapsed = HashSet::new();
         collapsed.insert("a".to_string());

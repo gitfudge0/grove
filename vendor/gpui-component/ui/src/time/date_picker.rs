@@ -30,20 +30,17 @@ pub(crate) fn init(cx: &mut App) {
     ])
 }
 
-/// Events emitted by the DatePicker.
 #[derive(Clone)]
 pub enum DatePickerEvent {
     Change(Date),
 }
 
-/// Preset value for DateRangePreset.
 #[derive(Clone)]
 pub enum DateRangePresetValue {
     Single(NaiveDate),
     Range(NaiveDate, NaiveDate),
 }
 
-/// Preset for date range selection.
 #[derive(Clone)]
 pub struct DateRangePreset {
     label: SharedString,
@@ -51,14 +48,12 @@ pub struct DateRangePreset {
 }
 
 impl DateRangePreset {
-    /// Creates a new DateRangePreset with a date.
     pub fn single(label: impl Into<SharedString>, date: NaiveDate) -> Self {
         DateRangePreset {
             label: label.into(),
             value: DateRangePresetValue::Single(date),
         }
     }
-    /// Creates a new DateRangePreset with a range of dates.
     pub fn range(label: impl Into<SharedString>, start: NaiveDate, end: NaiveDate) -> Self {
         DateRangePreset {
             label: label.into(),
@@ -67,7 +62,6 @@ impl DateRangePreset {
     }
 }
 
-/// Use to store the state of the date picker.
 pub struct DatePickerState {
     focus_handle: FocusHandle,
     date: Date,
@@ -87,12 +81,10 @@ impl Focusable for DatePickerState {
 impl EventEmitter<DatePickerEvent> for DatePickerState {}
 
 impl DatePickerState {
-    /// Create a date state.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::new_with_range(false, window, cx)
     }
 
-    /// Create a date state with range mode.
     pub fn range(window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::new_with_range(true, window, cx)
     }
@@ -133,38 +125,30 @@ impl DatePickerState {
         }
     }
 
-    /// Set the date format of the date picker to display in Input, default: "%Y/%m/%d".
     pub fn date_format(mut self, format: impl Into<SharedString>) -> Self {
         self.date_format = format.into();
         self
     }
 
-    /// Set the number of months calendar view to display, default is 1.
     pub fn number_of_months(mut self, number_of_months: usize) -> Self {
         self.number_of_months = number_of_months;
         self
     }
 
-    /// Get the date of the date picker.
     pub fn date(&self) -> Date {
         self.date
     }
 
-    /// Set the date of the date picker.
     pub fn set_date(&mut self, date: impl Into<Date>, window: &mut Window, cx: &mut Context<Self>) {
         self.update_date(date.into(), false, window, cx);
     }
 
-    /// Set the disabled match for the calendar.
     pub fn disabled_matcher(mut self, disabled: impl Into<Matcher>) -> Self {
         self.disabled_matcher = Some(Rc::new(disabled.into()));
         self
     }
 
-    /// Set the year range for the internal calendar.
-    ///
-    /// Default is 50 years before and after the current year.
-    /// `range` uses a half-open interval `(start, end)` where `end` is exclusive.
+    /// Default is 50 years before/after the current year; `range` is half-open `(start, end)`.
     pub fn set_year_range(&mut self, range: (i32, i32), cx: &mut Context<Self>) {
         self.calendar.update(cx, |state, cx| {
             state.set_year_range(range, cx);
@@ -183,7 +167,6 @@ impl DatePickerState {
         cx.notify();
     }
 
-    /// Set the disabled matcher of the date picker.
     fn set_canlendar_disabled_matcher(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let matcher = self.disabled_matcher.clone();
         self.calendar.update(cx, |state, _| {
@@ -213,12 +196,7 @@ impl DatePickerState {
         self.clean(&ClickEvent::default(), window, cx);
     }
 
-    // To focus the Picker Input, if current focus in is on the container.
-    //
-    // This is because mouse down out the Calendar, GPUI will move focus to the container.
-    // So we need to move focus back to the Picker Input.
-    //
-    // But if mouse down target is some other focusable element (e.g.: [`crate::Input`]), we should not move focus.
+    // A mouse-down outside the Calendar moves GPUI's focus to the container; move it back to the Picker Input unless the target is some other focusable element.
     fn focus_back_if_need(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.open {
             return;
@@ -265,7 +243,6 @@ impl DatePickerState {
     }
 }
 
-/// A DatePicker element.
 #[derive(IntoElement)]
 pub struct DatePicker {
     id: ElementId,
@@ -312,7 +289,6 @@ impl Render for DatePickerState {
 }
 
 impl DatePicker {
-    /// Create a new DatePicker with the given [`DatePickerState`].
     pub fn new(state: &Entity<DatePickerState>) -> Self {
         Self {
             id: ("date-picker", state.entity_id()).into(),
@@ -328,31 +304,26 @@ impl DatePicker {
         }
     }
 
-    /// Set the placeholder of the date picker, default: "".
     pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = Some(placeholder.into());
         self
     }
 
-    /// Set whether to show the clear button when the input field is not empty, default is false.
     pub fn cleanable(mut self, cleanable: bool) -> Self {
         self.cleanable = cleanable;
         self
     }
 
-    /// Set preset ranges for the date picker.
     pub fn presets(mut self, presets: Vec<DateRangePreset>) -> Self {
         self.presets = Some(presets);
         self
     }
 
-    /// Set number of months to display in the calendar, default is 2.
     pub fn number_of_months(mut self, number_of_months: usize) -> Self {
         self.number_of_months = number_of_months;
         self
     }
 
-    /// Set appearance of the date picker, if false, the date picker will be in a minimal style.
     pub fn appearance(mut self, appearance: bool) -> Self {
         self.appearance = appearance;
         self
@@ -365,7 +336,6 @@ impl RenderOnce for DatePicker {
             state.set_canlendar_disabled_matcher(window, cx);
         });
 
-        // This for keep focus border style, when click on the popup.
         let is_focused = self.focus_handle(cx).contains_focused(window, cx);
         let state = self.state.read(cx);
         let show_clean = self.cleanable && state.date.is_some();

@@ -24,14 +24,12 @@ pub(crate) fn init(cx: &mut App) {
     state::init(cx);
 }
 
-/// Create a new markdown text view with code location as id.
 #[track_caller]
 pub fn markdown(source: impl Into<SharedString>) -> TextView {
     let id: ElementId = ElementId::CodeLocation(*std::panic::Location::caller());
     TextView::markdown(id, source)
 }
 
-/// Create a new html text view with code location as id.
 #[track_caller]
 pub fn html(source: impl Into<SharedString>) -> TextView {
     let id: ElementId = ElementId::CodeLocation(*std::panic::Location::caller());
@@ -69,9 +67,7 @@ impl From<TextView> for Text {
 }
 
 impl Text {
-    /// Set the style for [`TextView`].
-    ///
-    /// Do nothing if this is `String`.
+    /// No-op if this is `String`.
     pub fn style(self, style: TextViewStyle) -> Self {
         match self {
             Self::String(s) => Self::String(s),
@@ -79,7 +75,6 @@ impl Text {
         }
     }
 
-    /// Get the text content.
     pub(crate) fn get_text(&self, cx: &App) -> SharedString {
         match self {
             Self::String(s) => s.clone(),

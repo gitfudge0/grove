@@ -8,7 +8,6 @@ use instant::Duration;
 
 use super::ProgressState;
 
-/// A linear horizontal progress bar element.
 #[derive(IntoElement)]
 pub struct Progress {
     id: ElementId,
@@ -20,7 +19,6 @@ pub struct Progress {
 }
 
 impl Progress {
-    /// Create a new Progress bar.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -32,24 +30,18 @@ impl Progress {
         }
     }
 
-    /// Enable indeterminate loading animation.
-    ///
-    /// When `loading` is `true`, the `value` is ignored and an infinite
-    /// sliding animation is shown instead.
+    /// When `true`, `value` is ignored and an infinite sliding animation shows instead.
     pub fn loading(mut self, loading: bool) -> Self {
         self.loading = loading;
         self
     }
 
-    /// Set the color of the progress bar.
     pub fn color(mut self, color: impl Into<Hsla>) -> Self {
         self.color = Some(color.into());
         self
     }
 
-    /// Set the percentage value of the progress bar.
-    ///
-    /// The value should be between 0.0 and 100.0.
+    /// Should be between 0.0 and 100.0.
     pub fn value(mut self, value: f32) -> Self {
         self.value = value.clamp(0., 100.);
         self

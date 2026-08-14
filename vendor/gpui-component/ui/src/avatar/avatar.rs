@@ -9,9 +9,7 @@ use crate::{
     avatar::{AvatarSized as _, avatar_size},
 };
 
-/// User avatar element.
-///
-/// We can use [`Sizable`] trait to set the size of the avatar (see also: [`avatar_size`] about the size in pixels).
+/// Use [`Sizable`] to set the size (see also [`avatar_size`] for the pixel size).
 #[derive(IntoElement)]
 pub struct Avatar {
     base: Div,
@@ -36,13 +34,11 @@ impl Avatar {
         }
     }
 
-    /// Set to use image source for the avatar.
     pub fn src(mut self, source: impl Into<ImageSource>) -> Self {
         self.src = Some(source.into());
         self
     }
 
-    /// Set name of the avatar user, if `src` is none, will use this name as placeholder.
     pub fn name(mut self, name: impl Into<SharedString>) -> Self {
         let name: SharedString = name.into();
         let short: SharedString = extract_text_initials(&name).into();
@@ -52,7 +48,6 @@ impl Avatar {
         self
     }
 
-    /// Set placeholder icon, default: [`IconName::User`]
     pub fn placeholder(mut self, icon: impl Into<Icon>) -> Self {
         self.placeholder = icon.into();
         self
