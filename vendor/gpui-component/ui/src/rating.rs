@@ -8,7 +8,6 @@ use gpui::{
 };
 use gpui::{ClickEvent, Hsla, StatefulInteractiveElement};
 
-/// A simple star Rating element.
 #[derive(IntoElement)]
 pub struct Rating {
     id: ElementId,
@@ -22,7 +21,6 @@ pub struct Rating {
 }
 
 impl Rating {
-    /// Create a new Rating with an `ElementId`.
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -36,25 +34,22 @@ impl Rating {
         }
     }
 
-    /// Set the star size.
     pub fn with_size(mut self, size: impl Into<Size>) -> Self {
         self.size = size.into();
         self
     }
 
-    /// Disable interaction.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
-    /// Set active color, default will use `yellow` from theme colors.
+    /// Default `yellow` from theme colors.
     pub fn color(mut self, color: impl Into<Hsla>) -> Self {
         self.color = Some(color.into());
         self
     }
 
-    /// Set initial value (0..=max).
     pub fn value(mut self, value: usize) -> Self {
         self.value = value;
         if self.value > self.max {
@@ -63,7 +58,6 @@ impl Rating {
         self
     }
 
-    /// Set maximum number of stars.
     pub fn max(mut self, max: usize) -> Self {
         self.max = max;
         if self.value > self.max {
@@ -72,9 +66,7 @@ impl Rating {
         self
     }
 
-    /// Add on_click handler when the rating changes.
-    ///
-    /// The `&usize` parameter is the new rating value.
+    /// `&usize` is the new rating value.
     pub fn on_click(mut self, handler: impl Fn(&usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Rc::new(handler));
         self
@@ -102,11 +94,9 @@ impl Disableable for Rating {
 }
 
 struct RaingState {
-    /// To save the default value on init state, to detect external value changes.
+    /// Init-time value, to detect external value changes.
     default_value: usize,
-    /// To store the current selected value.
     value: usize,
-    /// To store the currently hovered value.
     hovered_value: usize,
 }
 
@@ -126,7 +116,6 @@ impl RenderOnce for Rating {
             hovered_value: 0,
         });
 
-        // Reset state if outside has changed `value` prop.
         if state.read(cx).default_value != default_value {
             state.update(cx, |state, _| {
                 state.default_value = default_value;

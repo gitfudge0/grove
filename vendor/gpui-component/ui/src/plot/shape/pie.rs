@@ -28,7 +28,6 @@ impl<T> Pie<T> {
         Self::default()
     }
 
-    /// Set the value of the Pie.
     pub fn value<F>(mut self, value: F) -> Self
     where
         F: 'static + Fn(&T) -> Option<f32>,
@@ -37,25 +36,21 @@ impl<T> Pie<T> {
         self
     }
 
-    /// Set the start angle of the Pie.
     pub fn start_angle(mut self, start_angle: f32) -> Self {
         self.start_angle = start_angle;
         self
     }
 
-    /// Set the end angle of the Pie.
     pub fn end_angle(mut self, end_angle: f32) -> Self {
         self.end_angle = end_angle;
         self
     }
 
-    /// Set the pad angle of the Pie.
     pub fn pad_angle(mut self, pad_angle: f32) -> Self {
         self.pad_angle = pad_angle;
         self
     }
 
-    /// Get the arcs of the Pie.
     pub fn arcs<'a>(&self, data: &'a [T]) -> Vec<ArcData<'a, T>> {
         let mut values = Vec::new();
         let mut sum = 0.;

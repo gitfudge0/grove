@@ -18,8 +18,7 @@ use std::{any::Any, rc::Rc};
 
 use crate::setting::RenderOptions;
 
-/// Custom reset behavior for a setting field or item: the first closure
-/// reports "dirty" (reset button visibility), the second performs the reset. Used by `element`/`render` fields whose state bypasses `default_value`.
+/// First closure reports dirty state (reset-button visibility), second performs the reset. Used by `element`/`render` fields whose state isn't expressed via typed `default_value`.
 pub(crate) type ResetHandler = (Rc<dyn Fn(&App) -> bool>, Rc<dyn Fn(&mut Window, &mut App)>);
 
 pub(crate) trait SettingFieldRender {
@@ -53,7 +52,6 @@ pub(crate) fn set_value<T: Clone + 'static>(
     setting_field.set_value.clone()
 }
 
-/// The type of setting field to render.
 #[derive(Clone)]
 pub enum SettingFieldType {
     Switch,
@@ -130,22 +128,16 @@ impl SettingFieldType {
     }
 }
 
-/// A setting field that can get and set a value of type T in the App.
 pub struct SettingField<T> {
     pub(crate) field_type: SettingFieldType,
     pub(crate) style: StyleRefinement,
-    /// Function to get the value for this field.
     pub(crate) value: Rc<dyn Fn(&App) -> T>,
-    /// Function to set the value for this field.
     pub(crate) set_value: Rc<dyn Fn(T, &mut App)>,
     pub(crate) default_value: Option<T>,
-    /// Optional custom reset behavior for `element`/`render` fields; first
-    /// closure reports "dirty" (reset button visibility), second performs the reset.
     pub(crate) reset_handler: Option<ResetHandler>,
 }
 
 impl SettingField<bool> {
-    /// Create a new Switch field.
     pub fn switch<V, S>(value: V, set_value: S) -> Self
     where
         V: Fn(&App) -> bool + 'static,
@@ -154,7 +146,6 @@ impl SettingField<bool> {
         Self::new(SettingFieldType::Switch, value, set_value)
     }
 
-    /// Create a new Checkbox field.
     pub fn checkbox<V, S>(value: V, set_value: S) -> Self
     where
         V: Fn(&App) -> bool + 'static,
@@ -165,7 +156,6 @@ impl SettingField<bool> {
 }
 
 impl SettingField<SharedString> {
-    /// Create a new Input field.
     pub fn input<V, S>(value: V, set_value: S) -> Self
     where
         V: Fn(&App) -> SharedString + 'static,
@@ -174,8 +164,7 @@ impl SettingField<SharedString> {
         Self::new(SettingFieldType::Input, value, set_value)
     }
 
-    /// Create a new Dropdown field; the popup menu does not scroll — for
-    /// long option lists, use [`Self::scrollable_dropdown`] instead.
+    /// Popup menu does not scroll; for long lists use [`Self::scrollable_dropdown`].
     pub fn dropdown<V, S>(
         options: Vec<(SharedString, SharedString)>,
         value: V,
@@ -195,8 +184,7 @@ impl SettingField<SharedString> {
         )
     }
 
-    /// Create a new Dropdown field whose popup menu scrolls when its content
-    /// exceeds the viewport, unlike the non-scrolling [`Self::dropdown`].
+    /// For long lists where non-scrolling [`Self::dropdown`] would push items below the fold.
     pub fn scrollable_dropdown<V, S>(
         options: Vec<(SharedString, SharedString)>,
         value: V,
@@ -216,8 +204,7 @@ impl SettingField<SharedString> {
         )
     }
 
-    /// Create a new setting field with the given custom element implementing
-    /// [`SettingFieldElement`]; see also [`SettingField::render`] for a render closure.
+    /// See also [`SettingField::render`] for building with a plain render closure.
     pub fn element<E>(element: E) -> Self
     where
         E: SettingFieldElement + 'static,
@@ -231,8 +218,7 @@ impl SettingField<SharedString> {
         )
     }
 
-    /// Create a new setting field with the given element render closure; see
-    /// also [`SettingField::element`] for a custom field for complex scenarios.
+    /// See also [`SettingField::element`] for more complex scenarios.
     pub fn render<E, R>(element_render: R) -> Self
     where
         E: IntoElement + 'static,
@@ -247,7 +233,6 @@ impl SettingField<SharedString> {
 }
 
 impl SettingField<f64> {
-    /// Create a new Number Input field with the given options.
     pub fn number_input<V, S>(options: NumberFieldOptions, value: V, set_value: S) -> Self
     where
         V: Fn(&App) -> f64 + 'static,
@@ -258,7 +243,6 @@ impl SettingField<f64> {
 }
 
 impl<T> SettingField<T> {
-    /// Create a new setting field with the given get and set functions.
     fn new<V, S>(field_type: SettingFieldType, value: V, set_value: S) -> Self
     where
         V: Fn(&App) -> T + 'static,
@@ -274,15 +258,13 @@ impl<T> SettingField<T> {
         }
     }
 
-    /// Set the default value for this setting field, default is None; if
-    /// set, it is used to reset the setting, otherwise it cannot be reset.
+    /// Without this, the setting cannot be reset.
     pub fn default_value(mut self, default_value: impl Into<T>) -> Self {
         self.default_value = Some(default_value.into());
         self
     }
 
-    /// Provide custom reset behavior for [`SettingField::element`] /
-    /// [`SettingField::render`] fields not covered by [`SettingField::default_value`]. `is_dirty` controls reset-button visibility, `reset` performs it; takes precedence over `default_value`-based reset.
+    /// For `element`/`render` fields, whose externally-managed state `default_value` can't cover; takes precedence when set.
     pub fn on_reset<D, R>(mut self, is_dirty: D, reset: R) -> Self
     where
         D: Fn(&App) -> bool + 'static,
@@ -299,7 +281,6 @@ impl<T> Styled for SettingField<T> {
     }
 }
 
-/// A trait for setting fields that allows for dynamic typing.
 pub trait AnySettingField {
     fn as_any(&self) -> &dyn std::any::Any;
     fn type_name(&self) -> &'static str;
@@ -336,8 +317,7 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> AnySettingField for SettingFi
             return is_dirty(cx);
         }
 
-        // `element`/`render` fields carry no typed value, so the
-        // `default_value` comparison doesn't apply; without `on_reset`, not resettable.
+        // element/render fields carry no typed value, so default_value comparison is meaningless; without on_reset they're not resettable.
         if self.field_type.is_element() {
             return false;
         }

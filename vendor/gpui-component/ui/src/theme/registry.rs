@@ -42,7 +42,6 @@ pub(super) fn init(cx: &mut App) {
     cx.set_global(ThemeRegistry::default());
     ThemeRegistry::global_mut(cx).init_default_themes();
 
-    // Observe changes to the theme registry to apply changes to the active theme
     cx.observe_global::<ThemeRegistry>(|cx| {
         let mode = Theme::global(cx).mode;
         let light_theme = Theme::global(cx).light_theme.name.clone();
@@ -91,9 +90,7 @@ impl ThemeRegistry {
         cx.global_mut::<Self>()
     }
 
-    /// Watch themes directory.
-    ///
-    /// And reload themes to trigger the `on_load` callback.
+    /// Reloads themes to trigger the `on_load` callback.
     #[cfg(not(target_family = "wasm"))]
     pub fn watch_dir<F>(themes_dir: PathBuf, cx: &mut App, on_load: F) -> Result<()>
     where
@@ -101,7 +98,6 @@ impl ThemeRegistry {
     {
         Self::global_mut(cx).themes_dir = themes_dir.clone();
 
-        // Load theme in the background.
         cx.spawn(async move |cx| {
             _ = cx.update(|cx| {
                 if let Err(err) = Self::_watch_themes_dir(themes_dir, cx) {
@@ -117,15 +113,14 @@ impl ThemeRegistry {
         Ok(())
     }
 
-    /// Returns a reference to the map of themes (including default themes).
+    /// Includes default themes.
     pub fn themes(&self) -> &HashMap<SharedString, Rc<ThemeConfig>> {
         &self.themes
     }
 
-    /// Returns a sorted list of themes.
     pub fn sorted_themes(&self) -> Vec<&Rc<ThemeConfig>> {
         let mut themes = self.themes.values().collect::<Vec<_>>();
-        // sort by is_default true first, then light first dark later, then by name case-insensitive
+        // is_default first, then light before dark, then name case-insensitive.
         themes.sort_by(|a, b| {
             b.is_default
                 .cmp(&a.is_default)
@@ -135,7 +130,6 @@ impl ThemeRegistry {
         themes
     }
 
-    /// Returns a reference to the map of default themes.
     pub fn default_themes(&self) -> &HashMap<ThemeMode, Rc<ThemeConfig>> {
         &self.default_themes
     }
@@ -234,7 +228,6 @@ impl ThemeRegistry {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    /// Reload themes from the `themes_dir`.
     fn reload(&mut self) -> Result<()> {
         let mut themes = vec![];
 

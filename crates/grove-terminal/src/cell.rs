@@ -1,19 +1,9 @@
-//! The cell/snapshot vocabulary the model emits.
-//!
-//! Deliberately narrow: italic, underline, dim and strikethrough are dropped
-//! (spec §3 parity decision — the iced renderer never drew them either). Do not
-//! "fix" that without changing the spec.
+//! The cell/snapshot vocabulary the model emits. Deliberately narrow: italic, underline, dim and strikethrough are dropped, matching the iced renderer.
 
 use crate::color::TermColor;
 
-/// One visible grid cell in token space.
-///
-/// `inverse` is carried rather than pre-applied: the golden harness applies the
-/// fg/bg swap through a single shared helper so the oracle and the model cannot
-/// drift on inverse semantics.
-/// `Hash` is load-bearing for the renderer's per-row scene memo
-/// (`src/terminal_element.rs`): a row is reused verbatim when its raw cells
-/// hash equal, so the derive must stay in lockstep with `PartialEq`.
+/// `inverse` carried rather than pre-applied, so the golden harness's fg/bg swap helper can't drift from the model.
+/// `Hash` is load-bearing for the renderer's per-row scene memo — must stay in lockstep with `PartialEq`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Cell {
     pub c: char,

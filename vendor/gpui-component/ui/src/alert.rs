@@ -11,7 +11,6 @@ use crate::{
     text::{Text, TextViewStyle},
 };
 
-/// The variant of the [`Alert`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum AlertVariant {
     #[default]
@@ -54,7 +53,6 @@ impl AlertVariant {
     }
 }
 
-/// Alert used to display a message to the user.
 #[derive(IntoElement)]
 pub struct Alert {
     id: ElementId,
@@ -70,7 +68,6 @@ pub struct Alert {
 }
 
 impl Alert {
-    /// Create a new alert with the given message.
     pub fn new(id: impl Into<ElementId>, message: impl Into<Text>) -> Self {
         Self {
             id: id.into(),
@@ -86,68 +83,56 @@ impl Alert {
         }
     }
 
-    /// Create a new info [`AlertVariant::Info`] with the given message.
     pub fn info(id: impl Into<ElementId>, message: impl Into<Text>) -> Self {
         Self::new(id, message)
             .with_variant(AlertVariant::Info)
             .icon(IconName::Info)
     }
 
-    /// Create a new [`AlertVariant::Success`] alert with the given message.
     pub fn success(id: impl Into<ElementId>, message: impl Into<Text>) -> Self {
         Self::new(id, message)
             .with_variant(AlertVariant::Success)
             .icon(IconName::CircleCheck)
     }
 
-    /// Create a new [`AlertVariant::Warning`] alert with the given message.
     pub fn warning(id: impl Into<ElementId>, message: impl Into<Text>) -> Self {
         Self::new(id, message)
             .with_variant(AlertVariant::Warning)
             .icon(IconName::TriangleAlert)
     }
 
-    /// Create a new [`AlertVariant::Error`] alert with the given message.
     pub fn error(id: impl Into<ElementId>, message: impl Into<Text>) -> Self {
         Self::new(id, message)
             .with_variant(AlertVariant::Error)
             .icon(IconName::CircleX)
     }
 
-    /// Sets the [`AlertVariant`] of the alert.
     pub fn with_variant(mut self, variant: AlertVariant) -> Self {
         self.variant = variant;
         self
     }
 
-    /// Set the icon for the alert.
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.icon = icon.into();
         self
     }
 
-    /// Set the title for the alert.
     pub fn title(mut self, title: impl Into<SharedString>) -> Self {
         self.title = Some(title.into());
         self
     }
 
-    /// Set alert as banner style.
-    ///
-    /// The `banner` style will make the alert take the full width of the container and not border and radius.
-    /// This mode will not display `title`.
+    /// Full width, no border/radius, and no `title`.
     pub fn banner(mut self) -> Self {
         self.banner = true;
         self
     }
 
-    /// Set the visibility of the alert.
     pub fn visible(mut self, visible: bool) -> Self {
         self.visible = visible;
         self
     }
 
-    /// Set alert as closable, true will show Close icon.
     pub fn on_close(
         mut self,
         on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,

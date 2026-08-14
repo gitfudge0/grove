@@ -1,12 +1,5 @@
-//! RemoveProject (+ its async teardown progress), ArchiveProject,
-//! ArchivedProjects and Teardown.
-//!
-//! Ports of `src/gui/view/modals/confirm.rs:134-314,315-445,473-553` and
-//! `archived_projects.rs:23-158`, with the behavior halves from
-//! `src/gui/update/modals.rs` (`archive_gate_sessions` :703-720,
-//! `open_archive_gate`/`refresh_archive_gate` :721-745, `on_archive`
-//! :746-796, `kick_off_remove_project` :797-856, `advance_remove_project`
-//! :857-906) and `src/app/teardown.rs:11-40,187-199`.
+//! RemoveProject (+ its async teardown progress), ArchiveProject, ArchivedProjects and Teardown.
+//! Ports `src/gui/view/modals/confirm.rs`, `archived_projects.rs`, `src/gui/update/modals.rs` and `src/app/teardown.rs`.
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -24,23 +17,14 @@ use crate::views::components::{
     modal_header_with_close, modal_panel, mono, note_text, status_dot, ui, ModalBtn,
 };
 
-// ── local layout geometry (§8.4: geometry lives in the owning module) ─────
-
-/// The removal progress bar's girth. The `SPACE_MD` step is the smallest that
-/// still reads as a bar rather than a rule.
 const PROGRESS_BAR_H: f32 = SPACE_MD;
 
-/// The archived-row action slot: exactly two [`CONTROL_H`] mini buttons plus
-/// the `SPACE_XS` gap between them, so every row's name column ends on the
-/// same x regardless of which actions are present.
+/// Two [`CONTROL_H`] mini buttons plus their gap, so every row's name column ends on the same x.
 const ROW_ACTION_SLOT_W: f32 = CONTROL_H * 2.0 + SPACE_XS;
 
-/// Vertical breathing room for an inline "nothing here" block inside a modal
-/// body — one modal zone padding step above and below.
 const EMPTY_STATE_PY: f32 = SPACE_3XL * 2.0;
 
-/// The teardown modal's embedded PTY viewport: tall enough for a script's
-/// last ~15 lines without pushing the stage message off a laptop screen.
+/// Tall enough for a script's last ~15 lines without pushing the stage message off a laptop screen.
 const TEARDOWN_PTY_H: f32 = 240.0;
 
 impl ModalLayer {
@@ -48,12 +32,7 @@ impl ModalLayer {
         &mut self.slot
     }
 
-    // ── RemoveProject ───────────────────────────────────────────────────
-
-    /// Open the project-removal modal, discovering the project's non-main
-    /// worktrees up front so the modal can show "Also delete N worktrees on
-    /// disk" without re-shelling-out per frame
-    /// (`src/app/teardown.rs:11-40`).
+    /// Discovers the project's non-main worktrees up front so the modal can show "Also delete N worktrees" without re-shelling-out per frame.
     pub fn open_remove_project(&mut self, idx: usize, cx: &mut Context<Self>) {
         let Some(p) = cx
             .global::<SettingsState>()
@@ -85,11 +64,7 @@ impl ModalLayer {
         );
     }
 
-    /// Begin executing a confirmed removal (`kick_off_remove_project`,
-    /// `modals.rs:797-856`). The recursive worktree teardown runs on the
-    /// background executor and reports `done`/`current`/`errors` back into
-    /// the entity — **not** a tick, and never on the frame thread, so the
-    /// window stays responsive while `git worktree remove` blocks.
+    /// Teardown runs off the frame thread and reports progress back, so the window stays responsive while `git worktree remove` blocks.
     pub(super) fn kick_off_remove_project(&mut self, cx: &mut Context<Self>) {
         let Some(Modal::RemoveProject {
             idx,
@@ -106,8 +81,7 @@ impl ModalLayer {
         let worktrees = worktrees.clone();
         let also = *also_remove_worktrees;
 
-        // Sessions under the project die with it either way; they must never
-        // be left as orphans in the rail.
+        // Sessions under the project die with it either way — must not be left as orphans in the rail.
         self.kill_sessions_for_project(&name, cx);
 
         if !also || worktrees.is_empty() {
@@ -124,8 +98,6 @@ impl ModalLayer {
             for (i, wt) in worktrees.iter().enumerate() {
                 let wt_owned = wt.clone();
                 let project_path = project_path.clone();
-                // The blocking `git worktree remove` belongs on the background
-                // executor; the foreground only ever paints the progress.
                 let result = cx
                     .background_executor()
                     .spawn(async move { git::remove_worktree(&project_path, &wt_owned) })
@@ -160,7 +132,6 @@ impl ModalLayer {
         .detach();
     }
 
-    /// Drop the project from the store and close the modal.
     fn finalize_remove_project(&mut self, idx: usize, name: &str, cx: &mut Context<Self>) {
         SettingsState::update(cx, move |store| {
             if idx < store.projects.len() {
@@ -178,8 +149,7 @@ impl ModalLayer {
         cx.emit(ModalEvent::TreeInvalidated);
     }
 
-    /// Kill every session belonging to `project`, by name. One kill path, the
-    /// same one the archive gate uses (`App::kill_sessions_for_project`).
+    /// The same kill path the archive gate uses.
     fn kill_sessions_for_project(&mut self, project: &str, cx: &mut Context<Self>) {
         let ids: Vec<_> = self
             .registry
@@ -206,16 +176,7 @@ impl ModalLayer {
         });
     }
 
-    // ── ArchiveProject ──────────────────────────────────────────────────
-
-    /// One rendered row per SESSION of `project` — never per worktree, since
-    /// sessions are per-worktree and one worktree can hold several.
-    ///
-    /// Deliberately NOT filtered to live sessions: exited sessions stay in the
-    /// registry (that is how the sidebar shows exited rows) and killing the
-    /// project's sessions clears them too, so filtering here would make the
-    /// gate's count disagree with the killer's. Each row instead carries its
-    /// real liveness so the modal can say "running" or "exited" truthfully.
+    /// One row per SESSION, not per worktree. Deliberately NOT filtered to live sessions — filtering would make the gate's count disagree with the killer's.
     fn archive_gate_sessions(&self, project: &str, cx: &App) -> Vec<(String, String, bool)> {
         let activity = self.activity.read(cx);
         self.registry
@@ -254,10 +215,7 @@ impl ModalLayer {
         );
     }
 
-    /// Recompute the gate's session snapshot in place, so the modal re-renders
-    /// in the cleared state right after a kill instead of showing a cached
-    /// count that no longer matches reality (`refresh_archive_gate`,
-    /// `modals.rs:736-745`).
+    /// So the modal re-renders cleared right after a kill instead of showing a stale count.
     fn refresh_archive_gate(&mut self, cx: &mut Context<Self>) {
         let Some(Modal::ArchiveProject { name, .. }) = self.slot.get() else {
             return;
@@ -269,8 +227,6 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// The gate's kill button: the one and only kill path — the gate never
-    /// grew its own (`on_archive`, `modals.rs:746-796`).
     pub fn archive_kill_sessions(&mut self, cx: &mut Context<Self>) {
         let Some(Modal::ArchiveProject { name, .. }) = self.slot.get() else {
             return;
@@ -280,8 +236,7 @@ impl ModalLayer {
         self.refresh_archive_gate(cx);
     }
 
-    /// `y` routes through here, which re-checks the blocked precondition, so
-    /// it cannot bypass a disabled Archive button (`modals.rs:148-160`).
+    /// `y` routes through here, which re-checks the blocked precondition, so it can't bypass a disabled Archive button.
     pub(super) fn archive_confirm(&mut self, cx: &mut Context<Self>) {
         let Some(Modal::ArchiveProject { idx, name, .. }) = self.slot.get() else {
             return;
@@ -302,8 +257,6 @@ impl ModalLayer {
         self.close(cx);
         cx.emit(ModalEvent::TreeInvalidated);
     }
-
-    // ── ArchivedProjects ────────────────────────────────────────────────
 
     pub fn restore_archived(&mut self, idx: usize, cx: &mut Context<Self>) {
         SettingsState::update(cx, move |store| {
@@ -331,12 +284,7 @@ impl ModalLayer {
         cx.notify();
     }
 
-    // ── Teardown ────────────────────────────────────────────────────────
-
-    /// Begin tearing down `path` (`src/app/teardown.rs:187-199`): kill its
-    /// sessions, then either run the project's teardown script in a
-    /// modal-embedded PTY (advancing to removal when it exits) or remove the
-    /// worktree immediately.
+    /// Kills sessions, then either runs the project's teardown script in a modal-embedded PTY (advancing to removal on exit) or removes the worktree immediately.
     pub fn start_teardown(&mut self, p: &storage::Project, path: String, cx: &mut Context<Self>) {
         self.kill_sessions_for_wt(&path, cx);
         let script = p
@@ -377,8 +325,7 @@ impl ModalLayer {
             cx,
         );
 
-        // Modal-owned, never registered: a teardown PTY must not appear in the
-        // rail, exactly as iced keeps it out of `app.sessions`.
+        // Modal-owned, never registered: a teardown PTY must not appear in the rail.
         let session = cx.new(|cx| {
             crate::entities::terminal_session::TerminalSession::spawn_script(&script, &path, cx)
         });
@@ -390,9 +337,7 @@ impl ModalLayer {
         self.teardown_session = Some(session.clone());
         self.teardown_view = Some(view);
 
-        // The script's exit is what advances the stage. Poll rather than wait
-        // on the reader: EOF on the PTY and process reap are not the same
-        // event, and `alive()` is the same latch the rest of the app uses.
+        // Poll rather than wait on the reader: EOF on the PTY and process reap are not the same event.
         self.teardown_poll = Some(cx.spawn(async move |this, cx| loop {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(120))
@@ -405,8 +350,7 @@ impl ModalLayer {
         }));
     }
 
-    /// The script finished (or Escape skipped it): drop the PTY, paint a
-    /// `Removing` frame, then run the blocking removal off the frame thread.
+    /// The script finished (or Escape skipped it): drop the PTY, paint `Removing`, then run the blocking removal off-thread.
     fn advance_teardown(&mut self, cx: &mut Context<Self>) {
         let Some(Modal::Teardown {
             wt_path,
@@ -423,10 +367,7 @@ impl ModalLayer {
         }
         *stage = TeardownStage::Removing;
         *message = "removing worktree…".into();
-        // Set BEFORE the removal is kicked off so a `Removing` frame paints
-        // first (`src/app/modal.rs:171-174`). In gpui the removal is on the
-        // background executor, which makes this a paint-ordering detail
-        // rather than a hack — kept so the stage sequence stays observable.
+        // Set BEFORE the removal is kicked off so a `Removing` frame paints first.
         *removal_started = true;
         let (wt, project_path) = (wt_path.clone(), project_path.clone());
         self.teardown_poll = None;
@@ -459,8 +400,7 @@ impl ModalLayer {
         .detach();
     }
 
-    /// Escape during `RunningScript` means "skip the script and proceed to
-    /// removal" — never "close" (`cancel_modal`, `modals.rs:677-702`).
+    /// Escape during `RunningScript` means "skip the script and proceed to removal" — never "close".
     pub(super) fn skip_teardown_script(&mut self, cx: &mut Context<Self>) {
         self.advance_teardown(cx);
     }
@@ -491,8 +431,6 @@ impl ModalLayer {
         });
     }
 }
-
-// ── the views ────────────────────────────────────────────────────────────
 
 pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     match layer.slot().get() {
@@ -531,10 +469,7 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
     }
 }
 
-/// `remove_project_modal` (`view/modals/confirm.rs:315-445`): two stages in
-/// one variant — the confirm with its checkbox, then the progress view.
-/// The progress half of the two-stage variant, bundled so the view keeps one
-/// argument per concept.
+/// The progress half of the two-stage variant (confirm+checkbox, then progress), bundled to keep one argument per concept.
 struct RemoveProgress<'a> {
     in_progress: bool,
     done: usize,
@@ -617,9 +552,7 @@ fn remove_project_modal(
         d.into_any_element()
     };
 
-    // Cancel is refused while `in_progress` — an in-flight `git worktree
-    // remove` cannot be interrupted, so the close X would be dead there
-    // (§9.1.1 exception). It comes back once the confirm stage is showing.
+    // Cancel refused while in_progress: an in-flight `git worktree remove` can't be interrupted.
     let header = modal_header_slotted(
         Some("rm-proj-close"),
         "Remove project",
@@ -634,8 +567,6 @@ fn remove_project_modal(
         .child(divider_h())
         .child(modal_body(body));
     if !in_progress {
-        // The delete-worktrees hint only makes sense when the checkbox it
-        // names is actually on screen (`worktree_count > 0`).
         let hints: &[(&'static str, &'static str)] = if worktree_count > 0 {
             &[
                 ("y", "remove"),
@@ -667,18 +598,12 @@ fn remove_project_modal(
             ],
         ));
     }
-    // `in_progress` keeps no footer at all: Cancel is refused while busy, so
-    // there is nothing to offer.
 
-    // MODAL_W_LG, not the default MODAL_W_MD: the removal-progress body prints
-    // an untruncated worktree name above the progress bar, and at 480 a long
-    // name wraps and changes the dialog's height mid-removal (§2.4).
+    // MODAL_W_LG not MODAL_W_MD: an untruncated worktree name at 480 wraps and changes dialog height mid-removal.
     modal_panel(MODAL_W_LG, panel).into_any_element()
 }
 
-/// The removal progress bar: [`PROGRESS_BAR_H`] girth, `BG_STRIP` track, `RED`
-/// fill, `BORDER` border, radius 4 (`confirm.rs:409-419`). gpui has no
-/// `progress_bar` primitive, so the fill is a plain scaled child div.
+/// gpui has no `progress_bar` primitive, so the fill is a plain scaled child div.
 fn progress_bar(frac: f32) -> AnyElement {
     div()
         .w_full()
@@ -697,8 +622,7 @@ fn progress_bar(frac: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// `archive_project_modal` (`view/modals/confirm.rs:134-314`): one row per
-/// **session**, unfiltered by liveness, honestly labelled.
+/// One row per session, unfiltered by liveness, honestly labelled.
 fn archive_project_modal(
     name: &str,
     sessions: &[(String, String, bool)],
@@ -818,9 +742,7 @@ fn archive_project_modal(
     .into_any_element()
 }
 
-/// A 22×22 row action mini-button. `glyph`/`hover_bg` distinguish restore
-/// (cyan on the neutral hover fill) from delete (red on a red wash) — the
-/// same idiom as `iced`'s `mini` (`archived_projects.rs:18-40`).
+/// `glyph`/`hover_bg` distinguish restore (cyan on neutral hover) from delete (red on a red wash).
 fn archive_mini(
     id: &'static str,
     icon_name: &'static str,
@@ -845,8 +767,7 @@ fn archive_mini(
     .into_any_element()
 }
 
-/// `archived_projects_modal` (`view/modals/archived_projects.rs:23-158`): a
-/// marker modal whose every row derives live from `store.archived_projects()`.
+/// Every row derives live from `store.archived_projects()`.
 fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     let store = &cx.global::<SettingsState>().store;
     let rows: Vec<(usize, String, String)> = store
@@ -864,16 +785,7 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
             .child(ui("No archived projects.", TEXT_BODY, c::FG_MUTE()))
             .into_any_element()
     } else {
-        // §9.2 / rule 9: a `card()` of non-clickable rows, the same shape
-        // `setting_row_link` (`settings.rs`) uses for its container. Unlike a
-        // settings link, this row has no single natural destination — it
-        // holds two opposite, position-addressed actions (Restore, Delete)
-        // behind their own mini buttons. A row-level click here previously
-        // dispatched Restore in addition to whichever mini button was
-        // clicked, since nothing stopped propagation: a Delete click ran
-        // Delete then Restore against a list that had already shifted. The
-        // mini buttons already cover both actions, so the row itself stays
-        // inert rather than adding a redundant, colliding click target.
+        // The row stays inert (no row-level click): it used to also fire Restore alongside whichever mini button was clicked, since nothing stopped propagation.
         let card_rows: Vec<AnyElement> = rows
             .iter()
             .map(|(idx, name, path)| {
@@ -952,8 +864,6 @@ fn archived_projects_modal(dispatch: &ModalDispatch, cx: &App) -> AnyElement {
     .into_any_element()
 }
 
-/// `teardown_modal` (`view/modals/confirm.rs:473-553`). The embedded live PTY
-/// is Task 4's remaining half; the stage machine is complete.
 fn teardown_modal(
     layer: &ModalLayer,
     wt_path: &str,
@@ -966,10 +876,7 @@ fn teardown_modal(
         .file_name()
         .map_or_else(|| wt_path.to_string(), |f| f.to_string_lossy().into_owned());
 
-    // `body_text` is `TEXT_TITLE`/`FG_DIM` (rule 5) — the exact weight `Done`
-    // already used. Mid-flight the message stays one notch dimmer
-    // (`FG_MUTE`), a distinction worth keeping since it is how this modal
-    // tells "still working" from "final word" at a glance.
+    // Mid-flight the message stays one notch dimmer (FG_MUTE) than Done's body_text — how this modal tells "still working" from "final word".
     let message_el = if done {
         body_text(message.to_string()).into_any_element()
     } else {
@@ -980,8 +887,6 @@ fn teardown_modal(
         .flex()
         .flex_col()
         .gap(rpx(SPACE_XL))
-        // The ONE terminal renderer, reused — there is no second one (Task 3
-        // Step 4).
         .children(layer.teardown_view.clone().map(|v| {
             div()
                 .h(rpx(TEARDOWN_PTY_H))
@@ -992,10 +897,7 @@ fn teardown_modal(
         }))
         .child(message_el);
 
-    // Buttons live in the footer now (rule 2). Mid-removal (`Removing`): an
-    // in-flight `git worktree remove` cannot be safely interrupted, so there
-    // is genuinely no button and no footer for this stage — not even a
-    // disabled hint.
+    // Mid-removal: an in-flight `git worktree remove` can't be safely interrupted, so no footer at all for this stage.
     let footer = match stage {
         TeardownStage::Done { .. } => Some(modal_footer(
             &[("esc", "close")],
@@ -1008,10 +910,7 @@ fn teardown_modal(
             )
             .into_any_element()],
         )),
-        // "esc" here is off the plain cancel/close/back vocabulary on purpose:
-        // Escape doesn't just dismiss this modal, it skips the running script
-        // and proceeds straight to removal — a real, semantic action, so the
-        // hint says what it does rather than pretending it's a dismissal.
+        // "esc" names what it does (skip & remove), not a plain dismissal — Escape here is a real semantic action.
         TeardownStage::RunningScript => Some(modal_footer(
             &[("esc", "skip & remove")],
             vec![click_action(
@@ -1026,11 +925,7 @@ fn teardown_modal(
         TeardownStage::Removing => None,
     };
 
-    // §9.1.1 exception: Cancel means "skip the script" during `RunningScript`
-    // and is refused during `Removing` — a close X there would be either
-    // actively destructive or dead, so it is absent in both. `Done` is the
-    // only stage where Cancel really does close, so it is the only stage that
-    // gets one.
+    // `Done` is the only stage where Cancel really closes, so it's the only stage with a close X.
     let header = modal_header_slotted(
         Some("td-close-x"),
         format!("Delete worktree / {wt_name}"),

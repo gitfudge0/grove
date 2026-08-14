@@ -18,17 +18,12 @@ fn try_parse_theme_token(value: &str) -> anyhow::Result<ThemeToken> {
     ))
 }
 
-/// Represents a theme configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ThemeSet {
-    /// The name of the theme set.
     pub name: SharedString,
-    /// The author of the theme.
     pub author: Option<SharedString>,
-    /// The URL of the theme.
     pub url: Option<SharedString>,
-    /// The theme list of the theme set.
     #[serde(rename = "themes")]
     pub themes: Vec<ThemeConfig>,
 }
@@ -36,480 +31,354 @@ pub struct ThemeSet {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ThemeConfig {
-    /// Whether this theme is the default theme.
     pub is_default: bool,
-    /// The name of the theme.
     pub name: SharedString,
-    /// The mode of the theme, default is light.
+    /// Default is light.
     pub mode: ThemeMode,
 
-    /// The base font size, default is 16.
+    /// Default 16.
     #[serde(rename = "font.size")]
     pub font_size: Option<f32>,
-    /// The base font family, default is system font: `.SystemUIFont`.
+    /// Default is system font: `.SystemUIFont`.
     #[serde(rename = "font.family")]
     pub font_family: Option<SharedString>,
-    /// The monospace font family, default is platform specific:
-    /// - macOS: `Menlo`
-    /// - Windows: `Consolas`
-    /// - Linux: `DejaVu Sans Mono`
+    /// Default is platform-specific: macOS `Menlo`, Windows `Consolas`, Linux `DejaVu Sans Mono`.
     #[serde(rename = "mono_font.family")]
     pub mono_font_family: Option<SharedString>,
-    /// The monospace font size, default is 13.
+    /// Default 13.
     #[serde(rename = "mono_font.size")]
     pub mono_font_size: Option<f32>,
 
-    /// The border radius for general elements, default is 6.
+    /// Default 6.
     #[serde(rename = "radius")]
     pub radius: Option<usize>,
-    /// The border radius for large elements like Dialogs and Notifications, default is 8.
+    /// Large elements like Dialogs/Notifications; default 8.
     #[serde(rename = "radius.lg")]
     pub radius_lg: Option<usize>,
-    /// Set shadows in the theme, for example the Input and Button, default is true.
+    /// Default true.
     #[serde(rename = "shadow")]
     pub shadow: Option<bool>,
 
-    /// The colors of the theme.
     pub colors: ThemeConfigColors,
-    /// The highlight theme, this part is combilbility with `style` section in Zed theme.
-    ///
-    /// https://github.com/zed-industries/zed/blob/f50041779dcfd7a76c8aec293361c60c53f02d51/assets/themes/ayu/ayu.json#L9
+    /// Compatible with the `style` section in a Zed theme (zed-industries/zed assets/themes/ayu/ayu.json).
     pub highlight: Option<HighlightThemeStyle>,
 }
 
 #[derive(Debug, Default, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct ThemeConfigColors {
-    /// Used for accents such as hover background on MenuItem, ListItem, etc.
     #[serde(rename = "accent.background")]
     pub accent: Option<SharedString>,
-    /// Used for accent text color.
     #[serde(rename = "accent.foreground")]
     pub accent_foreground: Option<SharedString>,
-    /// Accordion background color.
     #[serde(rename = "accordion.background")]
     pub accordion: Option<SharedString>,
-    /// Accordion hover background color.
     #[serde(rename = "accordion.hover.background")]
     pub accordion_hover: Option<SharedString>,
-    /// Default background color.
     #[serde(rename = "background")]
     pub background: Option<SharedString>,
-    /// Default border color
     #[serde(rename = "border")]
     pub border: Option<SharedString>,
-    /// Default Button background color.
     #[serde(rename = "button.background")]
     pub button: Option<SharedString>,
-    /// Default Button active background color.
     #[serde(rename = "button.active.background")]
     pub button_active: Option<SharedString>,
-    /// Default Button text color.
     #[serde(rename = "button.foreground")]
     pub button_foreground: Option<SharedString>,
-    /// Default Button hover background color.
     #[serde(rename = "button.hover.background")]
     pub button_hover: Option<SharedString>,
-    /// Button danger background color, fallback to `danger`.
+    /// Fallback to `danger`.
     #[serde(rename = "button.danger.background")]
     pub button_danger: Option<SharedString>,
-    /// Button danger active background color, fallback to `danger_active`.
+    /// Fallback to `danger_active`.
     #[serde(rename = "button.danger.active.background")]
     pub button_danger_active: Option<SharedString>,
-    /// Button danger text color, fallback to `danger_foreground`.
+    /// Fallback to `danger_foreground`.
     #[serde(rename = "button.danger.foreground")]
     pub button_danger_foreground: Option<SharedString>,
-    /// Button danger hover background color, fallback to `danger_hover`.
+    /// Fallback to `danger_hover`.
     #[serde(rename = "button.danger.hover.background")]
     pub button_danger_hover: Option<SharedString>,
-    /// Button info background color, fallback to `info`.
+    /// Fallback to `info`.
     #[serde(rename = "button.info.background")]
     pub button_info: Option<SharedString>,
-    /// Button info active background color, fallback to `info_active`.
+    /// Fallback to `info_active`.
     #[serde(rename = "button.info.active.background")]
     pub button_info_active: Option<SharedString>,
-    /// Button info text color, fallback to `info_foreground`.
+    /// Fallback to `info_foreground`.
     #[serde(rename = "button.info.foreground")]
     pub button_info_foreground: Option<SharedString>,
-    /// Button info hover background color, fallback to `info_hover`.
+    /// Fallback to `info_hover`.
     #[serde(rename = "button.info.hover.background")]
     pub button_info_hover: Option<SharedString>,
-    /// Button primary background color, fallback to `primary`.
+    /// Fallback to `primary`.
     #[serde(rename = "button.primary.background")]
     pub button_primary: Option<SharedString>,
-    /// Button primary active background color, fallback to `primary_active`.
+    /// Fallback to `primary_active`.
     #[serde(rename = "button.primary.active.background")]
     pub button_primary_active: Option<SharedString>,
-    /// Button primary text color, fallback to `primary_foreground`.
+    /// Fallback to `primary_foreground`.
     #[serde(rename = "button.primary.foreground")]
     pub button_primary_foreground: Option<SharedString>,
-    /// Button primary hover background color, fallback to `primary_hover`.
+    /// Fallback to `primary_hover`.
     #[serde(rename = "button.primary.hover.background")]
     pub button_primary_hover: Option<SharedString>,
-    /// Button secondary background color, fallback to `secondary`.
+    /// Fallback to `secondary`.
     #[serde(rename = "button.secondary.background")]
     pub button_secondary: Option<SharedString>,
-    /// Button secondary active background color, fallback to `secondary_active`.
+    /// Fallback to `secondary_active`.
     #[serde(rename = "button.secondary.active.background")]
     pub button_secondary_active: Option<SharedString>,
-    /// Button secondary text color, fallback to `secondary_foreground`.
+    /// Fallback to `secondary_foreground`.
     #[serde(rename = "button.secondary.foreground")]
     pub button_secondary_foreground: Option<SharedString>,
-    /// Button secondary hover background color, fallback to `secondary_hover`.
+    /// Fallback to `secondary_hover`.
     #[serde(rename = "button.secondary.hover.background")]
     pub button_secondary_hover: Option<SharedString>,
-    /// Button success background color, fallback to `success`.
+    /// Fallback to `success`.
     #[serde(rename = "button.success.background")]
     pub button_success: Option<SharedString>,
-    /// Button success active background color, fallback to `success_active`.
+    /// Fallback to `success_active`.
     #[serde(rename = "button.success.active.background")]
     pub button_success_active: Option<SharedString>,
-    /// Button success text color, fallback to `success_foreground`.
+    /// Fallback to `success_foreground`.
     #[serde(rename = "button.success.foreground")]
     pub button_success_foreground: Option<SharedString>,
-    /// Button success hover background color, fallback to `success_hover`.
+    /// Fallback to `success_hover`.
     #[serde(rename = "button.success.hover.background")]
     pub button_success_hover: Option<SharedString>,
-    /// Button warning background color, fallback to `warning`.
+    /// Fallback to `warning`.
     #[serde(rename = "button.warning.background")]
     pub button_warning: Option<SharedString>,
-    /// Button warning active background color, fallback to `warning_active`.
+    /// Fallback to `warning_active`.
     #[serde(rename = "button.warning.active.background")]
     pub button_warning_active: Option<SharedString>,
-    /// Button warning text color, fallback to `warning_foreground`.
+    /// Fallback to `warning_foreground`.
     #[serde(rename = "button.warning.foreground")]
     pub button_warning_foreground: Option<SharedString>,
-    /// Button warning hover background color, fallback to `warning_hover`.
+    /// Fallback to `warning_hover`.
     #[serde(rename = "button.warning.hover.background")]
     pub button_warning_hover: Option<SharedString>,
-    /// Background color for GroupBox.
     #[serde(rename = "group_box.background")]
     pub group_box: Option<SharedString>,
-    /// Text color for GroupBox.
     #[serde(rename = "group_box.foreground")]
     pub group_box_foreground: Option<SharedString>,
-    /// Title text color for GroupBox.
     #[serde(rename = "group_box.title.foreground")]
     pub group_box_title_foreground: Option<SharedString>,
-    /// Input caret color (Blinking cursor).
+    /// Blinking cursor color.
     #[serde(rename = "caret")]
     pub caret: Option<SharedString>,
-    /// Chart 1 color.
     #[serde(rename = "chart.1")]
     pub chart_1: Option<SharedString>,
-    /// Chart 2 color.
     #[serde(rename = "chart.2")]
     pub chart_2: Option<SharedString>,
-    /// Chart 3 color.
     #[serde(rename = "chart.3")]
     pub chart_3: Option<SharedString>,
-    /// Chart 4 color.
     #[serde(rename = "chart.4")]
     pub chart_4: Option<SharedString>,
-    /// Chart 5 color.
     #[serde(rename = "chart.5")]
     pub chart_5: Option<SharedString>,
-    /// Bullish color for candlestick charts (upward price movement).
     #[serde(rename = "chart_bullish")]
     pub chart_bullish: Option<SharedString>,
-    /// Bearish color for candlestick charts (downward price movement).
     #[serde(rename = "chart_bearish")]
     pub chart_bearish: Option<SharedString>,
-    /// Danger background color.
     #[serde(rename = "danger.background")]
     pub danger: Option<SharedString>,
-    /// Danger active background color.
     #[serde(rename = "danger.active.background")]
     pub danger_active: Option<SharedString>,
-    /// Danger text color.
     #[serde(rename = "danger.foreground")]
     pub danger_foreground: Option<SharedString>,
-    /// Danger hover background color.
     #[serde(rename = "danger.hover.background")]
     pub danger_hover: Option<SharedString>,
-    /// Description List label background color.
     #[serde(rename = "description_list.label.background")]
     pub description_list_label: Option<SharedString>,
-    /// Description List label foreground color.
     #[serde(rename = "description_list.label.foreground")]
     pub description_list_label_foreground: Option<SharedString>,
-    /// Drag border color.
     #[serde(rename = "drag.border")]
     pub drag_border: Option<SharedString>,
-    /// Drop target background color.
     #[serde(rename = "drop_target.background")]
     pub drop_target: Option<SharedString>,
-    /// Default text color.
     #[serde(rename = "foreground")]
     pub foreground: Option<SharedString>,
-    /// Info background color.
     #[serde(rename = "info.background")]
     pub info: Option<SharedString>,
-    /// Info active background color.
     #[serde(rename = "info.active.background")]
     pub info_active: Option<SharedString>,
-    /// Info text color.
     #[serde(rename = "info.foreground")]
     pub info_foreground: Option<SharedString>,
-    /// Info hover background color.
     #[serde(rename = "info.hover.background")]
     pub info_hover: Option<SharedString>,
-    /// Border color for inputs such as Input, Select, etc.
     #[serde(rename = "input.border")]
     pub input: Option<SharedString>,
-    /// Link text color.
     #[serde(rename = "link")]
     pub link: Option<SharedString>,
-    /// Active link text color.
     #[serde(rename = "link.active")]
     pub link_active: Option<SharedString>,
-    /// Hover link text color.
     #[serde(rename = "link.hover")]
     pub link_hover: Option<SharedString>,
-    /// Background color for List and ListItem.
     #[serde(rename = "list.background")]
     pub list: Option<SharedString>,
-    /// Background color for active ListItem.
     #[serde(rename = "list.active.background")]
     pub list_active: Option<SharedString>,
-    /// Border color for active ListItem.
     #[serde(rename = "list.active.border")]
     pub list_active_border: Option<SharedString>,
-    /// Stripe background color for even ListItem.
     #[serde(rename = "list.even.background")]
     pub list_even: Option<SharedString>,
-    /// Background color for List header.
     #[serde(rename = "list.head.background")]
     pub list_head: Option<SharedString>,
-    /// Hover background color for ListItem.
     #[serde(rename = "list.hover.background")]
     pub list_hover: Option<SharedString>,
-    /// Muted backgrounds such as Skeleton and Switch.
     #[serde(rename = "muted.background")]
     pub muted: Option<SharedString>,
-    /// Muted text color, as used in disabled text.
     #[serde(rename = "muted.foreground")]
     pub muted_foreground: Option<SharedString>,
-    /// Background color for Popover.
     #[serde(rename = "popover.background")]
     pub popover: Option<SharedString>,
-    /// Text color for Popover.
     #[serde(rename = "popover.foreground")]
     pub popover_foreground: Option<SharedString>,
-    /// Primary background color.
     #[serde(rename = "primary.background")]
     pub primary: Option<SharedString>,
-    /// Active primary background color.
     #[serde(rename = "primary.active.background")]
     pub primary_active: Option<SharedString>,
-    /// Primary text color.
     #[serde(rename = "primary.foreground")]
     pub primary_foreground: Option<SharedString>,
-    /// Hover primary background color.
     #[serde(rename = "primary.hover.background")]
     pub primary_hover: Option<SharedString>,
-    /// Progress bar background color.
     #[serde(rename = "progress.bar.background")]
     pub progress_bar: Option<SharedString>,
-    /// Used for focus ring.
+    /// Focus ring.
     #[serde(rename = "ring")]
     pub ring: Option<SharedString>,
-    /// Scrollbar background color.
     #[serde(rename = "scrollbar.background")]
     pub scrollbar: Option<SharedString>,
-    /// Scrollbar thumb background color.
     #[serde(rename = "scrollbar.thumb.background")]
     pub scrollbar_thumb: Option<SharedString>,
-    /// Scrollbar thumb hover background color.
     #[serde(rename = "scrollbar.thumb.hover.background")]
     pub scrollbar_thumb_hover: Option<SharedString>,
-    /// Secondary background color.
     #[serde(rename = "secondary.background")]
     pub secondary: Option<SharedString>,
-    /// Active secondary background color.
     #[serde(rename = "secondary.active.background")]
     pub secondary_active: Option<SharedString>,
-    /// Secondary text color, used for secondary Button text color or secondary text.
     #[serde(rename = "secondary.foreground")]
     pub secondary_foreground: Option<SharedString>,
-    /// Hover secondary background color.
     #[serde(rename = "secondary.hover.background")]
     pub secondary_hover: Option<SharedString>,
-    /// Input selection background color.
     #[serde(rename = "selection.background")]
     pub selection: Option<SharedString>,
-    /// Sidebar background color.
     #[serde(rename = "sidebar.background")]
     pub sidebar: Option<SharedString>,
-    /// Sidebar accent background color.
     #[serde(rename = "sidebar.accent.background")]
     pub sidebar_accent: Option<SharedString>,
-    /// Sidebar accent text color.
     #[serde(rename = "sidebar.accent.foreground")]
     pub sidebar_accent_foreground: Option<SharedString>,
-    /// Sidebar border color.
     #[serde(rename = "sidebar.border")]
     pub sidebar_border: Option<SharedString>,
-    /// Sidebar text color.
     #[serde(rename = "sidebar.foreground")]
     pub sidebar_foreground: Option<SharedString>,
-    /// Sidebar primary background color.
     #[serde(rename = "sidebar.primary.background")]
     pub sidebar_primary: Option<SharedString>,
-    /// Sidebar primary text color.
     #[serde(rename = "sidebar.primary.foreground")]
     pub sidebar_primary_foreground: Option<SharedString>,
-    /// Skeleton background color.
     #[serde(rename = "skeleton.background")]
     pub skeleton: Option<SharedString>,
-    /// Slider bar background color.
     #[serde(rename = "slider.background")]
     pub slider_bar: Option<SharedString>,
-    /// Slider thumb background color.
     #[serde(rename = "slider.thumb.background")]
     pub slider_thumb: Option<SharedString>,
-    /// Success background color.
     #[serde(rename = "success.background")]
     pub success: Option<SharedString>,
-    /// Success text color.
     #[serde(rename = "success.foreground")]
     pub success_foreground: Option<SharedString>,
-    /// Success hover background color.
     #[serde(rename = "success.hover.background")]
     pub success_hover: Option<SharedString>,
-    /// Success active background color.
     #[serde(rename = "success.active.background")]
     pub success_active: Option<SharedString>,
-    /// Switch background color.
     #[serde(rename = "switch.background")]
     pub switch: Option<SharedString>,
-    /// Switch thumb background color.
     #[serde(rename = "switch.thumb.background")]
     pub switch_thumb: Option<SharedString>,
-    /// Tab background color.
     #[serde(rename = "tab.background")]
     pub tab: Option<SharedString>,
-    /// Tab active background color.
     #[serde(rename = "tab.active.background")]
     pub tab_active: Option<SharedString>,
-    /// Tab active text color.
     #[serde(rename = "tab.active.foreground")]
     pub tab_active_foreground: Option<SharedString>,
-    /// TabBar background color.
     #[serde(rename = "tab_bar.background")]
     pub tab_bar: Option<SharedString>,
-    /// TabBar segmented background color.
     #[serde(rename = "tab_bar.segmented.background")]
     pub tab_bar_segmented: Option<SharedString>,
-    /// Tab text color.
     #[serde(rename = "tab.foreground")]
     pub tab_foreground: Option<SharedString>,
-    /// Table background color.
     #[serde(rename = "table.background")]
     pub table: Option<SharedString>,
-    /// Table active item background color.
     #[serde(rename = "table.active.background")]
     pub table_active: Option<SharedString>,
-    /// Table active item border color.
     #[serde(rename = "table.active.border")]
     pub table_active_border: Option<SharedString>,
-    /// Stripe background color for even TableRow.
     #[serde(rename = "table.even.background")]
     pub table_even: Option<SharedString>,
-    /// Table header background color.
     #[serde(rename = "table.head.background")]
     pub table_head: Option<SharedString>,
-    /// Table header text color.
     #[serde(rename = "table.head.foreground")]
     pub table_head_foreground: Option<SharedString>,
-    /// Table footer background color.
     #[serde(rename = "table.foot.background")]
     pub table_foot: Option<SharedString>,
-    /// Table footer text color.
     #[serde(rename = "table.foot.foreground")]
     pub table_foot_foreground: Option<SharedString>,
-    /// Table item hover background color.
     #[serde(rename = "table.hover.background")]
     pub table_hover: Option<SharedString>,
-    /// Table row border color.
     #[serde(rename = "table.row.border")]
     pub table_row_border: Option<SharedString>,
-    /// TitleBar background color, use for Window title bar.
     #[serde(rename = "title_bar.background")]
     pub title_bar: Option<SharedString>,
-    /// TitleBar border color.
     #[serde(rename = "title_bar.border")]
     pub title_bar_border: Option<SharedString>,
-    /// StatusBar background color, use for the bottom status bar.
     #[serde(rename = "status_bar.background")]
     pub status_bar: Option<SharedString>,
-    /// StatusBar border color.
     #[serde(rename = "status_bar.border")]
     pub status_bar_border: Option<SharedString>,
-    /// Background color for Tiles.
     #[serde(rename = "tiles.background")]
     pub tiles: Option<SharedString>,
-    /// Warning background color.
     #[serde(rename = "warning.background")]
     pub warning: Option<SharedString>,
-    /// Warning active background color.
     #[serde(rename = "warning.active.background")]
     pub warning_active: Option<SharedString>,
-    /// Warning hover background color.
     #[serde(rename = "warning.hover.background")]
     pub warning_hover: Option<SharedString>,
-    /// Warning foreground color.
     #[serde(rename = "warning.foreground")]
     pub warning_foreground: Option<SharedString>,
-    /// Overlay background color.
     #[serde(rename = "overlay")]
     pub overlay: Option<SharedString>,
-    /// Window border color.
-    ///
-    /// # Platform specific:
-    ///
-    /// This is only works on Linux, other platforms we can't change the window border color.
+    /// Linux only — other platforms can't change the window border color.
     #[serde(rename = "window.border")]
     pub window_border: Option<SharedString>,
 
-    /// Base blue color.
     #[serde(rename = "base.blue")]
     blue: Option<String>,
-    /// Base light blue color.
     #[serde(rename = "base.blue.light")]
     blue_light: Option<String>,
-    /// Base cyan color.
     #[serde(rename = "base.cyan")]
     cyan: Option<String>,
-    /// Base light cyan color.
     #[serde(rename = "base.cyan.light")]
     cyan_light: Option<String>,
-    /// Base green color.
     #[serde(rename = "base.green")]
     green: Option<String>,
-    /// Base light green color.
     #[serde(rename = "base.green.light")]
     green_light: Option<String>,
-    /// Base magenta color.
     #[serde(rename = "base.magenta")]
     magenta: Option<String>,
     #[serde(rename = "base.magenta.light")]
     magenta_light: Option<String>,
-    /// Base red color.
     #[serde(rename = "base.red")]
     red: Option<String>,
-    /// Base light red color.
     #[serde(rename = "base.red.light")]
     red_light: Option<String>,
-    /// Base yellow color.
     #[serde(rename = "base.yellow")]
     yellow: Option<String>,
-    /// Base light yellow color.
     #[serde(rename = "base.yellow.light")]
     yellow_light: Option<String>,
 }
 
 impl ThemeColor {
-    /// Create a new `ThemeColor` from a `ThemeConfig`.
     pub(crate) fn apply_config(
         &mut self,
         config: &ThemeConfig,
@@ -529,7 +398,6 @@ impl ThemeColor {
                 }
                 tokens.$config_field = self.$config_field.into();
             };
-            // With fallback
             ($config_field:ident, fallback = $fallback:expr) => {
                 let fallback: gpui::Hsla = ($fallback).into();
                 if let Some(value) = &colors.$config_field {
@@ -573,7 +441,6 @@ impl ThemeColor {
 
         apply_background_color!(background);
 
-        // Base colors for fallback
         apply_color!(red);
         apply_color!(
             red_light,
@@ -614,7 +481,6 @@ impl ThemeColor {
             fallback = self.muted.blend(self.foreground.opacity(0.7))
         );
 
-        // Button colors
         let active_darken = if config.mode.is_dark() { 0.2 } else { 0.1 };
         let hover_opacity = 0.9;
         let transparent = gpui::transparent_black();
@@ -734,7 +600,6 @@ impl ThemeColor {
             fallback = self.warning.mix_oklab(transparent, 0.4)
         );
 
-        // Other colors
         apply_background_color!(accent, fallback = tokens.secondary);
         apply_color!(accent_foreground, fallback = self.foreground);
         apply_background_color!(accordion, fallback = tokens.background);
@@ -852,9 +717,7 @@ impl ThemeColor {
         apply_background_color!(overlay);
         apply_color!(window_border, fallback = self.border);
 
-        // TODO: Apply default fallback colors to highlight.
-
-        // Ensure opacity for list_active, table_active, selection.
+        // TODO: apply default fallback colors to highlight.
         let clamp_alpha = |raw: Option<&str>, color: Hsla, background: Background, max: f32| {
             let base = color.a;
             let target = base.min(max);
@@ -892,7 +755,6 @@ impl ThemeColor {
 }
 
 impl Theme {
-    /// Apply the given theme configuration to the current theme.
     pub fn apply_config(&mut self, config: &Rc<ThemeConfig>) {
         if config.mode.is_dark() {
             self.dark_theme = config.clone();
@@ -1035,14 +897,11 @@ mod tests {
             "name": "Highlight",
             "mode": "light",
             "colors": {
-                // Solid above the cap: must be capped to 0.2, not attenuated twice.
+                // Must be capped to 0.2, not attenuated twice.
                 "list.active.background": "#3b82f6",
-                // Gradient with a faint `from` stop and an opaque `to` stop: the
-                // `to` stop must be clamped independently, not left at full alpha.
+                // The opaque `to` stop must be clamped independently.
                 "table.active.background": "linear-gradient(#bfdbfe33, #3b82f6)",
-                // Gradient with a transparent `from` stop: the opaque `to` stop
-                // must still be clamped (the `base == 0` factor fallback used to
-                // leave it untouched).
+                // A transparent `from` stop used to leave the opaque `to` stop unclamped (base==0 factor fallback bug).
                 "selection.background": "linear-gradient(#3b82f600, #3b82f6)",
             }
         }))
@@ -1051,12 +910,10 @@ mod tests {
         let mut theme = Theme::default();
         theme.apply_config(&std::rc::Rc::new(config));
 
-        // Solid: representative color and rendered background both capped at 0.2.
         let blue = try_parse_color("#3b82f6").unwrap();
         assert_eq!(theme.list_active, blue.alpha(0.2));
         assert_eq!(theme.tokens.list_active.background, blue.alpha(0.2).into());
 
-        // Gradient: the opaque `to` stop is clamped to 0.2, not left fully opaque.
         let faint = try_parse_color("#bfdbfe33").unwrap();
         assert_eq!(
             theme.tokens.table_active.background,
@@ -1067,8 +924,6 @@ mod tests {
             )
         );
 
-        // Gradient: a transparent `from` stop stays transparent while the opaque
-        // `to` stop is still clamped to 0.3 (selection cap).
         let clear = try_parse_color("#3b82f600").unwrap();
         assert_eq!(
             theme.tokens.selection.background,

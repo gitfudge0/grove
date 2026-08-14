@@ -5,7 +5,6 @@ use gpui::{
 
 use crate::{ActiveTheme, StyledExt};
 
-/// A tag for displaying keyboard keybindings.
 #[derive(IntoElement, Clone, Debug)]
 pub struct Kbd {
     style: StyleRefinement,
@@ -26,7 +25,6 @@ impl From<Keystroke> for Kbd {
 }
 
 impl Kbd {
-    /// Create a new Kbd element with the given [`Keystroke`].
     pub fn new(stroke: Keystroke) -> Self {
         Self {
             style: StyleRefinement::default(),
@@ -36,19 +34,16 @@ impl Kbd {
         }
     }
 
-    /// Set the appearance of the keybinding, default is `true`.
     pub fn appearance(mut self, appearance: bool) -> Self {
         self.appearance = appearance;
         self
     }
 
-    /// Use outline style for the keybinding, default is `false`.
     pub fn outline(mut self) -> Self {
         self.outline = true;
         self
     }
 
-    /// Return the first keybinding for the given action and context.
     pub fn binding_for_action(
         action: &dyn Action,
         context: Option<&str>,
@@ -69,7 +64,6 @@ impl Kbd {
         }
     }
 
-    /// Return the first keybinding for the given action and focus handle.
     pub fn binding_for_action_in(
         action: &dyn Action,
         focus_handle: &FocusHandle,
@@ -83,10 +77,6 @@ impl Kbd {
         }
     }
 
-    /// Return the Platform specific keybinding string by KeyStroke
-    ///
-    /// macOS: https://support.apple.com/en-us/HT201236
-    /// Windows: https://support.microsoft.com/en-us/windows/keyboard-shortcuts-in-windows-dcc61a57-8ff0-cffe-9796-cb9706c75eec
     pub fn format(key: &Keystroke) -> String {
         #[cfg(target_os = "macos")]
         const SEPARATOR: &str = "";
@@ -95,9 +85,7 @@ impl Kbd {
 
         let mut parts = vec![];
 
-        // The key map order in macOS is: ⌃⌥⇧⌘
-        // And in Windows is: Ctrl+Alt+Shift+Win
-
+        // Key order: macOS is Ctrl-Alt-Shift-Cmd, Windows is Ctrl-Alt-Shift-Win.
         if key.modifiers.control {
             #[cfg(target_os = "macos")]
             parts.push("⌃");

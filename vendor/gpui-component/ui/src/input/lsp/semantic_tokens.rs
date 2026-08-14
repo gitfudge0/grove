@@ -9,15 +9,12 @@ use ropey::Rope;
 use crate::highlighter::HighlightTheme;
 use crate::input::{InputState, Lsp, RopeExt};
 
-/// A provider of semantic highlighting tokens, layered on top of the
-/// built-in tree-sitter [`SyntaxHighlighter`](crate::highlighter::SyntaxHighlighter) — it does **not** replace it. Tokens are delta-encoded with a numeric `token_type` resolved against the active [`HighlightTheme`](crate::highlighter::HighlightTheme) at paint time, so theme switches recolor tokens with no provider cooperation; modifiers are accepted but not currently mapped to styles.
+/// Layered on the built-in tree-sitter highlighter, not a replacement — LSP's `textDocument/semanticTokens/range` counterpart.
+/// Tokens are delta-encoded; the editor resolves each type name against the active theme at paint time, so a theme switch recolors with no provider cooperation. Modifiers aren't mapped to styles yet.
 pub trait DocumentRangeSemanticTokensProvider {
-    /// The legend naming the numeric `token_type` field of the tokens
-    /// returned by [`semantic_tokens`](Self::semantic_tokens); resolved against the active [`HighlightTheme`](crate::highlighter::HighlightTheme).
     fn legend(&self) -> SemanticTokensLegend;
 
-    /// Fetches semantic tokens for the specified byte range (LSP
-    /// `textDocument/semanticTokens/range`).
+    /// `textDocument/semanticTokens/range`.
     fn semantic_tokens(
         &self,
         text: &Rope,
@@ -28,8 +25,7 @@ pub trait DocumentRangeSemanticTokensProvider {
 }
 
 impl Lsp {
-    /// Get semantic token styles intersecting the visible byte range. Called
-    /// on every paint; binary-searches the sorted cache (`O(log N + visible)`) instead of scanning the whole document. Returns byte ranges and styles.
+    /// Called every paint; binary-searches the sorted cache (`O(log N + visible)`) instead of scanning the whole document.
     pub(crate) fn semantic_tokens_for_range(
         &self,
         text: &Rope,
@@ -43,8 +39,7 @@ impl Lsp {
         let visible_start = text.offset_to_position(visible_range.start);
         let visible_end = text.offset_to_position(visible_range.end);
 
-        // Cache is sorted by `range.start`; a token can only touch the
-        // viewport if its start is before `visible_end` and not on a line entirely above the viewport's first line (tokens are single-line).
+        // A token can touch the viewport only if its start is before visible_end, and not on a line entirely above the viewport (tokens are single-line).
         let hi = self
             .semantic_tokens
             .partition_point(|(range, _)| range.start < visible_end);
@@ -80,12 +75,10 @@ impl Lsp {
         let provider = provider.clone();
         let legend = provider.legend();
         let text = text.clone();
-        // Fetch the whole document; results are cached and filtered to the
-        // viewport at paint time, so a scroll never needs a refetch.
+        // Fetches the whole document, cached and filtered to the viewport at paint time, so a scroll never needs a refetch.
         let range = 0..text.len();
         let input_state = cx.entity();
 
-        // debounce timer 100ms
         self._semantic_tokens_task = cx.spawn_in(window, async move |_, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(100))
@@ -110,8 +103,12 @@ impl Lsp {
     }
 }
 
-/// Decode the LSP delta-encoding of `tokens` into absolute (position-range,
-/// type-name) pairs, sorted by start position; out-of-bounds `token_type` indices are skipped, and color resolution is deferred to paint time.
+/// Decode the LSP delta-encoding of `tokens` into absolute
+/// (position-range, type-name) pairs, sorted by start position.
+///
+/// The type name is looked up in `legend.token_types`; tokens whose
+/// `token_type` index is out of bounds are skipped. Color resolution is
+/// deferred to paint time so theme switches take effect without a refetch.
 fn decode_semantic_tokens(
     tokens: &SemanticTokens,
     legend: &SemanticTokensLegend,
@@ -190,8 +187,7 @@ mod tests {
         assert_eq!(decoded[0].0.start, Position::new(0, 0));
         assert_eq!(decoded[0].0.end, Position::new(0, 4));
         assert_eq!(decoded[0].1.as_ref(), "keyword");
-        // Second token's line is relative to the first (0 + 1), character
-        // resets because delta_line > 0.
+        // Character resets because delta_line > 0.
         assert_eq!(decoded[1].0.start, Position::new(1, 2));
         assert_eq!(decoded[1].0.end, Position::new(1, 7));
         assert_eq!(decoded[1].1.as_ref(), "comment");

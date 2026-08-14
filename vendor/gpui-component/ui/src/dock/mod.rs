@@ -30,79 +30,56 @@ pub(crate) fn init(cx: &mut App) {
 actions!(dock, [ToggleZoom, ClosePanel]);
 
 pub enum DockEvent {
-    /// The layout of the dock has changed, subscribers this to save the layout.
-    ///
-    /// This event is emitted when every time the layout of the dock has changed,
-    /// So it emits may be too frequently, you may want to debounce the event.
+    /// May fire frequently — debounce if saving the layout on it.
     LayoutChanged,
-
-    /// The drag item drop event.
     DragDrop(AnyDrag),
 }
 
-/// The main area of the dock.
 pub struct DockArea {
     id: SharedString,
-    /// The version is used to special the default layout, this is like the `panel_version` in [`Panel`](Panel).
+    /// Like `panel_version` in [`Panel`](Panel).
     version: Option<usize>,
     pub(crate) bounds: Bounds<Pixels>,
 
-    /// The center view of the dock_area.
     center: DockItem,
-    /// The left dock of the dock_area.
     left_dock: Option<Entity<Dock>>,
-    /// The bottom dock of the dock_area.
     bottom_dock: Option<Entity<Dock>>,
-    /// The right dock of the dock_area.
     right_dock: Option<Entity<Dock>>,
 
-    /// The entity_id of the [`TabPanel`](TabPanel) where each toggle button should be displayed,
     toggle_button_panels: Edges<Option<EntityId>>,
 
-    /// Whether to show the toggle button.
     toggle_button_visible: bool,
-    /// The top zoom view of the dock_area, if any.
     zoom_view: Option<AnyView>,
 
-    /// Lock panels layout, but allow to resize.
+    /// Locks panel layout but still allows resize.
     locked: bool,
 
-    /// The panel style, default is [`PanelStyle::Default`](PanelStyle::Default).
     pub(crate) panel_style: PanelStyle,
 
     _subscriptions: Vec<Subscription>,
 }
 
-/// DockItem is a tree structure that represents the layout of the dock.
+/// A tree structure representing the dock's layout.
 #[derive(Clone)]
 pub enum DockItem {
-    /// Split layout
     Split {
         axis: Axis,
-        /// Self size, only used for build split panels
         size: Option<Pixels>,
         items: Vec<DockItem>,
-        /// Items sizes
         sizes: Vec<Option<Pixels>>,
         view: Entity<StackPanel>,
     },
-    /// Tab layout
     Tabs {
-        /// Self size, only used for build split panels
         size: Option<Pixels>,
         items: Vec<Arc<dyn PanelView>>,
         active_ix: usize,
         view: Entity<TabPanel>,
     },
-    /// Panel layout
     Panel {
-        /// Self size, only used for build split panels
         size: Option<Pixels>,
         view: Arc<dyn PanelView>,
     },
-    /// Tiles layout
     Tiles {
-        /// Self size, only used for build split panels
         size: Option<Pixels>,
         items: Vec<TileItem>,
         view: Entity<Tiles>,
@@ -134,7 +111,6 @@ impl std::fmt::Debug for DockItem {
 }
 
 impl DockItem {
-    /// Get the size of the DockItem.
     fn get_size(&self) -> Option<Pixels> {
         match self {
             Self::Split { size, .. } => *size,
@@ -144,7 +120,6 @@ impl DockItem {
         }
     }
 
-    /// Set size for the DockItem.
     pub fn size(mut self, new_size: impl Into<Pixels>) -> Self {
         let new_size: Option<Pixels> = Some(new_size.into());
         match self {
@@ -156,7 +131,7 @@ impl DockItem {
         self
     }
 
-    /// Set active index for the DockItem, only valid for [`DockItem::Tabs`].
+    /// Only valid for [`DockItem::Tabs`].
     pub fn active_index(mut self, new_active_ix: usize, cx: &mut App) -> Self {
         debug_assert!(
             matches!(self, Self::Tabs { .. }),
@@ -177,7 +152,6 @@ impl DockItem {
         self
     }
 
-    /// Create DockItem::Split with given split layout.
     pub fn split(
         axis: Axis,
         items: Vec<DockItem>,
@@ -189,7 +163,6 @@ impl DockItem {
         Self::split_with_sizes(axis, items, sizes, dock_area, window, cx)
     }
 
-    /// Create DockItem with vertical split layout.
     pub fn v_split(
         items: Vec<DockItem>,
         dock_area: &WeakEntity<DockArea>,
@@ -251,7 +224,6 @@ impl DockItem {
         }
     }
 
-    /// Create DockItem with panel layout
     pub fn panel(panel: Arc<dyn PanelView>) -> Self {
         Self::Panel {
             size: None,
@@ -259,9 +231,7 @@ impl DockItem {
         }
     }
 
-    /// Create DockItem with tiles layout
-    ///
-    /// This items and metas should have the same length.
+    /// `items` and `metas` must have the same length.
     pub fn tiles(
         items: Vec<DockItem>,
         metas: Vec<impl Into<TileMeta> + Copy>,
@@ -287,9 +257,7 @@ impl DockItem {
                             TileItem::new(view.clone(), meta.bounds).z_index(meta.z_index);
                         tiles.add_item(tile_item, dock_area, window, cx);
                     }
-                    _ => {
-                        // Ignore non-tabs items
-                    }
+                    _ => {}
                 }
             }
             tiles
@@ -313,9 +281,6 @@ impl DockItem {
         }
     }
 
-    /// Create DockItem with tabs layout, items are displayed as tabs.
-    ///
-    /// The `active_ix` is the index of the active tab, if `None` the first tab is active.
     pub fn tabs(
         items: Vec<Arc<dyn PanelView>>,
         dock_area: &WeakEntity<DockArea>,
@@ -363,7 +328,6 @@ impl DockItem {
         }
     }
 
-    /// Returns the views of the dock item.
     pub fn view(&self) -> Arc<dyn PanelView> {
         match self {
             Self::Split { view, .. } => Arc::new(view.clone()),
@@ -373,7 +337,6 @@ impl DockItem {
         }
     }
 
-    /// Find existing panel in the dock item.
     pub fn find_panel(&self, panel: Arc<dyn PanelView>) -> Option<Arc<dyn PanelView>> {
         match self {
             Self::Split { items, .. } => {
@@ -391,7 +354,6 @@ impl DockItem {
         }
     }
 
-    /// Add a panel to the dock item.
     pub fn add_panel(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -408,7 +370,6 @@ impl DockItem {
                 });
             }
             Self::Split { view, items, .. } => {
-                // Iter items to add panel to the first tabs
                 for item in items.into_iter() {
                     if let DockItem::Tabs { view, .. } = item {
                         view.update(cx, |tab_panel, cx| {
@@ -418,7 +379,6 @@ impl DockItem {
                     }
                 }
 
-                // Unable to find tabs, create new tabs
                 let new_item = Self::tabs(vec![panel.clone()], dock_area, window, cx);
                 items.push(new_item.clone());
                 view.update(cx, |stack_panel, cx| {
@@ -444,7 +404,6 @@ impl DockItem {
         }
     }
 
-    /// Remove a panel from the dock item.
     pub fn remove_panel(&self, panel: Arc<dyn PanelView>, window: &mut Window, cx: &mut App) {
         match self {
             DockItem::Tabs { view, .. } => {
@@ -453,7 +412,6 @@ impl DockItem {
                 });
             }
             DockItem::Split { items, view, .. } => {
-                // For each child item, set collapsed state
                 for item in items {
                     item.remove_panel(panel.clone(), window, cx);
                 }
@@ -478,7 +436,6 @@ impl DockItem {
                 });
             }
             DockItem::Split { items, .. } => {
-                // For each child item, set collapsed state
                 for item in items {
                     item.set_collapsed(collapsed, window, cx);
                 }
@@ -488,7 +445,6 @@ impl DockItem {
         }
     }
 
-    /// Recursively traverses to find the left-most and top-most TabPanel.
     pub(crate) fn left_top_tab_panel(&self, cx: &App) -> Option<Entity<TabPanel>> {
         match self {
             DockItem::Tabs { view, .. } => Some(view.clone()),
@@ -498,7 +454,6 @@ impl DockItem {
         }
     }
 
-    /// Recursively traverses to find the right-most and top-most TabPanel.
     pub(crate) fn right_top_tab_panel(&self, cx: &App) -> Option<Entity<TabPanel>> {
         match self {
             DockItem::Tabs { view, .. } => Some(view.clone()),
@@ -585,12 +540,10 @@ impl DockArea {
         this
     }
 
-    /// Return the bounds of the dock area.
     pub fn bounds(&self) -> Bounds<Pixels> {
         self.bounds
     }
 
-    /// Subscribe to the tiles item drag item drop event
     fn subscribe_tiles_item_drop(
         &mut self,
         tile_panel: &Entity<Tiles>,
@@ -604,19 +557,16 @@ impl DockArea {
             }));
     }
 
-    /// Set the panel style of the dock area.
     pub fn panel_style(mut self, style: PanelStyle) -> Self {
         self.panel_style = style;
         self
     }
 
-    /// Set version of the dock area.
     pub fn set_version(&mut self, version: usize, _: &mut Window, cx: &mut Context<Self>) {
         self.version = Some(version);
         cx.notify();
     }
 
-    /// Return the center dock item.
     pub fn center(&self) -> &DockItem {
         &self.center
     }
@@ -641,19 +591,14 @@ impl DockArea {
         self.left_dock = None;
     }
 
-    /// Remove the bottom dock.
     pub fn remove_bottom_dock(&mut self, _: &mut Window, _: &mut Context<Self>) {
         self.bottom_dock = None;
     }
 
-    /// Remove the right dock.
     pub fn remove_right_dock(&mut self, _: &mut Window, _: &mut Context<Self>) {
         self.right_dock = None;
     }
 
-    /// The the DockItem as the center of the dock area.
-    ///
-    /// This is used to render at the Center of the DockArea.
     pub fn set_center(&mut self, center: DockItem, window: &mut Window, cx: &mut Context<Self>) {
         self.subscribe_item(&center, window, cx);
         self.center = center;
@@ -727,18 +672,16 @@ impl DockArea {
         self.update_toggle_button_tab_panels(window, cx);
     }
 
-    /// Set locked state of the dock area, if locked, the dock area cannot be split or move, but allows to resize panels.
+    /// While locked, the dock area cannot be split or moved, but resizing panels is still allowed.
     pub fn set_locked(&mut self, locked: bool, _window: &mut Window, _cx: &mut App) {
         self.locked = locked;
     }
 
-    /// Determine if the dock area is locked.
     #[inline]
     pub fn is_locked(&self) -> bool {
         self.locked
     }
 
-    /// Determine if the dock area has a dock at the given placement.
     pub fn has_dock(&self, placement: DockPlacement) -> bool {
         match placement {
             DockPlacement::Left => self.left_dock.is_some(),
@@ -748,7 +691,6 @@ impl DockArea {
         }
     }
 
-    /// Determine if the dock at the given placement is open.
     pub fn is_dock_open(&self, placement: DockPlacement, cx: &App) -> bool {
         match placement {
             DockPlacement::Left => self
@@ -770,9 +712,7 @@ impl DockArea {
         }
     }
 
-    /// Set the dock at the given placement to be open or closed.
-    ///
-    /// Only the left, bottom, right dock can be toggled.
+    /// Only the left, bottom and right docks can be toggled.
     pub fn set_dock_collapsible(
         &mut self,
         collapsible_edges: Edges<bool>,
@@ -798,7 +738,6 @@ impl DockArea {
         }
     }
 
-    /// Determine if the dock at the given placement is collapsible.
     pub fn is_dock_collapsible(&self, placement: DockPlacement, cx: &App) -> bool {
         match placement {
             DockPlacement::Left => self
@@ -820,7 +759,6 @@ impl DockArea {
         }
     }
 
-    /// Toggle the dock at the given placement.
     pub fn toggle_dock(
         &self,
         placement: DockPlacement,
@@ -841,12 +779,10 @@ impl DockArea {
         }
     }
 
-    /// Set the visibility of the toggle button.
     pub fn set_toggle_button_visible(&mut self, visible: bool, _: &mut Context<Self>) {
         self.toggle_button_visible = visible;
     }
 
-    /// Add a panel item to the dock area at the given placement.
     pub fn add_panel(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -903,7 +839,6 @@ impl DockArea {
         }
     }
 
-    /// Remove panel from the DockArea at the given placement.
     pub fn remove_panel(
         &mut self,
         panel: Arc<dyn PanelView>,
@@ -953,9 +888,7 @@ impl DockArea {
         self.remove_panel(panel.clone(), DockPlacement::Bottom, window, cx);
     }
 
-    /// Load the state of the DockArea from the DockAreaState.
-    ///
-    /// See also [DockeArea::dump].
+    /// See also [DockArea::dump].
     pub fn load(
         &mut self,
         state: DockAreaState,
@@ -982,8 +915,6 @@ impl DockArea {
         Ok(())
     }
 
-    /// Dump the dock panels layout to PanelState.
-    ///
     /// See also [DockArea::load].
     pub fn dump(&self, cx: &App) -> DockAreaState {
         let root = self.center.view();
@@ -1011,7 +942,6 @@ impl DockArea {
         }
     }
 
-    /// Subscribe event on the panels
     #[allow(clippy::only_used_in_recursion)]
     fn subscribe_item(&mut self, item: &DockItem, window: &mut Window, cx: &mut Context<Self>) {
         match item {
@@ -1037,19 +967,14 @@ impl DockArea {
                     },
                 ));
             }
-            DockItem::Tabs { .. } => {
-                // We subscribe to the tab panel event in StackPanel's insert_panel
-            }
-            DockItem::Tiles { .. } => {
-                // We subscribe to the tab panel event in Tiles's [`add_item`](Tiles::add_item)
-            }
-            DockItem::Panel { .. } => {
-                // Not supported
-            }
+            // Subscribed elsewhere: StackPanel::insert_panel.
+            DockItem::Tabs { .. } => {}
+            // Subscribed elsewhere: Tiles::add_item.
+            DockItem::Tiles { .. } => {}
+            DockItem::Panel { .. } => {}
         }
     }
 
-    /// Subscribe zoom event on the panel
     pub(crate) fn subscribe_panel<P: Panel>(
         &mut self,
         view: &Entity<P>,
@@ -1093,7 +1018,6 @@ impl DockArea {
         self._subscriptions.push(subscription);
     }
 
-    /// Returns the ID of the dock area.
     pub fn id(&self) -> SharedString {
         self.id.clone()
     }
@@ -1123,19 +1047,16 @@ impl DockArea {
     }
 
     pub fn update_toggle_button_tab_panels(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        // Left toggle button
         self.toggle_button_panels.left = self
             .center
             .left_top_tab_panel(cx)
             .map(|view| view.entity_id());
 
-        // Right toggle button
         self.toggle_button_panels.right = self
             .center
             .right_top_tab_panel(cx)
             .map(|view| view.entity_id());
 
-        // Bottom toggle button
         self.toggle_button_panels.bottom = self
             .bottom_dock
             .as_ref()
@@ -1160,40 +1081,33 @@ impl Render for DockArea {
                 } else {
                     match &self.center {
                         DockItem::Tiles { view, .. } => {
-                            // render tiles
                             this.child(view.clone())
                         }
                         _ => {
-                            // render dock
                             this.child(
                                 div()
                                     .flex()
                                     .flex_row()
                                     .h_full()
-                                    // Left dock
                                     .when_some(self.left_dock.clone(), |this, dock| {
                                         this.child(div().flex().flex_none().child(dock))
                                     })
-                                    // Center
                                     .child(
                                         div()
                                             .flex()
                                             .flex_1()
                                             .flex_col()
                                             .overflow_hidden()
-                                            // Top center
                                             .child(
                                                 div()
                                                     .flex_1()
                                                     .overflow_hidden()
                                                     .child(self.render_items(window, cx)),
                                             )
-                                            // Bottom Dock
                                             .when_some(self.bottom_dock.clone(), |this, dock| {
                                                 this.child(dock)
                                             }),
                                     )
-                                    // Right Dock
                                     .when_some(self.right_dock.clone(), |this, dock| {
                                         this.child(div().flex().flex_none().child(dock))
                                     }),
