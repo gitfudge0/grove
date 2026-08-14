@@ -1,23 +1,7 @@
-//! `ModalLayer` — one entity, one slot, the scrim, focus-on-mount and the
-//! Escape routing.
-//!
-//! Port of `src/gui/view/modals/mod.rs:30-151` (`modal_layer`) plus the
-//! lifecycle half of `src/gui/update/modals.rs`. The state machine itself is
-//! [`crate::modal`]; nothing here re-decides a verdict.
-//!
-//! Two documented exceptions to "centered on a scrim":
-//! - **Onboarding** replaces the screen entirely — full-viewport, no sidebar,
-//!   no statusbar, no scrim (`view/modals/mod.rs:107-110`).
-//! - **SessionLauncher** top-drops instead of centering
-//!   (`view/modals/mod.rs:114-121`).
-//!
-//! # Why Escape reaches here from inside a focused field
-//!
-//! `InputState::escape()` calls `cx.propagate()` (vendored
-//! `input/state.rs:1685`), so the keystroke survives binding dispatch and
-//! gpui's `finish_dispatch_key_event` then runs this element's bubble-phase
-//! `on_key_down`. That is the structural replacement for iced's
-//! `should_forward` Escape carve-out — see [`crate::modal`]'s module doc.
+//! `ModalLayer` — one entity, one slot, the scrim, focus-on-mount and Escape routing.
+//! Port of `src/gui/view/modals/mod.rs:30-151` + `src/gui/update/modals.rs`; state machine is [`crate::modal`].
+//! Onboarding replaces the screen full-viewport (`view/modals/mod.rs:107-110`); SessionLauncher top-drops (`view/modals/mod.rs:114-121`).
+//! Escape reaches here from a focused field because `InputState::escape()` calls `cx.propagate()` (`input/state.rs:1685`).
 
 pub mod add_project;
 pub mod confirm;
@@ -51,42 +35,26 @@ use crate::settings::SettingsState;
 
 use self::input::ModalInput;
 
-// The click vocabulary itself lives one layer down in
-// [`crate::views::dispatch`] so the app-wide component library can build
-// clickable chrome without depending on this module; re-exported here
-// because the modal layer is what interprets it.
 pub use crate::views::dispatch::{ModalClick, ModalDispatch, SettingToggle};
 
 /// What the layer cannot do for itself and hands back to `Workspace`.
 #[derive(Clone, Debug)]
 pub enum ModalEvent {
-    /// The quit confirm was accepted: flush and close the window.
     Quit,
-    /// The slot became empty; focus goes back to the body.
     Closed,
-    /// tmux was switched on; the workspace re-scans for sidecar sessions.
     TmuxEnabled,
-    /// The post-update restart: relaunch, flush, exit.
     RestartApp,
-    /// Spawn an agent session through `Sidebar::spawn_session`, so the toast
-    /// producer covers a failure exactly once (recorded ambiguity 7).
+    /// Toast producer covers a failure exactly once (recorded ambiguity 7).
     SpawnAgent {
         project: String,
         wt_path: String,
         agent: grove_core::agent::Agent,
     },
-    /// Add a worktree to the selected project and (re)build the tree.
     WorktreeAdded,
-    /// A project's worktrees changed on disk; the tree cache is stale.
     TreeInvalidated,
-    /// The palette's terminal rows: spawn and focus a home terminal.
     NewHomeTerminal,
-    /// The switch drill-in picked a session.
     SelectSession(crate::entities::session_registry::SessionId),
-    /// The switch drill-in picked a home terminal, by index.
     SelectTerminal(usize),
-    /// The palette strip's lifecycle-script rows: run `script` as a shell in
-    /// the worktree's terminal panel.
     RunScript { wt_path: String, script: String },
 }
 
@@ -94,27 +62,13 @@ pub enum ModalEvent {
 pub struct ModalLayer {
     slot: ModalSlot,
     focus: FocusHandle,
-    /// The open modal's text fields, rebuilt whenever the slot is repointed.
-    /// Dropping them with the slot is what makes "replace drops the old state"
-    /// a type property rather than a discipline (carried decision 4).
-    ///
-    /// Index conventions, per modal: `Input`/`SessionLauncher` = `[0]` the
-    /// single field; `AddProject` = `[0]` the path (step 1) or the name
-    /// (step 2); `Onboarding` = `[0]` path, `[1]` name; `ScriptsEditor` =
-    /// `[0]` setup, `[1]` run, `[2]` teardown; `ThemeManager` = `[0]` the
-    /// editor buffer when the editor sub-view is open.
+    /// Index conventions per modal: see `build_fields` for the field-order mapping.
     pub(super) fields: Vec<ModalInput>,
-    /// Change-event subscriptions for `fields`, one per entry, kept alive so
-    /// backspace/delete — consumed by gpui-component's `InputState` bindings
-    /// before they ever bubble to this element's key handler — still syncs
-    /// the slot's buffers (fix for stale palette query on delete).
+    /// Kept alive to sync buffers on backspace/delete, which `InputState` consumes before this element's key handler sees them.
     field_subs: Vec<gpui::Subscription>,
-    /// One OS dialog at a time — a second click while the picker is up must
-    /// not spawn another (`modals.rs:490-534`).
+    /// Guards against a second OS dialog while one is open (`modals.rs:490-534`).
     pub(super) picker_open: bool,
-    /// Set while the modal that just opened has not been focused yet; the
-    /// first `render` with a `&mut Window` performs the focus
-    /// (carried decision 5).
+    /// Set until the first `render` with a `&mut Window` performs the focus.
     needs_focus: bool,
     state: Entity<WorkspaceState>,
     registry: Entity<SessionRegistry>,
@@ -122,52 +76,23 @@ pub struct ModalLayer {
     toast: Entity<ToastState>,
     activity: Entity<ActivityStore>,
     clock: Entity<AnimationClock>,
-    /// The upgrade flow the Updates/Changelog views render and act on.
     pub(super) upgrade: Entity<Upgrade>,
-    /// The Settings → Tools rows, detected off-thread whenever Settings opens
-    /// or the refresh button is clicked (`src/gui/update/upgrade.rs:158-191`).
     pub(super) tools: Vec<settings::ToolStatus>,
     tools_task: Option<gpui::Task<()>>,
-    /// The teardown script's live PTY view. Modal-owned, never in the
-    /// registry — a teardown PTY must not appear in the rail, exactly as
-    /// iced keeps it out of `app.sessions` (`src/app/modal.rs:163-175`).
+    /// Modal-owned, never in the registry — a teardown PTY must not appear in the rail (`src/app/modal.rs:163-175`).
     pub(super) teardown_view: Option<Entity<crate::views::terminal_view::TerminalView>>,
     pub(super) teardown_session: Option<Entity<crate::entities::terminal_session::TerminalSession>>,
-    /// Polls the teardown script for exit; dropped when the stage advances.
     teardown_poll: Option<gpui::Task<()>>,
-    /// The diff viewer's live state, mirroring how `teardown_view` is
-    /// created on open and dropped on close: `Some` exactly while
-    /// `Modal::DiffViewer` is the open modal.
     pub(super) diff_viewer: Option<Entity<crate::entities::diff_viewer::DiffViewerState>>,
-    /// A hand-dragged diff file-list width (logical px), overriding the
-    /// measured auto-fit width. Lives here rather than on `DiffViewerState`
-    /// because that entity is dropped and recreated on every
-    /// close/reopen of the diff viewer (`open`/`cancel`/`close` below) while
-    /// this override is meant to survive the session. `None` means auto-fit.
+    /// Session-scoped hand-dragged width override; `None` means auto-fit. Lives here (not on `DiffViewerState`) because that entity is recreated on every open/close.
     pub(crate) file_list_w_override: Option<f32>,
-    /// The diff file-list divider's in-progress drag, mirroring
-    /// `Sidebar`'s `drag` field.
     diff_divider_drag: Option<crate::views::components::DividerDrag>,
-    /// The diff file-list divider's last press instant, for double-click
-    /// detection, mirroring `Sidebar`'s `last_divider_press`.
     last_diff_divider_press: Option<std::time::Instant>,
-    /// The palette result list's scroll position. It has to live on the view:
-    /// a handle built per-render would hand the list a fresh, zeroed offset on
-    /// every frame.
     pub(super) palette_scroll: gpui::ScrollHandle,
-    /// The `(view, row)` the palette was last scrolled to. Only a *changed*
-    /// selection may move the scroll — re-issuing it every frame would snap the
-    /// wheel straight back to the selected row. `render` is handed a
-    /// `&ModalLayer`, hence the `Cell`.
+    /// Only a changed selection may move the scroll, or the wheel would snap back every frame.
     palette_scrolled_to: std::cell::Cell<Option<(crate::modal::LauncherView, usize)>>,
-    /// The scroll position of the *other* keyboard-navigable modal list — the
-    /// theme picker's themes and the wizard's directory matches. One handle
-    /// serves both: only one modal renders at a time, and `open` clears it so a
-    /// stale offset can't leak from one list into the next.
+    /// Shared by the theme picker and the wizard's directory matches; only one renders at a time.
     pub(super) list_scroll: gpui::ScrollHandle,
-    /// `(tag, row)` last scrolled to, where `tag` distinguishes row sets that
-    /// share the handle (the picker's dark/light tabs). Same
-    /// only-a-changed-selection-may-scroll rule as `palette_scrolled_to`.
     list_scrolled_to: std::cell::Cell<Option<(usize, usize)>>,
 }
 
@@ -180,9 +105,6 @@ impl Focusable for ModalLayer {
 }
 
 impl ModalLayer {
-    // One owner, one constructor: the layer genuinely needs every entity it is
-    // handed, and a `Deps` struct here would only move the same eight names one
-    // indirection away.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         state: Entity<WorkspaceState>,
@@ -224,8 +146,7 @@ impl ModalLayer {
         }
     }
 
-    /// A weak-entity click dispatcher for the pure view functions. Mirrors
-    /// `Workspace::dispatcher`.
+    /// Mirrors `Workspace::dispatcher`.
     pub fn dispatcher(cx: &mut Context<Self>) -> ModalDispatch {
         let weak = cx.entity().downgrade();
         std::rc::Rc::new(move |click, window, cx: &mut App| {
@@ -237,14 +158,7 @@ impl ModalLayer {
         self.slot.is_open()
     }
 
-    /// The diff viewer body's content width, [`diff_viewer::effective_mode`]'s
-    /// input: the logical window width minus the viewer's own insets and its
-    /// file-list column — the same `content_w` [`diff_viewer::render`]
-    /// computes for itself, kept in agreement because both call
-    /// [`diff_viewer::file_list_w`] with the same [`DiffViewerState`]. A
-    /// method rather than a free function (unlike the original) because it
-    /// needs `self.diff_viewer` to measure the file-list column's width; when
-    /// no diff viewer entity exists yet, the column falls back to its floor.
+    /// [`diff_viewer::effective_mode`]'s input; must stay in agreement with [`diff_viewer::render`]'s own `content_w`.
     pub(crate) fn diff_content_w(&self, window: &Window, cx: &App) -> f32 {
         let zoom = cx.global::<crate::zoom::ZoomState>().zoom;
         let win_w = f32::from(window.viewport_size().width) / zoom;
@@ -262,11 +176,7 @@ impl ModalLayer {
         f32::from(window.viewport_size().width) / zoom
     }
 
-    // ── diff file-list divider ─────────────────────────────────────────
-
-    /// Mirrors `Sidebar::on_divider_press`: a double-click within
-    /// `DOUBLE_CLICK` releases the override back to auto-fit; otherwise it
-    /// starts a drag from the file list's current effective width.
+    /// Mirrors `Sidebar::on_divider_press`: double-click resets to auto-fit, else starts a drag.
     fn on_diff_divider_press(&mut self, window: &Window, cx: &mut Context<Self>) {
         let Some(dv) = self.diff_viewer.clone() else {
             return;
@@ -291,9 +201,7 @@ impl ModalLayer {
         }
     }
 
-    /// Mirrors `Sidebar::on_root_mouse_move`, attached to the `modal-layer`
-    /// root div — the only element guaranteed to keep receiving moves once
-    /// the cursor leaves the divider's narrow hit zone.
+    /// Mirrors `Sidebar::on_root_mouse_move`; attached to the root div, the only element that keeps receiving moves off the divider's hit zone.
     pub(crate) fn on_diff_divider_mouse_move(
         &mut self,
         cursor_x: f32,
@@ -316,11 +224,7 @@ impl ModalLayer {
         };
         let win_w = Self::logical_window_width(window, cx);
         let clamped = diff_viewer::clamp_file_list_w(cursor_x + offset, win_w);
-        // Unlike the sidebar, there is no settings write on mouse-up to gate
-        // with `DRAG_EPSILON` — the override *is* the side effect, and it is
-        // written here, on every move. So the epsilon has to live here too:
-        // without it, a plain click with a pixel of hand jitter would pin an
-        // override and silently kill auto-fit for the rest of the session.
+        // Epsilon guard lives here (not on mouse-up) because the override is written on every move, not just release.
         if (clamped - drag.start_width).abs() < crate::views::components::DRAG_EPSILON {
             return;
         }
@@ -328,18 +232,11 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// Mirrors `Sidebar::on_root_mouse_up`. No persistence step: the override
-    /// is session-only by design (carried decision 2). Unlike the sidebar,
-    /// the epsilon guard is not here — the gated side effect there is a
-    /// debounced settings write on release, but here the side effect
-    /// (`file_list_w_override`) is written continuously as the drag moves,
-    /// so the guard lives in `on_diff_divider_mouse_move` instead.
+    /// Mirrors `Sidebar::on_root_mouse_up`; no persistence, the override is session-only.
     pub(crate) fn on_diff_divider_mouse_up(&mut self, _cx: &mut Context<Self>) {
         self.diff_divider_drag = None;
     }
 
-    // Exercised only by this module's `#[cfg(test)]` assertions, which read the
-    // open modal's kind; the render path matches on `slot.get()` instead.
     #[allow(dead_code)]
     pub fn kind(&self) -> Option<ModalKind> {
         self.slot.kind()
@@ -349,11 +246,7 @@ impl ModalLayer {
         &self.slot
     }
 
-    /// Bring row `sel` of a shared-handle list into view, addressing it by the
-    /// index it actually occupies among the scroll container's direct children
-    /// (`card` interleaves dividers, so the two differ). Guarded like
-    /// `scroll_palette_to`: `scroll_to_item` resolves in prepaint, so
-    /// re-issuing it every frame would fight the mouse wheel.
+    /// `child_ix` is the container's direct-child index, not `sel` — `card` interleaves dividers so the two differ.
     pub(super) fn scroll_list_to(&self, tag: usize, sel: usize, child_ix: usize) {
         if self.list_scrolled_to.get() == Some((tag, sel)) {
             return;
@@ -362,25 +255,15 @@ impl ModalLayer {
         self.list_scroll.scroll_to_item(child_ix);
     }
 
-    /// Drop the retained offset — it only means anything against the list it
-    /// was measured on.
     pub(super) fn reset_list_scroll(&self) {
         self.list_scroll.set_offset(gpui::Point::default());
         self.list_scrolled_to.set(None);
     }
 
-    /// Open `modal`, replacing whatever was there. The old modal's field is
-    /// dropped with it; the new one's is built on the next render, which is
-    /// the first point a `&mut Window` exists.
     pub fn open(&mut self, modal: Modal, cx: &mut Context<Self>) {
-        // `on_open_settings` dispatches the tool scan alongside opening the
-        // modal (`src/gui/update/mod.rs:551-555`).
         if matches!(modal.kind(), ModalKind::Settings) {
             self.detect_tools(cx);
         }
-        // The live diff-viewer entity is created fresh per open and dropped
-        // the moment anything else opens — mirroring `teardown_view`, which
-        // must not survive past the modal that owns it.
         self.diff_viewer = if let Modal::DiffViewer { wt_path } = &modal {
             let mode = cx
                 .global::<crate::settings::SettingsState>()
@@ -400,16 +283,9 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// Route through the state machine's `cancel`, which is **not** a synonym
-    /// for close (Teardown skips, RemoveProject refuses, ThemePicker and the
-    /// changelog return to their parent).
+    /// Not a synonym for close: Teardown skips, RemoveProject refuses, ThemePicker/changelog return to their parent.
     pub fn cancel(&mut self, cx: &mut Context<Self>) -> CancelOutcome {
-        // Every door out of the `ThemePicker` — Escape, the Cancel button, the
-        // close X and `theme_picker_submit`'s tail — arrives here, so the live
-        // preview it drove is undone here too. It has to run *before*
-        // `slot.cancel()`, which may already have swapped the picker out for
-        // the modal it returns to. Self-guarding, and a no-op on the commit
-        // path, which consumes `original` first.
+        // Must run before `slot.cancel()` may swap the picker out; self-guarding and a no-op once `original` is consumed by commit.
         self.restore_theme_before_leaving(cx);
         let outcome = self.slot.cancel();
         match outcome {
@@ -434,7 +310,6 @@ impl ModalLayer {
         outcome
     }
 
-    /// Force the slot empty, for paths that already decided.
     pub fn close(&mut self, cx: &mut Context<Self>) {
         self.slot.close();
         self.fields.clear();
@@ -444,10 +319,7 @@ impl ModalLayer {
         cx.notify();
     }
 
-    // ── keyboard ────────────────────────────────────────────────────────
-
-    /// Translate a gpui keystroke into the pure alphabet. `None` means the
-    /// table has nothing to say and the key belongs to whatever is focused.
+    /// `None` means the key belongs to whatever is focused.
     fn translate(ev: &KeyDownEvent) -> Option<(ModalKey, ModalMods)> {
         let ks = &ev.keystroke;
         let key = match ks.key.as_str() {
@@ -472,8 +344,7 @@ impl ModalLayer {
             ctrl: m.control,
             alt: m.alt,
             shift: m.shift,
-            // The global-shortcut modifier: Cmd on macOS, Ctrl+Shift elsewhere
-            // (`keymap::platform_mod_prefix`).
+            // Cmd on macOS, Ctrl+Shift elsewhere (`keymap::platform_mod_prefix`).
             platform: if cfg!(target_os = "macos") {
                 m.platform
             } else {
@@ -490,10 +361,7 @@ impl ModalLayer {
         self.handle_key(key, mods, window, cx);
     }
 
-    /// The keys a focused `Input` would otherwise swallow arrive as actions
-    /// instead (`keymap::modal_input_bindings`), already stripped of their
-    /// keystroke. They re-enter the *same* decision path here, so there is one
-    /// verdict table and not two.
+    /// Reclaimed as actions (`keymap::modal_input_bindings`) so there is one verdict table, not two.
     fn on_modal_key(
         &mut self,
         key: ModalKey,
@@ -519,8 +387,6 @@ impl ModalLayer {
             return;
         };
         let ctx = KeyCtx {
-            // Genuinely in flight now: `escape_closes` is the real answer, and
-            // an apply refuses Escape until it lands.
             update_in_flight: !crate::entities::upgrade_state::escape_closes(
                 self.upgrade.read(cx).state(),
             ),
@@ -528,9 +394,6 @@ impl ModalLayer {
         };
         let verdict = key_verdict(modal, key, mods, ctx);
         match verdict {
-            // Not ours by the shared table: the palette owns its whole
-            // keyboard, the wizard delegate owns the rest, and anything
-            // neither claims belongs to the focused field.
             ModalKeyVerdict::FallThrough => {
                 let claimed = match self.slot.kind() {
                     Some(ModalKind::SessionLauncher) => self.palette_key(key, mods, window, cx),
@@ -552,12 +415,9 @@ impl ModalLayer {
             ModalKeyVerdict::Move(delta) => self.move_selection(delta, cx),
             ModalKeyVerdict::Custom(action) => self.perform(action, window, cx),
         }
-        // Everything the table claimed — `Ignore` included — stops here. An
-        // ignored key must not fall through to the workspace behind the scrim.
+        // `Ignore` must also stop here, or the key falls through to the workspace behind the scrim.
         cx.stop_propagation();
     }
-
-    // ── the effects the verdicts name ───────────────────────────────────
 
     fn move_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
         let Some(modal) = self.slot.get_mut() else {
@@ -602,9 +462,6 @@ impl ModalLayer {
             Some(ModalKind::Input) => self.submit_input(window, cx),
             Some(ModalKind::AgentPicker) => self.submit_agent_picker(cx),
             Some(ModalKind::AddProject) => self.wizard_next(window, cx),
-            // The name field and the three lifecycle buffers are all
-            // single-line now; Enter saves, exactly like clicking `Save`
-            // (`ModalClick::Save`, `settings.rs`).
             Some(ModalKind::ScriptsEditor) => self.save_scripts(cx),
             _ => {}
         }
@@ -668,8 +525,7 @@ impl ModalLayer {
         }
     }
 
-    /// The mouse half of the verdict table. Every arm is the same effect the
-    /// keyboard path performs, so a click and its keystroke can never diverge.
+    /// Every arm is the same effect the keyboard path performs, so a click and its keystroke can't diverge.
     fn on_click(&mut self, click: ModalClick, window: &mut Window, cx: &mut Context<Self>) {
         match click {
             ModalClick::Cancel => {
@@ -686,9 +542,6 @@ impl ModalLayer {
             ModalClick::RestoreArchived(idx) => self.restore_archived(idx, cx),
             ModalClick::DeleteArchived(idx) => self.delete_archived(idx, cx),
             ModalClick::SelectRow(i) => {
-                // Which follow-up to run once the mutation borrow above ends —
-                // click activates the launcher row (mirroring Enter) and
-                // previews the theme row (Enter/save still commits it).
                 enum SelectRowFollowUp {
                     Launcher,
                     Theme,
@@ -701,10 +554,7 @@ impl ModalLayer {
                     Some(Modal::SessionLauncher(st)) => {
                         st.sel = i;
                         if st.view != LauncherView::RowActions {
-                            // Identity resolution would otherwise activate
-                            // whatever row the stale anchor points at; in
-                            // RowActions the anchor is the strip's session,
-                            // not a row, and must survive the click.
+                            // In RowActions the anchor is the strip's session, not a row, and must survive the click.
                             st.anchor = None;
                         }
                         Some(SelectRowFollowUp::Launcher)
@@ -719,8 +569,6 @@ impl ModalLayer {
                 }
             }
             ModalClick::Submit => self.submit(window, cx),
-            // Same commit path `ModalAction::ThemePickerSubmit` reaches from
-            // the keyboard's Enter/Submit verdict.
             ModalClick::ThemePickerApply => self.theme_picker_submit(cx),
             ModalClick::ToggleDefaultAgent => self.toggle_default_agent(cx),
             ModalClick::CheckUpdates => {
@@ -769,17 +617,12 @@ impl ModalLayer {
         }
     }
 
-    /// The clicks owned by Tasks 4-6's modals. Split out purely to keep
-    /// [`Self::on_click`] readable.
+    /// Split out purely to keep [`Self::on_click`] readable.
     fn on_click_late(&mut self, click: ModalClick, window: &mut Window, cx: &mut Context<Self>) {
         self.on_wizard_click(click.clone(), window, cx);
     }
 
-    // ── render ──────────────────────────────────────────────────────────
-
-    /// Build the open modal's fields, if it has any. Called on the first
-    /// render after the slot is repointed, which is the first point a
-    /// `&mut Window` exists (carried decision 5).
+    /// Called on the first render after the slot is repointed — the first point a `&mut Window` exists.
     fn ensure_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.needs_focus {
             return;
@@ -788,8 +631,6 @@ impl ModalLayer {
         self.build_fields(window, cx);
     }
 
-    /// Rebuild the fields immediately (a wizard step changed, so the field set
-    /// changed with it) and re-focus.
     pub(super) fn rebuild_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.needs_focus = false;
         self.build_fields(window, cx);
@@ -811,7 +652,6 @@ impl ModalLayer {
                     .push(ModalInput::single_line(policy, "", buffer, window, cx));
             }
             Modal::SessionLauncher(st) => {
-                // The prompt must not claim to search what the scope hides.
                 let placeholder = match st.scope {
                     crate::launcher::PaletteScope::All => "Search projects & sessions…",
                     crate::launcher::PaletteScope::WorktreesOnly => "Search worktrees…",
@@ -863,18 +703,7 @@ impl ModalLayer {
                 ));
             }
             Modal::ScriptsEditor(st) => {
-                // The name field is first so it keeps index 0 for
-                // `sync_wizard_buffers`/rename, even though display mode
-                // doesn't render it — only rename mode does
-                // (`settings.rs::scripts_editor`). The three lifecycle
-                // buffers are genuinely single-line `ModalInput`s; the actual
-                // typing bug was never these fields' height — it was
-                // `crate::modal`'s verdict table returning `V::Ignore` for
-                // every character key, which reaches `cx.stop_propagation()`
-                // (`:388` below) before the platform input handler ever
-                // consults the focused `Input`. Fixed by routing
-                // `Modal::ScriptsEditor` to `V::FallThrough` like every other
-                // modal with real text fields.
+                // Name field kept at index 0 for `sync_wizard_buffers`/rename even though display mode doesn't render it.
                 self.fields.push(ModalInput::single_line(
                     policy,
                     "project name",
@@ -910,10 +739,7 @@ impl ModalLayer {
             }
             _ => {}
         }
-        // Backspace/delete never bubble to this element's key handler —
-        // gpui-component's `InputState` bindings consume them first — so the
-        // slot's buffers go stale on delete unless we sync on every change
-        // event directly from the field's `InputState`.
+        // `InputState` bindings consume backspace/delete before this element's key handler, so the slot must sync on every change event.
         let states: Vec<_> = self.fields.iter().map(|f| f.state().clone()).collect();
         for state in states {
             let sub = cx.subscribe(
@@ -921,11 +747,7 @@ impl ModalLayer {
                 |this, _, ev: &gpui_component::input::InputEvent, cx| {
                     if matches!(ev, gpui_component::input::InputEvent::Change) {
                         this.sync_wizard_buffers(cx);
-                        // A query edit rebuilds the row set from scratch, so
-                        // the retained offset belongs to a list that is gone.
                         this.reset_palette_scroll();
-                        // Same for the wizard's directory matches, which the
-                        // typed path rebuilds.
                         this.reset_list_scroll();
                         cx.notify();
                     }
@@ -933,26 +755,18 @@ impl ModalLayer {
             );
             self.field_subs.push(sub);
         }
-        // `ScriptsEditor`'s field 0 (the name) is not rendered in display
-        // mode — the header shows static text plus a pencil until it's
-        // clicked — so focusing it on open would point the caret at nothing.
-        // Field 1 (Setup) is the first field actually on screen.
+        // `ScriptsEditor` field 0 (name) isn't rendered in display mode, so focus field 1 (Setup) instead.
         let default_focus = match modal {
             Modal::ScriptsEditor(_) => self.fields.get(1).or_else(|| self.fields.first()),
             _ => self.fields.first(),
         };
         match default_focus {
-            // A field that is never focused silently eats nothing and looks
-            // broken.
             Some(f) => f.focus_at_end(window, cx),
-            // Every modal without a field focuses its own root, so Escape and
-            // its letter keys have somewhere to land.
             None => window.focus(&self.focus, cx),
         }
     }
 
-    /// Pull the live field buffers back into the slot before any decision that
-    /// reads them. gpui-component owns the text; the slot owns the truth.
+    /// gpui-component owns the text; the slot owns the truth.
     pub(super) fn sync_wizard_buffers(&mut self, cx: &mut Context<Self>) {
         let values: Vec<String> = self.fields.iter().map(|f| f.value(cx)).collect();
         match self.slot.get_mut() {
@@ -1035,9 +849,6 @@ impl Render for ModalLayer {
         };
 
         let framed = if kind.is_screen_replacement() {
-            // Onboarding is not a modal-layer modal: it replaces the screen —
-            // full viewport, no sidebar, no statusbar, no scrim. The entrance
-            // animation is spec §4's `with_animation`.
             div()
                 .absolute()
                 .top_0()
@@ -1050,10 +861,7 @@ impl Render for ModalLayer {
                 .child(
                     div()
                         .child(panel)
-                        // Spec §4's entrance animation: matches the iced
-                        // original's 200ms fade + 8px settle
-                        // (`onboarding.rs:47-56`) rather than the plain
-                        // 320ms opacity-only fade this replaces.
+                        // Matches iced original's 200ms fade + 8px settle (`onboarding.rs:47-56`).
                         .with_animation(
                             "onboarding-enter",
                             gpui::Animation::new(std::time::Duration::from_millis(200))
@@ -1071,14 +879,9 @@ impl Render for ModalLayer {
             .id("modal-layer")
             .key_context(kind.key_context())
             .track_focus(&self.focus)
-            // The scrim is a modal barrier, not just paint. Without this the
-            // layer is mouse-transparent: a press meant for the scrim reaches
-            // whatever is behind it, and `TerminalView::on_mouse_down` then
-            // calls `window.focus` on itself — taking the keyboard away from
-            // the open modal, so Escape lands in the PTY instead of closing.
+            // Without `occlude`, a press reaches whatever is behind the scrim and `TerminalView::on_mouse_down` steals focus back to the PTY.
             .occlude()
             .on_key_down(cx.listener(Self::on_key_down))
-            // The keys a focused `Input` would swallow, reclaimed as actions.
             .on_action(cx.listener(|this, _: &crate::keymap::ModalUp, window, cx| {
                 this.on_modal_key(ModalKey::Up, false, window, cx);
             }))
@@ -1116,13 +919,7 @@ impl Render for ModalLayer {
             .top_0()
             .left_0()
             .size_full()
-            // The diff file-list divider's drag stream: wired here rather
-            // than on `diff_viewer::render`'s own returned element because
-            // that element is not guaranteed to still cover the cursor once
-            // dragging starts (mirrors `sidebar::root_drag_listeners` being
-            // wired at `workspace.rs`, not inside `Sidebar::render`'s own
-            // divider hit-zone). Unconditional: both handlers no-op when
-            // `diff_divider_drag` is `None`.
+            // Wired at the root, not inside `diff_viewer::render`'s element, which isn't guaranteed to still cover the cursor mid-drag.
             .on_mouse_move(cx.listener(|this, e: &gpui::MouseMoveEvent, window, cx| {
                 let zoom = cx.global::<crate::zoom::ZoomState>().zoom.max(0.1);
                 let x = f32::from(e.position.x) / zoom;
@@ -1143,8 +940,6 @@ impl Render for ModalLayer {
 mod tests {
     use super::*;
 
-    /// Every kind either replaces the screen, top-drops or centers — and the
-    /// two exceptions are exactly the two the oracle documents.
     #[test]
     fn only_onboarding_replaces_the_screen_and_only_the_palette_top_drops() {
         for kind in ModalKind::ALL {
@@ -1160,16 +955,6 @@ mod tests {
             );
         }
     }
-
-    // ── the focus regression harness ────────────────────────────────────
-    //
-    // A window whose root mimics `Workspace`: a focusable root div declaring
-    // the screen key context while no modal is open, a focusable "terminal"
-    // stand-in that records every key it receives, and the `ModalLayer`
-    // mounted last and only while a modal is open. The terminal takes focus
-    // on the first frame — exactly as `Workspace::render`'s `focused_once`
-    // does — and only then is a modal opened, which is the ordering the
-    // reported bug needs.
 
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1268,8 +1053,7 @@ mod tests {
             focus: cx.focus_handle(),
             keys,
         });
-        // `Workspace::on_modal_event` does exactly this: a closed modal hands
-        // the keyboard back to the body on the next frame.
+        // Mirrors `Workspace::on_modal_event`: a closed modal hands the keyboard back to the body.
         let sub = cx.subscribe(&modals, |this: &mut TestRoot, _, ev: &ModalEvent, cx| {
             if matches!(ev, ModalEvent::Closed) {
                 this.focused_once = false;
@@ -1285,8 +1069,7 @@ mod tests {
         }
     }
 
-    /// The reported bug: with a modal open, Escape must close it and must
-    /// **not** reach the terminal behind the scrim.
+    /// Escape must close the open modal and never reach the terminal behind the scrim.
     #[gpui::test]
     fn escape_closes_the_modal_and_never_reaches_the_terminal(cx: &mut TestAppContext) {
         for modal in [
@@ -1325,10 +1108,7 @@ mod tests {
         }
     }
 
-    /// Root cause A: nothing under the scrim may take the mouse. A click that
-    /// lands on the terminal behind an open modal used to focus it
-    /// (`TerminalView::on_mouse_down`), after which every keystroke — Escape
-    /// included — went to the PTY instead of the modal.
+    /// A click through the scrim used to focus the terminal (`TerminalView::on_mouse_down`), stealing keystrokes from the modal.
     #[gpui::test]
     fn a_click_through_the_scrim_cannot_steal_focus_from_the_modal(cx: &mut TestAppContext) {
         cx.update(boot_globals);
@@ -1341,7 +1121,6 @@ mod tests {
         vcx.run_until_parked();
         keys.borrow_mut().clear();
 
-        // A press in the scrim's top-left corner, well clear of the panel.
         vcx.simulate_click(
             gpui::point(gpui::px(20.0), gpui::px(20.0)),
             gpui::Modifiers::default(),
@@ -1361,10 +1140,7 @@ mod tests {
         );
     }
 
-    /// Points `grove_core::storage` at a private directory for this process so
-    /// the theme test below — whose commit path runs `SettingsState::flush_now`
-    /// — never writes the developer's real `projects.json`. Mirrors
-    /// `settings.rs`'s helper of the same name.
+    /// Prevents `SettingsState::flush_now` from writing the developer's real `projects.json`; mirrors `settings.rs`'s helper.
     fn isolate_config_dir() {
         use std::sync::Once;
         static ONCE: Once = Once::new();
@@ -1376,10 +1152,7 @@ mod tests {
         });
     }
 
-    /// The theme picker's live preview must be undone when it is cancelled and
-    /// **kept** when it is committed. Both exits run through
-    /// [`ModalLayer::cancel`]; only the commit path consumes `original`, which
-    /// is what keeps the restore from clobbering the theme just pinned.
+    /// Both cancel and submit run through [`ModalLayer::cancel`]; only submit consumes `original`, so cancel's restore doesn't clobber a committed pick.
     #[gpui::test]
     fn cancelling_the_theme_picker_restores_the_theme_and_submitting_does_not(
         cx: &mut TestAppContext,
@@ -1394,15 +1167,11 @@ mod tests {
         vcx.run_until_parked();
         let modals = root.read_with(vcx, |r, _| r.modals.clone());
 
-        // `Store::default()` pins no theme, so the picker opens with
-        // `original` = the default dark theme.
         let original = crate::theme::DEFAULT_DARK_THEME.to_string();
         vcx.update(|_, cx| crate::theme::ThemeState::set_by_name(cx, &original));
 
-        // ── cancel: the preview is rolled back ──────────────────────────
         modals.update(vcx, |l, cx| {
             l.open_theme_picker(ThemePickerScope::App, ThemePickerReturn::Close, cx);
-            // Move off the opening selection so a *different* theme is live.
             l.theme_picker_move(1, cx);
         });
         vcx.run_until_parked();
@@ -1429,7 +1198,6 @@ mod tests {
             "cancel must drop the live preview global"
         );
 
-        // ── submit: the commit survives the same exit ───────────────────
         modals.update(vcx, |l, cx| {
             l.open_theme_picker(ThemePickerScope::App, ThemePickerReturn::Close, cx);
             l.theme_picker_move(1, cx);
@@ -1450,12 +1218,10 @@ mod tests {
             "submit closes the picker"
         );
 
-        // The active theme is process-global; leave it as it was found.
+        // The active theme is process-global; restore it.
         vcx.update(|_, cx| crate::theme::ThemeState::set_by_name(cx, &original));
     }
 
-    /// The realistic open path: the modal is opened by its **keybinding**,
-    /// dispatched while the terminal holds focus.
     #[gpui::test]
     fn escape_closes_a_modal_opened_by_its_keybinding(cx: &mut TestAppContext) {
         cx.update(boot_globals);
@@ -1465,9 +1231,7 @@ mod tests {
         let modals = root.read_with(vcx, |r, _| r.modals.clone());
         keys.borrow_mut().clear();
 
-        // Three cycles: the second and third also cover the reopen path,
-        // where the layer already rendered once and the field/focus state has
-        // been torn down.
+        // Cycles 2 and 3 cover the reopen path, after field/focus teardown.
         for cycle in 0..3 {
             vcx.simulate_keystrokes(&format!("{},", crate::keymap::platform_mod_prefix()));
             vcx.run_until_parked();
@@ -1491,27 +1255,7 @@ mod tests {
         }
     }
 
-    // ── G-tier: relocated left-footer-slot actions (G1) ─────────────────
-    //
-    // plan.md §2 retires the footer's low-emphasis left slot and moves its
-    // four call sites into the body as flat tinted `body_action`s. A dropped
-    // click handler in that move produces a button that looks perfect and
-    // does nothing — invisible to a visual pass.
-    //
-    // WEAKENED from the plan's "click it through the real render tree": the
-    // `body_action`/`flat_text_btn_tinted` shell wires its click through a
-    // bare `.on_mouse_down`, never through gpui's `.debug_selector()` (a
-    // test-only, `id()`-distinct opt-in each call site would have to add) —
-    // so `VisualTestContext::debug_bounds` never sees `"ap-default"` and
-    // friends and a coordinate-based `simulate_click` has nothing to aim at.
-    // Adding `.debug_selector` calls at each site is a production-code edit,
-    // out of scope here. Instead this proves the same thing two other ways:
-    // (a) a source-text check that the exact `id` literal is passed to
-    // `body_action`/`flat_text_btn` alongside the exact `ModalClick` the plan
-    // names, so the two can't silently drift apart at the call site, and (b)
-    // driving that same `ModalClick` through `ModalLayer::on_click` — the
-    // real handler `body_action`'s closure calls, not a test double — and
-    // asserting the effect the plan documents.
+    // No `debug_selector` on these buttons, so this checks the id/ModalClick source-text pairing plus driving the click through `on_click` directly, rather than a coordinate-based simulate_click.
     #[gpui::test]
     fn relocated_left_slot_actions_still_dispatch_their_click(cx: &mut TestAppContext) {
         isolate_config_dir();
@@ -1545,7 +1289,6 @@ mod tests {
             "settings.rs must still wire set-updates-refresh to CheckUpdates"
         );
 
-        // ── AgentPicker "Default" (confirm.rs:566) → ToggleDefaultAgent ──
         modals.update(vcx, |l, cx| {
             l.open(
                 Modal::AgentPicker {
@@ -1574,7 +1317,6 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        // ── ThemeManager "+ New theme" (theme_picker.rs:1110) → ThemeNew ─
         modals.update(vcx, |l, cx| {
             l.open(
                 Modal::ThemeManager {
@@ -1609,7 +1351,6 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        // ── ScriptsEditor "Archive project" (settings.rs:1658) → OpenArchiveGate ──
         vcx.update(|_, cx| {
             SettingsState::update(cx, |store| {
                 store.projects.push(grove_core::storage::Project {
@@ -1654,17 +1395,11 @@ mod tests {
         });
         vcx.run_until_parked();
 
-        // ── Settings "Check for updates" (settings.rs:1103) → CheckUpdates ──
         modals.update(vcx, |l, cx| {
             l.open(Modal::Settings, cx);
         });
         vcx.run_until_parked();
-        // Asserted immediately, before `run_until_parked`: `check()` sets
-        // `UpgradeState::Checking` synchronously and only then spawns the
-        // background fetch, which — drained by `run_until_parked` — may
-        // already have resolved to `Error`/`UpToDate` by the time anything
-        // reads the state back, racing the very thing this test wants to
-        // observe.
+        // Asserted before `run_until_parked` drains the background fetch, which may race past `Checking`.
         let checking = root.update_in(vcx, |_, window, cx| {
             modals.update(cx, |l, cx| {
                 l.on_click(ModalClick::CheckUpdates, window, cx);
@@ -1681,15 +1416,7 @@ mod tests {
         vcx.run_until_parked();
     }
 
-    /// The blocking-progress states are the sanctioned no-close-X cases
-    /// (plan.md §9.1.1): an in-flight removal or teardown cannot be safely
-    /// interrupted, so Escape must be refused rather than closing the modal
-    /// out from under the operation. Covers two of the three named states —
-    /// `RemoveProject { in_progress: true }` and `Teardown { stage: Removing
-    /// }` — both fully driven by pure `Modal` state; `Updating` is not
-    /// covered here because reaching its in-flight state requires
-    /// `Upgrade::start_update`, which needs a real `UpgradeState::Available`
-    /// release only a live network check can produce.
+    /// Escape must be refused mid-operation (plan.md §9.1.1); `Updating` isn't covered here since it needs a real network-fetched release.
     #[gpui::test]
     fn blocking_progress_states_refuse_escape(cx: &mut TestAppContext) {
         cx.update(boot_globals);
@@ -1698,7 +1425,6 @@ mod tests {
         vcx.run_until_parked();
         let modals = root.read_with(vcx, |r, _| r.modals.clone());
 
-        // RemoveProject, mid-removal.
         modals.update(vcx, |l, cx| {
             l.open(
                 Modal::RemoveProject {
@@ -1723,8 +1449,7 @@ mod tests {
             "escape must be refused while RemoveProject is in progress"
         );
 
-        // Teardown, mid-`git worktree remove` — cancel is refused
-        // (`ModalSlot::cancel`'s `Removing` arm), no footer and no close X.
+        // Cancel is refused by `ModalSlot::cancel`'s `Removing` arm.
         modals.update(vcx, |l, cx| {
             l.open(
                 Modal::Teardown {
@@ -1746,20 +1471,9 @@ mod tests {
         );
     }
 
-    // G6 (Updating(Updated): Later before Restart, each dispatching its own
-    // action) is skipped: `Upgrade::state` is a private field with no
-    // test-only setter, and reaching `UpgradeState::Updated` for real only
-    // happens through `Upgrade::start_update`, which requires
-    // `self.available()` to already hold a release — itself only reachable
-    // through a live network `check()`. Driving it hermetically would need a
-    // production-code test hook, which is out of scope for a test-only
-    // change.
+    // G6 (Updating(Updated) → Restart) skipped: reaching `UpgradeState::Updated` needs a live network check, no test hook exists.
 
-    /// A sub-`DRAG_EPSILON` move must not pin an override: a plain click on
-    /// the divider, with a pixel of hand jitter, has to leave the file-list
-    /// column on auto-fit rather than silently killing it for the session.
-    /// Only once the drag has actually travelled past the epsilon does
-    /// `file_list_w_override` get written.
+    /// A sub-epsilon move (hand jitter) must leave `file_list_w_override` unset; only past `DRAG_EPSILON` does it get written.
     #[gpui::test]
     fn a_sub_epsilon_move_leaves_the_override_unset_and_a_real_drag_sets_it(
         cx: &mut TestAppContext,
@@ -1796,10 +1510,7 @@ mod tests {
             drag.start_width
         });
 
-        // First move: well under `DRAG_EPSILON` from the start width. Because
-        // `grab_offset` is captured on this first move (matching the press
-        // position exactly, offset 0), the resulting clamped width equals
-        // `start_width` — a delta of 0.
+        // `grab_offset` is captured on this move (offset 0), so the clamped width equals `start_width`.
         root.update_in(vcx, |_, window, cx| {
             modals.update(cx, |l, cx| {
                 l.on_diff_divider_mouse_move(start_width, window, cx);
@@ -1811,7 +1522,6 @@ mod tests {
             "a sub-epsilon move must leave the override unset"
         );
 
-        // Second move: past the epsilon.
         let jump = start_width + crate::views::components::DRAG_EPSILON + 5.0;
         let win_w = root.update_in(vcx, |_, window, cx| {
             ModalLayer::logical_window_width(window, cx)
