@@ -15,9 +15,8 @@ use crate::input::{LastLayout, Point as TreeSitterPoint, RopeExt, WhitespaceIndi
 pub(crate) struct LineItem {
     /// The byte length of the line, without the end `\n`.
     len: usize,
-    /// The soft wrapped lines relative byte range (0..len) of this line (Include first line).
-    ///
-    /// Not contains the line end `\n`.
+    /// The soft wrapped lines relative byte range (0..len) of this line
+    /// (includes first line); does not contain the line end `\n`.
     pub(crate) wrapped_lines: SmallVec<[Range<usize>; 1]>,
 }
 
@@ -117,9 +116,8 @@ impl<'a> sum_tree::Dimension<'a, LineSummary> for WrapRows {
     }
 }
 
-/// Used to prepare the text with soft wrap to be get lines to displayed in the Editor.
-///
-/// After use lines to calculate the scroll size of the Editor.
+/// Prepares text with soft wrap into lines to display in the Editor, used
+/// afterward to calculate the Editor's scroll size.
 pub(crate) struct TextWrapper {
     text: Rope,
     font: Font,
@@ -243,15 +241,8 @@ impl TextWrapper {
         true
     }
 
-    /// Update the text wrapper and recalculate the wrapped lines.
-    ///
-    /// If the `text` is the same as the current text, do nothing.
-    ///
-    /// - `changed_text`: The text [`Rope`] that has changed.
-    /// - `range`: The `selected_range` before change.
-    /// - `new_text`: The inserted text.
-    /// - `force`: Whether to force the update, if false, the update will be skipped if the text is the same.
-    /// - `cx`: The application context.
+    /// Update the text wrapper and recalculate the wrapped lines; a no-op if
+    /// `text` is unchanged. `range` is the `selected_range` before the change; `new_text` is the inserted text.
     pub(crate) fn update(
         &mut self,
         changed_text: &Rope,
@@ -345,16 +336,14 @@ impl TextWrapper {
         self.text = changed_text.clone();
     }
 
-    /// Update the text wrapper and recalculate the wrapped lines.
-    ///
-    /// If the `text` is the same as the current text, do nothing.
+    /// Update the text wrapper and recalculate the wrapped lines; a no-op if
+    /// `text` is unchanged.
     fn update_all(&mut self, text: &Rope, cx: &mut App) {
         self.update(text, &(0..text.len()), &text, cx);
     }
 
-    /// Return display point (with soft wrap) from the given byte offset in the text.
-    ///
-    /// Panics if the `offset` is out of bounds.
+    /// Return display point (with soft wrap) from the given byte offset;
+    /// panics if `offset` is out of bounds.
     pub(crate) fn offset_to_display_point(&self, offset: usize) -> WrapDisplayPoint {
         let row = self.text.offset_to_point(offset).row;
         let start = self.text.line_start_offset(row);
@@ -384,9 +373,8 @@ impl TextWrapper {
         return WrapDisplayPoint::new(wrapped_row + ix, ix, last_range.len());
     }
 
-    /// Return byte offset in the text from the given display point (with soft wrap).
-    ///
-    /// Panics if the `point.row` is out of bounds.
+    /// Return byte offset in the text from the given display point (with
+    /// soft wrap); panics if `point.row` is out of bounds.
     pub(crate) fn display_point_to_offset(&self, point: WrapDisplayPoint) -> usize {
         // Seek to wrap row `point.row`
         let mut cursor = self.lines.cursor::<Dimensions<WrapRows, BufferRows>>(&());
@@ -418,18 +406,14 @@ impl TextWrapper {
     }
 }
 
-/// A display point within the soft-wrapped text.
-///
-/// This represents a position in the text after soft-wrapping,
-/// with an additional `local_row` field tracking the wrap line
-/// within the original buffer line.
+/// A position in the soft-wrapped text, with an additional `local_row`
+/// field tracking the wrap line within the original buffer line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WrapDisplayPoint {
     /// The 0-based soft wrapped row index in the text.
     pub row: usize,
-    /// The 0-based row index in local line (include first line).
-    ///
-    /// This value only valid when return from [`TextWrapper::offset_to_display_point`], otherwise it will be ignored.
+    /// The 0-based row index in local line (include first line); only valid
+    /// when returned from [`TextWrapper::offset_to_display_point`], otherwise ignored.
     pub local_row: usize,
     /// The 0-based column byte index in the display line (with soft wrap).
     pub column: usize,
@@ -517,12 +501,8 @@ impl LineLayout {
         self.len
     }
 
-    /// Get the position (x, y) for the given index in this line layout.
-    ///
-    /// - The `offset` is a local byte index in this line layout.
-    /// - When `line_end_affinity` is true, an offset at a soft wrap boundary is placed at
-    ///   the end of the current visual line rather than the start of the next one.
-    /// - The return value is relative to the top-left corner of this line layout, start from (0, 0)
+    /// Get the position (x, y), relative to this line layout's top-left
+    /// (0, 0), for the given local byte `offset`; if `line_end_affinity` is true, a boundary offset is placed at the end of the current visual line.
     pub(crate) fn position_for_index(
         &self,
         offset: usize,
@@ -586,10 +566,8 @@ impl LineLayout {
         acc_len
     }
 
-    /// Get the index for the given position (x, y) in this line layout.
-    ///
-    /// The `pos` is relative to the top-left corner of this line layout, start from (0, 0)
-    /// The return value is a local byte index in this line layout, start from 0.
+    /// Get the local byte index (from 0) for the given position, relative
+    /// to this line layout's top-left corner (0, 0).
     pub(crate) fn closest_index_for_position(
         &self,
         pos: Point<Pixels>,

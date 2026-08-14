@@ -19,22 +19,8 @@ use crate::{global_state::GlobalState, text::TextViewStyle};
 pub(crate) type CodeBlockActionsFn =
     dyn Fn(&CodeBlock, &mut Window, &mut App) -> AnyElement + Send + Sync;
 
-/// A text view that can render Markdown or HTML.
-///
-/// ## Goals
-///
-/// - Provide a rich text rendering component for such as Markdown or HTML,
-/// used to display rich text in GPUI application (e.g., Help messages, Release notes)
-/// - Support Markdown GFM and HTML (Simple HTML like Safari Reader Mode) for showing most common used markups.
-/// - Support Heading, Paragraph, Bold, Italic, StrikeThrough, Code, Link, Image, Blockquote, List, Table, HorizontalRule, CodeBlock ...
-///
-/// ## Not Goals
-///
-/// - Customization of the complex style (some simple styles will be supported)
-/// - As a Markdown editor or viewer (If you want to like this, you must fork your version).
-/// - As a HTML viewer, we not support CSS, we only support basic HTML tags for used to as a content reader.
-///
-/// See also [`MarkdownElement`], [`HtmlElement`]
+/// A text view that renders Markdown (GFM) or simple HTML (Safari Reader
+/// Mode-like, no CSS) — a content reader, not an editor or full HTML viewer. See also [`MarkdownElement`], [`HtmlElement`].
 #[derive(Clone)]
 pub struct TextView {
     id: ElementId,
@@ -133,27 +119,15 @@ impl TextView {
         self
     }
 
-    /// Set the text view to be scrollable, default is false.
-    ///
-    /// ## If true for `scrollable`
-    ///
-    /// The `scrollable` mode used for large content,
-    /// will show scrollbar, but requires the parent to have a fixed height,
-    /// and use [`gpui::list`] to render the content in a virtualized way.
-    ///
-    /// ## If false to fit content
-    ///
-    /// The TextView will expand to fit all content, no scrollbar.
-    /// This mode is suitable for small content, such as a few lines of text, a label, etc.
+    /// Set the text view to be scrollable, default is false. If true, shows
+    /// a scrollbar but requires a fixed-height parent and [`gpui::list`] virtualization; if false, expands to fit all content with no scrollbar.
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
         self
     }
 
-    /// Set custom block actions for code blocks.
-    ///
-    /// The closure receives the [`CodeBlock`],
-    /// and returns an element to display.
+    /// Set custom block actions for code blocks; the closure receives the
+    /// [`CodeBlock`] and returns an element to display.
     pub fn code_block_actions<F, E>(mut self, f: F) -> Self
     where
         F: Fn(&CodeBlock, &mut Window, &mut App) -> E + Send + Sync + 'static,
@@ -171,21 +145,16 @@ impl TextView {
         self
     }
 
-    /// Enable MDX JSX/expression parsing.
-    ///
-    /// This disables raw HTML parsing because `markdown-rs` gives HTML
-    /// priority over MDX when both are enabled.
+    /// Enable MDX JSX/expression parsing; disables raw HTML parsing, since
+    /// `markdown-rs` gives HTML priority over MDX when both are enabled.
     pub fn markdown_mdx(mut self) -> Self {
         let extensions = Arc::make_mut(&mut self.markdown_extensions);
         *extensions = extensions.clone().mdx();
         self
     }
 
-    /// Register a custom block-level Markdown parser.
-    ///
-    /// The parser runs during Markdown AST conversion and must be independent
-    /// of [`Window`] / [`App`]. Store any parsed data in [`MarkdownNode`] and
-    /// render it later with [`Self::markdown_block_renderer`].
+    /// Register a custom block-level Markdown parser; it runs during AST
+    /// conversion and must be independent of [`Window`]/[`App`]. Store parsed data in [`MarkdownNode`] and render it with [`Self::markdown_block_renderer`].
     pub fn markdown_block_parser<F>(mut self, parser: F) -> Self
     where
         F: for<'a> Fn(
@@ -631,11 +600,8 @@ mod tests {
         assert_eq!(selected_text.trim(), "quick select value");
     }
 
-    // Regression: markdown `TextView` items inside an outer `gpui::list` with
-    // `measure_all` must keep a stable total content height while scrolling.
-    // Before synchronous full-replace parsing, off-screen markdown views were
-    // first measured with empty content and the scrollbar thumb jittered as the
-    // total height grew during scrolling.
+    // Regression: markdown `TextView` items in an outer `gpui::list` with
+    // `measure_all` must keep a stable total content height while scrolling (previously off-screen views were first measured empty, jittering the scrollbar thumb).
     #[gpui::test]
     fn outer_list_content_total_stable_while_scrolling(cx: &mut TestAppContext) {
         use gpui::{ListAlignment, ListState, list};

@@ -121,9 +121,8 @@ impl InputState {
             return;
         }
 
-        // By default NumberInput steps the value internally with step 1.
-        // To opt out and emit `NumberInputEvent::Step` instead (the caller
-        // updates the value), call `state.set_step(None, window, cx)`.
+        // By default NumberInput steps the value internally with step 1. To opt out
+        // and emit `NumberInputEvent::Step` instead, call `state.set_step(None, ..)`.
         if let Some(step) = self.number_step.clone() {
             let value = self.unmask_value();
             let current = value.trim().parse::<f64>().unwrap_or(0.);
@@ -150,7 +149,6 @@ impl InputState {
 }
 
 /// The step strategy of the [`NumberInput`] for increment/decrement.
-///
 /// See also [`InputState::step`] and [`InputState::step_by`].
 #[derive(Clone)]
 pub enum NumberStep {
@@ -161,17 +159,8 @@ pub enum NumberStep {
 }
 
 impl NumberStep {
-    /// Create a step that calculates the step value from the current value
-    /// and direction on stepping.
-    ///
-    /// The current value is the value before stepping; an empty or invalid
-    /// value is treated as 0. The [`StepAction`] tells whether the value is
-    /// being incremented or decremented, useful when the step differs by
-    /// direction at a range boundary.
-    ///
-    /// The closure receives a [`Context<InputState>`] to read or update other
-    /// entities while computing the step, but must not re-enter the owning
-    /// [`InputState`] (it is mutably borrowed during stepping).
+    /// Create a step that computes the step value from the current value (empty/invalid
+    /// treated as 0) and [`StepAction`]. Must not re-enter the owning [`InputState`].
     pub fn by_value(
         f: impl Fn(f64, StepAction, &mut Context<InputState>) -> f64 + 'static,
     ) -> Self {
@@ -198,13 +187,8 @@ impl From<f64> for NumberStep {
     }
 }
 
-/// Step the `value` by `step` and clamp the result to the `min`/`max` range.
-///
-/// Returns `None` if stepping cannot move the value in the given direction
-/// (e.g. the value is already at the boundary).
-///
-/// The result keeps the max fraction digits of the current value and the step,
-/// to avoid float precision issue, e.g. `0.1 + 0.2 -> 0.3`.
+/// Step the `value` by `step` and clamp to the `min`/`max` range. Returns `None`
+/// if stepping cannot move the value in the given direction (already at the boundary).
 fn step_value(
     value: &str,
     action: StepAction,
@@ -235,9 +219,8 @@ fn step_value(
         }
     }
 
-    // Web behavior: stepping must move the value in the pressed direction, so
-    // a Decrement below min does nothing rather than clamping up. An empty or
-    // invalid value always steps into the range.
+    // Web behavior: stepping must move the value in the pressed direction, so a
+    // Decrement below min does nothing rather than clamping up (empty/invalid always steps in).
     if let Some(current) = current {
         let moved = match action {
             StepAction::Increment => new_value > current,

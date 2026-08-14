@@ -72,11 +72,8 @@ pub struct AlertDialog {
 }
 
 impl AlertDialog {
-    /// Create a new AlertDialog.
-    ///
-    /// By default, the dialog is not overlay closable with a OK button.
-    ///
-    /// You can change this with `.overlay_closable(true)`.
+    /// Create a new AlertDialog. By default, not overlay closable, with an OK
+    /// button; change with `.overlay_closable(true)`.
     pub fn new(cx: &mut App) -> Self {
         Self {
             base: Dialog::new(cx).overlay_closable(false).close_button(false),
@@ -89,22 +86,14 @@ impl AlertDialog {
         }
     }
 
-    /// Set to use confirm dialog, with OK and Cancel buttons.
-    ///
-    /// The default of [`AlertDialog`] has OK button.
+    /// Set to use confirm dialog, with OK and Cancel buttons (default: OK only).
     pub fn confirm(mut self) -> Self {
         self.button_props.show_cancel = true;
         self
     }
 
-    /// Sets the trigger element for the alert dialog.
-    ///
-    /// When a trigger is set, the dialog will render as a trigger element that opens the dialog when clicked.
-    ///
-    /// **Note**: When using `.trigger()`, you should also use `.content()` to define the dialog content
-    /// declaratively instead of using `.title()`, `.description()`, etc.
-    ///
-    /// The `title`, `description`, `icon`, and `button_props` will be ignored when used together with `.trigger()`.
+    /// Sets the trigger element; the dialog renders as this element and opens
+    /// on click. Use `.content()` instead of `.title()`/`.description()`/etc. — those are ignored when a trigger is set.
     pub fn trigger(mut self, trigger: impl IntoElement) -> Self {
         self.trigger = Some(trigger.into_any_element());
         self
@@ -137,11 +126,8 @@ impl AlertDialog {
         self
     }
 
-    /// Sets the footer builder for declarative API.
-    ///
-    /// This is used to define the footer content using declarative components like `DialogFooter`.
-    ///
-    /// If not set, a default footer with OK and optional Cancel button will be used.
+    /// Sets the footer builder for declarative API; if not set, a default
+    /// footer with OK and optional Cancel button is used.
     pub fn footer(mut self, footer: impl IntoElement) -> Self {
         self.base = self.base.footer(footer);
         self
@@ -213,9 +199,8 @@ impl AlertDialog {
         self
     }
 
-    /// Set the overlay closable of the alert dialog, defaults to `false`.
-    ///
-    /// When the overlay is clicked, the dialog will be closed.
+    /// Set the overlay closable of the alert dialog, defaults to `false`;
+    /// when true, clicking the overlay closes the dialog.
     pub fn overlay_closable(mut self, overlay_closable: bool) -> Self {
         self.base = self.base.overlay_closable(overlay_closable);
         self
@@ -233,9 +218,8 @@ impl AlertDialog {
         self
     }
 
-    /// Sets the callback for when the alert dialog is closed.
-    ///
-    /// Called after [`Self::on_action`] or [`Self::on_cancel`] callback.
+    /// Sets the callback for when the alert dialog is closed, called after
+    /// [`Self::on_action`] or [`Self::on_cancel`].
     pub fn on_close(
         mut self,
         on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -244,9 +228,8 @@ impl AlertDialog {
         self
     }
 
-    /// Sets the callback for when the OK/action button is clicked.
-    ///
-    /// The callback should return `true` to close the dialog, if return `false` the dialog will not be closed.
+    /// Sets the callback for when the OK/action button is clicked; return
+    /// `true` to close the dialog, `false` to keep it open.
     pub fn on_ok(
         mut self,
         on_ok: impl Fn(&ClickEvent, &mut Window, &mut App) -> bool + 'static,
@@ -255,9 +238,8 @@ impl AlertDialog {
         self
     }
 
-    /// Sets the callback for when the alert dialog has been canceled.
-    ///
-    /// The callback should return `true` to close the dialog, if return `false` the dialog will not be closed.
+    /// Sets the callback for when the alert dialog has been canceled; return
+    /// `true` to close the dialog, `false` to keep it open.
     pub fn on_cancel(
         mut self,
         on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) -> bool + 'static,

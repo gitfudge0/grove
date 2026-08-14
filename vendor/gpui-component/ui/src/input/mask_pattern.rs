@@ -25,9 +25,8 @@ impl MaskToken {
         matches!(self, MaskToken::Any)
     }
 
-    /// Check if the token is a match for the given character.
-    ///
-    /// The separator is always a match any input character.
+    /// Check if the token is a match for the given character; a separator
+    /// always matches any input character.
     fn is_match(&self, ch: char) -> bool {
         match self {
             MaskToken::Digit => ch.is_ascii_digit(),
@@ -97,20 +96,8 @@ impl From<&str> for MaskPattern {
 }
 
 impl MaskPattern {
-    /// Create a new mask pattern
-    ///
-    /// - `9` - Digit
-    /// - `A` - Letter
-    /// - `#` - Letter or Digit
-    /// - `*` - Any character
-    /// - other characters - Separator
-    ///
-    /// For example:
-    ///
-    /// - `(999)999-9999` - US phone number: (123)456-7890
-    /// - `99999-9999` - ZIP code: 12345-6789
-    /// - `AAAA-99-####` - Custom pattern: ABCD-12-3AB4
-    /// - `*999*` - Custom pattern: (123) or [123]
+    /// Create a new mask pattern: `9` Digit, `A` Letter, `#` Letter or Digit,
+    /// `*` Any character, other characters Separator. E.g. `(999)999-9999` -> US phone: (123)456-7890.
     pub fn new(pattern: &str) -> Self {
         let tokens = pattern
             .chars()
@@ -166,9 +153,7 @@ impl MaskPattern {
         }
     }
 
-    /// Check is the mask text is valid.
-    ///
-    /// If the mask pattern is None, always return true.
+    /// Check is the mask text is valid; always true if the pattern is None.
     pub fn is_valid(&self, mask_text: &str) -> bool {
         if self.is_none() {
             return true;
@@ -273,13 +258,8 @@ impl MaskPattern {
         }
     }
 
-    /// Format the text according to the mask pattern
-    ///
-    /// For example:
-    ///
-    /// - pattern: (999)999-999
-    /// - text: 123456789
-    /// - mask_text: (123)456-789
+    /// Format the text according to the mask pattern, e.g. pattern
+    /// `(999)999-999` + text `123456789` -> `(123)456-789`.
     pub fn mask(&self, text: &str) -> SharedString {
         if self.is_none() {
             return text.to_owned().into();
@@ -416,14 +396,8 @@ fn is_sign(ch: &char) -> bool {
     matches!(ch, '+' | '-')
 }
 
-/// Normalize full-width and CJK number characters into their ASCII equivalents.
-///
-/// E.g. `123。5` -> `123.5`
-///
-/// Every mapping is 1 char to 1 char with the same UTF-16 length, so the IME
-/// marked-range offsets (in UTF-16) stay valid. The UTF-8 byte length may
-/// shrink (3 bytes to 1), the caller must use the normalized string for all
-/// byte-offset calculations.
+/// Normalize full-width and CJK number characters into their ASCII
+/// equivalents, e.g. `123。5` -> `123.5`. Each mapping is 1 char to 1 char with the same UTF-16 length (IME marked-range offsets stay valid), though UTF-8 byte length may shrink — use the normalized string for byte-offset math.
 pub(crate) fn normalize_number_input(text: &str) -> Cow<'_, str> {
     #[inline]
     fn normalize_char(ch: char) -> Option<char> {

@@ -1,9 +1,5 @@
 //! The root view: the sidebar rail, the divider, and the body showing whatever
-//! `WorkspaceState` says is active.
-//!
-//! Plans 06-07 replace the remaining placeholders (appbar, statusbar, grid,
-//! zen). Every dimension comes from a named constant carrying its
-//! `src/gui/metrics.rs` line.
+//! `WorkspaceState` says is active. Every dimension comes from a named constant carrying its `src/gui/metrics.rs` line.
 
 use crate::views::rpx;
 use std::collections::HashMap;
@@ -69,60 +65,32 @@ pub struct Workspace {
     /// The window's logical width, refreshed each frame — the divider drag maps
     /// a cursor x against it.
     logical_win_w: f32,
-    /// The terminal takes focus on the first frame so keystrokes land without
-    /// a click; `window.focus` needs a `&mut Window`, which `new` has not got.
-    /// Cleared again whenever a modal closes: the layer's focus handle leaves
-    /// the element tree with it, and a `Window::focus` pointing at a handle
-    /// that is no longer painted dispatches to the *dispatch-tree root*,
-    /// which is above this view's div — so every binding and `on_key_down`
-    /// below it would go dead until the next click.
+    /// The terminal takes focus on the first frame so keystrokes land without a click.
+    /// Cleared again on modal close, since a stale focus handle dispatches to the dispatch-tree root, above this view, deadening every binding until the next click.
     focused_once: bool,
-    /// The body view that currently holds keyboard focus. Switching sessions
-    /// swaps the body entity without any focus call of its own, so `render`
-    /// compares this against the live body's id and refocuses when it changes
-    /// — never every frame, or the terminal would fight for focus.
+    /// Switching sessions swaps the body entity without a focus call of its own, so `render`
+    /// compares this against the live body's id and refocuses only when it changes.
     last_body_focused: Option<gpui::EntityId>,
     /// `observe_window_activation` needs a `&mut Window`, which `new` has not
     /// got — registered on the first frame instead.
     activation_observed: bool,
-    /// The agent pane's PTY dims as of the last frame. A reattached session is
-    /// resized to these the moment it attaches, so tmux does not report a
-    /// stale geometry on the first frame (`src/gui/update/mod.rs:135-139`).
+    /// A reattached session is resized to these dims the moment it attaches, so tmux does not report a stale geometry on the first frame.
     last_pty_dims: (u16, u16),
-    /// `last_pty_dims` from the previous frame, so the startup discovery gate
-    /// can tell a settled viewport (two consecutive equal frames) from a
-    /// still-resizing window (Wayland configures geometry over several
-    /// frames, so frame 1's size is transient, not final).
+    /// Lets the startup discovery gate tell a settled viewport (two equal frames) from one still resizing (Wayland configures geometry over several frames).
     prev_pty_dims: Option<(u16, u16)>,
-    /// Frames rendered while waiting for `last_pty_dims` to settle, so
-    /// discovery is forced after `TMUX_DISCOVERY_SETTLE_FRAMES` even if the
-    /// viewport never stops changing.
+    /// Frames waited for `last_pty_dims` to settle; discovery is forced after `TMUX_DISCOVERY_SETTLE_FRAMES` regardless.
     tmux_discovery_frames: u32,
     /// The startup tmux scan runs once, after the viewport has settled.
     tmux_discovered: bool,
-    /// Frames rendered since discovery, so a reattached session that no tile
-    /// ever paints still gets its deferred tmux attach after
-    /// `TMUX_ATTACH_FALLBACK_FRAMES`. Stops counting once nothing is pending.
+    /// Frames since discovery, so a reattached session no tile ever paints still gets its deferred tmux attach after `TMUX_ATTACH_FALLBACK_FRAMES`.
     tmux_attach_frames: u32,
-    /// The sidebar width is seeded from the real, zoom-corrected window width
-    /// on the first frame rather than the 1280px placeholder `new` had to use
-    /// before any `Window` existed (`update/mod.rs:124-127`); every later
-    /// frame just re-clamps the live width.
+    /// Seeded from the real, zoom-corrected window width on the first frame, replacing the 1280px placeholder `new` used before any `Window` existed.
     sidebar_seeded: bool,
-    /// `Window::on_window_should_close` is registered on the first frame for
-    /// the same reason, and additionally needs *this* entity (it counts the
-    /// running native sessions and runs [`Workspace::shutdown`]).
+    /// `Window::on_window_should_close` needs `&mut Window` and this entity, so it is registered on the first frame instead of in `new`.
     close_hook_registered: bool,
-    /// The first-run check runs on the first frame and never again — a latch
-    /// in the same family as `close_hook_registered` above. Without it every
-    /// later render would re-open the wizard the moment the user skipped it,
-    /// because `store.onboarded` only flips on the *last* step.
+    /// Runs once on the first frame; without this latch every render would reopen the wizard until `store.onboarded` flips on the last step.
     first_run_checked: bool,
-    /// Last frame's header-segment decision per session, so
-    /// [`grid::fit_segments`] has a `prev` to apply hysteresis against. A
-    /// render-time memo, not app state: it is deliberately *not* on
-    /// `WorkspaceState` and is never persisted. Evicted down to `tile_order`
-    /// each frame so it cannot outgrow the live sessions.
+    /// Last frame's header-segment decision per session, giving [`grid::fit_segments`] a `prev` for hysteresis. Render-time only, evicted to `tile_order` each frame.
     header_fits: HashMap<SessionId, grid::HeaderFit>,
     observers: Vec<gpui::Subscription>,
 }
@@ -134,18 +102,9 @@ impl Focusable for Workspace {
 }
 
 // ── tile-header measurement ──────────────────────────────────────────────
-//
-// `grid::tile_header` decides which identity segments it can afford from
-// widths measured here, because this is where a `&Window` — and therefore a
-// text system — exists. Everything below returns **device pixels**; the
-// decision itself is `grid::fit_segments`, which is pure.
+// `grid::tile_header` decides which identity segments it can afford from widths measured here, since a `&Window`/text system exists here. Everything below returns device pixels; `grid::fit_segments` makes the pure decision.
 
-/// Token space → **device pixels**. Every `SPACE_*`/`TEXT_*`/`ICON_*` token is
-/// authored against [`zoom::REM_BASE`] through [`rpx`], and `render` sets
-/// `rem_size = px(REM_BASE * zoom)` (`:1780`), so a token of `v` paints at
-/// `rem_size * (v / REM_BASE)` — i.e. `v * zoom`. Logical px (viewport over
-/// zoom, `sidebar_width`) convert by the same factor. Mixing the two spaces
-/// would leave the budget correct at 100% zoom only.
+/// Token space → device pixels. Tokens are authored against [`zoom::REM_BASE`], so a token of `v` paints at `v * zoom`; mixing token and logical px spaces would only be correct at 100% zoom.
 pub(crate) fn token_px(v: f32, window: &Window) -> f32 {
     f32::from(window.rem_size()) * (v / zoom::REM_BASE)
 }

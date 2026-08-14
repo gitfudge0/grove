@@ -10,19 +10,14 @@ use crate::ActiveTheme as _;
 /// Represents a column in a table, used for initializing table columns.
 #[derive(Debug, Clone)]
 pub struct Column {
-    /// The unique key of the column.
-    ///
-    /// This is used to identify the column in the table and your data source.
-    ///
-    /// In most cases, it should match the field name in your data source.
+    /// The unique key of the column, identifying it in the table and your
+    /// data source; usually matches the field name in your data source.
     pub key: SharedString,
     /// The display name of the column.
     pub name: SharedString,
     /// The text alignment of the column.
     pub align: TextAlign,
-    /// The sorting behavior of the column, if any.
-    ///
-    /// If `None`, the column is not sortable.
+    /// The sorting behavior of the column; `None` means not sortable.
     pub sort: Option<ColumnSort>,
     /// The padding of the column.
     pub paddings: Option<Edges<Pixels>>,
@@ -34,15 +29,8 @@ pub struct Column {
     pub resizable: bool,
     /// Whether the column is movable.
     pub movable: bool,
-    /// Whether the column is selectable.
-    ///
-    /// When `true`:
-    /// - In column selection mode: The entire column can be selected
-    /// - In cell selection mode: Individual cells in this column can be selected
-    ///
-    /// When `false`:
-    /// - The column and its cells cannot be selected
-    /// - Useful for action columns (e.g., buttons, checkboxes) that shouldn't participate in selection
+    /// Whether the column is selectable: if true, the column (or its cells,
+    /// depending on selection mode) can be selected; if false, useful for action columns (buttons, checkboxes) to opt out.
     pub selectable: bool,
     /// The minimum width of the column.
     pub min_width: Pixels,
@@ -95,17 +83,14 @@ impl Column {
         }
     }
 
-    /// Set the column to be sortable with custom sort function, default is None (not sortable).
-    ///
-    /// See also [`Column::sortable`] to enable sorting with default.
+    /// Set the column to be sortable with custom sort function, default is
+    /// None; see also [`Column::sortable`] for the default sort.
     pub fn sort(mut self, sort: ColumnSort) -> Self {
         self.sort = Some(sort);
         self
     }
 
-    /// Set whether the column is sortable, default is true.
-    ///
-    /// See also [`Column::sort`].
+    /// Set whether the column is sortable, default is true; see also [`Column::sort`].
     pub fn sortable(mut self) -> Self {
         self.sort = Some(ColumnSort::Default);
         self
@@ -129,9 +114,8 @@ impl Column {
         self
     }
 
-    /// Set the alignment of the column text, default is left.
-    ///
-    /// Only `text_left`, `text_right` is supported.
+    /// Set the alignment of the column text, default is left; only
+    /// `text_left`, `text_right` is supported.
     pub fn text_right(mut self) -> Self {
         self.align = TextAlign::Right;
         self
@@ -238,9 +222,8 @@ pub enum ColumnFixed {
 #[derive(Debug, Clone)]
 pub(crate) struct ColGroup {
     pub(crate) column: Column,
-    /// This is the runtime width of the column, we may update it when the column is resized.
-    ///
-    /// Including the width with next columns by col_span.
+    /// The runtime width of the column, updated on resize; includes the
+    /// width of next columns by col_span.
     pub(crate) width: Pixels,
     /// The bounds of the column in the table after it renders.
     pub(crate) bounds: Bounds<Pixels>,

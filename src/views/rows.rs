@@ -1,20 +1,5 @@
-//! The sidebar's row model: the pure helpers each row renders from, and the
-//! **flattening** that turns the project → worktree → session tree into the
-//! single `Vec<TreeRow>` the view scrolls.
-//!
-//! # Flattening decision (carried amendment 2)
-//!
-//! Rows are emitted **pre-resolved**: every field a renderer needs is on the
-//! row. Nothing looks back into `WorkspaceState` / the registry per row, which
-//! is what made the iced version O(projects × worktrees × sessions) per frame
-//! (`src/gui/view/sidebar.rs:227-237`).
-//!
-//! Rows are *not* uniformly tall in the iced build — a worktree showing a
-//! branch chip is `ROW_H + 14` (`src/gui/rows.rs:268`). [`row_height`] is the
-//! single height function; **`uniform_list` is therefore not usable as-is** and
-//! the decision belongs to Task 5, which renders. Whatever it picks, it and the
-//! agent-menu overlay walk must both call [`row_height`], or the overlay lands
-//! on the wrong row.
+//! The sidebar's row model: pure helpers each row renders from, and the flattening that turns the project → worktree → session tree into the single `Vec<TreeRow>` the view scrolls.
+//! Rows are emitted pre-resolved (carried amendment 2) to avoid the iced build's per-frame O(projects × worktrees × sessions) lookups; rows are not uniformly tall, so [`row_height`] is the single height function both the renderer and the agent-menu overlay must call.
 
 use crate::views::rpx;
 use crate::views::tokens::*;
@@ -47,10 +32,8 @@ pub const ROW_H: f32 = 28.0;
 /// disagreed would misplace the menu (§8.1).
 const BRANCH_LINE_H: f32 = 14.0;
 
-/// The fixed-width slot every row's leading glyph (twisty, state glyph) sits
-/// in. It is a *reserved* width: the glyph inside changes with state, and §2.4
-/// forbids the row reflowing when it does. All three call sites share this one
-/// constant so the columns line up down the tree.
+/// Reserved width for every row's leading glyph slot: the glyph changes with
+/// state but §2.4 forbids the row reflowing, so all call sites share this one constant to keep columns aligned.
 const GLYPH_SLOT_W: f32 = 14.0;
 
 /// Worktree-row indent: one glyph slot in from the project row's own

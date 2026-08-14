@@ -18,12 +18,8 @@ use std::{any::Any, rc::Rc};
 
 use crate::setting::RenderOptions;
 
-/// Custom reset behavior for a setting field or item.
-///
-/// The first closure reports whether the target is "dirty" (controls the reset
-/// button visibility), the second performs the reset. Used by `element`/`render`
-/// fields and custom element items whose state is not expressed through the
-/// typed `default_value` mechanism.
+/// Custom reset behavior for a setting field or item: the first closure
+/// reports "dirty" (reset button visibility), the second performs the reset. Used by `element`/`render` fields whose state bypasses `default_value`.
 pub(crate) type ResetHandler = (Rc<dyn Fn(&App) -> bool>, Rc<dyn Fn(&mut Window, &mut App)>);
 
 pub(crate) trait SettingFieldRender {
@@ -143,11 +139,8 @@ pub struct SettingField<T> {
     /// Function to set the value for this field.
     pub(crate) set_value: Rc<dyn Fn(T, &mut App)>,
     pub(crate) default_value: Option<T>,
-    /// Optional custom reset behavior, used by `element`/`render` fields whose
-    /// state is not expressed through the typed `default_value` mechanism.
-    ///
-    /// The first closure reports whether the field is "dirty" (controls the
-    /// reset button visibility), the second performs the reset.
+    /// Optional custom reset behavior for `element`/`render` fields; first
+    /// closure reports "dirty" (reset button visibility), second performs the reset.
     pub(crate) reset_handler: Option<ResetHandler>,
 }
 
@@ -181,10 +174,8 @@ impl SettingField<SharedString> {
         Self::new(SettingFieldType::Input, value, set_value)
     }
 
-    /// Create a new Dropdown field with the given options.
-    ///
-    /// The popup menu does not scroll. For long option lists that may exceed
-    /// the viewport, use [`Self::scrollable_dropdown`] instead.
+    /// Create a new Dropdown field; the popup menu does not scroll — for
+    /// long option lists, use [`Self::scrollable_dropdown`] instead.
     pub fn dropdown<V, S>(
         options: Vec<(SharedString, SharedString)>,
         value: V,
@@ -205,8 +196,7 @@ impl SettingField<SharedString> {
     }
 
     /// Create a new Dropdown field whose popup menu scrolls when its content
-    /// exceeds the viewport. Use this for long option lists where the
-    /// non-scrolling [`Self::dropdown`] would push items below the fold.
+    /// exceeds the viewport, unlike the non-scrolling [`Self::dropdown`].
     pub fn scrollable_dropdown<V, S>(
         options: Vec<(SharedString, SharedString)>,
         value: V,
@@ -226,9 +216,8 @@ impl SettingField<SharedString> {
         )
     }
 
-    /// Create a new setting field with the given custom element that implements [`SettingFieldElement`] trait.
-    ///
-    /// See also [`SettingField::render`] for simply building with a render closure.
+    /// Create a new setting field with the given custom element implementing
+    /// [`SettingFieldElement`]; see also [`SettingField::render`] for a render closure.
     pub fn element<E>(element: E) -> Self
     where
         E: SettingFieldElement + 'static,
@@ -242,9 +231,8 @@ impl SettingField<SharedString> {
         )
     }
 
-    /// Create a new setting field with the given element render closure.
-    ///
-    /// See also [`SettingField::element`] for building with a custom field for more complex scenarios.
+    /// Create a new setting field with the given element render closure; see
+    /// also [`SettingField::element`] for a custom field for complex scenarios.
     pub fn render<E, R>(element_render: R) -> Self
     where
         E: IntoElement + 'static,
@@ -286,26 +274,15 @@ impl<T> SettingField<T> {
         }
     }
 
-    /// Set the default value for this setting field, default is None.
-    ///
-    /// If set, this value can be used to reset the setting to its default state.
-    /// If not set, the setting cannot be reset.
+    /// Set the default value for this setting field, default is None; if
+    /// set, it is used to reset the setting, otherwise it cannot be reset.
     pub fn default_value(mut self, default_value: impl Into<T>) -> Self {
         self.default_value = Some(default_value.into());
         self
     }
 
-    /// Provide custom reset behavior for this field.
-    ///
-    /// This is intended for [`SettingField::element`] / [`SettingField::render`]
-    /// fields, whose state is managed externally and therefore not covered by
-    /// the typed [`SettingField::default_value`] reset mechanism.
-    ///
-    /// - `is_dirty` reports whether the field differs from its default and thus
-    ///   whether the reset button should appear.
-    /// - `reset` performs the reset.
-    ///
-    /// When set, this takes precedence over the `default_value` based reset.
+    /// Provide custom reset behavior for [`SettingField::element`] /
+    /// [`SettingField::render`] fields not covered by [`SettingField::default_value`]. `is_dirty` controls reset-button visibility, `reset` performs it; takes precedence over `default_value`-based reset.
     pub fn on_reset<D, R>(mut self, is_dirty: D, reset: R) -> Self
     where
         D: Fn(&App) -> bool + 'static,
@@ -359,9 +336,8 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> AnySettingField for SettingFi
             return is_dirty(cx);
         }
 
-        // `element`/`render` fields carry no typed value (their `value` always
-        // returns the default), so the `default_value` comparison is meaningless
-        // for them. Without a custom `on_reset`, they are not resettable.
+        // `element`/`render` fields carry no typed value, so the
+        // `default_value` comparison doesn't apply; without `on_reset`, not resettable.
         if self.field_type.is_element() {
             return false;
         }

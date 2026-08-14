@@ -167,33 +167,17 @@ pub struct RangeMatcher {
 
 /// Matcher to match dates.
 pub enum Matcher {
-    /// Match declare days of the week.
-    ///
-    /// Matcher::DayOfWeek(vec![0, 6])
-    /// Will match the days of the week that are Sunday and Saturday.
+    /// Match declared days of the week, e.g. `Matcher::DayOfWeek(vec![0, 6])`
+    /// matches Sunday and Saturday.
     DayOfWeek(Vec<u32>),
-    /// Match the included days, except for those before and after the interval.
-    ///
-    /// Matcher::Interval(IntervalMatcher {
-    ///   before: Some(NaiveDate::from_ymd(2020, 1, 2)),
-    ///   after: Some(NaiveDate::from_ymd(2020, 1, 3)),
-    /// })
-    /// Will match the days that are not between 2020-01-02 and 2020-01-03.
+    /// Match the included days, except those before/after the interval,
+    /// e.g. matches days outside 2020-01-02..2020-01-03.
     Interval(IntervalMatcher),
-    /// Match the days within the range.
-    ///
-    /// Matcher::Range(RangeMatcher {
-    ///   from: Some(NaiveDate::from_ymd(2020, 1, 1)),
-    ///   to: Some(NaiveDate::from_ymd(2020, 1, 3)),
-    /// })
-    /// Will match the days that are between 2020-01-01 and 2020-01-03.
+    /// Match the days within the range, e.g. matches days between
+    /// 2020-01-01 and 2020-01-03.
     Range(RangeMatcher),
-    /// Match dates using a custom function.
-    ///
-    /// let matcher = Matcher::Custom(Box::new(|date: &NaiveDate| {
-    ///     date.day0() < 5
-    /// }));
-    /// Will match first 5 days of each month
+    /// Match dates using a custom function, e.g. `|date| date.day0() < 5`
+    /// matches the first 5 days of each month.
     Custom(Box<dyn Fn(&NaiveDate) -> bool + Send + Sync>),
 }
 
@@ -308,9 +292,7 @@ impl CalendarState {
         self
     }
 
-    /// Set the disabled matcher of the calendar.
-    ///
-    /// The disabled matcher will be used to disable the days that match the matcher.
+    /// Set the disabled matcher of the calendar; disables days matching it.
     pub fn set_disabled_matcher(
         &mut self,
         disabled: impl Into<Matcher>,
@@ -320,9 +302,8 @@ impl CalendarState {
         self.disabled_matcher = Some(Rc::new(disabled.into()));
     }
 
-    /// Set the date of the calendar.
-    ///
-    /// When you set a range date, the mode will be automatically set to `Mode::Range`.
+    /// Set the date of the calendar; setting a range date automatically
+    /// switches the mode to `Mode::Range`.
     pub fn set_date(&mut self, date: impl Into<Date>, _: &mut Window, cx: &mut Context<Self>) {
         let date = date.into();
 
@@ -367,9 +348,8 @@ impl CalendarState {
         cx.notify();
     }
 
-    /// Set the year range of the calendar, default is 50 years before and after the current year.
-    ///
-    /// Each year page contains 20 years, so the range will be divided into chunks of 20 years is better.
+    /// Set the year range of the calendar, default 50 years before/after
+    /// current; ideally divided into 20-year chunks (each year page holds 20 years).
     pub fn year_range(mut self, range: (i32, i32)) -> Self {
         self.apply_year_range(range);
         self

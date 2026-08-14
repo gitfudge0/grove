@@ -120,11 +120,8 @@ pub fn icon_named(input: TokenStream) -> TokenStream {
 
     let raw_path = path.value();
 
-    // Resolve the path. A leading `$` switches us into env-var mode: the
-    // remainder of the string is an env var name whose value (set by the
-    // caller's `build.rs` via `cargo:rustc-env=`) is the absolute path of
-    // the icons directory. Otherwise treat the string as a path relative
-    // to the calling crate's `CARGO_MANIFEST_DIR`, the original behavior.
+    // A leading `$` switches to env-var mode: the rest is an env var name (set by
+    // the caller's build.rs) holding the icons dir; otherwise resolve relative to CARGO_MANIFEST_DIR.
     let icons_dir = if let Some(env_name) = raw_path.strip_prefix('$') {
         let env_value = std::env::var(env_name).unwrap_or_else(|_| {
             panic!(

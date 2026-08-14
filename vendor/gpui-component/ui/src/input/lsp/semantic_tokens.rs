@@ -10,42 +10,14 @@ use crate::highlighter::HighlightTheme;
 use crate::input::{InputState, Lsp, RopeExt};
 
 /// A provider of semantic highlighting tokens, layered on top of the
-/// built-in tree-sitter [`SyntaxHighlighter`](crate::highlighter::SyntaxHighlighter).
-///
-/// This is the editor counterpart of the LSP
-/// `textDocument/semanticTokens/range` request (and Monaco Editor's
-/// [`DocumentRangeSemanticTokensProvider`][monaco]). Like the other
-/// providers on [`Lsp`](crate::input::Lsp) — `DocumentColorProvider`,
-/// `HoverProvider`, … — it is installed on `InputState::lsp`, fetched
-/// asynchronously when the document changes, and its result is cached and
-/// composed into the render pipeline. It does **not** replace the
-/// tree-sitter highlighter.
-///
-/// # Token names and theming
-///
-/// Returned tokens are delta-encoded with a numeric `token_type` that
-/// indexes [`legend`](Self::legend)`.token_types`. The editor resolves each
-/// type *name* against the active
-/// [`HighlightTheme`](crate::highlighter::HighlightTheme) at paint time —
-/// the same vocabulary the tree-sitter path uses (`"keyword"`, `"comment"`,
-/// `"string"`, …; `"keyword.modifier"` falls back to `"keyword"`). Because
-/// the color is resolved from the name on every paint, theme switches
-/// recolor semantic tokens with no provider cooperation. Token *modifiers*
-/// are accepted but not currently mapped to styles.
-///
-/// [monaco]: https://microsoft.github.io/monaco-editor/
+/// built-in tree-sitter [`SyntaxHighlighter`](crate::highlighter::SyntaxHighlighter) — it does **not** replace it. Tokens are delta-encoded with a numeric `token_type` resolved against the active [`HighlightTheme`](crate::highlighter::HighlightTheme) at paint time, so theme switches recolor tokens with no provider cooperation; modifiers are accepted but not currently mapped to styles.
 pub trait DocumentRangeSemanticTokensProvider {
     /// The legend naming the numeric `token_type` field of the tokens
-    /// returned by [`semantic_tokens`](Self::semantic_tokens). Each entry in
-    /// [`SemanticTokensLegend::token_types`] is resolved against the active
-    /// [`HighlightTheme`](crate::highlighter::HighlightTheme).
+    /// returned by [`semantic_tokens`](Self::semantic_tokens); resolved against the active [`HighlightTheme`](crate::highlighter::HighlightTheme).
     fn legend(&self) -> SemanticTokensLegend;
 
-    /// Fetches semantic tokens for the specified byte range.
-    ///
-    /// textDocument/semanticTokens/range
-    ///
-    /// <https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_semanticTokens>
+    /// Fetches semantic tokens for the specified byte range (LSP
+    /// `textDocument/semanticTokens/range`).
     fn semantic_tokens(
         &self,
         text: &Rope,
@@ -56,17 +28,8 @@ pub trait DocumentRangeSemanticTokensProvider {
 }
 
 impl Lsp {
-    /// Get semantic token styles that intersect with the visible byte range,
-    /// resolving each cached token's type name against `theme`.
-    ///
-    /// Called on every paint. The cache is sorted by start position, so this
-    /// binary-searches the small window of tokens that can touch the viewport
-    /// (`O(log N + visible)`) instead of scanning the whole document — only
-    /// the windowed candidates pay the position→byte conversion. Tokens
-    /// resolving to an empty byte range, or whose type name the theme does
-    /// not recognize, are skipped.
-    ///
-    /// Returns byte ranges and styles.
+    /// Get semantic token styles intersecting the visible byte range. Called
+    /// on every paint; binary-searches the sorted cache (`O(log N + visible)`) instead of scanning the whole document. Returns byte ranges and styles.
     pub(crate) fn semantic_tokens_for_range(
         &self,
         text: &Rope,
@@ -80,10 +43,8 @@ impl Lsp {
         let visible_start = text.offset_to_position(visible_range.start);
         let visible_end = text.offset_to_position(visible_range.end);
 
-        // Cache is sorted by `range.start`. A token can only touch the
-        // viewport if its start is before `visible_end` (upper bound) and it
-        // is not on a line entirely above the viewport's first line (lower
-        // bound — tokens are single-line, so an earlier line cannot reach in).
+        // Cache is sorted by `range.start`; a token can only touch the
+        // viewport if its start is before `visible_end` and not on a line entirely above the viewport's first line (tokens are single-line).
         let hi = self
             .semantic_tokens
             .partition_point(|(range, _)| range.start < visible_end);
@@ -120,8 +81,7 @@ impl Lsp {
         let legend = provider.legend();
         let text = text.clone();
         // Fetch the whole document; results are cached and filtered to the
-        // viewport at paint time (mirrors `update_document_colors`), so a
-        // scroll never needs a refetch.
+        // viewport at paint time, so a scroll never needs a refetch.
         let range = 0..text.len();
         let input_state = cx.entity();
 
@@ -150,12 +110,8 @@ impl Lsp {
     }
 }
 
-/// Decode the LSP delta-encoding of `tokens` into absolute
-/// (position-range, type-name) pairs, sorted by start position.
-///
-/// The type name is looked up in `legend.token_types`; tokens whose
-/// `token_type` index is out of bounds are skipped. Color resolution is
-/// deferred to paint time so theme switches take effect without a refetch.
+/// Decode the LSP delta-encoding of `tokens` into absolute (position-range,
+/// type-name) pairs, sorted by start position; out-of-bounds `token_type` indices are skipped, and color resolution is deferred to paint time.
 fn decode_semantic_tokens(
     tokens: &SemanticTokens,
     legend: &SemanticTokensLegend,

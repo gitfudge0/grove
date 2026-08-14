@@ -70,11 +70,8 @@ where
         }
     }
 
-    /// Enable an interactive hover tooltip (crosshair + category/value) for this chart.
-    ///
-    /// The `id` must be unique among sibling elements. Without it, the chart stays a
-    /// non-interactive plot. Works for every [`BarAlignment`] (vertical bars get a
-    /// vertical crosshair, horizontal bars a horizontal one).
+    /// Enable an interactive hover tooltip (crosshair + category/value); `id`
+    /// must be unique among siblings, or the chart stays non-interactive.
     pub fn id(mut self, id: impl Into<ElementId>) -> Self {
         self.id = Some(id.into());
         self
@@ -98,25 +95,8 @@ where
         self
     }
 
-    /// Set a per-datum verbatim fill.
-    ///
-    /// The closure receives:
-    ///
-    /// 1. the datum,
-    /// 2. the **bar's bounds** in pixel space, expressed relative to the
-    ///    chart's origin (i.e. the bar's painted rectangle within the chart),
-    /// 3. the **chart's bounds** in pixel space with origin `(0, 0)` and size
-    ///    equal to the full chart extent, and
-    /// 4. the bar's [`BarAlignment`] (so callers can branch on orientation,
-    ///    e.g. flip a gradient angle).
-    ///
-    /// Both rectangles share the same coordinate system, so callers can
-    /// implement arbitrary chart-aware backgrounds — bar-local gradients,
-    /// chart-wide gradients, patterns, sampled colormaps, etc. — without any
-    /// help from the library.
-    ///
-    /// Accepts any type convertible to [`Background`]. Setting this clears any
-    /// previously set [`BarChart::fill_gradient`].
+    /// Set a per-datum verbatim fill. The closure receives the datum, the
+    /// bar's bounds and the chart's bounds (both pixel-space, same coordinate system so callers can implement chart-aware backgrounds), and the bar's [`BarAlignment`]. Clears [`BarChart::fill_gradient`].
     pub fn fill<Bg>(
         mut self,
         fill: impl Fn(&T, Bounds<f32>, Bounds<f32>, BarAlignment) -> Bg + 'static,
@@ -188,9 +168,7 @@ where
         self
     }
 
-    /// Show or hide the band-axis line and labels.
-    ///
-    /// Default is true.
+    /// Show or hide the band-axis line and labels. Default is true.
     pub fn label_axis(mut self, label_axis: bool) -> Self {
         self.label_axis = label_axis;
         self
@@ -201,18 +179,14 @@ where
         self
     }
 
-    /// Set the bar alignment.
-    ///
-    /// Default is [`BarAlignment::Bottom`].
+    /// Set the bar alignment. Default is [`BarAlignment::Bottom`].
     pub fn alignment(mut self, alignment: BarAlignment) -> Self {
         self.alignment = alignment;
         self
     }
 
-    /// Set the corner radii applied to every bar rectangle.
-    ///
-    /// Use [`Corners::all`] for uniform rounding, or construct [`Corners`] manually
-    /// to round only specific corners (e.g. just the tip end of each bar).
+    /// Set the corner radii applied to every bar rectangle; use [`Corners::all`]
+    /// for uniform rounding or construct [`Corners`] manually for specific corners.
     pub fn corner_radii(mut self, corner_radii: impl Into<Corners<Pixels>>) -> Self {
         self.corner_radii = corner_radii.into();
         self
@@ -237,9 +211,8 @@ where
         )
     }
 
-    /// Label gaps `(band_side, value_end_side)` reserved along the value axis for
-    /// horizontal bars, measured from the actual label text. Shared by `paint` and the
-    /// tooltip so the crosshair lines up with the bar region.
+    /// Label gaps `(band_side, value_end_side)` reserved along the value axis
+    /// for horizontal bars. Shared by `paint` and the tooltip so the crosshair lines up with the bar region.
     fn horizontal_gaps(&self, window: &mut Window) -> (f32, f32) {
         let Some(band_fn) = self.band.as_ref() else {
             return (0., 0.);
@@ -298,11 +271,8 @@ where
         } else {
             total_height
         };
-        // For horizontal charts the band labels (category names) are rendered
-        // along the value axis and can be arbitrarily wide, so we measure the
-        // actual maximum label width instead of using a fixed constant.
-        // Similarly, value labels (numbers) at the bar ends are measured so the
-        // scale range is always shrunk by exactly the right amount.
+        // Horizontal band labels can be arbitrarily wide, so measure the actual
+        // max label width instead of a fixed constant; same for value labels.
         let (band_gap, value_end_gap) = if is_horizontal {
             self.horizontal_gaps(window)
         } else {
@@ -396,16 +366,14 @@ where
         let fill_gradient = self.fill_gradient.clone();
         let label_color = cx.theme().foreground;
 
-        // Chart bounds in pixel space, with origin (0, 0) and size equal to
-        // the full chart extent. Passed to user `fill` closures so they can
-        // position chart-wide backgrounds (gradients, patterns, etc.).
+        // Chart bounds, origin (0,0), passed to user `fill` closures so they
+        // can position chart-wide backgrounds.
         let chart_bounds: Bounds<f32> = Bounds {
             origin: Point::new(0., 0.),
             size: Size::new(total_width, total_height),
         };
 
-        // Chart data range in f32 — passed to `fill_gradient` callers and used
-        // by the `chart_to_bar` remap helper.
+        // Chart data range in f32, passed to `fill_gradient` callers and the `chart_to_bar` remap helper.
         let chart_range = {
             let mut lo = 0.0_f32;
             let mut hi = 0.0_f32;
@@ -565,15 +533,7 @@ where
 }
 
 /// Clip a two-stop gradient to bar-local `[0, 1]`, interpolating colors at the
-/// clip points so the on-bar gradient matches the (possibly broader) gradient
-/// the caller defined.
-///
-/// When a stop position falls outside `[0, 1]` (e.g. because `chart_to_bar`
-/// returned a value past the bar's edge for a chart-relative gradient),
-/// gpui's renderer would clamp the position and lose the gradient effect.
-/// This function instead replaces such a stop with the color sampled along
-/// the line through both stops at position `0.0` or `1.0`, preserving the
-/// visual slice.
+/// clip points (instead of letting gpui clamp the position, which would lose the gradient effect) so the on-bar gradient matches the caller's broader one.
 fn clip_stops_to_bar(stops: [LinearColorStop; 2]) -> [LinearColorStop; 2] {
     let [a, b] = stops;
     let p0 = a.percentage;

@@ -9,22 +9,16 @@ use gpui::{Corners, Pixels};
 
 use crate::{AxisExt, StyledExt as _};
 
-/// A horizontal scroll viewport that only consumes horizontal wheel deltas.
-///
-/// GPUI's native `overflow_x_scroll` maps vertical wheel input onto horizontal
-/// scrolling when there is no vertical overflow. This wrapper keeps the visual
-/// clipping and scroll offset, while delegating wheel input to [`ScrollableMask`]
-/// so vertical wheel events can continue bubbling to the parent scroller.
+/// A horizontal scroll viewport that only consumes horizontal wheel deltas,
+/// unlike GPUI's native `overflow_x_scroll`, which maps vertical wheel input onto horizontal scrolling; delegates wheel handling to [`ScrollableMask`].
 pub(crate) fn horizontal_scroll_area(
     id: impl Into<ElementId>,
     scroll_handle: &ScrollHandle,
     style: &StyleRefinement,
     child: impl IntoElement,
 ) -> impl IntoElement {
-    // The mask must be a sibling of the scrolled element (like in Table), not
-    // a child of it: children are prepainted with the scroll offset applied,
-    // which would slide the mask away from the viewport as the content
-    // scrolls, leaving the uncovered part to the parent scroller.
+    // The mask must be a sibling of the scrolled element, not a child: a
+    // child would slide away from the viewport as the content scrolls.
     div()
         .w_full()
         .relative()
@@ -40,22 +34,8 @@ pub(crate) fn horizontal_scroll_area(
         .child(ScrollableMask::new(Axis::Horizontal, scroll_handle))
 }
 
-/// Make a scrollable mask element to cover the parent view with the mouse wheel event listening.
-///
-/// When the mouse wheel is scrolled, will move the `scroll_handle` scrolling with the `axis` direction.
-/// You can use this `scroll_handle` to control what you want to scroll.
-/// This is only can handle once axis scrolling.
-///
-/// Axis-dominant wheel events are consumed in the capture phase, so the mask
-/// wins over ancestor scrollers (e.g. `gpui::list`) that register their
-/// listeners after their children; events dominated by the other axis keep
-/// propagating. The mask stays inert while occluded.
-///
-/// At the scroll edge the two axes differ, matching platform scrollers:
-/// a vertical mask hands the event over to the ancestor scroller (CSS
-/// `overscroll-behavior: auto` chaining), while a horizontal mask keeps
-/// consuming it — a bubbled horizontal delta would get mapped onto a
-/// vertical-only ancestor by gpui's own wheel listener (see #2468).
+/// A mask covering the parent view that scrolls `scroll_handle` along `axis`
+/// on mouse wheel, handling only one axis. Consumes axis-dominant wheel events in the capture phase (so it wins over ancestor scrollers like `gpui::list`) and stays inert while occluded; at the scroll edge a vertical mask hands off to the ancestor, a horizontal mask keeps consuming (#2468).
 pub struct ScrollableMask {
     axis: Axis,
     scroll_handle: ScrollHandle,
@@ -171,16 +151,8 @@ impl Element for ScrollableMask {
                 let hitbox_id = hitbox.id;
 
                 move |event: &ScrollWheelEvent, phase, window, cx| {
-                    // Handle in the capture phase: ancestor scrollers such as
-                    // `gpui::list` register their wheel listeners after their
-                    // children paint, so in the bubble phase (reverse
-                    // registration order) they run first and would consume the
-                    // vertical component of a trackpad swipe before this mask
-                    // could stop the propagation.
-                    //
-                    // `should_handle_scroll` (instead of a raw bounds check)
-                    // keeps the mask inert when it is occluded, e.g. below an
-                    // open dialog or context menu.
+                    // Handle in the capture phase: ancestor scrollers like
+                    // `gpui::list` register after their children, so in bubble phase they'd run first. `should_handle_scroll` also keeps the mask inert while occluded.
                     if !(phase.capture() && hitbox_id.should_handle_scroll(window)) {
                         return;
                     }
@@ -188,9 +160,8 @@ impl Element for ScrollableMask {
                     let mut offset = scroll_handle.offset();
                     let mut delta = event.delta.pixel_delta(line_height);
 
-                    // Limit for only one way scrolling at same time.
-                    // When use MacBook touchpad we may get both x and y delta,
-                    // only allows the one that more to scroll.
+                    // One-way scrolling only: a MacBook touchpad may give both
+                    // x and y delta, so only the dominant axis is allowed.
                     if !delta.x.is_zero() && !delta.y.is_zero() {
                         if delta.x.abs() > delta.y.abs() {
                             delta.y = px(0.);
@@ -200,11 +171,8 @@ impl Element for ScrollableMask {
                     }
 
                     if !is_horizontal {
-                        // The current offset must be clamped too: after a
-                        // bubbled event, the scrolled element's own listener
-                        // pushes the shared offset beyond the edge unclamped
-                        // (the div only clamps on prepaint), and that
-                        // transient overscroll would read as "room to scroll".
+                        // Must clamp the current offset too: a bubbled event's
+                        // own listener can push it beyond the edge unclamped (div only clamps on prepaint), which would read as "room to scroll".
                         let axis_max = scroll_handle.max_offset().y.max(px(0.));
                         let current = offset.y.clamp(-axis_max, px(0.));
                         let new_offset = (current + delta.y).clamp(-axis_max, px(0.));
@@ -223,10 +191,7 @@ impl Element for ScrollableMask {
                     offset.x += delta.x;
 
                     // NOTE: `set_offset` does not clamp (clamping happens in
-                    // the div's prepaint), so any non-zero horizontal-dominant
-                    // delta passes this guard — even at the scroll edge the
-                    // event is consumed rather than turned into a parent
-                    // scroll.
+                    // the div's prepaint), so even at the scroll edge the event is consumed rather than turned into a parent scroll.
                     if offset != scroll_handle.offset() {
                         scroll_handle.set_offset(offset);
                         cx.notify(view_id);
@@ -286,9 +251,7 @@ mod tests {
     }
 
     /// Reproduces the markdown table case: the scroll area lives inside a
-    /// `gpui::list` item. The list registers its wheel listener after its
-    /// items paint, so in the bubble phase (reverse registration order) the
-    /// list runs first and consumes `delta.y` of every trackpad swipe.
+    /// `gpui::list` item, whose wheel listener (registered after its items paint) would otherwise consume `delta.y` of every trackpad swipe first.
     struct ListWithHorizontalAreaTest {
         scroll_handle: ScrollHandle,
         list_state: ListState,
@@ -606,9 +569,8 @@ mod tests {
             _ = window.draw(cx);
         });
 
-        // Two wheel events at the edge with no redraw in between: the first
-        // one leaves the inner offset beyond the edge unclamped, which must
-        // not read as "room to scroll" and swallow the second event.
+        // Two wheel events at the edge with no redraw between: the first
+        // leaves the inner offset unclamped, which must not swallow the second event.
         for _ in 0..2 {
             cx.simulate_event(ScrollWheelEvent {
                 position: point(px(10.), px(10.)),
@@ -624,9 +586,8 @@ mod tests {
         assert_eq!(inner_handle.offset().y, px(-240.));
     }
 
-    /// The vertical mask nested in a `gpui::list` ancestor: the list
-    /// registers its wheel listener after its items paint, so only a
-    /// capture-phase mask can stop it from scrolling on the same event.
+    /// The vertical mask nested in a `gpui::list` ancestor: only a
+    /// capture-phase mask can stop the list scrolling on the same event.
     struct ListWithVerticalAreaTest {
         scroll_handle: ScrollHandle,
         list_state: ListState,

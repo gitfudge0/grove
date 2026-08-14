@@ -52,9 +52,8 @@ impl ResizablePanelGroup {
         }
     }
 
-    /// Bind yourself to a resizable state entity.
-    ///
-    /// If not provided, it will handle its own state internally.
+    /// Bind yourself to a resizable state entity; if not provided, it
+    /// handles its own state internally.
     pub fn with_state(mut self, state: &Entity<ResizableState>) -> Self {
         self.state = Some(state.clone());
         self
@@ -66,11 +65,8 @@ impl ResizablePanelGroup {
         self
     }
 
-    /// Add a panel to the group.
-    ///
-    /// - The `axis` will be set to the same axis as the group.
-    /// - The `initial_size` will be set to the average size of all panels if not provided.
-    /// - The `group` will be set to the group entity.
+    /// Add a panel to the group; `axis` is set to the group's axis, `group`
+    /// to the group entity, and `initial_size` defaults to the average panel size.
     pub fn child(mut self, panel: impl Into<ResizablePanel>) -> Self {
         self.children.push(panel.into());
         self
@@ -85,20 +81,15 @@ impl ResizablePanelGroup {
         self
     }
 
-    /// Set size of the resizable panel group
-    ///
-    /// - When the axis is horizontal, the size is the height of the group.
-    /// - When the axis is vertical, the size is the width of the group.
+    /// Set size of the resizable panel group: height when the axis is
+    /// horizontal, width when vertical.
     pub fn size(mut self, size: Pixels) -> Self {
         self.size = Some(size);
         self
     }
 
-    /// Set the callback to be called when the panels are resized.
-    ///
-    /// ## Callback arguments
-    ///
-    /// - Entity<ResizableState>: The state of the ResizablePanelGroup.
+    /// Set the callback to be called when the panels are resized; receives
+    /// the `Entity<ResizableState>` of the group.
     pub fn on_resize(
         mut self,
         on_resize: impl Fn(&Entity<ResizableState>, &mut Window, &mut App) + 'static,
@@ -247,9 +238,8 @@ impl ResizablePanel {
         self
     }
 
-    /// Set the size range to limit panel resize.
-    ///
-    /// Default is [`PANEL_MIN_SIZE`] to [`Pixels::MAX`].
+    /// Set the size range to limit panel resize. Default is
+    /// [`PANEL_MIN_SIZE`] to [`Pixels::MAX`].
     pub fn size_range(mut self, range: impl Into<Range<Pixels>>) -> Self {
         self.size_range = range.into();
         self
@@ -290,13 +280,8 @@ impl RenderOnce for ResizablePanel {
             .flex_grow_1()
             .size_full()
             .relative()
-            // Apply caller style overrides here — between the flex defaults
-            // above and the size management below. This lets callers cancel
-            // the unconditional `.flex_grow_1()` (via `.flex_none()`, the load-
-            // bearing case for sized panels next to a collapsing sibling) and
-            // add their own padding / colors / borders, while keeping the
-            // panel's runtime size constraints (min/max + `flex_basis` driven
-            // by `ResizableState`) authoritative.
+            // Caller style overrides apply here, between the flex defaults
+            // and size management, so `.flex_none()` etc. can override `.flex_grow_1()` while the runtime size constraints stay authoritative.
             .refine_style(&self.style)
             .when(self.axis.is_vertical(), |this| {
                 this.min_h(size_range.start).max_h(size_range.end)
@@ -304,9 +289,8 @@ impl RenderOnce for ResizablePanel {
             .when(self.axis.is_horizontal(), |this| {
                 this.min_w(size_range.start).max_w(size_range.end)
             })
-            // 1. initial_size is None, to use auto size.
-            // 2. initial_size is Some and size is none, to use the initial size of the panel for first time render.
-            // 3. initial_size is Some and size is Some, use `size`.
+            // Precedence: auto size if `initial_size` is None; else the initial
+            // size until `size` (from state) is Some, which then wins.
             .when(self.initial_size.is_none(), |this| this.flex_shrink_1())
             .when_some(self.initial_size, |this, initial_size| {
                 // The `self.size` is None, that mean the initial size for the panel,

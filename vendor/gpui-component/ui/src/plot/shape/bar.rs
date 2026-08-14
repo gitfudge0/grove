@@ -31,11 +31,8 @@ impl BarAlignment {
         !self.is_horizontal()
     }
 
-    /// Linear-gradient angle (in degrees) that runs from the bar's base to its
-    /// tip for this alignment.
-    ///
-    /// gpui convention: `0°` points upward (stop-0 at bottom, stop-1 at top);
-    /// angles increase clockwise.
+    /// Linear-gradient angle (in degrees) from the bar's base to its tip;
+    /// gpui convention: `0°` points upward, angles increase clockwise.
     pub fn gradient_angle(self) -> f32 {
         match self {
             Self::Bottom => 0.,
@@ -89,18 +86,14 @@ impl<T> Bar<T> {
         self
     }
 
-    /// Set the alignment of the Bar.
-    ///
-    /// Default is [`BarAlignment::Bottom`].
+    /// Set the alignment of the Bar. Default is [`BarAlignment::Bottom`].
     pub fn alignment(mut self, alignment: BarAlignment) -> Self {
         self.alignment = alignment;
         self
     }
 
-    /// Set the cross-axis position of each bar (in pixels).
-    ///
-    /// For vertical alignments this is the X coordinate; for horizontal
-    /// alignments this is the Y coordinate.
+    /// Set the cross-axis position of each bar (in pixels): X for vertical
+    /// alignments, Y for horizontal.
     pub fn cross<F>(mut self, cross: F) -> Self
     where
         F: Fn(&T) -> Option<f32> + 'static,
@@ -133,17 +126,8 @@ impl<T> Bar<T> {
         self
     }
 
-    /// Set the fill of each bar.
-    ///
-    /// The closure receives the datum, the bar's painted frame (`Bounds<f32>`)
-    /// in raw pixel coordinates relative to the plot bounds origin, and the
-    /// bar's [`BarAlignment`] (so callers can branch on orientation, e.g. flip
-    /// a gradient angle). Callers wishing to derive normalized or chart-relative
-    /// coordinates from this frame should do so themselves.
-    ///
-    /// Accepts any type convertible to [`Background`], including solid colors and
-    /// fully-specified [`gpui::linear_gradient`] values. The background is used
-    /// verbatim — the gradient angle is not adjusted for bar orientation.
+    /// Set the fill of each bar. The closure receives the datum, the bar's
+    /// painted frame (`Bounds<f32>`, raw pixels relative to the plot bounds origin), and its [`BarAlignment`]. Accepts any type convertible to [`Background`]; used verbatim, with no gradient-angle adjustment.
     pub fn fill<F, B>(mut self, fill: F) -> Self
     where
         F: Fn(&T, Bounds<f32>, BarAlignment) -> B + 'static,
@@ -162,10 +146,8 @@ impl<T> Bar<T> {
         self
     }
 
-    /// Set the corner radii applied to every bar rectangle.
-    ///
-    /// Use [`Corners::all`] for uniform rounding, or construct `Corners` manually to
-    /// round only specific corners (e.g. just the tip end of each bar).
+    /// Set the corner radii applied to every bar rectangle; use
+    /// [`Corners::all`] for uniform rounding or construct `Corners` manually for specific corners.
     pub fn corner_radii(mut self, corner_radii: impl Into<Corners<Pixels>>) -> Self {
         self.corner_radii = corner_radii.into();
         self
@@ -238,10 +220,8 @@ impl<T> Bar<T> {
     }
 }
 
-/// Origin point for a bar label, positioned outside the bar at the value end.
-///
-/// The caller chooses the [`gpui::TextAlign`] (typically `Center` for vertical
-/// bars, `Left` for `BarAlignment::Left`, `Right` for `BarAlignment::Right`).
+/// Origin point for a bar label, positioned outside the bar at the value
+/// end; the caller chooses the [`gpui::TextAlign`] (typically `Center` for vertical bars, matching side for horizontal).
 fn label_origin(
     alignment: BarAlignment,
     cross: f32,

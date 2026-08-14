@@ -20,9 +20,8 @@ pub trait TableDelegate: Sized + 'static {
     /// Return the number of rows in the table.
     fn rows_count(&self, cx: &App) -> usize;
 
-    /// Returns the table column at the given index.
-    ///
-    /// This only call on Table prepare or refresh.
+    /// Returns the table column at the given index; called on Table
+    /// prepare or refresh only.
     fn column(&self, col_ix: usize, cx: &App) -> Column;
 
     /// Perform sort on the column at the given index.
@@ -44,9 +43,8 @@ pub trait TableDelegate: Sized + 'static {
         div().id("header")
     }
 
-    /// Return the group headers definitions (can be multi-level).
-    ///
-    /// By default, it returns None, meaning no group headers.
+    /// Return the group headers definitions (can be multi-level); default
+    /// is None, meaning no group headers.
     fn group_headers(&self, cx: &App) -> Option<Vec<Vec<ColumnGroup>>> {
         None
     }
@@ -85,9 +83,7 @@ pub trait TableDelegate: Sized + 'static {
             .child(self.column(col_ix, cx).name.clone())
     }
 
-    /// Render the row at the given row and column.
-    ///
-    /// Not include the table head row.
+    /// Render the row at the given row and column; excludes the table head row.
     fn render_tr(
         &mut self,
         row_ix: usize,
@@ -117,9 +113,8 @@ pub trait TableDelegate: Sized + 'static {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement;
 
-    /// Move the column at the given `col_ix` so that it ends up at the index `to_ix`.
-    ///
-    /// e.g.: `let col = self.columns.remove(col_ix); self.columns.insert(to_ix, col);`
+    /// Move the column at `col_ix` so it ends up at index `to_ix`, e.g.:
+    /// `let col = self.columns.remove(col_ix); self.columns.insert(to_ix, col);`
     fn move_column(
         &mut self,
         col_ix: usize,
@@ -148,9 +143,8 @@ pub trait TableDelegate: Sized + 'static {
         false
     }
 
-    /// Return a Element to show when table is loading, default is built-in Skeleton loading view.
-    ///
-    /// The size is the size of the Table.
+    /// Return an Element to show when table is loading (default: built-in
+    /// Skeleton view); `size` is the size of the Table.
     fn render_loading(
         &mut self,
         size: Size,
@@ -160,28 +154,19 @@ pub trait TableDelegate: Sized + 'static {
         Loading::new().size(size)
     }
 
-    /// Return true to enable load more data when scrolling to the bottom.
-    ///
-    /// Default: false
+    /// Return true to enable load more data when scrolling to the bottom. Default: false
     fn has_more(&self, cx: &App) -> bool {
         false
     }
 
-    /// Returns a threshold value (n rows), of course, when scrolling to the bottom,
-    /// the remaining number of rows triggers `load_more`.
-    /// This should smaller than the total number of first load rows.
-    ///
-    /// Default: 20 rows
+    /// Threshold (n rows) that triggers `load_more` when scrolling near the
+    /// bottom; should be smaller than the first-load row count. Default: 20.
     fn load_more_threshold(&self) -> usize {
         20
     }
 
-    /// Load more data when the table is scrolled to the bottom.
-    ///
-    /// This will performed in a background task.
-    ///
-    /// This is always called when the table is near the bottom,
-    /// so you must check if there is more data to load or lock the loading state.
+    /// Load more data when the table is scrolled to the bottom, performed in
+    /// a background task; called whenever near the bottom, so check for more data or lock the loading state.
     fn load_more(&mut self, window: &mut Window, cx: &mut Context<TableState<Self>>) {}
 
     /// Render the last empty column, default to empty.
@@ -193,12 +178,8 @@ pub trait TableDelegate: Sized + 'static {
         h_flex().w_3().h_full().flex_shrink_0()
     }
 
-    /// Called when the visible range of the rows changed.
-    ///
-    /// NOTE: Make sure this method is fast, because it will be called frequently.
-    ///
-    /// This can used to handle some data update, to only update the visible rows.
-    /// Please ensure that the data is updated in the background task.
+    /// Called when the visible range of the rows changed; must be fast,
+    /// since called frequently. Use it to update only visible rows, ensuring data updates in a background task.
     fn visible_rows_changed(
         &mut self,
         visible_range: Range<usize>,
@@ -207,12 +188,8 @@ pub trait TableDelegate: Sized + 'static {
     ) {
     }
 
-    /// Called when the visible range of the columns changed.
-    ///
-    /// NOTE: Make sure this method is fast, because it will be called frequently.
-    ///
-    /// This can used to handle some data update, to only update the visible rows.
-    /// Please ensure that the data is updated in the background task.
+    /// Called when the visible range of the columns changed; must be fast,
+    /// since called frequently. Use it to update only visible rows, ensuring data updates in a background task.
     fn visible_columns_changed(
         &mut self,
         visible_range: Range<usize>,
@@ -221,10 +198,8 @@ pub trait TableDelegate: Sized + 'static {
     ) {
     }
 
-    /// Get the text representation of a cell for export purposes (e.g., CSV export).
-    ///
-    /// Returns an empty string by default. Implement this method to support export.
-    /// The text should be formatted as it should appear in the exported data.
+    /// Get the text representation of a cell for export (e.g. CSV), formatted
+    /// as it should appear in exported data; empty string by default.
     fn cell_text(&self, row_ix: usize, col_ix: usize, cx: &App) -> String {
         String::new()
     }

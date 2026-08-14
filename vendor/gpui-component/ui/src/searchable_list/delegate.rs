@@ -11,17 +11,14 @@ pub trait SearchableListItem: Clone {
     /// Short display label shown in the dropdown row and in the trigger by default.
     fn title(&self) -> SharedString;
 
-    /// Override the trigger display element (e.g. "Country (US)" instead of just "United States").
-    ///
-    /// Returns `None` to fall back to `title()`.
+    /// Override the trigger display element (e.g. "Country (US)" instead of
+    /// "United States"); `None` falls back to `title()`.
     fn display_title(&self) -> Option<AnyElement> {
         None
     }
 
-    /// Render this item's row content inside the dropdown.
-    ///
-    /// Override to add icons, avatars, secondary text, etc.
-    /// The default renders `title()`.
+    /// Render this item's row content inside the dropdown; override to add
+    /// icons, avatars, secondary text, etc. Default renders `title()`.
     fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
         self.title()
     }
@@ -29,9 +26,8 @@ pub trait SearchableListItem: Clone {
     /// The value that identifies this item.
     fn value(&self) -> &Self::Value;
 
-    /// Whether this item matches the search query.
-    ///
-    /// Defaults to case-insensitive substring match on `title()`.
+    /// Whether this item matches the search query; defaults to
+    /// case-insensitive substring match on `title()`.
     fn matches(&self, query: &str) -> bool {
         self.title().to_lowercase().contains(&query.to_lowercase())
     }
@@ -51,9 +47,8 @@ pub trait SearchableListDelegate: Sized + 'static {
         1
     }
 
-    /// Optional header element for the given section index.
-    ///
-    /// Deprecated: override [`render_section_header`] instead (provides `Window` + `App` access).
+    /// Optional header element for the given section index. Deprecated:
+    /// override [`render_section_header`] instead (provides `Window` + `App` access).
     #[deprecated]
     fn section(&self, _section: usize) -> Option<AnyElement> {
         None
@@ -71,26 +66,16 @@ pub trait SearchableListDelegate: Sized + 'static {
         Self::Item: SearchableListItem<Value = V>,
         V: PartialEq;
 
-    /// Called when the search query changes.
-    ///
-    /// Implementations should filter or fetch items and may return an async `Task`.
-    /// The `App` context allows spawning background work.
+    /// Called when the search query changes; implementations should filter
+    /// or fetch items and may return an async `Task`, using `App` to spawn background work.
     fn perform_search(&mut self, _query: &str, _window: &mut Window, _cx: &mut App) -> Task<()> {
         Task::ready(())
     }
 
     // MARK: Rendering hooks
 
-    /// Override the row content for the item at `ix`.
-    ///
-    /// When `Some(_)` is returned, the adapter suppresses its default `SearchableListItemElement`
-    /// layout (including the automatic trailing check icon) — the returned element is rendered
-    /// as-is. Return `None` to fall back to the standard rendering.
-    ///
-    /// `checked` is `true` when the item is in the current selection (as determined by
-    /// `is_item_checked`), letting custom renderers show their own selection indicator.
-    ///
-    /// Replaces the `item_renderer` closure that was previously set on `SearchableListAdapter`.
+    /// Override the row content for the item at `ix`. `Some(_)` is rendered
+    /// as-is, suppressing the default layout (incl. trailing check icon); `None` falls back to standard rendering. `checked` reflects `is_item_checked`.
     fn render_item(
         &self,
         _ix: IndexPath,
@@ -102,11 +87,8 @@ pub trait SearchableListDelegate: Sized + 'static {
         None
     }
 
-    /// Render the header element for the given section (full render access).
-    ///
-    /// When `Some(_)` is returned, it is rendered directly — the adapter's default div wrapper
-    /// (padding, muted colour) is bypassed. Return `None` to fall back to the deprecated
-    /// `section()` wrapped in the standard div (no visual change for existing delegates).
+    /// Render the header element for the given section. `Some(_)` is rendered
+    /// directly, bypassing the default div wrapper; `None` falls back to the deprecated `section()` in the standard div.
     fn render_section_header(
         &self,
         _section: usize,
@@ -119,17 +101,13 @@ pub trait SearchableListDelegate: Sized + 'static {
     // MARK: Item state hooks
 
     /// Whether the item at `ix` should be rendered as interactive.
-    ///
     /// Default: `!item.disabled()`.
     fn is_item_enabled(&self, _ix: IndexPath, item: &Self::Item, _cx: &App) -> bool {
         !item.disabled()
     }
 
-    /// Whether the item at `ix` should show a checkmark.
-    ///
-    /// `current_selection` is the slice of currently selected `(IndexPath, Item)` pairs.
-    ///
-    /// Default: checks whether the item's value is present in `current_selection`.
+    /// Whether the item at `ix` should show a checkmark. `current_selection`
+    /// is the currently selected `(IndexPath, Item)` pairs. Default: checks whether the item's value is present in it.
     fn is_item_checked(
         &self,
         _ix: IndexPath,
@@ -145,17 +123,7 @@ pub trait SearchableListDelegate: Sized + 'static {
     // MARK: Lifecycle / selection hooks
 
     /// Called before a user-triggered selection change is committed.
-    ///
-    /// `selection` is the live selection vec — the delegate may freely mutate it: add items,
-    /// remove items, reorder, or leave it unchanged to effectively veto the operation.
-    ///
-    /// `changes` is the slice of atomic changes the mode-strategy computed (e.g. Single
-    /// replacement deselects all then selects one; Multi toggles the clicked item). The delegate
-    /// is not required to apply them — they are informational. The default implementation applies
-    /// every change in order.
-    ///
-    /// No `cx` is available: this hook runs synchronously during the item-click handler while
-    /// the list entity is mutably borrowed. Side effects that need cx belong in `on_confirm`.
+    /// `selection` is the live selection vec, freely mutable by the delegate (or left unchanged to veto); `changes` are the mode-strategy's computed atomic changes, informational only — the default applies them in order. No `cx`: runs synchronously with the list entity mutably borrowed; side effects needing cx belong in `on_confirm`.
     fn on_will_change(
         &mut self,
         selection: &mut Vec<(IndexPath, Self::Item)>,

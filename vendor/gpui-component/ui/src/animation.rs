@@ -6,11 +6,7 @@ use gpui::{
 };
 use smallvec::SmallVec;
 
-/// A cubic bezier function like CSS `cubic-bezier`.
-///
-/// Builder:
-///
-/// https://cubic-bezier.com
+/// A cubic bezier function like CSS `cubic-bezier`. Builder: https://cubic-bezier.com
 pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> impl Fn(f32) -> f32 {
     move |t: f32| {
         let one_t = 1.0 - t;
