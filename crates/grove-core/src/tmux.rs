@@ -343,7 +343,9 @@ mod tests {
         assert!(
             cache_is_fresh(
                 checked_at,
-                checked_at + AVAILABLE_CACHE_TTL - Duration::from_millis(1)
+                (checked_at + AVAILABLE_CACHE_TTL)
+                    .checked_sub(Duration::from_millis(1))
+                    .expect("AVAILABLE_CACHE_TTL is well above 1ms")
             ),
             "an entry just under the TTL must still be fresh"
         );
