@@ -35,7 +35,10 @@ pub enum MetricError {
         family: &'static str,
         available: Vec<String>,
     },
-    WrongAdvance { expected: f32, measured: f32 },
+    WrongAdvance {
+        expected: f32,
+        measured: f32,
+    },
 }
 
 impl std::fmt::Display for MetricError {

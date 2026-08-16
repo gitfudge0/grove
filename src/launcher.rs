@@ -611,7 +611,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn an_empty_query_matches_everything_at_score_zero() {
         assert_eq!(fuzzy_score("", "grove", "main", "claude"), Some(0));
@@ -673,7 +672,6 @@ mod tests {
         let m = fuzzy_match_indices("grove zzz", "grove", "main", "claude");
         assert!(!m.matched);
     }
-
 
     #[test]
     fn ranking_is_score_desc_then_recency_asc() {
@@ -749,7 +747,6 @@ mod tests {
         assert!(projects[..split].iter().all(|p| *p == 0));
         assert!(projects[split..].iter().all(|p| *p == 1));
     }
-
 
     #[test]
     fn selection_resolves_by_identity_not_by_index_after_a_re_sort() {
@@ -827,7 +824,6 @@ mod tests {
             }
         }
     }
-
 
     #[test]
     fn root_project_order_puts_the_active_project_first() {
@@ -1011,7 +1007,6 @@ mod tests {
         assert!(!rows.contains(&PaletteRow::Settings));
     }
 
-
     fn two_combos() -> Vec<(usize, String, String, Agent)> {
         vec![
             (
@@ -1106,7 +1101,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn switch_rows_are_sessions_then_terminals() {
         assert_eq!(
@@ -1178,7 +1172,6 @@ mod tests {
         assert_eq!(next_theme_mode(false, true), ThemeMode::Dark);
     }
 
-
     #[test]
     fn setting_row_label_section_and_icon_are_total_and_nonempty() {
         for s in SettingRow::ALL {
@@ -1214,7 +1207,6 @@ mod tests {
             ]
         );
     }
-
 
     #[test]
     fn the_window_follows_the_selection_down_and_up() {

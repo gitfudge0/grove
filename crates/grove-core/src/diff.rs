@@ -757,7 +757,6 @@ mod tests {
 
     use super::*;
 
-
     #[test]
     fn numstat_common_case() {
         let out = "12\t3\tsrc/main.rs\n";
@@ -823,7 +822,6 @@ mod tests {
         assert_eq!(parse_numstat(out).len(), 0);
     }
 
-
     #[test]
     fn status_porcelain_untracked() {
         let out = "?? new_file.txt\n";
@@ -847,7 +845,6 @@ mod tests {
         assert_eq!(parse_status_porcelain("?\n").len(), 0);
         assert_eq!(parse_status_porcelain("\n").len(), 0);
     }
-
 
     #[test]
     fn patch_single_hunk_common_case() {
@@ -968,7 +965,6 @@ Binary files a/x.png and b/x.png differ\n";
         assert!(!no_newline_at_eof);
     }
 
-
     #[test]
     fn synthesize_added_patch_all_lines_added() {
         let Patch::Text { hunks, .. } = synthesize_added_patch("one\ntwo\nthree\n") else {
@@ -980,7 +976,6 @@ Binary files a/x.png and b/x.png differ\n";
         assert_eq!(hunks[0].lines[0].new_no, Some(1));
         assert_eq!(hunks[0].lines[2].new_no, Some(3));
     }
-
 
     fn line(kind: LineKind, text: &str, old_no: Option<u32>, new_no: Option<u32>) -> Line {
         Line {
@@ -1136,7 +1131,6 @@ Binary files a/x.png and b/x.png differ\n";
         assert_eq!(new.as_ref().unwrap().text, "a1");
     }
 
-
     fn reconstruct(runs: &[Run]) -> String {
         runs.iter().map(|r| r.text.as_str()).collect()
     }
@@ -1259,7 +1253,6 @@ Binary files a/x.png and b/x.png differ\n";
         assert!(new[0].changed && new[0].text == "chunged");
     }
 
-
     fn fc(path: &str) -> FileChange {
         FileChange {
             path: path.to_string(),
@@ -1320,7 +1313,6 @@ Binary files a/x.png and b/x.png differ\n";
         assert!(r.evicted.is_empty());
         assert_eq!(r.selected.as_deref(), Some("a.rs"));
     }
-
 
     fn dirs(rows: &[TreeNode]) -> Vec<(&str, usize, bool)> {
         rows.iter()
