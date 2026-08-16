@@ -4,6 +4,8 @@
 //! gpui's structural dispatch replaces the iced `should_forward`/`MODAL_OPEN`/`PALETTE_OPEN` statics (carried decision 3); per-modal chords bind via [`ModalKind::key_context`].
 //! ←/→ capture uses a descendant binding gated by `wants_arrows` since capture-phase interception doesn't work at this gpui rev; [`bound_chords`]'s test guards every bound chord is claimed by [`key_verdict`].
 
+use grove_core::git::BranchRef;
+
 /// What a `Confirm` modal is actually confirming (`src/app/modal.rs:177-186`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfirmKind {
@@ -13,8 +15,162 @@ pub enum ConfirmKind {
     RemoveWorktree(String),
     InitAndAddWorktree {
         name: String,
+        /// The base branch picked in the prompt, carried across the init round trip so the answer survives.
+        base: Option<String>,
     },
     Quit,
+}
+
+/// The Base row's unset state. Prose, not a branch name — the renderer sets it in
+/// sans for exactly that reason, while real branch names stay mono.
+pub const BASE_UNSET_LABEL: &str = "Current HEAD";
+
+/// The new-worktree field's placeholder: an example name, not an instruction.
+///
+/// A field paints nothing (§14), so an empty one is only visible because of this.
+/// No `/` — `valid_worktree_name` takes alphanumerics, `-`, `_` and `.` only, and
+/// `the_worktree_placeholder_is_a_name_the_validator_accepts` holds it to that.
+pub const WORKTREE_NAME_PLACEHOLDER: &str = "fix-billing-retry";
+
+/// At or above this many branches the dropdown grows a filter line; below it the list is short enough to read.
+pub const BRANCH_FILTER_MIN: usize = 12;
+
+/// The "Base" branch picker living inside the new-worktree [`Modal::Input`].
+///
+/// `filter` is a plain `String` rather than a second `InputState`: it is a
+/// same-modal, throwaway match string fed from `key_verdict`, and a second
+/// focus-managed field would buy nothing but focus bookkeeping.
+#[derive(Clone, Debug, Default)]
+pub struct BaseBranchState {
+    /// The repo the branches were listed from; empty until the modal knows its project.
+    pub repo: String,
+    /// Empty until the background listing lands, which is the paintable initial state.
+    pub branches: Vec<BranchRef>,
+    /// `None` means "whatever HEAD is", which is also what submit passes through.
+    pub chosen: Option<String>,
+    pub open: bool,
+    pub filter: String,
+    /// Index into the *filtered* list.
+    pub highlight: usize,
+    pub loaded: bool,
+}
+
+// `BranchRef` is Stage-1 API and deliberately left untouched, so it carries no
+// `PartialEq`; `Modal`'s derive needs one here, and branch identity is the name.
+impl PartialEq for BaseBranchState {
+    fn eq(&self, other: &Self) -> bool {
+        self.repo == other.repo
+            && self.chosen == other.chosen
+            && self.open == other.open
+            && self.filter == other.filter
+            && self.highlight == other.highlight
+            && self.loaded == other.loaded
+            && self.branches.len() == other.branches.len()
+            && self
+                .branches
+                .iter()
+                .zip(&other.branches)
+                .all(|(a, b)| a.name == b.name)
+    }
+}
+
+/// True when `name` names an existing **local** branch.
+///
+/// Only locals count: `BranchRef::name` is `%(refname:short)`, so a remote reads
+/// as `origin/foo` and can never equal a typed worktree name, and `add_worktree`
+/// keys its "check the branch out as-is" path strictly on `refs/heads/<name>`.
+pub fn branch_exists(name: &str, branches: &[BranchRef]) -> bool {
+    let name = name.trim();
+    !name.is_empty() && branches.iter().any(|b| !b.is_remote && b.name == name)
+}
+
+/// Case-insensitive substring match over branch names.
+pub fn filter_branches<'a>(branches: &'a [BranchRef], filter: &str) -> Vec<&'a BranchRef> {
+    let needle = filter.trim().to_ascii_lowercase();
+    branches
+        .iter()
+        .filter(|b| needle.is_empty() || b.name.to_ascii_lowercase().contains(&needle))
+        .collect()
+}
+
+impl BaseBranchState {
+    /// Folds one background listing in; a resolvable default seeds the choice, `None` leaves it unset.
+    pub fn apply_loaded(&mut self, branches: Vec<BranchRef>, default: Option<String>) {
+        self.branches = branches;
+        self.chosen = default;
+        self.loaded = true;
+    }
+
+    pub fn visible(&self) -> Vec<&BranchRef> {
+        filter_branches(&self.branches, &self.filter)
+    }
+
+    pub fn wants_filter(&self) -> bool {
+        self.branches.len() >= BRANCH_FILTER_MIN
+    }
+
+    /// A typed name that already exists is checked out as-is, so the base is not the user's to pick.
+    pub fn locked(&self, typed: &str) -> bool {
+        branch_exists(typed, &self.branches)
+    }
+
+    /// The base actually handed to `git::add_worktree`: none at all when the name is checked out as-is.
+    pub fn base_for_submit(&self, typed: &str) -> Option<String> {
+        if self.locked(typed) {
+            None
+        } else {
+            self.chosen.clone()
+        }
+    }
+
+    pub fn open_dropdown(&mut self) {
+        self.open = true;
+        self.filter.clear();
+        self.highlight = self
+            .chosen
+            .as_ref()
+            .and_then(|c| self.branches.iter().position(|b| &b.name == c))
+            .unwrap_or(0);
+    }
+
+    pub fn close_dropdown(&mut self) {
+        self.open = false;
+        self.filter.clear();
+        self.highlight = 0;
+    }
+
+    pub fn move_highlight(&mut self, delta: i32) {
+        let len = self.visible().len();
+        if len == 0 {
+            self.highlight = 0;
+            return;
+        }
+        let next = (self.highlight.min(len - 1) as i32 + delta).rem_euclid(len as i32);
+        self.highlight = next as usize;
+    }
+
+    /// Commits the highlighted (or `i`-th visible) branch and closes the dropdown.
+    pub fn pick(&mut self, i: usize) {
+        if let Some(b) = self.visible().get(i) {
+            let name = b.name.clone();
+            self.chosen = Some(name);
+        }
+        self.close_dropdown();
+    }
+
+    pub fn pick_highlighted(&mut self) {
+        self.pick(self.highlight);
+    }
+
+    pub fn push_filter(&mut self, c: char) {
+        self.filter.push(c);
+        self.highlight = 0;
+    }
+
+    pub fn pop_filter(&mut self) {
+        self.filter.pop();
+        self.highlight = 0;
+    }
 }
 
 /// Stage of an in-progress worktree teardown (`src/app/modal.rs:152-161`).
@@ -97,6 +253,8 @@ pub enum Modal {
         title: String,
         buffer: String,
         note: Option<String>,
+        /// The new-worktree prompt's Base picker; the only `Input` in the app.
+        base: BaseBranchState,
     },
     Confirm {
         title: String,
@@ -386,6 +544,7 @@ pub enum ModalKey {
     Enter,
     Tab,
     Space,
+    Backspace,
     Up,
     Down,
     Left,
@@ -445,6 +604,11 @@ pub enum ModalKeyVerdict {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModalAction {
     Confirm(bool),
+    /// New-worktree Base picker, all four only reachable while its dropdown is open.
+    BaseDropdownClose,
+    BaseDropdownPick,
+    BaseFilterPush(char),
+    BaseFilterPop,
     /// `y` routes through the gate re-check so it cannot bypass a disabled Archive button.
     ArchiveConfirm,
     RemoveProjectConfirm,
@@ -582,6 +746,23 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
     }
 
     match modal {
+        // An open Base dropdown owns the keyboard: Escape closes only the dropdown and
+        // Enter only commits a branch, so the closed-dropdown arm below keeps its
+        // prefill-then-single-Enter behaviour untouched. Deliberately keyed on the
+        // modal's own runtime state rather than the global `wants_arrows` policy.
+        Modal::Input { base, .. } if base.open => match key {
+            _ if ctrl_c(key, mods) => V::Close,
+            K::Escape => V::Custom(A::BaseDropdownClose),
+            K::Enter => V::Custom(A::BaseDropdownPick),
+            K::Down => V::Move(1),
+            K::Up => V::Move(-1),
+            K::Backspace => V::Custom(A::BaseFilterPop),
+            K::Char(c) if !mods.ctrl && !mods.alt && !mods.platform => {
+                V::Custom(A::BaseFilterPush(c))
+            }
+            _ => V::Ignore,
+        },
+
         // Only the lifecycle keys are claimed here; the rest belongs to the focused Input.
         Modal::Input { .. } => match key {
             K::Escape => V::Close,
@@ -983,6 +1164,7 @@ mod tests {
             title: "t".into(),
             buffer: String::new(),
             note: None,
+            base: BaseBranchState::default(),
         }
     }
 
@@ -1423,5 +1605,277 @@ mod tests {
             let f = |n: usize| n == i;
             assert!(escape_should_dismiss(f(0), f(1), f(2), f(3)), "input {i}");
         }
+    }
+}
+
+/// The new-worktree Base picker's pure half.
+#[cfg(test)]
+mod base_branch_tests {
+    use super::*;
+
+    fn v(modal: &Modal, key: ModalKey) -> ModalKeyVerdict {
+        key_verdict(modal, key, ModalMods::NONE, KeyCtx::default())
+    }
+
+    fn br(name: &str, is_remote: bool) -> BranchRef {
+        BranchRef {
+            name: name.into(),
+            is_remote,
+            is_head: false,
+            ahead: 0,
+            behind: 0,
+        }
+    }
+
+    fn some_branches() -> Vec<BranchRef> {
+        vec![
+            br("main", false),
+            br("feature/login", false),
+            br("origin/main", true),
+            br("origin/Release", true),
+        ]
+    }
+
+    #[test]
+    fn a_resolvable_default_seeds_the_choice() {
+        let mut st = BaseBranchState::default();
+        st.apply_loaded(some_branches(), Some("main".into()));
+        assert_eq!(st.chosen.as_deref(), Some("main"));
+        assert!(st.loaded);
+    }
+
+    #[test]
+    fn no_resolvable_default_stays_unset_but_legible() {
+        let mut st = BaseBranchState::default();
+        st.apply_loaded(some_branches(), None);
+        assert_eq!(st.chosen, None);
+        assert!(
+            !BASE_UNSET_LABEL.is_empty(),
+            "the unset state stays legible"
+        );
+        // Unset still submits as today's implicit HEAD.
+        assert_eq!(st.base_for_submit("wip"), None);
+    }
+
+    #[test]
+    fn only_local_branch_names_count_as_existing() {
+        let bs = some_branches();
+        assert!(branch_exists("main", &bs));
+        assert!(branch_exists("feature/login", &bs));
+        // A remote reads as `origin/…`, so a typed name can never collide with one.
+        assert!(!branch_exists("Release", &bs));
+        assert!(!branch_exists("origin/main", &bs));
+        assert!(!branch_exists("brand-new", &bs));
+        assert!(!branch_exists("", &bs));
+        assert!(!branch_exists("   ", &bs));
+    }
+
+    #[test]
+    fn an_existing_name_locks_the_row_and_drops_the_base() {
+        let mut st = BaseBranchState::default();
+        st.apply_loaded(some_branches(), Some("main".into()));
+        assert!(st.locked("main"));
+        assert_eq!(st.base_for_submit("main"), None);
+        assert!(!st.locked("brand-new"));
+        assert_eq!(st.base_for_submit("brand-new").as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn the_filter_is_a_case_insensitive_substring_match() {
+        let bs = some_branches();
+        let names = |f: &str| {
+            filter_branches(&bs, f)
+                .into_iter()
+                .map(|b| b.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names("").len(), 4);
+        assert_eq!(names("  ").len(), 4);
+        assert_eq!(names("MAIN"), vec!["main", "origin/main"]);
+        assert_eq!(names("release"), vec!["origin/Release"]);
+        assert_eq!(names("login"), vec!["feature/login"]);
+        assert!(names("nope").is_empty());
+    }
+
+    #[test]
+    fn the_filter_only_appears_once_the_list_is_long() {
+        let mut st = BaseBranchState::default();
+        st.apply_loaded(some_branches(), None);
+        assert!(!st.wants_filter());
+        let many: Vec<BranchRef> = (0..BRANCH_FILTER_MIN)
+            .map(|i| br(&format!("b{i}"), false))
+            .collect();
+        st.apply_loaded(many, None);
+        assert!(st.wants_filter());
+    }
+
+    #[test]
+    fn a_single_branch_repo_still_opens_a_one_entry_dropdown() {
+        let mut st = BaseBranchState::default();
+        st.apply_loaded(vec![br("main", false)], Some("main".into()));
+        st.open_dropdown();
+        assert!(st.open);
+        assert_eq!(st.visible().len(), 1);
+        st.move_highlight(1);
+        assert_eq!(st.highlight, 0);
+    }
+
+    #[test]
+    fn opening_highlights_the_current_choice_and_picking_commits_it() {
+        let mut st = BaseBranchState::default();
+        st.apply_loaded(some_branches(), Some("origin/main".into()));
+        st.open_dropdown();
+        assert_eq!(st.highlight, 2);
+        st.move_highlight(1);
+        assert_eq!(st.highlight, 3);
+        st.pick_highlighted();
+        assert_eq!(st.chosen.as_deref(), Some("origin/Release"));
+        assert!(!st.open, "picking closes the dropdown");
+    }
+
+    #[test]
+    fn closing_the_dropdown_keeps_the_choice_and_clears_the_filter() {
+        let mut st = BaseBranchState::default();
+        st.apply_loaded(some_branches(), Some("main".into()));
+        st.open_dropdown();
+        st.push_filter('o');
+        st.push_filter('r');
+        assert_eq!(st.filter, "or");
+        assert_eq!(st.visible().len(), 2);
+        st.pop_filter();
+        assert_eq!(st.filter, "o");
+        st.close_dropdown();
+        assert_eq!(st.chosen.as_deref(), Some("main"));
+        assert!(st.filter.is_empty());
+    }
+
+    #[test]
+    fn picking_indexes_the_filtered_list_not_the_full_one() {
+        let mut st = BaseBranchState::default();
+        st.apply_loaded(some_branches(), None);
+        st.open_dropdown();
+        st.push_filter('o');
+        st.push_filter('r');
+        st.pick(1);
+        assert_eq!(st.chosen.as_deref(), Some("origin/Release"));
+    }
+
+    #[test]
+    fn an_empty_or_unloaded_list_is_paintable_and_inert() {
+        let mut st = BaseBranchState::default();
+        assert!(!st.loaded);
+        assert!(
+            !BASE_UNSET_LABEL.is_empty(),
+            "the unset state stays legible"
+        );
+        st.open_dropdown();
+        assert!(st.visible().is_empty());
+        st.move_highlight(-1);
+        st.pick_highlighted();
+        assert_eq!(st.chosen, None);
+    }
+
+    #[test]
+    fn an_open_dropdown_claims_the_keys_a_closed_one_leaves_alone() {
+        use ModalKey as K;
+        use ModalKeyVerdict as V;
+        let closed = Modal::Input {
+            title: "t".into(),
+            buffer: String::new(),
+            note: None,
+            base: BaseBranchState::default(),
+        };
+        assert_eq!(
+            v(&closed, K::Enter),
+            V::Submit,
+            "prefill + one Enter submits"
+        );
+        assert_eq!(v(&closed, K::Escape), V::Close);
+        assert_eq!(v(&closed, K::Down), V::FallThrough);
+        assert_eq!(v(&closed, K::Char('a')), V::FallThrough);
+
+        let mut base = BaseBranchState::default();
+        base.apply_loaded(some_branches(), Some("main".into()));
+        base.open_dropdown();
+        let open = Modal::Input {
+            title: "t".into(),
+            buffer: String::new(),
+            note: None,
+            base,
+        };
+        assert_eq!(
+            v(&open, K::Escape),
+            V::Custom(ModalAction::BaseDropdownClose),
+            "Escape closes the dropdown, not the modal"
+        );
+        assert_eq!(
+            v(&open, K::Enter),
+            V::Custom(ModalAction::BaseDropdownPick),
+            "Enter selects, it does not submit"
+        );
+        assert_eq!(v(&open, K::Down), V::Move(1));
+        assert_eq!(v(&open, K::Up), V::Move(-1));
+        assert_eq!(
+            v(&open, K::Char('m')),
+            V::Custom(ModalAction::BaseFilterPush('m'))
+        );
+        assert_eq!(
+            v(&open, K::Backspace),
+            V::Custom(ModalAction::BaseFilterPop)
+        );
+        assert_eq!(
+            key_verdict(&open, K::Char('c'), ModalMods::CTRL, KeyCtx::default()),
+            V::Close,
+            "Ctrl+C still closes the whole modal"
+        );
+    }
+
+    #[test]
+    fn the_init_round_trip_carries_the_chosen_base() {
+        let mut st = BaseBranchState::default();
+        st.apply_loaded(some_branches(), Some("main".into()));
+        let kind = ConfirmKind::InitAndAddWorktree {
+            name: "wip".into(),
+            base: st.base_for_submit("wip"),
+        };
+        let ConfirmKind::InitAndAddWorktree { name, base } = kind else {
+            panic!("wrong kind");
+        };
+        assert_eq!(name, "wip");
+        assert_eq!(base.as_deref(), Some("main"));
+    }
+}
+
+#[cfg(test)]
+mod placeholder_tests {
+    use super::*;
+
+    /// A placeholder demonstrating a value the validator rejects would teach the
+    /// wrong format, so the example is held to the real rule.
+    #[test]
+    fn the_worktree_placeholder_is_a_name_the_validator_accepts() {
+        assert!(
+            grove_core::git::valid_worktree_name(WORKTREE_NAME_PLACEHOLDER),
+            "{WORKTREE_NAME_PLACEHOLDER:?} would be rejected on submit"
+        );
+        // Specifically: slashes are not accepted, whatever branch-name habit suggests.
+        assert!(!grove_core::git::valid_worktree_name("fix/billing-retry"));
+        assert!(!WORKTREE_NAME_PLACEHOLDER.contains('/'));
+    }
+
+    /// The placeholder is never the buffer, so an untouched field submits nothing.
+    #[test]
+    fn a_fresh_input_modal_carries_an_empty_buffer_not_the_placeholder() {
+        let modal = Modal::Input {
+            title: "New worktree".into(),
+            buffer: String::new(),
+            note: None,
+            base: BaseBranchState::default(),
+        };
+        let Modal::Input { buffer, .. } = modal else {
+            unreachable!()
+        };
+        assert!(buffer.is_empty());
+        assert_ne!(buffer, WORKTREE_NAME_PLACEHOLDER);
     }
 }

@@ -68,6 +68,13 @@ a word, a pulse (full table in §12).
 cannot introduce a new state by picking a new colour; you must find a glyph
 too, and the glyph is what has to be legible.
 
+**One named exception: text-field focus.** Fields paint nothing at all — no
+border, no fill, no ring — so a focused field is distinguished only by its
+caret and by its row label lifting `FG_MUTE` → `FG` (§14, §9.1.1). The label
+tint is colour with no second channel. This breaks the rule above and is not
+reconciled with it — it is a deliberate product decision. It is the only
+sanctioned instance; do not cite it as precedent for a second one.
+
 ### 2.4 Nothing reflows on hover or on a state change
 
 Hover-revealed controls occupy their slot even while hidden; `state_glyph`
@@ -278,14 +285,14 @@ a bright page reads through a wash more than a dark one at the same alpha.
 `amber_sits_between_yellow_and_red` (`src/theme.rs`, test module) asserts AMBER stays
 inside the yellow→red interval and nearer yellow.
 
-`FOCUS_RING()` is derived from `MAGENTA()` via `alpha()` — never a
-hand-written `Hsla` literal — so it tracks a theme swap exactly as `MAGENTA`
-does. Its alpha is 0.25 on dark themes, 0.35 on light themes: the same alpha
-on a near-white light surface would nearly disappear, so light gets a
-stronger tint rather than a second token (`src/theme.rs` — `FOCUS_RING`). A
-test enforces that `FOCUS_RING`'s hue/saturation/lightness never drift from
-`MAGENTA`'s and that its alpha matches these bands, checked across every
-bundled theme. See §10.1 for where the ring is drawn.
+`FOCUS_RING()` has been **removed**. Fields draw no focus affordance of their
+own (§14), which was the token's only consumer; nothing else in the app draws
+a focus outline (§10.1), so keeping a ring token would have been a standing
+invitation to add one.
+
+Nothing replaced it. Fields paint no fill either (§14), so there is no
+field-surface colour token at all; a field is transparent in every state and
+inherits whatever surface hosts it.
 
 #### Washes and selection
 
@@ -667,13 +674,14 @@ carry two lines of content.
 `TILE_HEAD_H`, which is why a tile header and a chrome button read as the same
 weight.
 
-`FIELD_PY` (2.0) is a boxed field's own vertical padding — one tier removed
-from `CONTROL_H`. A boxed field stacks `FIELD_PY` on both edges around a
-`TEXT_BODY` mono run, plus the box's own 1px border on each edge; added up
-that measures roughly 22px tall, one control tier above `CONTROL_H` itself.
-That extra headroom is what lets a boxed field carry its own border and a
-focus ring without crowding the text inside it (`src/views/tokens.rs` —
-`FIELD_PY`).
+`FIELD_PY` (3.0) is a field's vertical padding — one tier removed from
+`CONTROL_H`. A field stacks `FIELD_PY` on both edges around a `TEXT_BODY` mono
+run; added up that measures roughly 22px, one control tier above `CONTROL_H`
+itself, so a row hosting a field is the same height as a row hosting a value.
+It absorbed the 1px-per-edge the retired field border used to contribute
+(2 → 3), so nothing moved when the border went away. There is no `FIELD_PX`:
+a field paints nothing, so a horizontal inset would only push its text out of
+line with the column it shares (`src/views/tokens.rs` — `FIELD_PY`).
 
 A settings row (App Settings and Project Settings both, since the
 Settings-modal unification gave them one shared row grid) is sized by
@@ -706,7 +714,7 @@ One more constant is derived from `ROW_MIN_H` rather than authored:
 |---|---|---|---|
 | `MODAL_SCROLL_MAX_H` | `ROW_MIN_H * 12` | 456 | `src/views/tokens.rs` — the settings body's scroll cap, both modals |
 | `CARD_LABEL_INDENT` | `SPACE_2XL + 1` | 13 | `src/views/tokens.rs` — a settings card's label indent, derived from the card's own 1px border plus a row's `SPACE_2XL` inset |
-| `STATUS_DOT_COL_W` | `DOT_MD + SPACE_SM * 2` | 15 | `src/views/tokens.rs` — the leading status-dot column reserved on every settings row |
+| `STATUS_DOT_COL_W` | `DOT_MD + SPACE_SM * 2` | 15 | `src/views/tokens.rs` — the leading status-dot column, reserved on every row of a card that reserves it (§9.1.1) |
 
 Plus `FIELD_LABEL_COL_W` (92, `src/views/tokens.rs`) — the fixed label-column
 width shared by every field row in Project Settings, so three fields align on
@@ -958,7 +966,7 @@ It is consumed by `appbar`, `sidebar`, `rows`, `statusbar`, `grid`,
 | `flat_icon_btn(id, name, box_w, icon_size, on_click)` | Thin wrapper: `icon_btn` at `CONTROL_H`, `FG_DIM` rest, `BG_HOVER` hover, no ring | `h CONTROL_H` (22) | `box_w`, `icon_size` | default, hover |
 | `flat_text_btn(id, label, text_size, h_padding, on_click)` | Flat borderless text button in the same 22px shape | `h CONTROL_H`, `RADIUS_CONTROL`, mono `FG_DIM` | text size, h-padding | default, hover |
 | `flat_text_btn_tinted(id, label, text_size, h_padding, color, on_click)` | `flat_text_btn` with a colour axis, so a low-emphasis destructive action ("Archive project") has a component to be instead of a bare `ui()` run with a raw `on_mouse_down` — no button shape, no hover. A full `Danger` `modal_action` in that footer slot would compete with the footer's own Save/Primary button, which is why this stays flat rather than promoted to a weight | `h CONTROL_H`, `RADIUS_CONTROL` | text size, h-padding, `color` | default, hover |
-| `field_box(focused: bool) -> Div` | The app-wide boxed text field shell: a `CONTROL_H` box, mono text vertically centred, 1px border, and a zero-blur `FOCUS_RING_W`-spread outer `BoxShadow` in `FOCUS_RING` when focused (variant C1c). Retired `field_underline`'s bottom-rule shape, which was `CONTROL_H` and physically couldn't host a multi-row buffer. Takes only `focused`; the caller chains `.child(...)` on the returned `Div` to build the field. **Caller contract:** the wrapped `Input` must zero gpui-component's own `input_px`/`input_py` and claim its width, verbatim `.appearance(false).pl(px(0.0)).pr(px(0.0)).py(px(0.0)).w_full()` — `Input` applies that padding regardless of `.appearance(false)`, which drops only the border and fill, so an unzeroed inset is what breaks a field's left edge out of true against the rest of the panel, and `w_full()` is what stops the field collapsing to its content inside this shell's `min_w_0` flex row. Also `overflow_hidden()`, so a long value clips at the field's own right edge instead of running into the enclosing card's border | `h CONTROL_H`, `w_full`, `overflow_hidden`, `border_1` | — | default (`BORDER_SOFT`), focused (`FOCUS_RING` outer `BoxShadow`) |
+| `field_box() -> Div` | The app-wide text-field shell, which **paints nothing**: no border, no fill, no focus ring, in any state. It contributes vertical padding (`FIELD_PY`), radius and mono type only, so the field bleeds into whatever card, panel or screen hosts it. No horizontal inset — with nothing painted, `px` would only push the field's text out of line with the column it shares. It takes no `focused` argument because it has no focus state to draw: focus is carried by the row label's `LabelTone` plus the caret, the named §14 exception to §2.3. Retired `field_underline`'s bottom-rule shape. The caller chains `.child(...)` on the returned `Div` to build the field. **Caller contract:** the wrapped `Input` must zero gpui-component's own `input_px`/`input_py` and claim its width, verbatim `.appearance(false).pl(px(0.0)).pr(px(0.0)).py(px(0.0)).w_full()` — `Input` applies that padding regardless of `.appearance(false)`, so an unzeroed inset is what breaks a field's left edge out of true, and a missing `.appearance(false)` re-draws the widget's own border and fill inside this shell that deliberately has neither; `w_full()` stops the field collapsing to its content inside the shell's `min_w_0` flex row. Also `overflow_hidden()`, so a long value clips at the field's own right edge | `w_full`, `overflow_hidden`, no border, no fill | — | none: identical in every state |
 | `seg_button(id, label, active, side, danger, on_click)` | One segment of a two-way segmented control. Sized by `CONTROL_H` rather than by vertical padding, so a segment is the same 22px as every other in-row control (§8.1) — the same shape `flat_text_btn` uses; `py` would stack on top of the fixed height, so there is none | `h CONTROL_H`, `px SPACE_2XL`, mono `TEXT_SMALL` | `SegSide::{Left,Right}`, `danger` | default, hover, **active**, **inert** (`on_click: None`) |
 | `seg_button_content(id, content, active, side, danger, on_click)` | `seg_button`'s shell around arbitrary content, for glyph segments; `content` owns its padding | outer corners at `RADIUS_CONTROL` on `side` only | as above | as above |
 | `seg_text_color(active, danger)` | The label tint rule: active+danger → `RED`, active → `FG`, else `FG_DIM` | — | — | — |
@@ -977,9 +985,10 @@ It is consumed by `appbar`, `sidebar`, `rows`, `statusbar`, `grid`,
 its 1px border on each edge, so the tick mark fills the box without crossing
 the stroke. It is a derived value in the `FOOTER_RADIUS` sense (§7.3): it
 moves with the box and is never chosen independently. It happens to land on
-`ICON_SM`, the list-density glyph tier. `CHECKBOX_BOX` (14) and `FOCUS_RING_W`
-(2) are both kept as module-local constants in `components.rs` rather than
-promoted to `tokens.rs`, because each has exactly one consumer (§14 rule 3).
+`ICON_SM`, the list-density glyph tier. `CHECKBOX_BOX` (14) is kept as a
+module-local constant in `components.rs` rather than promoted to `tokens.rs`,
+because it has exactly one consumer (§14 rule 3). `FOCUS_RING_W` (2) was the
+other example of the pattern and is gone with the focus ring itself (§10.1).
 
 `Accent`'s rest alpha is the named constant `ACCENT_BORDER_REST_ALPHA` (0.45,
 `src/views/components.rs`): the accent is present at rest but held back, so the
@@ -1014,7 +1023,7 @@ parameter list and not a builder.
 | `status_dot(size, color)` | **The** filled activity dot — statusbar, terminal tab bar, sidebar rollups, session header | `rounded_full` | static |
 | `status_dot_hollow(size, color)` | `status_dot`'s "absent / not installed" counterpart: same circle, same size, drawn as a 1px ring (`border_1`, `border_color`) instead of a filled `bg` — colour alone must never be the sole carrier of state (§2.3); filled versus hollow is a shape difference that survives greyscale, colour-blindness and a dimmed display, which is why it keeps the full 1px hairline in the state's own colour rather than a washed-out fill | `rounded_full`, `border_1` | static |
 | `icon_slot(name, size, color)` | Fixed 24px icon slot so titles align regardless of glyph width | w 24 | static |
-| `status_gutter(dot)` | A fixed `STATUS_DOT_COL_W` column, reserved as column one on **every** settings row whether or not that row carries a status dot. Labels then start at the same x whether or not their row shows a dot — `icon_slot`'s rationale ("a fixed slot so titles align regardless of glyph width") applied to the row grid rather than a new idea. Fixed at `CONTROL_H` tall and centres its mark *inside that height*, not inside the row's overall height — the row's outer container is `items_start` (so a tall sublabel never drags the whole row's cross-axis alignment around), which pins this gutter's top edge to the row's first line, and matching that line's own height is what puts the mark's centre on the label line. Centring on the row's overall height instead was a real shipped bug the user caught in the running app: with a sublabel present, the row's centre falls *between* the label and sublabel lines, so the dot floats above the label rather than sitting on it | w `STATUS_DOT_COL_W` (15), h `CONTROL_H` | static |
+| `status_gutter(dot)` | A fixed `STATUS_DOT_COL_W` column, reserved as column one on every row of a card that reserves it (`RowGutter::Reserved`) whether or not that row carries a status dot; a card where no row can carry one passes `RowGutter::None` and reserves nothing (§9.1.1). Labels then start at the same x whether or not their row shows a dot — `icon_slot`'s rationale ("a fixed slot so titles align regardless of glyph width") applied to the row grid rather than a new idea. Fixed at `CONTROL_H` tall and centres its mark *inside that height*, not inside the row's overall height — the row's outer container is `items_start` (so a tall sublabel never drags the whole row's cross-axis alignment around), which pins this gutter's top edge to the row's first line, and matching that line's own height is what puts the mark's centre on the label line. Centring on the row's overall height instead was a real shipped bug the user caught in the running app: with a sublabel present, the row's centre falls *between* the label and sublabel lines, so the dot floats above the label rather than sitting on it | w `STATUS_DOT_COL_W` (15), h `CONTROL_H` | static |
 | `click_row(id, selected, density, dispatch, click, content)` | The clickable list row every list shares. `density` picks how much room the row gives its content — see `RowDensity` below | `gap SPACE_LG`, plus whatever `density` picks | `RowDensity::{Compact,Manager,Card}` | default, hover (`BG_HOVER`), selected (`BG_HL`), pointer |
 | `palette_row(id, selected, dispatch, click, content)` | Palette results row | `h PALETTE_ROW_H` (54), `px SPACE_2XL`, `RADIUS_GROUP` | default, hover (`BG_HOVER`, **unselected only**), selected (`SEL_TINT_SOFT` + 1px `SEL_RING`), pointer |
 
@@ -1135,8 +1144,19 @@ those dividers is a bespoke shape next to a shared one.
 
 **Rows.** One row family, on `setting_row_grid`, sized by the `ROW_PX`/`ROW_PY`
 padding contract with `ROW_MIN_H` as a floor, not by a pinned per-kind height
-(§8.1). `status_gutter` reserves its column on every row so labels
-align whether or not a row shows a dot (§9.1). Disabled is `FG_MUTE()` plus a
+(§8.1). A clickable row gets those metrics from `RowDensity::CardPadded`
+rather than re-stating them by hand; plain `RowDensity::Card` is for the denser
+rows that bring their own padding (the diff tree, the session card).
+
+**The status gutter is a per-card decision, not a per-row one.** `status_gutter`
+exists so labels line up whether or not a given row shows a dot — so every row
+*in a card* must agree, which is what `RowGutter::Reserved` / `RowGutter::None`
+selects. Reserving it on some rows of a card and not others produces exactly the
+misalignment the rule was written to prevent, and reserving it in a card where no
+row can ever carry a mark indents every label for nothing. The New-worktree modal
+is the second case and passes `RowGutter::None`; the Settings cards pass
+`RowGutter::Reserved`. Labels also sit in a `FIELD_LABEL_COL_W` minimum column,
+so the value column starts at the same x across rows either way. Disabled is `FG_MUTE()` plus a
 dropped handler — `Option<handler>` structurally prevents the click, per
 §10.1's disabled pattern — and it is **never** `opacity()`: opacity is not a
 state in this system (§13), and a half-transparent row still paints a hover
@@ -1171,13 +1191,87 @@ every scrolling modal body — Settings, Project Settings/ScriptsEditor, the
 command palette results list, the theme manager list, and any modal body added
 after this one. It is one constant, not a per-modal number to pick.
 
-**One multiline exception.** The ThemeManager JSON editor is the one field in
-the app that keeps a bordered box taller than `CONTROL_H` (22px), because a
-single-line field's `CONTROL_H` box physically cannot host a multi-row text
-buffer. Every other single-line field in the app uses `field_box`.
+**Fields paint nothing.** `field_box` has no border, no fill and no ring, in
+any state. It contributes padding, radius and mono type and nothing else, so a
+field bleeds into whatever card, panel or screen hosts it. `field_box()`
+therefore takes no `focused` argument — it has no focus state to draw.
 
-**`field_underline` is retired in favour of `field_box`.** `field_box` is the
-boxed-plus-focus-ring field variant; the `field_underline` identifier must
+**Focus lives on the row label.** A focused field's row label is `FG()`; an
+unfocused one is `FG_MUTE()`. That plus the caret is the whole affordance.
+Both `setting_row_grid` and `setting_row_field` take a `LabelTone`
+(`Static` / `Focused` / `Blurred`); `Static` is for a row that hosts no field
+and cannot take focus, and stays at `FG()`.
+
+**Every field carries a placeholder, and it is load-bearing.** A field paints
+nothing, so an *empty* field is invisible — no fill, no outline, and for the
+wizard and onboarding fields no label to tint either. The placeholder is the
+only thing giving an empty field presence on screen, so a field without one is
+a bug, not a missing nicety.
+
+The placeholder is an **example value, not an instruction**: `fix-billing-retry`,
+`~/code/my-repo`, `npm install`. It demonstrates the format by being a valid
+instance of it. No `e.g.` prefix, no trailing ellipsis, no lorem. Where a field
+has a real default, the placeholder *is* that default (the AddProject and
+Onboarding name fields show the folder an empty submit would use), which is
+strictly more informative than a generic example.
+
+Two carve-outs, both principled rather than grandfathered. A **search or filter**
+input takes no formatted value, so there is no instance to demonstrate and an
+example query would mislead — the command palette (`Search worktrees…`) and the
+Base dropdown's filter row (`type to filter…`) stay instructions. The Base
+filter row is additionally not a field at all: it owns no `InputState` and can
+never take focus, and an example branch name there would be indistinguishable
+from the branch rows directly beneath it — exactly the confusion the convention
+exists to prevent.
+
+**A placeholder must never read as a typed value.** Placeholder is `FG_MUTE()`,
+a real value is `FG()`. That is not automatic: `gpui_component`'s `Input` draws
+its placeholder in *its own* `cx.theme().muted_foreground` while a real value
+inherits `text_style.color` from `panel_surface`. Left alone, gpui-component's
+default is a fixed achromatic grey (`hsl(0, 0%, 45%)`) that ignores all 32
+bundled themes, so `crate::theme::sync_component_theme` pushes Grove's
+`FG_MUTE()` into that global at startup and on every theme change, and
+`the_placeholder_renders_in_groves_own_muted_tone` pins it. A placeholder also
+never reaches the buffer — an untouched field's value is `""` and submits as
+today's no-op, held by
+`an_untouched_field_holds_no_value_despite_its_placeholder`.
+
+An example for a validated field must satisfy that validator.
+`WORKTREE_NAME_PLACEHOLDER` is checked against `git::valid_worktree_name` by
+`the_worktree_placeholder_is_a_name_the_validator_accepts` — note that a name
+takes alphanumerics, `-`, `_` and `.` but **not** `/`, whatever branch-naming
+habit suggests.
+
+**A field with no row label has no focus affordance.** The Add-project wizard's
+two fields and Onboarding's two are headed by a `section_header`, not a row
+label, and the command palette's search field has no label at all. Each is the
+only focusable field on its screen and is focused on open, so the caret is
+unambiguous there — but this is a real limit of the label-tint scheme, not a
+solved case. Do not add a field to a screen with more than one of them unless
+that field sits in a labelled row.
+
+> **Named exception to §2.3.** §2.3 says colour is never the sole carrier of
+> state. Here it is: a field's focus state is carried by the label's colour and
+> nothing else. This is a deliberate product decision taken with open eyes, not
+> an oversight and not something the rest of the system reconciles away. It is
+> the only sanctioned instance — every *other* state in the app still pairs
+> colour with a second cue.
+
+**Two bordered exceptions.** The ThemeManager JSON editor keeps a bordered box
+taller than `CONTROL_H` (22px): a single-line field's `CONTROL_H` box
+physically cannot host a multi-row buffer, and a 14-row code region needs an
+explicit boundary — a fill alone leaves a short buffer with no legible bottom
+edge, which is a region problem a one-line field does not have. The
+ScriptsEditor's script rows and its rename-title field keep their bottom-rule
+(`border_b_1`) treatment, which is local to those rows and was never
+`field_box`. Every other single-line field in the app goes through
+`field_box`: the New-worktree Name field and its Base filter, Add project's
+path and name fields, the onboarding path and name fields.
+
+**`field_underline` is retired in favour of `field_box`.** `field_box` is now
+the borderless fill-shift field described above (it was the
+boxed-plus-focus-ring variant when the rule was written; the retirement holds
+either way). The `field_underline` identifier must
 never reappear anywhere in the view layer, not even as a dangling doc-comment
 reference (`src/views/conformance.rs` — the check retiring it). Every
 `Input::new(...)` call site wrapped by `field_box` must chain, within 16
@@ -1187,13 +1281,14 @@ at `Size::Medium` — regardless of `.appearance(false)`, because
 `.appearance(false)` drops only the border and fill, not the padding. A
 missing zeroed inset breaks the field's left edge out of true against the
 rest of the panel; a missing `.appearance(false)` draws the third-party
-widget's own border inside the wrapping box, a double border no other rule
-catches. `w_full()` stops the field collapsing to its content inside the
+widget's own border *and fill* inside a wrapping box that deliberately has
+neither, reintroducing exactly what §14 removed. `w_full()` stops the field collapsing to its content inside the
 shell's `min_w_0` flex row.
 
-`field_box`'s focus ring is drawn as a zero-blur, `FOCUS_RING_W`-spread outer
-`BoxShadow`, not `border_2` — gpui's `Div` has no outline primitive at this
-rev, and `border_2` would grow the box and reflow the row on focus.
+`field_box` paints nothing — no border, no fill, no ring — so it is identical
+in every state and a row can never reflow on focus. Focus is carried by the
+row label's tint (§14). The earlier zero-blur `FOCUS_RING_W`-spread
+`BoxShadow` and the 1px border are both retired.
 
 **Selection lists.** Every selection list uses `card()` +
 `click_row(RowDensity::Card)`. `palette_row` (`PALETTE_ROW_H`, 54px — §9.1) is
@@ -1291,15 +1386,14 @@ This is the real vocabulary in the tree, not an aspirational one.
 | **Inert** | An already-active segment takes `on_click: None` — no hover, no pointer, no handler | `seg_button` / `seg_button_content` |
 | **Disabled** | `FG_MUTE` text and glyph, no pointer, no hover, no handler attached | `modal_checkbox` / `click_checkbox` only (§15) |
 
-**Focus rings exist, and are drawn only through `FOCUS_RING`.** `FOCUS_RING()`
-(§4.2/§4.1 palette derivations) is a `MAGENTA`-derived alpha tint, used for
-`field_box`'s zero-blur outer `BoxShadow` (§9.1.1) and nowhere else. `FocusHandle`
-exists where keyboard routing needs it, but outside `field_box`, keyboard
-position is still communicated by the *selection* treatment — the list's own
-tint-plus-ring — not by a separate focus affordance, because a cyan ring would
-collide with the selection language it sits next to. **Do not add a one-off
-focus outline outside `field_box`**, and do not describe the system as having
-none.
+**There are no focus rings anywhere in the app.** The `FOCUS_RING` token is
+gone (§4.2). A focused `field_box` is indicated by its row label's tint alone
+(`FG_MUTE` → `FG`, §14); everywhere else, keyboard position is
+communicated by the *selection* treatment — the list's own tint-plus-ring —
+because a second ring language would collide with the selection language it
+sits next to. **Do not add a focus outline anywhere, including to
+`field_box`**: an outline is the one treatment that grows a control's box and
+reflows the row around it on focus.
 
 The disabled pattern is worth naming because it is unusually clean: passing
 `None` for the handler *structurally* prevents interactivity, rather than
@@ -1399,8 +1493,9 @@ wire those to the tick** (`src/entities/animation_clock.rs` — module doc).
 
 ## 12. Accessibility
 
-**Colour is never the sole carrier of state.** Every signal pairs colour with a
-second channel:
+**Colour is never the sole carrier of state**, with the single named exception
+of text-field focus (§2.3, §14). Every other signal pairs colour with a second
+channel:
 
 | Signal | Colour | Second channel |
 |---|---|---|
@@ -1510,7 +1605,7 @@ is shown by the selection treatment, not a focus ring (§10.1).
 2. If it genuinely is not, add it *in scale order*, with a doc comment naming
    its role and which tokens it sits between.
 3. **Never add a token with exactly one consumer.** That is a module constant
-   (`CHECKBOX_BOX`, `ICON_SLOT_W`, `AGENT_BTN` and `FOCUS_RING_W` are the
+   (`CHECKBOX_BOX`, `ICON_SLOT_W`, `AGENT_BTN` and `BASE_DROPDOWN_W` are the
    pattern).
 4. A number belongs in `tokens.rs` only if it is **relational** — a notch on a
    scale with neighbours. Positional, singular geometry stays in its owning

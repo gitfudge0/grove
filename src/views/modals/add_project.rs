@@ -2,7 +2,7 @@
 
 use crate::views::rpx;
 use crate::views::tokens::*;
-use gpui::{div, prelude::*, AnyElement, App, Context, Div, Focusable as _, Window};
+use gpui::{div, prelude::*, AnyElement, App, Context, Div, Window};
 
 use crate::add_project::{self, ChooseOutcome, GitProbe, SubmitOutcome};
 use crate::settings::SettingsState;
@@ -463,7 +463,7 @@ fn dir_list(
             click_row(
                 gpui::SharedString::from(format!("dir-{i}")),
                 i == sel,
-                RowDensity::Card,
+                RowDensity::CardPadded,
                 dispatch,
                 ModalClick::WizardPickDir(i),
                 mono(
@@ -472,9 +472,6 @@ fn dir_list(
                     if i == sel { c::FG() } else { c::FG_DIM() },
                 ),
             )
-            .min_h(rpx(ROW_MIN_H))
-            .px(rpx(ROW_PX))
-            .py(rpx(ROW_PY))
             .into_any_element(),
         );
     }
@@ -492,10 +489,13 @@ fn dir_list(
 }
 
 /// `None` if `layer.fields[idx]` doesn't exist. Every text field goes through this so `Input`'s insets stay zeroed per `field_box`'s contract.
-fn field_row(layer: &ModalLayer, idx: usize, window: &Window, cx: &App) -> Option<Div> {
+///
+/// These fields head a `section_header`, not a row label, so there is no label to
+/// tint on focus (§14). Each wizard step auto-focuses its only field, so the caret
+/// alone is unambiguous here.
+fn field_row(layer: &ModalLayer, idx: usize, _window: &Window, _cx: &App) -> Option<Div> {
     layer.fields.get(idx).map(|f| {
-        let focused = f.state().read(cx).focus_handle(cx).is_focused(window);
-        field_box(focused).child(
+        field_box().child(
             gpui_component::input::Input::new(f.state())
                 .appearance(false)
                 .pl(gpui::px(0.0))
@@ -980,7 +980,7 @@ fn onboarding(
                             click_row(
                                 gpui::SharedString::from(format!("ob-agent-{i}")),
                                 active,
-                                RowDensity::Card,
+                                RowDensity::CardPadded,
                                 dispatch,
                                 ModalClick::OnboardPickAgent(i),
                                 ui(
@@ -989,9 +989,6 @@ fn onboarding(
                                     if active { c::FG() } else { c::FG_DIM() },
                                 ),
                             )
-                            .min_h(rpx(ROW_MIN_H))
-                            .px(rpx(ROW_PX))
-                            .py(rpx(ROW_PY))
                             .into_any_element(),
                         );
                     }

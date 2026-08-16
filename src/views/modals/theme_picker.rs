@@ -673,10 +673,7 @@ fn theme_row(
     click: ModalClick,
     content: impl IntoElement,
 ) -> gpui::Stateful<gpui::Div> {
-    click_row(id, active, RowDensity::Card, dispatch, click, content)
-        .min_h(rpx(ROW_MIN_H))
-        .px(rpx(ROW_PX))
-        .py(rpx(ROW_PY))
+    click_row(id, active, RowDensity::CardPadded, dispatch, click, content)
 }
 
 fn manager(layer: &ModalLayer, dispatch: &ModalDispatch, window: &Window, cx: &App) -> AnyElement {

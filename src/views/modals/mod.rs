@@ -55,7 +55,10 @@ pub enum ModalEvent {
     NewHomeTerminal,
     SelectSession(crate::entities::session_registry::SessionId),
     SelectTerminal(usize),
-    RunScript { wt_path: String, script: String },
+    RunScript {
+        wt_path: String,
+        script: String,
+    },
 }
 
 /// The single modal slot, its focus, and whatever field the open modal owns.
@@ -275,11 +278,15 @@ impl ModalLayer {
         } else {
             None
         };
+        let is_input = matches!(modal.kind(), ModalKind::Input);
         self.slot.open(modal);
         self.reset_list_scroll();
         self.fields.clear();
         self.field_subs.clear();
         self.needs_focus = true;
+        if is_input {
+            self.load_base_branches(cx);
+        }
         cx.notify();
     }
 
@@ -327,6 +334,7 @@ impl ModalLayer {
             "enter" => ModalKey::Enter,
             "tab" => ModalKey::Tab,
             "space" => ModalKey::Space,
+            "backspace" => ModalKey::Backspace,
             "up" => ModalKey::Up,
             "down" => ModalKey::Down,
             "left" => ModalKey::Left,
@@ -435,6 +443,10 @@ impl ModalLayer {
                 step(sel, confirm::AVAILABLE_AGENTS.len());
                 cx.notify();
             }
+            Modal::Input { base, .. } if base.open => {
+                base.move_highlight(delta);
+                cx.notify();
+            }
             Modal::ThemePicker { .. } => self.theme_picker_move(delta, cx),
             Modal::ThemeManager { .. } => self.theme_manager_move(delta, cx),
             Modal::Onboarding { .. } | Modal::AddProject(_) => {
@@ -483,6 +495,10 @@ impl ModalLayer {
                 cx.notify();
             }
             ModalAction::ToggleDefaultAgent => self.toggle_default_agent(cx),
+            ModalAction::BaseDropdownClose => self.close_base_dropdown(window, cx),
+            ModalAction::BaseDropdownPick => self.pick_base_branch(None, window, cx),
+            ModalAction::BaseFilterPush(c) => self.edit_base_filter(Some(c), cx),
+            ModalAction::BaseFilterPop => self.edit_base_filter(None, cx),
             ModalAction::ChooseTmux(enabled) => self.choose_tmux(enabled, cx),
             ModalAction::ThemePickerSubmit => self.theme_picker_submit(cx),
             ModalAction::ThemePickerSwitchTab => self.theme_picker_switch_tab(cx),
@@ -541,6 +557,8 @@ impl ModalLayer {
             ModalClick::ArchiveKillSessions => self.archive_kill_sessions(cx),
             ModalClick::RestoreArchived(idx) => self.restore_archived(idx, cx),
             ModalClick::DeleteArchived(idx) => self.delete_archived(idx, cx),
+            ModalClick::BaseDropdownToggle => self.toggle_base_dropdown(window, cx),
+            ModalClick::BaseSelect(i) => self.pick_base_branch(Some(i), window, cx),
             ModalClick::SelectRow(i) => {
                 enum SelectRowFollowUp {
                     Launcher,
@@ -648,8 +666,13 @@ impl ModalLayer {
         let policy = InputPolicy::for_modal(kind);
         match modal {
             Modal::Input { buffer, .. } => {
-                self.fields
-                    .push(ModalInput::single_line(policy, "", buffer, window, cx));
+                self.fields.push(ModalInput::single_line(
+                    policy,
+                    crate::modal::WORKTREE_NAME_PLACEHOLDER,
+                    buffer,
+                    window,
+                    cx,
+                ));
             }
             Modal::SessionLauncher(st) => {
                 let placeholder = match st.scope {
@@ -687,16 +710,24 @@ impl ModalLayer {
                 name,
                 ..
             } => {
+                // Example values, matching the AddProject wizard: the name field
+                // shows the folder that an empty submit would actually use.
+                let name_hint = crate::add_project::path_basename(path);
+                let name_hint = if name_hint.is_empty() {
+                    "my-repo".to_string()
+                } else {
+                    name_hint
+                };
                 self.fields.push(ModalInput::single_line(
                     policy,
-                    "~/path/to/project",
+                    "~/code/my-repo",
                     path,
                     window,
                     cx,
                 ));
                 self.fields.push(ModalInput::single_line(
                     policy,
-                    "project name (optional)",
+                    &name_hint,
                     name.as_deref().unwrap_or(""),
                     window,
                     cx,
@@ -770,6 +801,13 @@ impl ModalLayer {
     pub(super) fn sync_wizard_buffers(&mut self, cx: &mut Context<Self>) {
         let values: Vec<String> = self.fields.iter().map(|f| f.value(cx)).collect();
         match self.slot.get_mut() {
+            // Keeps the slot's own copy of the typed name truthful; the Base row's
+            // existing-branch check re-reads the live field on every keystroke.
+            Some(Modal::Input { buffer, .. }) => {
+                if let Some(v) = values.first() {
+                    buffer.clone_from(v);
+                }
+            }
             Some(Modal::AddProject(st)) => {
                 if let Some(v) = values.first() {
                     match st.step {
@@ -1033,6 +1071,7 @@ mod tests {
         ));
         cx.set_global(crate::zoom::ZoomState::new(1.0));
         gpui_component::init(cx);
+        crate::theme::sync_component_theme(cx);
         cx.bind_keys(crate::keymap::bindings());
     }
 
@@ -1069,6 +1108,56 @@ mod tests {
         }
     }
 
+    /// `Input` paints its placeholder in gpui-component's `muted_foreground`, not
+    /// Grove's palette, so an unsynced build would show a fixed third-party grey.
+    /// This pins the actual colour the placeholder renders in.
+    #[gpui::test]
+    fn the_placeholder_renders_in_groves_own_muted_tone(cx: &mut TestAppContext) {
+        cx.update(boot_globals);
+        cx.update(|cx| {
+            assert_eq!(
+                gpui_component::Theme::global(cx).muted_foreground,
+                crate::theme::FG_MUTE(),
+                "placeholder tone drifted from Grove's FG_MUTE"
+            );
+            // And a real value, which inherits `panel_surface`'s text colour, must
+            // never be the same tone as a placeholder.
+            assert_ne!(crate::theme::FG_MUTE(), crate::theme::FG());
+        });
+    }
+
+    /// The field the placeholder belongs to still submits nothing when untouched.
+    #[gpui::test]
+    fn an_untouched_field_holds_no_value_despite_its_placeholder(cx: &mut TestAppContext) {
+        cx.update(boot_globals);
+        let (root, vcx) =
+            cx.add_window_view(|_, cx| build_root(cx, Rc::new(RefCell::new(Vec::new()))));
+        vcx.run_until_parked();
+        let modals = root.read_with(vcx, |r, _| r.modals.clone());
+        modals.update(vcx, |l, cx| {
+            l.open(
+                Modal::Input {
+                    title: "New worktree".into(),
+                    buffer: String::new(),
+                    note: None,
+                    base: crate::modal::BaseBranchState::default(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        modals.update(vcx, |l, cx| {
+            let Some(field) = l.fields.first() else {
+                panic!("the name field was never built");
+            };
+            assert_eq!(
+                field.value(cx),
+                "",
+                "the placeholder leaked into the field's value"
+            );
+        });
+    }
+
     /// Escape must close the open modal and never reach the terminal behind the scrim.
     #[gpui::test]
     fn escape_closes_the_modal_and_never_reaches_the_terminal(cx: &mut TestAppContext) {
@@ -1079,6 +1168,7 @@ mod tests {
                 title: "t".into(),
                 buffer: String::new(),
                 note: None,
+                base: crate::modal::BaseBranchState::default(),
             },
             Modal::SessionLauncher(Box::default()),
         ] {

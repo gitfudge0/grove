@@ -533,25 +533,81 @@ pub fn render(
     }
 }
 
+/// What a row's label says about the row's focus state.
+///
+/// A transparent field draws nothing of its own, so the label is the field's
+/// only focus affordance (DESIGN.md §14, the named §2.3 exception).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LabelTone {
+    /// The row hosts no field and cannot take focus.
+    Static,
+    Focused,
+    Blurred,
+}
+
+impl LabelTone {
+    /// `None` for a row with no field; otherwise the field's focus state.
+    pub(crate) fn field(focused: Option<bool>) -> Self {
+        match focused {
+            None => LabelTone::Static,
+            Some(true) => LabelTone::Focused,
+            Some(false) => LabelTone::Blurred,
+        }
+    }
+
+    fn color(self) -> gpui::Hsla {
+        match self {
+            LabelTone::Static | LabelTone::Focused => c::FG(),
+            LabelTone::Blurred => c::FG_MUTE(),
+        }
+    }
+}
+
+/// Whether a card reserves the leading status column. The decision belongs to the
+/// **card**, not the row: reserving it on some rows and not others is what pushes
+/// labels out of line, which is the opposite of what §9.1.1 asks for. A card where
+/// no row can ever carry a mark reserves nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RowGutter {
+    Reserved,
+    None,
+}
+
 /// Returns the row's inner content only; callers add the padding/height that make it a row.
-fn setting_row_grid(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn setting_row_grid(
     label: &'static str,
+    tone: LabelTone,
     sublabel: Option<(&'static str, SublabelTone)>,
     control: Option<AnyElement>,
     chevron: bool,
     status: Option<AnyElement>,
+    gutter: RowGutter,
 ) -> Div {
-    let mut cluster = div().flex().items_center().gap(rpx(SPACE_MD));
+    let mut cluster = div()
+        .flex()
+        .flex_1()
+        .min_w_0()
+        .justify_end()
+        .items_center()
+        .gap(rpx(SPACE_MD));
     cluster = cluster.children(control);
     if chevron {
         cluster = cluster.child(crate::icons::icon("chev-right", ICON_SM, c::FG_MUTE()));
     }
 
+    // A fixed label column, so every row's control starts at the same x whether or
+    // not the card reserves a status gutter (`FIELD_LABEL_COL_W` is a floor, so a
+    // longer label grows rather than clipping).
     let label_line = div()
         .flex()
         .items_center()
         .gap(rpx(SPACE_LG))
-        .child(ui(label, TEXT_BODY, c::FG()).flex_1())
+        .child(
+            ui(label, TEXT_BODY, tone.color())
+                .flex_shrink_0()
+                .min_w(rpx(FIELD_LABEL_COL_W)),
+        )
         .child(cluster);
 
     let mut col = div()
@@ -570,15 +626,18 @@ fn setting_row_grid(
         .flex()
         .items_start()
         .w_full()
-        .child(status_gutter(status))
+        .when(gutter == RowGutter::Reserved, |d| {
+            d.child(status_gutter(status))
+        })
         .child(col)
 }
 
 /// Non-interactive: the control itself carries interaction, so the row box stays inert rather than a second hit target.
-fn setting_row_static(
+pub(crate) fn setting_row_static(
     label: &'static str,
     sublabel: Option<(&'static str, SublabelTone)>,
     control: Option<AnyElement>,
+    gutter: RowGutter,
 ) -> Div {
     div()
         .flex()
@@ -586,7 +645,15 @@ fn setting_row_static(
         .px(rpx(ROW_PX))
         .py(rpx(ROW_PY))
         .min_h(rpx(ROW_MIN_H))
-        .child(setting_row_grid(label, sublabel, control, false, None))
+        .child(setting_row_grid(
+            label,
+            LabelTone::Static,
+            sublabel,
+            control,
+            false,
+            None,
+            gutter,
+        ))
 }
 
 /// A drill-in row: the whole row is the hit target because the row *is* the control.
@@ -601,19 +668,25 @@ fn setting_row_link(
     click_row(
         id,
         false,
-        RowDensity::Card,
+        RowDensity::CardPadded,
         dispatch,
         click,
-        setting_row_grid(label, None, value, true, None),
+        setting_row_grid(
+            label,
+            LabelTone::Static,
+            None,
+            value,
+            true,
+            None,
+            RowGutter::Reserved,
+        ),
     )
-    .min_h(rpx(ROW_MIN_H))
-    .px(rpx(ROW_PX))
-    .py(rpx(ROW_PY))
 }
 
 /// The three lifecycle-script rows: an underline-style input stacked below a title line, rather than the two-column gutter layout other rows use.
-fn setting_row_field(
+pub(crate) fn setting_row_field(
     label: &'static str,
+    tone: LabelTone,
     sublabel: Option<(&'static str, SublabelTone)>,
     input: AnyElement,
 ) -> Div {
@@ -622,7 +695,7 @@ fn setting_row_field(
             .flex()
             .items_baseline()
             .gap(rpx(SPACE_SM))
-            .child(ui(label, TEXT_BODY, c::FG()));
+            .child(ui(label, TEXT_BODY, tone.color()));
     if let Some((sub, tone)) = sublabel {
         title_line = title_line.child(row_sublabel(sub, tone));
     }
@@ -728,8 +801,13 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                 ModalClick::OpenThemeManager,
             )
             .into_any_element(),
-            setting_row_static("App size", None, Some(app_size_stepper.into_any_element()))
-                .into_any_element(),
+            setting_row_static(
+                "App size",
+                None,
+                Some(app_size_stepper.into_any_element()),
+                RowGutter::Reserved,
+            )
+            .into_any_element(),
             setting_row_static(
                 "Follow system appearance",
                 None,
@@ -742,6 +820,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                     dispatch,
                     ModalClick::ToggleSetting(SettingToggle::ThemeFollowSystem),
                 )),
+                RowGutter::Reserved,
             )
             .into_any_element(),
             setting_row_static(
@@ -763,6 +842,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                         cx.refresh_windows();
                     },
                 )),
+                RowGutter::Reserved,
             )
             .into_any_element(),
         ]),
@@ -843,8 +923,13 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
     let agents_terminal = settings_card_block(
         "AGENTS & TERMINAL",
         card(vec![
-            setting_row_static("Backend", None, Some(backend_seg.into_any_element()))
-                .into_any_element(),
+            setting_row_static(
+                "Backend",
+                None,
+                Some(backend_seg.into_any_element()),
+                RowGutter::Reserved,
+            )
+            .into_any_element(),
             setting_row_static(
                 "Permissions",
                 Some((
@@ -852,6 +937,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                     SublabelTone::Safety,
                 )),
                 Some(perms_seg.into_any_element()),
+                RowGutter::Reserved,
             )
             .into_any_element(),
             setting_row_static(
@@ -869,6 +955,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                     dispatch,
                     ModalClick::ToggleSetting(SettingToggle::Chrome),
                 )),
+                RowGutter::Reserved,
             )
             .into_any_element(),
         ]),
@@ -927,6 +1014,7 @@ fn settings_modal(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> Any
                         cx.refresh_windows();
                     },
                 )),
+                RowGutter::Reserved,
             )
             .into_any_element(),
         ]),
@@ -1367,10 +1455,12 @@ fn scripts_editor(
     } else {
         setting_row_grid(
             "Project theme",
+            LabelTone::Static,
             Some(("Enable Project themes in Settings", SublabelTone::Normal)),
             Some(mono(value_text, TEXT_BODY, value_color).into_any_element()),
             false,
             None,
+            RowGutter::Reserved,
         )
         .px(rpx(ROW_PX))
         .py(rpx(ROW_PY))
@@ -1410,7 +1500,13 @@ fn scripts_editor(
             )
             .into_any_element();
 
-        setting_row_field(label, Some((desc, SublabelTone::Normal)), input).into_any_element()
+        setting_row_field(
+            label,
+            LabelTone::field(Some(focused)),
+            Some((desc, SublabelTone::Normal)),
+            input,
+        )
+        .into_any_element()
     };
 
     let lifecycle_rows = vec![

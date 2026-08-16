@@ -303,12 +303,33 @@ pub fn valid_project_name(name: &str) -> bool {
 }
 
 /// `worktree_dir` is the project's pinned directory key, not its current display name — frozen at first rename so renaming a project can't orphan its worktree directories.
-pub fn add_worktree(project_path: &str, worktree_dir: &str, name: &str) -> Result<String> {
+pub fn add_worktree(
+    project_path: &str,
+    worktree_dir: &str,
+    name: &str,
+    base: Option<&str>,
+) -> Result<String> {
     if !valid_worktree_name(name) {
         return Err(GitError::InvalidWorktreeName);
     }
     if !valid_project_name(worktree_dir) {
         return Err(GitError::InvalidProjectName);
+    }
+    if let Some(b) = base {
+        tracing::debug!(
+            args = format!("rev-parse --verify --quiet {b}"),
+            cwd = %project_path,
+            "running git command"
+        );
+        let out = Command::new("git")
+            .args(["-C", project_path, "rev-parse", "--verify", "--quiet", b])
+            .output()?;
+        if !out.status.success() {
+            return Err(GitError::Command {
+                cmd: "rev-parse --verify".into(),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            });
+        }
     }
     let root = worktrees_root()?;
     create_private_dir(&root)?;
@@ -344,6 +365,9 @@ pub fn add_worktree(project_path: &str, worktree_dir: &str, name: &str) -> Resul
     if !branch_exists {
         args.extend(["-b", name]);
         args.push(&dest_str);
+        if let Some(b) = base {
+            args.push(b);
+        }
     } else {
         args.push(&dest_str);
         args.push(name);
@@ -423,6 +447,151 @@ pub fn copy_worktree_includes(project_path: &str, wt_path: &str) -> Result<()> {
         return Err(GitError::Copy(failed.join(", ")));
     }
     Ok(())
+}
+
+#[derive(Clone, Debug)]
+pub struct BranchRef {
+    pub name: String,
+    pub is_remote: bool,
+    pub is_head: bool,
+    pub ahead: u32,
+    pub behind: u32,
+}
+
+/// Parses `[ahead 2, behind 1]`-style `%(upstream:track)` output; absent or unparseable is `(0, 0)`.
+fn parse_track(track: &str) -> (u32, u32) {
+    let inner = track.trim().trim_start_matches('[').trim_end_matches(']');
+    let mut ahead = 0;
+    let mut behind = 0;
+    for clause in inner.split(',') {
+        let clause = clause.trim();
+        if let Some(n) = clause.strip_prefix("ahead ") {
+            ahead = n.trim().parse().unwrap_or(0);
+        } else if let Some(n) = clause.strip_prefix("behind ") {
+            behind = n.trim().parse().unwrap_or(0);
+        }
+    }
+    (ahead, behind)
+}
+
+/// One `for-each-ref` call covering both local and remote-tracking branches.
+pub fn list_branches(repo: &str) -> Result<Vec<BranchRef>> {
+    tracing::debug!(
+        args = "for-each-ref --format=... refs/heads refs/remotes",
+        cwd = %repo,
+        "running git command"
+    );
+    let out = Command::new("git")
+        .args([
+            "-C",
+            repo,
+            "for-each-ref",
+            "--format=%(refname)%09%(refname:short)%09%(HEAD)%09%(upstream:track)",
+            "refs/heads",
+            "refs/remotes",
+        ])
+        .output();
+    let Ok(out) = out else {
+        return Err(GitError::Command {
+            cmd: "for-each-ref".into(),
+            stderr: String::new(),
+        });
+    };
+    if !out.status.success() {
+        tracing::warn!(
+            status = ?out.status,
+            stderr = %String::from_utf8_lossy(&out.stderr),
+            "git command failed"
+        );
+        return Err(GitError::Command {
+            cmd: "for-each-ref".into(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        });
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut result = vec![];
+    for line in stdout.lines() {
+        let mut fields = line.splitn(4, '\t');
+        let (Some(refname), Some(short), Some(head), Some(track)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let is_remote = refname.starts_with("refs/remotes/");
+        if is_remote {
+            if let Some(rest) = refname.strip_prefix("refs/remotes/") {
+                if rest.rsplit('/').next() == Some("HEAD") {
+                    continue;
+                }
+            }
+        }
+        let (ahead, behind) = parse_track(track);
+        result.push(BranchRef {
+            name: short.to_string(),
+            is_remote,
+            is_head: head == "*",
+            ahead,
+            behind,
+        });
+    }
+    let (head, rest): (Vec<_>, Vec<_>) = result.into_iter().partition(|b| b.is_head);
+    let (mut locals, mut remotes): (Vec<_>, Vec<_>) = rest.into_iter().partition(|b| !b.is_remote);
+    locals.sort_by(|a, b| a.name.cmp(&b.name));
+    remotes.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut sorted = head;
+    sorted.extend(locals);
+    sorted.extend(remotes);
+    Ok(sorted)
+}
+
+/// Best-guess default base branch for creating a new worktree from, in priority order:
+/// `origin/HEAD`, then `main`, then `master`, then the repo's current branch.
+pub fn default_base(repo: &str) -> Option<String> {
+    tracing::debug!(
+        args = "symbolic-ref refs/remotes/origin/HEAD",
+        cwd = %repo,
+        "running git command"
+    );
+    if let Ok(out) = Command::new("git")
+        .args(["-C", repo, "symbolic-ref", "refs/remotes/origin/HEAD"])
+        .output()
+    {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if let Some(idx) = s.rfind("origin/") {
+                let short = &s[idx + "origin/".len()..];
+                if !short.is_empty() {
+                    return Some(short.to_string());
+                }
+            }
+        }
+    }
+    for candidate in ["main", "master"] {
+        tracing::debug!(
+            args = format!("show-ref --verify --quiet refs/heads/{candidate}"),
+            cwd = %repo,
+            "running git command"
+        );
+        let ok = Command::new("git")
+            .args([
+                "-C",
+                repo,
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{candidate}"),
+            ])
+            .status()
+            .is_ok_and(|s| s.success());
+        if ok {
+            return Some(candidate.to_string());
+        }
+    }
+    let cur = current_branch(repo);
+    if !cur.is_empty() && cur != "(detached)" {
+        return Some(cur);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -802,4 +971,210 @@ pub fn init_if_needed(project_path: &str) -> Result<()> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod branch_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::TempDir;
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn unique_worktree_dir() -> String {
+        format!(
+            "grove-branch-test-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        )
+    }
+
+    /// Builds a hermetic git invocation: signing disabled, default branch pinned to `main`,
+    /// and ambient global/system config blanked so the machine's real git setup (in
+    /// particular commit/tag signing) never leaks into these fixtures.
+    fn git_cmd(dir: &Path) -> Command {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C")
+            .arg(dir)
+            .arg("-c")
+            .arg("commit.gpgsign=false")
+            .arg("-c")
+            .arg("tag.gpgsign=false")
+            .arg("-c")
+            .arg("init.defaultBranch=main")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_TERMINAL_PROMPT", "0");
+        cmd
+    }
+
+    fn run(dir: &Path, args: &[&str]) {
+        let out = git_cmd(dir).args(args).output().expect("spawn git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn init_repo() -> TempDir {
+        let dir = TempDir::new().expect("tempdir");
+        run(dir.path(), &["init", "-q", "-b", "main"]);
+        run(dir.path(), &["config", "user.name", "Grove Test"]);
+        run(dir.path(), &["config", "user.email", "test@grove.invalid"]);
+        run(dir.path(), &["commit", "--allow-empty", "-q", "-m", "init"]);
+        dir
+    }
+
+    fn head_sha(dir: &Path) -> String {
+        let out = git_cmd(dir)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("spawn git");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn rev_parse(dir: &Path, rev: &str) -> String {
+        let out = git_cmd(dir)
+            .args(["rev-parse", rev])
+            .output()
+            .expect("spawn git");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn cleanup(added_path: &str) {
+        let _ = fs::remove_dir_all(added_path);
+    }
+
+    #[test]
+    fn list_branches_reports_local_and_remote() {
+        let repo = init_repo();
+        run(repo.path(), &["branch", "feature-a"]);
+        let sha = head_sha(repo.path());
+        run(
+            repo.path(),
+            &["update-ref", "refs/remotes/origin/main", &sha],
+        );
+        run(
+            repo.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+
+        let repo_str = repo.path().to_string_lossy().to_string();
+        let branches = list_branches(&repo_str).expect("list_branches");
+
+        assert!(
+            !branches
+                .iter()
+                .any(|b| b.is_remote && b.name.ends_with("/HEAD")),
+            "origin/HEAD symref must be excluded: {branches:?}"
+        );
+        let heads: Vec<_> = branches.iter().filter(|b| b.is_head).collect();
+        assert_eq!(heads.len(), 1, "exactly one branch should be HEAD");
+
+        let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
+        assert!(names.contains(&"feature-a"));
+        assert!(branches
+            .iter()
+            .any(|b| b.is_remote && b.name == "origin/main"));
+        assert!(branches
+            .iter()
+            .filter(|b| !b.is_remote)
+            .any(|b| b.name == "feature-a"));
+    }
+
+    #[test]
+    fn default_base_picks_main() {
+        let repo = init_repo();
+        run(repo.path(), &["branch", "-m", "main"]);
+        let repo_str = repo.path().to_string_lossy().to_string();
+        assert_eq!(default_base(&repo_str), Some("main".to_string()));
+    }
+
+    #[test]
+    fn default_base_falls_back_to_current_branch() {
+        let repo = init_repo();
+        run(repo.path(), &["branch", "-m", "trunk"]);
+        let repo_str = repo.path().to_string_lossy().to_string();
+        assert_eq!(default_base(&repo_str), Some("trunk".to_string()));
+    }
+
+    #[test]
+    fn add_worktree_with_base_branches_from_base() {
+        let repo = init_repo();
+        run(repo.path(), &["branch", "-m", "main"]);
+        run(repo.path(), &["checkout", "-q", "-b", "other"]);
+        run(
+            repo.path(),
+            &["commit", "-q", "--allow-empty", "-m", "other-tip"],
+        );
+        let other_tip = head_sha(repo.path());
+        run(repo.path(), &["checkout", "-q", "main"]);
+        let main_tip = head_sha(repo.path());
+        assert_ne!(other_tip, main_tip);
+
+        let repo_str = repo.path().to_string_lossy().to_string();
+        let wt_dir = unique_worktree_dir();
+        let path = add_worktree(&repo_str, &wt_dir, "new-branch", Some("other"))
+            .expect("add_worktree with base");
+        let wt_head = rev_parse(Path::new(&path), "HEAD");
+        assert_eq!(wt_head, other_tip);
+        assert_ne!(wt_head, main_tip);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn add_worktree_without_base_uses_current_head() {
+        let repo = init_repo();
+        run(repo.path(), &["branch", "-m", "main"]);
+        let main_tip = head_sha(repo.path());
+
+        let repo_str = repo.path().to_string_lossy().to_string();
+        let wt_dir = unique_worktree_dir();
+        let path =
+            add_worktree(&repo_str, &wt_dir, "new-branch-2", None).expect("add_worktree no base");
+        let wt_head = rev_parse(Path::new(&path), "HEAD");
+        assert_eq!(wt_head, main_tip);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn add_worktree_existing_branch_ignores_base() {
+        let repo = init_repo();
+        run(repo.path(), &["branch", "-m", "main"]);
+        run(repo.path(), &["checkout", "-q", "-b", "elsewhere"]);
+        run(
+            repo.path(),
+            &["commit", "-q", "--allow-empty", "-m", "elsewhere-tip"],
+        );
+        run(repo.path(), &["checkout", "-q", "main"]);
+        run(repo.path(), &["checkout", "-q", "-b", "existing-branch"]);
+        run(repo.path(), &["commit", "-q", "--allow-empty", "-m", "x"]);
+        let existing_tip = head_sha(repo.path());
+        run(repo.path(), &["checkout", "-q", "main"]);
+
+        let repo_str = repo.path().to_string_lossy().to_string();
+        let wt_dir = unique_worktree_dir();
+        let path = add_worktree(&repo_str, &wt_dir, "existing-branch", Some("elsewhere"))
+            .expect("add_worktree existing branch");
+        let wt_head = rev_parse(Path::new(&path), "HEAD");
+        assert_eq!(wt_head, existing_tip);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn add_worktree_invalid_base_errors() {
+        let repo = init_repo();
+        let repo_str = repo.path().to_string_lossy().to_string();
+        let wt_dir = unique_worktree_dir();
+        let result = add_worktree(&repo_str, &wt_dir, "new-branch-3", Some("no-such-ref"));
+        assert!(result.is_err(), "invalid base should error, not panic");
+    }
 }

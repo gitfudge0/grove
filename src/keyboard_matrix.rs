@@ -30,6 +30,7 @@ fn sample_modal(kind: ModalKind) -> Modal {
             title: "t".into(),
             buffer: String::new(),
             note: None,
+            base: BaseBranchState::default(),
         },
         ModalKind::Confirm => Modal::Confirm {
             title: "t".into(),

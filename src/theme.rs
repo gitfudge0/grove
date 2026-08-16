@@ -125,10 +125,17 @@ pub fn CYAN() -> Hsla {
 pub fn MAGENTA() -> Hsla {
     theme::with_current(|t| ic(t.magenta)).into()
 }
-/// Drawn outside a focused control's own 1px magenta border. Light themes get a stronger alpha (0.35 vs 0.25) or the same wash disappears on a near-white surface.
-pub fn FOCUS_RING() -> Hsla {
-    let a = theme::with_current(|t| if is_dark_of(t) { 0.25 } else { 0.35 });
-    alpha(MAGENTA(), a)
+/// Pushes the one gpui-component colour Grove actually renders into that crate's
+/// own global theme.
+///
+/// `Input` draws its placeholder in `cx.theme().muted_foreground` — gpui-component's
+/// palette, not Grove's — while a real value inherits `text_style.color` (`FG()`,
+/// set on `panel_surface`). Left unsynced, a placeholder would sit at a fixed
+/// third-party grey that ignores all 32 bundled themes, and the
+/// placeholder-vs-value distinction §14 relies on would be whatever that grey
+/// happened to look like. Called at startup and on every theme change.
+pub fn sync_component_theme(cx: &mut gpui::App) {
+    gpui_component::Theme::global_mut(cx).muted_foreground = FG_MUTE();
 }
 
 pub fn GREEN() -> Hsla {
@@ -307,6 +314,7 @@ impl ThemeState {
     pub fn set_by_name(cx: &mut gpui::App, name: &str) {
         if grove_core::theme::set_by_name(name) {
             cx.update_global::<Self, _>(|this, _| this.generation += 1);
+            sync_component_theme(cx);
             cx.refresh_windows();
         }
     }
@@ -490,6 +498,12 @@ mod tests {
     /// AMBER is `mix(yellow, red, 0.25)`, checked against every bundled theme.
     #[test]
     fn amber_sits_between_yellow_and_red() {
+        // Reads the live accessors below, so it must serialize against the tests
+        // that swap the active theme (pre-existing race; the lock is the file's
+        // established guard).
+        let _lock = ACTIVE_THEME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(theme::BUILTINS.len() > 30, "expected the full bundled set");
         for t in theme::BUILTINS {
             let (y, r) = (yellow_of(t), red_of(t));
@@ -526,6 +540,12 @@ mod tests {
     /// Chrome stack: strip is darkest, then rail, then body — checked on every bundled theme, including light.
     #[test]
     fn chrome_surfaces_get_progressively_darker() {
+        // Reads the live accessors below, so it must serialize against the tests
+        // that swap the active theme (pre-existing race; the lock is the file's
+        // established guard).
+        let _lock = ACTIVE_THEME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(theme::BUILTINS.len() > 30, "expected the full bundled set");
         for t in theme::BUILTINS {
             let (strip, rail, bg) = (
@@ -546,48 +566,6 @@ mod tests {
         }
         assert!(lum(BG_STRIP()) < lum(BG_RAIL()));
         assert!(lum(BG_RAIL()) < lum(BG()));
-    }
-
-    /// FOCUS_RING must be hue/sat/lightness-identical to MAGENTA, alpha exactly 0.25 dark / 0.35 light.
-    #[test]
-    fn focus_ring_derives_from_magenta_at_the_theme_relative_alpha() {
-        assert!(theme::BUILTINS.len() > 30, "expected the full bundled set");
-        let _lock = ACTIVE_THEME_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _guard = ActiveThemeGuard::capture();
-
-        let (mut saw_dark, mut saw_light) = (0u32, 0u32);
-        for t in theme::BUILTINS {
-            // Built from the theme's raw magenta, independent of the live accessor.
-            let m: Hsla = magenta_of(t).into();
-            let want_a = if is_dark_of(t) { 0.25 } else { 0.35 };
-            let expected = alpha(m, want_a);
-
-            theme::set(t.clone());
-            let live = FOCUS_RING();
-
-            assert_eq!(
-                (live.h, live.s, live.l),
-                (expected.h, expected.s, expected.l),
-                "theme '{}': FOCUS_RING hue/sat/lightness drifted from MAGENTA's",
-                t.name
-            );
-            assert!(
-                (live.a - want_a).abs() < 1e-6,
-                "theme '{}': FOCUS_RING alpha {} != expected {want_a} ({})",
-                t.name,
-                live.a,
-                if is_dark_of(t) { "dark" } else { "light" }
-            );
-            if is_dark_of(t) {
-                saw_dark += 1;
-            } else {
-                saw_light += 1;
-            }
-        }
-        assert!(saw_dark > 0, "no dark theme was exercised");
-        assert!(saw_light > 0, "no light theme was exercised");
     }
 
     /// PANEL_SHADOW's alpha and geometry (Y/BLUR) must both be strictly larger on dark, or a light panel inherits a dark-theme shadow.

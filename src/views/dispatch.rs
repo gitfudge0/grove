@@ -19,6 +19,10 @@ pub enum ModalClick {
     DeleteArchived(usize),
     /// AgentPicker: click a row, then Enter or click again to start.
     SelectRow(usize),
+    /// New-worktree prompt: open/close the Base branch picker.
+    BaseDropdownToggle,
+    /// New-worktree prompt: pick the n-th *filtered* branch row.
+    BaseSelect(usize),
     Submit,
     ToggleDefaultAgent,
     /// ThemePicker.

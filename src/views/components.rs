@@ -23,8 +23,6 @@ pub(crate) struct DividerDrag {
     pub(crate) start_width: f32,
 }
 
-const FOCUS_RING_W: f32 = 2.0;
-
 /// [`modal_header_slotted`]'s close-button id when a caller passes none.
 const DEFAULT_CLOSE_ID: &str = "modal-close";
 
@@ -378,14 +376,17 @@ pub fn click_checkbox(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowDensity {
     Manager,
-    /// A row inside a bordered [`card`]: full-bleed square fill, since a rounded fill inset from the card edge reads as a floating second surface.
+    /// A row inside a bordered [`card`] that brings its own padding — the diff tree and the session card, which are denser than a list row.
     Card,
+    /// [`Card`](RowDensity::Card) at list-row metrics: carries `ROW_PX`/`ROW_PY`/`ROW_MIN_H` itself, so a selection row never hand-repeats them.
+    CardPadded,
 }
 
 impl RowDensity {
     fn px(self) -> f32 {
         match self {
             RowDensity::Manager | RowDensity::Card => SPACE_XL,
+            RowDensity::CardPadded => ROW_PX,
         }
     }
 
@@ -393,13 +394,22 @@ impl RowDensity {
         match self {
             RowDensity::Manager => Some(SPACE_MD),
             RowDensity::Card => None,
+            RowDensity::CardPadded => Some(ROW_PY),
         }
     }
 
     fn radius(self) -> Option<f32> {
         match self {
             RowDensity::Manager => Some(RADIUS_GROUP),
-            RowDensity::Card => None,
+            RowDensity::Card | RowDensity::CardPadded => None,
+        }
+    }
+
+    /// A floor, never a pinned height (§8.1).
+    fn min_h(self) -> Option<f32> {
+        match self {
+            RowDensity::Manager | RowDensity::Card => None,
+            RowDensity::CardPadded => Some(ROW_MIN_H),
         }
     }
 }
@@ -440,6 +450,10 @@ pub fn click_row_on(
         .map(|d| match density.py() {
             Some(py) => d.py(rpx(py)),
             None => d.w_full(),
+        })
+        .map(|d| match density.min_h() {
+            Some(h) => d.min_h(rpx(h)).w_full(),
+            None => d,
         })
         .map(|d| match density.radius() {
             Some(r) => d.rounded(rpx(r)),
@@ -572,7 +586,6 @@ pub fn modal_body(content: impl IntoElement) -> Div {
         .pb(rpx(SPACE_3XL))
         .flex()
         .flex_col()
-        .gap(rpx(SPACE_XL))
         .child(content)
 }
 
@@ -775,13 +788,19 @@ pub fn flat_text_btn_tinted(
         })
 }
 
-/// A boxed shell with a `BoxShadow` focus ring, since gpui's `Div` has no outline primitive.
+/// The app-wide text-field shell: padding, radius, mono type — and no paint of
+/// its own. No border, no fill, no ring, in any state; the field bleeds into
+/// whatever card, panel or screen hosts it.
+///
+/// It therefore has no focus state to draw. Focus is carried by the caret plus
+/// the row label's tint (`LabelTone`, §14) — see DESIGN.md's named §2.3
+/// exception.
 ///
 /// **Caller contract** (still load bearing). The wrapped `Input` must be
 /// built with its own insets zeroed and its width claimed, verbatim:
 ///
 /// ```ignore
-/// field_box(focused).child(
+/// field_box().child(
 ///     Input::new(state)
 ///         .appearance(false)
 ///         .pl(px(0.0))
@@ -792,36 +811,17 @@ pub fn flat_text_btn_tinted(
 /// ```
 ///
 /// `Input` applies its own padding regardless of `.appearance(false)` — leave it unzeroed and the field's left edge goes out of true.
-///
-/// [`BG_STRIP`]: crate::theme::BG_STRIP
-/// [`BORDER_SOFT`]: crate::theme::BORDER_SOFT
-/// [`FOCUS_RING`]: crate::theme::FOCUS_RING
-pub fn field_box(focused: bool) -> Div {
+pub fn field_box() -> Div {
     div()
         .w_full()
         .min_w_0()
         .flex()
         .items_center()
         .overflow_hidden()
-        .px(rpx(FIELD_PX))
+        // No horizontal inset: with nothing painted, `px` would only push the
+        // field's text out of line with the column it shares.
         .py(rpx(FIELD_PY))
         .rounded(rpx(RADIUS_GROUP))
-        .bg(c::BG_STRIP())
-        .border_1()
-        .border_color(if focused {
-            c::MAGENTA()
-        } else {
-            c::BORDER_SOFT()
-        })
-        .when(focused, |d| {
-            d.shadow(vec![gpui::BoxShadow {
-                color: c::FOCUS_RING(),
-                offset: gpui::point(px(0.0), px(0.0)),
-                blur_radius: px(0.0),
-                spread_radius: px(FOCUS_RING_W),
-                inset: false,
-            }])
-        })
         .font(gpui::font(MONO_FAMILY))
         .text_size(rpx(TEXT_BODY))
 }

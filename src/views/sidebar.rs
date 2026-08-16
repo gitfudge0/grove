@@ -241,6 +241,8 @@ impl Sidebar {
                         title: "New worktree".into(),
                         buffer: String::new(),
                         note: None,
+                        // Seeded empty; `ModalLayer::open` kicks the background branch listing.
+                        base: crate::modal::BaseBranchState::default(),
                     },
                     cx,
                 );

@@ -811,8 +811,8 @@ fn r12_every_text_field_keeps_the_zeroed_inset_input_contract() {
          .appearance(false).pl(px(0.0)).pr(px(0.0)).py(px(0.0)).w_full() — \
          Input applies its own input_px/input_py padding regardless of \
          .appearance(false), and a missing .appearance(false) draws the \
-         third-party widget's own border inside field_box's new box, a \
-         double border no other rule can see.",
+         third-party widget's own border and fill inside field_box, which \
+         deliberately paints neither, reintroducing exactly what §14 removed.",
         hits,
     );
 }
@@ -833,11 +833,12 @@ fn r13_field_underline_is_gone_and_cannot_come_back() {
     report(
         "R13 field_underline is gone and cannot come back",
         "plan.md §1",
-        "field_underline retired in favour of field_box's boxed-plus-\
-         focus-ring field (variant C1c). The identifier must not appear \
-         anywhere in the view layer outside a comment — not even as a \
-         dangling doc-comment reference to a function that no longer \
-         exists.",
+        "field_underline retired in favour of field_box, which now paints \
+         nothing at all per §14 (it was the boxed-plus-focus-ring variant C1c \
+         when the rule was written; the retirement stands either way). The \
+         identifier must not appear anywhere in the view layer outside a \
+         comment — not even as a dangling doc-comment reference to a function \
+         that no longer exists.",
         hits,
     );
 }

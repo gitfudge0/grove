@@ -141,7 +141,7 @@ fn add_worktree_appears_in_listing_and_remove_worktree_makes_it_disappear() {
     let root = worktrees_root().expect("worktrees_root");
     let _guard = WorktreeRootGuard(root.join(&project_name));
 
-    let dest = add_worktree(repo_str, &project_name, "feature-x").expect("add_worktree");
+    let dest = add_worktree(repo_str, &project_name, "feature-x", None).expect("add_worktree");
 
     let after_add = list_worktrees(repo_str);
     assert!(
@@ -242,7 +242,7 @@ fn worktree_owner_repo_reports_the_owning_main_checkout() {
     let root = worktrees_root().expect("worktrees_root");
     let _guard = WorktreeRootGuard(root.join(&dir_key));
 
-    let dest = add_worktree(repo_str, &dir_key, "feature-x").expect("add_worktree");
+    let dest = add_worktree(repo_str, &dir_key, "feature-x", None).expect("add_worktree");
 
     let owner = worktree_owner_repo(&dest).expect("worktree_owner_repo on a real worktree");
     let canon = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());

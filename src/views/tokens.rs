@@ -50,10 +50,10 @@ pub const RADIUS_FULL: f32 = 999.0;
 /// The theme-swatch corner, below [`RADIUS_CONTROL`] — a 10px chip at that radius reads as a circle.
 pub const SWATCH_RADIUS: f32 = 2.0;
 
-/// A boxed field's horizontal padding, both edges.
-pub const FIELD_PX: f32 = SPACE_XL;
-/// A boxed field's vertical padding; measures ~22px tall with its text and border, one notch above [`CONTROL_H`].
-pub const FIELD_PY: f32 = 2.0;
+/// A field's vertical padding — the field paints nothing, so this only sets the
+/// text's line box, keeping it at ~22px, one notch above [`CONTROL_H`], so a row
+/// hosting a field is the same height as one hosting a value.
+pub const FIELD_PY: f32 = 3.0;
 
 /// A panel shadow's vertical offset on dark themes; paired with `crate::theme::PANEL_SHADOW`.
 pub const PANEL_SHADOW_Y: f32 = 12.0;
