@@ -5,6 +5,222 @@
 
 use std::time::{Duration, Instant};
 
+/// The axis a grid boundary divides. `Columns` moves left/right; `Rows` moves up/down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GridAxis {
+    Columns,
+    Rows,
+}
+
+/// A stable address for one split in the column-first grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridBoundary {
+    pub axis: GridAxis,
+    pub boundary: usize,
+    /// Set only for a row split, because each column owns independent row weights.
+    pub column: Option<usize>,
+}
+
+/// One weighted region in physical or logical pixel space.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WeightedSpan {
+    pub start: f32,
+    pub size: f32,
+}
+
+/// Used when a caller cannot supply a trustworthy tile minimum. This is positional grid geometry,
+/// so it stays in the module that owns the calculation rather than joining the shared token scale.
+pub const MIN_REGION_FALLBACK_PX: f32 = 64.0;
+
+/// Converts a tile's cell requirement and design-space overhead into an outer minimum measured in
+/// device pixels. Physical overhead covers hairlines and borders, which deliberately do not scale
+/// with the application's rem zoom.
+#[must_use]
+pub fn tile_minimum_px(
+    cell_design_px: f32,
+    minimum_cells: f32,
+    design_overhead_px: f32,
+    physical_overhead_px: f32,
+    zoom: f32,
+) -> f32 {
+    let zoom = if zoom.is_finite() && zoom > 0.0 {
+        zoom
+    } else {
+        1.0
+    };
+    cell_design_px
+        .mul_add(minimum_cells, design_overhead_px)
+        .mul_add(zoom, physical_overhead_px.max(0.0))
+}
+
+/// The device-pixel content left after subtracting zoom-scaled design overhead and unscaled
+/// physical hairlines/borders from an outer tile span.
+#[must_use]
+pub fn usable_tile_px(
+    outer_px: f32,
+    design_overhead_px: f32,
+    physical_overhead_px: f32,
+    zoom: f32,
+) -> f32 {
+    let zoom = if zoom.is_finite() && zoom > 0.0 {
+        zoom
+    } else {
+        1.0
+    };
+    (outer_px - design_overhead_px * zoom - physical_overhead_px.max(0.0)).max(0.0)
+}
+
+/// Equal normalized weights for `count` regions.
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn equal_weights(count: usize) -> Vec<f32> {
+    if count == 0 {
+        return Vec::new();
+    }
+    vec![1.0 / count as f32; count]
+}
+
+/// Normalizes positive finite weights in place. Invalid input falls back to equal weights.
+pub fn normalize_weights(weights: &mut [f32]) {
+    if weights.is_empty() {
+        return;
+    }
+    let valid = weights
+        .iter()
+        .all(|weight| weight.is_finite() && *weight > 0.0);
+    let sum: f32 = weights.iter().sum();
+    if !valid || !sum.is_finite() || sum <= f32::EPSILON {
+        #[allow(clippy::cast_precision_loss)]
+        let equal = 1.0 / weights.len() as f32;
+        weights.fill(equal);
+        return;
+    }
+    for weight in weights {
+        *weight /= sum;
+    }
+}
+
+/// Returns the normalized minimum weight for one region. If every requested minimum cannot fit,
+/// the caller still gets a positive equal-share floor instead of a zero-sized tile.
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn minimum_weight(total_px: f32, gap_px: f32, count: usize, minimum_px: f32) -> f32 {
+    if count == 0 {
+        return 0.0;
+    }
+    let minimum_px = if minimum_px.is_finite() && minimum_px > 0.0 {
+        minimum_px
+    } else {
+        MIN_REGION_FALLBACK_PX
+    };
+    let available = (total_px - gap_px.max(0.0) * count.saturating_sub(1) as f32).max(1.0);
+    (minimum_px / available).min(1.0 / count as f32)
+}
+
+/// Transfers normalized weight across one adjacent pair while keeping the pair total fixed.
+/// `delta > 0` moves the boundary right/down, growing the region before it.
+pub fn transfer_pair(weights: &mut [f32], boundary: usize, delta: f32, minimum: f32) -> bool {
+    let Some(right) = boundary.checked_add(1) else {
+        return false;
+    };
+    if right >= weights.len() || !delta.is_finite() {
+        return false;
+    }
+    normalize_weights(weights);
+    let pair_total = weights[boundary] + weights[right];
+    let floor = minimum.max(f32::EPSILON).min(pair_total / 2.0);
+    let next_left = (weights[boundary] + delta).clamp(floor, pair_total - floor);
+    let next_right = pair_total - next_left;
+    let changed = (weights[boundary] - next_left).abs() > f32::EPSILON;
+    weights[boundary] = next_left;
+    weights[right] = next_right;
+    changed
+}
+
+/// Resets only the addressed pair to equal shares of its current pair total.
+pub fn reset_pair(weights: &mut [f32], boundary: usize) -> bool {
+    let Some(right) = boundary.checked_add(1) else {
+        return false;
+    };
+    if right >= weights.len() {
+        return false;
+    }
+    normalize_weights(weights);
+    let equal = f32::midpoint(weights[boundary], weights[right]);
+    let changed = (weights[boundary] - equal).abs() > f32::EPSILON;
+    weights[boundary] = equal;
+    weights[right] = equal;
+    changed
+}
+
+/// Converts normalized weights into exact spans after reserving the 1px gaps.
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn weighted_spans(total_px: f32, gap_px: f32, weights: &[f32]) -> Vec<WeightedSpan> {
+    if weights.is_empty() {
+        return Vec::new();
+    }
+    let mut normalized = weights.to_vec();
+    normalize_weights(&mut normalized);
+    let gap = gap_px.max(0.0);
+    let available = (total_px - gap * weights.len().saturating_sub(1) as f32).max(0.0);
+    let mut cursor = 0.0;
+    normalized
+        .into_iter()
+        .map(|weight| {
+            let span = WeightedSpan {
+                start: cursor,
+                size: available * weight,
+            };
+            cursor += span.size + gap;
+            span
+        })
+        .collect()
+}
+
+/// Picks the boundary next to a tile in the requested direction.
+#[must_use]
+pub fn boundary_adjacent_to_tile(
+    tile_idx: usize,
+    tile_count: usize,
+    dx: i32,
+    dy: i32,
+) -> Option<GridBoundary> {
+    if tile_idx >= tile_count || (dx == 0) == (dy == 0) {
+        return None;
+    }
+    let (cols, _) = grid_layout(tile_count);
+    let column = tile_idx % cols;
+    let row = tile_idx / cols;
+    if dx < 0 && column > 0 {
+        Some(GridBoundary {
+            axis: GridAxis::Columns,
+            boundary: column - 1,
+            column: None,
+        })
+    } else if dx > 0 && column + 1 < cols {
+        Some(GridBoundary {
+            axis: GridAxis::Columns,
+            boundary: column,
+            column: None,
+        })
+    } else if dy < 0 && row > 0 {
+        Some(GridBoundary {
+            axis: GridAxis::Rows,
+            boundary: row - 1,
+            column: Some(column),
+        })
+    } else if dy > 0 && tile_idx + cols < tile_count {
+        Some(GridBoundary {
+            axis: GridAxis::Rows,
+            boundary: row,
+            column: Some(column),
+        })
+    } else {
+        None
+    }
+}
+
 /// Port of `src/gui/metrics.rs:325-330`.
 #[must_use]
 pub fn grid_layout(n: usize) -> (usize, usize) {
@@ -57,6 +273,8 @@ pub fn grid_neighbor(i: usize, n: usize, dx: i32, dy: i32) -> Option<usize> {
 
 /// Equal-cell approximation used only to size the slide animation's draw offset (it settles exactly at `t = 1`). Port of `src/gui/metrics.rs:367-375`.
 #[must_use]
+#[allow(dead_code)]
+// Kept as the stable equal-grid approximation for callers that do not have a `GridSizing` snapshot.
 #[allow(clippy::cast_precision_loss)]
 pub fn grid_tile_size(win_w: f32, win_h: f32, zoom: f32, chrome_h: f32, n: usize) -> (f32, f32) {
     let (cols, rows) = grid_layout(n);
@@ -315,5 +533,91 @@ mod tests {
         assert_eq!(slide_offsets(0, 2, 4), [(2, 0, -1), (0, 0, 1)]);
         // Diagonal swap 0 <-> 3.
         assert_eq!(slide_offsets(0, 3, 4), [(3, -1, -1), (0, 1, 1)]);
+    }
+
+    #[test]
+    fn equal_and_invalid_weights_normalize_without_zero_regions() {
+        assert_eq!(equal_weights(0), Vec::<f32>::new());
+        assert_eq!(equal_weights(2), vec![0.5, 0.5]);
+        let mut invalid = vec![f32::NAN, 0.0, -1.0];
+        normalize_weights(&mut invalid);
+        for weight in invalid {
+            assert!((weight - 1.0 / 3.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn pair_transfer_preserves_sum_and_clamps_both_tiles() {
+        let mut weights = vec![0.25, 0.5, 0.25];
+        assert!(transfer_pair(&mut weights, 0, 0.4, 0.2));
+        assert!((weights[0] - 0.55).abs() < 1e-6);
+        assert!((weights[1] - 0.2).abs() < 1e-6);
+        assert!((weights.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        assert!(!transfer_pair(&mut weights, 8, 0.1, 0.2));
+    }
+
+    #[test]
+    fn reset_changes_only_the_addressed_pair() {
+        let mut weights = vec![0.2, 0.5, 0.3];
+        assert!(reset_pair(&mut weights, 0));
+        assert!((weights[0] - 0.35).abs() < 1e-6);
+        assert!((weights[1] - 0.35).abs() < 1e-6);
+        assert!((weights[2] - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn weighted_spans_reserve_hairline_gaps() {
+        let spans = weighted_spans(101.0, 1.0, &[0.25, 0.75]);
+        assert_eq!(spans.len(), 2);
+        assert!((spans[0].start - 0.0).abs() < 1e-6);
+        assert!((spans[0].size - 25.0).abs() < 1e-6);
+        assert!((spans[1].start - 26.0).abs() < 1e-6);
+        assert!((spans[1].size - 75.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn weighted_spans_keep_seams_one_physical_pixel_across_zoom_levels() {
+        for zoom in [0.6, 1.0, 1.75] {
+            let spans = weighted_spans(200.0 * zoom, 1.0, &[0.4, 0.6]);
+            let gap = spans[1].start - (spans[0].start + spans[0].size);
+            assert!((gap - 1.0).abs() < 1e-5, "zoom {zoom}: gap {gap}");
+        }
+    }
+
+    #[test]
+    fn minimum_weight_uses_fallback_and_degrades_to_equal_on_tiny_spans() {
+        assert!((minimum_weight(400.0, 1.0, 2, 100.0) - 100.0 / 399.0).abs() < 1e-6);
+        assert_eq!(minimum_weight(50.0, 1.0, 2, 100.0), 0.5);
+        assert!(minimum_weight(400.0, 1.0, 2, f32::NAN) > 0.0);
+    }
+
+    #[test]
+    fn tile_minimum_keeps_scaled_content_and_physical_hairlines_in_separate_spaces() {
+        for zoom in [0.6, 1.0, 1.75] {
+            let minimum = tile_minimum_px(8.0, 10.0, 32.0, 3.0, zoom);
+            let usable = usable_tile_px(minimum, 32.0, 3.0, zoom);
+            assert!((usable - 80.0 * zoom).abs() < 1e-5, "zoom {zoom}");
+        }
+    }
+
+    #[test]
+    fn boundary_selection_respects_ragged_columns() {
+        assert_eq!(
+            boundary_adjacent_to_tile(0, 3, 1, 0),
+            Some(GridBoundary {
+                axis: GridAxis::Columns,
+                boundary: 0,
+                column: None,
+            })
+        );
+        assert_eq!(boundary_adjacent_to_tile(1, 3, 0, 1), None);
+        assert_eq!(
+            boundary_adjacent_to_tile(2, 3, 0, -1),
+            Some(GridBoundary {
+                axis: GridAxis::Rows,
+                boundary: 0,
+                column: Some(0),
+            })
+        );
     }
 }

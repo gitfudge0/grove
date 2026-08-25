@@ -1,9 +1,14 @@
 //! The root view: the sidebar rail, the divider, and the body showing whatever `WorkspaceState` says is active.
 
 use crate::views::rpx;
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
-use gpui::{div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, Window};
+use gpui::{
+    div, prelude::*, px, AnyElement, App, Context, Element, Entity, FocusHandle, Focusable, Hitbox,
+    IntoElement, MouseButton, Pixels, Window,
+};
 
 use crate::activity::ActivityState;
 use crate::entities::activity_store::ActivityStore;
@@ -19,6 +24,7 @@ use crate::entities::workspace_state::{
     RAIL_W,
 };
 use crate::fonts::{MONO_FAMILY, UI_FAMILY};
+use crate::grid::{GridAxis, GridBoundary};
 use crate::keymap;
 use crate::settings::SettingsState;
 use crate::theme as c;
@@ -53,6 +59,9 @@ pub struct Workspace {
     /// Also carries the previous press for the 350ms double-click reset (`layout.rs:162-197`).
     term_panel_dragging: bool,
     last_term_divider_press: Option<std::time::Instant>,
+    /// Published during prepaint so a divider may capture the root even though it stops the
+    /// mouse-down event before it reaches the root listener.
+    pointer_capture_hitbox: Rc<Cell<Option<gpui::HitboxId>>>,
     logical_win_w: f32,
     /// Focus is deferred to the first frame since `window.focus` needs a `&mut Window`, unavailable in `new`.
     focused_once: bool,
@@ -82,6 +91,173 @@ impl Focusable for Workspace {
 /// Token space → device pixels: `rem_size = px(REM_BASE * zoom)`, so a token of `v` paints at `v * zoom`.
 pub(crate) fn token_px(v: f32, window: &Window) -> f32 {
     f32::from(window.rem_size()) * (v / zoom::REM_BASE)
+}
+
+/// Worst-case outer tile floor in physical pixels. Waiting borders are included so switching a
+/// tile into the waiting state cannot steal a PTY row or column at an existing clamp boundary.
+fn grid_tile_minimum_px(axis: GridAxis, zoom: f32) -> f32 {
+    let physical_border = 2.0 * grid::WAITING_BORDER_PX;
+    let (cell, cells, design_overhead, physical_overhead) = match axis {
+        GridAxis::Columns => (
+            crate::fonts::CELL_W,
+            grid::GRID_MIN_PTY_COLS,
+            grid::TILE_PTY_PAD_W,
+            physical_border,
+        ),
+        GridAxis::Rows => (
+            crate::fonts::CELL_H,
+            grid::GRID_MIN_PTY_ROWS,
+            grid::TILE_HEAD_H + grid::TILE_PTY_PAD_H,
+            physical_border + grid::TILE_HEADER_DIVIDER_PX,
+        ),
+    };
+    let minimum = crate::grid::tile_minimum_px(
+        cell,
+        cells,
+        design_overhead,
+        physical_overhead + grid::GRID_TILE_SNAP_GUARD_PX,
+        zoom,
+    );
+    debug_assert!(
+        crate::grid::usable_tile_px(minimum, design_overhead, physical_overhead, zoom)
+            >= cell * cells * zoom
+    );
+    minimum
+}
+
+/// Owns the workspace-wide pointer hitbox. The pinned GPUI `div` listener API hides its hitbox id,
+/// so this thin element is the smallest place that can use `Window::capture_pointer` directly.
+struct WorkspacePointerRegion {
+    workspace: Entity<Workspace>,
+    capture_hitbox: Rc<Cell<Option<gpui::HitboxId>>>,
+    child: AnyElement,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PointerCaptureTransition<T> {
+    Rebind(T),
+    Release,
+    Leave,
+}
+
+fn pointer_capture_transition<T: Copy + Eq>(
+    grid_pointer_active: bool,
+    previous_frame: Option<T>,
+    current_frame: T,
+    captured: Option<T>,
+) -> PointerCaptureTransition<T> {
+    if grid_pointer_active {
+        PointerCaptureTransition::Rebind(current_frame)
+    } else if previous_frame.is_some() && captured == previous_frame {
+        PointerCaptureTransition::Release
+    } else {
+        PointerCaptureTransition::Leave
+    }
+}
+
+impl IntoElement for WorkspacePointerRegion {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for WorkspacePointerRegion {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = Hitbox;
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
+        let layout_id = self.child.request_layout(window, cx);
+        (
+            layout_id,
+            std::mem::replace(&mut self.child, div().into_any_element()),
+        )
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<Pixels>,
+        child: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        // HitboxId is frame-local: the notify caused by a press redraws and replaces the id that
+        // the press handler captured. Rebind to this frame's region before its listeners paint so
+        // outside move/up events continue routing to the current listener. The pinned GPUI
+        // capture API has no paint-phase restriction, so prepaint is a supported call site.
+        let hitbox = window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal);
+        let previous_frame = self.capture_hitbox.replace(Some(hitbox.id));
+        let grid_pointer_active = {
+            let workspace = self.workspace.read(cx);
+            workspace.state.read(cx).grid_pointer_active()
+        };
+        match pointer_capture_transition(
+            grid_pointer_active,
+            previous_frame,
+            hitbox.id,
+            window.captured_hitbox(),
+        ) {
+            PointerCaptureTransition::Rebind(target) => window.capture_pointer(target),
+            PointerCaptureTransition::Release => window.release_pointer(),
+            PointerCaptureTransition::Leave => {}
+        }
+        child.prepaint(window, cx);
+        hitbox
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<Pixels>,
+        child: &mut Self::RequestLayoutState,
+        hitbox: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let hitbox_id = hitbox.id;
+        let workspace = self.workspace.clone();
+        window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
+            if phase.bubble() && hitbox_id.is_hovered(window) {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.on_root_mouse_move(
+                        f32::from(event.position.x),
+                        f32::from(event.position.y),
+                        event.dragging(),
+                        cx,
+                    );
+                });
+            }
+        });
+
+        let hitbox_id = hitbox.id;
+        let workspace = self.workspace.clone();
+        window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, window, cx| {
+            if phase.bubble() && event.button == MouseButton::Left && hitbox_id.is_hovered(window) {
+                workspace.update(cx, Workspace::on_root_mouse_up);
+                window.release_pointer();
+            }
+        });
+
+        child.paint(window, cx);
+    }
 }
 
 /// The advance width of `text` as `components::ui`/`mono` would paint it.
@@ -273,6 +449,7 @@ impl Workspace {
             panel_views: HashMap::new(),
             term_panel_dragging: false,
             last_term_divider_press: None,
+            pointer_capture_hitbox: Rc::new(Cell::new(None)),
             logical_win_w: 1280.0,
             focused_once: false,
             last_body_focused: None,
@@ -585,6 +762,47 @@ impl Workspace {
         }
     }
 
+    fn grid_resize_key(
+        &mut self,
+        action: &keymap::GridResize,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let boundary = {
+            let state = self.state.read(cx);
+            state
+                .grid_focused()
+                .and_then(|id| {
+                    state
+                        .tile_order()
+                        .iter()
+                        .position(|candidate| *candidate == id)
+                })
+                .and_then(|tile| {
+                    crate::grid::boundary_adjacent_to_tile(
+                        tile,
+                        state.tile_order().len(),
+                        action.dx,
+                        action.dy,
+                    )
+                })
+        };
+        let Some(boundary) = boundary else {
+            return;
+        };
+        let (_, minimum) = self.grid_resize_metrics(boundary, window, cx);
+        let step = if action.fine {
+            crate::entities::workspace_state::GRID_RESIZE_FINE_STEP_PCT
+        } else {
+            crate::entities::workspace_state::GRID_RESIZE_STEP_PCT
+        };
+        self.state.update(cx, |state, cx| {
+            if state.grid_resize_step(action.dx, action.dy, step, minimum) {
+                cx.notify();
+            }
+        });
+    }
+
     /// `mod+N` selects the Nth visible session; out of range is a no-op, not a clamp (`sessions.rs:394-407`).
     fn select_session(
         &mut self,
@@ -686,6 +904,11 @@ impl Workspace {
                     s.grid_drag_start(idx);
                     cx.notify();
                 });
+                if self.state.read(cx).grid_pointer_active() {
+                    if let Some(hitbox) = self.pointer_capture_hitbox.get() {
+                        window.capture_pointer(hitbox);
+                    }
+                }
                 // Carried amendment 7: focusing a tile focuses its view.
                 if let Some(view) = id.and_then(|id| self.views.get(&id)).cloned() {
                     let handle = view.read(cx).focus_handle(cx);
@@ -700,6 +923,35 @@ impl Workspace {
                 s.grid_drag_hover(idx);
                 cx.notify();
             }),
+            GridAction::ResizePress {
+                boundary,
+                x,
+                y,
+                click_count,
+            } => {
+                if click_count >= 2 {
+                    self.state.update(cx, |state, cx| {
+                        state.reset_grid_boundary(boundary);
+                        cx.notify();
+                    });
+                    return;
+                }
+                let coordinate = match boundary.axis {
+                    GridAxis::Columns => x,
+                    GridAxis::Rows => y,
+                };
+                let (span, minimum) = self.grid_resize_metrics(boundary, window, cx);
+                let started = self.state.update(cx, |state, cx| {
+                    let started = state.grid_resize_drag_start(boundary, coordinate, span, minimum);
+                    cx.notify();
+                    started
+                });
+                if started {
+                    if let Some(hitbox) = self.pointer_capture_hitbox.get() {
+                        window.capture_pointer(hitbox);
+                    }
+                }
+            }
             GridAction::TileZen(id) => {
                 self.state.update(cx, |s, cx| {
                     s.tile_zen(id);
@@ -982,24 +1234,69 @@ impl Workspace {
     }
 
     /// Listened for at the root so the pointer can leave the 6px zone (`layout.rs:178-197`).
-    fn on_root_mouse_move(&mut self, x: f32, cx: &mut Context<Self>) {
-        if !self.term_panel_dragging {
+    fn grid_resize_metrics(&self, boundary: GridBoundary, window: &Window, cx: &App) -> (f32, f32) {
+        let zoom = cx.global::<ZoomState>().zoom.max(0.1);
+        let viewport = window.viewport_size();
+        let (total, count, minimum) = match boundary.axis {
+            GridAxis::Columns => (
+                f32::from(viewport.width),
+                self.state.read(cx).grid_sizing().column_weights().len(),
+                grid_tile_minimum_px(GridAxis::Columns, zoom),
+            ),
+            GridAxis::Rows => {
+                let total =
+                    f32::from(viewport.height) - (appbar::APPBAR_H + statusbar::STATUS_H) * zoom;
+                let count = boundary.column.map_or(0, |column| {
+                    self.state.read(cx).grid_sizing().row_weights(column).len()
+                });
+                let minimum = grid_tile_minimum_px(GridAxis::Rows, zoom);
+                (total, count, minimum)
+            }
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let gap_total = count.saturating_sub(1) as f32 * grid::GRID_SEAM_PX;
+        (
+            (total - gap_total).max(1.0),
+            crate::grid::minimum_weight(total, grid::GRID_SEAM_PX, count, minimum),
+        )
+    }
+
+    /// Root-owned continuation keeps both panel and grid resize gestures alive outside a 6px hit zone.
+    fn on_root_mouse_move(&mut self, x: f32, y: f32, left_pressed: bool, cx: &mut Context<Self>) {
+        if !left_pressed {
+            self.term_panel_dragging = false;
+            self.state.update(cx, |state, cx| {
+                if state.grid_pointer_cancel() {
+                    cx.notify();
+                }
+            });
             return;
         }
-        let (win_w, sidebar_w) = (self.logical_win_w, self.state.read(cx).sidebar_width());
+        if self.term_panel_dragging {
+            let zoom = cx.global::<ZoomState>().zoom.max(0.1);
+            let (win_w, sidebar_w) = (self.logical_win_w, self.state.read(cx).sidebar_width());
+            self.state.update(cx, |s, cx| {
+                s.set_term_panel_portion(term_portion_for_cursor(x / zoom, win_w, sidebar_w));
+                cx.notify();
+            });
+        }
         self.state.update(cx, |s, cx| {
-            s.set_term_panel_portion(term_portion_for_cursor(x, win_w, sidebar_w));
-            cx.notify();
+            if s.grid_resize_drag_update(x, y) {
+                cx.notify();
+            }
         });
     }
 
     fn on_root_mouse_up(&mut self, cx: &mut Context<Self>) {
         self.term_panel_dragging = false;
-        self.state.update(cx, |s, cx| {
-            s.grid_drag_end();
+        let reordered = self.state.update(cx, |s, cx| {
+            let reordered = s.grid_pointer_end();
             cx.notify();
+            reordered
         });
-        self.persist_grid_order(cx);
+        if reordered {
+            self.persist_grid_order(cx);
+        }
     }
 
     /// Native, not tmux-pinned: convenience shells, so `attention::prepare` returns `None`.
@@ -1408,7 +1705,41 @@ impl Workspace {
                 }
                 self.spawn_wt_script(wt_path, script, cx);
             }
-            ModalEvent::WorktreeAdded | ModalEvent::TreeInvalidated => {
+            ModalEvent::WorktreeAdded { path } => {
+                let idx = self.state.read(cx).proj_idx();
+                let active = cx
+                    .global::<SettingsState>()
+                    .store
+                    .projects
+                    .get(idx)
+                    .map(|p| p.path.clone());
+                self.tree.clone().update(cx, |t, cx| {
+                    t.rebuild_wt_cache();
+                    if let Some(path) = active {
+                        t.set_active_worktrees(idx, grove_core::git::list_worktrees(&path));
+                    }
+                    cx.notify();
+                });
+                let snap = self.snapshot(cx);
+                if let Some(wt) = snap
+                    .projects
+                    .iter()
+                    .find(|project| project.idx == idx)
+                    .and_then(|project| {
+                        project
+                            .worktrees
+                            .iter()
+                            .position(|worktree| worktree.path == *path)
+                    })
+                {
+                    self.state.update(cx, |s, cx| {
+                        s.focus_added_worktree(idx, wt, &snap);
+                        cx.notify();
+                    });
+                }
+                cx.notify();
+            }
+            ModalEvent::TreeInvalidated => {
                 let idx = self.state.read(cx).proj_idx();
                 let active = cx
                     .global::<SettingsState>()
@@ -1447,22 +1778,22 @@ impl Workspace {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<TileData> {
-        let (order, focused, pending_kill, sidebar_w) = {
+        let (order, focused, pending_kill, sizing) = {
             let ws = self.state.read(cx);
             (
                 ws.tile_order().to_vec(),
                 ws.grid_focused(),
                 ws.pending_kill(),
-                ws.sidebar_width(),
+                ws.grid_sizing().clone(),
             )
         };
-        // Unlike sidebar-blind `GridCtx::tile_size`, subtract the sidebar and `grid`'s inter-column device-px gap first.
-        let tile_w_px = {
-            let (cols, _) = crate::grid::grid_layout(order.len());
-            let cols_f = f32::from(u16::try_from(cols).unwrap_or(u16::MAX));
-            let body_w = f32::from(window.viewport_size().width) - token_px(sidebar_w, window);
-            ((body_w - (cols_f - 1.0)) / cols_f).max(0.0)
-        };
+        // Grid view is full-width. Header fitting follows the same weighted column spans the renderer uses.
+        let column_spans = crate::grid::weighted_spans(
+            f32::from(window.viewport_size().width),
+            1.0,
+            sizing.column_weights(),
+        );
+        let (cols, _) = crate::grid::grid_layout(order.len());
         // A render-time memo, so it must not accumulate dead sessions.
         self.header_fits.retain(|id, _| order.contains(id));
         // Read once per frame, not per tile — same join `header_data` does, hoisted out of the loop below.
@@ -1500,6 +1831,9 @@ impl Workspace {
                 branch: segment_px(window, &branch),
                 title: segment_px(window, context.as_deref().unwrap_or_default()),
             };
+            let tile_w_px = column_spans
+                .get(tile_idx % cols)
+                .map_or(0.0, |span| span.size);
             let budget = header_budget_px(window, tile_w_px, tile_idx, waiting, agent_label);
             let fit = grid::fit_segments(budget, &seg, self.header_fits.get(&id).copied());
             self.header_fits.insert(id, fit);
@@ -1894,7 +2228,11 @@ impl Render for Workspace {
         }
 
         // While a modal is open, no screen-scoped chord fires from behind the scrim.
-        let screen_context = self.state.read(cx).screen().key_context();
+        let screen_context = if self.state.read(cx).grid_resize_mode().is_some() {
+            keymap::GRID_RESIZE_CONTEXT
+        } else {
+            self.state.read(cx).screen().key_context()
+        };
 
         let root = div()
             .track_focus(&self.focus)
@@ -1932,6 +2270,19 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &keymap::ToggleGrid, window, cx| {
                 this.toggle_grid(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &keymap::EnterGridResize, _, cx| {
+                this.state.update(cx, |state, cx| {
+                    if state.enter_grid_resize_mode() {
+                        cx.notify();
+                    }
+                });
+            }))
+            .on_action(cx.listener(|this, _: &keymap::ExitGridResize, _, cx| {
+                this.state.update(cx, |state, cx| {
+                    state.exit_grid_resize_mode();
+                    cx.notify();
+                });
+            }))
             .on_action(cx.listener(|this, _: &keymap::ToggleZen, window, cx| {
                 this.toggle_zen(window, cx);
             }))
@@ -1947,6 +2298,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, a: &keymap::GridSwap, window, cx| {
                 this.grid_move(a.dx, a.dy, true, window, cx);
             }))
+            .on_action(
+                cx.listener(|this, action: &keymap::GridResize, window, cx| {
+                    this.grid_resize_key(action, window, cx);
+                }),
+            )
             .on_action(cx.listener(|this, a: &keymap::AdjustTermPanel, _, cx| {
                 // Must `propagate` explicitly with the panel closed, or gpui swallows the key.
                 if !this.state.read(cx).term_panel_open() {
@@ -2030,16 +2386,6 @@ impl Render for Workspace {
 
         // Drag events must outlive their hit zones, and the root is the only element wide enough to deliver them.
         let root = sidebar::root_drag_listeners(&self.sidebar, root);
-        let root = root
-            .on_mouse_move(cx.listener(|this, e: &gpui::MouseMoveEvent, _, cx| {
-                // Divided back out of zoom since `logical_win_w`/sidebar width are design-px.
-                let zoom = cx.global::<ZoomState>().zoom.max(0.1);
-                this.on_root_mouse_move(f32::from(e.position.x) / zoom, cx);
-            }))
-            .on_mouse_up(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| this.on_root_mouse_up(cx)),
-            );
 
         let dispatch: appbar::Dispatch = {
             let weak = cx.entity().downgrade();
@@ -2085,6 +2431,7 @@ impl Render for Workspace {
                     .unwrap_or_else(|| crate::theme::DEFAULT_DARK_THEME.to_string()),
                 skip_permissions: store.dangerously_skip_permissions_enabled.unwrap_or(false),
                 toast: self.toast.read(cx).current().cloned(),
+                grid_resize_hint: self.state.read(cx).grid_resize_label(),
                 dispatch,
             }
         };
@@ -2104,17 +2451,14 @@ impl Render for Workspace {
                 (phase - 20.0).abs() / 20.0
             },
             tick,
-            drag: self.state.read(cx).grid_drag(),
+            drag: self.state.read(cx).grid_reorder_drag(),
+            sizing: self.state.read(cx).grid_sizing().clone(),
             slide: self.state.read(cx).grid_slide(),
-            tile_size: {
-                let n = self.state.read(cx).tile_order().len();
+            grid_size: {
                 let size = window.viewport_size();
-                crate::grid::grid_tile_size(
+                (
                     f32::from(size.width),
-                    f32::from(size.height),
-                    zoom_value,
-                    appbar::APPBAR_H + statusbar::STATUS_H,
-                    n,
+                    f32::from(size.height) - (appbar::APPBAR_H + statusbar::STATUS_H) * zoom_value,
                 )
             },
             dispatch: std::rc::Rc::clone(&grid_dispatch),
@@ -2182,7 +2526,8 @@ impl Render for Workspace {
             body_el
         };
 
-        root.flex()
+        let root = root
+            .flex()
             .flex_col()
             .relative()
             .size_full()
@@ -2211,6 +2556,13 @@ impl Render for Workspace {
             })
             // Modal layer is rendered LAST so it paints above every other layer.
             .when(modal_open, |d| d.child(self.modals.clone()))
+            .into_any_element();
+
+        WorkspacePointerRegion {
+            workspace: cx.entity(),
+            capture_hitbox: Rc::clone(&self.pointer_capture_hitbox),
+            child: root,
+        }
     }
 }
 
@@ -2340,6 +2692,76 @@ mod tests {
         assert!((statusbar::STATUS_H - 26.0).abs() < f32::EPSILON);
         assert!((session_header::SESSBAR_H - 36.0).abs() < f32::EPSILON);
         assert!((crate::views::tokens::DIVIDER_DRAG_HIT_W - 6.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn grid_resize_clamps_preserve_waiting_and_ordinary_pty_floors_at_every_zoom() {
+        for zoom in [0.6, 1.0, 1.75] {
+            for axis in [GridAxis::Columns, GridAxis::Rows] {
+                let minimum = grid_tile_minimum_px(axis, zoom);
+                // Three minimum regions' worth of room gives a non-equal clamp for this pair.
+                let total = minimum * 3.0 + grid::GRID_SEAM_PX;
+                let floor = crate::grid::minimum_weight(total, grid::GRID_SEAM_PX, 2, minimum);
+                let spans =
+                    crate::grid::weighted_spans(total, grid::GRID_SEAM_PX, &[floor, 1.0 - floor]);
+                let clamped_outer = spans[0].size;
+
+                for waiting in [false, true] {
+                    let border = if waiting {
+                        2.0 * grid::WAITING_BORDER_PX
+                    } else {
+                        0.0
+                    };
+                    let (design_overhead, physical_overhead, cell, cells) = match axis {
+                        GridAxis::Columns => (
+                            grid::TILE_PTY_PAD_W,
+                            border,
+                            crate::fonts::CELL_W,
+                            grid::GRID_MIN_PTY_COLS,
+                        ),
+                        GridAxis::Rows => (
+                            grid::TILE_HEAD_H + grid::TILE_PTY_PAD_H,
+                            border + grid::TILE_HEADER_DIVIDER_PX,
+                            crate::fonts::CELL_H,
+                            grid::GRID_MIN_PTY_ROWS,
+                        ),
+                    };
+                    let usable = crate::grid::usable_tile_px(
+                        clamped_outer,
+                        design_overhead,
+                        physical_overhead,
+                        zoom,
+                    );
+                    assert!(
+                        usable + f32::EPSILON >= cell * cells * zoom,
+                        "axis={axis:?} zoom={zoom} waiting={waiting}: {usable} usable"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn active_grid_pointer_capture_rebinds_to_each_frames_hitbox() {
+        let mut captured = None;
+        let mut previous = None;
+        for current in [41_u64, 73, 108] {
+            let transition = pointer_capture_transition(true, previous, current, captured);
+            assert_eq!(transition, PointerCaptureTransition::Rebind(current));
+            captured = Some(current);
+            previous = Some(current);
+        }
+
+        // Once state ownership ends, release only the capture this region published. A capture
+        // owned by some other hitbox must be left alone.
+        assert_eq!(
+            pointer_capture_transition(false, previous, 109, captured),
+            PointerCaptureTransition::Release
+        );
+        assert_eq!(
+            pointer_capture_transition(false, previous, 109, Some(999)),
+            PointerCaptureTransition::Leave
+        );
     }
 
     /// `compute_pty_dims` (`src/gui/metrics.rs:265-295`) reimplemented here as the oracle.

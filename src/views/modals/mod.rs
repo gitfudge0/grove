@@ -50,7 +50,9 @@ pub enum ModalEvent {
         wt_path: String,
         agent: grove_core::agent::Agent,
     },
-    WorktreeAdded,
+    WorktreeAdded {
+        path: String,
+    },
     TreeInvalidated,
     NewHomeTerminal,
     SelectSession(crate::entities::session_registry::SessionId),

@@ -37,6 +37,7 @@ pub enum GlobalShortcut {
     Settings,
     ToggleZen,
     ToggleGrid,
+    EnterGridResize,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -175,6 +176,15 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         literal: false,
     },
     ShortcutDef {
+        action: Some(GlobalShortcut::EnterGridResize),
+        triggers: &["r", "R"],
+        display_keys: "r",
+        description: "Resize grid",
+        scopes: &[Scope::Screen(Screen::Grid)],
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
         action: Some(GlobalShortcut::ToggleZen),
         triggers: &[],
         display_keys: "enter",
@@ -309,6 +319,15 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         scopes: G,
         requires_alt: false,
         literal: false,
+    },
+    ShortcutDef {
+        action: None,
+        triggers: &[],
+        display_keys: "←↓↑→ / h j k l · shift fine · enter/esc done",
+        description: "Adjust grid split in resize mode",
+        scopes: &[Scope::Screen(Screen::Grid)],
+        requires_alt: false,
+        literal: true,
     },
     ShortcutDef {
         action: Some(GlobalShortcut::ScrollHalfPage(false)),
@@ -503,6 +522,8 @@ actions!(
         NextSession,
         PrevSession,
         ToggleGrid,
+        EnterGridResize,
+        ExitGridResize,
         ToggleZen,
         Settings,
         ZoomIn,
@@ -559,6 +580,14 @@ pub struct GridSwap {
     pub dy: i32,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
+#[action(namespace = grove, no_json)]
+pub struct GridResize {
+    pub dx: i32,
+    pub dy: i32,
+    pub fine: bool,
+}
+
 /// Bound only in the workspace context (recorded ambiguity 4), so a closed panel falls through to the PTY.
 #[derive(Clone, Debug, Default, PartialEq, gpui::Action)]
 #[action(namespace = grove, no_json)]
@@ -577,6 +606,8 @@ pub const GRID_DIRECTIONS: &[(&str, i32, i32)] = &[
     ("up", 0, -1),
     ("down", 0, 1),
 ];
+
+pub const GRID_RESIZE_CONTEXT: &str = "GridResize";
 
 /// Port of `grid_swap_mods`: on macOS Alt or Shift (Cmd+Opt+H collides with OS "Hide Others"), Alt alone elsewhere.
 pub fn grid_swap_prefixes() -> Vec<String> {
@@ -606,6 +637,30 @@ fn grid_bindings() -> Vec<KeyBinding> {
             ));
         }
     }
+    out
+}
+
+fn grid_resize_bindings() -> Vec<KeyBinding> {
+    let ctx = Some(GRID_RESIZE_CONTEXT);
+    let mut out = Vec::new();
+    for &(key, dx, dy) in GRID_DIRECTIONS {
+        out.push(KeyBinding::new(
+            key,
+            GridResize {
+                dx,
+                dy,
+                fine: false,
+            },
+            ctx,
+        ));
+        out.push(KeyBinding::new(
+            &format!("shift-{key}"),
+            GridResize { dx, dy, fine: true },
+            ctx,
+        ));
+    }
+    out.push(KeyBinding::new("enter", ExitGridResize, ctx));
+    out.push(KeyBinding::new("escape", ExitGridResize, ctx));
     out
 }
 
@@ -691,6 +746,7 @@ fn binding_for(keystroke: &str, sc: GlobalShortcut, ctx: Option<&str>) -> Option
         S::NextSession => KeyBinding::new(keystroke, NextSession, ctx),
         S::PrevSession => KeyBinding::new(keystroke, PrevSession, ctx),
         S::ToggleGrid => KeyBinding::new(keystroke, ToggleGrid, ctx),
+        S::EnterGridResize => KeyBinding::new(keystroke, EnterGridResize, ctx),
         S::ToggleZen => KeyBinding::new(keystroke, ToggleZen, ctx),
         S::Settings => KeyBinding::new(keystroke, Settings, ctx),
         S::ZoomIn => KeyBinding::new(keystroke, ZoomIn, ctx),
@@ -724,6 +780,7 @@ pub fn bindings() -> Vec<KeyBinding> {
     }
     out.extend(select_session_bindings());
     out.extend(grid_bindings());
+    out.extend(grid_resize_bindings());
     out.extend(term_panel_bindings());
     out.extend(zen_focus_bindings());
     // Last, so a modal's `"… > Input"` binding out-ranks anything above on a tie.
@@ -788,6 +845,7 @@ mod tests {
         // 8 directions × (1 move + 1 swap chord per platform modifier set).
         let per_dir = 1 + grid_swap_prefixes().len();
         assert_eq!(grid_bindings().len(), GRID_DIRECTIONS.len() * per_dir);
+        assert_eq!(grid_resize_bindings().len(), GRID_DIRECTIONS.len() * 2 + 2);
         assert_eq!(term_panel_bindings().len(), 2);
         assert_eq!(zen_focus_bindings().len(), 2);
     }
@@ -810,6 +868,40 @@ mod tests {
         assert_eq!(by_key("up"), by_key("k"));
         assert_eq!(by_key("down"), by_key("j"));
         assert_eq!(GRID_DIRECTIONS.len(), 8);
+    }
+
+    #[test]
+    fn grid_resize_has_coarse_fine_and_exit_bindings_only_in_its_context() {
+        let bindings = grid_resize_bindings();
+        let strokes: Vec<String> = bindings
+            .iter()
+            .map(|binding| {
+                binding
+                    .keystrokes()
+                    .iter()
+                    .map(gpui::KeybindingKeystroke::unparse)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        for key in ["h", "j", "k", "l", "left", "right", "up", "down"] {
+            assert!(strokes.contains(&key.to_string()));
+            assert!(strokes.contains(&format!("shift-{key}")));
+        }
+        assert!(strokes.contains(&"enter".to_string()));
+        assert!(strokes.contains(&"escape".to_string()));
+
+        let Some(entry) = SHORTCUTS
+            .iter()
+            .find(|shortcut| shortcut.action == Some(GlobalShortcut::EnterGridResize))
+        else {
+            unreachable!("grid resize entry must stay in the registry");
+        };
+        assert_eq!(contexts_for(entry), vec![Some("Grid")]);
+        assert_eq!(
+            keystrokes_for(entry),
+            vec![format!("{}r", platform_mod_prefix())]
+        );
     }
 
     /// Alt or Shift on macOS, Alt alone elsewhere — never the same chord as a plain move.

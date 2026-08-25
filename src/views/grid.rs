@@ -5,12 +5,13 @@ use crate::views::tokens::*;
 use std::rc::Rc;
 
 use gpui::{
-    div, prelude::*, px, AnyElement, App, Entity, Hsla, MouseButton, MouseDownEvent, Window,
+    div, prelude::*, px, AnyElement, App, CursorStyle, Entity, Hsla, MouseButton, MouseDownEvent,
+    Window,
 };
 
 use crate::entities::session_registry::SessionId;
-use crate::entities::workspace_state::{GridDrag, GridSlide};
-use crate::grid::{grid_layout, slide_progress};
+use crate::entities::workspace_state::{GridDrag, GridSizing, GridSlide};
+use crate::grid::{grid_layout, slide_progress, weighted_spans, GridAxis, GridBoundary};
 use crate::icons::icon;
 use crate::keymap::platform_mod_label;
 use crate::theme as c;
@@ -32,8 +33,24 @@ pub const PTY_PAD_W: f32 = 36.0;
 /// Vertical half of the same fudge constant (`src/gui/metrics.rs:22`).
 pub const PTY_PAD_H: f32 = 28.0;
 
+/// The hit zone extends equally beyond the 1px seam without taking layout space.
+const DIVIDER_HIT_OFFSET: f32 = (DIVIDER_DRAG_HIT_W - GRID_SEAM_PX) / 2.0;
+/// Grid seams are physical hairlines and do not scale with application zoom.
+pub const GRID_SEAM_PX: f32 = 1.0;
+/// Waiting emphasis is one physical hairline on every edge.
+pub const WAITING_BORDER_PX: f32 = 1.0;
+/// Header/body separation is a physical hairline supplied by [`divider_h`].
+pub const TILE_HEADER_DIVIDER_PX: f32 = 1.0;
+/// Covers flex pixel snapping so a clamped tile cannot round one device pixel below its PTY floor.
+pub const GRID_TILE_SNAP_GUARD_PX: f32 = 1.0;
+/// Column handles deliberately paint above row handles at divider junctions.
+const DIVIDER_JUNCTION_AXIS: GridAxis = GridAxis::Columns;
+/// Existing PTY sizing floors use ten columns and four rows; resize clamping uses the same contract.
+pub const GRID_MIN_PTY_COLS: f32 = 10.0;
+pub const GRID_MIN_PTY_ROWS: f32 = 4.0;
+
 /// What a click inside the grid asks the workspace to do; tiles never touch state directly.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GridAction {
     /// Focus + acknowledge + arm a drag (`layout.rs:308-321`).
     Press(usize),
@@ -41,6 +58,13 @@ pub enum GridAction {
     Focus(usize),
     /// No-op unless a drag is armed; the release is handled at the root instead (`Workspace::on_root_mouse_up`, `layout.rs:323-342`).
     Hover(usize),
+    /// A clean double-click resets this one split; a single press starts root-owned resizing.
+    ResizePress {
+        boundary: GridBoundary,
+        x: f32,
+        y: f32,
+        click_count: usize,
+    },
     /// The tile's own zen button (`layout.rs:344-356`).
     TileZen(SessionId),
     /// The tile's kill button — two-step, exactly like the session bar's.
@@ -82,9 +106,10 @@ pub struct GridCtx {
     /// Raw tick for the title zone's dot walk; `pulse`/`scrim_pulse` can't recover it.
     pub tick: u64,
     pub drag: Option<GridDrag>,
+    pub sizing: GridSizing,
     pub slide: Option<GridSlide>,
-    /// Nominal tile size for the slide's draw offset; must match `grid_tile_size`'s geometry exactly.
-    pub tile_size: (f32, f32),
+    /// Physical grid content size after the appbar/statusbar have taken their space.
+    pub grid_size: (f32, f32),
     pub dispatch: GridDispatch,
 }
 
@@ -176,35 +201,229 @@ pub fn grid(ctx: &GridCtx) -> AnyElement {
     }
     let (cols, rows) = grid_layout(n);
 
-    let mut columns = div()
-        .flex()
-        .flex_row()
-        .size_full()
-        // 1px of the container's BORDER_SOFT background shows through as the inter-tile gap (`terminal.rs:165-173`).
-        .gap(px(1.0))
-        .bg(c::BORDER_SOFT());
+    let mut columns = div().flex().flex_row().size_full().bg(c::BORDER_SOFT());
 
     for col_idx in 0..cols {
+        let column_weight = ctx
+            .sizing
+            .column_weights()
+            .get(col_idx)
+            .copied()
+            .unwrap_or(1.0);
         let mut column = div()
             .flex()
             .flex_col()
-            .flex_1()
+            .flex_basis(px(0.0))
+            .flex_grow(column_weight)
             .h_full()
-            .overflow_hidden()
-            .gap(px(1.0));
+            .overflow_hidden();
+        let row_weights = ctx.sizing.row_weights(col_idx);
+        let row_count = (col_idx..n).step_by(cols).count();
         for row_idx in 0..rows {
             let tile_idx = row_idx * cols + col_idx;
             let Some(data) = ctx.tiles.get(tile_idx) else {
                 continue;
             };
-            column = column.child(tile(tile_idx, data, ctx));
+            let row_weight = row_weights.get(row_idx).copied().unwrap_or(1.0);
+            column = column.child(tile(tile_idx, row_weight, data, ctx));
+            if row_idx + 1 < row_count {
+                column = column.child(row_divider());
+            }
         }
         columns = columns.child(column);
+        if col_idx + 1 < cols {
+            columns = columns.child(column_divider());
+        }
     }
-    columns.into_any_element()
+    div()
+        .relative()
+        .size_full()
+        .child(columns)
+        // Hit zones paint last so both halves of each 6px target win over adjacent terminal views.
+        .child(resize_handles(ctx, n, cols, rows))
+        .into_any_element()
 }
 
-/// The draw-only offset for a tile mid-slide, in logical px, or `None` once the animation has settled. Port of `terminal.rs:127-158`.
+fn divider_press(
+    boundary: GridBoundary,
+    ctx: &GridCtx,
+) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) + use<> {
+    let dispatch = Rc::clone(&ctx.dispatch);
+    move |event, window, cx| {
+        cx.stop_propagation();
+        dispatch(
+            GridAction::ResizePress {
+                boundary,
+                x: f32::from(event.position.x),
+                y: f32::from(event.position.y),
+                click_count: event.click_count,
+            },
+            window,
+            cx,
+        );
+    }
+}
+
+fn column_divider() -> AnyElement {
+    div()
+        .flex_shrink_0()
+        .w(px(GRID_SEAM_PX))
+        .h_full()
+        .bg(c::BORDER_SOFT())
+        .into_any_element()
+}
+
+fn row_divider() -> AnyElement {
+    div()
+        .flex_shrink_0()
+        .w_full()
+        .h(px(GRID_SEAM_PX))
+        .bg(c::BORDER_SOFT())
+        .into_any_element()
+}
+
+fn resize_handles(ctx: &GridCtx, tile_count: usize, cols: usize, rows: usize) -> AnyElement {
+    // Axis ownership is deterministic at intersections: row targets paint first and column
+    // targets paint last, so the column cursor/action wins across the complete 6px junction.
+    debug_assert_eq!(DIVIDER_JUNCTION_AXIS, GridAxis::Columns);
+    div()
+        .absolute()
+        .top(px(0.0))
+        .left(px(0.0))
+        .size_full()
+        .child(row_resize_handles(ctx, tile_count, cols, rows))
+        .child(column_resize_handles(ctx, cols))
+        .into_any_element()
+}
+
+fn row_resize_handles(ctx: &GridCtx, tile_count: usize, cols: usize, rows: usize) -> AnyElement {
+    let mut layer = div()
+        .absolute()
+        .top(px(0.0))
+        .left(px(0.0))
+        .size_full()
+        .flex()
+        .flex_row();
+    for column in 0..cols {
+        let column_weight = ctx
+            .sizing
+            .column_weights()
+            .get(column)
+            .copied()
+            .unwrap_or(1.0);
+        let row_weights = ctx.sizing.row_weights(column);
+        let row_count = (column..tile_count).step_by(cols).count();
+        let mut row_guides = div()
+            .flex()
+            .flex_col()
+            .flex_basis(px(0.0))
+            .flex_grow(column_weight)
+            .h_full();
+        for row in 0..rows {
+            if row >= row_count {
+                continue;
+            }
+            row_guides = row_guides.child(
+                div()
+                    .flex_basis(px(0.0))
+                    .flex_grow(row_weights.get(row).copied().unwrap_or(1.0))
+                    .w_full(),
+            );
+            if row + 1 < row_count {
+                let split = GridBoundary {
+                    axis: GridAxis::Rows,
+                    boundary: row,
+                    column: Some(column),
+                };
+                row_guides = row_guides.child(
+                    div().relative().flex_shrink_0().w_full().h(px(1.0)).child(
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "grid-row-handle-{column}-{row}"
+                            )))
+                            .absolute()
+                            .left(px(0.0))
+                            .top(px(-DIVIDER_HIT_OFFSET))
+                            .w_full()
+                            .h(px(DIVIDER_DRAG_HIT_W))
+                            .cursor(CursorStyle::ResizeUpDown)
+                            .on_mouse_down(MouseButton::Left, divider_press(split, ctx)),
+                    ),
+                );
+            }
+        }
+        layer = layer.child(row_guides);
+        if column + 1 < cols {
+            layer = layer.child(div().flex_shrink_0().w(px(GRID_SEAM_PX)).h_full());
+        }
+    }
+    layer.into_any_element()
+}
+
+fn column_resize_handles(ctx: &GridCtx, cols: usize) -> AnyElement {
+    let mut layer = div()
+        .absolute()
+        .top(px(0.0))
+        .left(px(0.0))
+        .size_full()
+        .flex()
+        .flex_row();
+    for column in 0..cols {
+        let column_weight = ctx
+            .sizing
+            .column_weights()
+            .get(column)
+            .copied()
+            .unwrap_or(1.0);
+        layer = layer.child(div().flex_basis(px(0.0)).flex_grow(column_weight).h_full());
+        if column + 1 < cols {
+            let split = GridBoundary {
+                axis: GridAxis::Columns,
+                boundary: column,
+                column: None,
+            };
+            layer = layer.child(
+                div()
+                    .relative()
+                    .flex_shrink_0()
+                    .w(px(GRID_SEAM_PX))
+                    .h_full()
+                    .child(
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "grid-column-handle-{column}"
+                            )))
+                            .absolute()
+                            .top(px(0.0))
+                            .left(px(-DIVIDER_HIT_OFFSET))
+                            .w(px(DIVIDER_DRAG_HIT_W))
+                            .h_full()
+                            .cursor(CursorStyle::ResizeLeftRight)
+                            .on_mouse_down(MouseButton::Left, divider_press(split, ctx)),
+                    ),
+            );
+        }
+    }
+    layer.into_any_element()
+}
+
+fn weighted_slide_delta(
+    total_px: f32,
+    current_weights: &[f32],
+    current_index: usize,
+    original_weights: &[f32],
+    original_index: usize,
+) -> Option<f32> {
+    let current = weighted_spans(total_px, GRID_SEAM_PX, current_weights)
+        .get(current_index)?
+        .start;
+    let original = weighted_spans(total_px, GRID_SEAM_PX, original_weights)
+        .get(original_index)?
+        .start;
+    Some(original - current)
+}
+
+/// The draw-only offset for a tile mid-slide, in physical px, or `None` once the animation has settled. Port of `terminal.rs:127-158`.
 fn slide_offset(tile_idx: usize, ctx: &GridCtx) -> Option<(f32, f32)> {
     let slide = ctx.slide?;
     let &(_, d_col, d_row) = slide.tiles.iter().find(|(idx, ..)| *idx == tile_idx)?;
@@ -213,14 +432,29 @@ fn slide_offset(tile_idx: usize, ctx: &GridCtx) -> Option<(f32, f32)> {
         return None;
     }
     let remaining = 1.0 - t;
-    let (tile_w, tile_h) = ctx.tile_size;
-    Some((
-        d_col as f32 * (tile_w + 1.0) * remaining,
-        d_row as f32 * (tile_h + 1.0) * remaining,
-    ))
+    let (cols, _) = grid_layout(ctx.tiles.len());
+    let current_col = tile_idx % cols;
+    let current_row = tile_idx / cols;
+    let original_col = usize::try_from(current_col as i32 + d_col).ok()?;
+    let original_row = usize::try_from(current_row as i32 + d_row).ok()?;
+    let dx = weighted_slide_delta(
+        ctx.grid_size.0,
+        ctx.sizing.column_weights(),
+        current_col,
+        ctx.sizing.column_weights(),
+        original_col,
+    )?;
+    let dy = weighted_slide_delta(
+        ctx.grid_size.1,
+        ctx.sizing.row_weights(current_col),
+        current_row,
+        ctx.sizing.row_weights(original_col),
+        original_row,
+    )?;
+    Some((dx * remaining, dy * remaining))
 }
 
-fn tile(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
+fn tile(tile_idx: usize, weight: f32, data: &TileData, ctx: &GridCtx) -> AnyElement {
     let is_drag_src = ctx.drag.is_some_and(|d| d.source_idx == tile_idx);
     let is_drop_zone = ctx
         .drag
@@ -228,7 +462,7 @@ fn tile(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
 
     let (border_color, border_w) = if data.waiting {
         // §7.2: exactly one border weight — the hairline. A waiting tile is called out by the amber *tone*, never by a heavier stroke.
-        (c::AMBER(), 1.0)
+        (c::AMBER(), WAITING_BORDER_PX)
     } else {
         (gpui::transparent_black(), 0.0)
     };
@@ -261,7 +495,8 @@ fn tile(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
         .relative()
         .flex()
         .flex_col()
-        .flex_1()
+        .flex_basis(px(0.0))
+        .flex_grow(weight)
         .w_full()
         .overflow_hidden()
         .bg(c::BG())
@@ -292,7 +527,7 @@ fn tile(tile_idx: usize, data: &TileData, ctx: &GridCtx) -> AnyElement {
 
     // The slide: a relative inset moves the drawing, not the layout.
     if let Some((dx, dy)) = slide_offset(tile_idx, ctx) {
-        root = root.left(rpx(dx)).top(rpx(dy));
+        root = root.left(px(dx)).top(px(dy));
     }
     root.into_any_element()
 }
@@ -606,6 +841,23 @@ mod tests {
         assert!((scrim_alpha(0.0) - 0.7).abs() < 1e-6);
         assert!((scrim_alpha(1.0) - 1.0).abs() < 1e-6);
         assert!((scrim_alpha(0.5) - 0.85).abs() < 1e-6);
+    }
+
+    #[test]
+    fn column_axis_owns_every_divider_junction() {
+        assert_eq!(DIVIDER_JUNCTION_AXIS, GridAxis::Columns);
+    }
+
+    #[test]
+    fn slide_distance_reserves_one_physical_seam_at_every_zoom() {
+        for zoom in [0.6, 1.0, 1.75] {
+            let total = 200.0 * zoom;
+            let Some(distance) = weighted_slide_delta(total, &[0.5, 0.5], 0, &[0.5, 0.5], 1) else {
+                unreachable!("second region exists");
+            };
+            let expected = (total - GRID_SEAM_PX) / 2.0 + GRID_SEAM_PX;
+            assert!((distance - expected).abs() < 1e-5, "zoom {zoom}");
+        }
     }
 
     /// `terminal.rs:888-911,1106-1115` — the tenth tile and beyond lose the chord, never render `mod+10`.

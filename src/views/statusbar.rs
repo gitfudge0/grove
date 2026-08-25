@@ -15,7 +15,7 @@ use crate::entities::toast::{Toast, ToastKind};
 use crate::keymap::{platform_mod_label, GlobalShortcut};
 use crate::theme as c;
 use crate::views::appbar::{on_chrome, shortcut_key, ChromeAction, Dispatch};
-use crate::views::components::{divider_h, keycap, mono, status_dot};
+use crate::views::components::{divider_h, footer_hint_flat, keycap, mono, status_dot};
 
 /// Status bar height (`src/gui/metrics.rs:16`).
 pub const STATUS_H: f32 = 26.0;
@@ -27,6 +27,8 @@ pub struct StatusbarCtx {
     pub theme_name: String,
     pub skip_permissions: bool,
     pub toast: Option<Toast>,
+    /// Present only while the transient grid-resize key context owns plain direction keys.
+    pub grid_resize_hint: Option<String>,
     pub dispatch: Dispatch,
 }
 
@@ -90,29 +92,41 @@ pub fn statusbar(ctx: &StatusbarCtx) -> AnyElement {
         None => div().into_any_element(),
     };
 
-    let right = div()
-        .flex()
-        .items_center()
-        .gap(rpx(SPACE_3XL))
-        .child(hint_chip(
-            "statusbar-palette",
-            shortcut_key(GlobalShortcut::NewSession, "p"),
-            "palette",
-            ChromeAction::OpenSessionLauncher,
-            &ctx.dispatch,
-        ))
-        .child(hint_chip(
-            "statusbar-shortcuts",
-            shortcut_key(GlobalShortcut::ShortcutOverlay, "/"),
-            "shortcuts",
-            ChromeAction::OpenShortcutOverlay,
-            &ctx.dispatch,
-        ))
-        .child(mono(
-            format!("v{}", env!("CARGO_PKG_VERSION")),
-            TEXT_MICRO,
-            c::FG_MUTE(),
-        ));
+    let right = if let Some(target) = ctx.grid_resize_hint.as_ref() {
+        div()
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_3XL))
+            .child(mono("RESIZE", TEXT_MICRO, c::CYAN()))
+            .child(mono(target.clone(), TEXT_MICRO, c::FG_DIM()))
+            .child(footer_hint_flat("←↓↑→ / hjkl", "5%"))
+            .child(footer_hint_flat("shift", "1%"))
+            .child(footer_hint_flat("enter / esc", "done"))
+    } else {
+        div()
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_3XL))
+            .child(hint_chip(
+                "statusbar-palette",
+                shortcut_key(GlobalShortcut::NewSession, "p"),
+                "palette",
+                ChromeAction::OpenSessionLauncher,
+                &ctx.dispatch,
+            ))
+            .child(hint_chip(
+                "statusbar-shortcuts",
+                shortcut_key(GlobalShortcut::ShortcutOverlay, "/"),
+                "shortcuts",
+                ChromeAction::OpenShortcutOverlay,
+                &ctx.dispatch,
+            ))
+            .child(mono(
+                format!("v{}", env!("CARGO_PKG_VERSION")),
+                TEXT_MICRO,
+                c::FG_MUTE(),
+            ))
+    };
 
     div()
         .flex()

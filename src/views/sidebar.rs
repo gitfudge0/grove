@@ -233,7 +233,7 @@ impl Sidebar {
             RowAction::SpawnAgent(proj, wt, agent) => self.spawn_session(proj, wt, agent, cx),
             RowAction::AddWorktree(proj) => {
                 self.state.update(cx, |s, cx| {
-                    s.select_project(proj);
+                    s.begin_add_worktree(proj);
                     cx.notify();
                 });
                 self.open_modal(

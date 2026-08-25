@@ -116,6 +116,10 @@ on first launch with `tmux` installed, grove asks which backend to use. use the 
 | `mod+j` / `mod+k` | next / previous session (visible order) |
 | `mod+1`..`mod+9` | select the nth session |
 | `mod+g` | toggle the grid (agent view) |
+| `mod+r` | enter grid resize mode while the grid is open |
+| `←↓↑→` / `h j k l` | move the split beside the focused tile by 5% in grid resize mode |
+| `shift+←↓↑→` / `shift+h j k l` | move that split by 1% in grid resize mode |
+| `enter` / `esc` | leave grid resize mode |
 | `mod+enter` | toggle zen mode |
 | `mod+,` | open settings |
 | `mod+=` / `mod+-` / `mod+0` | zoom in / out / reset |
@@ -126,6 +130,8 @@ on first launch with `tmux` installed, grove asks which backend to use. use the 
 | `esc` | close modals |
 
 everything else on the keyboard goes straight to the focused session's PTY.
+
+grid seams can also be dragged with the mouse. double-click one seam to reset only that split. grid sizing lasts for the current grove run and resets to equal shares when the grid topology changes.
 
 ## supported agents
 

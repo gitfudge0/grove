@@ -143,6 +143,7 @@ fn dispatch_on_screen(def: &ShortcutDef, screen: Screen) -> Target {
             GlobalShortcut::Settings => "Settings",
             GlobalShortcut::ToggleZen => "ToggleZen",
             GlobalShortcut::ToggleGrid => "ToggleGrid",
+            GlobalShortcut::EnterGridResize => "EnterGridResize",
             GlobalShortcut::ZoomIn => "ZoomIn",
             GlobalShortcut::ZoomOut => "ZoomOut",
             GlobalShortcut::ZoomReset => "ZoomReset",

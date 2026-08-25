@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use grove_core::storage::Store;
 
 use crate::entities::session_registry::SessionId;
+use crate::grid::{GridAxis, GridBoundary};
 
 /// Default sidebar width, also the divider double-click reset target (`src/gui/metrics.rs:9`).
 pub const RAIL_W: f32 = 320.0;
@@ -63,6 +64,9 @@ pub const TERM_PANEL_PORTION: u16 = 40;
 pub const TERM_PANEL_PORTION_MIN: u16 = 20;
 pub const TERM_PANEL_PORTION_MAX: u16 = 75;
 pub const TERM_PANEL_PORTION_STEP: u16 = 5;
+/// Keyboard grid-resize steps, in percentage points of the whole axis.
+pub const GRID_RESIZE_STEP_PCT: f32 = 5.0;
+pub const GRID_RESIZE_FINE_STEP_PCT: f32 = 1.0;
 
 /// Port of `src/gui/metrics.rs:257-263`: the panel is docked on the right, so a cursor further left grows it; clamped to `[TERM_PANEL_PORTION_MIN, TERM_PANEL_PORTION_MAX]`.
 #[must_use]
@@ -103,6 +107,104 @@ pub enum PtyPane {
 pub struct GridDrag {
     pub source_idx: usize,
     pub hover_idx: usize,
+}
+
+/// Session-only proportions for the current column-first topology.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GridSizing {
+    tile_count: usize,
+    topology: (usize, usize),
+    column_weights: Vec<f32>,
+    row_weights: Vec<Vec<f32>>,
+}
+
+impl GridSizing {
+    #[must_use]
+    fn equal(tile_count: usize) -> Self {
+        if tile_count == 0 {
+            return Self::default();
+        }
+        let (cols, rows) = crate::grid::grid_layout(tile_count);
+        let row_weights = (0..cols)
+            .map(|column| {
+                let count = (column..tile_count).step_by(cols).count();
+                crate::grid::equal_weights(count)
+            })
+            .collect();
+        Self {
+            tile_count,
+            topology: (cols, rows),
+            column_weights: crate::grid::equal_weights(cols),
+            row_weights,
+        }
+    }
+
+    fn ensure_topology(&mut self, tile_count: usize) -> bool {
+        let next = if tile_count == 0 {
+            (0, 0)
+        } else {
+            crate::grid::grid_layout(tile_count)
+        };
+        let row_shape: Vec<usize> = if tile_count == 0 {
+            Vec::new()
+        } else {
+            (0..next.0)
+                .map(|column| (column..tile_count).step_by(next.0).count())
+                .collect()
+        };
+        let current_shape: Vec<usize> = self.row_weights.iter().map(Vec::len).collect();
+        if self.tile_count == tile_count && self.topology == next && current_shape == row_shape {
+            return false;
+        }
+        *self = Self::equal(tile_count);
+        true
+    }
+
+    #[must_use]
+    pub fn column_weights(&self) -> &[f32] {
+        &self.column_weights
+    }
+
+    #[must_use]
+    pub fn row_weights(&self, column: usize) -> &[f32] {
+        self.row_weights.get(column).map_or(&[], Vec::as_slice)
+    }
+
+    fn weights(&self, boundary: GridBoundary) -> Option<&[f32]> {
+        match boundary.axis {
+            GridAxis::Columns => Some(&self.column_weights),
+            GridAxis::Rows => self.row_weights.get(boundary.column?),
+        }
+        .map(Vec::as_slice)
+    }
+
+    fn weights_mut(&mut self, boundary: GridBoundary) -> Option<&mut Vec<f32>> {
+        match boundary.axis {
+            GridAxis::Columns => Some(&mut self.column_weights),
+            GridAxis::Rows => self.row_weights.get_mut(boundary.column?),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GridResizeMode {
+    pub selected: Option<GridBoundary>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GridResizeDrag {
+    pub boundary: GridBoundary,
+    pub start_coordinate: f32,
+    pub span_px: f32,
+    pub start_weights: (f32, f32),
+    pub minimum_weight: f32,
+}
+
+/// Exactly one grid gesture may own the root pointer listeners.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GridPointerDrag {
+    Reorder(GridDrag),
+    Resize(GridResizeDrag),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -215,7 +317,9 @@ pub struct WorkspaceState {
     grid_view_before_zen: bool,
     /// The terminal tab was entered from the grid, likewise (`shortcuts.rs:548-556`).
     grid_view_before_terminal: bool,
-    grid_drag: Option<GridDrag>,
+    grid_pointer_drag: Option<GridPointerDrag>,
+    grid_sizing: GridSizing,
+    grid_resize_mode: Option<GridResizeMode>,
     grid_slide: Option<GridSlide>,
     pending_grid_persist: Option<Vec<SessionId>>,
     /// Membership, not a bare bool, is the state — per-session open-ness so session A's panel state never leaks into session B; dropped in [`Self::on_session_removed`] to avoid accumulating dead ids.
@@ -254,7 +358,9 @@ impl Default for WorkspaceState {
             grid_focused: None,
             grid_view_before_zen: false,
             grid_view_before_terminal: false,
-            grid_drag: None,
+            grid_pointer_drag: None,
+            grid_sizing: GridSizing::default(),
+            grid_resize_mode: None,
             grid_slide: None,
             pending_grid_persist: None,
             panel_open_sessions: HashSet::new(),
@@ -381,8 +487,24 @@ impl WorkspaceState {
     pub fn grid_view_before_terminal(&self) -> bool {
         self.grid_view_before_terminal
     }
-    pub fn grid_drag(&self) -> Option<GridDrag> {
-        self.grid_drag
+    #[cfg(test)]
+    pub fn grid_pointer_drag(&self) -> Option<GridPointerDrag> {
+        self.grid_pointer_drag
+    }
+    pub fn grid_pointer_active(&self) -> bool {
+        self.grid_pointer_drag.is_some()
+    }
+    pub fn grid_reorder_drag(&self) -> Option<GridDrag> {
+        match self.grid_pointer_drag {
+            Some(GridPointerDrag::Reorder(drag)) => Some(drag),
+            Some(GridPointerDrag::Resize(_)) | None => None,
+        }
+    }
+    pub fn grid_sizing(&self) -> &GridSizing {
+        &self.grid_sizing
+    }
+    pub fn grid_resize_mode(&self) -> Option<GridResizeMode> {
+        self.grid_resize_mode
     }
     pub fn grid_slide(&self) -> Option<GridSlide> {
         self.grid_slide
@@ -487,6 +609,34 @@ impl WorkspaceState {
             self.collapsed.insert(proj);
         }
         self.proj_idx = proj;
+    }
+
+    /// Prepares the add-worktree flow without treating its trigger as a tree-row
+    /// toggle. The subsequent success transition owns opening the new worktree.
+    pub fn begin_add_worktree(&mut self, proj: usize) {
+        self.open_agent_menu = None;
+        self.pending_kill = None;
+        self.pending_kill_terminal = None;
+        self.tree_touched = true;
+        self.proj_idx = proj;
+    }
+
+    /// Selects a newly-created worktree while preserving every unrelated tree
+    /// expansion choice. Unlike [`Self::select_worktree`], this deliberately
+    /// opens the target rather than toggling it.
+    pub fn focus_added_worktree(&mut self, proj: usize, wt: usize, snap: &TreeSnapshot) {
+        self.open_agent_menu = None;
+        self.pending_kill = None;
+        self.pending_kill_terminal = None;
+        self.tree_touched = true;
+        self.proj_idx = proj;
+        self.wt_idx = wt;
+        self.collapsed.remove(&proj);
+        self.collapsed_wt.remove(&(proj, wt));
+        self.set_active_session(
+            snap.worktree(proj, wt)
+                .and_then(|worktree| worktree.sessions.first().copied()),
+        );
     }
 
     /// `sessions.rs:90-103`. `count` is `home_terminals.len()`.
@@ -718,7 +868,9 @@ impl WorkspaceState {
             self.set_active_session(Some(id));
             self.acknowledge(id);
         }
-        self.grid_drag = None;
+        self.grid_pointer_drag = None;
+        self.grid_resize_mode = None;
+        self.grid_sizing.ensure_topology(self.tile_order.len());
     }
 
     /// Counterpart to [`Self::enter_grid`]; likewise leaves `grid_view` to the caller (`layout.rs:257-269`).
@@ -732,7 +884,8 @@ impl WorkspaceState {
         self.pending_grid_persist = Some(self.tile_order.clone());
         self.tile_order.clear();
         self.grid_focused = None;
-        self.grid_drag = None;
+        self.grid_pointer_drag = None;
+        self.grid_resize_mode = None;
     }
 
     /// `mod+g`. Port of `on_toggle_grid_view` (`layout.rs:199-216`).
@@ -770,6 +923,8 @@ impl WorkspaceState {
             self.grid_view = false;
             self.grid_view_before_zen = true;
             self.chrome_visible = false;
+            self.grid_pointer_drag = None;
+            self.grid_resize_mode = None;
         } else {
             self.chrome_visible = false;
         }
@@ -784,10 +939,17 @@ impl WorkspaceState {
         self.grid_view = false;
         self.grid_view_before_zen = true;
         self.chrome_visible = false;
+        self.grid_pointer_drag = None;
+        self.grid_resize_mode = None;
     }
 
     /// Point `grid_focused` at a (possibly different) tile (`update/mod.rs:1061-1068`; the selection half is the view's).
     pub fn set_grid_focus(&mut self, focus: Option<SessionId>) {
+        if self.grid_focused != focus {
+            // The resize context is defined relative to the focused tile. Exiting on a focus
+            // change is less surprising than leaving its selected split pointed at the old tile.
+            self.grid_resize_mode = None;
+        }
         self.grid_focused = focus;
     }
 
@@ -800,7 +962,7 @@ impl WorkspaceState {
 
     /// Grid-only; no-ops if there's nothing to focus or the move would fall off the edge of the tile layout (`update/mod.rs:1071-1094`).
     pub fn grid_move(&mut self, dx: i32, dy: i32) {
-        if self.tile_order.is_empty() {
+        if self.tile_order.is_empty() || self.grid_resize_mode.is_some() {
             return;
         }
         self.leave_terminal_tab();
@@ -825,6 +987,9 @@ impl WorkspaceState {
 
     /// Leaves `grid_focused`/`active_session` untouched — both hold a session, not a tile-order position, so focus stays on the same session after its tile moves (`update/mod.rs:1102-1116`).
     pub fn grid_swap(&mut self, dx: i32, dy: i32) {
+        if self.grid_resize_mode.is_some() {
+            return;
+        }
         let Some(pos) = self
             .grid_focused
             .and_then(|id| self.tile_order.iter().position(|&x| x == id))
@@ -850,10 +1015,11 @@ impl WorkspaceState {
         self.set_grid_focus(Some(id));
         self.set_active_session(Some(id));
         self.acknowledge(id);
-        self.grid_drag = Some(GridDrag {
+        self.grid_resize_mode = None;
+        self.grid_pointer_drag = Some(GridPointerDrag::Reorder(GridDrag {
             source_idx: tile_idx,
             hover_idx: tile_idx,
-        });
+        }));
     }
 
     pub fn grid_focus_tile(&mut self, tile_idx: usize) {
@@ -867,19 +1033,22 @@ impl WorkspaceState {
 
     /// A no-op when no drag is armed — the enter event fires regardless (`layout.rs:323-328`).
     pub fn grid_drag_hover(&mut self, tile_idx: usize) {
-        if let Some(drag) = self.grid_drag.as_mut() {
+        if let Some(GridPointerDrag::Reorder(drag)) = self.grid_pointer_drag.as_mut() {
             drag.hover_idx = tile_idx;
         }
     }
 
-    /// Swap if it moved, record the slide, stage the persist (`layout.rs:330-342`).
-    pub fn grid_drag_end(&mut self) {
-        let Some(drag) = self.grid_drag.take() else {
-            return;
+    /// Releases the one pointer owner. Returns true only when a reorder changed the persisted order.
+    pub fn grid_pointer_end(&mut self) -> bool {
+        let Some(pointer) = self.grid_pointer_drag.take() else {
+            return false;
+        };
+        let GridPointerDrag::Reorder(drag) = pointer else {
+            return false;
         };
         let (src, dst) = (drag.source_idx, drag.hover_idx);
         if src == dst || src >= self.tile_order.len() || dst >= self.tile_order.len() {
-            return;
+            return false;
         }
         crate::grid::swap_tiles(&mut self.tile_order, src, dst);
         self.grid_slide = Some(GridSlide {
@@ -887,6 +1056,184 @@ impl WorkspaceState {
             start: std::time::Instant::now(),
         });
         self.pending_grid_persist = Some(self.tile_order.clone());
+        true
+    }
+
+    /// Clears pointer ownership without committing a reorder. Used when a move arrives without
+    /// the left button held, which means the platform release happened outside our listener path.
+    pub fn grid_pointer_cancel(&mut self) -> bool {
+        self.grid_pointer_drag.take().is_some()
+    }
+
+    /// Enters the transient keyboard context without changing tile focus or order.
+    pub fn enter_grid_resize_mode(&mut self) -> bool {
+        if !self.grid_view || self.tile_order.len() < 2 {
+            return false;
+        }
+        self.grid_sizing.ensure_topology(self.tile_order.len());
+        let selected = self
+            .grid_focused
+            .and_then(|id| {
+                self.tile_order
+                    .iter()
+                    .position(|candidate| *candidate == id)
+            })
+            .and_then(|tile| {
+                [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    .into_iter()
+                    .find_map(|(dx, dy)| {
+                        crate::grid::boundary_adjacent_to_tile(tile, self.tile_order.len(), dx, dy)
+                    })
+            });
+        self.grid_pointer_drag = None;
+        self.grid_resize_mode = Some(GridResizeMode { selected });
+        true
+    }
+
+    pub fn exit_grid_resize_mode(&mut self) {
+        self.grid_resize_mode = None;
+    }
+
+    /// Steps the boundary in the requested direction. The caller supplies an axis-specific floor
+    /// derived from the current viewport and terminal metrics.
+    pub fn grid_resize_step(
+        &mut self,
+        dx: i32,
+        dy: i32,
+        percentage_points: f32,
+        minimum_weight: f32,
+    ) -> bool {
+        if self.grid_resize_mode.is_none() || !percentage_points.is_finite() {
+            return false;
+        }
+        let Some(tile) = self.grid_focused.and_then(|id| {
+            self.tile_order
+                .iter()
+                .position(|candidate| *candidate == id)
+        }) else {
+            return false;
+        };
+        let Some(boundary) =
+            crate::grid::boundary_adjacent_to_tile(tile, self.tile_order.len(), dx, dy)
+        else {
+            return false;
+        };
+        let selection_changed = self
+            .grid_resize_mode
+            .is_some_and(|mode| mode.selected != Some(boundary));
+        if let Some(mode) = self.grid_resize_mode.as_mut() {
+            mode.selected = Some(boundary);
+        }
+        let direction = if dx != 0 { dx } else { dy };
+        let signed_step = if direction < 0 {
+            -percentage_points
+        } else {
+            percentage_points
+        };
+        let delta = signed_step / 100.0;
+        let Some(weights) = self.grid_sizing.weights_mut(boundary) else {
+            return false;
+        };
+        crate::grid::transfer_pair(weights, boundary.boundary, delta, minimum_weight)
+            || selection_changed
+    }
+
+    /// Starts a mouse resize from the current pair. Updates always refer back to this snapshot,
+    /// which prevents accumulated error and jump-back after dragging against a clamp.
+    pub fn grid_resize_drag_start(
+        &mut self,
+        boundary: GridBoundary,
+        coordinate: f32,
+        span_px: f32,
+        minimum_weight: f32,
+    ) -> bool {
+        if !coordinate.is_finite() || !span_px.is_finite() || span_px <= 0.0 {
+            return false;
+        }
+        self.grid_sizing.ensure_topology(self.tile_order.len());
+        let Some(weights) = self.grid_sizing.weights(boundary) else {
+            return false;
+        };
+        let Some(&before) = weights.get(boundary.boundary) else {
+            return false;
+        };
+        let Some(&after) = weights.get(boundary.boundary + 1) else {
+            return false;
+        };
+        self.grid_pointer_drag = Some(GridPointerDrag::Resize(GridResizeDrag {
+            boundary,
+            start_coordinate: coordinate,
+            span_px,
+            start_weights: (before, after),
+            minimum_weight,
+        }));
+        true
+    }
+
+    pub fn grid_resize_drag_update(&mut self, x: f32, y: f32) -> bool {
+        let Some(GridPointerDrag::Resize(drag)) = self.grid_pointer_drag else {
+            return false;
+        };
+        let coordinate = match drag.boundary.axis {
+            GridAxis::Columns => x,
+            GridAxis::Rows => y,
+        };
+        if !coordinate.is_finite() {
+            return false;
+        }
+        let Some(weights) = self.grid_sizing.weights_mut(drag.boundary) else {
+            return false;
+        };
+        let Some(right) = drag.boundary.boundary.checked_add(1) else {
+            return false;
+        };
+        if right >= weights.len() {
+            return false;
+        }
+        weights[drag.boundary.boundary] = drag.start_weights.0;
+        weights[right] = drag.start_weights.1;
+        crate::grid::transfer_pair(
+            weights,
+            drag.boundary.boundary,
+            (coordinate - drag.start_coordinate) / drag.span_px,
+            drag.minimum_weight,
+        )
+    }
+
+    pub fn reset_grid_boundary(&mut self, boundary: GridBoundary) -> bool {
+        self.grid_pointer_drag = None;
+        let Some(weights) = self.grid_sizing.weights_mut(boundary) else {
+            return false;
+        };
+        crate::grid::reset_pair(weights, boundary.boundary)
+    }
+
+    #[must_use]
+    pub fn grid_resize_label(&self) -> Option<String> {
+        let mode = self.grid_resize_mode?;
+        Some(match mode.selected {
+            Some(GridBoundary {
+                axis: GridAxis::Columns,
+                boundary,
+                ..
+            }) => format!("columns {} / {}", boundary + 1, boundary + 2),
+            Some(GridBoundary {
+                axis: GridAxis::Rows,
+                boundary,
+                column: Some(column),
+            }) => format!(
+                "column {} rows {} / {}",
+                column + 1,
+                boundary + 1,
+                boundary + 2
+            ),
+            Some(GridBoundary {
+                axis: GridAxis::Rows,
+                column: None,
+                ..
+            })
+            | None => "choose split".to_string(),
+        })
     }
 
     /// Re-derive the grid's view of the session list after sessions were removed behind the GUI's back (`layout.rs:276-306`).
@@ -894,6 +1241,8 @@ impl WorkspaceState {
         if !self.grid_view && !self.grid_view_before_zen {
             self.tile_order.clear();
             self.grid_focused = None;
+            self.grid_pointer_drag = None;
+            self.grid_resize_mode = None;
             return;
         }
         let keys: Vec<String> = live.iter().map(|t| t.key.clone()).collect();
@@ -909,6 +1258,10 @@ impl WorkspaceState {
         }
         if self.active_session.is_none() {
             self.set_active_session(self.grid_focused);
+        }
+        if self.grid_sizing.ensure_topology(self.tile_order.len()) {
+            self.grid_pointer_drag = None;
+            self.grid_resize_mode = None;
         }
         if self.grid_view && self.tile_order.is_empty() {
             self.grid_view = false;
@@ -1183,6 +1536,63 @@ mod tests {
         w.select_project(2);
         assert!(!w.project_collapsed(2));
         let _ = snap;
+    }
+
+    #[test]
+    fn begin_add_worktree_preserves_all_expansion_state() {
+        let mut w = WorkspaceState {
+            collapsed: [0, 2].into_iter().collect(),
+            collapsed_wt: [(0, 1), (2, 0)].into_iter().collect(),
+            open_agent_menu: Some((0, 1)),
+            pending_kill: Some(sid(1)),
+            pending_kill_terminal: Some(2),
+            ..WorkspaceState::default()
+        };
+
+        w.begin_add_worktree(2);
+
+        assert_eq!(w.proj_idx(), 2);
+        assert!(w.tree_touched);
+        assert!(w.project_collapsed(0));
+        assert!(w.project_collapsed(2));
+        assert!(w.worktree_collapsed(0, 1));
+        assert!(w.worktree_collapsed(2, 0));
+        assert_eq!(w.open_agent_menu(), None);
+        assert_eq!(w.pending_kill(), None);
+        assert_eq!(w.pending_kill_terminal(), None);
+    }
+
+    #[test]
+    fn focus_added_worktree_opens_only_the_new_target_and_selects_its_session() {
+        let mut snap = fixture();
+        snap.projects[0].worktrees.push(SnapshotWorktree {
+            path: "/a-new".into(),
+            name: "a-new".into(),
+            branch: "new".into(),
+            is_main: false,
+            sessions: vec![sid(4)],
+        });
+        let mut w = WorkspaceState {
+            collapsed: [0, 2].into_iter().collect(),
+            collapsed_wt: [(0, 0), (0, 1), (0, 2), (2, 0)].into_iter().collect(),
+            active_session: Some(sid(1)),
+            ..WorkspaceState::default()
+        };
+
+        w.focus_added_worktree(0, 2, &snap);
+
+        assert_eq!((w.proj_idx(), w.wt_idx()), (0, 2));
+        assert_eq!(w.active_session(), Some(sid(4)));
+        assert!(!w.project_collapsed(0));
+        assert!(!w.worktree_collapsed(0, 2));
+        assert!(w.project_collapsed(2));
+        assert!(w.worktree_collapsed(0, 0));
+        assert!(w.worktree_collapsed(0, 1));
+        assert!(w.worktree_collapsed(2, 0));
+
+        snap.projects[0].worktrees[2].sessions.clear();
+        w.focus_added_worktree(0, 2, &snap);
+        assert_eq!(w.active_session(), None);
     }
 
     /// `sessions.rs:90-103`.
@@ -2023,7 +2433,7 @@ mod tests {
         assert_eq!(w.active_session(), Some(sid(3)));
         assert_eq!(w.take_pending_acks(), vec![sid(3)]);
         assert_eq!(
-            w.grid_drag(),
+            w.grid_reorder_drag(),
             Some(GridDrag {
                 source_idx: 2,
                 hover_idx: 2
@@ -2031,12 +2441,12 @@ mod tests {
         );
 
         w.grid_drag_hover(0);
-        assert_eq!(w.grid_drag().map(|d| d.hover_idx), Some(0));
+        assert_eq!(w.grid_reorder_drag().map(|d| d.hover_idx), Some(0));
 
-        w.grid_drag_end();
+        assert!(w.grid_pointer_end());
         assert_eq!(w.tile_order(), [sid(3), sid(2), sid(1), sid(4)]);
         assert_eq!(w.grid_focused(), Some(sid(3)));
-        assert!(w.grid_drag().is_none());
+        assert!(w.grid_pointer_drag().is_none());
         assert!(w.grid_slide().is_some());
         assert!(w.take_grid_order_to_persist().is_some());
     }
@@ -2049,15 +2459,172 @@ mod tests {
         let _ = w.take_grid_order_to_persist();
 
         w.grid_drag_hover(1);
-        assert!(w.grid_drag().is_none());
-        w.grid_drag_end();
+        assert!(w.grid_reorder_drag().is_none());
+        assert!(!w.grid_pointer_end());
         assert_eq!(w.tile_order(), [sid(1), sid(2)]);
 
         w.grid_drag_start(1);
-        w.grid_drag_end();
+        assert!(!w.grid_pointer_end());
         assert_eq!(w.tile_order(), [sid(1), sid(2)]);
         assert!(w.grid_slide().is_none());
         assert!(w.take_grid_order_to_persist().is_none());
+    }
+
+    #[test]
+    fn resize_drag_owns_pointer_without_reordering_or_moving_focus() {
+        let l = live(&[1, 2, 3, 4]);
+        let mut w = WorkspaceState::default();
+        w.toggle_grid(&l, &[]);
+        let focused = w.grid_focused();
+        let order = w.tile_order().to_vec();
+        let boundary = GridBoundary {
+            axis: GridAxis::Columns,
+            boundary: 0,
+            column: None,
+        };
+
+        assert!(w.grid_resize_drag_start(boundary, 200.0, 800.0, 0.1));
+        assert!(matches!(
+            w.grid_pointer_drag(),
+            Some(GridPointerDrag::Resize(_))
+        ));
+        assert!(w.grid_reorder_drag().is_none());
+        assert!(w.grid_resize_drag_update(280.0, 0.0));
+        assert!((w.grid_sizing().column_weights()[0] - 0.6).abs() < 1e-6);
+        assert!(!w.grid_pointer_end());
+        assert_eq!(w.tile_order(), order);
+        assert_eq!(w.grid_focused(), focused);
+        assert!(w.take_grid_order_to_persist().is_none());
+    }
+
+    #[test]
+    fn resize_drag_uses_its_original_baseline_after_a_clamp() {
+        let l = live(&[1, 2]);
+        let mut w = WorkspaceState::default();
+        w.toggle_grid(&l, &[]);
+        let boundary = GridBoundary {
+            axis: GridAxis::Columns,
+            boundary: 0,
+            column: None,
+        };
+        assert!(w.grid_resize_drag_start(boundary, 100.0, 100.0, 0.2));
+        assert!(w.grid_resize_drag_update(1000.0, 0.0));
+        assert!((w.grid_sizing().column_weights()[0] - 0.8).abs() < 1e-6);
+        assert!(w.grid_resize_drag_update(110.0, 0.0));
+        assert!((w.grid_sizing().column_weights()[0] - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_missing_left_button_cancels_pointer_ownership_without_committing_reorder() {
+        let mut w = WorkspaceState::default();
+        w.toggle_grid(&live(&[1, 2]), &[]);
+        let _ = w.take_grid_order_to_persist();
+        let original = w.tile_order().to_vec();
+        w.grid_drag_start(0);
+        w.grid_drag_hover(1);
+
+        assert!(w.grid_pointer_cancel());
+        assert_eq!(w.tile_order(), original);
+        assert!(w.grid_pointer_drag().is_none());
+        assert!(!w.grid_pointer_cancel());
+        assert!(w.take_grid_order_to_persist().is_none());
+    }
+
+    #[test]
+    fn keyboard_resize_selects_the_focused_adjacent_boundary_and_never_reorders() {
+        let l = live(&[1, 2, 3, 4]);
+        let mut w = WorkspaceState::default();
+        w.toggle_grid(&l, &[]);
+        let order = w.tile_order().to_vec();
+        assert!(w.enter_grid_resize_mode());
+        assert_eq!(w.grid_resize_label().as_deref(), Some("columns 1 / 2"));
+        assert!(w.grid_resize_step(1, 0, 5.0, 0.1));
+        assert!((w.grid_sizing().column_weights()[0] - 0.55).abs() < 1e-6);
+        assert_eq!(w.tile_order(), order);
+        assert_eq!(w.grid_focused(), Some(sid(1)));
+
+        assert!(w.grid_resize_step(0, 1, 1.0, 0.1));
+        assert_eq!(
+            w.grid_resize_label().as_deref(),
+            Some("column 1 rows 1 / 2")
+        );
+        assert!((w.grid_sizing().row_weights(0)[0] - 0.51).abs() < 1e-6);
+        w.exit_grid_resize_mode();
+        assert!(w.grid_resize_mode().is_none());
+    }
+
+    #[test]
+    fn keyboard_resize_reports_a_new_selection_even_when_transfer_is_clamped() {
+        let mut w = WorkspaceState::default();
+        w.toggle_grid(&live(&[1, 2, 3, 4]), &[]);
+        assert!(w.enter_grid_resize_mode());
+
+        // An equal-share floor clamps both pairs, but changing axis still changes the status hint.
+        assert!(!w.grid_resize_step(1, 0, 5.0, 0.5));
+        assert_eq!(w.grid_resize_label().as_deref(), Some("columns 1 / 2"));
+        assert!(w.grid_resize_step(0, 1, 5.0, 0.5));
+        assert_eq!(
+            w.grid_resize_label().as_deref(),
+            Some("column 1 rows 1 / 2")
+        );
+        // Repeating the same clamped request changes neither selection nor weights.
+        assert!(!w.grid_resize_step(0, 1, 5.0, 0.5));
+    }
+
+    #[test]
+    fn changing_grid_focus_exits_keyboard_resize_mode() {
+        let mut w = WorkspaceState::default();
+        w.toggle_grid(&live(&[1, 2]), &[]);
+        assert!(w.enter_grid_resize_mode());
+
+        w.set_grid_focus(Some(sid(2)));
+        assert_eq!(w.grid_focused(), Some(sid(2)));
+        assert!(w.grid_resize_mode().is_none());
+    }
+
+    #[test]
+    fn topology_change_resets_all_session_only_weights_and_exits_resize() {
+        let mut w = WorkspaceState::default();
+        w.toggle_grid(&live(&[1, 2, 3, 4]), &[]);
+        assert!(w.enter_grid_resize_mode());
+        assert!(w.grid_resize_step(1, 0, 5.0, 0.1));
+        assert_ne!(w.grid_sizing().column_weights(), &[0.5, 0.5]);
+
+        w.reconcile_after_teardown(&live(&[1, 2, 3]), &[]);
+        assert_eq!(w.grid_sizing().column_weights(), &[0.5, 0.5]);
+        assert_eq!(w.grid_sizing().row_weights(0), &[0.5, 0.5]);
+        assert_eq!(w.grid_sizing().row_weights(1), &[1.0]);
+        assert!(w.grid_resize_mode().is_none());
+        assert!(w.grid_pointer_drag().is_none());
+    }
+
+    #[test]
+    fn resetting_one_split_leaves_every_other_split_unchanged() {
+        let mut w = WorkspaceState::default();
+        w.toggle_grid(&live(&[1, 2, 3, 4]), &[]);
+        assert!(w.enter_grid_resize_mode());
+        assert!(w.grid_resize_step(1, 0, 5.0, 0.1));
+        assert!(w.grid_resize_step(0, 1, 5.0, 0.1));
+        let rows_before = w.grid_sizing().row_weights(0).to_vec();
+        assert!(w.reset_grid_boundary(GridBoundary {
+            axis: GridAxis::Columns,
+            boundary: 0,
+            column: None,
+        }));
+        assert_eq!(w.grid_sizing().column_weights(), &[0.5, 0.5]);
+        assert_eq!(w.grid_sizing().row_weights(0), rows_before);
+    }
+
+    #[test]
+    fn leaving_the_grid_for_zen_clears_the_transient_resize_context() {
+        let tiles = live(&[1, 2]);
+        let mut w = WorkspaceState::default();
+        w.toggle_grid(&tiles, &[]);
+        assert!(w.enter_grid_resize_mode());
+        w.toggle_zen(&tiles, &[]);
+        assert!(!w.grid_view());
+        assert!(w.grid_resize_mode().is_none());
+        assert!(w.grid_pointer_drag().is_none());
     }
 
     /// `layout.rs:257-269` — leaving the grid re-anchors the panel, so a stale `Panel` intent cannot type into another worktree's shell.

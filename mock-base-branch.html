@@ -1,0 +1,1321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Base Branch Selection — Flows &amp; States</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    /* ---- Tier-1 palette (tokyonight-day / light) ---- */
+    --bg: #e1e2e7;
+    --bg_highlight: #c4c8da;
+    --fg: #3760bf;
+    --fg_dark: #6172b0;
+    --comment: #848cb5;
+    --blue: #2e7de9;
+    --cyan: #007197;
+    --magenta: #9854f1;
+    --green: #587539;
+    --yellow: #8c6c3e;
+    --red: #f52a65;
+
+    /* ---- derived semantic tokens ---- */
+    --BG: var(--bg);
+    --BG_RAIL: #d8d9de;
+    --BG_STRIP: #cfd0d5;
+    --BG_HOVER: #d1d4e0;
+    --BG_HL: var(--bg_highlight);
+    --BORDER: #c6cde1;
+    --BORDER_SOFT: #d5d9e4;
+    --SCRIM: rgba(72,109,195,0.70);
+    --PANEL_SHADOW: rgba(0,0,0,0.18);
+    --FG: var(--fg);
+    --FG_DIM: var(--fg_dark);
+    --FG_MUTE: var(--comment);
+    --FOCUS_RING: rgba(152,84,241,0.35);
+    --SEL_TINT_SOFT: rgba(0,113,151,0.10);
+    --SEL_TINT_STRONG: rgba(0,113,151,0.22);
+    --SEL_RING: rgba(0,113,151,0.5);
+    --AMBER: #a65c48;
+
+    /* ---- numeric scale ---- */
+    --SPACE_XS: 2px; --SPACE_SM: 4px; --SPACE_MD: 6px; --SPACE_LG: 8px;
+    --SPACE_XL: 10px; --SPACE_2XL: 12px; --SPACE_3XL: 16px;
+    --TEXT_MICRO: 10px; --TEXT_SMALL: 11px; --TEXT_BODY: 12px; --TEXT_TITLE: 13px;
+    --ICON_XS: 10px; --ICON_SM: 12px; --ICON_MD: 14px; --ICON_LG: 16px;
+    --MODAL_W_SM: 420px; --MODAL_W_MD: 480px; --MODAL_W_LG: 560px; --MODAL_W_XL: 640px;
+    --RADIUS_CONTROL: 4px; --RADIUS_GROUP: 6px; --RADIUS_PANEL: 12px; --RADIUS_FULL: 999px;
+    --FIELD_PX: 10px; --FIELD_PY: 2px; --FIELD_LABEL_COL_W: 92px;
+    --CONTROL_H: 22px; --ROW_PX: 12px; --ROW_PY: 8px; --ROW_LINE_GAP: 6px; --ROW_MIN_H: 38px;
+    --MODAL_SCROLL_MAX_H: 456px;
+    --ICON_BTN_W: 28px; --CHECKBOX_BOX: 14px; --FOCUS_RING_W: 2px; --PALETTE_ROW_H: 54px;
+    --SHADOW_Y: 6px; --SHADOW_BLUR: 24px;
+
+    --SANS: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --MONO: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  :root:not([data-theme="light"]) {}
+  html.dark {
+    --bg: #24283b;
+    --bg_highlight: #373b51;
+    --fg: #c0caf5;
+    --fg_dark: #a1aad0;
+    --comment: #565f89;
+    --blue: #7aa2f7;
+    --cyan: #7dcfff;
+    --magenta: #bb9af7;
+    --green: #9ece6a;
+    --yellow: #e0af68;
+    --red: #f7768e;
+
+    --BG_RAIL: #1e2130;
+    --BG_STRIP: #181b28;
+    --BG_HOVER: #2e3247;
+    --BORDER: #3d4259;
+    --BORDER_SOFT: #2f3348;
+    --SCRIM: rgba(4,4,6,0.62);
+    --PANEL_SHADOW: rgba(0,0,0,0.35);
+    --FOCUS_RING: rgba(187,154,247,0.25);
+    --SEL_TINT_SOFT: rgba(125,207,255,0.10);
+    --SEL_TINT_STRONG: rgba(125,207,255,0.22);
+    --SEL_RING: rgba(125,207,255,0.5);
+    --AMBER: #e6a172;
+    --SHADOW_Y: 12px; --SHADOW_BLUR: 40px;
+  }
+  html.dark #viewport { background-image: radial-gradient(circle, #1a1d29 1px, transparent 1px); }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--BG);
+    color: var(--FG);
+    font-family: var(--SANS);
+    overflow: hidden;
+  }
+
+  #viewport {
+    position: fixed; inset: 0; overflow: hidden; cursor: grab;
+    background-color: var(--BG);
+    background-image: radial-gradient(circle, var(--BORDER) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  #viewport.panning { cursor: grabbing; }
+  #canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; padding: 60px; width: max-content; }
+
+  .hud {
+    position: fixed; right: var(--SPACE_3XL); bottom: var(--SPACE_3XL); z-index: 10; display: flex; gap: var(--SPACE_MD); align-items: center;
+    background: var(--BG_RAIL); border: 1px solid var(--BORDER); border-radius: var(--RADIUS_GROUP); padding: var(--SPACE_LG) var(--SPACE_XL);
+    font-size: var(--TEXT_BODY); box-shadow: 0 4px 14px var(--PANEL_SHADOW);
+  }
+  .hud button { border: 1px solid var(--BORDER); background: var(--BG); color: var(--FG); border-radius: var(--RADIUS_CONTROL); padding: var(--SPACE_XS) var(--SPACE_2XL); font: inherit; cursor: pointer; }
+  .hud .zoom-pct { min-width: 42px; text-align: center; color: var(--FG_MUTE); font-family: var(--MONO); font-size: var(--TEXT_SMALL); }
+  .theme-toggle {
+    position: fixed; right: var(--SPACE_3XL); top: var(--SPACE_3XL); z-index: 10; border: 1px solid var(--BORDER);
+    background: var(--BG_RAIL); color: var(--FG); border-radius: var(--RADIUS_FULL); padding: var(--SPACE_LG) var(--SPACE_3XL);
+    font: inherit; font-size: var(--TEXT_BODY); cursor: pointer; box-shadow: 0 4px 14px var(--PANEL_SHADOW);
+  }
+
+  .frame-card.screen  { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+  .frame-card.desktop { width: 1280px; height: 800px; }
+
+  .page-header { margin-bottom: 36px; max-width: 1100px; }
+  .page-header h1 { font-size: 26px; font-weight: 700; margin: 0 0 var(--SPACE_LG); letter-spacing: -0.01em; }
+  .page-header .subtitle { font-size: var(--TEXT_TITLE); color: var(--FG_MUTE); margin: 0 0 var(--SPACE_3XL); max-width: 760px; line-height: 1.5; }
+  .legend {
+    display: inline-flex; gap: var(--SPACE_3XL); flex-wrap: wrap; align-items: center;
+    background: var(--BG_RAIL); border: 1px solid var(--BORDER);
+    border-radius: var(--RADIUS_GROUP); padding: var(--SPACE_XL) var(--SPACE_3XL); font-size: var(--TEXT_BODY); color: var(--FG_MUTE);
+  }
+  .legend b { color: var(--FG); }
+  .legend .tag { display: inline-flex; align-items: center; gap: var(--SPACE_MD); }
+  .legend .swatch { width: var(--SPACE_XL); height: var(--SPACE_XL); border-radius: var(--RADIUS_CONTROL); display: inline-block; }
+  .swatch.before { background: var(--red); }
+  .swatch.after { background: var(--green); }
+  .legend code { font-family: var(--MONO); }
+
+  .section-heading {
+    font-size: 18px; font-weight: 700; margin: 56px 0 var(--SPACE_LG); padding-bottom: var(--SPACE_LG);
+    border-bottom: 2px solid var(--BORDER); display: flex; align-items: baseline; gap: var(--SPACE_XL);
+  }
+  .section-letter {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; border-radius: var(--RADIUS_GROUP);
+    background: var(--magenta); color: #fff; font-size: var(--TEXT_TITLE); font-weight: 700;
+  }
+  .section-sub { font-size: var(--TEXT_BODY); font-weight: 400; color: var(--FG_MUTE); }
+
+  .frame-row { display: flex; gap: 28px; margin-top: 22px; align-items: flex-start; position: relative; flex-wrap: wrap; }
+  .frame { width: 480px; max-width: 100%; position: relative; }
+  .frame.desktop-frame { width: 1280px; }
+
+  .frame-caption { margin-bottom: var(--SPACE_XL); }
+  .frame-id {
+    display: inline-block; font-size: var(--TEXT_SMALL); font-weight: 700; letter-spacing: 0.02em;
+    color: #fff; background: var(--comment); border-radius: var(--RADIUS_CONTROL); padding: var(--SPACE_XS) var(--SPACE_LG); margin-right: var(--SPACE_LG);
+    font-family: var(--MONO);
+  }
+  html.dark .frame-id { background: #414868; }
+  .frame-name { font-size: var(--TEXT_TITLE); font-weight: 600; color: var(--FG); }
+  .frame-desc { font-size: var(--TEXT_BODY); color: var(--FG_MUTE); margin: var(--SPACE_MD) 0 0; line-height: 1.5; }
+  .frame-tradeoff { font-size: var(--TEXT_BODY); color: var(--AMBER); margin: var(--SPACE_SM) 0 0; line-height: 1.5; font-weight: 600; }
+
+  .frame-card {
+    background: var(--BG_RAIL); border: 1px solid var(--BORDER); border-radius: var(--RADIUS_PANEL);
+    box-shadow: 0 var(--SHADOW_Y) var(--SHADOW_BLUR) var(--PANEL_SHADOW); overflow: hidden;
+  }
+
+  .connector-row { display: flex; align-items: center; color: var(--comment); font-size: 20px; align-self: center; padding-top: 90px; }
+
+  /* ============ GROVE COMPONENTS ============ */
+
+  .icon { width: var(--ICON_MD); height: var(--ICON_MD); flex-shrink: 0; }
+  .icon.sm { width: var(--ICON_SM); height: var(--ICON_SM); }
+  .icon.xs { width: var(--ICON_XS); height: var(--ICON_XS); }
+  .icon.lg { width: var(--ICON_LG); height: var(--ICON_LG); }
+  .mono { font-family: var(--MONO); }
+
+  /* modal shell: header -> divider -> body -> footer */
+  .g-modal { display: flex; flex-direction: column; background: var(--BG_RAIL); }
+  .g-modal-header {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    padding: var(--SPACE_3XL); gap: var(--SPACE_XL);
+  }
+  .g-modal-title-block { display: flex; flex-direction: column; gap: var(--SPACE_XS); }
+  .g-modal-title { font-size: var(--TEXT_TITLE); font-weight: 700; color: var(--magenta); margin: 0; font-family: var(--SANS); }
+  .g-modal-subtitle { font-size: var(--TEXT_SMALL); color: var(--FG_MUTE); margin: 0; font-family: var(--MONO); }
+  .g-modal-subtitle.prose { font-family: var(--SANS); }
+  .g-close-btn {
+    width: var(--ICON_BTN_W); height: var(--ICON_BTN_W); border-radius: var(--RADIUS_CONTROL);
+    border: 1px solid transparent; background: transparent; color: var(--FG_MUTE);
+    display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0;
+  }
+  .g-modal-divider { height: 1px; background: var(--BORDER); }
+  .g-modal-body { padding: var(--SPACE_3XL); display: flex; flex-direction: column; gap: var(--SPACE_3XL); }
+  .g-modal-body.scroll { max-height: var(--MODAL_SCROLL_MAX_H); overflow-y: auto; }
+  .g-modal-footer {
+    background: var(--BG_STRIP); padding: var(--SPACE_2XL) var(--SPACE_3XL);
+    display: flex; align-items: center; gap: var(--SPACE_XL);
+  }
+  .g-footer-left { font-size: var(--TEXT_SMALL); color: var(--FG_MUTE); flex: 1; }
+  .g-footer-hints { display: flex; gap: var(--SPACE_MD); }
+  .g-hint-chip {
+    background: var(--BG_HL); color: var(--FG_DIM); font-family: var(--MONO); font-size: var(--TEXT_SMALL);
+    padding: var(--SPACE_XS) var(--SPACE_LG); border-radius: var(--RADIUS_CONTROL);
+  }
+  .g-footer-buttons { display: flex; gap: var(--SPACE_LG); }
+
+  /* buttons */
+  .g-btn {
+    font-family: var(--SANS); font-size: var(--TEXT_BODY); font-weight: 600; border-radius: var(--RADIUS_CONTROL);
+    height: var(--CONTROL_H); padding: 0 var(--SPACE_3XL); border: 1px solid; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: var(--SPACE_MD);
+  }
+  .g-btn-plain { color: var(--FG_DIM); border-color: var(--BORDER); background: var(--BG); }
+  .g-btn-primary { color: var(--FG); border-color: var(--BORDER); background: var(--BG_HL); }
+  .g-btn-accent { color: var(--FG); border-color: rgba(152,84,241,0.45); background: var(--BG_HL); }
+  html.dark .g-btn-accent { border-color: rgba(187,154,247,0.45); }
+  .g-btn-danger { color: var(--red); border-color: var(--red); background: var(--BG); }
+
+  /* field box */
+  .field-row { display: flex; align-items: center; gap: var(--SPACE_XL); }
+  .field-row .field-label { width: var(--FIELD_LABEL_COL_W); font-size: var(--TEXT_BODY); color: var(--FG_DIM); flex-shrink: 0; }
+  .field-box {
+    flex: 1; display: flex; align-items: center; gap: var(--SPACE_LG);
+    border: 1px solid var(--BORDER); border-radius: var(--RADIUS_CONTROL); height: var(--CONTROL_H);
+    padding: var(--FIELD_PY) var(--FIELD_PX); background: var(--BG);
+  }
+  .field-box.focus { box-shadow: 0 0 0 var(--FOCUS_RING_W) var(--FOCUS_RING); }
+  .field-box input {
+    border: 0; outline: 0; background: transparent; color: var(--FG); font-family: var(--SANS);
+    font-size: var(--TEXT_BODY); flex: 1; min-width: 0; padding: 0;
+  }
+  .field-box input.mono-val { font-family: var(--MONO); }
+  .field-box input::placeholder { color: var(--FG_MUTE); }
+  .field-box .chev { color: var(--FG_MUTE); cursor: pointer; flex-shrink: 0; }
+  .field-box.disabled { background: var(--BG_STRIP); }
+  .field-box.disabled input { color: var(--FG_MUTE); }
+
+  .row-sublabel { font-size: var(--TEXT_SMALL); color: var(--FG_MUTE); margin-top: var(--SPACE_XS); line-height: 1.4; }
+  .validation-note { color: var(--red); font-size: var(--TEXT_SMALL); }
+
+  /* settings card block */
+  .g-section-label {
+    font-family: var(--MONO); text-transform: uppercase; font-size: var(--TEXT_MICRO); color: var(--FG_MUTE);
+    letter-spacing: 0.04em; margin-left: 13px; margin-bottom: var(--SPACE_MD);
+  }
+  .g-card {
+    background: var(--BG_STRIP); border: 1px solid var(--BORDER); border-radius: var(--RADIUS_CONTROL);
+    overflow: hidden;
+  }
+  .g-card-block { display: flex; flex-direction: column; }
+
+  /* click rows */
+  .g-row {
+    display: flex; align-items: center; gap: var(--SPACE_LG); min-height: var(--ROW_MIN_H);
+    padding: var(--ROW_PY) var(--ROW_PX); border-bottom: 1px solid var(--BORDER_SOFT); cursor: pointer;
+  }
+  .g-row:last-child { border-bottom: none; }
+  .g-row.static { cursor: default; }
+  .g-row.disabled { cursor: default; color: var(--FG_MUTE); }
+  .g-row:hover:not(.disabled):not(.static) { background: var(--BG_HOVER); }
+  .g-row.selected { background: var(--SEL_TINT_SOFT); box-shadow: inset 0 0 0 1px var(--SEL_RING); }
+  .g-gutter { width: 15px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  .g-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--SPACE_XS); }
+  .g-row-label { font-size: var(--TEXT_BODY); color: var(--FG); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .g-row-label.mono { font-family: var(--MONO); }
+  .g-row-label.muted { color: var(--FG_MUTE); }
+  .g-row-value { font-family: var(--MONO); font-size: var(--TEXT_BODY); color: var(--FG_DIM); flex-shrink: 0; }
+  .dot { width: 6px; height: 6px; border-radius: var(--RADIUS_FULL); background: var(--cyan); flex-shrink: 0; }
+  .dot.hollow { background: transparent; border: 1px solid var(--FG_MUTE); }
+  .check { color: var(--cyan); }
+
+  .group-label {
+    font-family: var(--MONO); text-transform: uppercase; font-size: var(--TEXT_MICRO); color: var(--FG_MUTE);
+    letter-spacing: 0.04em; padding: var(--SPACE_LG) var(--ROW_PX) var(--SPACE_Xs, 4px);
+    background: var(--BG_STRIP);
+  }
+
+  /* chips (variant D) */
+  .chip-row { display: flex; flex-wrap: wrap; gap: var(--SPACE_LG); }
+  .g-chip {
+    display: inline-flex; align-items: center; gap: var(--SPACE_MD); border-radius: var(--RADIUS_FULL);
+    border: 1px solid var(--BORDER); background: var(--BG); padding: var(--SPACE_XS) var(--SPACE_2XL);
+    font-family: var(--MONO); font-size: var(--TEXT_SMALL); color: var(--FG_DIM); max-width: 220px; cursor: pointer;
+  }
+  .g-chip.selected { background: var(--BG_HL); border-color: var(--SEL_RING); box-shadow: inset 0 0 0 1px var(--SEL_RING); color: var(--FG); }
+  .g-chip span.txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .g-chip.other { color: var(--FG_MUTE); }
+
+  /* skeleton */
+  .skel { background: linear-gradient(90deg, var(--BORDER_SOFT), var(--BORDER), var(--BORDER_SOFT)); border-radius: var(--RADIUS_CONTROL); height: 10px; }
+  .skel.w60 { width: 60%; } .skel.w40 { width: 40%; } .skel.w30 { width: 30%; }
+
+  /* toast */
+  .g-toast {
+    display: inline-flex; align-items: center; gap: var(--SPACE_LG); background: var(--BG_RAIL);
+    border: 1px solid var(--BORDER); border-radius: var(--RADIUS_GROUP); padding: var(--SPACE_XL) var(--SPACE_3XL);
+    box-shadow: 0 var(--SHADOW_Y) var(--SHADOW_BLUR) var(--PANEL_SHADOW); font-size: var(--TEXT_BODY); color: var(--FG);
+  }
+  .g-toast .icon { color: var(--green); }
+
+  /* step indicator */
+  .step-dots { display: flex; gap: var(--SPACE_MD); align-items: center; }
+  .step-dot { width: 6px; height: 6px; border-radius: var(--RADIUS_FULL); background: var(--BORDER); }
+  .step-dot.active { background: var(--magenta); }
+  .step-label { font-family: var(--MONO); font-size: var(--TEXT_SMALL); color: var(--FG_MUTE); }
+
+  /* inline dropdown (variant A) */
+  .inline-dropdown { border: 1px solid var(--BORDER); border-radius: var(--RADIUS_CONTROL); background: var(--BG_STRIP); overflow: hidden; margin-top: var(--SPACE_MD); }
+
+  /* filter input for overlay */
+  .filter-box { display: flex; align-items: center; gap: var(--SPACE_LG); border: 1px solid var(--BORDER); border-radius: var(--RADIUS_CONTROL); height: var(--CONTROL_H); padding: 0 var(--FIELD_PX); background: var(--BG); }
+  .filter-box input { border: 0; outline: 0; background: transparent; color: var(--FG); font-family: var(--SANS); font-size: var(--TEXT_BODY); flex: 1; }
+
+  /* scroll fade affordance */
+  .scroll-fade-bottom { position: relative; }
+  .scroll-fade-bottom::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 28px;
+    background: linear-gradient(to bottom, transparent, var(--BG_STRIP));
+    pointer-events: none;
+  }
+
+  /* ---- app chrome (desktop frame) ---- */
+  .app-window { display: flex; height: 100%; background: var(--BG); position: relative; }
+  .app-sidebar { width: 240px; flex-shrink: 0; background: var(--BG_RAIL); border-right: 1px solid var(--BORDER); display: flex; flex-direction: column; }
+  .app-sidebar-header { padding: var(--SPACE_3XL) var(--SPACE_2XL); font-size: var(--TEXT_SMALL); color: var(--FG_MUTE); font-family: var(--MONO); text-transform: uppercase; letter-spacing: 0.04em; display: flex; justify-content: space-between; align-items: center; }
+  .add-btn { width: 20px; height: 20px; border-radius: var(--RADIUS_CONTROL); border: 1px solid var(--BORDER); background: var(--BG); color: var(--FG_DIM); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  .sidebar-item { padding: var(--SPACE_LG) var(--SPACE_2XL); font-size: var(--TEXT_BODY); color: var(--FG_DIM); display: flex; align-items: center; gap: var(--SPACE_LG); }
+  .sidebar-item.active { background: var(--BG_HL); color: var(--FG); }
+  .sidebar-item.project { font-weight: 600; color: var(--FG); font-size: var(--TEXT_TITLE); padding-top: var(--SPACE_3XL); }
+  .sidebar-item.worktree { padding-left: 30px; font-family: var(--MONO); font-size: var(--TEXT_SMALL); }
+  .app-main { flex: 1; display: flex; flex-direction: column; }
+  .app-statusbar { height: 26px; background: var(--BG_STRIP); border-top: 1px solid var(--BORDER); display: flex; align-items: center; padding: 0 var(--SPACE_3XL); font-size: var(--TEXT_SMALL); color: var(--FG_MUTE); font-family: var(--MONO); gap: var(--SPACE_3XL); }
+  .app-content { flex: 1; padding: var(--SPACE_3XL); color: var(--FG_MUTE); font-family: var(--MONO); font-size: var(--TEXT_SMALL); }
+  .app-terminal-line { color: var(--FG_MUTE); }
+  .app-terminal-line.prompt { color: var(--green); }
+  .scrim-layer { position: absolute; inset: 0; background: var(--SCRIM); display: flex; align-items: center; justify-content: center; }
+
+  .sticky-note {
+    display: inline-block; background: var(--yellow); border: 1px solid var(--AMBER); color: var(--BG_STRIP);
+    font-size: 12.5px; line-height: 1.55; padding: var(--SPACE_3XL) var(--SPACE_3XL); max-width: 420px; border-radius: 3px;
+    box-shadow: 0 6px 16px var(--PANEL_SHADOW); transform: rotate(-1.2deg); margin: 40px 0; font-family: var(--SANS);
+  }
+  .sticky-note.rot2 { transform: rotate(1deg); }
+  .sticky-note b { color: var(--BG_STRIP); font-family: var(--MONO); }
+  html.dark .sticky-note { color: #2c2612; }
+  html.dark .sticky-note b { color: #1c1808; }
+</style>
+</head>
+<body>
+<button class="theme-toggle" id="themeToggle" type="button">☾ Dark</button>
+<div class="hud">
+  <button type="button" id="zoomOut">−</button>
+  <span class="zoom-pct" id="zoomPct">100%</span>
+  <button type="button" id="zoomIn">+</button>
+  <button type="button" id="zoomFit">Fit</button>
+</div>
+<div id="viewport">
+<div id="canvas">
+
+  <div class="page-header">
+    <h1>Base branch selection — Flows &amp; States</h1>
+    <p class="subtitle">Design review mock for letting the user choose the base branch when creating a worktree. Currently <code style="font-family:var(--MONO)">git worktree add -b &lt;name&gt; &lt;dest&gt;</code> runs with no start-point, so the base is silently whatever HEAD the project root happens to be on. Four interaction variants are compared in Section B; Variant A is carried through the lifecycle and edge-case sections as the recommended baseline.</p>
+    <div class="legend">
+      <span class="tag"><span class="swatch before"></span><b>BEFORE</b> = existing UI to remove</span>
+      <span class="tag"><span class="swatch after"></span><b>AFTER</b> = new design</span>
+      <span class="tag">Frame IDs (e.g. <b>A1</b>, <b>B3</b>) group related states</span>
+    </div>
+  </div>
+
+  <!-- ================= SECTION A ================= -->
+  <div class="section-heading"><span class="section-letter">A</span> Context &amp; today <span class="section-sub">— orientation + the existing bare-input modal</span></div>
+  <div class="frame-row">
+
+    <div class="frame desktop-frame">
+      <div class="frame-caption">
+        <span class="frame-id">A1</span><span class="frame-name">App shell, no modal</span>
+        <p class="frame-desc">Orientation frame: sidebar project/worktree list + main pane, nothing open. Entry points to worktree creation live here: the project row's "+" button, and the command palette's "Create worktree…" row (not rendered as a separate frame).</p>
+      </div>
+      <div class="frame-card screen desktop">
+        <div class="app-window">
+          <div class="app-sidebar">
+            <div class="app-sidebar-header">Projects</div>
+            <div class="sidebar-item project">grove <button class="add-btn" title="">+</button></div>
+            <div class="sidebar-item worktree active">● main</div>
+            <div class="sidebar-item worktree">○ feature/auth-refresh</div>
+            <div class="sidebar-item worktree">○ fix/worktree-race</div>
+            <div class="sidebar-item project">higgsboson-app <button class="add-btn">+</button></div>
+            <div class="sidebar-item worktree">○ main</div>
+          </div>
+          <div class="app-main">
+            <div class="app-content">
+              <div class="app-terminal-line prompt">$ cargo test --workspace</div>
+              <div class="app-terminal-line">running 214 tests…</div>
+              <div class="app-terminal-line">test views::conformance::r7_border_weight ... ok</div>
+            </div>
+            <div class="app-statusbar"><span>grove · main</span><span>●</span><span>up to date</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <div class="frame desktop-frame">
+      <div class="frame-caption">
+        <span class="frame-id">A2</span><span class="frame-name">Today's modal, in context</span>
+        <p class="frame-desc">Same window, "New worktree" modal centered over the scrim after clicking "+" — real placement for placement-judging.</p>
+      </div>
+      <div class="frame-card screen desktop">
+        <div class="app-window">
+          <div class="app-sidebar">
+            <div class="app-sidebar-header">Projects</div>
+            <div class="sidebar-item project">grove <button class="add-btn">+</button></div>
+            <div class="sidebar-item worktree active">● main</div>
+            <div class="sidebar-item worktree">○ feature/auth-refresh</div>
+            <div class="sidebar-item worktree">○ fix/worktree-race</div>
+          </div>
+          <div class="app-main">
+            <div class="app-content"></div>
+            <div class="app-statusbar"><span>grove · main</span></div>
+          </div>
+          <div class="scrim-layer">
+            <div class="g-modal" style="width:var(--MODAL_W_MD);border-radius:var(--RADIUS_PANEL);box-shadow:0 var(--SHADOW_Y) var(--SHADOW_BLUR) var(--PANEL_SHADOW);">
+              <div class="g-modal-header">
+                <div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div>
+                <button class="g-close-btn">
+                  <svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                </button>
+              </div>
+              <div class="g-modal-divider"></div>
+              <div class="g-modal-body">
+                <div class="field-row">
+                  <svg class="icon lg" viewBox="0 0 16 16" fill="none" style="color:var(--FG_MUTE)"><path d="M5 2v12M5 4a3 3 0 003 3h2a3 3 0 003-3" stroke="currentColor" stroke-width="1.3"/><circle cx="5" cy="2" r="1.6" stroke="currentColor" stroke-width="1.2"/><circle cx="13" cy="4" r="1.6" stroke="currentColor" stroke-width="1.2"/></svg>
+                  <div class="field-box focus"><input placeholder="" value="" /></div>
+                </div>
+              </div>
+              <div class="g-modal-footer">
+                <div class="g-footer-left"></div>
+                <div class="g-footer-hints"><span class="g-hint-chip">⏎ confirm</span><span class="g-hint-chip">esc cancel</span></div>
+                <div class="g-footer-buttons">
+                  <button class="g-btn g-btn-plain">Cancel</button>
+                  <button class="g-btn g-btn-primary">Submit</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">A3</span><span class="frame-name">Today's modal, alone</span>
+        <p class="frame-desc" style="color:var(--red);font-weight:600;">BEFORE — to be replaced. Natural size, 480px. One bare row: icon + empty-placeholder input. No label, no caption, no help text anywhere.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header">
+            <div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div>
+            <button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+          </div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="field-row">
+              <svg class="icon lg" viewBox="0 0 16 16" fill="none" style="color:var(--FG_MUTE)"><path d="M5 2v12M5 4a3 3 0 003 3h2a3 3 0 003-3" stroke="currentColor" stroke-width="1.3"/><circle cx="5" cy="2" r="1.6" stroke="currentColor" stroke-width="1.2"/><circle cx="13" cy="4" r="1.6" stroke="currentColor" stroke-width="1.2"/></svg>
+              <div class="field-box"><input placeholder="" value="" /></div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ confirm</span><span class="g-hint-chip">esc cancel</span></div>
+            <div class="g-footer-buttons">
+              <button class="g-btn g-btn-plain">Cancel</button>
+              <button class="g-btn g-btn-primary">Submit</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">A4</span><span class="frame-name">Today's modal, validation error</span>
+        <p class="frame-desc">Same bare modal with the red validation note shown below the row.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header">
+            <div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div>
+            <button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+          </div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="field-row">
+              <svg class="icon lg" viewBox="0 0 16 16" fill="none" style="color:var(--FG_MUTE)"><path d="M5 2v12M5 4a3 3 0 003 3h2a3 3 0 003-3" stroke="currentColor" stroke-width="1.3"/><circle cx="5" cy="2" r="1.6" stroke="currentColor" stroke-width="1.2"/><circle cx="13" cy="4" r="1.6" stroke="currentColor" stroke-width="1.2"/></svg>
+              <div class="field-box focus"><input class="mono-val" value="feat space" /></div>
+            </div>
+            <div class="validation-note" style="margin-left:26px;">Invalid name: use letters, digits, '-', '_' or '.'</div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ confirm</span><span class="g-hint-chip">esc cancel</span></div>
+            <div class="g-footer-buttons">
+              <button class="g-btn g-btn-plain">Cancel</button>
+              <button class="g-btn g-btn-primary">Submit</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sticky-note">
+    <b>Core gap:</b> there is currently NO branch enumeration anywhere in grove-core — no <code>git branch --list</code>, no <code>for-each-ref</code>, no <code>ls-remote</code>. A branch picker needs new core plumbing built before any variant below can be wired up.
+  </div>
+  <div class="sticky-note rot2">
+    <b>Modal plumbing:</b> Modal::Input today is backed by a single String buffer. Adding a base-branch field makes this the app's first multi-field modal — real implementation cost, not a trivial UI tweak.
+  </div>
+
+  <!-- ================= SECTION B ================= -->
+  <div class="section-heading"><span class="section-letter">B</span> Variants <span class="section-sub">— four interaction approaches to the same target state</span></div>
+
+  <div class="sticky-note">
+    <b>Prefill rule (applies to all variants):</b> the base field is always prefilled with a sensible default (repo's default branch, or current HEAD). Choosing a base must never become a mandatory extra step — one Enter keypress still creates a worktree in the common case.
+  </div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B1</span><span class="frame-name">Variant A — inline row, collapsed</span>
+        <p class="frame-desc">Same 480px modal. Body becomes a 2-row settings_card_block: Name, then Base showing the prefilled branch + chevron.</p>
+        <p class="frame-tradeoff">Tradeoff: minimal build cost, smallest change from today — doesn't scale to huge branch lists.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header">
+            <div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div>
+            <button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+          </div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="g-section-label">Worktree</div>
+            <div class="g-card">
+              <div class="g-row static">
+                <div class="g-gutter"></div>
+                <div class="g-row-main"><div class="g-row-label">Name</div></div>
+                <div class="field-box" style="max-width:220px;"><input class="mono-val" value="feature/auth-refresh" /></div>
+              </div>
+              <div class="g-row static">
+                <div class="g-gutter"></div>
+                <div class="g-row-main"><div class="g-row-label">Base</div></div>
+                <div class="field-box" style="max-width:220px;justify-content:space-between;">
+                  <span class="mono" style="font-size:var(--TEXT_BODY);">main</span>
+                  <svg class="icon sm chev" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ confirm</span><span class="g-hint-chip">esc cancel</span></div>
+            <div class="g-footer-buttons">
+              <button class="g-btn g-btn-plain">Cancel</button>
+              <button class="g-btn g-btn-primary">Submit</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B2</span><span class="frame-name">Variant A — inline dropdown open</span>
+        <p class="frame-desc">Clicking the chevron opens a compact list directly below the row — no full overlay.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header">
+            <div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div>
+            <button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+          </div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="g-section-label">Worktree</div>
+            <div class="g-card">
+              <div class="g-row static">
+                <div class="g-gutter"></div>
+                <div class="g-row-main"><div class="g-row-label">Name</div></div>
+                <div class="field-box" style="max-width:220px;"><input class="mono-val" value="feature/auth-refresh" /></div>
+              </div>
+              <div class="g-row static">
+                <div class="g-gutter"></div>
+                <div class="g-row-main"><div class="g-row-label">Base</div></div>
+                <div class="field-box focus" style="max-width:220px;justify-content:space-between;">
+                  <span class="mono" style="font-size:var(--TEXT_BODY);">main</span>
+                  <svg class="icon sm chev" viewBox="0 0 16 16" fill="none"><path d="M12 10l-4-4-4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </div>
+              </div>
+            </div>
+            <div class="inline-dropdown">
+              <div class="g-row selected"><div class="g-gutter"><span class="check">✓</span></div><div class="g-row-main"><div class="g-row-label mono">main</div></div></div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">develop</div></div></div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">release/2.4</div></div></div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ confirm</span><span class="g-hint-chip">esc close</span></div>
+            <div class="g-footer-buttons">
+              <button class="g-btn g-btn-plain">Cancel</button>
+              <button class="g-btn g-btn-primary">Submit</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B3</span><span class="frame-name">Variant B — step 1 of 2 (name)</span>
+        <p class="frame-desc">Two-step wizard. Step indicator in the header. Only the name is asked for first.</p>
+        <p class="frame-tradeoff">Tradeoff: most explicit &amp; safest for first-timers, but most clicks — see sticky below.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header">
+            <div class="g-modal-title-block">
+              <h2 class="g-modal-title">New worktree</h2>
+              <p class="g-modal-subtitle prose">Step 1 of 2 · Name</p>
+            </div>
+            <div style="display:flex;align-items:center;gap:var(--SPACE_2XL);">
+              <div class="step-dots"><span class="step-dot active"></span><span class="step-dot"></span></div>
+              <button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+            </div>
+          </div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="field-row">
+              <svg class="icon lg" viewBox="0 0 16 16" fill="none" style="color:var(--FG_MUTE)"><path d="M5 2v12M5 4a3 3 0 003 3h2a3 3 0 003-3" stroke="currentColor" stroke-width="1.3"/><circle cx="5" cy="2" r="1.6" stroke="currentColor" stroke-width="1.2"/><circle cx="13" cy="4" r="1.6" stroke="currentColor" stroke-width="1.2"/></svg>
+              <div class="field-box focus"><input class="mono-val" value="feature/auth-refresh" /></div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ next</span><span class="g-hint-chip">esc cancel</span></div>
+            <div class="g-footer-buttons">
+              <button class="g-btn g-btn-plain">Cancel</button>
+              <button class="g-btn g-btn-primary">Next</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B4</span><span class="frame-name">Variant B — step 2 of 2 (base)</span>
+        <p class="frame-desc">Branch list to choose the base, prefilled selection already marked. Footer hint reads "back", not "cancel".</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header">
+            <div class="g-modal-title-block">
+              <h2 class="g-modal-title">New worktree</h2>
+              <p class="g-modal-subtitle prose">Step 2 of 2 · Base branch</p>
+            </div>
+            <div style="display:flex;align-items:center;gap:var(--SPACE_2XL);">
+              <div class="step-dots"><span class="step-dot"></span><span class="step-dot active"></span></div>
+              <button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+            </div>
+          </div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="g-section-label">Base branch</div>
+            <div class="g-card">
+              <div class="g-row selected"><div class="g-gutter"><span class="check">✓</span></div><div class="g-row-main"><div class="g-row-label mono">main</div><div class="row-sublabel">default branch</div></div></div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">develop</div></div></div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">fix/worktree-race</div></div></div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ create</span><span class="g-hint-chip">esc back</span></div>
+            <div class="g-footer-buttons">
+              <button class="g-btn g-btn-plain">Back</button>
+              <button class="g-btn g-btn-primary">Create</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sticky-note">
+    <b>Tension:</b> the "one Enter for the common case" constraint fights Variant B directly — a second required step, even with a good default preselected, adds a click and a screen the other three variants don't need.
+  </div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B5</span><span class="frame-name">Variant C — base field, collapsed</span>
+        <p class="frame-desc">Base field shown as a simple mono value, not yet activated. Clicking it opens the full overlay (B6).</p>
+        <p class="frame-tradeoff">Tradeoff: scales to hundreds of branches, but highest build cost of the four.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header">
+            <div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div>
+            <button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+          </div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="g-section-label">Worktree</div>
+            <div class="g-card">
+              <div class="g-row static">
+                <div class="g-gutter"></div>
+                <div class="g-row-main"><div class="g-row-label">Name</div></div>
+                <div class="field-box" style="max-width:220px;"><input class="mono-val" value="feature/auth-refresh" /></div>
+              </div>
+              <div class="g-row">
+                <div class="g-gutter"></div>
+                <div class="g-row-main"><div class="g-row-label">Base</div></div>
+                <div class="g-row-value">main</div>
+              </div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ confirm</span><span class="g-hint-chip">esc cancel</span></div>
+            <div class="g-footer-buttons">
+              <button class="g-btn g-btn-plain">Cancel</button>
+              <button class="g-btn g-btn-primary">Submit</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B6</span><span class="frame-name">Variant C — search overlay open</span>
+        <p class="frame-desc">Full searchable overlay: filter input, Local/Remote groups, ahead/behind counts, keyboard nav. Card density (38px rows), not the 54px palette row.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header">
+            <div class="g-modal-title-block">
+              <h2 class="g-modal-title">Choose base branch</h2>
+              <p class="g-modal-subtitle prose">for feature/auth-refresh</p>
+            </div>
+            <button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+          </div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="filter-box">
+              <svg class="icon sm" viewBox="0 0 16 16" fill="none" style="color:var(--FG_MUTE)"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.3"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+              <input placeholder="Filter branches…" />
+            </div>
+            <div class="g-card">
+              <div class="group-label">Local</div>
+              <div class="g-row selected"><div class="g-gutter"><span class="check">✓</span></div><div class="g-row-main"><div class="g-row-label mono">main</div></div><div class="g-row-value">—</div></div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">develop</div></div><div class="g-row-value">+3 −1</div></div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">fix/worktree-race</div></div><div class="g-row-value">+1 −0</div></div>
+              <div class="group-label">Remote</div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">origin/release/2.4</div></div><div class="g-row-value">+0 −4</div></div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">↑↓ navigate</span><span class="g-hint-chip">⏎ select</span><span class="g-hint-chip">esc close</span></div>
+            <div class="g-footer-buttons"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B7</span><span class="frame-name">Variant D — quick-pick chips</span>
+        <p class="frame-desc">Base row is a chip row: default branch first, then recent branches, then "Other…".</p>
+        <p class="frame-tradeoff">Tradeoff: fastest for the 90% case — but needs a new "recent branches" store that doesn't exist yet.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header">
+            <div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div>
+            <button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+          </div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="g-section-label">Worktree</div>
+            <div class="g-card">
+              <div class="g-row static">
+                <div class="g-gutter"></div>
+                <div class="g-row-main"><div class="g-row-label">Name</div></div>
+                <div class="field-box" style="max-width:220px;"><input class="mono-val" value="feature/auth-refresh" /></div>
+              </div>
+            </div>
+            <div class="g-section-label">Base</div>
+            <div class="chip-row">
+              <div class="g-chip selected"><span class="dot"></span><span class="txt">main</span></div>
+              <div class="g-chip"><span class="txt">develop</span></div>
+              <div class="g-chip"><span class="txt">fix/worktree-race</span></div>
+              <div class="g-chip other">Other…</div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ confirm</span><span class="g-hint-chip">esc cancel</span></div>
+            <div class="g-footer-buttons">
+              <button class="g-btn g-btn-plain">Cancel</button>
+              <button class="g-btn g-btn-primary">Submit</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">B8</span><span class="frame-name">Variant D — "Other…" clicked</span>
+        <p class="frame-desc">Falls through into Variant C's searchable list for the full branch set.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header">
+            <div class="g-modal-title-block">
+              <h2 class="g-modal-title">Choose base branch</h2>
+              <p class="g-modal-subtitle prose">for feature/auth-refresh</p>
+            </div>
+            <button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+          </div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="filter-box">
+              <svg class="icon sm" viewBox="0 0 16 16" fill="none" style="color:var(--FG_MUTE)"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.3"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+              <input placeholder="Filter branches…" />
+            </div>
+            <div class="g-card">
+              <div class="group-label">Local</div>
+              <div class="g-row selected"><div class="g-gutter"><span class="check">✓</span></div><div class="g-row-main"><div class="g-row-label mono">main</div></div><div class="g-row-value">—</div></div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">develop</div></div><div class="g-row-value">+3 −1</div></div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">fix/worktree-race</div></div><div class="g-row-value">+1 −0</div></div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">↑↓ navigate</span><span class="g-hint-chip">⏎ select</span><span class="g-hint-chip">esc close</span></div>
+            <div class="g-footer-buttons"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= SECTION C ================= -->
+  <div class="section-heading"><span class="section-letter">C</span> In context <span class="section-sub">— recommendation, placed in the real app window</span></div>
+  <div class="frame-row">
+    <div class="frame desktop-frame">
+      <div class="frame-caption">
+        <span class="frame-id">C1</span><span class="frame-name">Recommended variant, in the app window</span>
+        <p class="frame-desc">Variant A is used here for placement-judging purposes — it is the recommendation: smallest change from today, ships the prefill rule, and doesn't fight the one-Enter constraint. Variants C and D remain worth building later as the branch list grows.</p>
+      </div>
+      <div class="frame-card screen desktop">
+        <div class="app-window">
+          <div class="app-sidebar">
+            <div class="app-sidebar-header">Projects</div>
+            <div class="sidebar-item project">grove <button class="add-btn">+</button></div>
+            <div class="sidebar-item worktree active">● main</div>
+            <div class="sidebar-item worktree">○ feature/auth-refresh</div>
+            <div class="sidebar-item worktree">○ fix/worktree-race</div>
+          </div>
+          <div class="app-main">
+            <div class="app-content"></div>
+            <div class="app-statusbar"><span>grove · main</span></div>
+          </div>
+          <div class="scrim-layer">
+            <div class="g-modal" style="width:var(--MODAL_W_MD);border-radius:var(--RADIUS_PANEL);box-shadow:0 var(--SHADOW_Y) var(--SHADOW_BLUR) var(--PANEL_SHADOW);">
+              <div class="g-modal-header">
+                <div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div>
+                <button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+              </div>
+              <div class="g-modal-divider"></div>
+              <div class="g-modal-body">
+                <div class="g-section-label">Worktree</div>
+                <div class="g-card">
+                  <div class="g-row static">
+                    <div class="g-gutter"></div>
+                    <div class="g-row-main"><div class="g-row-label">Name</div></div>
+                    <div class="field-box focus" style="max-width:220px;"><input class="mono-val" value="feature/auth-refresh" /></div>
+                  </div>
+                  <div class="g-row static">
+                    <div class="g-gutter"></div>
+                    <div class="g-row-main"><div class="g-row-label">Base</div></div>
+                    <div class="field-box" style="max-width:220px;justify-content:space-between;">
+                      <span class="mono" style="font-size:var(--TEXT_BODY);">main</span>
+                      <svg class="icon sm chev" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="g-modal-footer">
+                <div class="g-footer-left"></div>
+                <div class="g-footer-hints"><span class="g-hint-chip">⏎ confirm</span><span class="g-hint-chip">esc cancel</span></div>
+                <div class="g-footer-buttons">
+                  <button class="g-btn g-btn-plain">Cancel</button>
+                  <button class="g-btn g-btn-primary">Submit</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= SECTION D ================= -->
+  <div class="section-heading"><span class="section-letter">D</span> Lifecycle <span class="section-sub">— rendered with Variant A's design</span></div>
+
+  <div class="sticky-note">
+    <b>Applies to all variants:</b> this lifecycle (loading → populated → filtered → dirty → success/error) is drawn using Variant A's chrome for concreteness, but the same states apply regardless of which variant ships.
+  </div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">D1</span><span class="frame-name">Branch list loading</span>
+        <p class="frame-desc">Skeleton rows at the same height as loaded rows — nothing reflows once data arrives.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header"><div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div><button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="g-section-label">Worktree</div>
+            <div class="g-card">
+              <div class="g-row static"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label">Name</div></div><div class="field-box" style="max-width:220px;"><input class="mono-val" value="feature/auth-refresh" /></div></div>
+              <div class="g-row static"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label">Base</div></div><div style="max-width:220px;flex:1;display:flex;flex-direction:column;gap:4px;"><div class="skel w60"></div></div></div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">esc cancel</span></div>
+            <div class="g-footer-buttons"><button class="g-btn g-btn-plain">Cancel</button><button class="g-btn g-btn-primary" style="opacity:.6;">Submit</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">D2</span><span class="frame-name">Populated + prefilled</span>
+        <p class="frame-desc">Default steady state: base resolved to the repo default branch.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header"><div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div><button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="g-section-label">Worktree</div>
+            <div class="g-card">
+              <div class="g-row static"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label">Name</div></div><div class="field-box" style="max-width:220px;"><input class="mono-val" value="feature/auth-refresh" /></div></div>
+              <div class="g-row static"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label">Base</div></div><div class="field-box" style="max-width:220px;justify-content:space-between;"><span class="mono" style="font-size:var(--TEXT_BODY);">main</span><svg class="icon sm chev" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div></div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ confirm</span><span class="g-hint-chip">esc cancel</span></div>
+            <div class="g-footer-buttons"><button class="g-btn g-btn-plain">Cancel</button><button class="g-btn g-btn-primary">Submit</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">D3</span><span class="frame-name">Filter narrowed</span>
+        <p class="frame-desc">Inline dropdown filtered by typed text "rel".</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header"><div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div><button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="g-section-label">Worktree</div>
+            <div class="g-card">
+              <div class="g-row static"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label">Name</div></div><div class="field-box" style="max-width:220px;"><input class="mono-val" value="feature/auth-refresh" /></div></div>
+              <div class="g-row static"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label">Base</div></div><div class="field-box focus" style="max-width:220px;justify-content:space-between;"><input class="mono-val" value="rel" style="max-width:80px;"/><svg class="icon sm chev" viewBox="0 0 16 16" fill="none"><path d="M12 10l-4-4-4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div></div>
+            </div>
+            <div class="inline-dropdown">
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">release/2.4</div></div></div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ select</span><span class="g-hint-chip">esc close</span></div>
+            <div class="g-footer-buttons"><button class="g-btn g-btn-plain">Cancel</button><button class="g-btn g-btn-primary">Submit</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">D4</span><span class="frame-name">Non-default base selected</span>
+        <p class="frame-desc">Dirty-state indicator: an explicit "changed" label plus dot next to the base value — never color alone.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header"><div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div><button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="g-section-label">Worktree</div>
+            <div class="g-card">
+              <div class="g-row static"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label">Name</div></div><div class="field-box" style="max-width:220px;"><input class="mono-val" value="feature/auth-refresh" /></div></div>
+              <div class="g-row static">
+                <div class="g-gutter"><span class="dot"></span></div>
+                <div class="g-row-main"><div class="g-row-label">Base</div><div class="row-sublabel">changed from default (main)</div></div>
+                <div class="field-box" style="max-width:220px;justify-content:space-between;"><span class="mono" style="font-size:var(--TEXT_BODY);">release/2.4</span><svg class="icon sm chev" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+              </div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ confirm</span><span class="g-hint-chip">esc cancel</span></div>
+            <div class="g-footer-buttons"><button class="g-btn g-btn-plain">Cancel</button><button class="g-btn g-btn-primary">Submit</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">D5</span><span class="frame-name">Success toast</span>
+        <p class="frame-desc">After creation, a toast confirms the worktree was added.</p>
+      </div>
+      <div class="frame-card" style="padding:40px;display:flex;align-items:center;justify-content:center;">
+        <div class="g-toast">
+          <svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M3 8.5l3 3 7-7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="mono">added feature/auth-refresh</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">D6</span><span class="frame-name">Error path — Message modal</span>
+        <p class="frame-desc">Creation failure surfaces as a Message modal with the real error string shape.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header"><div class="g-modal-title-block"><h2 class="g-modal-title">Worktree failed</h2></div><button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="mono" style="font-size:var(--TEXT_BODY);color:var(--FG);">Worktree failed: destination path '../grove-feature-auth-refresh' already exists</div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">esc close</span></div>
+            <div class="g-footer-buttons"><button class="g-btn g-btn-primary">OK</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= SECTION E ================= -->
+  <div class="section-heading"><span class="section-letter">E</span> Edge cases</div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">E1</span><span class="frame-name">Only one branch total</span>
+        <p class="frame-desc">Nothing to pick — the base control degrades to a static disabled value rather than an empty broken dropdown.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header"><div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div><button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="g-section-label">Worktree</div>
+            <div class="g-card">
+              <div class="g-row static"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label">Name</div></div><div class="field-box" style="max-width:220px;"><input class="mono-val" value="hotfix" /></div></div>
+              <div class="g-row static disabled"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label muted">Base</div><div class="row-sublabel">only branch in repo — nothing to choose</div></div><div class="g-row-value">main</div></div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ confirm</span><span class="g-hint-chip">esc cancel</span></div>
+            <div class="g-footer-buttons"><button class="g-btn g-btn-plain">Cancel</button><button class="g-btn g-btn-primary">Submit</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">E2</span><span class="frame-name">Long branch name — three truncation contexts</span>
+        <p class="frame-desc">Field, chip, and list row all truncate with ellipsis; none wrap or reflow.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header"><div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div><button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="g-section-label">Field (Base row)</div>
+            <div class="g-card">
+              <div class="g-row static"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label">Base</div></div><div class="field-box" style="max-width:220px;justify-content:space-between;"><span class="mono" style="font-size:var(--TEXT_BODY);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">feature/JIRA-4821-migrate-legacy-billing-webhooks-to-v2</span><svg class="icon sm chev" viewBox="0 0 16 16" fill="none" style="flex-shrink:0;"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div></div>
+            </div>
+            <div class="g-section-label">Chip</div>
+            <div class="chip-row"><div class="g-chip selected"><span class="dot"></span><span class="txt">feature/JIRA-4821-migrate-legacy-billing-webhooks-to-v2</span></div></div>
+            <div class="g-section-label">List row</div>
+            <div class="g-card">
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">feature/JIRA-4821-migrate-legacy-billing-webhooks-to-v2</div></div><div class="g-row-value">+12 −0</div></div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">esc close</span></div>
+            <div class="g-footer-buttons"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">E3</span><span class="frame-name">Detached HEAD</span>
+        <p class="frame-desc">Decision: prefill falls back to the repo's default branch (main) rather than offering "(detached)" as a base — a detached commit isn't a valid start-point label a user would recognize. The current HEAD state is still surfaced as a sublabel for transparency.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header"><div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div><button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="g-section-label">Worktree</div>
+            <div class="g-card">
+              <div class="g-row static"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label">Name</div></div><div class="field-box" style="max-width:220px;"><input class="mono-val" value="patch-1" /></div></div>
+              <div class="g-row static"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label">Base</div><div class="row-sublabel">project root is (detached) — defaulted to main</div></div><div class="field-box" style="max-width:220px;justify-content:space-between;"><span class="mono" style="font-size:var(--TEXT_BODY);">main</span><svg class="icon sm chev" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div></div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ confirm</span><span class="g-hint-chip">esc cancel</span></div>
+            <div class="g-footer-buttons"><button class="g-btn g-btn-plain">Cancel</button><button class="g-btn g-btn-primary">Submit</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">E4</span><span class="frame-name">Name matches an existing branch</span>
+        <p class="frame-desc">Git would check that branch out instead of creating one — Base becomes irrelevant and visibly disables: FG_MUTE text, no click handler, no reduced opacity, with a row_sublabel explaining why.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header"><div class="g-modal-title-block"><h2 class="g-modal-title">New worktree</h2></div><button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div class="g-section-label">Worktree</div>
+            <div class="g-card">
+              <div class="g-row static"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label">Name</div></div><div class="field-box focus" style="max-width:220px;"><input class="mono-val" value="develop" /></div></div>
+              <div class="g-row static disabled"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label muted">Base</div><div class="row-sublabel">existing branch — worktree will check it out, base does not apply</div></div><div class="g-row-value" style="color:var(--FG_MUTE);">—</div></div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ confirm</span><span class="g-hint-chip">esc cancel</span></div>
+            <div class="g-footer-buttons"><button class="g-btn g-btn-plain">Cancel</button><button class="g-btn g-btn-primary">Submit</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="frame-row">
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">E5</span><span class="frame-name">Non-git project</span>
+        <p class="frame-desc">Existing "Initialize Git repo?" confirm modal, unchanged by this feature.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header"><div class="g-modal-title-block"><h2 class="g-modal-title">Initialize Git repo?</h2></div><button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body">
+            <div style="font-size:var(--TEXT_BODY);color:var(--FG);line-height:1.5;">'<span class="mono">/Users/dm/Sandbox/scratch-notes</span>' is not a Git repo. Run <span class="mono">git init</span>, then create worktree '<span class="mono">notes-wip</span>'.</div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">⏎ confirm</span><span class="g-hint-chip">esc cancel</span></div>
+            <div class="g-footer-buttons"><button class="g-btn g-btn-plain">Cancel</button><button class="g-btn g-btn-accent">Run git init</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector-row">→</div>
+
+    <div class="frame">
+      <div class="frame-caption">
+        <span class="frame-id">E6</span><span class="frame-name">Many branches — scrolled list</span>
+        <p class="frame-desc">Variant C overlay at its MODAL_SCROLL_MAX_H (456px) cap, scrolled partway, with a bottom fade proving more content follows.</p>
+      </div>
+      <div class="frame-card">
+        <div class="g-modal">
+          <div class="g-modal-header"><div class="g-modal-title-block"><h2 class="g-modal-title">Choose base branch</h2><p class="g-modal-subtitle prose">for feature/checkout-v2</p></div><button class="g-close-btn"><svg class="icon" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></div>
+          <div class="g-modal-divider"></div>
+          <div class="g-modal-body" style="padding-bottom:0;">
+            <div class="filter-box"><svg class="icon sm" viewBox="0 0 16 16" fill="none" style="color:var(--FG_MUTE)"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.3"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><input placeholder="Filter branches…" /></div>
+            <div class="g-card scroll-fade-bottom" style="max-height:calc(var(--MODAL_SCROLL_MAX_H) - 90px);overflow-y:auto;margin-bottom:var(--SPACE_3XL);">
+              <div class="group-label">Local</div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">develop</div></div><div class="g-row-value">+3 −1</div></div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">fix/worktree-race</div></div><div class="g-row-value">+1 −0</div></div>
+              <div class="g-row selected"><div class="g-gutter"><span class="check">✓</span></div><div class="g-row-main"><div class="g-row-label mono">release/2.4</div></div><div class="g-row-value">—</div></div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">feature/checkout-v2</div></div><div class="g-row-value">+22 −3</div></div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">feature/payments-retry</div></div><div class="g-row-value">+8 −2</div></div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">chore/deps-bump</div></div><div class="g-row-value">+2 −0</div></div>
+              <div class="group-label">Remote</div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">origin/spike/webgpu-render</div></div><div class="g-row-value">+41 −6</div></div>
+              <div class="g-row"><div class="g-gutter"></div><div class="g-row-main"><div class="g-row-label mono">origin/hotfix/oauth-refresh</div></div><div class="g-row-value">+3 −0</div></div>
+            </div>
+          </div>
+          <div class="g-modal-footer">
+            <div class="g-footer-left"></div>
+            <div class="g-footer-hints"><span class="g-hint-chip">↑↓ navigate</span><span class="g-hint-chip">⏎ select</span><span class="g-hint-chip">esc close</span></div>
+            <div class="g-footer-buttons"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /#canvas -->
+</div><!-- /#viewport -->
+
+<script>
+(function () {
+  var vp = document.getElementById('viewport'), cv = document.getElementById('canvas');
+  var x = 0, y = 0, z = 1, MIN = 0.1, MAX = 2.5, userAdjusted = false;
+  function apply() {
+    cv.style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + z + ')';
+    document.getElementById('zoomPct').textContent = Math.round(z * 100) + '%';
+  }
+  function fit() {
+    var w = cv.scrollWidth, h = cv.scrollHeight;
+    z = Math.min(MAX, Math.max(MIN, Math.min(innerWidth / w, innerHeight / h) * 0.95));
+    x = (innerWidth - w * z) / 2; y = Math.max(20, (innerHeight - h * z) / 2);
+    apply();
+  }
+  function zoomAt(nz, cx, cy) {
+    userAdjusted = true;
+    nz = Math.min(MAX, Math.max(MIN, nz));
+    x = cx - (cx - x) * (nz / z);
+    y = cy - (cy - y) * (nz / z);
+    z = nz; apply();
+  }
+  vp.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    zoomAt(z * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
+  }, { passive: false });
+  var panning = false, px = 0, py = 0;
+  vp.addEventListener('pointerdown', function (e) {
+    if (e.target.closest('.frame, .sticky-note')) return;
+    e.preventDefault();
+    panning = true; userAdjusted = true; px = e.clientX - x; py = e.clientY - y;
+    vp.classList.add('panning'); vp.setPointerCapture(e.pointerId);
+  });
+  vp.addEventListener('pointermove', function (e) {
+    if (panning) { x = e.clientX - px; y = e.clientY - py; apply(); }
+  });
+  vp.addEventListener('pointerup', function () { panning = false; vp.classList.remove('panning'); });
+  document.getElementById('zoomIn').onclick = function () { zoomAt(z * 1.25, innerWidth / 2, innerHeight / 2); };
+  document.getElementById('zoomOut').onclick = function () { zoomAt(z / 1.25, innerWidth / 2, innerHeight / 2); };
+  document.getElementById('zoomFit').onclick = fit;
+  addEventListener('resize', function () { if (!userAdjusted) fit(); });
+  document.getElementById('themeToggle').onclick = function () {
+    var dark = document.documentElement.classList.toggle('dark');
+    this.textContent = dark ? '☀ Light' : '☾ Dark';
+  };
+  fit();
+})();
+</script>
+</body>
+</html>

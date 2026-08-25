@@ -907,6 +907,32 @@ code row aligned to the same grid; in unified mode it makes every row — line
 rows and hunk headers alike — uniform, which is what lets the body render as a
 `uniform_list`.
 
+### 8.8 Grid resize interaction
+
+Grid columns and each column's row stack use normalized, session-only weights.
+The column-first tile topology, tile order, focus and slide behavior do not
+change when a split moves. A session-count change that alters the grid's shape
+resets every weight to an equal share. Grid weights never enter `Store`.
+
+Every split keeps the standard 1px `BORDER_SOFT` hairline and overlays the
+shared `DIVIDER_DRAG_HIT_W` 6px hit target. Column splits use the left-right
+resize cursor; row splits use the up-down resize cursor. Root mouse move and
+mouse up listeners own continuation after the pointer leaves the hit target.
+A double-click resets only the pair on that split.
+
+`mod+r` enters the `GridResize` key context. Arrows and `h/j/k/l` move the split
+next to the focused tile by 5 percentage points; Shift changes the step to one
+point. Enter and Escape return to the normal `Grid` context. The statusbar
+replaces its ordinary shortcut group with the selected split and these keys
+while the mode is active.
+
+Minimum tile sizes derive from `fonts::CELL_W`, `fonts::CELL_H`,
+`grid::TILE_HEAD_H`, `grid::TILE_PTY_PAD_W` and `grid::TILE_PTY_PAD_H`.
+`grid::MIN_REGION_FALLBACK_PX` is the conservative floor only when a caller
+cannot supply valid metrics. When the viewport is too small to fit every exact
+minimum, clamping falls back to positive equal shares rather than producing a
+zero-sized tile.
+
 ---
 
 ## 9. Components

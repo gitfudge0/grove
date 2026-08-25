@@ -208,7 +208,7 @@ impl ModalLayer {
                 crate::telemetry::track("worktree_created", vec![]);
                 self.toast
                     .update(cx, |t, cx| t.set_toast(format!("added {name}"), cx));
-                cx.emit(ModalEvent::WorktreeAdded);
+                cx.emit(ModalEvent::WorktreeAdded { path });
             }
             Err(e) => {
                 crate::telemetry::track("error", vec![("kind", "worktree_failed".into())]);
