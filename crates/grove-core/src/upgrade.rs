@@ -335,8 +335,12 @@ fn commit_to_verify(target_commitish: &str) -> Option<&str> {
     (s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())).then_some(s)
 }
 
-/// GitHub serves release assets from `github.com`, which redirects to its S3-backed object host.
-const ALLOWED_ASSET_HOSTS: [&str; 2] = ["github.com", "objects.githubusercontent.com"];
+/// GitHub serves release assets from `github.com`, which redirects to one of its asset hosts.
+const ALLOWED_ASSET_HOSTS: [&str; 3] = [
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+];
 
 /// `None` for anything that isn't plain `https://`.
 fn https_host(url: &str) -> Option<String> {
@@ -793,6 +797,10 @@ mod tests {
         )
         .is_ok());
         assert!(check_asset_url("https://objects.githubusercontent.com/x/Grove.dmg").is_ok());
+        assert!(check_asset_url(
+            "https://release-assets.githubusercontent.com/github-production-release-asset/x"
+        )
+        .is_ok());
     }
 
     #[test]
