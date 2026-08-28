@@ -93,6 +93,62 @@ pub fn filter_branches<'a>(branches: &'a [BranchRef], filter: &str) -> Vec<&'a B
         .collect()
 }
 
+/// A paint-only view of the visible branch list. Group rows deliberately carry
+/// no selection index: keyboard and pointer selection always address
+/// [`BaseBranchState::visible`], not this expanded list.
+#[derive(Clone, Debug)]
+pub enum BaseBranchDropdownItem<'a> {
+    Group {
+        /// The complete slash-delimited path represented by this heading.
+        path: &'a str,
+        depth: usize,
+    },
+    Branch {
+        /// Index into the filtered, selectable branch list.
+        index: usize,
+        branch: &'a BranchRef,
+        /// The final path component; its ancestor is already named by a group.
+        label: &'a str,
+        depth: usize,
+    },
+}
+
+/// Expands slash-delimited visible branch names into quiet group headings and
+/// indented selectable rows without changing the branches' order or indices.
+pub fn branch_dropdown_items<'a>(visible: &[&'a BranchRef]) -> Vec<BaseBranchDropdownItem<'a>> {
+    let mut items = Vec::with_capacity(visible.len());
+    let mut previous_groups: Vec<&str> = Vec::new();
+
+    for (index, branch) in visible.iter().enumerate() {
+        let mut groups = Vec::new();
+        for (offset, _) in branch.name.match_indices('/') {
+            groups.push(&branch.name[..offset]);
+        }
+        let label = branch
+            .name
+            .rsplit_once('/')
+            .map_or(branch.name.as_str(), |(_, leaf)| leaf);
+        let shared = groups
+            .iter()
+            .zip(&previous_groups)
+            .take_while(|(next, prior)| next == prior)
+            .count();
+
+        for (depth, path) in groups.iter().enumerate().skip(shared) {
+            items.push(BaseBranchDropdownItem::Group { path, depth });
+        }
+        items.push(BaseBranchDropdownItem::Branch {
+            index,
+            branch,
+            label,
+            depth: groups.len(),
+        });
+        previous_groups = groups;
+    }
+
+    items
+}
+
 impl BaseBranchState {
     /// Folds one background listing in; a resolvable default seeds the choice, `None` leaves it unset.
     pub fn apply_loaded(&mut self, branches: Vec<BranchRef>, default: Option<String>) {
@@ -1695,6 +1751,86 @@ mod base_branch_tests {
         assert_eq!(names("release"), vec!["origin/Release"]);
         assert_eq!(names("login"), vec!["feature/login"]);
         assert!(names("nope").is_empty());
+    }
+
+    #[test]
+    fn slash_delimited_branches_gain_quiet_hierarchy_without_reordering_rows() {
+        let branches = vec![
+            br("main", false),
+            br("feature/auth/login", false),
+            br("feature/auth/logout", false),
+            br("feature/search", false),
+            br("origin/main", true),
+        ];
+        let visible = filter_branches(&branches, "");
+        let items = branch_dropdown_items(&visible);
+        let presentation = items
+            .iter()
+            .map(|item| match item {
+                BaseBranchDropdownItem::Group { path, depth } => {
+                    format!("group:{depth}:{path}")
+                }
+                BaseBranchDropdownItem::Branch {
+                    index,
+                    label,
+                    depth,
+                    ..
+                } => format!("branch:{index}:{depth}:{label}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            presentation,
+            [
+                "branch:0:0:main",
+                "group:0:feature",
+                "group:1:feature/auth",
+                "branch:1:2:login",
+                "branch:2:2:logout",
+                "branch:3:1:search",
+                "group:0:origin",
+                "branch:4:1:main",
+            ]
+        );
+    }
+
+    #[test]
+    fn filtered_hierarchy_keeps_click_and_keyboard_indices_in_the_visible_list() {
+        let mut st = BaseBranchState::default();
+        st.apply_loaded(
+            vec![
+                br("main", false),
+                br("feature/auth/login", false),
+                br("feature/auth/logout", false),
+                br("feature/search", false),
+            ],
+            None,
+        );
+        st.open_dropdown();
+        for c in "auth".chars() {
+            st.push_filter(c);
+        }
+
+        let visible = st.visible();
+        let selectable = branch_dropdown_items(&visible)
+            .into_iter()
+            .filter_map(|item| match item {
+                BaseBranchDropdownItem::Branch { index, branch, .. } => {
+                    Some((index, branch.name.clone()))
+                }
+                BaseBranchDropdownItem::Group { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selectable,
+            vec![
+                (0, "feature/auth/login".to_string()),
+                (1, "feature/auth/logout".to_string())
+            ]
+        );
+
+        st.move_highlight(1);
+        st.pick_highlighted();
+        assert_eq!(st.chosen.as_deref(), Some("feature/auth/logout"));
     }
 
     #[test]

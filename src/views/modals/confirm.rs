@@ -11,7 +11,9 @@ use crate::theme as c;
 
 use super::settings::{setting_row_grid, LabelTone, RowGutter};
 use super::{Modal, ModalClick, ModalDispatch, ModalEvent, ModalLayer};
-use crate::modal::{BaseBranchState, ConfirmKind, BASE_UNSET_LABEL};
+use crate::modal::{
+    branch_dropdown_items, BaseBranchDropdownItem, BaseBranchState, ConfirmKind, BASE_UNSET_LABEL,
+};
 use crate::views::components::{
     body_action, body_text, card, click_action, click_row, divider_h, field_box, icon_slot,
     modal_body, modal_footer, modal_header_with_close, modal_panel, mono, note_text, ui, ModalBtn,
@@ -600,27 +602,53 @@ fn base_dropdown(base: &BaseBranchState, dispatch: &ModalDispatch) -> AnyElement
         );
     }
     let visible = base.visible();
-    for (i, b) in visible.iter().enumerate() {
-        let content = div()
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_MD))
-            .w_full()
-            .child(mono(b.name.clone(), TEXT_BODY, c::FG_DIM()).flex_1())
-            .when(b.is_head, |d| {
-                d.child(ui("current", TEXT_SMALL, c::FG_MUTE()))
-            });
-        rows.push(
-            click_row(
-                ("base-branch", i),
-                i == base.highlight,
-                RowDensity::CardPadded,
-                dispatch,
-                ModalClick::BaseSelect(i),
-                content,
-            )
-            .into_any_element(),
-        );
+    for item in branch_dropdown_items(&visible) {
+        match item {
+            BaseBranchDropdownItem::Group { path, depth } => {
+                // Group labels establish path context without becoming list rows:
+                // only branches receive a selectable index or click handler.
+                rows.push(
+                    div()
+                        .w_full()
+                        .px(rpx(ROW_PX))
+                        .py(rpx(SPACE_SM))
+                        .child(
+                            div()
+                                .when(depth > 0, |d| d.pl(rpx(SPACE_LG * depth as f32)))
+                                .child(ui(path.replace('/', " / "), TEXT_SMALL, c::FG_MUTE())),
+                        )
+                        .into_any_element(),
+                );
+            }
+            BaseBranchDropdownItem::Branch {
+                index,
+                branch,
+                label,
+                depth,
+            } => {
+                let content = div()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_MD))
+                    .w_full()
+                    .when(depth > 0, |d| d.pl(rpx(SPACE_LG * depth as f32)))
+                    .child(mono(label.to_string(), TEXT_BODY, c::FG_DIM()).flex_1())
+                    .when(branch.is_head, |d| {
+                        d.child(ui("current", TEXT_SMALL, c::FG_MUTE()))
+                    });
+                rows.push(
+                    click_row(
+                        ("base-branch", index),
+                        index == base.highlight,
+                        RowDensity::CardPadded,
+                        dispatch,
+                        ModalClick::BaseSelect(index),
+                        content,
+                    )
+                    .into_any_element(),
+                );
+            }
+        }
     }
     if visible.is_empty() {
         let msg = if base.loaded {

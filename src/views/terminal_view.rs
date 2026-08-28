@@ -328,10 +328,12 @@ impl TerminalView {
         if self.view_geom(cx).1 == before {
             return;
         }
-        if let (Some(cell), Some((anchor, _))) =
-            (self.pixel_to_abs(d.last_x, d.last_y, cx), self.selection)
-        {
-            self.selection = Some((anchor, cell));
+        if let Some(selection) = self.selection {
+            let (cell_w, cell_h) = Self::cell_metrics(cx);
+            let (h, sb) = self.view_geom(cx);
+            self.selection = mouse::extend_selection_after_scroll(
+                selection, d.last_x, d.last_y, cell_w, cell_h, h, sb,
+            );
         }
     }
 

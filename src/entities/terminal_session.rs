@@ -39,6 +39,10 @@ pub struct TerminalSession {
     last_damage_gen: u64,
     /// Whether tmux is parked in copy-mode from a scroll-up (`session.rs:617-622`).
     tmux_copy_mode: bool,
+    /// Tmux renders copy-mode on an alternate screen, so GroveTerm's own
+    /// display offset remains zero. Keep tmux's exact offset for selection
+    /// coordinates and overlays.
+    tmux_display_offset: usize,
     last_input_at: Option<Instant>,
     last_scroll_at: Option<Instant>,
     /// Stamped at spawn so a silent session reads as "quiet since spawn", never "quiet forever".
@@ -114,6 +118,7 @@ impl TerminalSession {
             cols,
             last_damage_gen: 0,
             tmux_copy_mode: false,
+            tmux_display_offset: 0,
             last_input_at: None,
             last_scroll_at: None,
             last_output_at: Instant::now(),
@@ -142,6 +147,7 @@ impl TerminalSession {
             cols,
             last_damage_gen: 0,
             tmux_copy_mode: false,
+            tmux_display_offset: 0,
             last_input_at: None,
             last_scroll_at: None,
             last_output_at: Instant::now(),
@@ -215,6 +221,7 @@ impl TerminalSession {
             cols: INIT_COLS,
             last_damage_gen: 0,
             tmux_copy_mode: false,
+            tmux_display_offset: 0,
             last_input_at: None,
             last_scroll_at: None,
             last_output_at: Instant::now(),
@@ -293,6 +300,7 @@ impl TerminalSession {
     pub fn send(&mut self, bytes: &[u8]) {
         self.last_input_at = Some(Instant::now());
         self.term.scroll_to(0);
+        self.tmux_display_offset = 0;
         if self.tmux_copy_mode {
             if let Backend::Tmux { name } = &self.backend {
                 tmux::cancel_copy_mode(name);
@@ -370,9 +378,13 @@ impl TerminalSession {
             Backend::Tmux { name } => {
                 // Grove's own scrollback is empty for tmux; drive copy-mode instead.
                 let name = name.clone();
-                tmux::scroll(&name, up, lines);
+                if let Some(offset) = tmux::scroll(&name, up, lines) {
+                    self.tmux_display_offset = offset;
+                }
                 if up {
                     self.tmux_copy_mode = true;
+                } else if self.tmux_display_offset == 0 {
+                    self.tmux_copy_mode = false;
                 }
             }
             Backend::Native => {
@@ -415,10 +427,21 @@ impl TerminalSession {
         }
     }
 
-    /// `GroveTerm::selection_text` already applies trimming, verified against the vt100 oracle — not re-implemented here.
+    /// Native selections use GroveTerm's oracle-backed history walk. Tmux
+    /// selections read tmux's own history because its alternate-screen redraw
+    /// only leaves the current viewport in GroveTerm.
     pub fn selection_text(&mut self, a: AbsCell, head: AbsCell) -> Option<String> {
-        self.term
-            .selection_text((a.a_row, a.col), (head.a_row, head.col))
+        match &self.backend {
+            Backend::Tmux { name } => tmux::selection_text(
+                name,
+                (a.a_row, a.col),
+                (head.a_row, head.col),
+                self.tmux_display_offset,
+            ),
+            Backend::Native => self
+                .term
+                .selection_text((a.a_row, a.col), (head.a_row, head.col)),
+        }
     }
 
     pub fn dims(&self) -> (u16, u16) {
@@ -434,7 +457,10 @@ impl TerminalSession {
     }
 
     pub fn display_offset(&self) -> usize {
-        self.term.display_offset()
+        match self.backend {
+            Backend::Tmux { .. } => self.tmux_display_offset,
+            Backend::Native => self.term.display_offset(),
+        }
     }
 
     pub fn damage_generation(&self) -> u64 {

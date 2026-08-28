@@ -94,6 +94,22 @@ pub fn pixel_to_abs(
     })
 }
 
+/// Re-resolves only the moving end of a drag after the viewport scrolls.
+/// Keeping the original absolute anchor retains already-selected off-screen
+/// rows.
+pub fn extend_selection_after_scroll(
+    selection: (AbsCell, AbsCell),
+    x: f32,
+    y: f32,
+    cell_w: f32,
+    cell_h: f32,
+    h: usize,
+    sb: usize,
+) -> Option<(AbsCell, AbsCell)> {
+    let head = pixel_to_abs(x, y, cell_w, cell_h, h, sb)?;
+    Some((selection.0, head))
+}
+
 /// Order two selection endpoints as `(r1, c1, r2, c2)` (`pty.rs:374-380`). The compare is on the `(row, col)` tuple, with a swap when reversed.
 pub fn normalize_selection(a: AbsCell, b: AbsCell) -> (usize, usize, usize, usize) {
     if (a.a_row, a.col) <= (b.a_row, b.col) {
@@ -288,6 +304,23 @@ mod tests {
         let below = pixel_to_abs(0.0, CELL_H * 999.0, CELL_W, CELL_H, 24, 0);
         assert_eq!(below, Some(AbsCell { a_row: 0, col: 0 }));
         assert_eq!(pixel_to_abs(0.0, 0.0, CELL_W, CELL_H, 0, 0), None);
+    }
+
+    #[test]
+    fn drag_autoscroll_keeps_the_anchor_and_extends_into_history() {
+        let anchor = AbsCell { a_row: 10, col: 4 };
+        let mut selection = (anchor, AbsCell { a_row: 23, col: 7 });
+
+        for offset in [3, 6, 9] {
+            let Some(next) =
+                extend_selection_after_scroll(selection, 7.0, 0.0, CELL_W, CELL_H, 24, offset)
+            else {
+                panic!("a non-empty viewport must produce a selection endpoint");
+            };
+            selection = next;
+            assert_eq!(selection.0, anchor);
+            assert_eq!(selection.1.a_row, offset + 23);
+        }
     }
 
     #[test]

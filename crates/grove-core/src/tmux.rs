@@ -1,5 +1,6 @@
 use crate::agent::Agent;
 use crate::session_meta;
+use std::cmp::Reverse;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -199,17 +200,132 @@ pub fn configure_embedded_session(name: &str) {
 }
 
 /// The attached client renders on the alternate screen, so real pane history lives in tmux's own buffer, reachable only through copy-mode.
-pub fn scroll(name: &str, up: bool, lines: usize) {
+/// Returns tmux's resulting copy-mode scroll position. The query shares the
+/// scroll invocation, so drag autoscroll still starts only one process per tick.
+pub fn scroll(name: &str, up: bool, lines: usize) -> Option<usize> {
     // copy-mode/send-keys take a pane target — exact()'s `=` prefix is invalid here ("can't find pane").
+    let lines = lines.to_string();
+    let mut c = tmux();
     if up {
-        let mut enter = tmux();
-        enter.args(["copy-mode", "-e", "-t", name]);
-        let _ = run_silent(enter);
+        c.args(["copy-mode", "-e", "-t", name, ";"]);
     }
     let cmd = if up { "scroll-up" } else { "scroll-down" };
+    c.args([
+        "send-keys",
+        "-t",
+        name,
+        "-X",
+        "-N",
+        &lines,
+        cmd,
+        ";",
+        "display-message",
+        "-p",
+        "-t",
+        name,
+        "#{scroll_position}",
+    ]);
+    let out = c.stderr(Stdio::null()).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&out.stdout);
+    Some(value.trim().parse().unwrap_or(0))
+}
+
+/// Copies a Grove selection from tmux's own history. Tmux-backed sessions are
+/// rendered on an alternate screen, so GroveTerm only contains the current
+/// copy-mode viewport and cannot read an endpoint after it scrolls off screen.
+pub fn selection_text(
+    name: &str,
+    p1: (usize, usize),
+    p2: (usize, usize),
+    restore_offset: usize,
+) -> Option<String> {
+    // Older absolute rows come first. On a row tie, the smaller column is the
+    // start of the selection.
+    let (start, end) = if (p1.0, Reverse(p1.1)) >= (p2.0, Reverse(p2.1)) {
+        (p1, p2)
+    } else {
+        (p2, p1)
+    };
+
     let mut c = tmux();
-    c.args(["send-keys", "-t", name, "-X", "-N", &lines.to_string(), cmd]);
-    let _ = run_silent(c);
+    c.args(["copy-mode", "-e", "-t", name, ";"]);
+    push_copy_cursor(&mut c, name, start.0, start.1.saturating_add(1));
+    c.args(["send-keys", "-t", name, "-X", "begin-selection", ";"]);
+    push_copy_cursor(&mut c, name, end.0, end.1.saturating_add(1));
+    c.args(["send-keys", "-t", name, "-X", "copy-selection", ";"]);
+    if restore_offset == 0 {
+        c.args(["send-keys", "-t", name, "-X", "cancel", ";"]);
+    } else {
+        c.args([
+            "send-keys",
+            "-t",
+            name,
+            "-X",
+            "history-bottom",
+            ";",
+            "send-keys",
+            "-N",
+            &restore_offset.to_string(),
+            "-t",
+            name,
+            "-X",
+            "scroll-up",
+            ";",
+        ]);
+    }
+    c.args(["save-buffer", "-"]);
+    let out = c.stderr(Stdio::null()).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout)
+        .trim_end_matches('\n')
+        .to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+fn push_copy_cursor(c: &mut Command, name: &str, a_row: usize, col: usize) {
+    c.args([
+        "send-keys",
+        "-t",
+        name,
+        "-X",
+        "history-bottom",
+        ";",
+        "send-keys",
+        "-t",
+        name,
+        "-X",
+        "start-of-line",
+        ";",
+    ]);
+    if a_row > 0 {
+        c.args([
+            "send-keys",
+            "-N",
+            &a_row.to_string(),
+            "-t",
+            name,
+            "-X",
+            "cursor-up",
+            ";",
+        ]);
+    }
+    if col > 0 {
+        c.args([
+            "send-keys",
+            "-N",
+            &col.to_string(),
+            "-t",
+            name,
+            "-X",
+            "cursor-right",
+            ";",
+        ]);
+    }
 }
 
 pub fn cancel_copy_mode(name: &str) {
@@ -478,7 +594,7 @@ mod tests {
 
         assert_eq!(display(name, "#{pane_in_mode}"), "0", "should start live");
 
-        scroll(name, true, 3);
+        let offset = scroll(name, true, 3).expect("scroll position");
         assert_eq!(
             display(name, "#{pane_in_mode}"),
             "1",
@@ -486,12 +602,63 @@ mod tests {
         );
         let pos: i32 = display(name, "#{scroll_position}").parse().unwrap_or(-1);
         assert!(pos > 0, "scroll_position should advance, got {pos}");
+        assert_eq!(offset, pos as usize);
 
         cancel_copy_mode(name);
         assert_eq!(
             display(name, "#{pane_in_mode}"),
             "0",
             "cancel returns to live"
+        );
+
+        kill_session(name);
+    }
+
+    #[test]
+    fn selection_text_reads_rows_outside_the_visible_tmux_viewport() {
+        if !available() {
+            eprintln!("skipping: tmux not on PATH");
+            return;
+        }
+        let name = "grove__selftest__selection__0";
+        kill_session(name);
+
+        let mut create = tmux();
+        create.args([
+            "new-session",
+            "-d",
+            "-s",
+            name,
+            "-x",
+            "80",
+            "-y",
+            "6",
+            "sh",
+            "-c",
+            "for i in $(seq 1 15); do printf 'line-%02d-abcdefghij\\n' \"$i\"; done; sleep 30",
+        ]);
+        assert!(
+            run_silent(create).expect("spawn").success(),
+            "new-session failed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // The six-row live viewport cannot contain this eleven-row span. Both
+        // endpoint orders must still copy the same text from tmux history.
+        let expected = "-abcdefghij\nline-06-abcdefghij\nline-07-abcdefghij\nline-08-abcdefghij\nline-09-abcdefghij\nline-10-abcdefghij\nline-11-abcdefghij\nline-12-abcdefghij\nline-13-abcdefghij\nline-14-abcdefghij\nline-";
+        assert_eq!(
+            selection_text(name, (12, 7), (2, 5), 0).as_deref(),
+            Some(expected)
+        );
+        let offset = scroll(name, true, 3).expect("scroll position");
+        assert_eq!(
+            selection_text(name, (2, 5), (12, 7), offset).as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            display(name, "#{scroll_position}"),
+            offset.to_string(),
+            "copy should restore the drag viewport"
         );
 
         kill_session(name);
