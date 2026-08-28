@@ -109,6 +109,40 @@ impl Agent {
         }
     }
 
+    /// Builds the argv used when launching an agent session. On Unix, run the
+    /// agent through a fresh interactive login shell so current shell rc
+    /// changes are loaded at spawn time. The agent and all of its arguments
+    /// remain separate argv elements behind `--`.
+    pub fn session_invocation(self, args: &[String]) -> (String, Vec<String>) {
+        let (program, prefix_args) = self.invocation();
+
+        if matches!(self, Agent::Terminal) {
+            let mut invocation_args = prefix_args;
+            invocation_args.extend(args.iter().cloned());
+            return (program, invocation_args);
+        }
+
+        #[cfg(not(windows))]
+        {
+            let mut shell_args = vec![
+                "-lic".to_string(),
+                "exec \"$@\"".to_string(),
+                "--".to_string(),
+                program,
+            ];
+            shell_args.extend(prefix_args);
+            shell_args.extend(args.iter().cloned());
+            return (crate::env_path::login_shell(), shell_args);
+        }
+
+        #[cfg(windows)]
+        {
+            let mut invocation_args = prefix_args;
+            invocation_args.extend(args.iter().cloned());
+            (program, invocation_args)
+        }
+    }
+
     /// Cached for the process lifetime, since this runs on `view()`'s render path; a CLI installed after startup won't be noticed until restart.
     pub fn available(self) -> bool {
         match self {
@@ -303,5 +337,31 @@ mod tests {
         assert!(prefix_args.is_empty() || cfg!(windows));
         #[cfg(not(windows))]
         assert_eq!(program, "claude");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn session_invocation_sources_login_shell_without_interpolating_args() {
+        let args = vec![
+            "--prompt=hello; touch unsafe".to_string(),
+            "$(echo nope)".to_string(),
+        ];
+        let (program, invocation_args) = Agent::Codex.session_invocation(&args);
+
+        assert_eq!(program, crate::env_path::login_shell());
+        assert_eq!(&invocation_args[..3], ["-lic", "exec \"$@\"", "--"]);
+        assert_eq!(
+            &invocation_args[3..],
+            ["codex".to_string(), args[0].clone(), args[1].clone()]
+        );
+    }
+
+    #[test]
+    fn terminal_session_invocation_remains_plain_shell() {
+        let args = vec!["--existing-terminal-arg".to_string()];
+        let (program, invocation_args) = Agent::Terminal.session_invocation(&args);
+
+        assert_eq!(program, Agent::Terminal.invocation().0);
+        assert_eq!(invocation_args, args);
     }
 }

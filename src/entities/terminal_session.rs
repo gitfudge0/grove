@@ -567,22 +567,15 @@ fn spawn_tmux(
             )]
         })
         .unwrap_or_default();
-    tmux::new_session(
-        &name,
-        cwd,
-        rows,
-        cols,
-        &agent.program(),
-        // Launch flags first, then attention args (`crates/grove-core/src/session.rs:190`).
-        &target
-            .args
-            .iter()
-            .cloned()
-            .chain(extra_args.iter().cloned())
-            .collect::<Vec<_>>(),
-        &env,
-    )
-    .map_err(|e| e.to_string())?;
+    let agent_args = target
+        .args
+        .iter()
+        .cloned()
+        .chain(extra_args.iter().cloned())
+        .collect::<Vec<_>>();
+    let (program, invocation_args) = agent.session_invocation(&agent_args);
+    tmux::new_session(&name, cwd, rows, cols, &program, &invocation_args, &env)
+        .map_err(|e| e.to_string())?;
     // Without the sidecar the session can't be rediscovered after a restart; kill rather than orphan it (`session.rs:213-227`).
     if let Err(e) = session_meta::write(
         &name,
@@ -630,15 +623,15 @@ fn spawn_native(
     rows: u16,
     cols: u16,
 ) -> Result<(PtyHandle, Backend), String> {
-    let (program, prefix_args) = target.agent.invocation();
+    let agent_args = target
+        .args
+        .iter()
+        .cloned()
+        .chain(extra_args.iter().cloned())
+        .collect::<Vec<_>>();
+    let (program, prefix_args) = target.agent.session_invocation(&agent_args);
     let mut cmd = CommandBuilder::new(program);
     for a in prefix_args {
-        cmd.arg(a);
-    }
-    for a in &target.args {
-        cmd.arg(a);
-    }
-    for a in extra_args {
         cmd.arg(a);
     }
     cmd.cwd(cwd);
