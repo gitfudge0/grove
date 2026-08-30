@@ -133,7 +133,6 @@ impl ProjectTree {
         }
     }
 
-    // TODO(unwired): no caller pre-warms the worktree cache — see `sweep_wt_cache` below.
     #[allow(dead_code)]
     pub fn ensure_wt_cached(&mut self, proj: usize, active_proj: usize, store: &Store) {
         if proj == active_proj || self.wt_cache.contains_key(&proj) {
@@ -151,8 +150,7 @@ impl ProjectTree {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Discards the sweep if the generation moved while it ran (reached in production only from unwired `sweep_wt_cache`).
-    #[allow(dead_code)]
+    /// Discards the sweep if the generation moved while it ran.
     pub fn apply_sweep(&mut self, generation: u64, swept: HashMap<usize, Vec<Worktree>>) -> bool {
         if generation != self.generation {
             return false;
@@ -161,15 +159,8 @@ impl ProjectTree {
         true
     }
 
-    // TODO(unwired): nothing calls this yet.
-    #[allow(dead_code)]
-    pub fn sweep_wt_cache(&mut self, store: &Store, active_proj: usize, cx: &mut Context<Self>) {
+    pub fn sweep_wt_cache(&mut self, targets: Vec<(usize, String)>, cx: &mut Context<Self>) {
         let generation = self.generation;
-        let targets: Vec<(usize, String)> = store
-            .active_projects()
-            .filter(|(i, _)| *i != active_proj)
-            .map(|(i, p)| (i, p.path.clone()))
-            .collect();
         if targets.is_empty() {
             return;
         }
@@ -391,6 +382,14 @@ impl ProjectTree {
     }
 }
 
+pub(crate) fn cache_sweep_targets(store: &Store, active_proj: usize) -> Vec<(usize, String)> {
+    store
+        .active_projects()
+        .filter(|(i, _)| *i != active_proj)
+        .map(|(i, p)| (i, p.path.clone()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,6 +476,21 @@ mod tests {
         tree.set_active_worktrees(1, vec![wt("/a", true)]);
         tree.switch_active_project(1, 1, "/nope");
         assert_eq!(tree.worktrees_for_project(1, 1).len(), 1);
+    }
+
+    #[test]
+    fn cache_sweep_warms_every_non_active_project() {
+        let mut store = Store {
+            projects: vec![
+                project("alpha", "/a"),
+                project("hidden", "/h"),
+                project("gamma", "/g"),
+            ],
+            ..Store::default()
+        };
+        store.projects[1].archived = true;
+
+        assert_eq!(cache_sweep_targets(&store, 0), vec![(2, "/g".to_string())]);
     }
 
     #[test]

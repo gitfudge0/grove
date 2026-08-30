@@ -269,6 +269,16 @@ impl ModalLayer {
         if matches!(modal.kind(), ModalKind::Settings) {
             self.detect_tools(cx);
         }
+        if matches!(modal.kind(), ModalKind::SessionLauncher) {
+            let active_proj = self.state.read(cx).proj_idx();
+            let targets = crate::entities::project_tree::cache_sweep_targets(
+                &cx.global::<crate::settings::SettingsState>().store,
+                active_proj,
+            );
+            self.tree.update(cx, |tree, cx| {
+                tree.sweep_wt_cache(targets, cx);
+            });
+        }
         self.diff_viewer = if let Modal::DiffViewer { wt_path } = &modal {
             let mode = cx
                 .global::<crate::settings::SettingsState>()
