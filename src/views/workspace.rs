@@ -88,6 +88,44 @@ impl Focusable for Workspace {
     }
 }
 
+/// Resolve a stored worktree selection against the live project/worktree list. The path, never a
+/// display name, is the join key so duplicate project names cannot redirect a launch.
+fn resolve_multi_root_worktrees(
+    selected_paths: &[String],
+    projects: &[grove_core::storage::Project],
+) -> Result<Vec<(String, String)>, String> {
+    selected_paths
+        .iter()
+        .map(|selected_path| resolve_multi_root_worktree(selected_path, projects))
+        .collect()
+}
+
+fn resolve_multi_root_worktree(
+    selected_path: &str,
+    projects: &[grove_core::storage::Project],
+) -> Result<(String, String), String> {
+    let canonical = fs_err::canonicalize(selected_path)
+        .map_err(|_| format!("{selected_path}: worktree is no longer available"))?;
+    let canonical_text = canonical.to_string_lossy().into_owned();
+
+    for project in projects {
+        let listed = grove_core::git::list_worktrees(&project.path);
+        if listed
+            .into_iter()
+            .any(|worktree| fs_err::canonicalize(worktree.path).is_ok_and(|path| path == canonical))
+        {
+            return Ok((project.name.clone(), canonical_text));
+        }
+    }
+
+    Err(format!("{selected_path}: worktree is no longer available"))
+}
+
+fn header_identity_label(meta: &crate::entities::session_registry::SessionMeta) -> String {
+    grove_core::session_meta::multi_project_identity(&meta.project, &meta.context_roots)
+        .unwrap_or_else(|| meta.agent.label().to_string())
+}
+
 /// Token space → device pixels: `rem_size = px(REM_BASE * zoom)`, so a token of `v` paints at `v * zoom`.
 pub(crate) fn token_px(v: f32, window: &Window) -> f32 {
     f32::from(window.rem_size()) * (v / zoom::REM_BASE)
@@ -1310,6 +1348,7 @@ impl Workspace {
             project: String::new(),
             label: label.clone(),
             args: Vec::new(),
+            context_roots: Vec::new(),
             use_tmux: false,
         };
         let session = cx.new(|cx| TerminalSession::spawn(&target, &[], None, cx));
@@ -1324,6 +1363,7 @@ impl Workspace {
             project: String::new(),
             wt_path: wt_path.to_string(),
             agent: grove_core::agent::Agent::Terminal,
+            context_roots: Vec::new(),
             label,
             spawned_at: std::time::Instant::now(),
             attention: None,
@@ -1426,7 +1466,7 @@ impl Workspace {
             let id = active_session?;
             let meta = registry.meta(id)?.clone();
             let entity = registry.session(id)?.clone();
-            let label = meta.agent.label().to_string();
+            let label = header_identity_label(&meta);
             (meta, entity, label)
         };
         let title = entity.read(cx).title();
@@ -1675,6 +1715,92 @@ impl Workspace {
                 self.sidebar
                     .clone()
                     .update(cx, |s, cx| s.spawn_session_in(project, wt_path, agent, cx));
+            }
+            ModalEvent::LaunchMultiRootSession {
+                worktree_paths,
+                agent,
+            } => {
+                let agent = *agent;
+                let targets = {
+                    let store = &cx.global::<SettingsState>().store;
+                    resolve_multi_root_worktrees(worktree_paths, &store.projects)
+                };
+                let targets = match targets {
+                    Ok(targets) => targets,
+                    Err(error) => {
+                        self.toast
+                            .clone()
+                            .update(cx, |toast, cx| toast.set_error(error, cx));
+                        return;
+                    }
+                };
+                let Some((primary_project, primary_cwd)) = targets.first().cloned() else {
+                    self.toast.clone().update(cx, |toast, cx| {
+                        toast.set_error("select one or more worktrees", cx);
+                    });
+                    return;
+                };
+                let extra_roots = targets
+                    .iter()
+                    .skip(1)
+                    .map(|(_, path)| path.clone())
+                    .collect::<Vec<_>>();
+                let context_roots = targets
+                    .iter()
+                    .map(|(project, wt_path)| grove_core::session_meta::ContextRoot {
+                        project: project.clone(),
+                        wt_path: wt_path.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                let launch_args = {
+                    let store = &cx.global::<SettingsState>().store;
+                    agent.multi_root_launch_args(
+                        store.dangerously_skip_permissions_enabled.unwrap_or(false),
+                        store.chrome_enabled.unwrap_or(false),
+                        &extra_roots,
+                    )
+                };
+                let Some(launch_args) = launch_args else {
+                    self.toast.clone().update(cx, |toast, cx| {
+                        toast.set_error("multi-worktree sessions require Claude or Codex", cx);
+                    });
+                    return;
+                };
+                let did_launch = self.sidebar.clone().update(cx, |s, cx| {
+                    s.spawn_session_in_with_context(
+                        primary_project.clone(),
+                        primary_cwd.clone(),
+                        agent,
+                        launch_args,
+                        context_roots,
+                        cx,
+                    )
+                });
+                if did_launch {
+                    SettingsState::update(cx, {
+                        let project = primary_project.clone();
+                        let wt_path = primary_cwd.clone();
+                        move |store| {
+                            store.recent_launches.retain(|recent| {
+                                !(recent.project == project
+                                    && recent.wt_path == wt_path
+                                    && recent.agent == agent)
+                            });
+                            store.recent_launches.insert(
+                                0,
+                                grove_core::storage::RecentLaunch {
+                                    project,
+                                    wt_path,
+                                    agent,
+                                },
+                            );
+                            store.recent_launches.truncate(12);
+                        }
+                    });
+                    self.toast
+                        .clone()
+                        .update(cx, |toast, cx| toast.set_toast("launched 1 session", cx));
+                }
             }
             ModalEvent::NewHomeTerminal => {
                 self.sidebar.clone().update(cx, Sidebar::new_home_terminal);
@@ -2569,6 +2695,53 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_identity_uses_the_group_marker_only_for_multiple_projects() {
+        let mut meta = crate::entities::session_registry::SessionMeta {
+            id: SessionId::from_raw(1),
+            project: "portfolio".into(),
+            wt_path: "/portfolio".into(),
+            agent: grove_core::agent::Agent::Claude,
+            context_roots: vec![
+                grove_core::session_meta::ContextRoot {
+                    project: "portfolio".into(),
+                    wt_path: "/portfolio".into(),
+                },
+                grove_core::session_meta::ContextRoot {
+                    project: "api".into(),
+                    wt_path: "/api".into(),
+                },
+            ],
+            label: "claude 1".into(),
+            spawned_at: std::time::Instant::now(),
+            attention: None,
+            tmux: false,
+            tmux_name: None,
+        };
+        assert_eq!(header_identity_label(&meta), "portfolio + 1 project");
+        meta.context_roots.truncate(1);
+        assert_eq!(header_identity_label(&meta), "claude");
+    }
+
+    #[test]
+    fn multi_root_resolution_is_all_or_nothing_when_one_path_is_stale() {
+        let primary = env!("CARGO_MANIFEST_DIR").to_string();
+        let stale = std::path::Path::new(&primary)
+            .join(format!("missing-worktree-{}", std::process::id()))
+            .to_string_lossy()
+            .into_owned();
+        let projects = vec![grove_core::storage::Project {
+            name: "primary".into(),
+            path: primary.clone(),
+            scripts: grove_core::storage::ProjectScripts::default(),
+            theme: None,
+            archived: false,
+            worktree_dir: None,
+        }];
+
+        assert!(resolve_multi_root_worktrees(&[primary, stale], &projects).is_err());
+    }
 
     /// Isolates config writes so this test can't touch the developer's real `projects.json`; mirrors `settings.rs`.
     fn isolate_config_dir() {

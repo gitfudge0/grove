@@ -4,6 +4,8 @@
 //! `src/gui/update/settings_rows.rs`. Not ported: `helpers.rs`'s pixel scroll-offset helpers, since gpui scrolls by
 //! item index and needs no layout model at all.
 
+use std::collections::HashSet;
+
 use grove_core::agent::Agent;
 
 /// Flat additive bonus on a worktree/branch hit, since that's what the caller is usually typing toward.
@@ -242,6 +244,7 @@ pub enum PaletteRow {
         agent: Agent,
     },
     NewSession,
+    NewMultiProjectSession,
     TerminalHome,
     TerminalWt,
     AddProject,
@@ -263,6 +266,7 @@ pub enum RowIdentity {
         agent: Agent,
     },
     NewSession,
+    NewMultiProjectSession,
     TerminalHome,
     TerminalWt,
     AddProject,
@@ -291,6 +295,7 @@ pub fn row_identity(row: &PaletteRow) -> RowIdentity {
             agent: *agent,
         },
         PaletteRow::NewSession => RowIdentity::NewSession,
+        PaletteRow::NewMultiProjectSession => RowIdentity::NewMultiProjectSession,
         PaletteRow::TerminalHome => RowIdentity::TerminalHome,
         PaletteRow::TerminalWt => RowIdentity::TerminalWt,
         PaletteRow::AddProject => RowIdentity::AddProject,
@@ -507,6 +512,7 @@ pub fn root_rows(
     }
     rows.extend([
         PaletteRow::NewSession,
+        PaletteRow::NewMultiProjectSession,
         PaletteRow::TerminalHome,
         PaletteRow::TerminalWt,
     ]);
@@ -530,6 +536,50 @@ pub enum PaletteScope {
     #[default]
     All,
     WorktreesOnly,
+}
+
+/// Temporary worktree selection for the worktrees-only launcher flow.
+///
+/// Paths are canonical absolute paths supplied by the caller. The set deliberately
+/// retains paths absent from a rebuilt filtered row list, and its output follows
+/// selection order so the first selected path is the primary launch root.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct WorktreeSelection {
+    paths: Vec<String>,
+    seen: HashSet<String>,
+}
+
+impl WorktreeSelection {
+    pub(crate) fn clear(&mut self) {
+        self.paths.clear();
+        self.seen.clear();
+    }
+
+    /// Toggles one canonical worktree path and returns whether it is now selected.
+    pub(crate) fn toggle(&mut self, canonical_path: &str) -> bool {
+        if self.seen.remove(canonical_path) {
+            self.paths.retain(|path| path != canonical_path);
+            false
+        } else {
+            let path = canonical_path.to_owned();
+            self.seen.insert(path.clone());
+            self.paths.push(path);
+            true
+        }
+    }
+
+    pub(crate) fn count(&self) -> usize {
+        self.paths.len()
+    }
+
+    pub(crate) fn contains(&self, canonical_path: &str) -> bool {
+        self.seen.contains(canonical_path)
+    }
+
+    /// Returns unique selected paths in deterministic selection order.
+    pub(crate) fn selected_targets(&self) -> Vec<String> {
+        self.paths.clone()
+    }
 }
 
 /// Single gate for [`PaletteScope`]: `WorktreesOnly` returns after the ranked combos.
@@ -567,6 +617,16 @@ pub fn typed_rows(
     let mut rows = rank_and_group_combos(scored);
     if scope == PaletteScope::WorktreesOnly {
         return rows;
+    }
+    if !query.trim().is_empty()
+        && fuzzy_match(
+            query,
+            "new multi-project session",
+            "multi repo multiple worktrees",
+            "",
+        )
+    {
+        rows.push(PaletteRow::NewMultiProjectSession);
     }
     if !query.trim().is_empty() && fuzzy_match(query, "settings", "", "") {
         rows.push(PaletteRow::Settings);
@@ -809,6 +869,7 @@ mod tests {
     fn every_action_row_has_its_own_identity() {
         let rows = [
             PaletteRow::NewSession,
+            PaletteRow::NewMultiProjectSession,
             PaletteRow::TerminalHome,
             PaletteRow::TerminalWt,
             PaletteRow::AddProject,
@@ -842,6 +903,7 @@ mod tests {
         let rows = root_rows(&recents, &[], 1, 0, false, false);
         assert!(matches!(rows[0], PaletteRow::Recent { .. }));
         assert_eq!(rows[1], PaletteRow::NewSession);
+        assert_eq!(rows[2], PaletteRow::NewMultiProjectSession);
         assert!(rows.contains(&PaletteRow::Settings));
         assert!(rows.contains(&PaletteRow::SwitchToSession));
     }
@@ -910,6 +972,7 @@ mod tests {
                     agent: Agent::Claude,
                 },
                 PaletteRow::NewSession,
+                PaletteRow::NewMultiProjectSession,
                 PaletteRow::TerminalHome,
                 PaletteRow::TerminalWt,
                 PaletteRow::SwitchToSession,
@@ -935,6 +998,31 @@ mod tests {
     fn the_root_list_is_never_empty_even_with_no_projects() {
         let rows = root_rows(&[], &[], 0, 0, false, false);
         assert_eq!(rows[0], PaletteRow::NewSession);
+        assert_eq!(rows[1], PaletteRow::NewMultiProjectSession);
+    }
+
+    #[test]
+    fn multi_project_command_is_present_in_all_scope_and_hidden_in_worktrees_only() {
+        assert!(
+            root_rows(&[], &[], 0, 0, false, false).contains(&PaletteRow::NewMultiProjectSession)
+        );
+        assert!(!typed_rows(
+            "multi project",
+            &[],
+            &[],
+            false,
+            false,
+            PaletteScope::WorktreesOnly,
+        )
+        .contains(&PaletteRow::NewMultiProjectSession));
+    }
+
+    #[test]
+    fn multi_project_command_matches_its_private_search_aliases() {
+        for query in ["multi project", "multi repo", "multiple worktrees"] {
+            assert!(typed_rows(query, &[], &[], false, false, PaletteScope::All)
+                .contains(&PaletteRow::NewMultiProjectSession));
+        }
     }
 
     #[test]
@@ -1055,6 +1143,69 @@ mod tests {
                 "{q:?} leaked {scoped:?} into the worktrees-only scope"
             );
         }
+    }
+
+    #[test]
+    fn worktree_selection_handles_none_one_and_many_paths() {
+        let mut selection = WorktreeSelection::default();
+        assert_eq!(selection.count(), 0);
+        assert_eq!(selection.selected_targets(), Vec::<String>::new());
+
+        assert!(selection.toggle("/worktrees/one"));
+        assert_eq!(selection.count(), 1);
+        assert!(selection.contains("/worktrees/one"));
+
+        assert!(selection.toggle("/worktrees/two"));
+        assert_eq!(selection.count(), 2);
+        assert_eq!(
+            selection.selected_targets(),
+            vec!["/worktrees/one", "/worktrees/two"]
+        );
+    }
+
+    #[test]
+    fn worktree_selection_deduplicates_repeated_canonical_paths() {
+        let mut selection = WorktreeSelection::default();
+        assert!(selection.toggle("/worktrees/shared"));
+        assert!(!selection.toggle("/worktrees/shared"));
+        assert!(selection.toggle("/worktrees/shared"));
+
+        assert_eq!(selection.count(), 1);
+        assert_eq!(selection.selected_targets(), vec!["/worktrees/shared"]);
+    }
+
+    #[test]
+    fn worktree_selection_keeps_first_selection_as_the_primary_target() {
+        let mut selection = WorktreeSelection::default();
+        selection.toggle("/worktrees/charlie");
+        selection.toggle("/worktrees/alpha");
+        selection.toggle("/worktrees/bravo");
+
+        assert_eq!(
+            selection.selected_targets(),
+            vec!["/worktrees/charlie", "/worktrees/alpha", "/worktrees/bravo"]
+        );
+    }
+
+    #[test]
+    fn worktree_selection_survives_rebuilt_rows_in_any_order() {
+        let mut selection = WorktreeSelection::default();
+        selection.toggle("/worktrees/alpha");
+        selection.toggle("/worktrees/charlie");
+
+        let filtered_rows = [combo(0, "/worktrees/charlie")];
+        assert!(matches!(filtered_rows[0], PaletteRow::Combo { .. }));
+        assert_eq!(
+            selection.selected_targets(),
+            vec!["/worktrees/alpha", "/worktrees/charlie"]
+        );
+
+        let reordered_rows = [combo(0, "/worktrees/charlie"), combo(1, "/worktrees/alpha")];
+        assert_eq!(reordered_rows.len(), 2);
+        assert_eq!(
+            selection.selected_targets(),
+            vec!["/worktrees/alpha", "/worktrees/charlie"]
+        );
     }
 
     #[test]

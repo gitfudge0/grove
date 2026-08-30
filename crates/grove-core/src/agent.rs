@@ -77,6 +77,28 @@ impl Agent {
         args
     }
 
+    /// Builds launch arguments for one primary root plus additional writable roots.
+    /// Claude and Codex both accept repeated `--add-dir <path>` pairs. OpenCode
+    /// and Terminal have no corresponding interactive multi-root mode.
+    pub fn multi_root_launch_args(
+        self,
+        skip_permissions: bool,
+        chrome: bool,
+        additional_roots: &[String],
+    ) -> Option<Vec<String>> {
+        match self {
+            Agent::Claude | Agent::Codex => {
+                let mut args = self.launch_args(skip_permissions, chrome);
+                for root in additional_roots {
+                    args.push("--add-dir".into());
+                    args.push(root.clone());
+                }
+                Some(args)
+            }
+            Agent::OpenCode | Agent::Terminal => None,
+        }
+    }
+
     /// On Windows, a resolved `.cmd`/`.bat` shim is wrapped as `cmd.exe /C <path>` since `CreateProcess` can't exec it directly; `.exe` and Unix run the binary directly.
     pub fn invocation(self) -> (String, Vec<String>) {
         match self {
@@ -255,6 +277,43 @@ mod tests {
         let args = Agent::Claude.launch_args(true, true);
         assert_eq!(args.len(), 2);
         assert_eq!(args, vec!["--dangerously-skip-permissions", "--chrome"]);
+    }
+
+    #[test]
+    fn multi_root_args_append_one_native_pair_per_extra_root() {
+        let roots = vec!["/worktrees/second".into(), "/worktrees/third".into()];
+        assert_eq!(
+            Agent::Claude.multi_root_launch_args(false, false, &roots),
+            Some(vec![
+                "--add-dir".into(),
+                "/worktrees/second".into(),
+                "--add-dir".into(),
+                "/worktrees/third".into(),
+            ])
+        );
+        assert_eq!(
+            Agent::Codex.multi_root_launch_args(true, false, &roots),
+            Some(vec![
+                "--dangerously-bypass-approvals-and-sandbox".into(),
+                "--add-dir".into(),
+                "/worktrees/second".into(),
+                "--add-dir".into(),
+                "/worktrees/third".into(),
+            ])
+        );
+    }
+
+    #[test]
+    fn unsupported_agents_refuse_multi_root_launches() {
+        let roots = vec!["/worktrees/second".into()];
+        assert_eq!(
+            Agent::OpenCode.multi_root_launch_args(false, false, &roots),
+            None
+        );
+        assert_eq!(
+            Agent::Terminal.multi_root_launch_args(false, false, &roots),
+            None
+        );
     }
 
     /// U3: `--chrome` is Claude-only; no other agent ever gets it.

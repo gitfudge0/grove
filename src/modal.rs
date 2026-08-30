@@ -437,6 +437,21 @@ pub struct LauncherSlotState {
     pub anchor: Option<crate::launcher::RowIdentity>,
     pub agent_sel: usize,
     pub scope: crate::launcher::PaletteScope,
+    /// Temporary path-keyed selection used only by the worktrees-only flow.
+    pub(crate) selected_worktrees: crate::launcher::WorktreeSelection,
+}
+
+impl LauncherSlotState {
+    /// Reuses the open palette for a fresh multi-project selection flow.
+    pub(crate) fn enter_worktrees_only(&mut self) {
+        self.query.clear();
+        self.sel = 0;
+        self.view = LauncherView::Root;
+        self.anchor = None;
+        self.agent_sel = 0;
+        self.scope = crate::launcher::PaletteScope::WorktreesOnly;
+        self.selected_worktrees.clear();
+    }
 }
 
 /// The slot's discriminant — what the key table, key contexts and drift guard index by.
@@ -1565,6 +1580,29 @@ mod tests {
         ] {
             assert_eq!(v(&m, k), ModalKeyVerdict::FallThrough, "{k:?}");
         }
+    }
+
+    #[test]
+    fn entering_worktrees_only_resets_the_launcher_to_a_fresh_selection() {
+        let mut st = LauncherSlotState {
+            query: "multi repo".into(),
+            sel: 4,
+            view: LauncherView::RowActions,
+            anchor: Some(crate::launcher::RowIdentity::Settings),
+            agent_sel: 2,
+            scope: crate::launcher::PaletteScope::All,
+            selected_worktrees: crate::launcher::WorktreeSelection::default(),
+        };
+        st.selected_worktrees.toggle("/worktrees/one");
+        st.enter_worktrees_only();
+
+        assert_eq!(st.query, "");
+        assert_eq!(st.sel, 0);
+        assert_eq!(st.view, LauncherView::Root);
+        assert_eq!(st.anchor, None);
+        assert_eq!(st.agent_sel, 0);
+        assert_eq!(st.scope, crate::launcher::PaletteScope::WorktreesOnly);
+        assert_eq!(st.selected_worktrees.count(), 0);
     }
 
     #[test]

@@ -38,6 +38,25 @@ const INDENT_SESSION: f32 = INDENT_WORKTREE + GLYPH_SLOT_W + SPACE_MD;
 
 /// Taller than any spacing notch on purpose: this pads a block of prose standing in for a list, not a row in one.
 const EMPTY_ROW_PAD_Y: f32 = 24.0;
+/// The compact card shows a bounded root inventory; remaining roots are represented
+/// by one final count row so the rail stays scannable.
+const MAX_SESSION_CONTEXT_ROOT_ROWS: usize = 3;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionContextRootRow {
+    project: String,
+    detail: String,
+}
+
+impl SessionContextRootRow {
+    fn label(&self) -> String {
+        match (self.project.trim(), self.detail.trim()) {
+            ("", detail) => detail.to_string(),
+            (project, "") => project.to_string(),
+            (project, detail) => format!("{project} · {detail}"),
+        }
+    }
+}
 
 /// Only show a branch chip for non-default worktrees: the main worktree's branch is redundant with the project name (`src/gui/rows.rs:249`).
 #[must_use]
@@ -192,6 +211,12 @@ pub enum TreeRow {
         project: String,
         /// Suppressed (empty) when it duplicates [`Self::SessionCard::worktree`] ([`worktree_shows_branch`]); falls back to `""` when the worktree isn't cached yet.
         branch: String,
+        /// Ordered root inventory for a multi-root session, resolved from the
+        /// current snapshot before rendering. Empty keeps the single-root card
+        /// byte-for-byte equivalent to its existing layout.
+        context_roots: Vec<SessionContextRootRow>,
+        /// Roots omitted after [`MAX_SESSION_CONTEXT_ROOT_ROWS`].
+        hidden_context_roots: usize,
         /// Time since the last activity-state change, or since `spawned_at` when `since_of` has no entry yet.
         elapsed: String,
         active: bool,
@@ -230,10 +255,62 @@ impl TreeRow {
                 is_main,
                 ..
             } => row_height(worktree_shows_branch(*is_main, branch, name)),
-            Self::SessionCard { .. } => SESSION_CARD_H,
+            Self::SessionCard {
+                context_roots,
+                hidden_context_roots,
+                ..
+            } => session_card_height(session_card_detail_lines(
+                context_roots.len(),
+                *hidden_context_roots,
+            )),
             _ => ROW_H,
         }
     }
+}
+
+fn session_card_detail_lines(context_root_count: usize, hidden_context_roots: usize) -> usize {
+    if context_root_count == 0 {
+        2
+    } else {
+        context_root_count + usize::from(hidden_context_roots > 0)
+    }
+}
+
+fn session_card_height(detail_lines: usize) -> f32 {
+    SPACE_LG * 2.0
+        + CARD_LINE_H
+        + ROW_LINE_GAP * detail_lines as f32
+        + CARD_LINE_SM_H * detail_lines as f32
+        + 1.0 * 2.0
+}
+
+fn session_context_root_rows(
+    context_roots: &[grove_core::session_meta::ContextRoot],
+    worktrees: &HashMap<&str, (&str, &str)>,
+) -> (Vec<SessionContextRootRow>, usize) {
+    if context_roots.len() < 2 {
+        return (Vec::new(), 0);
+    }
+
+    let hidden = context_roots
+        .len()
+        .saturating_sub(MAX_SESSION_CONTEXT_ROOT_ROWS);
+    let rows = context_roots
+        .iter()
+        .take(MAX_SESSION_CONTEXT_ROOT_ROWS)
+        .map(|root| {
+            let detail = worktrees
+                .get(normalize_wt_path(&root.wt_path))
+                .map(|(_, branch)| branch.trim())
+                .filter(|branch| !branch.is_empty())
+                .map_or_else(|| path_basename(&root.wt_path), str::to_string);
+            SessionContextRootRow {
+                project: root.project.clone(),
+                detail,
+            }
+        })
+        .collect();
+    (rows, hidden)
 }
 
 /// Build the sidebar's rows, in exactly the order `tree_view` pushes them (`src/gui/view/sidebar.rs:225-381`).
@@ -343,6 +420,7 @@ pub struct SessionInfo {
     pub wt_path: String,
     pub label: String,
     pub agent: Agent,
+    pub context_roots: Vec<grove_core::session_meta::ContextRoot>,
     /// Stripped/sanitized OSC title, or `None` when unset — the card falls back to [`Self::label`].
     pub title: Option<String>,
     pub spawned_at: std::time::Instant,
@@ -504,6 +582,10 @@ pub fn flatten_sessions(
         let branch = worktrees
             .get(normalize_wt_path(wt_path))
             .map_or_else(String::new, |(_, b)| (*b).to_string());
+        let (context_roots, hidden_context_roots) = meta.map_or_else(
+            || (Vec::new(), 0),
+            |i| session_context_root_rows(&i.context_roots, &worktrees),
+        );
         // A missing entry means the poll hasn't answered yet, not a clean worktree.
         let diff = git
             .get(normalize_wt_path(wt_path))
@@ -531,8 +613,10 @@ pub fn flatten_sessions(
                 })
                 .unwrap_or_default(),
             worktree,
-            project: meta.map(|i| i.project.clone()).unwrap_or_default(),
+            project: meta.map_or_else(String::new, |i| i.project.clone()),
             branch,
+            context_roots,
+            hidden_context_roots,
             elapsed,
             // Same rule as the tree (`sidebar.rs:338`).
             active: !ws.terminal_focused() && ws.active_session() == Some(id),
@@ -1169,7 +1253,36 @@ pub fn diff_chips(diff: Option<(u32, u32)>) -> AnyElement {
     }
 }
 
-/// Every state treatment is a fill or overlay, never a size: the card's box is pinned to [`SESSION_CARD_H`] (the token [`TreeRow::height`] reports), so arming a kill cannot reflow the list under the cursor.
+fn session_diff_control(id: SessionId, diff: Option<(u32, u32)>, ctx: &RowCtx) -> AnyElement {
+    let chips = diff_chips(diff);
+    // Only an actual `+N -M` pair is worth opening the viewer for.
+    match diff_display(diff) {
+        DiffDisplay::Counts(..) => {
+            let dispatch = Rc::clone(&ctx.dispatch);
+            div()
+                .id(("diff-chip-open", id.raw()))
+                .flex()
+                .flex_none()
+                .ml_auto()
+                .rounded(rpx(RADIUS_CONTROL))
+                .cursor_pointer()
+                .hover(|s| s.bg(c::BG_HOVER()))
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    dispatch(RowAction::OpenDiff(id), window, cx);
+                })
+                .child(chips)
+                .into_any_element()
+        }
+        _ => div()
+            .flex()
+            .flex_none()
+            .ml_auto()
+            .child(chips)
+            .into_any_element(),
+    }
+}
+
+/// Every state treatment is a fill or overlay, never a size: the card's box is pinned to its [`TreeRow::height`], so arming a kill cannot reflow the list under the cursor.
 fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
     let TreeRow::SessionCard {
         id,
@@ -1178,6 +1291,8 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         worktree,
         project,
         branch,
+        context_roots,
+        hidden_context_roots,
         elapsed,
         active,
         pending_kill,
@@ -1282,34 +1397,62 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
                 .truncate(),
             ),
         )
-        .child({
-            let chips = diff_chips(*diff);
-            // Only an actual `+N -M` pair is worth opening the viewer for.
-            match diff_display(*diff) {
-                DiffDisplay::Counts(..) => {
-                    let dispatch = Rc::clone(&ctx.dispatch);
-                    div()
-                        .id(("diff-chip-open", id.raw()))
-                        .flex()
-                        .flex_none()
-                        .ml_auto()
-                        .rounded(rpx(RADIUS_CONTROL))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(c::BG_HOVER()))
-                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                            dispatch(RowAction::OpenDiff(id), window, cx);
-                        })
-                        .child(chips)
-                        .into_any_element()
-                }
-                _ => div()
+        .child(session_diff_control(id, *diff, ctx));
+
+    let mut content = div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w_0()
+        .py(rpx(SPACE_LG))
+        .gap(rpx(ROW_LINE_GAP))
+        .child(headline);
+    if context_roots.is_empty() {
+        content = content.child(context_line).child(meta);
+    } else {
+        let detail_lines = session_card_detail_lines(context_roots.len(), *hidden_context_roots);
+        for (index, label) in context_roots
+            .iter()
+            .map(SessionContextRootRow::label)
+            .chain((*hidden_context_roots > 0).then(|| format!("+{} more", hidden_context_roots)))
+            .enumerate()
+        {
+            let is_first = index == 0;
+            let is_last = index + 1 == detail_lines;
+            let trailing = if is_first {
+                div()
                     .flex()
                     .flex_none()
                     .ml_auto()
-                    .child(chips)
-                    .into_any_element(),
-            }
-        });
+                    .items_center()
+                    .gap(rpx(SPACE_SM))
+                    .child(card_state_mark(*state, accent, ctx.tick))
+                    .child(ui(word, TEXT_MICRO, accent))
+                    .child(ui(elapsed.clone(), TEXT_MICRO, c::FG_MUTE()))
+                    .into_any_element()
+            } else if is_last {
+                session_diff_control(id, *diff, ctx)
+            } else {
+                div().into_any_element()
+            };
+            content = content.child(
+                div()
+                    .flex()
+                    .w_full()
+                    .h(rpx(CARD_LINE_SM_H))
+                    .items_center()
+                    .gap(rpx(SPACE_MD))
+                    .child(
+                        div()
+                            .flex()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .child(ui(label, TEXT_SMALL, c::FG_MUTE()).truncate()),
+                    )
+                    .child(trailing),
+            );
+        }
+    }
 
     let dispatch = Rc::clone(&ctx.dispatch);
     let body = click_row_on(
@@ -1317,21 +1460,12 @@ fn session_card(row: &TreeRow, ctx: &RowCtx) -> AnyElement {
         *active,
         RowDensity::Card,
         move |window, cx| dispatch(RowAction::SelectSession(id), window, cx),
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_w_0()
-            .py(rpx(SPACE_LG))
-            .gap(rpx(ROW_LINE_GAP))
-            .child(headline)
-            .child(context_line)
-            .child(meta),
+        content,
     )
     .h_full();
 
     card(vec![body.into_any_element()])
-        .h(rpx(SESSION_CARD_H))
+        .h(rpx(row.height()))
         .flex_none()
         .relative()
         .overflow_hidden()
@@ -1662,6 +1796,7 @@ mod tests {
             wt_path: wt_path.into(),
             label: "claude 1".into(),
             agent: Agent::Claude,
+            context_roots: Vec::new(),
             title: None,
             spawned_at,
         }
@@ -2097,6 +2232,189 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_multi_root_session_card_keeps_its_ordered_root_inventory() {
+        let mut snap = fixture();
+        snap.projects.push(SnapshotProject {
+            idx: 3,
+            name: "api".into(),
+            is_git: true,
+            has_run: false,
+            worktrees: vec![SnapshotWorktree {
+                path: "/api".into(),
+                name: "api".into(),
+                branch: "api-main".into(),
+                is_main: true,
+                sessions: vec![],
+            }],
+            sessions: vec![],
+        });
+        snap.projects.push(SnapshotProject {
+            idx: 4,
+            name: "web".into(),
+            is_git: true,
+            has_run: false,
+            worktrees: vec![SnapshotWorktree {
+                path: "/web".into(),
+                name: "web".into(),
+                branch: "web-main".into(),
+                is_main: true,
+                sessions: vec![],
+            }],
+            sessions: vec![],
+        });
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let now = std::time::Instant::now();
+        let mut portfolio = info("alpha", "/a", now);
+        portfolio.project = "portfolio".into();
+        portfolio.context_roots = vec![
+            grove_core::session_meta::ContextRoot {
+                project: "portfolio".into(),
+                wt_path: "/a".into(),
+            },
+            grove_core::session_meta::ContextRoot {
+                project: "api".into(),
+                wt_path: "/api".into(),
+            },
+            grove_core::session_meta::ContextRoot {
+                project: "web".into(),
+                wt_path: "/web".into(),
+            },
+        ];
+        let session_info = HashMap::from([(sid(1), portfolio)]);
+        let inventories: Vec<Vec<String>> = flatten_sessions(
+            &snap,
+            &ws,
+            &ActivityStore::new(),
+            &session_info,
+            &HashMap::new(),
+            &[],
+        )
+        .iter()
+        .filter_map(|row| match row {
+            TreeRow::SessionCard {
+                id, context_roots, ..
+            } if *id == sid(1) => Some(
+                context_roots
+                    .iter()
+                    .map(SessionContextRootRow::label)
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect();
+        assert_eq!(
+            inventories,
+            vec![vec![
+                "portfolio · main".to_string(),
+                "api · api-main".to_string(),
+                "web · web-main".to_string(),
+            ]]
+        );
+    }
+
+    #[test]
+    fn a_single_project_session_card_keeps_its_existing_two_detail_lines() {
+        let snap = fixture();
+        let mut ws = WorkspaceState::default();
+        ws.toggle_terminals_collapsed();
+        let now = std::time::Instant::now();
+        let mut single = info("alpha", "/a", now);
+        single.context_roots = vec![grove_core::session_meta::ContextRoot {
+            project: "alpha".into(),
+            wt_path: "/a".into(),
+        }];
+        let rows = flatten_sessions(
+            &snap,
+            &ws,
+            &ActivityStore::new(),
+            &HashMap::from([(sid(1), single)]),
+            &HashMap::new(),
+            &[],
+        );
+        let cards: Vec<(&Vec<SessionContextRootRow>, usize, f32)> = rows
+            .iter()
+            .filter_map(|row| match row {
+                TreeRow::SessionCard {
+                    id,
+                    context_roots,
+                    hidden_context_roots,
+                    ..
+                } if *id == sid(1) => Some((context_roots, *hidden_context_roots, row.height())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cards.len(), 1);
+        assert!(cards[0].0.is_empty());
+        assert_eq!(cards[0].1, 0);
+        assert_eq!(cards[0].2, SESSION_CARD_H);
+    }
+
+    #[test]
+    fn multi_root_inventory_uses_a_worktree_basename_when_its_branch_is_uncached() {
+        let roots = vec![
+            grove_core::session_meta::ContextRoot {
+                project: "portfolio".into(),
+                wt_path: "/portfolio".into(),
+            },
+            grove_core::session_meta::ContextRoot {
+                project: "grove".into(),
+                wt_path: "/dev/grove-feature/".into(),
+            },
+        ];
+        let (rows, hidden) = session_context_root_rows(&roots, &HashMap::new());
+        assert_eq!(hidden, 0);
+        assert_eq!(
+            rows.iter()
+                .map(SessionContextRootRow::label)
+                .collect::<Vec<_>>(),
+            vec!["portfolio · portfolio", "grove · grove-feature"]
+        );
+    }
+
+    #[test]
+    fn multi_root_inventory_keeps_multiple_worktrees_from_one_project() {
+        let roots = vec![
+            grove_core::session_meta::ContextRoot {
+                project: "portfolio".into(),
+                wt_path: "/a".into(),
+            },
+            grove_core::session_meta::ContextRoot {
+                project: "portfolio".into(),
+                wt_path: "/a-x".into(),
+            },
+        ];
+        let worktrees = HashMap::from([("/a", ("alpha", "main")), ("/a-x", ("a-x", "feature"))]);
+        let (rows, hidden) = session_context_root_rows(&roots, &worktrees);
+        assert_eq!(hidden, 0);
+        assert_eq!(
+            rows.iter()
+                .map(SessionContextRootRow::label)
+                .collect::<Vec<_>>(),
+            vec!["portfolio · main", "portfolio · feature"]
+        );
+    }
+
+    #[test]
+    fn multi_root_inventory_caps_at_three_rows_then_reports_the_remainder() {
+        let roots = (0..5)
+            .map(|n| grove_core::session_meta::ContextRoot {
+                project: format!("project-{n}"),
+                wt_path: format!("/worktrees/{n}"),
+            })
+            .collect::<Vec<_>>();
+        let (rows, hidden) = session_context_root_rows(&roots, &HashMap::new());
+        assert_eq!(hidden, 2);
+        assert_eq!(
+            rows.iter()
+                .map(SessionContextRootRow::label)
+                .collect::<Vec<_>>(),
+            vec!["project-0 · 0", "project-1 · 1", "project-2 · 2"]
+        );
+        assert_eq!(session_card_detail_lines(rows.len(), hidden), 4);
+    }
+
     /// The bug the sessions rail shipped with: a cache miss and a genuinely
     /// clean worktree both rendered the neutral `clean` chip, so a rail that
     /// was never polled looked like a repo with no work in it.
@@ -2139,9 +2457,10 @@ mod tests {
         assert!(diffs.contains(&Some((5, 2))));
     }
 
-    /// The card is a fixed box, and `height()` is the only place that says so.
+    /// Single-root cards retain the existing fixed box; multi-root cards add only
+    /// the compact inventory lines they visibly need.
     #[test]
-    fn a_session_card_declares_the_cards_height_not_the_row_height() {
+    fn session_card_height_tracks_the_visible_context_inventory() {
         let card = TreeRow::SessionCard {
             id: sid(1),
             agent: Agent::Claude,
@@ -2149,6 +2468,8 @@ mod tests {
             worktree: "alpha".into(),
             project: "alpha".into(),
             branch: "main".into(),
+            context_roots: Vec::new(),
+            hidden_context_roots: 0,
             elapsed: "2m".into(),
             active: false,
             pending_kill: false,
@@ -2163,6 +2484,37 @@ mod tests {
             *pending_kill = true;
         }
         assert!((armed.height() - card.height()).abs() < f32::EPSILON);
+
+        let multi_root = TreeRow::SessionCard {
+            id: sid(1),
+            agent: Agent::Claude,
+            title: "reviewing the rail".into(),
+            worktree: "alpha".into(),
+            project: "alpha".into(),
+            branch: "main".into(),
+            context_roots: vec![
+                SessionContextRootRow {
+                    project: "alpha".into(),
+                    detail: "main".into(),
+                },
+                SessionContextRootRow {
+                    project: "beta".into(),
+                    detail: "main".into(),
+                },
+                SessionContextRootRow {
+                    project: "gamma".into(),
+                    detail: "main".into(),
+                },
+            ],
+            hidden_context_roots: 2,
+            elapsed: "2m".into(),
+            active: false,
+            pending_kill: false,
+            state: ActivityState::Idle,
+            diff: Some((0, 0)),
+        };
+        assert_eq!(multi_root.height(), session_card_height(4));
+        assert!(multi_root.height() > SESSION_CARD_H);
     }
 
     /// The headline is the agent's OSC title; a session whose agent never set

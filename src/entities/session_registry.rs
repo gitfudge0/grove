@@ -40,6 +40,7 @@ pub struct SessionMeta {
     pub project: String,
     pub wt_path: String,
     pub agent: Agent,
+    pub context_roots: Vec<grove_core::session_meta::ContextRoot>,
     /// Internal label (`claude 1`, …); stripped from the OSC title to make the context text (`src/gui/rows.rs:778`).
     pub label: String,
     pub spawned_at: Instant,
@@ -61,6 +62,7 @@ pub struct SpawnTarget {
     pub label: String,
     /// Built the same way iced does (`src/app/spawn.rs:26-32`); chained before the attention `extra_args` on both backends (`crates/grove-core/src/session.rs:190,254-259`).
     pub args: Vec<String>,
+    pub context_roots: Vec<grove_core::session_meta::ContextRoot>,
     /// Home terminals and panel shells must never be tmux-backed, or the next launch's discovery reimports them as agent sessions (`crates/grove-core/src/session.rs:149-175`).
     pub use_tmux: bool,
 }
@@ -75,6 +77,7 @@ impl SpawnTarget {
             project: String::new(),
             label,
             args: Vec::new(),
+            context_roots: Vec::new(),
             use_tmux: false,
         }
     }
@@ -119,7 +122,18 @@ impl SessionRegistry {
     }
 
     /// The live entity is attached separately by [`Self::attach`], so ordering stays testable without spawning anything.
+    #[allow(dead_code)]
     pub fn insert_meta(&mut self, project: String, wt_path: String, agent: Agent) -> SessionId {
+        self.insert_meta_with_context(project, wt_path, agent, Vec::new())
+    }
+
+    pub fn insert_meta_with_context(
+        &mut self,
+        project: String,
+        wt_path: String,
+        agent: Agent,
+        context_roots: Vec<grove_core::session_meta::ContextRoot>,
+    ) -> SessionId {
         let id = self.next_id();
         let label = self.next_agent_label(agent);
         // Skipped under test: `prepare` writes a real file under the user's config dir, which pure bookkeeping tests must not litter.
@@ -138,6 +152,7 @@ impl SessionRegistry {
             project,
             wt_path,
             agent,
+            context_roots,
             label,
             spawned_at: Instant::now(),
             attention,
@@ -158,6 +173,7 @@ impl SessionRegistry {
                 project: d.project.clone(),
                 wt_path: d.wt_path.clone(),
                 agent: d.agent,
+                context_roots: d.context_roots.clone(),
                 label: d.label.clone(),
                 spawned_at: Instant::now(),
                 attention: None,
@@ -283,6 +299,11 @@ impl SessionRegistry {
             if m.project == from {
                 m.project = to.to_string();
                 count += 1;
+            }
+            for root in &mut m.context_roots {
+                if root.project == from {
+                    root.project = to.to_string();
+                }
             }
         }
         count
@@ -434,6 +455,7 @@ impl SessionRegistry {
                 project: String::new(),
                 wt_path: wt_path.to_string(),
                 agent: Agent::Terminal,
+                context_roots: Vec::new(),
                 label,
                 spawned_at: Instant::now(),
                 attention: None,
@@ -452,6 +474,7 @@ impl SessionRegistry {
             project: String::new(),
             wt_path: home_dir(),
             agent: Agent::Terminal,
+            context_roots: Vec::new(),
             label,
             spawned_at: Instant::now(),
             attention: None,
@@ -570,6 +593,34 @@ mod tests {
         assert_eq!(label(a).as_deref(), Some("claude 1"));
         assert_eq!(label(b).as_deref(), Some("codex 1"));
         assert_eq!(label(c).as_deref(), Some("claude 2"));
+    }
+
+    #[test]
+    fn reattached_session_keeps_its_persisted_multi_root_context() {
+        let roots = vec![
+            grove_core::session_meta::ContextRoot {
+                project: "portfolio".into(),
+                wt_path: "/portfolio".into(),
+            },
+            grove_core::session_meta::ContextRoot {
+                project: "api".into(),
+                wt_path: "/api".into(),
+            },
+        ];
+        let discovered = grove_core::tmux::DiscoveredSession {
+            name: "grove-portfolio-claude-1".into(),
+            wt_path: "/portfolio".into(),
+            project: "portfolio".into(),
+            label: "claude 1".into(),
+            agent: Agent::Claude,
+            context_roots: roots.clone(),
+        };
+        let mut registry = SessionRegistry::new();
+        let id = registry.insert_reattached(0, &discovered);
+        assert_eq!(
+            registry.meta(id).map(|meta| &meta.context_roots),
+            Some(&roots)
+        );
     }
 
     /// The first shell is spawned on demand, and something is always selected afterward (`src/app/terminals.rs:133-149`).

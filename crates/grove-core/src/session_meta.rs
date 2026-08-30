@@ -4,12 +4,43 @@ use fs_err as fs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// One writable worktree available to a multi-root agent session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextRoot {
+    pub project: String,
+    pub wt_path: String,
+}
+
+/// The compact identity shown for a session spanning distinct projects.
+#[must_use]
+pub fn multi_project_identity(
+    primary_project: &str,
+    context_roots: &[ContextRoot],
+) -> Option<String> {
+    let mut projects = vec![primary_project];
+    for root in context_roots {
+        if !projects.iter().any(|project| *project == root.project) {
+            projects.push(&root.project);
+        }
+    }
+    let extra = projects.len().saturating_sub(1);
+    (extra > 0).then(|| {
+        format!(
+            "{primary_project} + {extra} project{}",
+            if extra == 1 { "" } else { "s" }
+        )
+    })
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionMeta {
     pub wt_path: String,
     pub project: String,
     pub label: String,
     pub agent: Agent,
+    /// Ordered roots for a multi-worktree session. Older sidecars deserialize as empty.
+    #[serde(default)]
+    pub context_roots: Vec<ContextRoot>,
 }
 
 fn sessions_dir() -> Result<PathBuf> {
@@ -98,10 +129,20 @@ pub fn rename_project(old_name: &str, new_name: &str) -> usize {
         let Some(mut meta) = read(&name) else {
             continue;
         };
-        if meta.project != old_name {
+        let mut changed = false;
+        if meta.project == old_name {
+            meta.project = new_name.to_string();
+            changed = true;
+        }
+        for root in &mut meta.context_roots {
+            if root.project == old_name {
+                root.project = new_name.to_string();
+                changed = true;
+            }
+        }
+        if !changed {
             continue;
         }
-        meta.project = new_name.to_string();
         match write(&name, &meta) {
             Ok(()) => count += 1,
             Err(e) => {
@@ -172,6 +213,10 @@ mod tests {
             project: "testproject".into(),
             label: "test-label".into(),
             agent: Agent::Claude,
+            context_roots: vec![ContextRoot {
+                project: "testproject".into(),
+                wt_path: "/tmp/test-wt".into(),
+            }],
         }
     }
 
@@ -232,6 +277,60 @@ mod tests {
         assert_eq!(back.project, meta.project);
         assert_eq!(back.label, meta.label);
         assert_eq!(back.agent, meta.agent);
+        assert_eq!(back.context_roots, meta.context_roots);
+    }
+
+    #[test]
+    fn legacy_sidecar_defaults_context_roots() {
+        let json = r#"{"wt_path":"/tmp/test-wt","project":"testproject","label":"test-label","agent":"Claude"}"#;
+        let meta: SessionMeta = serde_json::from_str(json).expect("legacy sidecar deserialize");
+        assert!(meta.context_roots.is_empty());
+    }
+
+    #[test]
+    fn multi_project_identity_counts_distinct_projects_only() {
+        let roots = vec![
+            ContextRoot {
+                project: "portfolio".into(),
+                wt_path: "/p/a".into(),
+            },
+            ContextRoot {
+                project: "portfolio".into(),
+                wt_path: "/p/b".into(),
+            },
+            ContextRoot {
+                project: "api".into(),
+                wt_path: "/a".into(),
+            },
+            ContextRoot {
+                project: "web".into(),
+                wt_path: "/w".into(),
+            },
+        ];
+        assert_eq!(
+            multi_project_identity("portfolio", &roots),
+            Some("portfolio + 2 projects".into())
+        );
+        assert_eq!(multi_project_identity("portfolio", &roots[..2]), None);
+        assert_eq!(
+            multi_project_identity("portfolio", &roots[..3]),
+            Some("portfolio + 1 project".into())
+        );
+    }
+
+    #[test]
+    fn multi_project_identity_keeps_single_project_sessions_unmarked() {
+        let roots = vec![
+            ContextRoot {
+                project: "portfolio".into(),
+                wt_path: "/p/main".into(),
+            },
+            ContextRoot {
+                project: "portfolio".into(),
+                wt_path: "/p/feature".into(),
+            },
+        ];
+        assert_eq!(multi_project_identity("portfolio", &roots), None);
     }
 
     /// Isolated per test via `GROVE_CONFIG_DIR`; serializes against `storage::tests::CONFIG_DIR_ENV_TEST_LOCK` since that env var is process-global and both modules' tests run concurrently.
@@ -265,6 +364,7 @@ mod tests {
             project: project.into(),
             label: "test-label".into(),
             agent: Agent::Claude,
+            context_roots: Vec::new(),
         }
     }
 

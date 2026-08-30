@@ -363,11 +363,7 @@ impl Sidebar {
         cwd: String,
         agent: Agent,
         cx: &mut Context<Self>,
-    ) {
-        self.state.update(cx, |s, cx| {
-            s.set_open_agent_menu(None);
-            cx.notify();
-        });
+    ) -> bool {
         let args = {
             let store = &cx.global::<SettingsState>().store;
             agent.launch_args(
@@ -375,8 +371,38 @@ impl Sidebar {
                 store.chrome_enabled.unwrap_or(false),
             )
         };
+        self.spawn_session_in_with_args(name, cwd, agent, args, cx)
+    }
+
+    /// Spawn one agent session with a primary worktree and agent-specific extra arguments.
+    pub fn spawn_session_in_with_args(
+        &mut self,
+        name: String,
+        cwd: String,
+        agent: Agent,
+        args: Vec<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.spawn_session_in_with_context(name, cwd, agent, args, Vec::new(), cx)
+    }
+
+    /// Spawn one agent session with its ordered writable worktree context.
+    pub fn spawn_session_in_with_context(
+        &mut self,
+        name: String,
+        cwd: String,
+        agent: Agent,
+        args: Vec<String>,
+        context_roots: Vec<grove_core::session_meta::ContextRoot>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.state.update(cx, |s, cx| {
+            s.set_open_agent_menu(None);
+            cx.notify();
+        });
         let (id, extra_args, state_file, target) = self.registry.update(cx, |r, cx| {
-            let id = r.insert_meta(name.clone(), cwd.clone(), agent);
+            let id =
+                r.insert_meta_with_context(name.clone(), cwd.clone(), agent, context_roots.clone());
             let label = r.meta(id).map_or_else(String::new, |m| m.label.clone());
             let extra_args = r.take_attention_args(id);
             let state_file = r.attention_files(id).map(|f| f.state_file.clone());
@@ -391,6 +417,7 @@ impl Sidebar {
                     project: name,
                     label,
                     args,
+                    context_roots,
                     use_tmux: true,
                 },
             )
@@ -446,6 +473,7 @@ impl Sidebar {
             s.select_session(id, &snap);
             cx.notify();
         });
+        spawn_error.is_none()
     }
 
     /// Leaves the grid first, or a terminal spawned behind the tiles would be invisible.
@@ -476,6 +504,7 @@ impl Sidebar {
                     project: String::new(),
                     wt_path: target.cwd.clone(),
                     agent: Agent::Terminal,
+                    context_roots: Vec::new(),
                     label,
                     spawned_at: Instant::now(),
                     attention: None,
@@ -622,6 +651,7 @@ impl Render for Sidebar {
                             wt_path: m.wt_path.clone(),
                             label: m.label.clone(),
                             agent: m.agent,
+                            context_roots: m.context_roots.clone(),
                             title,
                             spawned_at: m.spawned_at,
                         },

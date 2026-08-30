@@ -13,12 +13,48 @@ use crate::theme as c;
 use super::{Modal, ModalClick, ModalDispatch, ModalEvent, ModalLayer};
 use crate::modal::{LauncherSlotState, LauncherView};
 use crate::views::components::{
-    body_text, cue_chip, divider_h, icon_slot, keycap_text, modal_footer_hints, modal_panel, mono,
-    palette_row, section_header, ui,
+    body_text, cue_chip, divider_h, footer_container, footer_hint_flat, icon_slot, keycap_text,
+    keycap_text_flat, modal_footer_hints, modal_panel, mono, palette_row, section_header, ui,
 };
 
 /// Lines an inline note up with a row's title, not its icon: SPACE_2XL + the 24px icon_slot + SPACE_LG gap.
 const ROW_TEXT_INDENT: f32 = SPACE_2XL + 24.0 + SPACE_LG;
+
+/// Resolves the path before it becomes selection identity. A stale row cannot add an unvalidated
+/// fallback path, while selections made before a later deletion remain intact in the set.
+fn canonical_worktree_path(path: &str) -> Option<String> {
+    let path = std::path::Path::new(path);
+    path.is_absolute()
+        .then_some(path)
+        .and_then(|path| fs_err::canonicalize(path).ok())
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+fn scoped_multi_root_targets(st: &LauncherSlotState) -> Option<Vec<String>> {
+    (st.scope == launcher::PaletteScope::WorktreesOnly && st.selected_worktrees.count() > 0)
+        .then(|| st.selected_worktrees.selected_targets())
+}
+
+fn selected_multi_root_agent(cx: &App) -> Option<Agent> {
+    let available = super::confirm::available_agents();
+    let configured = cx
+        .global::<SettingsState>()
+        .store
+        .default_agent
+        .unwrap_or(Agent::Claude);
+    available
+        .iter()
+        .copied()
+        .find(|agent| *agent == configured)
+        .or_else(|| available.first().copied())
+}
+
+fn multi_root_launch_event(worktree_paths: Vec<String>, agent: Agent) -> ModalEvent {
+    ModalEvent::LaunchMultiRootSession {
+        worktree_paths,
+        agent,
+    }
+}
 
 /// Every `(proj, project_name, wt_path, agent)` combo the palette can list.
 fn combos(
@@ -269,6 +305,12 @@ impl ModalLayer {
         if key == K::Tab {
             return self.palette_tab(window, cx);
         }
+        if key == K::Space && self.toggle_focused_worktree(cx) {
+            return true;
+        }
+        if key == K::Enter && self.launch_selected_worktrees(cx) {
+            return true;
+        }
         let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() else {
             return false;
         };
@@ -334,6 +376,55 @@ impl ModalLayer {
         }
     }
 
+    /// Space is intentionally scoped to the rail's worktree launcher. It retains selections that
+    /// disappear from a filtered row list because the state is keyed by canonical path, not index.
+    fn toggle_focused_worktree(&mut self, cx: &mut Context<Self>) -> bool {
+        let rows = self.palette_rows(cx);
+        let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() else {
+            return false;
+        };
+        if st.scope != launcher::PaletteScope::WorktreesOnly {
+            return false;
+        }
+        let Some(PaletteRow::Combo { wt_path, .. }) = rows.get(st.sel) else {
+            cx.notify();
+            return true;
+        };
+        if let Some(path) = canonical_worktree_path(wt_path) {
+            st.selected_worktrees.toggle(&path);
+        }
+        cx.notify();
+        true
+    }
+
+    /// Enter launches the whole selected set once with the normal available-agent choice. An empty
+    /// selection stays in the palette so it is obvious that Enter did not create a session.
+    fn launch_selected_worktrees(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(Modal::SessionLauncher(st)) = self.slot.get() else {
+            return false;
+        };
+        if st.scope != launcher::PaletteScope::WorktreesOnly {
+            return false;
+        }
+        let Some(worktree_paths) = scoped_multi_root_targets(st) else {
+            self.toast.update(cx, |toast, cx| {
+                toast.set_toast("select one or more worktrees", cx);
+            });
+            cx.notify();
+            return true;
+        };
+        if self.multi_root_launching {
+            return true;
+        }
+        let Some(agent) = selected_multi_root_agent(cx) else {
+            return true;
+        };
+        self.multi_root_launching = true;
+        self.close(cx);
+        cx.emit(multi_root_launch_event(worktree_paths, agent));
+        true
+    }
+
     /// Resolves the row FRESH from `palette_rows` at `st.sel` rather than trusting `st.anchor`,
     /// which stays `None` until an arrow key is pressed (`reanchor`).
     fn palette_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -342,6 +433,13 @@ impl ModalLayer {
         };
         let view = st.view;
         let sel = st.sel;
+
+        if st.scope == launcher::PaletteScope::WorktreesOnly
+            && matches!(view, LauncherView::Root | LauncherView::BrowseAll)
+        {
+            cx.notify();
+            return true;
+        }
 
         if view == LauncherView::RowActions {
             if let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() {
@@ -390,6 +488,7 @@ impl ModalLayer {
             }
             PaletteRow::Setting(s) => self.activate_setting(s, window, cx),
             PaletteRow::NewSession
+            | PaletteRow::NewMultiProjectSession
             | PaletteRow::TerminalHome
             | PaletteRow::TerminalWt
             | PaletteRow::AddProject
@@ -417,6 +516,12 @@ impl ModalLayer {
         };
         let view = st.view;
         let sel = st.sel;
+        if st.scope == launcher::PaletteScope::WorktreesOnly
+            && matches!(view, LauncherView::Root | LauncherView::BrowseAll)
+        {
+            self.toggle_focused_worktree(cx);
+            return;
+        }
         if view == LauncherView::RowActions {
             self.activate_row_action(cx);
             return;
@@ -473,6 +578,18 @@ impl ModalLayer {
                 if let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() {
                     st.view = LauncherView::BrowseAll;
                     st.sel = 0;
+                }
+                self.reset_palette_scroll();
+                cx.notify();
+            }
+            PaletteRow::NewMultiProjectSession => {
+                if let Some(Modal::SessionLauncher(st)) = self.slot.get_mut() {
+                    st.enter_worktrees_only();
+                }
+                // The focused InputState owns its live buffer. Clearing only the
+                // slot would let its next change event restore the old query.
+                if let Some(field) = self.fields.first() {
+                    field.set_value("", window, cx);
                 }
                 self.reset_palette_scroll();
                 cx.notify();
@@ -736,13 +853,21 @@ pub fn render(layer: &ModalLayer, dispatch: &ModalDispatch, cx: &App) -> AnyElem
         _ => &[("↑↓", "navigate"), ("⏎", "open"), ("esc", "back")],
     };
 
+    let footer = if st.scope == launcher::PaletteScope::WorktreesOnly
+        && matches!(st.view, LauncherView::Root | LauncherView::BrowseAll)
+    {
+        multi_root_footer(st.selected_worktrees.count())
+    } else {
+        modal_footer_hints(hints)
+    };
+
     modal_panel(
         MODAL_W_XL,
         div()
             .children(search)
             .child(divider_h())
             .child(list_zone)
-            .child(modal_footer_hints(hints)),
+            .child(footer),
     )
     .into_any_element()
 }
@@ -774,6 +899,9 @@ fn row_label(row: &PaletteRow, cx: &App) -> (String, String, &'static str) {
             )
         }
         PaletteRow::NewSession => ("New session…".into(), String::new(), "plus"),
+        PaletteRow::NewMultiProjectSession => {
+            ("New multi-project session".into(), String::new(), "plus")
+        }
         PaletteRow::TerminalHome => ("Home terminal".into(), String::new(), "term"),
         PaletteRow::TerminalWt => ("Worktree terminal".into(), String::new(), "term"),
         PaletteRow::AddProject => ("Add project…".into(), String::new(), "plus"),
@@ -798,6 +926,7 @@ fn palette_row_content(
     subtitle: String,
     selected: bool,
     show_hint: bool,
+    checked: bool,
 ) -> impl IntoElement {
     let icon_color = if selected { c::YELLOW() } else { c::FG_MUTE() };
     let title_color = if selected { c::FG() } else { c::FG_DIM() };
@@ -820,7 +949,31 @@ fn palette_row_content(
     if selected && show_hint {
         row = row.child(keycap_text("⏎", c::FG_DIM()));
     }
+    if checked {
+        row = row.child(icon_slot("check", ICON_SM, c::YELLOW()));
+    }
     row
+}
+
+fn multi_root_footer(count: usize) -> gpui::Div {
+    footer_container(
+        div()
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_3XL))
+            .child(footer_hint_flat("space", "toggle"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_MD))
+                    .child(keycap_text_flat("⏎", c::FG_DIM()))
+                    .child(mono("launch 1 session", TEXT_MICRO, c::FG_MUTE())),
+            )
+            .child(footer_hint_flat("esc", "close"))
+            .child(div().flex_1())
+            .child(mono(format!("{count} selected"), TEXT_MICRO, c::FG_MUTE())),
+    )
 }
 
 /// The scroll container's children, plus the child index the selected row landed at, for scroll_to_item.
@@ -857,6 +1010,9 @@ fn row_list(
             row,
             PaletteRow::Recent { .. } | PaletteRow::Combo { .. } | PaletteRow::Setting(_)
         );
+        let checked = st.scope == launcher::PaletteScope::WorktreesOnly
+            && matches!(row, PaletteRow::Combo { wt_path, .. } if canonical_worktree_path(wt_path)
+                .is_some_and(|path| st.selected_worktrees.contains(&path)));
         if selected {
             selected_child = Some(list.len());
         }
@@ -866,7 +1022,7 @@ fn row_list(
                 selected,
                 dispatch,
                 ModalClick::SelectRow(i),
-                palette_row_content(icon, title, sub, selected, show_hint),
+                palette_row_content(icon, title, sub, selected, show_hint, checked),
             )
             .into_any_element(),
         );
@@ -959,7 +1115,7 @@ fn switch_list(
                 )
             }
         };
-        let content = palette_row_content(icon, label, sub, selected, true);
+        let content = palette_row_content(icon, label, sub, selected, true, false);
         let row_el = palette_row(
             gpui::SharedString::from(format!("switch-{i}")),
             selected,
@@ -1012,6 +1168,7 @@ fn settings_list(st: &LauncherSlotState, dispatch: &ModalDispatch, cx: &App) -> 
                     super::settings::setting_value(s, cx),
                     selected,
                     true,
+                    false,
                 ),
             )
             .into_any_element(),
@@ -1245,6 +1402,167 @@ mod tests {
             }],
             ..Store::default()
         }
+    }
+
+    fn store_with_current_project() -> Store {
+        Store {
+            projects: vec![Project {
+                name: "current".to_string(),
+                path: env!("CARGO_MANIFEST_DIR").to_string(),
+                scripts: grove_core::storage::ProjectScripts::default(),
+                theme: None,
+                archived: false,
+                worktree_dir: None,
+            }],
+            ..Store::default()
+        }
+    }
+
+    fn worktrees_only_launcher() -> Modal {
+        Modal::SessionLauncher(Box::new(LauncherSlotState {
+            scope: launcher::PaletteScope::WorktreesOnly,
+            ..Default::default()
+        }))
+    }
+
+    #[test]
+    fn canonical_worktree_path_rejects_a_missing_path() {
+        let missing = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("missing-worktree-{}", std::process::id()));
+        assert!(canonical_worktree_path(&missing.to_string_lossy()).is_none());
+    }
+
+    #[gpui::test]
+    fn space_toggles_the_focused_worktree_only_in_the_scoped_launcher(cx: &mut TestAppContext) {
+        cx.update(boot_globals);
+        let (root, vcx) = cx.add_window_view(|_, cx| build_root(cx, store_with_current_project()));
+        vcx.run_until_parked();
+        let modals = root.read_with(vcx, |r, _| r.modals.clone());
+
+        modals.update(vcx, |l, cx| l.open(worktrees_only_launcher(), cx));
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("space");
+        vcx.run_until_parked();
+        modals.read_with(vcx, |l, _| {
+            let Some(Modal::SessionLauncher(st)) = l.slot.get() else {
+                panic!("scoped launcher closed after Space");
+            };
+            assert_eq!(st.selected_worktrees.count(), 1);
+        });
+
+        modals.update(vcx, |l, cx| {
+            l.open(Modal::SessionLauncher(Box::default()), cx);
+        });
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("space");
+        vcx.run_until_parked();
+        modals.read_with(vcx, |l, _| {
+            let Some(Modal::SessionLauncher(st)) = l.slot.get() else {
+                panic!("all-scope launcher closed after Space");
+            };
+            assert_eq!(st.scope, launcher::PaletteScope::All);
+            assert_eq!(st.selected_worktrees.count(), 0);
+        });
+    }
+
+    #[gpui::test]
+    fn multi_project_command_clears_the_live_query_before_the_first_space(cx: &mut TestAppContext) {
+        cx.update(boot_globals);
+        let (root, vcx) = cx.add_window_view(|_, cx| build_root(cx, store_with_current_project()));
+        vcx.run_until_parked();
+        let modals = root.read_with(vcx, |r, _| r.modals.clone());
+
+        modals.update(vcx, |l, cx| {
+            l.open(Modal::SessionLauncher(Box::default()), cx)
+        });
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("mul");
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("space");
+        vcx.run_until_parked();
+
+        modals.read_with(vcx, |l, cx| {
+            let Some(Modal::SessionLauncher(st)) = l.slot.get() else {
+                panic!("multi-project command must keep the palette open");
+            };
+            assert_eq!(st.scope, launcher::PaletteScope::WorktreesOnly);
+            assert_eq!(st.query, "");
+            assert_eq!(st.view, LauncherView::Root);
+            assert_eq!(st.sel, 0);
+            assert_eq!(st.anchor, None);
+            assert_eq!(st.selected_worktrees.count(), 1);
+            assert_eq!(
+                l.fields.first().map(|field| field.value(cx)),
+                Some(String::new())
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn scoped_selection_survives_a_query_that_hides_its_row(cx: &mut TestAppContext) {
+        cx.update(boot_globals);
+        let (root, vcx) = cx.add_window_view(|_, cx| build_root(cx, store_with_current_project()));
+        vcx.run_until_parked();
+        let modals = root.read_with(vcx, |r, _| r.modals.clone());
+
+        modals.update(vcx, |l, cx| l.open(worktrees_only_launcher(), cx));
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("space");
+        vcx.run_until_parked();
+        modals.update(vcx, |l, _cx| {
+            let Some(Modal::SessionLauncher(st)) = l.slot.get_mut() else {
+                panic!("scoped launcher closed unexpectedly");
+            };
+            st.query = "definitely-not-a-worktree".into();
+        });
+        modals.read_with(vcx, |l, cx| {
+            assert!(l.palette_rows(cx).is_empty());
+            let Some(Modal::SessionLauncher(st)) = l.slot.get() else {
+                panic!("scoped launcher closed unexpectedly");
+            };
+            assert_eq!(st.selected_worktrees.count(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn enter_with_no_scoped_selection_keeps_the_launcher_open(cx: &mut TestAppContext) {
+        cx.update(boot_globals);
+        let (root, vcx) = cx.add_window_view(|_, cx| build_root(cx, store_with_current_project()));
+        vcx.run_until_parked();
+        let modals = root.read_with(vcx, |r, _| r.modals.clone());
+
+        modals.update(vcx, |l, cx| l.open(worktrees_only_launcher(), cx));
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        modals.read_with(vcx, |l, _| {
+            let Some(Modal::SessionLauncher(st)) = l.slot.get() else {
+                panic!("empty scoped launcher closed after Enter");
+            };
+            assert_eq!(st.selected_worktrees.count(), 0);
+        });
+    }
+
+    #[test]
+    fn scoped_launch_builds_one_multi_root_event_with_all_selected_paths() {
+        let event = multi_root_launch_event(
+            vec!["/worktrees/primary".into(), "/worktrees/extra".into()],
+            Agent::Claude,
+        );
+        let ModalEvent::LaunchMultiRootSession {
+            worktree_paths,
+            agent,
+        } = event
+        else {
+            panic!("scoped launch must emit the multi-root event");
+        };
+        assert_eq!(agent, Agent::Claude);
+        assert_eq!(
+            worktree_paths,
+            vec!["/worktrees/primary", "/worktrees/extra"]
+        );
     }
 
     /// Regression: open the palette, never touch an arrow key, press Tab.

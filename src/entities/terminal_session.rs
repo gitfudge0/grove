@@ -584,6 +584,7 @@ fn spawn_tmux(
             project: target.project.clone(),
             label: target.label.clone(),
             agent,
+            context_roots: target.context_roots.clone(),
         },
     ) {
         tmux::kill_session(&name);

@@ -50,6 +50,11 @@ pub enum ModalEvent {
         wt_path: String,
         agent: grove_core::agent::Agent,
     },
+    /// Worktrees-only launcher hand-off for one multi-root agent session.
+    LaunchMultiRootSession {
+        worktree_paths: Vec<String>,
+        agent: grove_core::agent::Agent,
+    },
     WorktreeAdded {
         path: String,
     },
@@ -99,6 +104,9 @@ pub struct ModalLayer {
     /// Shared by the theme picker and the wizard's directory matches; only one renders at a time.
     pub(super) list_scroll: gpui::ScrollHandle,
     list_scrolled_to: std::cell::Cell<Option<(usize, usize)>>,
+    /// The scoped launcher closes before emitting its multi-root event; retain this guard until then so a
+    /// second Enter cannot submit the same selection while the synchronous hand-off is running.
+    multi_root_launching: bool,
 }
 
 impl EventEmitter<ModalEvent> for ModalLayer {}
@@ -148,6 +156,7 @@ impl ModalLayer {
             palette_scrolled_to: std::cell::Cell::new(None),
             list_scroll: gpui::ScrollHandle::new(),
             list_scrolled_to: std::cell::Cell::new(None),
+            multi_root_launching: false,
         }
     }
 
@@ -266,6 +275,7 @@ impl ModalLayer {
     }
 
     pub fn open(&mut self, modal: Modal, cx: &mut Context<Self>) {
+        self.multi_root_launching = false;
         if matches!(modal.kind(), ModalKind::Settings) {
             self.detect_tools(cx);
         }

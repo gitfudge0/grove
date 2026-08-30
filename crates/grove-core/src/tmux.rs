@@ -367,6 +367,7 @@ pub struct DiscoveredSession {
     pub project: String,
     pub label: String,
     pub agent: Agent,
+    pub context_roots: Vec<session_meta::ContextRoot>,
 }
 
 pub fn live_grove_session_names() -> Vec<String> {
@@ -403,6 +404,7 @@ pub fn list_grove_sessions() -> Vec<DiscoveredSession> {
                 project: meta.project,
                 label: meta.label,
                 agent: meta.agent,
+                context_roots: meta.context_roots,
             })
         })
         .collect()
