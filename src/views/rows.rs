@@ -519,9 +519,16 @@ pub fn flatten_sessions(
         TreeRow::SessionCard {
             id,
             agent: meta.map_or(Agent::Terminal, |i| i.agent),
-            // OSC title over label — an agent that never set one still gets a headline.
+            // Strip internal labels from the raw OSC title. An agent that never set one still gets a headline.
             title: meta
-                .map(|i| i.title.clone().unwrap_or_else(|| i.label.clone()))
+                .map(|i| {
+                    i.title
+                        .as_deref()
+                        .and_then(|raw_title| {
+                            session_context(raw_title, &worktree, &i.label, i.agent.label())
+                        })
+                        .unwrap_or_else(|| i.label.clone())
+                })
                 .unwrap_or_default(),
             worktree,
             project: meta.map(|i| i.project.clone()).unwrap_or_default(),
@@ -1739,6 +1746,38 @@ mod tests {
             shape(&rows),
             vec!["H:NEEDS YOU", "C2", "H:WORKING", "C3", "H:IDLE", "C1"]
         );
+    }
+
+    #[test]
+    fn session_cards_use_contextual_titles_and_fall_back_to_labels() {
+        let snap = fixture();
+        let mut session_info = HashMap::new();
+        let spawned_at = std::time::Instant::now();
+        let mut titled = info("grove", "/", spawned_at);
+        titled.wt_path = "/grove".into();
+        titled.label = "codex 1".into();
+        titled.title = Some("grove codex 1 Fix auth".into());
+        session_info.insert(sid(1), titled);
+        let mut untitled = info("grove", "/", spawned_at);
+        untitled.label = "codex 1".into();
+        session_info.insert(sid(2), untitled);
+
+        let rows = flatten_sessions(
+            &snap,
+            &WorkspaceState::default(),
+            &ActivityStore::new(),
+            &session_info,
+            &HashMap::new(),
+            &[],
+        );
+        let titles: Vec<_> = rows
+            .iter()
+            .filter_map(|row| match row {
+                TreeRow::SessionCard { id, title, .. } => Some((id.raw(), title.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(titles, vec![(3, ""), (2, "codex 1"), (1, "Fix auth")]);
     }
 
     /// `WaitingForInput` and `Done` land in NEEDS YOU and REVIEW
