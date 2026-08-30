@@ -78,8 +78,8 @@ impl Agent {
     }
 
     /// Builds launch arguments for one primary root plus additional writable roots.
-    /// Claude and Codex both accept repeated `--add-dir <path>` pairs. OpenCode
-    /// and Terminal have no corresponding interactive multi-root mode.
+    /// Claude and Codex accept repeated `--add-dir <path>` pairs. OpenCode and
+    /// Terminal receive their extra roots through Grove's symlink bundle.
     pub fn multi_root_launch_args(
         self,
         skip_permissions: bool,
@@ -95,7 +95,7 @@ impl Agent {
                 }
                 Some(args)
             }
-            Agent::OpenCode | Agent::Terminal => None,
+            Agent::OpenCode | Agent::Terminal => Some(self.launch_args(skip_permissions, chrome)),
         }
     }
 
@@ -304,15 +304,15 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_agents_refuse_multi_root_launches() {
+    fn bundle_agents_accept_multi_root_launches_without_native_flags() {
         let roots = vec!["/worktrees/second".into()];
         assert_eq!(
             Agent::OpenCode.multi_root_launch_args(false, false, &roots),
-            None
+            Some(Vec::new())
         );
         assert_eq!(
             Agent::Terminal.multi_root_launch_args(false, false, &roots),
-            None
+            Some(Vec::new())
         );
     }
 

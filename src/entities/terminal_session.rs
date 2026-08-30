@@ -5,8 +5,8 @@ use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use futures::channel::mpsc;
 use futures::StreamExt as _;
+use futures::channel::mpsc;
 use gpui::{Context, Task};
 use grove_core::session_meta::{self, SessionMeta};
 use grove_core::tmux;
@@ -59,6 +59,7 @@ pub struct TerminalSession {
     scene_cache: Option<(TermSceneKey, Rc<TermScene>)>,
     /// Dropping the `Task` stops the reader, so this field *is* the reader.
     reader: Task<()>,
+    _bundle: Option<grove_core::multi_root::SymlinkBundle>,
 }
 
 impl TerminalSession {
@@ -73,6 +74,10 @@ impl TerminalSession {
         let dims = *cx.global::<crate::zoom::CurrentPtyDims>();
         let (rows, cols) = (dims.rows, dims.cols);
         let cwd = target.cwd.clone();
+        let bundle = target
+            .temp_bundle_path
+            .as_ref()
+            .and_then(|path| grove_core::multi_root::SymlinkBundle::from_path(path.into()));
         let mut spawn_error = None;
         let spawned = if target.use_tmux {
             match spawn_tmux(&cwd, target, extra_args, state_file, rows, cols) {
@@ -128,6 +133,7 @@ impl TerminalSession {
             pending_attach: None,
             scene_cache: None,
             reader: Self::spawnreader(rx, cx),
+            _bundle: bundle,
         }
     }
 
@@ -157,6 +163,7 @@ impl TerminalSession {
             pending_attach: Some(name.to_string()),
             scene_cache: None,
             reader: Self::spawnreader(None, cx),
+            _bundle: None,
         }
     }
 
@@ -231,6 +238,7 @@ impl TerminalSession {
             pending_attach: None,
             scene_cache: None,
             reader: Self::spawnreader(rx, cx),
+            _bundle: None,
         }
     }
 
@@ -567,6 +575,10 @@ fn spawn_tmux(
             )]
         })
         .unwrap_or_default();
+    let mut env = env;
+    if let Some(path) = &target.temp_bundle_path {
+        env.push(("GROVE_MULTI_ROOT".into(), path.clone()));
+    }
     let agent_args = target
         .args
         .iter()
@@ -585,6 +597,7 @@ fn spawn_tmux(
             label: target.label.clone(),
             agent,
             context_roots: target.context_roots.clone(),
+            temp_bundle_path: target.temp_bundle_path.clone(),
         },
     ) {
         tmux::kill_session(&name);
@@ -638,6 +651,9 @@ fn spawn_native(
     cmd.cwd(cwd);
     cmd.env("TERM", "xterm-256color");
     cmd.env("LC_ALL", "en_US.UTF-8");
+    if let Some(path) = &target.temp_bundle_path {
+        cmd.env("GROVE_MULTI_ROOT", path);
+    }
     if let Some(path) = state_file {
         cmd.env(
             grove_core::attention::STATE_FILE_ENV,

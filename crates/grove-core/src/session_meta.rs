@@ -41,6 +41,8 @@ pub struct SessionMeta {
     /// Ordered roots for a multi-worktree session. Older sidecars deserialize as empty.
     #[serde(default)]
     pub context_roots: Vec<ContextRoot>,
+    #[serde(default)]
+    pub temp_bundle_path: Option<String>,
 }
 
 fn sessions_dir() -> Result<PathBuf> {
@@ -114,6 +116,11 @@ fn session_names() -> Vec<String> {
 pub fn prune(live: &[String]) {
     for name in session_names() {
         if !live.iter().any(|n| n == &name) {
+            if let Some(meta) = read(&name) {
+                if let Some(path) = meta.temp_bundle_path {
+                    crate::multi_root::cleanup_path(std::path::Path::new(&path));
+                }
+            }
             delete(&name);
         }
     }
@@ -217,6 +224,7 @@ mod tests {
                 project: "testproject".into(),
                 wt_path: "/tmp/test-wt".into(),
             }],
+            temp_bundle_path: None,
         }
     }
 
@@ -365,6 +373,7 @@ mod tests {
             label: "test-label".into(),
             agent: Agent::Claude,
             context_roots: Vec::new(),
+            temp_bundle_path: None,
         }
     }
 

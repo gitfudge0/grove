@@ -8,6 +8,7 @@ pub mod env_path;
 pub mod error;
 pub mod git;
 pub mod highlight;
+pub mod multi_root;
 pub mod render_rows;
 pub mod session_meta;
 pub mod storage;

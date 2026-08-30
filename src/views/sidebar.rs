@@ -383,7 +383,7 @@ impl Sidebar {
         args: Vec<String>,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.spawn_session_in_with_context(name, cwd, agent, args, Vec::new(), cx)
+        self.spawn_session_in_with_context(name, cwd, agent, args, Vec::new(), None, cx)
     }
 
     /// Spawn one agent session with its ordered writable worktree context.
@@ -394,6 +394,7 @@ impl Sidebar {
         agent: Agent,
         args: Vec<String>,
         context_roots: Vec<grove_core::session_meta::ContextRoot>,
+        temp_bundle_path: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
         self.state.update(cx, |s, cx| {
@@ -401,8 +402,13 @@ impl Sidebar {
             cx.notify();
         });
         let (id, extra_args, state_file, target) = self.registry.update(cx, |r, cx| {
-            let id =
-                r.insert_meta_with_context(name.clone(), cwd.clone(), agent, context_roots.clone());
+            let id = r.insert_meta_with_context(
+                name.clone(),
+                cwd.clone(),
+                agent,
+                context_roots.clone(),
+                temp_bundle_path.clone(),
+            );
             let label = r.meta(id).map_or_else(String::new, |m| m.label.clone());
             let extra_args = r.take_attention_args(id);
             let state_file = r.attention_files(id).map(|f| f.state_file.clone());
@@ -418,6 +424,7 @@ impl Sidebar {
                     label,
                     args,
                     context_roots,
+                    temp_bundle_path: temp_bundle_path.clone(),
                     use_tmux: true,
                 },
             )
@@ -437,6 +444,9 @@ impl Sidebar {
         let tmux_backed = tmux_name.is_some();
         let spawn_error = session.read(cx).spawn_error().map(str::to_string);
         if let Some(e) = spawn_error.as_deref() {
+            if let Some(path) = temp_bundle_path.as_deref() {
+                grove_core::multi_root::cleanup_path(std::path::Path::new(path));
+            }
             crate::telemetry::track("error", vec![("kind", "spawn_failed".into())]);
             let msg = format!("failed to start session: {e}");
             if let Some(toast) = self.toast.clone() {
@@ -505,6 +515,7 @@ impl Sidebar {
                     wt_path: target.cwd.clone(),
                     agent: Agent::Terminal,
                     context_roots: Vec::new(),
+                    temp_bundle_path: None,
                     label,
                     spawned_at: Instant::now(),
                     attention: None,

@@ -32,6 +32,7 @@ pub(crate) fn spawn_wt_script(
         wt_path: wt_path.to_string(),
         agent: grove_core::agent::Agent::Terminal,
         context_roots: Vec::new(),
+        temp_bundle_path: None,
         label,
         spawned_at: std::time::Instant::now(),
         attention: None,

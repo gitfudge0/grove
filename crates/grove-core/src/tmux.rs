@@ -368,6 +368,7 @@ pub struct DiscoveredSession {
     pub label: String,
     pub agent: Agent,
     pub context_roots: Vec<session_meta::ContextRoot>,
+    pub temp_bundle_path: Option<String>,
 }
 
 pub fn live_grove_session_names() -> Vec<String> {
@@ -395,7 +396,8 @@ pub fn live_grove_session_names() -> Vec<String> {
 pub fn list_grove_sessions() -> Vec<DiscoveredSession> {
     let live = live_grove_session_names();
     session_meta::prune(&live);
-    live.into_iter()
+    let sessions = live
+        .into_iter()
         .filter_map(|name| {
             let meta = session_meta::read(&name)?;
             Some(DiscoveredSession {
@@ -405,9 +407,17 @@ pub fn list_grove_sessions() -> Vec<DiscoveredSession> {
                 label: meta.label,
                 agent: meta.agent,
                 context_roots: meta.context_roots,
+                temp_bundle_path: meta.temp_bundle_path,
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let active_bundles = sessions
+        .iter()
+        .filter_map(|session| session.temp_bundle_path.as_ref())
+        .map(std::path::PathBuf::from)
+        .collect::<Vec<_>>();
+    crate::multi_root::cleanup_orphaned(&active_bundles);
+    sessions
 }
 
 /// Fits a worktree path into a tmux session name, which can't contain `:` or `.`.

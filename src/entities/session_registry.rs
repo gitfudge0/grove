@@ -41,6 +41,7 @@ pub struct SessionMeta {
     pub wt_path: String,
     pub agent: Agent,
     pub context_roots: Vec<grove_core::session_meta::ContextRoot>,
+    pub temp_bundle_path: Option<String>,
     /// Internal label (`claude 1`, …); stripped from the OSC title to make the context text (`src/gui/rows.rs:778`).
     pub label: String,
     pub spawned_at: Instant,
@@ -63,6 +64,7 @@ pub struct SpawnTarget {
     /// Built the same way iced does (`src/app/spawn.rs:26-32`); chained before the attention `extra_args` on both backends (`crates/grove-core/src/session.rs:190,254-259`).
     pub args: Vec<String>,
     pub context_roots: Vec<grove_core::session_meta::ContextRoot>,
+    pub temp_bundle_path: Option<String>,
     /// Home terminals and panel shells must never be tmux-backed, or the next launch's discovery reimports them as agent sessions (`crates/grove-core/src/session.rs:149-175`).
     pub use_tmux: bool,
 }
@@ -78,6 +80,7 @@ impl SpawnTarget {
             label,
             args: Vec::new(),
             context_roots: Vec::new(),
+            temp_bundle_path: None,
             use_tmux: false,
         }
     }
@@ -124,7 +127,7 @@ impl SessionRegistry {
     /// The live entity is attached separately by [`Self::attach`], so ordering stays testable without spawning anything.
     #[allow(dead_code)]
     pub fn insert_meta(&mut self, project: String, wt_path: String, agent: Agent) -> SessionId {
-        self.insert_meta_with_context(project, wt_path, agent, Vec::new())
+        self.insert_meta_with_context(project, wt_path, agent, Vec::new(), None)
     }
 
     pub fn insert_meta_with_context(
@@ -133,6 +136,7 @@ impl SessionRegistry {
         wt_path: String,
         agent: Agent,
         context_roots: Vec<grove_core::session_meta::ContextRoot>,
+        temp_bundle_path: Option<String>,
     ) -> SessionId {
         let id = self.next_id();
         let label = self.next_agent_label(agent);
@@ -153,6 +157,7 @@ impl SessionRegistry {
             wt_path,
             agent,
             context_roots,
+            temp_bundle_path,
             label,
             spawned_at: Instant::now(),
             attention,
@@ -174,6 +179,7 @@ impl SessionRegistry {
                 wt_path: d.wt_path.clone(),
                 agent: d.agent,
                 context_roots: d.context_roots.clone(),
+                temp_bundle_path: d.temp_bundle_path.clone(),
                 label: d.label.clone(),
                 spawned_at: Instant::now(),
                 attention: None,
@@ -229,6 +235,9 @@ impl SessionRegistry {
         );
         if let Some(files) = meta.attention.as_ref() {
             attention::cleanup(files);
+        }
+        if let Some(path) = meta.temp_bundle_path.as_deref() {
+            grove_core::multi_root::cleanup_path(std::path::Path::new(path));
         }
         // Without this the tmux session outlives grove and gets reattached on the next launch (`crates/grove-core/src/session.rs:522-534`); unlike iced, native children are not killpg'd here.
         if let Some(name) = meta.tmux_name.as_deref() {

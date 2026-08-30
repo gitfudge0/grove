@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::{
-    div, prelude::*, px, AnyElement, App, Context, Element, Entity, FocusHandle, Focusable, Hitbox,
-    IntoElement, MouseButton, Pixels, Window,
+    AnyElement, App, Context, Element, Entity, FocusHandle, Focusable, Hitbox, IntoElement,
+    MouseButton, Pixels, Window, div, prelude::*, px,
 };
 
 use crate::activity::ActivityState;
@@ -20,8 +20,8 @@ use crate::entities::toast::ToastState;
 use crate::entities::upgrade::Upgrade;
 use crate::entities::upgrade_state::upgrade_available;
 use crate::entities::workspace_state::{
-    clamp_sidebar_width, term_portion_for_cursor, LiveTile, PtyPane, RailMode, WorkspaceState,
-    RAIL_W,
+    LiveTile, PtyPane, RAIL_W, RailMode, WorkspaceState, clamp_sidebar_width,
+    term_portion_for_cursor,
 };
 use crate::fonts::{MONO_FAMILY, UI_FAMILY};
 use crate::grid::{GridAxis, GridBoundary};
@@ -29,7 +29,7 @@ use crate::keymap;
 use crate::settings::SettingsState;
 use crate::theme as c;
 use crate::views::appbar::{self, AppbarCtx, ChromeAction, WaitingRow};
-use crate::views::grid::{self, GridAction, GridCtx, TileData, PTY_PAD_H, PTY_PAD_W};
+use crate::views::grid::{self, GridAction, GridCtx, PTY_PAD_H, PTY_PAD_W, TileData};
 use crate::views::modals::{ModalEvent, ModalLayer};
 use crate::views::rows;
 use crate::views::session_header::{self, SessionHeaderData, ToolAction, ToolCluster};
@@ -1349,6 +1349,7 @@ impl Workspace {
             label: label.clone(),
             args: Vec::new(),
             context_roots: Vec::new(),
+            temp_bundle_path: None,
             use_tmux: false,
         };
         let session = cx.new(|cx| TerminalSession::spawn(&target, &[], None, cx));
@@ -1364,6 +1365,7 @@ impl Workspace {
             wt_path: wt_path.to_string(),
             agent: grove_core::agent::Agent::Terminal,
             context_roots: Vec::new(),
+            temp_bundle_path: None,
             label,
             spawned_at: std::time::Instant::now(),
             attention: None,
@@ -1766,6 +1768,25 @@ impl Workspace {
                     });
                     return;
                 };
+                let temp_bundle_path = if matches!(
+                    agent,
+                    grove_core::agent::Agent::OpenCode | grove_core::agent::Agent::Terminal
+                ) {
+                    match grove_core::multi_root::SymlinkBundle::create(&extra_roots) {
+                        Ok(bundle) => Some(bundle.into_path().to_string_lossy().into_owned()),
+                        Err(error) => {
+                            self.toast.clone().update(cx, |toast, cx| {
+                                toast.set_error(
+                                    format!("could not prepare multi-worktree session: {error}"),
+                                    cx,
+                                );
+                            });
+                            return;
+                        }
+                    }
+                } else {
+                    None
+                };
                 let did_launch = self.sidebar.clone().update(cx, |s, cx| {
                     s.spawn_session_in_with_context(
                         primary_project.clone(),
@@ -1773,6 +1794,7 @@ impl Workspace {
                         agent,
                         launch_args,
                         context_roots,
+                        temp_bundle_path,
                         cx,
                     )
                 });
