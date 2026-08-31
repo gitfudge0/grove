@@ -80,6 +80,16 @@ pub const fn should_bounce(newly_waiting: bool, window_focused: bool) -> bool {
     newly_waiting && !window_focused
 }
 
+/// A completed hook belongs to the previous turn. Fresh live evidence can start a new turn,
+/// while a quiet screen keeps the persisted completion state.
+fn resolve_done_hook(live: ActivityState) -> ActivityState {
+    match live {
+        ActivityState::Working | ActivityState::WaitingForInput => live,
+        ActivityState::Idle | ActivityState::Done => ActivityState::Done,
+        ActivityState::Exited => ActivityState::Exited,
+    }
+}
+
 pub struct ActivityStore {
     trackers: HashMap<SessionId, Tracker>,
     /// Waiting sessions in `visible_session_order`, resolved once per pass.
@@ -376,7 +386,9 @@ impl ActivityStore {
                     (true, Some(AttentionState::NeedsYou | AttentionState::Working)) => {
                         ActivityState::Working
                     }
-                    (true, Some(AttentionState::Done)) => ActivityState::Done,
+                    (true, Some(AttentionState::Done)) => {
+                        resolve_done_hook(classify(*agent, &scrape(), &sig))
+                    }
                     _ => classify(*agent, &scrape(), &sig),
                 }
             };
@@ -532,5 +544,42 @@ mod tests {
         assert!(!is_fast(false, true, false, waiting > 0, false));
         // ...and a single waiting session is what wakes it up.
         assert!(is_fast(false, true, false, 1 > 0, false));
+    }
+
+    #[test]
+    fn a_done_hook_yields_to_fresh_codex_work() {
+        let signals = Signals {
+            alive: true,
+            output_age: Duration::from_secs(1),
+            bell_pending: false,
+            was_working: false,
+            focused: false,
+            scrolling: false,
+            interacting: false,
+            title: None,
+        };
+        let live = classify(Agent::Codex, "esc to interrupt", &signals);
+        assert_eq!(resolve_done_hook(live), ActivityState::Working);
+        assert_eq!(
+            resolve_done_hook(ActivityState::WaitingForInput),
+            ActivityState::WaitingForInput
+        );
+    }
+
+    #[test]
+    fn a_done_hook_survives_stale_quiet_codex_output() {
+        let signals = Signals {
+            alive: true,
+            output_age: Duration::MAX,
+            bell_pending: false,
+            was_working: false,
+            focused: false,
+            scrolling: false,
+            interacting: false,
+            title: None,
+        };
+        let live = classify(Agent::Codex, "", &signals);
+        assert_eq!(live, ActivityState::Idle);
+        assert_eq!(resolve_done_hook(live), ActivityState::Done);
     }
 }

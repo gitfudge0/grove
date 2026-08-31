@@ -153,6 +153,64 @@ pub fn session_context(
     sanitize_ui_text(&out)
 }
 
+/// Extract the current Codex prompt from the live screen. Codex keeps the
+/// prompt visible while it works, but does not reliably publish it as an OSC
+/// title.
+#[must_use]
+pub fn codex_prompt(screen_tail: &str) -> Option<String> {
+    let lines: Vec<&str> = screen_tail.lines().collect();
+    for (index, line) in lines.iter().enumerate().rev() {
+        let Some(prompt) = line.trim_start().strip_prefix('›') else {
+            continue;
+        };
+        let prompt = prompt.trim();
+        if !prompt.is_empty() {
+            return sanitize_ui_text(prompt);
+        }
+        if let Some(next) = lines.get(index + 1).map(|line| line.trim()) {
+            if !next.is_empty() {
+                return sanitize_ui_text(next);
+            }
+        }
+    }
+    None
+}
+
+/// Convert the visible terminal snapshot into the same trimmed screen-tail
+/// shape used by the terminal activity poller.
+#[must_use]
+pub fn snapshot_tail(snapshot: &grove_terminal::Snapshot, max_lines: usize) -> String {
+    let lines: Vec<String> = (0..snapshot.rows)
+        .map(|row| {
+            (0..snapshot.cols)
+                .filter_map(|col| snapshot.cell(row, col).map(|cell| cell.c))
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect();
+    let start = lines.len().saturating_sub(max_lines);
+    lines.into_iter().skip(start).collect::<Vec<_>>().join("\n")
+}
+
+/// Resolve the user-facing context for an agent session. Screen text is only
+/// consulted for Codex; other agents keep their OSC-title behavior unchanged.
+#[must_use]
+pub fn resolve_session_context(
+    agent: Agent,
+    raw_title: Option<&str>,
+    screen_tail: Option<&str>,
+    wt_name: &str,
+    label: &str,
+) -> Option<String> {
+    if agent == Agent::Codex {
+        if let Some(prompt) = screen_tail.and_then(codex_prompt) {
+            return Some(prompt);
+        }
+    }
+    raw_title.and_then(|raw| session_context(raw, wt_name, label, agent.label()))
+}
+
 /// Title/subtitle for the sidebar project-tree empty state, or `None` when the tree has rows (`src/gui/widgets/primitives.rs:195-220`).
 /// The two states must never share copy: each has a different fix, and one message would send the user to the wrong place.
 #[must_use]
@@ -604,11 +662,7 @@ pub fn flatten_sessions(
             // Strip internal labels from the raw OSC title. An agent that never set one still gets a headline.
             title: meta
                 .map(|i| {
-                    i.title
-                        .as_deref()
-                        .and_then(|raw_title| {
-                            session_context(raw_title, &worktree, &i.label, i.agent.label())
-                        })
+                    resolve_session_context(i.agent, i.title.as_deref(), None, &worktree, &i.label)
                         .unwrap_or_else(|| i.label.clone())
                 })
                 .unwrap_or_default(),
@@ -1712,6 +1766,54 @@ mod tests {
         assert_eq!(
             session_context("grove", "grove", "claude 1", "Claude"),
             None
+        );
+    }
+
+    #[test]
+    fn codex_prompt_uses_the_latest_visible_prompt() {
+        let screen = "Working (0s)\n› Run /review on my current changes\ngpt-5.4-mini low";
+        assert_eq!(
+            codex_prompt(screen),
+            Some("Run /review on my current changes".into())
+        );
+        assert_eq!(
+            codex_prompt("Working\n›\nReview the current changes"),
+            Some("Review the current changes".into())
+        );
+        assert_eq!(codex_prompt("Working\nno prompt"), None);
+    }
+
+    #[test]
+    fn codex_resolution_prefers_screen_prompt_and_keeps_existing_fallbacks() {
+        assert_eq!(
+            resolve_session_context(
+                Agent::Codex,
+                Some("grove codex 1"),
+                Some("› Fix the auth flow"),
+                "grove",
+                "codex 1",
+            ),
+            Some("Fix the auth flow".into())
+        );
+        assert_eq!(
+            resolve_session_context(
+                Agent::Codex,
+                Some("grove codex 1 Fix the auth flow"),
+                Some("no visible prompt"),
+                "grove",
+                "codex 1",
+            ),
+            Some("Fix the auth flow".into())
+        );
+        assert_eq!(
+            resolve_session_context(
+                Agent::Claude,
+                Some("grove claude 1 Review the rail"),
+                Some("› Ignore this"),
+                "grove",
+                "claude 1",
+            ),
+            Some("Review the rail".into())
         );
     }
 

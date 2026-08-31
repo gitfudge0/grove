@@ -109,6 +109,7 @@ mod tests {
             label: "claude 1".to_string(),
             agent: Agent::Claude,
             context_roots: Vec::new(),
+            temp_bundle_path: None,
         }
     }
 
@@ -119,6 +120,7 @@ mod tests {
             wt_path: wt.to_string(),
             agent: Agent::Claude,
             context_roots: Vec::new(),
+            temp_bundle_path: None,
             label: "claude 1".to_string(),
             spawned_at: std::time::Instant::now(),
             attention: None,

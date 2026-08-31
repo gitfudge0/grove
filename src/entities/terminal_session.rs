@@ -5,8 +5,8 @@ use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use futures::StreamExt as _;
 use futures::channel::mpsc;
+use futures::StreamExt as _;
 use gpui::{Context, Task};
 use grove_core::session_meta::{self, SessionMeta};
 use grove_core::tmux;
@@ -21,6 +21,12 @@ use portable_pty::CommandBuilder;
 /// Initial PTY size before the element's first `prepaint` reports real bounds (`crates/grove-core/src/session.rs:53-54`).
 const INIT_ROWS: u16 = 24;
 const INIT_COLS: u16 = 80;
+
+fn output_age_at(last_output_at: Option<Instant>, now: Instant) -> Duration {
+    last_output_at.map_or(Duration::MAX, |last_output_at| {
+        now.saturating_duration_since(last_output_at)
+    })
+}
 
 /// Tmux keeps its scrollback in copy-mode on the alternate screen, so grove's own scrollback is empty for it (`session.rs:667-705`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,8 +51,8 @@ pub struct TerminalSession {
     tmux_display_offset: usize,
     last_input_at: Option<Instant>,
     last_scroll_at: Option<Instant>,
-    /// Stamped at spawn so a silent session reads as "quiet since spawn", never "quiet forever".
-    last_output_at: Instant,
+    /// `None` until the PTY produces its first output.
+    last_output_at: Option<Instant>,
     /// Latched once [`Self::alive`] observes the child reaped: `try_wait` must never be called again after it.
     exited: bool,
     /// `Some` implies `pty.is_none()`.
@@ -126,7 +132,7 @@ impl TerminalSession {
             tmux_display_offset: 0,
             last_input_at: None,
             last_scroll_at: None,
-            last_output_at: Instant::now(),
+            last_output_at: None,
             exited: false,
             spawn_error,
             pane_pid,
@@ -156,7 +162,7 @@ impl TerminalSession {
             tmux_display_offset: 0,
             last_input_at: None,
             last_scroll_at: None,
-            last_output_at: Instant::now(),
+            last_output_at: None,
             exited: false,
             spawn_error: None,
             pane_pid: None,
@@ -231,7 +237,7 @@ impl TerminalSession {
             tmux_display_offset: 0,
             last_input_at: None,
             last_scroll_at: None,
-            last_output_at: Instant::now(),
+            last_output_at: None,
             exited: false,
             spawn_error,
             pane_pid: None,
@@ -284,7 +290,7 @@ impl TerminalSession {
 
     /// Feeds chunks into the model and repaints only if the grid actually moved (damage-generation compare, not a redraw-every-chunk).
     fn ingest(&mut self, chunks: &[Vec<u8>], cx: &mut Context<Self>) {
-        self.last_output_at = Instant::now();
+        self.last_output_at = Some(Instant::now());
         for chunk in chunks {
             self.term.process(chunk);
         }
@@ -514,7 +520,7 @@ impl TerminalSession {
     }
 
     pub fn output_age(&self) -> Duration {
-        Instant::now().saturating_duration_since(self.last_output_at)
+        output_age_at(self.last_output_at, Instant::now())
     }
 
     /// `Some` means no PTY at all; toast producers read this since spawn always returns a session, never a `Result`.
@@ -667,7 +673,21 @@ fn spawn_native(
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use grove_core::agent::Agent;
+
+    use super::output_age_at;
+
+    #[test]
+    fn output_is_stale_until_the_pty_produces_bytes() {
+        let now = Instant::now();
+        assert_eq!(output_age_at(None, now), Duration::MAX);
+        assert_eq!(
+            output_age_at(Some(now - Duration::from_secs(2)), now),
+            Duration::from_secs(2)
+        );
+    }
 
     #[test]
     fn a_terminal_target_still_invokes_the_login_shell_with_no_flags() {

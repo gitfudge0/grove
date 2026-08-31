@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Context, Element, Entity, FocusHandle, Focusable, Hitbox, IntoElement,
-    MouseButton, Pixels, Window, div, prelude::*, px,
+    div, prelude::*, px, AnyElement, App, Context, Element, Entity, FocusHandle, Focusable, Hitbox,
+    IntoElement, MouseButton, Pixels, Window,
 };
 
 use crate::activity::ActivityState;
@@ -20,8 +20,8 @@ use crate::entities::toast::ToastState;
 use crate::entities::upgrade::Upgrade;
 use crate::entities::upgrade_state::upgrade_available;
 use crate::entities::workspace_state::{
-    LiveTile, PtyPane, RAIL_W, RailMode, WorkspaceState, clamp_sidebar_width,
-    term_portion_for_cursor,
+    clamp_sidebar_width, term_portion_for_cursor, LiveTile, PtyPane, RailMode, WorkspaceState,
+    RAIL_W,
 };
 use crate::fonts::{MONO_FAMILY, UI_FAMILY};
 use crate::grid::{GridAxis, GridBoundary};
@@ -29,7 +29,7 @@ use crate::keymap;
 use crate::settings::SettingsState;
 use crate::theme as c;
 use crate::views::appbar::{self, AppbarCtx, ChromeAction, WaitingRow};
-use crate::views::grid::{self, GridAction, GridCtx, PTY_PAD_H, PTY_PAD_W, TileData};
+use crate::views::grid::{self, GridAction, GridCtx, TileData, PTY_PAD_H, PTY_PAD_W};
 use crate::views::modals::{ModalEvent, ModalLayer};
 use crate::views::rows;
 use crate::views::session_header::{self, SessionHeaderData, ToolAction, ToolCluster};
@@ -1472,18 +1472,21 @@ impl Workspace {
             (meta, entity, label)
         };
         let title = entity.read(cx).title();
-        let context = title.as_deref().and_then(|raw| {
-            if terminal_focused {
-                rows::terminal_context(raw, &meta.label)
-            } else {
-                rows::session_context(
-                    raw,
-                    &rows::path_basename(&meta.wt_path),
-                    &meta.label,
-                    meta.agent.label(),
-                )
-            }
-        });
+        let context = if terminal_focused {
+            title
+                .as_deref()
+                .and_then(|raw| rows::terminal_context(raw, &meta.label))
+        } else {
+            let screen_tail = (meta.agent == grove_core::agent::Agent::Codex)
+                .then(|| rows::snapshot_tail(&entity.read(cx).snapshot(), 15));
+            rows::resolve_session_context(
+                meta.agent,
+                title.as_deref(),
+                screen_tail.as_deref(),
+                &rows::path_basename(&meta.wt_path),
+                &meta.label,
+            )
+        };
         // Branchless sessions (home terminals) find no worktree and skip the segment entirely (`terminal.rs:530-535`).
         let branch = snap
             .projects
@@ -1963,14 +1966,15 @@ impl Workspace {
             // Same derivation as `header_data` — a tile and the session bar must never disagree about the session's state.
             let context = self.registry.read(cx).session(id).and_then(|entity| {
                 let title = entity.read(cx).title();
-                title.as_deref().and_then(|raw| {
-                    rows::session_context(
-                        raw,
-                        &rows::path_basename(&meta.wt_path),
-                        &meta.label,
-                        meta.agent.label(),
-                    )
-                })
+                let screen_tail = (meta.agent == grove_core::agent::Agent::Codex)
+                    .then(|| rows::snapshot_tail(&entity.read(cx).snapshot(), 15));
+                rows::resolve_session_context(
+                    meta.agent,
+                    title.as_deref(),
+                    screen_tail.as_deref(),
+                    &rows::path_basename(&meta.wt_path),
+                    &meta.label,
+                )
             });
             let waiting = self.activity.read(cx).state_of(id) == ActivityState::WaitingForInput;
             let agent_label = meta.agent.label();
@@ -2735,6 +2739,7 @@ mod tests {
                     wt_path: "/api".into(),
                 },
             ],
+            temp_bundle_path: None,
             label: "claude 1".into(),
             spawned_at: std::time::Instant::now(),
             attention: None,

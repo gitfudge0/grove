@@ -465,6 +465,7 @@ impl SessionRegistry {
                 wt_path: wt_path.to_string(),
                 agent: Agent::Terminal,
                 context_roots: Vec::new(),
+                temp_bundle_path: None,
                 label,
                 spawned_at: Instant::now(),
                 attention: None,
@@ -484,6 +485,7 @@ impl SessionRegistry {
             wt_path: home_dir(),
             agent: Agent::Terminal,
             context_roots: Vec::new(),
+            temp_bundle_path: None,
             label,
             spawned_at: Instant::now(),
             attention: None,
@@ -623,6 +625,7 @@ mod tests {
             label: "claude 1".into(),
             agent: Agent::Claude,
             context_roots: roots.clone(),
+            temp_bundle_path: None,
         };
         let mut registry = SessionRegistry::new();
         let id = registry.insert_reattached(0, &discovered);

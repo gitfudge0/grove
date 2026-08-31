@@ -644,17 +644,20 @@ impl Render for Sidebar {
                 .all()
                 .iter()
                 .map(|m| {
-                    let title = registry
-                        .session(m.id)
-                        .and_then(|e| e.read(cx).title())
-                        .and_then(|raw| {
-                            rows::session_context(
-                                &raw,
-                                &rows::path_basename(&m.wt_path),
-                                &m.label,
-                                m.agent.label(),
-                            )
+                    let (raw_title, screen_tail) =
+                        registry.session(m.id).map_or((None, None), |e| {
+                            let raw_title = e.read(cx).title();
+                            let screen_tail = (m.agent == Agent::Codex)
+                                .then(|| rows::snapshot_tail(&e.read(cx).snapshot(), 15));
+                            (raw_title, screen_tail)
                         });
+                    let title = rows::resolve_session_context(
+                        m.agent,
+                        raw_title.as_deref(),
+                        screen_tail.as_deref(),
+                        &rows::path_basename(&m.wt_path),
+                        &m.label,
+                    );
                     (
                         m.id,
                         rows::SessionInfo {
