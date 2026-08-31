@@ -68,6 +68,8 @@ impl Agent {
                 }
             }
             Agent::Codex => {
+                args.push("-c".into());
+                args.push(r#"tui.terminal_title=["activity","thread-title"]"#.into());
                 if skip_permissions {
                     args.push("--dangerously-bypass-approvals-and-sandbox".into());
                 }
@@ -294,6 +296,8 @@ mod tests {
         assert_eq!(
             Agent::Codex.multi_root_launch_args(true, false, &roots),
             Some(vec![
+                "-c".into(),
+                r#"tui.terminal_title=["activity","thread-title"]"#.into(),
                 "--dangerously-bypass-approvals-and-sandbox".into(),
                 "--add-dir".into(),
                 "/worktrees/second".into(),
@@ -319,9 +323,35 @@ mod tests {
     /// U3: `--chrome` is Claude-only; no other agent ever gets it.
     #[test]
     fn chrome_flag_is_claude_only() {
-        for agent in [Agent::Codex, Agent::OpenCode, Agent::Terminal] {
+        for agent in [Agent::OpenCode, Agent::Terminal] {
             assert!(agent.launch_args(false, true).is_empty());
         }
+        assert_eq!(
+            Agent::Codex.launch_args(false, true),
+            vec![
+                "-c".to_string(),
+                r#"tui.terminal_title=["activity","thread-title"]"#.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_launch_requests_generated_thread_titles() {
+        assert_eq!(
+            Agent::Codex.launch_args(false, false),
+            vec![
+                "-c".to_string(),
+                r#"tui.terminal_title=["activity","thread-title"]"#.to_string(),
+            ]
+        );
+        assert_eq!(
+            Agent::Codex.launch_args(true, false),
+            vec![
+                "-c".to_string(),
+                r#"tui.terminal_title=["activity","thread-title"]"#.to_string(),
+                "--dangerously-bypass-approvals-and-sandbox".to_string(),
+            ]
+        );
     }
 
     #[cfg(windows)]

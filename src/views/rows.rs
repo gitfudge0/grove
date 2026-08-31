@@ -153,6 +153,37 @@ pub fn session_context(
     sanitize_ui_text(&out)
 }
 
+fn codex_osc_context(
+    raw_title: &str,
+    wt_name: &str,
+    label: &str,
+    agent_label: &str,
+) -> Option<String> {
+    let context = session_context(raw_title, wt_name, label, agent_label)?;
+    let context = context
+        .split('|')
+        .map(str::trim)
+        .filter(|part| !part.is_empty() && !is_codex_activity_title(part))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    sanitize_ui_text(&context)
+}
+
+fn is_codex_activity_title(title: &str) -> bool {
+    let mut chars = title.chars();
+    if chars
+        .next()
+        .is_some_and(|ch| ('\u{2800}'..='\u{28ff}').contains(&ch))
+        && chars.next().is_none()
+    {
+        return true;
+    }
+    matches!(
+        title.to_ascii_lowercase().as_str(),
+        "ready" | "starting" | "thinking" | "working" | "waiting"
+    )
+}
+
 /// Extract the current Codex prompt from the live screen. Codex keeps the
 /// prompt visible while it works, but does not reliably publish it as an OSC
 /// title.
@@ -204,6 +235,11 @@ pub fn resolve_session_context(
     label: &str,
 ) -> Option<String> {
     if agent == Agent::Codex {
+        if let Some(context) =
+            raw_title.and_then(|raw| codex_osc_context(raw, wt_name, label, agent.label()))
+        {
+            return Some(context);
+        }
         if let Some(prompt) = screen_tail.and_then(codex_prompt) {
             return Some(prompt);
         }
@@ -1784,11 +1820,21 @@ mod tests {
     }
 
     #[test]
-    fn codex_resolution_prefers_screen_prompt_and_keeps_existing_fallbacks() {
+    fn codex_resolution_prefers_summary_title_then_keeps_existing_fallbacks() {
         assert_eq!(
             resolve_session_context(
                 Agent::Codex,
-                Some("grove codex 1"),
+                Some("\u{28f9} | Fix OSC summary titles | grove"),
+                Some("› Explain the original regression"),
+                "grove",
+                "codex 1",
+            ),
+            Some("Fix OSC summary titles".into())
+        );
+        assert_eq!(
+            resolve_session_context(
+                Agent::Codex,
+                Some("\u{28f9} | grove codex 1"),
                 Some("› Fix the auth flow"),
                 "grove",
                 "codex 1",
