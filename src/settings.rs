@@ -63,6 +63,29 @@ impl SettingsState {
         cx.update_global::<Self, _>(|this, _| this.persist_if_dirty());
     }
 
+    /// Applies one deliberate action and reports its synchronous disk write.
+    /// A failed write restores the in-memory store so UI and disk cannot diverge.
+    pub fn update_and_flush_checked<R>(
+        cx: &mut gpui::App,
+        f: impl FnOnce(&mut Store) -> R,
+    ) -> (R, grove_core::storage::Result<()>) {
+        cx.update_global::<Self, _>(|this, _| {
+            let before = this.store.clone();
+            let was_dirty = this.dirty;
+            let result = f(&mut this.store);
+            this.dirty = true;
+            this.epoch += 1;
+            let saved = storage::save(&this.store);
+            if saved.is_ok() {
+                this.dirty = false;
+            } else {
+                this.store = before;
+                this.dirty = was_dirty;
+            }
+            (result, saved)
+        })
+    }
+
     /// The mutating half of [`Self::update`], factored out so the debounce's
     /// bookkeeping is testable without a gpui `App`.
     fn mark(&mut self, f: impl FnOnce(&mut Store)) -> u64 {
@@ -84,8 +107,8 @@ impl SettingsState {
         true
     }
 
-    /// Whether a write is pending. Exposed for tests and for the quit path to
-    /// assert against.
+    /// Whether a write is pending. Exposed for persistence tests.
+    #[cfg(test)]
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }

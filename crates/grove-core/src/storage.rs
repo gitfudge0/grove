@@ -261,7 +261,7 @@ pub enum DiffMode {
     Split,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Store {
     #[serde(default)]
     pub projects: Vec<Project>,

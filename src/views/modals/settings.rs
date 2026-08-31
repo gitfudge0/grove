@@ -6,6 +6,7 @@ use crate::views::tokens::*;
 use gpui::{div, prelude::*, AnyElement, App, Context, Div, Focusable, Window};
 
 use grove_core::agent::Agent;
+use grove_core::storage::Store;
 
 use crate::entities::upgrade::Upgrade;
 use crate::entities::upgrade_state::{ChangelogState, UpgradeState};
@@ -32,6 +33,74 @@ const TOOL_ACTION_W: f32 = 84.0;
 const CHORD_COL_W: f32 = 150.0;
 /// Wider than CHORD_COL_W: static chords (`cmd+c / cmd+v`) are longer than any registry chord.
 const STATIC_CHORD_COL_W: f32 = CHORD_COL_W + SPACE_XL * 2.0;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProjectRenameError {
+    Blank,
+    Invalid,
+    Collision(String),
+    Missing,
+}
+
+impl std::fmt::Display for ProjectRenameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Blank => f.write_str("Project name cannot be blank."),
+            Self::Invalid => f.write_str(
+                "Invalid project name: do not start with '-' or use '/', '\\', or '..'.",
+            ),
+            Self::Collision(name) => write!(f, "A project named \"{name}\" already exists."),
+            Self::Missing => f.write_str("Project no longer exists."),
+        }
+    }
+}
+
+/// Renames every config key that uses the project display name. Returns the old name when a rename occurred.
+fn rename_project_in_store(
+    store: &mut Store,
+    path: &str,
+    requested_name: &str,
+) -> Result<Option<String>, ProjectRenameError> {
+    let new_name = requested_name.trim();
+    if new_name.is_empty() {
+        return Err(ProjectRenameError::Blank);
+    }
+    if !grove_core::git::valid_project_name(new_name) {
+        return Err(ProjectRenameError::Invalid);
+    }
+    if store
+        .projects
+        .iter()
+        .any(|p| p.path != path && p.name.eq_ignore_ascii_case(new_name))
+    {
+        return Err(ProjectRenameError::Collision(new_name.to_string()));
+    }
+    let idx = store
+        .projects
+        .iter()
+        .position(|p| p.path == path)
+        .ok_or(ProjectRenameError::Missing)?;
+    let old_name = store.projects[idx].name.clone();
+    if new_name == old_name {
+        return Ok(None);
+    }
+
+    grove_core::storage::pin_worktree_dir_on_rename(&mut store.projects[idx], &old_name);
+    store.projects[idx].name = new_name.to_string();
+    for recent in &mut store.recent_launches {
+        if recent.project == old_name {
+            recent.project = new_name.to_string();
+        }
+    }
+    let old_prefix = format!("{old_name}::");
+    let new_prefix = format!("{new_name}::");
+    for key in &mut store.grid_order {
+        if let Some(rest) = key.strip_prefix(&old_prefix) {
+            *key = format!("{new_prefix}{rest}");
+        }
+    }
+    Ok(Some(old_name))
+}
 
 /// The current value shown on a settings row.
 pub fn setting_value(row: SettingRow, cx: &App) -> String {
@@ -266,64 +335,34 @@ impl ModalLayer {
         let (setup, run, teardown) = (norm(&st.setup), norm(&st.run), norm(&st.teardown));
         let path = st.project_path.clone();
         let new_name = st.name.trim().to_string();
-        // Case-insensitive collision check: RecentLaunch.project/grid_order are keyed by name, so a collision would silently merge two projects' recents/tile order.
-        if !new_name.is_empty() {
-            let collides = cx
-                .global::<SettingsState>()
-                .store
+        let new_name_for_update = new_name.clone();
+        let (rename, saved) = SettingsState::update_and_flush_checked(cx, move |store| {
+            let rename = rename_project_in_store(store, &path, &new_name_for_update);
+            if rename.is_err() {
+                return rename;
+            }
+            let idx = store
                 .projects
                 .iter()
-                .any(|p| p.path != path && p.name.eq_ignore_ascii_case(&new_name));
-            if collides {
-                self.open(
-                    Modal::Message(format!("A project named \"{new_name}\" already exists.")),
-                    cx,
-                );
-                return;
-            }
-        }
-        // Read outside the closure: the update closure is `move` with a local `old_name`, but sidecar/registry propagation below needs both names after the mutation.
-        let renamed_from = cx
-            .global::<SettingsState>()
-            .store
-            .projects
-            .iter()
-            .find(|p| p.path == path)
-            .map(|p| p.name.clone())
-            .filter(|old_name| !new_name.is_empty() && *old_name != new_name);
-        let new_name_for_update = new_name.clone();
-        SettingsState::update(cx, move |store| {
-            let new_name = new_name_for_update;
-            let Some(idx) = store.projects.iter().position(|p| p.path == path) else {
-                return;
-            };
-            let old_name = store.projects[idx].name.clone();
+                .position(|p| p.path == path)
+                .expect("rename validation found this project");
             store.projects[idx].scripts.setup = setup;
             store.projects[idx].scripts.run = run;
             store.projects[idx].scripts.teardown = teardown;
-            if new_name.is_empty() || new_name == old_name {
+            rename
+        });
+        let renamed_from = match rename {
+            Ok(old_name) => old_name,
+            Err(error) => {
+                self.toast
+                    .update(cx, |t, cx| t.set_error(error.to_string(), cx));
                 return;
             }
-            // Pin worktree_dir at the old name before it moves, or the rename orphans every existing worktree dir (storage.rs project_for_worktree_path rule 2).
-            grove_core::storage::pin_worktree_dir_on_rename(&mut store.projects[idx], &old_name);
-            store.projects[idx].name.clone_from(&new_name);
-            // RecentLaunch.project/grid_order are keyed by name, not path — must migrate both or they orphan.
-            for r in &mut store.recent_launches {
-                if r.project == old_name {
-                    r.project.clone_from(&new_name);
-                }
-            }
-            let old_prefix = format!("{old_name}::");
-            let new_prefix = format!("{new_name}::");
-            for key in &mut store.grid_order {
-                if let Some(rest) = key.strip_prefix(&old_prefix) {
-                    *key = format!("{new_prefix}{rest}");
-                }
-            }
-        });
-        SettingsState::flush_now(cx);
-        if cx.global::<SettingsState>().is_dirty() {
-            self.open(Modal::Message("Scripts could not be saved.".into()), cx);
+        };
+        if let Err(error) = saved {
+            self.toast.update(cx, |t, cx| {
+                t.set_error(format!("Scripts could not be saved: {error}"), cx)
+            });
             return;
         }
         // Propagate the rename to session metadata: persisted sidecars first, then the live registry, so a running app doesn't keep showing the old name.
@@ -348,15 +387,49 @@ impl ModalLayer {
         cx.notify();
     }
 
-    /// Accepts the typed name locally only; nothing writes to disk until `save_scripts`, so Cancel/Esc still undoes it.
+    /// Persists the project rename without saving any in-progress script edits.
     pub(super) fn scripts_rename_commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_wizard_buffers(cx);
+        let Some(Modal::ScriptsEditor(st)) = self.slot.get() else {
+            return;
+        };
+        let path = st.project_path.clone();
+        let new_name = st.name.trim().to_string();
+        let new_name_for_update = new_name.clone();
+        let (rename, saved) = SettingsState::update_and_flush_checked(cx, move |store| {
+            rename_project_in_store(store, &path, &new_name_for_update)
+        });
+        let renamed_from = match rename {
+            Ok(old_name) => old_name,
+            Err(error) => {
+                self.toast
+                    .update(cx, |t, cx| t.set_error(error.to_string(), cx));
+                return;
+            }
+        };
+        if let Err(error) = saved {
+            self.toast.update(cx, |t, cx| {
+                t.set_error(format!("Project could not be renamed: {error}"), cx)
+            });
+            return;
+        }
+        if let Some(old_name) = renamed_from {
+            grove_core::session_meta::rename_project(&old_name, &new_name);
+            self.registry
+                .update(cx, |r, _| r.rename_project(&old_name, &new_name));
+        }
         if let Some(Modal::ScriptsEditor(st)) = self.slot.get_mut() {
+            st.name.clone_from(&new_name);
             st.renaming = false;
+        }
+        if let Some(f) = self.fields.first() {
+            f.set_value(&new_name, window, cx);
         }
         if let Some(f) = self.fields.get(1) {
             f.focus_at_end(window, cx);
         }
+        self.toast
+            .update(cx, |t, cx| t.set_toast("project renamed", cx));
         cx.notify();
     }
 
@@ -1341,7 +1414,7 @@ fn scripts_editor(
 ) -> AnyElement {
     let store = &cx.global::<SettingsState>().store;
     let project = store.projects.iter().find(|p| p.path == st.project_path);
-    let project_name = project.map_or_else(|| st.project_path.clone(), |p| p.name.clone());
+    let project_name = scripts_editor_title(st);
     let themes_enabled = store.project_themes_enabled;
     // While Project themes is off, show "Default" rather than a stale pinned name that would look active.
     let pinned_name = if themes_enabled {
@@ -1383,7 +1456,7 @@ fn scripts_editor(
                     .w_full(),
             )
             .into_any_element(),
-        _ => ui(project_name.clone(), TEXT_TITLE, c::MAGENTA())
+        _ => ui(project_name, TEXT_TITLE, c::MAGENTA())
             .flex_1()
             .min_w_0()
             .into_any_element(),
@@ -1589,6 +1662,17 @@ fn scripts_editor(
             .child(footer),
     )
     .into_any_element()
+}
+
+/// The editor owns an unsaved project name just like it owns the script buffers.
+/// Reading the title back from settings here would make an accepted rename appear to revert until Save.
+fn scripts_editor_title(st: &ScriptsEditorState) -> String {
+    let name = st.name.trim();
+    if name.is_empty() {
+        st.project_path.clone()
+    } else {
+        name.to_string()
+    }
 }
 
 /// Escape is genuinely refused while a stage is in flight; the footer only offers a hint once the apply has landed.
@@ -1863,6 +1947,86 @@ mod tests {
         for def in SHORTCUTS.iter().filter(|d| d.literal) {
             assert_eq!(chord_label(def), def.display_keys);
         }
+    }
+
+    #[test]
+    fn scripts_editor_title_uses_the_pending_rename() {
+        let st = ScriptsEditorState {
+            project_path: "/code/original".into(),
+            name: "renamed project".into(),
+            ..Default::default()
+        };
+
+        assert_eq!(scripts_editor_title(&st), "renamed project");
+    }
+
+    #[test]
+    fn scripts_editor_title_falls_back_to_the_path_for_an_empty_name() {
+        let st = ScriptsEditorState {
+            project_path: "/code/original".into(),
+            name: "   ".into(),
+            ..Default::default()
+        };
+
+        assert_eq!(scripts_editor_title(&st), "/code/original");
+    }
+
+    fn project(name: &str, path: &str) -> grove_core::storage::Project {
+        grove_core::storage::Project {
+            name: name.into(),
+            path: path.into(),
+            scripts: Default::default(),
+            theme: None,
+            archived: false,
+            worktree_dir: None,
+        }
+    }
+
+    #[test]
+    fn project_rename_migrates_every_name_key_without_touching_scripts() {
+        let mut store = Store {
+            projects: vec![project("old", "/code/app")],
+            grid_order: vec!["old::/code/app".into(), "other::/code/other".into()],
+            recent_launches: vec![grove_core::storage::RecentLaunch {
+                project: "old".into(),
+                wt_path: "/code/app".into(),
+                agent: Agent::Claude,
+            }],
+            ..Default::default()
+        };
+        store.projects[0].scripts.run = Some("draft stays put".into());
+
+        assert_eq!(
+            rename_project_in_store(&mut store, "/code/app", " new "),
+            Ok(Some("old".into()))
+        );
+        assert_eq!(store.projects[0].name, "new");
+        assert_eq!(store.projects[0].worktree_dir.as_deref(), Some("old"));
+        assert_eq!(
+            store.projects[0].scripts.run.as_deref(),
+            Some("draft stays put")
+        );
+        assert_eq!(store.recent_launches[0].project, "new");
+        assert_eq!(store.grid_order, ["new::/code/app", "other::/code/other"]);
+    }
+
+    #[test]
+    fn project_rename_rejects_blank_and_case_insensitive_collisions_without_mutating() {
+        let mut store = Store {
+            projects: vec![project("old", "/code/app"), project("Taken", "/code/other")],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            rename_project_in_store(&mut store, "/code/app", "  "),
+            Err(ProjectRenameError::Blank)
+        );
+        assert_eq!(
+            rename_project_in_store(&mut store, "/code/app", "taken"),
+            Err(ProjectRenameError::Collision("taken".into()))
+        );
+        assert_eq!(store.projects[0].name, "old");
+        assert_eq!(store.projects[0].worktree_dir, None);
     }
 
     #[test]
