@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Grove Workspace and Session Navigation Decision</title>
+  <style>
+    :root {
+      --cream: #f3eee1;
+      --card: #fbf8ef;
+      --navy: #2e2a6e;
+      --navy-dark: #211d4e;
+      --text: #26234f;
+      --text-dim: #78749c;
+      --line: #d8d2e8;
+      --for: #2e2a6e;
+      --conditional: #a9791b;
+      --skeptical: #a3402f;
+      --display: "Trebuchet MS", "Arial Narrow", sans-serif;
+      --body: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        linear-gradient(rgba(46,42,110,.025) 1px, transparent 1px),
+        var(--cream);
+      background-size: 100% 32px;
+      font-family: var(--body);
+      line-height: 1.52;
+    }
+    main { width: min(1180px, calc(100% - 48px)); margin: 0 auto; padding: 54px 0 34px; }
+    h1, h2, h3, .label, .node, .pill { font-family: var(--display); }
+    header { display: grid; grid-template-columns: 1.4fr 1fr; gap: 36px; align-items: stretch; margin-bottom: 28px; }
+    .title-block { background: var(--navy); color: white; padding: 30px 34px; }
+    .eyebrow, .label { text-transform: uppercase; letter-spacing: .14em; font-size: 11px; font-weight: 800; }
+    h1 { margin: 8px 0 0; font-size: clamp(30px, 4vw, 52px); line-height: 1.02; letter-spacing: -.035em; }
+    .meta { margin: 0; display: grid; align-content: center; gap: 10px; padding: 8px 0; }
+    .meta div { display: grid; grid-template-columns: 110px 1fr; border-bottom: 1px solid var(--line); padding-bottom: 9px; }
+    .meta dt { color: var(--navy); font-family: var(--display); font-weight: 800; }
+    .meta dd { margin: 0; color: var(--text-dim); }
+    .decision { background: var(--card); border: 3px solid var(--navy); box-shadow: 8px 8px 0 var(--line); margin: 0 0 34px; }
+    .decision-head { padding: 26px 30px 24px; border-bottom: 2px solid var(--navy); }
+    .decision-head .label { color: var(--navy); }
+    .decision-head h2 { margin: 8px 0 10px; font-size: clamp(26px, 3vw, 40px); line-height: 1.08; letter-spacing: -.025em; }
+    .decision-head p { margin: 0; max-width: 900px; font-size: 17px; }
+    .decision-grid { display: grid; grid-template-columns: 1.3fr 1fr 1fr 1fr; }
+    .decision-grid section { padding: 22px 24px 24px; border-right: 1px solid var(--line); }
+    .decision-grid section:last-child { border-right: 0; }
+    .decision-grid h3 { margin: 0 0 8px; color: var(--navy); text-transform: uppercase; letter-spacing: .1em; font-size: 12px; }
+    .decision-grid p, .decision-grid ul { margin: 0; font-size: 14px; }
+    ul { padding-left: 18px; }
+    li + li { margin-top: 5px; }
+    .process { display: grid; grid-template-columns: minmax(430px, 1.3fr) 1fr; align-items: center; gap: 42px; padding: 22px 0 38px; }
+    .process-tree { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; position: relative; padding-top: 68px; }
+    .process-root { position: absolute; top: 0; left: 50%; transform: translateX(-50%); color: var(--navy); border: 2px solid var(--navy); background: var(--card); padding: 8px 16px; z-index: 2; }
+    .process-root::after { content: ""; position: absolute; left: 50%; top: 100%; height: 22px; border-left: 2px solid var(--navy); }
+    .process-tree::before { content: ""; position: absolute; top: 44px; left: 16.66%; right: 16.66%; border-top: 2px solid var(--navy); }
+    .phase { position: relative; padding: 13px 10px; background: var(--navy); color: white; text-align: center; font-family: var(--display); font-weight: 800; font-size: 13px; }
+    .phase::before { content: ""; position: absolute; left: 50%; bottom: 100%; height: 24px; border-left: 2px solid var(--navy); }
+    .phase:first-of-type { background: var(--card); color: var(--navy); border: 2px solid var(--navy); padding: 11px 8px; }
+    .process-copy h2 { margin: 0 0 8px; font-size: 24px; }
+    .process-copy p { margin: 0; color: var(--text-dim); }
+    .section-kicker { display: flex; align-items: center; gap: 14px; margin: 0 0 9px; }
+    .section-kicker::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+    .section-title { margin: 0 0 20px; font-size: 30px; }
+    .persona { display: grid; grid-template-columns: minmax(560px, 1.25fr) 1fr; gap: 38px; padding: 25px 0; border-top: 1px dashed var(--text-dim); align-items: center; }
+    .persona:last-of-type { border-bottom: 1px dashed var(--text-dim); }
+    .chain { display: grid; grid-template-columns: 220px 44px 1fr 44px auto; align-items: center; }
+    .node { min-height: 78px; padding: 13px 15px; display: grid; align-content: center; }
+    .identity { background: var(--navy); color: white; }
+    .identity strong { font-size: 17px; }
+    .identity span { font-size: 12px; opacity: .82; margin-top: 2px; }
+    .priority { border: 2px solid var(--navy); background: var(--card); }
+    .priority small { text-transform: uppercase; color: var(--text-dim); letter-spacing: .1em; font-size: 9px; }
+    .priority strong { font-size: 13px; margin-top: 3px; }
+    .connector { border-top: 2px solid var(--navy); }
+    .pill { color: white; padding: 7px 11px; border-radius: 999px; font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+    .pill.for { background: var(--for); }
+    .pill.conditional { background: var(--conditional); }
+    .pill.skeptical { background: var(--skeptical); }
+    .annotation { border-left: 3px solid var(--navy); padding-left: 18px; }
+    .annotation p { margin: 3px 0 12px; font-size: 14px; }
+    .annotation p:last-child { margin-bottom: 0; }
+    .annotation .label { color: var(--navy); }
+    .legend { display: grid; grid-template-columns: auto 1fr; gap: 14px; background: var(--card); border: 1px solid var(--line); margin: 18px 0; padding: 18px 20px; }
+    .legend-icon { width: 28px; height: 28px; border: 2px solid var(--navy); color: var(--navy); border-radius: 50%; display: grid; place-items: center; font-family: Georgia, serif; font-weight: bold; }
+    .legend p { margin: 0; color: var(--text-dim); font-size: 13px; }
+    .convergence { margin: 34px 0 0; padding: 24px 28px; background: var(--navy-dark); color: white; display: grid; grid-template-columns: 190px 1fr; gap: 24px; align-items: start; }
+    .convergence h2 { margin: 0; font-size: 22px; }
+    .convergence p { margin: 0; }
+    footer { display: flex; justify-content: space-between; gap: 20px; margin-top: 32px; color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .09em; }
+    @media (max-width: 900px) {
+      .decision-grid { grid-template-columns: 1fr 1fr; }
+      .decision-grid section:nth-child(2) { border-right: 0; }
+      .decision-grid section:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+      .persona { grid-template-columns: 1fr; gap: 16px; }
+      .process { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 700px) {
+      main { width: min(100% - 26px, 1180px); padding-top: 24px; }
+      header, .decision-grid, .convergence { grid-template-columns: 1fr; }
+      .decision-grid section { border-right: 0; border-bottom: 1px solid var(--line); }
+      .process-tree { grid-template-columns: 1fr; padding: 0 0 0 30px; }
+      .process-root { position: relative; transform: none; left: auto; text-align: center; }
+      .process-root::after, .process-tree::before, .phase::before { display: none; }
+      .chain { grid-template-columns: 1fr; gap: 8px; }
+      .connector { height: 14px; width: 2px; border-top: 0; border-left: 2px solid var(--navy); margin: auto; }
+      .pill { justify-self: start; }
+      footer { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="title-block">
+        <div class="eyebrow">Grove product decision</div>
+        <h1>Workspace and session navigation</h1>
+      </div>
+      <dl class="meta">
+        <div><dt>Scope</dt><dd>Navigation model and workspace switching</dd></div>
+        <div><dt>Domain</dt><dd>Rust/GPUI desktop app for AI coding sessions</dd></div>
+        <div><dt>Perspectives</dt><dd>6 independent, project-specific lenses</dd></div>
+      </dl>
+    </header>
+
+    <article class="decision">
+      <div class="decision-head">
+        <div class="label">Decision</div>
+        <h2>Build a session-first workspace “saved desktop” model.</h2>
+        <p>Use one compact workspace switcher in the session sidebar header. Put a prominent <strong>New session</strong> action and a searchable session dock below it, grouped by <strong>Needs you</strong>, <strong>Working</strong>, and <strong>Idle / Recent</strong>. Show project and worktree identity as session metadata.</p>
+      </div>
+      <div class="decision-grid">
+        <section>
+          <h3>Why</h3>
+          <p>This matches the frequent work: moving between sessions and starting new ones. It builds on Grove's existing Sessions rail and launcher while removing repository hierarchy from the routine path.</p>
+        </section>
+        <section>
+          <h3>Risks to watch</h3>
+          <ul><li>Project management becomes too hidden</li><li>Workspace state restoration feels surprising</li><li>Long session lists lose scanability</li><li>Migration from global <code>WorkspaceState</code> becomes brittle</li></ul>
+        </section>
+        <section>
+          <h3>Conditions</h3>
+          <ul><li>Visible Browse projects action</li><li>Search in session and project views</li><li>Clear workspace label during creation</li><li>Per-workspace state contract</li><li>Keyboard and mouse parity</li><li>Purposeful empty state</li></ul>
+        </section>
+        <section>
+          <h3>Out of scope</h3>
+          <ul><li>Cross-workspace mixed dashboard</li><li>Permanent project tree</li><li>Many-to-many workspace membership</li><li>Cloud and team concepts</li></ul>
+        </section>
+      </div>
+    </article>
+
+    <section class="process" aria-label="Decision process">
+      <div class="process-tree">
+        <div class="process-root label">The process</div>
+        <div class="phase">Ground the behavior</div>
+        <div class="phase">Test independent lenses</div>
+        <div class="phase">Commit the model</div>
+      </div>
+      <div class="process-copy">
+        <h2>Frequency sets the hierarchy.</h2>
+        <p>The room evaluated the rejected rail, tree, dropdown, tabs, and palette-recents variants against what Grove users actually repeat all day. Each perspective was formed independently before synthesis.</p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-kicker label">Independent perspectives</div>
+      <h2 class="section-title">The room</h2>
+
+      <article class="persona">
+        <div class="chain"><div class="node identity"><strong>Mara Chen</strong><span>Daily multi-agent developer</span></div><i class="connector"></i><div class="node priority"><small>Priority</small><strong>Fast context switching</strong></div><i class="connector"></i><span class="pill for">For</span></div>
+        <div class="annotation"><div class="label">Take</div><p>I spend the day returning to live conversations, not tending repository structure. Put sessions first, keep their project and worktree visible, and make the next session one obvious action away.</p><div class="label">Flags</div><p>A flat list without urgency groups will become noise once several agents are running.</p></div>
+      </article>
+
+      <article class="persona">
+        <div class="chain"><div class="node identity"><strong>Ishan Rao</strong><span>Product interaction designer</span></div><i class="connector"></i><div class="node priority"><small>Priority</small><strong>Honest visual hierarchy</strong></div><i class="connector"></i><span class="pill for">For</span></div>
+        <div class="annotation"><div class="label">Take</div><p>The interface should reflect task frequency. A workspace is the context boundary, sessions are the active objects, and projects are supporting metadata plus an occasional management destination.</p><div class="label">Flags</div><p>The workspace switcher must stay compact without becoming cryptic or easy to change by mistake.</p></div>
+      </article>
+
+      <article class="persona">
+        <div class="chain"><div class="node identity"><strong>Lin Park</strong><span>Keyboard and DX maintainer</span></div><i class="connector"></i><div class="node priority"><small>Priority</small><strong>Input-method parity</strong></div><i class="connector"></i><span class="pill conditional">Conditional</span></div>
+        <div class="annotation"><div class="label">Take</div><p>Use one launcher state machine, opened either by the visible New session action or the app bar command palette. Keyboard access should accelerate the same flow, never reveal a separate or more capable one.</p><div class="label">Flags</div><p>Two launcher implementations will drift in defaults, validation, and workspace targeting.</p></div>
+      </article>
+
+      <aside class="legend">
+        <div class="legend-icon">i</div>
+        <p><strong>For</strong> supports the recommendation as stated. <strong>Conditional</strong> supports it when the named safeguard is part of the build. <strong>Skeptical</strong> challenges whether the model earns its added complexity.</p>
+      </aside>
+
+      <article class="persona">
+        <div class="chain"><div class="node identity"><strong>Oskar Bell</strong><span>Rust/GPUI maintainer</span></div><i class="connector"></i><div class="node priority"><small>Priority</small><strong>State clarity and migration</strong></div><i class="connector"></i><span class="pill conditional">Conditional</span></div>
+        <div class="annotation"><div class="label">Take</div><p>The saved-desktop model is coherent if workspace switching is atomic. Define a per-workspace record for active session, grid mode, sidebar mode, and selection before migrating the current global <code>WorkspaceState</code>.</p><div class="label">Flags</div><p>Partial restoration can show navigation from one workspace beside content from another.</p></div>
+      </article>
+
+      <article class="persona">
+        <div class="chain"><div class="node identity"><strong>Priya Nair</strong><span>Accessibility and scale reviewer</span></div><i class="connector"></i><div class="node priority"><small>Priority</small><strong>Discoverability at any scale</strong></div><i class="connector"></i><span class="pill conditional">Conditional</span></div>
+        <div class="annotation"><div class="label">Take</div><p>Do not force an unbounded project and worktree hierarchy through a permanent tree. Searchable session groups and a flat Browse projects view scale better, provided both expose names, status, context, focus order, and empty states clearly.</p><div class="label">Flags</div><p>Hidden project controls and status conveyed only by color will exclude users and slow discovery.</p></div>
+      </article>
+
+      <article class="persona">
+        <div class="chain"><div class="node identity"><strong>Dev Malik</strong><span>Skeptic and core-product maintainer</span></div><i class="connector"></i><div class="node priority"><small>Priority</small><strong>Complexity that earns its keep</strong></div><i class="connector"></i><span class="pill skeptical">Skeptical</span></div>
+        <div class="annotation"><div class="label">Take</div><p>Workspaces only earn their cost if they provide reliable separation and restoration, not another label above sessions. Keep the first version local and explicit, with no mixed dashboard, team semantics, or flexible membership model.</p><div class="label">Flags</div><p>If users cannot predict what changes on a switch, the abstraction will feel like lost state.</p></div>
+      </article>
+    </section>
+
+    <section class="convergence">
+      <h2>Independent convergence</h2>
+      <p>The daily user, interaction designer, and accessibility reviewer independently reject forcing project hierarchy into the frequent path. Their reasons differ: switching speed, honest hierarchy, and scalability. That convergence is the strongest signal in the room.</p>
+    </section>
+
+    <footer>
+      <span>Grove decision room · workspace and session navigation</span>
+      <span>Cast: Mara · Ishan · Lin · Oskar · Priya · Dev</span>
+    </footer>
+  </main>
+</body>
+</html>
