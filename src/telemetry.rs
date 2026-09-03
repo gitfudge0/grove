@@ -126,28 +126,52 @@ fn send(event: &str, props: Vec<(&'static str, serde_json::Value)>) {
     let Some(api_key) = api_key() else {
         return;
     };
-    let mut properties = serde_json::Map::new();
-    properties.insert("$process_person_profile".to_string(), false.into());
-    properties.insert("app_version".to_string(), env!("CARGO_PKG_VERSION").into());
-    properties.insert("os".to_string(), std::env::consts::OS.into());
-    for (k, v) in props {
-        properties.insert(k.to_string(), v);
-    }
-    let body = serde_json::json!({
-        "api_key": api_key,
-        "event": event,
-        "distinct_id": distinct_id(),
-        "properties": properties,
-    });
+    let body = build_payload(event, api_key, &distinct_id(), props);
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(3))
         .timeout_read(Duration::from_secs(5))
         .build();
-    let _ = agent
+    if let Err(error) = agent
         .post(POSTHOG_ENDPOINT)
         .set("User-Agent", "grove")
         .set("Content-Type", "application/json")
-        .send_string(&body.to_string());
+        .send_string(&body.to_string())
+    {
+        tracing::warn!(
+            error = %sanitized_error_description(&error),
+            "failed to send PostHog telemetry event"
+        );
+    }
+}
+
+fn build_payload(
+    event: &str,
+    api_key: &str,
+    distinct_id: &str,
+    props: Vec<(&'static str, serde_json::Value)>,
+) -> serde_json::Value {
+    let mut properties = serde_json::Map::new();
+    properties.insert("$process_person_profile".to_string(), false.into());
+    properties.insert("app_version".to_string(), env!("CARGO_PKG_VERSION").into());
+    properties.insert("os".to_string(), std::env::consts::OS.into());
+    properties.insert("token".to_string(), api_key.into());
+    properties.insert("distinct_id".to_string(), distinct_id.into());
+    for (k, v) in props {
+        properties.insert(k.to_string(), v);
+    }
+    serde_json::json!({
+        "api_key": api_key,
+        "event": event,
+        "distinct_id": distinct_id,
+        "properties": properties,
+    })
+}
+
+fn sanitized_error_description(error: &ureq::Error) -> String {
+    match error {
+        ureq::Error::Status(status, _) => format!("HTTP status {status}"),
+        ureq::Error::Transport(_) => "transport error".to_string(),
+    }
 }
 
 // Hourly ping; PostHog dedupes into DAU, so no day-boundary logic needed.
@@ -180,7 +204,7 @@ pub fn install_panic_hook() {
 
 #[cfg(test)]
 mod tests {
-    use super::scrub_token;
+    use super::{build_payload, sanitized_error_description, scrub_token};
 
     fn scrub(msg: &str) -> String {
         msg.split(' ')
@@ -222,5 +246,48 @@ mod tests {
         super::set_enabled(true);
         assert!(!super::enabled());
         super::set_enabled(false);
+    }
+
+    #[test]
+    fn payload_contains_posthog_identifiers_and_standard_properties() {
+        let payload = build_payload("workspace_opened", "phc_test_key", "anon-123", vec![]);
+
+        assert_eq!(payload["event"], "workspace_opened");
+        assert_eq!(payload["api_key"], "phc_test_key");
+        assert_eq!(payload["distinct_id"], "anon-123");
+        assert_eq!(payload["properties"]["token"], "phc_test_key");
+        assert_eq!(payload["properties"]["distinct_id"], "anon-123");
+        assert_eq!(payload["properties"]["$process_person_profile"], false);
+        assert_eq!(
+            payload["properties"]["app_version"],
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(payload["properties"]["os"], std::env::consts::OS);
+    }
+
+    #[test]
+    fn custom_properties_are_merged_and_can_override_defaults() {
+        let payload = build_payload(
+            "test",
+            "phc_test_key",
+            "anon-123",
+            vec![
+                ("command", "open".into()),
+                ("app_version", "custom-version".into()),
+            ],
+        );
+
+        assert_eq!(payload["properties"]["command"], "open");
+        assert_eq!(payload["properties"]["app_version"], "custom-version");
+    }
+
+    #[test]
+    fn telemetry_error_description_does_not_include_request_secrets() {
+        let secret = "phc_do_not_log";
+        let error = ureq::get("not a valid URL").call().unwrap_err();
+        let description = sanitized_error_description(&error);
+
+        assert_eq!(description, "transport error");
+        assert!(!description.contains(secret));
     }
 }
