@@ -1,220 +1,275 @@
 # Grove design system contract
 
-Status: fixed dark-first product scheme for the native Rust/GPUI app. The light theme is a derived accessibility and reference counterpart required by the design-system contract. It is not a reason to restore user-selectable colorways.
+Status: dark-first neutral system for the native Rust and GPUI app. The light theme is a warm-white counterpart.
 
-`DESIGN.html` renders specimens and GPUI strings from one JavaScript token source. It wins if this Markdown copy drifts.
+One semantic scheme drives both appearances. Dark is the product default; light is its derived counterpart, not a separate theme family.
+
+`DESIGN.html` generated JavaScript values win if this Markdown copy drifts.
 
 ## Primitives
 
 | Token | Value | Rust / GPUI mapping |
 |---|---:|---|
-| plum-black-950 | `#0d0b0f` | `Color::Rgb(13, 11, 15)` |
-| plum-black-900 | `#141216` | `Color::Rgb(20, 18, 22)` |
-| plum-black-850 | `#18151b` | `Color::Rgb(24, 21, 27)` |
-| plum-black-800 | `#201c23` | `Color::Rgb(32, 28, 35)` |
-| plum-black-750 | `#26212a` | `Color::Rgb(38, 33, 42)` |
-| plum-black-700 | `#302a34` | `Color::Rgb(48, 42, 52)` |
-| plum-black-600 | `#43394a` | `Color::Rgb(67, 57, 74)` |
-| plum-black-450 | `#6d6370` | `Color::Rgb(109, 99, 112)` |
-| plum-black-300 | `#aaa0ad` | `Color::Rgb(170, 160, 173)` |
-| plum-black-100 | `#e9e4eb` | `Color::Rgb(233, 228, 235)` |
-| plum-black-50 | `#f5f0f6` | `Color::Rgb(245, 240, 246)` |
-| plum-black-25 | `#fbf7fb` | `Color::Rgb(251, 247, 251)` |
-| brand-700 | `#7a1f9f` | `Color::Rgb(122, 31, 159)` |
-| brand-600 | `#8f27b8` | `Color::Rgb(143, 39, 184)` |
-| brand-500 | `#a63bd2` | `Color::Rgb(166, 59, 210)` |
-| brand-400 | `#c15ff5` | `Color::Rgb(193, 95, 245)` |
-| brand-300 | `#d488f8` | `Color::Rgb(212, 136, 248)` |
-| violet-600 / 400 | `#7650d6` / `#9a6cff` | `Color::Rgb(118, 80, 214)` / `Color::Rgb(154, 108, 255)` |
-| green-700 / 400 | `#2d8b4d` / `#6fd083` | `Color::Rgb(45, 139, 77)` / `Color::Rgb(111, 208, 131)` |
-| amber-700 / 400 | `#9b651f` / `#dcaa63` | `Color::Rgb(155, 101, 31)` / `Color::Rgb(220, 170, 99)` |
-| red-700 / 400 | `#a83f55` / `#df7181` | `Color::Rgb(168, 63, 85)` / `Color::Rgb(223, 113, 129)` |
-| blue-700 / 400 | `#355d8c` / `#82a7d6` | `Color::Rgb(53, 93, 140)` / `Color::Rgb(130, 167, 214)` |
+| neutral-0 | `#ffffff` | `c::NEUTRAL_0()` |
+| neutral-50 | `#f7f7f8` | `c::NEUTRAL_50()` |
+| neutral-100 | `#ededee` | `c::NEUTRAL_100()` |
+| neutral-200 | `#dedee0` | `c::NEUTRAL_200()` |
+| neutral-300 | `#c3c3c7` | `c::NEUTRAL_300()` |
+| neutral-400 | `#9a9aa0` | `c::NEUTRAL_400()` |
+| neutral-500 | `#707078` | `c::NEUTRAL_500()` |
+| neutral-600 | `#515158` | `c::NEUTRAL_600()` |
+| neutral-700 | `#34343a` | `c::NEUTRAL_700()` |
+| neutral-800 | `#232327` | `c::NEUTRAL_800()` |
+| neutral-850 | `#1b1b1e` | `c::NEUTRAL_850()` |
+| neutral-900 | `#141416` | `c::NEUTRAL_900()` |
+| neutral-950 | `#0d0d0f` | `c::NEUTRAL_950()` |
+| warm-white | `#fbfaf7` | `c::WARM_WHITE()` |
+| violet-400 | `#a78bfa` | `c::VIOLET_400()` |
+| violet-500 | `#8b5cf6` | `c::VIOLET_500()` |
+| violet-600 | `#7c3aed` | `c::VIOLET_600()` |
+| green-500 | `#78d98b` | `c::GREEN()` |
+| amber-500 | `#e0ad63` | `c::AMBER()` |
+| red-500 | `#ef7d8e` | `c::RED()` |
+| blue-500 | `#79a9e8` | `c::BLUE()` |
 
-Opaque primitives live in `grove-core` as `Color::Rgb(r,g,b)`. Components never use primitive literals directly.
+Violet is limited to agent identity, connection state, focus, and active ports. Green means success or running. Amber means needs-you or warning. Red means destructive or error. Blue means tertiary information.
 
-## Semantic dark / light
+## Semantic light and dark
 
 | Token | Dark | Light | Meaning | Rust / GPUI mapping |
 |---|---|---|---|---|
-| bg | `#141216` | `#fbf7fb` | main shell | `c::BG()` |
-| bg-subtle / strip | `#0d0b0f` | `#f5f0f6` | appbar, status | `c::BG_SUBTLE()` |
-| rail | `#18151b` | `#eee8ef` | workspace/navigation rail | `c::RAIL()` |
-| surface | `#18151b` | `#f8f3f8` | bounded surface | `c::SURFACE()` |
-| surface-raised | `#201c23` | `#fffaff` | active/elevated | `c::SURFACE_RAISED()` |
-| hover | `#26212a` | `#ebe3ed` | pointer hover | `c::HOVER()` |
-| selected | `rgba(193,95,245,.08)` | `rgba(143,39,184,.08)` | selected wash | `c::SELECTED()` returns Rgba |
-| selected-border | `rgba(193,95,245,.30)` | `rgba(143,39,184,.36)` | focus-selected seam | `c::SELECTED_BORDER()` |
-| text-primary | `#e9e4eb` | `#241d27` | primary copy | `c::TEXT_PRIMARY()` |
-| text-secondary | `#aaa0ad` | `#514854` | secondary copy | `c::TEXT_SECONDARY()` |
-| text-muted | `#6d6370` | `#746a76` | metadata only | `c::TEXT_MUTED()` |
-| brand | `#c15ff5` | `#8f27b8` | Grove / active focus | `c::BRAND()` |
-| brand-hover | `#d488f8` | `#7a1f9f` | hover | `c::BRAND_HOVER()` |
-| brand-pressed | `#a63bd2` | `#681786` | pressed | `c::BRAND_PRESSED()` |
-| on-brand | `#0d0b0f` | `#fff9ff` | text on brand | `c::ON_BRAND()` |
-| focus | `#c15ff5` | `#8f27b8` | keyboard/focus | `c::FOCUS()` |
-| focus-wash | `rgba(193,95,245,.10)` | `rgba(143,39,184,.10)` | focus background | `c::FOCUS_WASH()` |
-| running / success | `#6fd083` | `#2d8b4d` | running or success only | `c::RUNNING()` / `c::SUCCESS()` |
-| needs-you / warning | `#dcaa63` | `#9b651f` | user attention only | `c::NEEDS_YOU()` / `c::WARNING()` |
-| amber-wash | `rgba(220,170,99,.09)` | `rgba(155,101,31,.09)` | waiting row | `c::AMBER_WASH()` |
-| destructive / error | `#df7181` | `#a83f55` | destructive/error only | `c::DESTRUCTIVE()` / `c::ERROR()` |
-| red-wash | `rgba(223,113,129,.10)` | `rgba(168,63,85,.09)` | destructive hover | `c::RED_WASH()` |
-| info / navigation | `#9a6cff` | `#355d8c` | informational navigation | `c::INFO()` / `c::NAVIGATION()` |
-| border | `#302a34` | `#d9cfdc` | 1px seam | `c::BORDER()` |
-| border-strong | `#43394a` | `#b9aebe` | focus structure | `c::BORDER_STRONG()` |
-| divider-soft | `rgba(233,228,235,.07)` | `rgba(36,29,39,.08)` | quiet divider | `c::DIVIDER_SOFT()` |
-| scrim | `rgba(13,11,15,.72)` | `rgba(36,29,39,.42)` | modal scrim | `c::SCRIM()` |
-| dot-grid | `rgba(67,57,74,.24)` | `rgba(81,72,84,.15)` | sparse field texture | `c::DOT_GRID()` |
-| terminal-bg / text | `#141216` / `#e9e4eb` | `#fbf7fb` / `#241d27` | PTY | `c::TERMINAL_BG()` / `c::TERMINAL_TEXT()` |
-| diff-add / bg | `#6fd083` / `rgba(111,208,131,.10)` | `#2d8b4d` / `rgba(45,139,77,.10)` | additions | `c::DIFF_ADD()` / `c::DIFF_ADD_BG()` |
-| diff-delete / bg | `#df7181` / `rgba(223,113,129,.10)` | `#a83f55` / `rgba(168,63,85,.09)` | deletions | `c::DIFF_DELETE()` / `c::DIFF_DELETE_BG()` |
-| shadow-color | `rgba(5,3,6,.28)` | `rgba(46,34,49,.14)` | shadow primitive | `c::SHADOW()` |
+| bg | `#141416` | `#fbfaf7` | main application background | `c::BG()` |
+| bg-subtle | `#0d0d0f` | `#f7f7f8` | appbar and statusbar | `c::BG_STRIP()` |
+| surface | `#1b1b1e` | `#ffffff` | sidebar, panels, and bounded regions | `c::SURFACE()` |
+| surface-raised | `#232327` | `#ffffff` | menus, dialogs, and floating panels | `c::SURFACE_RAISED()` |
+| hover | `#34343a` | `#ededee` | neutral pointer hover | `c::BG_HOVER()` |
+| selected | `#232327` | `#ededee` | neutral selected row fill | `c::BG_HL()` |
+| text-primary | `#f7f7f8` | `#141416` | required copy and primary labels | `c::FG()` |
+| text-secondary | `#c3c3c7` | `#515158` | supporting copy | `c::FG_DIM()` |
+| text-muted | `#707078` | `#707078` | nonessential metadata | `c::FG_MUTE()` |
+| brand | `#f7f7f8` | `#141416` | Grove mark and high-contrast brand fill | `c::BRAND()` |
+| brand-hover | `#ededee` | `#232327` | hover for brand-filled actions | `c::BRAND_HOVER()` |
+| on-brand | `#141416` | `#f7f7f8` | text and icons on brand | `c::ON_BRAND()` |
+| inverse-cta-bg | `#f7f7f8` | `#141416` | dominant inverse call to action | `c::INVERSE_CTA_BG()` |
+| inverse-cta-text | `#141416` | `#f7f7f8` | content on inverse call to action | `c::INVERSE_CTA_TEXT()` |
+| accent | `#8b5cf6` | `#7c3aed` | agent identity, connection, and active port | `c::MAGENTA()` |
+| accent-hover | `#a78bfa` | `#8b5cf6` | hover for violet-only roles | `c::ACCENT_HOVER()` |
+| accent-pressed | `#7c3aed` | `#7c3aed` | pressed violet-only roles | `c::ACCENT_PRESSED()` |
+| focus | `#a78bfa` | `#7c3aed` | keyboard focus ring | `c::SEL_RING()` |
+| accent-wash | `rgba(139,92,246,.14)` | `rgba(124,58,237,.10)` | quiet agent or connection backing | `c::SEL_TINT_SOFT()` |
+| running / success | `#78d98b` | `#78d98b` | running process or completed action | `c::GREEN()` |
+| needs-you / warning | `#e0ad63` | `#e0ad63` | required input or caution | `c::AMBER()` |
+| destructive / error | `#ef7d8e` | `#ef7d8e` | destructive action or failure | `c::RED()` |
+| tertiary / info | `#79a9e8` | `#79a9e8` | tertiary information only | `c::BLUE()` |
+| border | `#34343a` | `#dedee0` | standard one-pixel seam | `c::BORDER()` |
+| border-strong | `#515158` | `#c3c3c7` | emphasized structure | `c::BORDER_STRONG()` |
+| divider-soft | `rgba(247,247,248,.08)` | `rgba(20,20,22,.09)` | quiet internal divider | `c::BORDER_SOFT()` |
+| scrim | `rgba(13,13,15,.76)` | `rgba(20,20,22,.38)` | modal and blocking overlay | `c::SCRIM()` |
+| terminal-bg | `#0d0d0f` | `#ffffff` | PTY background | `c::TERMINAL_BG()` |
+| terminal-text | `#ededee` | `#232327` | PTY foreground | `c::TERMINAL_TEXT()` |
 
-Alpha semantics use `gpui::Rgba { r, g, b, a }` through theme accessors. Meanings never swap: plum is brand/focus/active, green is running/success, amber is needs-user/warning, red is destructive/error, and violet or muted blue is informational navigation.
+Components use semantic accessors only. Neutral selection never becomes violet. Violet remains reserved for agent identity, connection state, focus, and active ports.
 
 ## Typography
 
-CSS source: `--text-*`, `--line-*`, `--weight-*`, and reusable `--tracking-brand/heading/section/status`.
+### Families
 
-Families: UI `"IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif` maps to `ui()`. Terminal `"BlexMono Nerd Font Mono", "IBM Plex Mono", ui-monospace, monospace` maps to `mono()`. Both are bundled product fonts.
+| Token | CSS family | Use | Rust / GPUI mapping |
+|---|---|---|---|
+| font-ui | `"IBM Plex Sans", Arial, sans-serif` | all application UI | `gpui::font(fonts::UI_FAMILY)` through `ui(text, size, color)` |
+| font-mono | `"BlexMono Nerd Font Mono", "IBM Plex Mono", monospace` | terminal, path, branch, keycap, status | `gpui::font(fonts::MONO_FAMILY)` through `mono(text, size, color)` |
 
-| Token | rem / px | Line | Weight | GPUI mapping |
+Both primary families are bundled. Arial and IBM Plex Mono are fallbacks, not replacements.
+
+### Scale
+
+`1rem = 16 design px.`
+
+| Token | px / rem | Line height | Default weight | Rust / GPUI mapping |
 |---|---:|---:|---:|---|
-| micro | `.625 / 10` | 1.3 | 500 | `ui().text_size(rpx(10.)).font_weight(MEDIUM)` |
-| caption | `.6875 / 11` | 1.35 | 400 | `ui().text_size(rpx(11.))` |
-| body-sm | `.75 / 12` | 1.45 | 400 | `ui().text_size(rpx(12.))` |
-| body | `.8125 / 13` | 1.5 | 400 | `ui().text_size(rpx(13.))` |
-| title | `.9375 / 15` | 1.35 | 600 | `ui().text_size(rpx(15.)).font_weight(SEMIBOLD)` |
-| heading | `1.125 / 18` | 1.25 | 600 | `ui().text_size(rpx(18.)).font_weight(SEMIBOLD)` |
-| display | `1.5 / 24` | 1.15 | 700 | `ui().text_size(rpx(24.)).font_weight(BOLD)` |
-| display-lg | `2 / 32` | 1.08 | 700 | `ui().text_size(rpx(32.)).font_weight(BOLD)` |
-| weights | 400 / 500 / 600 / 700 | n/a | named | `NORMAL / MEDIUM / SEMIBOLD / BOLD` |
+| text-10 | 10 / .625rem | 13px | 500 | `.text_size(rpx(TEXT_10))` where `TEXT_10 = 10.0` |
+| text-11 | 11 / .6875rem | 15px | 400 | `.text_size(rpx(TEXT_11))` where `TEXT_11 = 11.0` |
+| text-12 | 12 / .75rem | 17px | 400 | `.text_size(rpx(TEXT_12))` where `TEXT_12 = 12.0` |
+| text-13 | 13 / .8125rem | 19px | 400 | `.text_size(rpx(TEXT_13))` where `TEXT_13 = 13.0` |
+| text-15 | 15 / .9375rem | 20px | 600 | `.text_size(rpx(TEXT_15))` where `TEXT_15 = 15.0` |
+| text-18 | 18 / 1.125rem | 23px | 600 | `.text_size(rpx(TEXT_18))` where `TEXT_18 = 18.0` |
+| text-24 | 24 / 1.5rem | 29px | 700 | `.text_size(rpx(TEXT_24))` where `TEXT_24 = 24.0` |
+| text-32 | 32 / 2rem | 36px | 700 | `.text_size(rpx(TEXT_32))` where `TEXT_32 = 32.0` |
 
-Mono replaces `ui()` with `mono()` for terminal, keycaps, paths, and micro metadata. `1rem = 16 design px`.
+### Weights
+
+| Token | Value | Rust / GPUI mapping |
+|---|---:|---|
+| weight-regular | 400 | `gpui::FontWeight::NORMAL` |
+| weight-medium | 500 | `gpui::FontWeight::MEDIUM` |
+| weight-semibold | 600 | `gpui::FontWeight::SEMIBOLD` |
+| weight-bold | 700 | `gpui::FontWeight::BOLD` |
 
 ### Type roles
 
-UI roles use IBM Plex Sans. Mono roles use Blex Mono Nerd Font Mono. Terminal mono never becomes decorative UI identity. Tracked uppercase is reserved for micro section labels. Muted metadata never drops below caption. Body copy is never all caps.
-
-| Role | Family | Scale | Weight | Letter spacing / case | Usage | Grove example | GPUI mapping |
-|---|---|---|---:|---|---|---|---|
-| Brand mark | UI | title | 600 | `.02em`, lowercase | product wordmark only | `grove` | `ui().text_size(rpx(15.)).font_weight(SEMIBOLD)` |
-| Workspace name | UI | title | 600 | normal, title case | active workspace / tooltip | `Client platform` | `ui().text_size(rpx(15.)).font_weight(SEMIBOLD)` |
-| Destination title | UI | heading | 600 | `-.01em`, sentence case | Monitor / Project heading | `Monitor` | `ui().text_size(rpx(18.)).font_weight(SEMIBOLD)` |
-| Panel / section label | UI | micro | 600 | `.10em`, uppercase | short navigation group labels only | `NEEDS YOU` | `ui().text_size(rpx(10.)).font_weight(SEMIBOLD)` plus tracking helper |
-| Session identity | UI | body-sm | 600 | normal | agent and task identity | `Claude Code · Refine global color system` | `ui().text_size(rpx(12.)).font_weight(SEMIBOLD)` |
-| Worktree / project row | UI | body-sm | 500 | normal | tree and picker rows | `grove / main` | `ui().text_size(rpx(12.)).font_weight(MEDIUM)` |
-| Body / help text | UI | body | 400 | normal, sentence case | explanation and guidance | `Choose a worktree to start a session.` | `ui().text_size(rpx(13.))` |
-| Metadata / path / branch | Mono | caption | 400 | normal | paths, branch, elapsed | `~/Sandbox/grove · main` | `mono().text_size(rpx(11.))` |
-| Status / telemetry label | Mono | micro | 500 | `.04em`, sentence case | statusbar and compact counters | `3 running · native` | `mono().text_size(rpx(10.)).font_weight(MEDIUM)` |
-| Keycap / shortcut | Mono | micro | 500 | normal | command hints only | `⌘K` | `mono().text_size(rpx(10.)).font_weight(MEDIUM)` |
-| Terminal content | Mono | body | 400 | normal | PTY output and prompt | `› cargo test theme` | `mono().text_size(rpx(13.))` |
-| Empty-state display | UI | display | 600 | `-.015em`, sentence case | one short empty-state line | `No sessions need you` | `ui().text_size(rpx(24.)).font_weight(SEMIBOLD)` |
+| Role | Family | Size | Weight | Use | Rust / GPUI mapping |
+|---|---|---:|---:|---|---|
+| brand mark | UI | 15 | 700 | GROVE wordmark | `ui("GROVE", TEXT_15, c::BRAND()).font_weight(FontWeight::BOLD)` |
+| workspace trigger | UI | 12 | 500 | active workspace button | `ui(name, TEXT_12, c::FG()).font_weight(FontWeight::MEDIUM)` |
+| section heading | UI | 18 | 600 | page and panel headings | `ui(label, TEXT_18, c::FG()).font_weight(FontWeight::SEMIBOLD)` |
+| row label | UI | 12 | 500 | project, worktree, and session | `ui(label, TEXT_12, c::FG()).font_weight(FontWeight::MEDIUM)` |
+| body | UI | 13 | 400 | guidance and dialog copy | `ui(copy, TEXT_13, c::FG())` |
+| metadata | Mono | 11 | 400 | path and branch | `mono(meta, TEXT_11, c::FG_DIM())` |
+| status | Mono | 10 | 500 | statusbar and counters | `mono(status, TEXT_10, c::FG_DIM()).font_weight(FontWeight::MEDIUM)` |
+| terminal | Mono | 12 | 400 | PTY text | `mono(line, TEXT_12, c::TERMINAL_TEXT())` |
+| display | UI | 32 | 700 | sparse empty-state title | `ui(title, TEXT_32, c::FG()).font_weight(FontWeight::BOLD)` |
 
 ## Radius
 
-| Token | px | GPUI mapping |
+| Token | Value | Rust / GPUI mapping |
 |---|---:|---|
-| radius-0/2/4/6/8/12 | 0, 2, 4, 6, 8, 12 | `.rounded(rpx(RADIUS_*))` |
-| radius-full | 999 | `.rounded_full()`; semantic pills only |
-
-Dominant control radius is 4; grouped containers use 6.
+| radius-4 | 4px | `.rounded(rpx(RADIUS_4))` with `RADIUS_4 = 4.0` |
+| radius-8 | 8px | `.rounded(rpx(RADIUS_8))` with `RADIUS_8 = 8.0` |
+| radius-12 | 12px | `.rounded(rpx(RADIUS_12))` with `RADIUS_12 = 12.0` |
+| radius-full | full pill, status only | `.rounded_full()` for status pills and indicators only |
 
 ## Spacing
 
-| Token | px | GPUI mapping |
+| Token | Value | Rust / GPUI mapping |
 |---|---:|---|
-| space-2/4/6/8/10/12 | 2,4,6,8,10,12 | constants in `src/views/tokens.rs`; `rpx(SPACE_*)` |
-| space-16/20/24/32/40/48 | 16,20,24,32,40,48 | constants in `src/views/tokens.rs`; `rpx(SPACE_*)` |
-| rail/context/appbar | 52 / 236 / 40 | `rpx(WORKSPACE_RAIL_W / CONTEXT_SIDEBAR_W / APPBAR_H)` |
-| header/status/row/control | 36 / 26 / 28 / 22 | `rpx(HEADER_H / STATUS_H / ROW_H / CONTROL_H)` |
-| grid-seam | 1 physical px | `px(1.0)` explicitly non-scaling |
-| terminal-main-min / panel-min | 480 / 280 | `rpx(TERMINAL_MAIN_MIN_W / TERMINAL_PANEL_MIN_W)` |
+| space-2 | 2px | `rpx(SPACE_2)` with `SPACE_2 = 2.0` |
+| space-4 | 4px | `rpx(SPACE_4)` with `SPACE_4 = 4.0` |
+| space-6 | 6px | `rpx(SPACE_6)` with `SPACE_6 = 6.0` |
+| space-8 | 8px | `rpx(SPACE_8)` with `SPACE_8 = 8.0` |
+| space-10 | 10px | `rpx(SPACE_10)` with `SPACE_10 = 10.0` |
+| space-12 | 12px | `rpx(SPACE_12)` with `SPACE_12 = 12.0` |
+| space-16 | 16px | `rpx(SPACE_16)` with `SPACE_16 = 16.0` |
+| space-20 | 20px | `rpx(SPACE_20)` with `SPACE_20 = 20.0` |
+| space-24 | 24px | `rpx(SPACE_24)` with `SPACE_24 = 24.0` |
+| space-32 | 32px | `rpx(SPACE_32)` with `SPACE_32 = 32.0` |
+| space-40 | 40px | `rpx(SPACE_40)` with `SPACE_40 = 40.0` |
+| space-48 | 48px | `rpx(SPACE_48)` with `SPACE_48 = 48.0` |
 
-Appbar is 40px: dense enough for the 22px controls plus 9px vertical padding, and more stable cross-platform than 38px.
+Geometry is part of the spacing contract.
+
+| Geometry token | Value | Rust / GPUI mapping |
+|---|---:|---|
+| appbar-h | 40px | `rpx(APPBAR_H)` with `APPBAR_H = 40.0` |
+| sidebar-w | 236px | `rpx(SIDEBAR_W)` with `SIDEBAR_W = 236.0` |
+| header-h | 36px | `rpx(HEADER_H)` with `HEADER_H = 36.0` |
+| status-h | 26px | `rpx(STATUS_H)` with `STATUS_H = 26.0` |
+| row-h | 28px | `rpx(ROW_H)` with `ROW_H = 28.0` |
+| control-h | 24px | `rpx(CONTROL_H)` with `CONTROL_H = 24.0` |
+
+Workspace switching is appbar content and owns no separate width token.
 
 ## Gaps
 
-CSS source: `--gap-xs/sm/md/lg/xl`.
-
-| Token | Alias | GPUI mapping |
+| Token | Alias | Rust / GPUI mapping |
 |---|---|---|
-| gap-xs/sm/md/lg/xl | space-2/4/8/12/16 | `.gap(rpx(GAP_*))` or child margins |
+| gap-2 | space-2 | `.gap(rpx(GAP_2))` with `GAP_2 = SPACE_2` |
+| gap-4 | space-4 | `.gap(rpx(GAP_4))` with `GAP_4 = SPACE_4` |
+| gap-6 | space-6 | `.gap(rpx(GAP_6))` with `GAP_6 = SPACE_6` |
+| gap-8 | space-8 | `.gap(rpx(GAP_8))` with `GAP_8 = SPACE_8` |
+| gap-12 | space-12 | `.gap(rpx(GAP_12))` with `GAP_12 = SPACE_12` |
+| gap-16 | space-16 | `.gap(rpx(GAP_16))` with `GAP_16 = SPACE_16` |
 
-## Border widths
+## Borders
 
-| Token | Value | GPUI mapping |
+| Token | Value | Rust / GPUI mapping |
 |---|---:|---|
-| border-thin | 1px | `px(1.0)` for physical hairlines |
-| border-medium | 2px | `rpx(BORDER_MEDIUM)` |
+| border-thin | 1 physical px | `.border_1().border_color(c::BORDER())` |
+| border-medium | 2px | `.border(rpx(BORDER_MEDIUM)).border_color(c::BORDER_STRONG())` |
+| focus-ring | 2px | `.border(rpx(FOCUS_RING)).border_color(c::SEL_RING())` |
 
 ## Shadows
 
-CSS source: `--shadow-sm/md/lg`, overridden by theme.
-
-| Token | Dark | Light | GPUI mapping |
+| Token | Dark | Light | Rust / GPUI mapping |
 |---|---|---|---|
-| shadow-sm | `0 1px 2px rgba(5,3,6,.18)` | `0 1px 2px rgba(46,34,49,.08)` | proposed `shadow_sm(c::SHADOW())` helper |
-| shadow-md | `0 4px 12px rgba(5,3,6,.22)` | `0 4px 12px rgba(46,34,49,.11)` | proposed `shadow_md(c::SHADOW())` helper |
-| shadow-lg | `0 10px 28px rgba(5,3,6,.28)` | `0 10px 24px rgba(46,34,49,.14)` | proposed `shadow_lg(c::SHADOW())` helper |
+| shadow-sm | `0 1px 2px rgba(0,0,0,.36)` | `0 1px 2px rgba(13,13,15,.10)` | `gpui::BoxShadow { color: c::SHADOW_SM(), offset: gpui::point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false }` |
+| shadow-md | `0 8px 24px rgba(0,0,0,.42)` | `0 8px 24px rgba(13,13,15,.14)` | `gpui::BoxShadow { color: c::SHADOW_MD(), offset: gpui::point(px(0.), px(8.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }` |
+| shadow-lg | `0 16px 48px rgba(0,0,0,.50)` | `0 16px 48px rgba(13,13,15,.18)` | `gpui::BoxShadow { color: c::SHADOW_LG(), offset: gpui::point(px(0.), px(16.)), blur_radius: px(48.), spread_radius: px(0.), inset: false }` |
 
-Dark depth uses color and seams first. Shadows are nearly invisible by design.
+Dark depth comes from surface steps and borders first. Shadows remain quiet.
 
 ## Motion
 
-| Token | Value | GPUI mapping |
+| Token | Value | Rust / GPUI mapping |
 |---|---|---|
-| duration-fast/base/slow | 80 / 140 / 220ms | `Duration::from_millis(DURATION_*)` |
-| ease-standard | `cubic-bezier(.2,.8,.2,1)` | `gpui_component::animation::cubic_bezier(.2,.8,.2,1.)` |
-| ease-decelerate | `cubic-bezier(.16,1,.3,1)` | `cubic_bezier(.16,1.,.3,1.)` |
-| ease-accelerate | `cubic-bezier(.4,0,1,1)` | `cubic_bezier(.4,0.,1.,1.)` |
+| duration-fast | 80ms | `Duration::from_millis(80)` |
+| duration-base | 140ms | `Duration::from_millis(140)` |
+| duration-slow | 220ms | `Duration::from_millis(220)` |
+| ease-standard | `cubic-bezier(.2,.8,.2,1)` | `cubic_bezier(0.2, 0.8, 0.2, 1.0)` |
+| ease-decelerate | `cubic-bezier(.16,1,.3,1)` | `cubic_bezier(0.16, 1.0, 0.3, 1.0)` |
+| ease-accelerate | `cubic-bezier(.4,0,1,1)` | `cubic_bezier(0.4, 0.0, 1.0, 1.0)` |
 
-Use `gpui::Animation::new(Duration::from_millis(...)).with_easing(...)`. Reduced motion uses app-level setting/media equivalent, 0ms, and skips transform animations. No bounce.
+Reduced motion uses `Duration::ZERO` and skips transform-based transitions. Do not animate a transform when the reduced-motion preference is active.
 
 ## Z-index
 
-CSS source: `--z-base/raised/sticky/overlay/modal/toast`.
-
-| Token | Order | GPUI mapping |
+| Token | Order | Rust / GPUI mapping |
 |---|---:|---|
-| base / raised / sticky / overlay / modal / toast | 0 / 10 / 20 / 40 / 60 / 80 | semantic paint order or overlay insertion order only; GPUI has no CSS z-index property |
+| z-base | 0 | paint order 0, first normal `Stack` child |
+| z-raised | 10 | paint order 10, later `Stack` child |
+| z-sticky | 20 | paint order 20, after scrolling content |
+| z-overlay | 40 | paint order 40, first `Overlay` entry |
+| z-modal | 60 | paint order 60, later `Overlay` entry |
+| z-toast | 80 | paint order 80, last `Overlay` entry |
 
-## Icon sizes
+GPUI has no CSS z-index property. These values are ordering semantics only.
 
-CSS source: `--icon-*` and `--dot-*`.
+## Icons
 
-| Token | px | GPUI mapping |
+| Token | Value | Rust / GPUI mapping |
 |---|---:|---|
-| icon-10/12/14/16/20/24/32 | 10,12,14,16,20,24,32 | `.size(rpx(ICON_*))` |
-| dot-6/7/8 | 6,7,8 | `.size(rpx(DOT_*))` |
+| icon-12 | 12px | `.size(rpx(ICON_12))` with `ICON_12 = 12.0` |
+| icon-14 | 14px | `.size(rpx(ICON_14))` with `ICON_14 = 14.0` |
+| icon-16 | 16px | `.size(rpx(ICON_16))` with `ICON_16 = 16.0` |
+| icon-20 | 20px | `.size(rpx(ICON_20))` with `ICON_20 = 20.0` |
+| icon-24 | 24px | `.size(rpx(ICON_24))` with `ICON_24 = 24.0` |
+| icon-32 | 32px | `.size(rpx(ICON_32))` with `ICON_32 = 32.0` |
+
+Use one-pixel or 1.5-pixel optical strokes and `currentColor`. Violet icons are restricted to the violet semantic roles.
 
 ## Opacity
 
-CSS source: `--opacity-*`.
-
-| Token | Value | GPUI mapping |
+| Token | Value | Rust / GPUI mapping |
 |---|---:|---|
-| disabled / muted / hover / pressed / scrim | .38 / .62 / .08 / .14 / .72 | `c::alpha(token, value)` or `.opacity(value)` where supported |
+| opacity-disabled | .38 | `c::alpha(color, 0.38)` |
+| opacity-muted | .62 | `c::alpha(color, 0.62)` |
+| opacity-hover | .08 | `c::alpha(color, 0.08)` |
+| opacity-pressed | .14 | `c::alpha(color, 0.14)` |
+| opacity-scrim | .76 | `c::alpha(c::NEUTRAL_950(), 0.76)` |
 
 ## Blur
 
-CSS source: `--blur-*`.
-
-| Token | px | GPUI mapping |
+| Token | Value | Rust / GPUI mapping |
 |---|---:|---|
-| blur-0/4/8/16 | 0,4,8,16 | proposed blur helper; rare, because Grove has no glass surfaces |
+| blur-0 | 0px | no filter; paint content directly |
+| blur-4 | 4px | no core GPUI equivalent; platform compositor helper with 4px radius |
+| blur-8 | 8px | no core GPUI equivalent; platform compositor helper with 8px radius |
+| blur-16 | 16px | no core GPUI equivalent; platform compositor helper with 16px radius |
+
+Blur is not a surface-building tool in Grove. Use it only when a platform overlay requires it.
 
 ## Assumptions
 
-| Assumption | Record | GPUI mapping / restriction |
+| Assumption | Record | GPUI mapping or restriction |
 |---|---|---|
-| Palette | Moodboard values were visually inferred, then regularized around approved Smoked plum values. | Recheck on calibrated displays. |
-| Themes | Dark received design scrutiny. Light is a warm derived accessibility/reference counterpart. | Do not restore theme proliferation. |
-| Typography | IBM Plex Sans and Blex Mono Nerd Font Mono are actual bundled product families and substitute for the moodboard's neutral grotesk/mono character. | Load via `ui()` / `mono()`. |
-| Units | 1rem is 16 design px; design px become `rpx()` except explicit physical seams. | Never use raw numeric component values. |
-| Spacing/radius | Regularized, tidy rather than pixel-traced. 2px and 6px are deliberate dense half-steps. | Constants in `src/views/tokens.rs`. |
-| Motion, z, opacity, blur | Defaults because static screenshots cannot specify them. | Reduced motion is mandatory; blur is rare. |
-| Shadows | Defaulted and intentionally subtle. | Prefer color/seams. |
-| Contrast dark | brand/bg 5.52:1; primary/bg 14.86:1; muted/bg 3.25:1; on-brand/brand 5.81:1. | Muted is metadata or large/nonessential text only, never required body copy. |
-| Contrast light | brand/bg 6.28:1; primary/bg 15.47:1; muted/bg 4.87:1; on-brand/brand 6.43:1. | All listed normal-text pairs pass AA. |
-| Source of truth | Markdown is a hand-copy. | `DESIGN.html` generated source wins on conflict. |
+| Source | Palette, geometry, and density come from the selected A4 wireframe and written brief. | `DESIGN.html` token arrays and CSS blocks win over this copy. |
+| Themes | Dark received primary design scrutiny. Light is a derived warm-white counterpart. | Both resolve through the same `c::*()` semantic names. |
+| Fonts | IBM Plex Sans and Blex Mono Nerd Font Mono are bundled in `src/fonts.rs`. | Use `ui()` and `mono()` helpers only. |
+| Units | 1rem is 16 design px. Layout values pass through `rpx()`; hairlines use `px(1.)`. | Do not place bare layout numbers in components. |
+| Regularization | Spacing and radius are tidy scales rather than traced values. | Add or rename constants in `src/views/tokens.rs` before component work. |
+| New aliases | Existing `c::BG*()`, `c::FG*()`, status colors, and `c::SEL_*()` map directly. New semantic names in this contract must become thin accessors in `src/theme.rs`. | Do not substitute component literals while aliases are pending. |
+| Defaults | Shadows, motion, z order, opacity, and blur are defaults because a static wireframe cannot specify them. | Reduced motion is mandatory; blur stays rare. |
+| Geometry | Appbar 40, sidebar 236, header 36, status 26, row 28, control 24. | Workspace switching adds no separate side strip. |
+| Support color text | Green, amber, red, and blue are role colors, not default copy colors. | On warm white, pair their indicators with `c::FG()` text until each small-text pairing is separately validated. |
+
+### Computed contrast
+
+| Pair | Dark | Light | Restriction |
+|---|---:|---:|---|
+| brand / bg | 17.18:1 | 17.63:1 | AAA for normal text |
+| on-brand / brand | 17.18:1 | 17.18:1 | AAA for normal text |
+| primary / bg | 17.18:1 | 17.63:1 | AAA for normal text |
+| secondary / bg | 10.47:1 | 7.54:1 | AAA for normal text |
+| muted / bg | 3.75:1 | 4.70:1 | Dark is nonessential metadata or large text only. Light passes AA for normal text. |
+| accent / bg | 4.35:1 | 5.46:1 | Keep out of body copy in both themes. Use for agent identity, connection, focus, and active ports. |
+
+Ratios use WCAG relative luminance against `#141416` in dark and `#fbfaf7` in light.
