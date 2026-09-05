@@ -1,0 +1,459 @@
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Grove supplementary references</title><style>
+:root {
+  color-scheme: dark;
+  --neutral-0: #ffffff;
+  --neutral-50: #f7f7f8;
+  --neutral-100: #ededee;
+  --neutral-200: #dedee0;
+  --neutral-300: #c3c3c7;
+  --neutral-400: #9a9aa0;
+  --neutral-500: #707078;
+  --neutral-600: #515158;
+  --neutral-700: #34343a;
+  --neutral-800: #232327;
+  --neutral-850: #1b1b1e;
+  --neutral-900: #141416;
+  --neutral-950: #0d0d0f;
+  --warm-white: #fbfaf7;
+  --violet-400: #a78bfa;
+  --violet-500: #8b5cf6;
+  --violet-600: #7c3aed;
+  --green-500: #78d98b;
+  --amber-500: #e0ad63;
+  --red-500: #ef7d8e;
+  --blue-500: #79a9e8;
+  --color-board: #0d0d0f;
+  --color-bg: #000000;
+  --color-bg-subtle: #000000;
+  --color-surface: #000000;
+  --color-surface-raised: #1b1b1b;
+  --color-hover: #232327;
+  --color-selected: #232327;
+  --color-text-primary: #f7f7f8;
+  --color-text-secondary: #aaaab2;
+  --color-text-muted: #707078;
+  --color-brand: #f7f7f8;
+  --color-brand-hover: #ededee;
+  --color-on-brand: #141416;
+  --color-inverse-cta-bg: #f7f7f8;
+  --color-inverse-cta-text: #141416;
+  --color-accent: #8b5cf6;
+  --color-accent-hover: #a78bfa;
+  --color-accent-pressed: #7c3aed;
+  --color-focus: #f7f7f8;
+  --color-accent-wash: rgba(139,92,246,.14);
+  --color-running: #78d98b;
+  --color-needs-you: #e0ad63;
+  --color-destructive: #ef7d8e;
+  --color-tertiary: #79a9e8;
+  --color-border: #34343a;
+  --color-border-strong: #515158;
+  --color-divider-soft: rgba(247,247,248,.08);
+  --color-scrim: rgba(13,13,15,.76);
+  --color-terminal-bg: #0d0d0f;
+  --color-terminal-text: #ededee;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.36);
+  --shadow-md: 0 8px 24px rgba(0,0,0,.42);
+  --shadow-lg: 0 16px 48px rgba(0,0,0,.50);
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "BlexMono Nerd Font Mono", "IBM Plex Mono", monospace;
+  --text-10: .625rem;
+  --text-11: .6875rem;
+  --text-12: .75rem;
+  --text-13: .8125rem;
+  --text-14: .875rem;
+  --text-16: 1rem;
+  --line-14: 1.429;
+  --line-16: 1.375;
+  --line-field-label: 16px;
+  --line-field-value: 22px;
+  --text-15: .9375rem;
+  --text-18: 1.125rem;
+  --text-24: 1.5rem;
+  --text-32: 2rem;
+  --line-10: 1.3;
+  --line-11: 1.364;
+  --line-12: 1.417;
+  --line-13: 1.462;
+  --line-15: 1.333;
+  --line-18: 1.278;
+  --line-24: 1.208;
+  --line-32: 1.125;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --radius-4: 4px;
+  --radius-8: 8px;
+  --radius-12: 12px;
+  --radius-16: 16px;
+  --radius-full: 999px;
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-10: 10px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-20: 20px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-40: 40px;
+  --space-48: 48px;
+  --gap-2: var(--space-2);
+  --gap-4: var(--space-4);
+  --gap-6: var(--space-6);
+  --gap-8: var(--space-8);
+  --gap-12: var(--space-12);
+  --gap-16: var(--space-16);
+  --border-thin: 1px;
+  --border-medium: 2px;
+  --focus-ring: 2px;
+  --duration-fast: 80ms;
+  --duration-base: 140ms;
+  --duration-slow: 220ms;
+  --ease-standard: cubic-bezier(.2,.8,.2,1);
+  --ease-decelerate: cubic-bezier(.16,1,.3,1);
+  --ease-accelerate: cubic-bezier(.4,0,1,1);
+  --z-base: 0;
+  --z-raised: 10;
+  --z-sticky: 20;
+  --z-overlay: 40;
+  --z-modal: 60;
+  --z-toast: 80;
+  --icon-12: 12px;
+  --icon-14: 14px;
+  --icon-16: 16px;
+  --icon-20: 20px;
+  --icon-24: 24px;
+  --icon-32: 32px;
+  --opacity-disabled: .58;
+  --opacity-muted: .62;
+  --opacity-hover: .08;
+  --opacity-pressed: .14;
+  --opacity-scrim: .76;
+  --blur-0: 0;
+  --blur-4: 4px;
+  --blur-8: 8px;
+  --blur-16: 16px;
+  --appbar-h: 40px;
+  --sidebar-w: 236px;
+  --header-h: 36px;
+  --status-h: 26px;
+  --row-h: 28px;
+  --control-h: 24px;
+  --field-h: 60px;
+  --form-button-h: 44px;
+  --field-inset-x: 14px;
+  --field-inset-top: 8px;
+  --field-value-top: 27px;
+  --textarea-h: 130px;
+  --switch-w: 48px;
+  --switch-h: 28px;
+  --switch-thumb: 22px;
+  --switch-inset: 3px;
+  --tile-min-w: 42px;
+  --tile-h: 44px;
+  --category-dot-size: 8px;
+  --shadow-none: none;
+  --color-field-fill: #1b1b1b;
+  --color-switch-on: #39b76c;
+  --color-switch-thumb: #ffffff;
+  --color-category-dot: #79a9e8;
+  --color-error-wash: rgba(239,125,142,.09);
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --color-board: #efeeeb;
+  --color-field-fill: #efefef;
+  --color-switch-on: #39b76c;
+  --color-switch-thumb: #ffffff;
+  --color-category-dot: #79a9e8;
+  --color-error-wash: rgba(182,56,76,.09);
+  --color-bg: #ffffff;
+  --color-bg-subtle: #f7f7f8;
+  --color-surface: #ffffff;
+  --color-surface-raised: #efefef;
+  --color-hover: #ededee;
+  --color-selected: #ededee;
+  --color-text-primary: #141416;
+  --color-text-secondary: #66666d;
+  --color-text-muted: #707078;
+  --color-brand: #141416;
+  --color-brand-hover: #232327;
+  --color-on-brand: #f7f7f8;
+  --color-inverse-cta-bg: #141416;
+  --color-inverse-cta-text: #f7f7f8;
+  --color-accent: #7c3aed;
+  --color-accent-hover: #8b5cf6;
+  --color-accent-pressed: #7c3aed;
+  --color-focus: #141416;
+  --color-accent-wash: rgba(124,58,237,.10);
+  --color-running: #78d98b;
+  --color-needs-you: #e0ad63;
+  --color-destructive: #b6384c;
+  --color-tertiary: #79a9e8;
+  --color-border: #dedee0;
+  --color-border-strong: #c3c3c7;
+  --color-divider-soft: rgba(20,20,22,.09);
+  --color-scrim: rgba(20,20,22,.38);
+  --color-terminal-bg: #ffffff;
+  --color-terminal-text: #232327;
+  --shadow-sm: 0 1px 2px rgba(13,13,15,.10);
+  --shadow-md: 0 8px 24px rgba(13,13,15,.14);
+  --shadow-lg: 0 16px 48px rgba(13,13,15,.18);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--color-board);color:var(--color-text-primary);font-family:var(--font-ui);font-size:var(--text-13);line-height:var(--line-13)}
+button,input{font:inherit}
+button{cursor:pointer}
+button:focus-visible,input:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-offset:var(--space-2)}
+.theme-toggle{position:fixed;z-index:var(--z-toast);top:var(--space-16);right:var(--space-16);height:var(--control-h);padding:0 var(--space-10);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-surface-raised);color:var(--color-text-primary);box-shadow:var(--shadow-none)}
+main{width:min(100%,calc(var(--space-48) * 28));margin:0 auto;padding:var(--space-48) var(--space-24)}
+header{max-width:calc(var(--space-48) * 16)}
+.eyebrow,.mono,.statusbar,.context,.mapping{font-family:var(--font-mono)}
+.eyebrow{color:var(--color-text-muted);font-size:var(--text-10);text-transform:uppercase}
+h1{font-size:var(--text-32);line-height:var(--line-32);margin:var(--space-6) 0}
+h2{font-size:var(--text-24);line-height:var(--line-24);margin:var(--space-40) 0 var(--space-12)}
+h3{font-size:var(--text-15);line-height:var(--line-15);margin:0}
+p{color:var(--color-text-secondary)}
+.rule{border-top:var(--border-thin) solid var(--color-border-strong);padding-top:var(--space-12)}
+.group{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--gap-12)}
+.spec{min-width:0;border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-surface);overflow:hidden}
+.wide{grid-column:1/-1;width:100%}
+.spec-head{display:flex;align-items:baseline;gap:var(--gap-8);padding:var(--space-12);border-bottom:var(--border-thin) solid var(--color-divider-soft)}
+.index{color:var(--color-text-muted);font:var(--text-10)/var(--line-10) var(--font-mono)}
+.spec-body{padding:var(--space-12);display:flex;flex-direction:column;gap:var(--gap-12)}
+.mapping{color:var(--color-text-muted);font-size:var(--text-10);padding:var(--space-8) var(--space-12);border-top:var(--border-thin) solid var(--color-divider-soft)}
+.rowset,.states,.trio,.seg,.toolbar,.statusbar,.appbar,.session-head,.group-head,.tile-head{display:flex;align-items:center;gap:var(--gap-6)}
+.rowset,.states{flex-wrap:wrap}
+.stack{display:flex;flex-direction:column;gap:var(--gap-6)}
+.btn{height:var(--control-h);display:inline-flex;align-items:center;justify-content:center;gap:var(--gap-4);padding:0 var(--space-10);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-surface);color:var(--color-text-primary);white-space:nowrap}
+.btn:hover,.icon-btn:hover,.menu-row:hover{background:var(--color-hover)}
+.btn.primary{background:var(--color-inverse-cta-bg);color:var(--color-inverse-cta-text);border-color:var(--color-inverse-cta-bg)}
+.btn.ghost{border-color:var(--color-divider-soft);background:var(--color-bg)}
+.btn.danger{color:var(--color-destructive);border-color:var(--color-destructive)}
+.btn[disabled],.icon-btn[disabled],input[disabled]{opacity:var(--opacity-disabled);cursor:default}
+.icon-btn{width:var(--control-h);height:var(--control-h);display:inline-flex;align-items:center;justify-content:center;flex:none;padding:0;border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-bg);color:var(--color-text-secondary)}
+.icon-btn.flat{border-color:var(--color-divider-soft);background:var(--color-bg)}
+.icon-btn.danger{color:var(--color-destructive)}
+.icon{display:block;flex:none;width:var(--icon-14);height:var(--icon-14);fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.seg{gap:0;border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);overflow:hidden}
+.seg .btn{border:0;border-radius:0}
+.seg .active{background:var(--color-selected);color:var(--color-text-primary)}
+.view-switch{display:flex;align-items:center;gap:var(--gap-2);border:0;background:transparent;overflow:visible}.view-switch .view-btn{width:var(--control-h);height:var(--control-h);padding:0;border:0;border-radius:var(--radius-8);background:transparent;color:var(--color-text-secondary);display:inline-flex;align-items:center;justify-content:center;flex:none}.view-switch .view-btn:hover{background:var(--color-hover)}.view-switch .view-btn[aria-pressed="true"]{background:var(--color-selected);color:var(--color-text-primary)}.view-switch .view-btn:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-offset:var(--space-2)}
+.appbar{height:var(--appbar-h);padding:0 var(--space-12);background:var(--color-bg-subtle);border-bottom:var(--border-thin) solid var(--color-border-strong)}
+.appbar-comparison{display:grid;gap:var(--gap-12)}
+.appbar-option{border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);overflow:hidden}
+.option-note{display:flex;gap:var(--gap-8);padding:var(--space-6) var(--space-10);color:var(--color-text-secondary);font-size:var(--text-11)}
+.joined{height:var(--space-32);display:flex;align-items:center;border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);overflow:hidden}
+.joined .btn{height:100%;border:0;border-right:var(--border-thin) solid var(--color-border);border-radius:0}
+.joined .btn:last-child{border-right:0}
+.shared-well{height:var(--header-h);display:flex;align-items:center;padding:var(--space-4);border-radius:var(--radius-8);background:var(--color-surface)}
+.shared-well .btn{border:0;background:var(--color-surface)}
+.shared-well .seg{border:0}
+.compact-pair{height:var(--space-32);display:flex;align-items:center;gap:var(--gap-4)}
+.compact-pair>.btn,.compact-pair>.seg{height:100%}
+.compact-pair .seg .btn{height:100%}
+.background-blend{height:var(--header-h);display:flex;align-items:center;gap:var(--gap-8)}
+.background-blend .btn,.background-blend .seg{border-color:var(--color-bg-subtle);background:var(--color-bg-subtle)}
+.background-blend .active{background:var(--color-selected)}
+.blend-divider{width:var(--border-thin);height:var(--control-h);background:var(--color-divider-soft)}
+.low-profile{height:var(--control-h);display:flex;align-items:center;gap:var(--gap-4)}
+.low-profile .btn,.low-profile .seg{height:var(--control-h);padding:0 var(--space-6);font-size:var(--text-11)}
+.low-profile .icon{width:var(--icon-12);height:var(--icon-12)}
+.trigger-states{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,calc(var(--sidebar-w) + var(--space-48))),1fr));gap:var(--gap-8)}
+.trigger-state{min-width:0;height:var(--space-32);justify-content:flex-start}
+.trigger-state .label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trigger-state.retry{color:var(--color-destructive);border-color:var(--color-destructive)}
+.brand{color:var(--color-brand);font-size:var(--text-15);font-weight:var(--weight-bold)}
+.spacer{flex:1}
+.menu{width:100%;max-height:calc(var(--row-h) * 6);display:flex;flex-direction:column;overflow:hidden;border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-surface-raised);box-shadow:var(--shadow-none);padding:var(--space-6)}
+.menu-scroll{overflow:auto}
+.pinned{flex:none}
+.menu-title{font:var(--text-10)/var(--line-10) var(--font-mono);color:var(--color-text-muted);padding:var(--space-6) var(--space-8)}
+.menu-row{width:100%;min-height:var(--row-h);display:flex;align-items:center;gap:var(--gap-6);padding:0 var(--space-8);border:0;border-radius:var(--radius-8);background:transparent;color:var(--color-text-primary);text-align:left}
+.menu-row.selected{background:transparent}
+.divider{height:var(--border-thin);background:var(--color-divider-soft);margin:var(--space-4) 0}
+.badge,.chip{display:inline-flex;align-items:center;gap:var(--gap-4);min-height:var(--control-h);padding:0 var(--space-8);border-radius:var(--radius-full);border:var(--border-thin) solid var(--color-border);font-size:var(--text-10)}
+.badge.wait,.chip.wait{color:var(--color-needs-you)}
+.chip.run{color:var(--color-running)}
+.chip.error{color:var(--color-destructive)}
+.chip.info{color:var(--color-tertiary)}
+.shell{display:grid;grid-template-columns:var(--sidebar-w) minmax(0,1fr);min-height:calc(var(--row-h) * 7);border:var(--border-thin) solid var(--color-border)}
+.sidebar{background:var(--color-surface);border-right:var(--border-thin) solid var(--color-border);padding:var(--space-8)}
+.canvas{background:var(--color-bg);padding:var(--space-12);min-width:0}
+.tree-row,.session-row,.project-row,.worktree-row{min-height:var(--row-h);display:flex;align-items:center;gap:var(--gap-6);padding:0 var(--space-8);border-radius:var(--radius-8)}
+.row-leading{width:var(--space-24);display:inline-flex;align-items:center;justify-content:center;flex:none}
+.row-label{min-width:0;display:flex;align-items:baseline;gap:var(--gap-6);flex:1;overflow:hidden}
+.row-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row-meta{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text-muted);font:var(--text-10)/var(--line-10) var(--font-mono)}
+.row-status{width:var(--space-48);display:inline-flex;align-items:center;justify-content:flex-end;flex:none;font:var(--text-10)/var(--line-10) var(--font-mono);white-space:nowrap}
+.row-trailing{width:calc(var(--space-24) + var(--space-4));display:inline-flex;align-items:center;justify-content:flex-end;flex:none}
+.row-trailing{position:relative}
+.row-trailing .trio{position:absolute;right:0;z-index:var(--z-raised);padding:var(--space-2);border-radius:var(--radius-8);background:var(--color-surface-raised)}
+.tree-row.selected,.session-row.selected{background:var(--color-selected)}
+.project-row.hover{background:var(--color-hover)}
+.row-label .skeleton{width:100%}
+.indent{padding-left:var(--space-20)}
+.context{color:var(--color-text-muted);font-size:var(--text-10)}
+.good{color:var(--color-running)}
+.warn{color:var(--color-needs-you)}
+.bad{color:var(--color-destructive)}
+.info{color:var(--color-tertiary)}
+.accent{color:var(--color-accent)}
+.session-head{height:var(--header-h);padding:0 var(--space-12);background:var(--color-bg-subtle);border-bottom:var(--border-thin) solid var(--color-border)}
+.statusbar{height:var(--status-h);padding:0 var(--space-8);background:var(--color-bg-subtle);border-top:var(--border-thin) solid var(--color-border);font-size:var(--text-10)}
+.statusbar>span{display:inline-flex;align-items:center;gap:var(--gap-4)}
+.overlay-demo{position:relative;min-height:calc(var(--space-48) * 5);background:var(--color-bg);overflow:hidden;border:var(--border-thin) solid var(--color-border)}
+.mini-app{position:relative;min-height:calc(var(--space-48) * 5);background:var(--color-bg);overflow:hidden}
+.mini-appbar{height:var(--appbar-h);display:flex;align-items:center;gap:var(--gap-8);padding:0 var(--space-12);background:var(--color-bg-subtle);border-bottom:var(--border-thin) solid var(--color-border)}
+.mini-body{display:grid;grid-template-columns:var(--sidebar-w) 1fr;min-height:calc(var(--space-48) * 4)}
+.mini-sidebar{padding:var(--space-8);background:var(--color-surface);border-right:var(--border-thin) solid var(--color-border)}
+.mini-canvas{padding:var(--space-16);color:var(--color-text-muted)}
+.neutral-veil{position:absolute;inset:0;z-index:var(--z-overlay);background:var(--color-scrim);opacity:var(--opacity-pressed);pointer-events:auto}
+.source-anchor{position:absolute;top:calc(var(--appbar-h) + var(--space-24));left:var(--space-8);z-index:var(--z-modal);width:var(--sidebar-w)}
+.focus-origin{outline:var(--border-medium) solid var(--color-focus);outline-offset:0;background:var(--color-surface-raised)}
+.confirmation-tray{width:calc(var(--space-48) * 9);max-width:100%;padding:var(--space-10);border:var(--border-thin) solid var(--color-border);border-radius:0 0 var(--radius-8) var(--radius-8);background:var(--color-surface-raised);box-shadow:var(--shadow-none)}
+.tray-title{display:flex;align-items:center;gap:var(--gap-6)}
+.tray-consequences{margin:var(--space-8) 0;color:var(--color-text-secondary)}
+.tray-actions{display:flex;justify-content:flex-end;gap:var(--gap-6)}
+.workspace-stage{position:relative;min-height:calc(var(--space-48) * 4);border:var(--border-thin) solid var(--color-border);background:var(--color-bg)}
+.workspace-anchor{position:absolute;top:var(--appbar-h);left:calc(var(--space-12) + var(--space-48) + var(--space-8));z-index:var(--z-overlay)}
+.quick-create{width:calc(var(--space-48) * 9);max-width:100%;height:auto;padding:var(--space-12);border:var(--border-thin) solid var(--color-border);border-radius:0 0 var(--radius-8) var(--radius-8);background:var(--color-bg);box-shadow:var(--shadow-none)}
+.quick-create h3{display:flex;align-items:center;justify-content:space-between;margin:0 0 var(--space-12)}
+.quick-create .progress{margin-top:var(--space-12)}
+.quick-create.manager-panel{height:auto}
+.danger-confirm-row{margin-top:var(--space-8);padding:var(--space-8);border-top:var(--border-thin) solid var(--color-border);background:var(--color-surface-raised)}
+.field-wrap{position:relative;display:block;min-width:0}
+.field-wrap label{position:absolute;z-index:var(--z-raised);left:var(--field-inset-x);top:var(--field-inset-top);font:var(--weight-regular) var(--text-12)/var(--line-field-label) var(--font-ui);color:var(--color-text-secondary);pointer-events:none}
+.field{height:var(--field-h);width:100%;min-width:0;padding:var(--field-value-top) var(--field-inset-x) var(--space-8);border:var(--border-thin) solid transparent;border-radius:var(--radius-12);background:var(--color-field-fill);color:var(--color-text-primary);font:var(--weight-regular) var(--text-16)/var(--line-field-value) var(--font-ui)}
+.field.mono{font-family:var(--font-ui)}
+.field:hover{border-color:var(--color-border)}
+.field:focus,.field.demo-focus{border-color:var(--color-focus);outline:var(--border-thin) solid var(--color-focus);outline-offset:0}
+.field:disabled{opacity:var(--opacity-disabled);cursor:not-allowed}.field[readonly]{color:var(--color-text-secondary)}
+textarea.field{height:var(--textarea-h);min-height:var(--textarea-h);resize:vertical}
+.compound-well{position:relative;height:var(--field-h);min-height:var(--field-h);display:flex;align-items:center;gap:var(--gap-8);padding:calc(var(--field-value-top) - var(--border-thin)) calc(var(--field-inset-x) + var(--control-h) + var(--gap-8)) calc(var(--field-h) - var(--field-value-top) - var(--line-field-value) - var(--border-thin)) var(--field-inset-x);border:var(--border-thin) solid transparent;border-radius:var(--radius-12);background:var(--color-field-fill)}
+.compound-well>.icon-btn{position:absolute;right:var(--field-inset-x);top:calc((var(--field-h) - var(--control-h)) / 2 - var(--border-thin));border:0;background:transparent}
+.compound-well:focus-within,.compound-well.demo-focus{border-color:var(--color-focus);outline:var(--border-thin) solid var(--color-focus);outline-offset:0}
+.compound-well .field{height:var(--line-field-value);min-width:0;flex:1;padding:0;border:0;border-radius:0;background:transparent;outline:none}
+.embedded-label{display:flex;align-items:baseline;gap:var(--gap-8);min-width:0;font:var(--text-16)/var(--line-field-value) var(--font-ui)}.embedded-label small{color:var(--color-text-secondary);font-size:var(--text-12)}
+.split-well,.form-split{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--gap-12)}
+.field.error,.compound-well.invalid{border-color:var(--color-destructive);border-radius:var(--radius-12) var(--radius-12) 0 0}
+.note,.inline-error{display:block;margin:0;padding:var(--space-10) var(--space-12);border:var(--border-thin) solid var(--color-destructive);border-top:0;border-radius:0 0 var(--radius-12) var(--radius-12);background:var(--color-error-wash);font:var(--text-12)/var(--line-12) var(--font-ui);color:var(--color-destructive)}
+.form-panel{padding:var(--space-16);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-16);background:var(--color-bg);box-shadow:var(--shadow-none)}
+.switch-row{display:flex;align-items:center;gap:var(--gap-16);padding:var(--space-12) 0}.switch-row+.switch-row{border-top:var(--border-thin) solid var(--color-border)}
+.switch-copy{flex:1;min-width:0}.switch-copy strong{font:var(--weight-medium) var(--text-16)/var(--line-16) var(--font-ui)}.switch-copy p,.form-help{margin:var(--space-6) 0 0;color:var(--color-text-secondary);font:var(--text-13)/var(--line-13) var(--font-ui)}
+.switch{width:var(--switch-w);height:var(--switch-h);padding:var(--switch-inset);border:0;border-radius:var(--radius-full);background:var(--color-border);flex:none;cursor:pointer}
+.switch:before{content:"";display:block;width:var(--switch-thumb);height:var(--switch-thumb);border-radius:var(--radius-full);background:var(--color-switch-thumb);transition:transform var(--duration-base) var(--ease-standard)}
+.switch[aria-checked="true"]{background:var(--color-switch-on)}.switch[aria-checked="true"]:before{transform:translateX(calc(var(--switch-w) - var(--switch-thumb) - var(--switch-inset) * 2))}
+.switch:disabled,.choice:disabled{opacity:var(--opacity-disabled);cursor:not-allowed}
+.choices{display:flex;flex-wrap:wrap;gap:var(--gap-8)}.choice-label{margin:0 0 var(--space-12);color:var(--color-text-secondary);font:var(--text-12)/var(--line-12) var(--font-ui)}.choices+.choice-label{margin-top:var(--space-12)}
+.choice{min-width:var(--tile-min-w);height:var(--tile-h);padding:0 var(--space-12);border:var(--border-thin) solid transparent;border-radius:var(--radius-12);background:var(--color-field-fill);color:var(--color-text-primary);font:var(--text-14)/var(--line-14) var(--font-ui);cursor:pointer}
+.choice[aria-pressed="true"]{border-color:var(--color-focus);outline:var(--border-thin) solid var(--color-focus);background:var(--color-selected)}
+.switch:focus-visible,.choice:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-offset:var(--space-4)}
+.category-dot{position:absolute;left:var(--field-inset-x);top:calc(var(--field-value-top) + var(--space-6));width:var(--category-dot-size);height:var(--category-dot-size);border-radius:var(--radius-full);background:var(--color-category-dot);pointer-events:none}
+.category-field .field{padding-left:calc(var(--field-inset-x) + var(--category-dot-size) + var(--space-8))}
+.progress{height:var(--space-4);border-radius:var(--radius-8);background:var(--color-selected);overflow:hidden}
+.progress span{display:block;width:66%;height:100%;background:var(--color-text-secondary)}
+.skeleton{height:var(--row-h);border-radius:var(--radius-8);background:var(--color-selected);opacity:var(--opacity-muted)}
+.disclosure{display:inline-grid;place-items:center;width:var(--control-h);height:var(--control-h)}
+.full-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--gap-4);min-height:calc(var(--space-48) * 5);padding:var(--space-8);background:var(--color-bg);border:var(--border-thin) solid var(--color-border)}
+.full-grid.two,.full-grid.wide{grid-template-columns:repeat(auto-fit,minmax(min(100%,var(--sidebar-w)),1fr))}
+.tile{min-width:0;border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);overflow:hidden;background:var(--color-surface)}
+.tile.focus{border-color:var(--color-focus)}
+.tile-head{min-height:var(--header-h);align-items:flex-start;padding:var(--space-12) var(--space-8);border-bottom:var(--border-thin) solid var(--color-border)}
+.tile-head .row-leading{align-items:flex-start;padding-top:var(--space-2)}
+.tile-identity{min-width:0;display:flex;flex-direction:column;gap:var(--gap-6);flex:1;overflow:hidden}
+.tile-identity b,.tile-path,.tile-task{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tile-identity b{font:var(--text-15)/var(--line-15) var(--font-ui)}
+.tile-task{color:var(--color-text-secondary);font:var(--text-12)/var(--line-12) var(--font-ui)}
+.tile-path{padding:var(--space-6) var(--space-10);color:var(--color-text-muted);font:var(--text-10)/var(--line-10) var(--font-mono)}
+.tile-status{flex:none;white-space:nowrap;font:var(--text-10)/var(--line-10) var(--font-mono)}
+.tile-body,.pty{padding:var(--space-10);background:var(--color-terminal-bg);color:var(--color-terminal-text);font:var(--text-11)/var(--line-11) var(--font-mono);overflow:hidden}
+.tile-body{height:calc(var(--space-48) * 3)}
+.pty{min-height:calc(var(--space-48) * 2)}
+.group-head{height:var(--row-h);font:var(--text-10)/var(--line-10) var(--font-mono);color:var(--color-text-muted)}
+.empty{text-align:center;padding:var(--space-24);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-bg)}
+.empty strong{display:block;font-size:var(--text-18);margin-bottom:var(--space-6)}
+.banner{display:flex;align-items:center;gap:var(--gap-6);padding:var(--space-8);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8)}
+.tooltip{padding:var(--space-4) var(--space-8);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-surface-raised);box-shadow:var(--shadow-none);font-size:var(--text-10)}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{transition-duration:0s!important;animation-duration:0s!important}}
+.spec{border-radius:var(--radius-16)}.stack{gap:var(--gap-12)}
+.btn{height:var(--form-button-h);border-radius:var(--radius-12);font-size:var(--text-14)}
+.low-profile .btn,.appbar .btn,.mini-appbar .btn,.menu .btn,.statusbar .btn{height:var(--control-h);border-radius:var(--radius-8);font-size:var(--text-11)}
+@media(max-width:600px){main{padding:var(--space-16)}.group{grid-template-columns:minmax(0,1fr)}.spec.wide{grid-column:auto}.form-split{grid-template-columns:minmax(0,1fr)}.workspace-anchor{left:0;width:100%}.mini-body,.shell{grid-template-columns:minmax(0,1fr)}.mini-sidebar,.shell>.sidebar{display:none}.source-anchor{width:100%;left:0}}
+
+body{margin:0;padding:0;background:var(--color-bg);font:var(--text-14)/var(--line-14) var(--font-ui);color:var(--color-text-primary)}
+.review-controls{display:flex;gap:var(--space-12);align-items:center;padding:var(--space-12) var(--space-24);border-bottom:var(--border-thin) solid var(--color-border);background:var(--color-surface-raised)}select{max-width:360px;color:inherit;background:var(--color-field-fill);padding:var(--space-8);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8)}
+.preview{padding:0;border:0;max-width:none;text-align:left;width:1280px;height:800px;position:relative;overflow:hidden;background:var(--color-bg);margin:0 auto}.supp-appbar{height:40px;display:flex;align-items:center;gap:var(--space-16);padding:0 var(--space-16);border-bottom:var(--border-thin) solid var(--color-border);background:var(--color-surface-raised)}
+.supp-pane{position:absolute;inset:72px 160px 32px;display:flex;flex-direction:column;border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-12);background:var(--color-surface);overflow:hidden}.supp-pane.attached{inset:40px auto auto 70px;width:430px;max-height:600px}.supp-pane.attached .supp-body{padding:var(--space-16)}.supp-pane.attached .supp-head{padding:0 var(--space-16)}.supp-pane.wide{left:32px;right:32px}.supp-head{margin:0;max-width:none;display:flex;align-items:center;justify-content:space-between;height:56px;flex:none;padding:0 var(--space-24);border-bottom:var(--border-thin) solid var(--color-border)}.supp-head h1{font:var(--weight-semibold) var(--text-18)/var(--line-18) var(--font-ui);margin:0}.supp-body{padding:var(--space-24);overflow:auto;flex:1;min-height:0;display:flex;flex-direction:column;gap:var(--space-16)}.supp-actions{display:flex;justify-content:flex-end;align-items:center;gap:var(--space-8);min-height:64px;padding:var(--space-12) var(--space-24);border-top:var(--border-thin) solid var(--color-border)}.supp-actions .btn{height:44px;min-width:100px;border-radius:var(--radius-12)}.supp-row{display:flex;align-items:center;justify-content:space-between;gap:var(--space-16);padding:var(--space-12) 0;border-bottom:var(--border-thin) solid var(--color-divider-soft)}.supp-row small,.muted{color:var(--color-text-secondary)}.supp-section{margin:var(--space-12) 0 0;font:var(--weight-medium) var(--text-13)/var(--line-13) var(--font-ui)}.supp-code{font:var(--text-12)/var(--line-12) var(--font-mono);white-space:pre;overflow:auto;background:var(--color-terminal-bg);color:var(--color-terminal-text);border-radius:var(--radius-8);padding:var(--space-16);min-height:220px;margin:0}.supp-error{padding:var(--space-12);border:var(--border-thin) solid var(--color-destructive);border-radius:var(--radius-8);color:var(--color-destructive)}.supp-progress{height:4px;background:var(--color-selected);border-radius:var(--radius-8);overflow:hidden;flex:none}.supp-progress span{display:block;width:66%;height:100%;background:var(--color-text-secondary)}.diff-columns{display:grid;grid-template-columns:220px 1fr;gap:var(--space-16);min-height:300px}.choices-row{display:flex;gap:var(--space-16);align-items:center}.review-notes{max-width:1200px;margin:var(--space-24) auto;padding:var(--space-24);border-top:var(--border-thin) solid var(--color-border)}.review-notes p{max-width:85ch}.demo-focus{outline:var(--focus-ring) solid var(--color-focus);outline-offset:var(--space-4)}button:focus-visible,select:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-offset:var(--space-4)}@media(max-width:1000px){.preview{width:100vw}.supp-pane{left:32px;right:32px}.diff-columns{grid-template-columns:180px 1fr}}
+</style></head><body><div class="review-controls"><strong>Reference review</strong><select id="surface" aria-label="Supplementary surface"></select><select id="state" aria-label="Reference state"></select><button id="theme" class="btn">Light appearance</button><span class="muted">HTML only · native acceptance pending</span></div><main class="preview" id="preview"></main><aside class="review-notes" id="notes"></aside><script id="inventory" type="application/json">[{"id": "settings", "title": "Settings", "matrix": "Settings Appearance / Agents & Terminal / Tools / Data & Projects", "owners": ["src/views/modals/settings.rs", "src/settings.rs"], "route": "Settings; Modal::Settings; ModalClick::ToggleSetting, RefreshTools, SetDefaultAgent, OpenArchivedProjects, CheckUpdates", "contract": "Appearance / Agents & Terminal / Tools / Data & Projects, one scrolling page. Preserve zoom, follow-system, custom terminal themes, Native/Tmux, Skip/Safe, Chrome, telemetry, defaults and detection.", "states": ["normal", "checking tools", "tool unavailable", "keyboard focus"], "focus": "Escape/Close returns to the settings trigger; section headings are not tabs.", "disposition": "Retain single scrolling page; preserve zoom, system-follow, project PTY theme, Native/Tmux, Skip/Safe, Chrome, telemetry, RefreshTools and SetDefaultAgent semantics; detection has no installer", "status": "reference-review-pending", "policies": {"normal": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "checking tools": {"busy": true, "close": true, "lockInputs": false, "disabledActions": ["Refresh tools"], "hideActions": false, "dismiss": "Detection continues; Settings stays dismissible"}, "tool unavailable": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "theme-picker", "title": "Terminal themes", "matrix": "ThemePicker Dark/Light, search, project override", "owners": ["src/views/modals/theme_picker.rs", "src/theme.rs"], "route": "OpenThemePicker / OpenProjectTheme; ThemePickerTab, ThemePickerApply, ThemePickerUseDefault, ThemePickerToggleFollowSystem", "contract": "Dark and Light are terminal theme collections. Search, preview, Use default for project override, Apply and Cancel preserve original theme and return destination.", "states": ["normal", "project override", "empty search", "keyboard focus"], "focus": "Cancel restores preview; return to the same ScriptsEditor draft or Settings.", "disposition": "Retain terminal theme management; separate finalized chrome appearance", "status": "reference-review-pending", "policies": {"normal": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "project override": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "empty search": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "theme-manager", "title": "Manage terminal themes", "matrix": "ThemeManager create/duplicate/rename/delete/JSON", "owners": ["src/views/modals/theme_picker.rs", "src/theme.rs", "crates/grove-core/src/theme_file.rs"], "route": "OpenThemeManager; ThemeNew, ThemeDuplicate, ThemeRenameStart/Commit, ThemeDeleteRequest/Confirm/Cancel, ThemeEditOpen/Save", "contract": "List and 14-row mono JSON editor use a large editing surface. Rename uses a real compound Input. Preserve Tab/IME, preview, apply and save failures.", "states": ["normal", "rename error", "delete confirmation", "JSON error", "keyboard focus"], "focus": "Cancel returns to ThemePicker; nested edit state is explicit, not a modal stack.", "disposition": "Replace painted rename string/caret with real Input; retain 14-row mono JSON editing, Tab/IME, preview/apply/cancel and unsaved ScriptsEditor return", "status": "reference-review-pending", "policies": {"normal": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "rename error": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "delete confirmation": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "JSON error": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "project-actions", "title": "Project settings", "matrix": "Project rename/archive/restore/delete", "owners": ["src/views/modals/project.rs", "src/views/modals/confirm.rs"], "route": "Project overflow \u2192 ScriptsEditor; ScriptsRenameStart/Commit/Cancel, OpenArchiveGate; RemoveProjectConfirm", "contract": "Project identity stays stable across rename. Archive/delete are attached decisions with the exact running-session and on-disk consequences.", "states": ["normal", "rename error", "destructive confirmation", "keyboard focus"], "focus": "Cancel restores source project row and unchanged data.", "disposition": "Retain with stable project identity and explicit consequences", "status": "reference-review-pending", "policies": {"normal": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "rename error": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "destructive confirmation": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "archived-projects", "title": "Archived projects", "matrix": "ArchiveProject / ArchivedProjects", "owners": ["src/views/modals/project.rs", "src/views/modals/settings.rs"], "route": "Settings \u2192 OpenArchivedProjects; ArchiveKillSessions, ArchiveConfirm, RestoreArchived(index), DeleteArchived(index)", "contract": "Archive gate counts every session, including exited ones. Kill all precedes archive. Archived row bodies are inert; explicit Restore/Delete isolate clicks and preserve workspace membership.", "states": ["normal", "empty", "sessions must close", "delete confirmation", "keyboard focus"], "focus": "Close returns to Settings; archive gate returns to project settings.", "disposition": "Archive gate counts all sessions including exited; kill-all then archive; archived rows inert, restore/delete isolate clicks and preserve membership", "status": "reference-review-pending", "policies": {"normal": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "empty": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "sessions must close": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "delete confirmation": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "scripts-editor", "title": "Project scripts", "matrix": "ScriptsEditor project rename/setup/run/teardown", "owners": ["src/views/modals/settings.rs", "src/views/scripts.rs", "src/views/modals/project.rs"], "route": "Project overflow \u2192 ScriptsEditor; Save, ScriptsRenameStart/Commit/Cancel, OpenProjectTheme, OpenArchiveGate; ToolAction::RunScript", "contract": "Large pane retains three single-line fields Setup / Run / Teardown. Preserve execution, rename, archive and unsaved theme-picker round-trip.", "states": ["normal", "editing name", "unsaved theme return", "keyboard focus"], "focus": "Cancel retains the existing unsaved-change policy; ThemePicker return restores draft.", "disposition": "Preserve existing single-line script fields, execution, archive and unsaved theme-picker roundtrip; do not invent multiline script semantics", "status": "reference-review-pending", "policies": {"normal": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "editing name": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "unsaved theme return": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "navigation-palette", "title": "Switch to session", "matrix": "Palette navigation/recent sessions/settings commands", "owners": ["src/views/modals/launcher.rs", "src/launcher.rs"], "route": "SwitchSession; Modal::SessionLauncher; LauncherView::Switch, BrowseAll, RowActions, Settings", "contract": "Retain search ranking, recent sessions, path-stable highlighted identity, existing session selection and settings commands. Creation moves to identified worktrees.", "states": ["normal", "empty search", "keyboard focus"], "focus": "Arrow/Enter select; Escape returns to the exact prior session focus.", "disposition": "Retain navigation and existing sessions; migrate presentation", "status": "reference-review-pending", "policies": {"normal": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "empty search": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "creation-rehome", "title": "Create in a worktree", "matrix": "Global New session / AgentPicker / onboarding direct launch", "owners": ["src/views/modals/launcher.rs", "src/views/modals/confirm.rs", "src/launcher.rs", "src/modal.rs"], "route": "NewSession / NewSessionInWorktree; Modal::AgentPicker; OnboardAdvance final launch", "contract": "Retire global direct managed creation and AgentPicker routes. NewSession routes to identified-worktree setup; primary trio remains Codex / Claude Code / Terminal. No implicit launch from navigation.", "states": ["worktree selected", "no worktree", "tool unavailable", "keyboard focus"], "focus": "Dismiss preserves the worktree and live processes; original shortcuts must not launch globally.", "disposition": "Retire global direct entry points; rehome to identified worktree and reviewed advanced route; preserve default-agent preferences", "status": "reference-review-pending", "policies": {"worktree selected": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "no worktree": {"busy": false, "close": true, "lockInputs": false, "disabledActions": ["Codex", "Claude Code", "Terminal", "Advanced session"], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "tool unavailable": {"busy": false, "close": true, "lockInputs": false, "disabledActions": ["Codex"], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "advanced-launch", "title": "Advanced session", "matrix": "Multi-root managed launch / WorktreesOnly selection", "owners": ["src/launcher.rs", "src/views/modals/launcher.rs"], "route": "Worktree overflow \u2192 advanced launch; LauncherSlotState selected roots; WorktreesOnly; multi-root launch event", "contract": "Capability-preserving supplemental amendment: allow OpenCode and supported multi-root launch only from an identified worktree alongside the fixed primary trio. Preserve query ranking and canonical-path selection. Primary project owns the resulting workspace session.", "states": ["normal", "selected roots", "tool unavailable", "pending", "keyboard focus"], "focus": "Escape before submit preserves selection; pending submission cannot duplicate PTYs.", "disposition": "Proposed retain capability in worktree-scoped advanced flow; preserve query ranking/path-stable selection; explicit supplemental reference amendment required", "status": "reference-review-pending", "policies": {"normal": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "selected roots": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "tool unavailable": {"busy": false, "close": true, "lockInputs": false, "disabledActions": ["Start session"], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "pending": {"busy": true, "close": false, "lockInputs": true, "disabledActions": ["Start session", "Cancel", "OpenCode"], "hideActions": false, "dismiss": "Submission handoff is locked against duplicates"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "existing-agents", "title": "Existing sessions", "matrix": "OpenCode/other existing agents", "owners": ["src/entities/session_registry.rs", "src/views/rows.rs", "src/views/sidebar.rs"], "route": "SessionRegistry \u2192 sidebar/list/grid rows; SelectSession; CloseFocusedSession", "contract": "OpenCode and other supported existing sessions stay selectable. Advanced creation is separate from the primary trio; non-main worktree delete lives in worktree overflow.", "states": ["normal", "exited session", "close confirmation", "keyboard focus"], "focus": "Selecting keeps exact SessionId; Cancel close preserves the process.", "disposition": "Preserve live sessions and supported advanced creation; primary trio stays three slots; rehome non-main worktree delete from agent menu", "status": "reference-review-pending", "policies": {"normal": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "exited session": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "close confirmation": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "onboarding", "title": "Welcome to Grove", "matrix": "Onboarding Welcome/Environment/Project/Session", "owners": ["src/views/modals/add_project.rs", "src/views/grid.rs"], "route": "Modal::Onboarding; OnboardAdvance, OnboardBack, OnboardSkip, WizardBrowse, WizardPickDir, OnboardPickAgent, OnboardPerms", "contract": "Four screens Welcome / Environment / Project / Session; Back and Skip preserve onboarding semantics. Project fields keep browse/type/name/probe behavior. Final launch is worktree-scoped.", "states": ["welcome", "environment", "project", "session", "detection unavailable", "path error", "keyboard focus"], "focus": "Back does not undo added projects. Skip persists onboarded state only as the existing flow specifies.", "disposition": "Preserve four-screen Back/Skip/detection/path/name/permissions/onboarded behavior; Back does not undo added project; rehome final launch to worktree", "status": "reference-review-pending", "policies": {"welcome": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "environment": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "project": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "session": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "detection unavailable": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "path error": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "shortcuts", "title": "Keyboard shortcuts", "matrix": "Shortcuts/help and command routes", "owners": ["src/keymap.rs", "src/keyboard_matrix.rs", "src/views/modals/settings.rs"], "route": "ShortcutOverlay; platform/scoped SHORTCUTS registry; Settings navigation", "contract": "Show platform-correct chords, Workspace / Grid / Zen applicability and navigation. Rehome managed creation bindings while preserving terminal utility bindings.", "states": ["normal", "grid scope", "zen scope", "keyboard focus"], "focus": "Escape closes and restores previous focus; displayed keys derive from registry.", "disposition": "Preserve platform/scoped shortcut overlay and navigation; rehome global creation bindings deliberately", "status": "reference-review-pending", "policies": {"normal": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "grid scope": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "zen scope": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "diff-viewer", "title": "Changes", "matrix": "DiffViewer flat/tree, split/unified, selection", "owners": ["src/views/modals/diff_viewer.rs", "src/entities/diff_viewer.rs"], "route": "ToolAction::OpenDiff; SelectDiffFile, SetDiffMode, ToggleDiffListStyle, ToggleDiffTreeDir, DiffFileListDividerPress", "contract": "Large viewer with file tree/list, resizable divider and double-click reset, unified/split, narrow fallback, virtual syntax/intraline and synchronized pan. Preserve binary, empty, no-longer-changed and error states.", "states": ["normal", "loading", "binary", "empty", "no longer changed", "error", "narrow", "keyboard focus"], "focus": "Escape returns to the same session; file selection and scroll remain local to viewer.", "disposition": "Major supplemental design: divider/reset, narrow fallback, virtual syntax/intraline, sync pan, binary/empty/no-longer-changed/error; preserve code/diff token families", "status": "reference-review-pending", "policies": {"normal": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "loading": {"busy": true, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Loading view remains dismissible; completion respects owning lifetime"}, "binary": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "empty": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "no longer changed": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "error": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "narrow": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "updates", "title": "Update Grove", "matrix": "Updating Downloading/Building/Installing/Finishing/error", "owners": ["src/views/modals/settings.rs", "src/entities/upgrade.rs", "src/views/statusbar.rs", "src/entities/upgrade_state.rs", "crates/grove-core/src/upgrade.rs"], "route": "CheckUpdates, StartUpdate, SkipVersion, CopyReleaseUrl, RestartApp; UpgradeState; grove_core::upgrade::Stage", "contract": "Preserve Idle/Checking/UpToDate/Available/Error/Updating/Updated/UpdateFailed and Downloading/Building/Installing/Finishing. Later/Restart and release URL actions reflect real pipeline state.", "states": ["available", "checking", "downloading", "building", "installing", "finishing", "failed", "updated", "keyboard focus"], "focus": "Running stages follow existing dismissal policy; persistence uses checked settings transaction.", "disposition": "Preserve pipeline, failure/Later/Restart actions and visible progress; background writes use checked transaction", "status": "reference-review-pending", "policies": {"available": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "checking": {"busy": true, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Checking in Settings remains dismissible"}, "downloading": {"busy": true, "close": false, "lockInputs": false, "disabledActions": [], "hideActions": true, "dismiss": "UpgradeState::Updating refuses Escape and has no Close/Later action"}, "building": {"busy": true, "close": false, "lockInputs": false, "disabledActions": [], "hideActions": true, "dismiss": "UpgradeState::Updating refuses Escape and has no Close/Later action"}, "installing": {"busy": true, "close": false, "lockInputs": false, "disabledActions": [], "hideActions": true, "dismiss": "UpgradeState::Updating refuses Escape and has no Close/Later action"}, "finishing": {"busy": true, "close": false, "lockInputs": false, "disabledActions": [], "hideActions": true, "dismiss": "UpgradeState::Updating refuses Escape and has no Close/Later action"}, "failed": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "updated": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "utility-terminals", "title": "Terminal", "matrix": "Home utility tabs / worktree shell panel", "owners": ["src/views/term_panel.rs", "src/views/scripts.rs"], "route": "NewHomeTerminal; ToggleTerminal; ToggleTermPanel; TerminalTabAction; ToolAction::ToggleTermPanel", "contract": "Global home utility tabs and worktree shell panel retain new/close/restart, scroll, OSC title, zen and divider drag/reset. Hide worktree panel in Grid. Utility shells are distinct from managed creation.", "states": ["home tabs", "worktree shell", "exited", "close confirmation", "keyboard focus"], "focus": "Focus/close targets exact utility PTY; hiding panel never terminates it.", "disposition": "Preserve tab scroll/new/close/restart, OSC title/zen, divider drag/double-click reset, worktree script shell; panel hidden in Grid; distinguish utility PTYs", "status": "reference-review-pending", "policies": {"home tabs": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "worktree shell": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "exited": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "close confirmation": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "terminal-tools", "title": "Terminal tools", "matrix": "Terminal links/ports/copy/paste/scrollback", "owners": ["src/terminal_element.rs", "src/views/session_header.rs"], "route": "TerminalElement; terminal clipboard/keys/drop/mouse adapters; session header tool affordances", "contract": "Preserve detected links/ports, copy/paste, selection, scrolling, mouse reporting and resize. Native terminal metrics remain 12.5 / 7.5 / 17.", "states": ["normal", "selected text", "detected port", "keyboard focus"], "focus": "Dismiss menu returns terminal focus; preserve bracketed paste and native mouse semantics.", "disposition": "Preserve native behavior and migrate visible tool affordances", "status": "reference-review-pending", "policies": {"normal": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "selected text": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "detected port": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "remove-project", "title": "Remove project", "matrix": "RemoveProject / removal progress", "owners": ["src/views/modals/project.rs", "src/views/modals/confirm.rs"], "route": "Modal::RemoveProject; ToggleRemoveWorktrees; RemoveProjectConfirm; project removal worker", "contract": "Optional on-disk worktree removal, per-item errors and nondismissible mutation. ConfirmKind::RemoveProject is explicitly unwired; do not add a second route.", "states": ["normal", "removing", "partial failure", "keyboard focus"], "focus": "Cancel before mutation; during removal reject dismissal and retain item errors.", "disposition": "Preserve optional on-disk worktree removal, per-item errors and nondismissible mutation; audit unwired RemoveProject variant rather than invent a new route", "status": "reference-review-pending", "policies": {"normal": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "removing": {"busy": true, "close": false, "lockInputs": true, "disabledActions": [], "hideActions": true, "dismiss": "In-progress removal rejects dismissal"}, "partial failure": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "teardown", "title": "Remove worktree", "matrix": "Teardown lifecycle", "owners": ["src/views/modals/project.rs", "src/views/modals/confirm.rs"], "route": "Modal::Teardown; TeardownStage; project.rs removal worker", "contract": "RunningScript shows actual teardown PTY; Escape skips script. Removing rejects Escape; Done dismisses. Keep modal-owned teardown PTY out of session registry.", "states": ["running script", "removing", "done", "failure", "keyboard focus"], "focus": "The stage, rather than generic overlay behavior, controls Escape.", "disposition": "RunningScript Escape skips script; Removing rejects Escape; Done dismisses; preserve exact destructive progression", "status": "reference-review-pending", "policies": {"running script": {"busy": true, "close": false, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape and Skip script skip teardown and continue removal"}, "removing": {"busy": true, "close": false, "lockInputs": false, "disabledActions": [], "hideActions": true, "dismiss": "Removing rejects Escape"}, "done": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "failure": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "confirmations", "title": "Confirm action", "matrix": "Confirm Quit / RemoveWorktree / InitAndAddWorktree", "owners": ["src/views/modals/confirm.rs", "src/modal.rs"], "route": "Modal::Confirm; ConfirmKind::Quit, RemoveWorktree, InitAndAddWorktree; ModalClick::Confirm(bool)", "contract": "Attached decisions spell out exact consequences; InitAndAddWorktree retains requested name and selected Base across init. Quit preserves the existing clobber rule.", "states": ["quit", "remove worktree", "initialize and create", "keyboard focus"], "focus": "Cancel restores source focus; Enter confirms only the focused supported action.", "disposition": "Preserve each consequence/action and focus return using reviewed attached compositions", "status": "reference-review-pending", "policies": {"quit": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "remove worktree": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "initialize and create": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "messages-inputs", "title": "Message and input", "matrix": "Message / TmuxChoice / Input", "owners": ["src/views/modals/confirm.rs", "src/views/modals/input.rs", "src/modal.rs"], "route": "Modal::Message, Modal::TmuxChoice, Modal::Input; ChooseTmux, Submit, BaseDropdownToggle/BaseSelect", "contract": "Retain message dismissal, Native/Tmux choice and stable input semantics. Worktree prompt uses shared fields and preserves Base picker selection/filter.", "states": ["message", "backend choice", "input", "validation error", "keyboard focus"], "focus": "Escape applies ModalSlot verdict and returns original trigger focus.", "disposition": "Preserve message dismissal, backend choice and stable input semantics", "status": "reference-review-pending", "policies": {"message": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "backend choice": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "input": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "validation error": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "changelog", "title": "What changed", "matrix": "Changelog loading/error/empty/list", "owners": ["src/views/modals/settings.rs", "src/modal.rs"], "route": "OpenChangelog; Modal::Changelog; ChangelogState::Idle/Loading/Loaded/Error", "contract": "Single scrolling release list with loading/error/empty/list variants and explicit return_to_settings.", "states": ["loading", "error", "empty", "list", "keyboard focus"], "focus": "Close returns to Settings when requested; otherwise prior app focus.", "disposition": "Retain return destination and visible recovery; migrate every state", "status": "reference-review-pending", "policies": {"loading": {"busy": true, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Loading view remains dismissible; completion respects owning lifetime"}, "error": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "empty": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "list": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "attention", "title": "Needs you", "matrix": "Global attention pill / zen pill / queue", "owners": ["src/views/appbar.rs", "src/views/workspace.rs"], "route": "JumpToWaitingSession; appbar attention pill; zen pill; ActivityStore queue", "contract": "Zero/one/many requests include background workspace labels. Selecting performs checked workspace switch then exact-session selection. Signal-only hooks never imply an approval transport.", "states": ["zero", "one request", "multiple requests", "switch failure", "keyboard focus"], "focus": "Focusing does not clear Waiting. E5 decision remains blocked; no Approve control.", "disposition": "Zero/one/many requests with workspace labels; checked switch then select exact session; focus never clears Waiting", "status": "reference-review-pending", "policies": {"zero": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "one request": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "multiple requests": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "switch failure": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "return-focus", "title": "Return to your work", "matrix": "ModalSlot return routes / zen / transient chrome", "owners": ["src/modal.rs", "src/views/workspace.rs"], "route": "ModalSlot; ThemePickerReturn; Changelog return_to_settings; ToggleZen; transient chrome", "contract": "Keep one slot, explicit return destinations, focused pane, drag captures, zen/chrome visibility and toast feedback. Scripts drafts survive ThemePicker.", "states": ["scripts theme return", "changelog return", "zen", "keyboard focus"], "focus": "Restore original focus on dismissal; do not invent a modal stack.", "disposition": "Preserve single slot and explicit ThemePicker/Changelog returns, focused pane, drag captures, chrome visibility and toast feedback; do not invent modal stack", "status": "reference-review-pending", "policies": {"scripts theme return": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "changelog return": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "zen": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}, {"id": "transient-surfaces", "title": "Worktree actions", "matrix": "Context menus, confirmations and transient errors", "owners": ["src/views/modals/mod.rs", "src/entities/toast.rs"], "route": "Project/worktree overflow; ModalClick::Cancel/Confirm; ToastState; overlay dismiss policy", "contract": "All context menus, confirmations and transient errors adopt shared source-attached menu/dialog/status components. Actions stop propagation to their parent row.", "states": ["normal", "confirmation", "persistent error", "keyboard focus"], "focus": "Outside/Escape dismiss when allowed; pending destructive stages block dismissal.", "disposition": "Inventory every route; shared final overlay/action/status presentation", "status": "reference-review-pending", "policies": {"normal": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "confirmation": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "persistent error": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}, "keyboard focus": {"busy": false, "close": true, "lockInputs": false, "disabledActions": [], "hideActions": false, "dismiss": "Escape/Close returns to source focus"}}}]</script><script>
+const records=JSON.parse(document.getElementById('inventory').textContent);const surface=document.getElementById('surface'),state=document.getElementById('state');const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const svg={
+chevDown:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>',
+chevRight:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg>',
+codex:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2 13 5v6l-5 3-5-3V5z"/><path d="m5 6 3 2 3-2M8 8v4"/></svg>',
+claude:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h12M4 4l8 8M12 4l-8 8"/></svg>',
+terminal:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 4 4 4-4 4M8 12h5"/></svg>',
+dots:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h.01M8 8h.01M13 8h.01"/></svg>',
+close:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg>',
+check:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg>',
+plus:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>',
+warning:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 14 13H2zM8 6v3.5M8 11.5h.01"/></svg>',
+folder:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h4l1.5 1.5h5.5v7h-11z"/></svg>'
+,running:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.25"/></svg>'
+,error:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="m6 6 4 4M10 6l-4 4"/></svg>'
+,list:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4h8M6 8h8M6 12h8M2 4h.01M2 8h.01M2 12h.01"/></svg>'
+,grid:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="4" height="4"/><rect x="9.5" y="2.5" width="4" height="4"/><rect x="2.5" y="9.5" width="4" height="4"/><rect x="9.5" y="9.5" width="4" height="4"/></svg>'
+,trash:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M6 4V2.5h4V4M4.5 4l.5 9h6l.5-9M7 6.5v4M9 6.5v4"/></svg>'
+,refresh:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 5V2l-2 2a5 5 0 1 0 1.5 5M13 2v3h-3"/></svg>'
+,play:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 3 7 5-7 5z"/></svg>'
+,sun:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5 13 13M13 3l-1.5 1.5M4.5 11.5 3 13"/></svg>'
+,moon:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.5 10.5A5.5 5.5 0 0 1 5.5 3.5 5.5 5.5 0 1 0 12.5 10.5z"/></svg>'
+};
+// Supplementary icon proposals for retained commands absent from the catalog dictionary.
+Object.assign(svg, {
+copy:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1"/><path d="M3 10H2V2h8v1"/></svg>',
+paste:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3H3v11h10V3h-2"/><rect x="5" y="2" width="6" height="3" rx="1"/></svg>',
+edit:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.5 2.5l2 2L6 12l-2.5.5L4 10z"/></svg>',
+external:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5M14 2 7 9M6 3H2v11h11v-4"/></svg>',
+chevLeft:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m10 3-5 5 5 5"/></svg>'
+});
+const actionIcons={"Close": "close", "Cancel": "close", "Later": "close", "Skip": "chevRight", "Back": "chevLeft", "Continue": "chevRight", "Follow system": "sun", "100%": "chevDown", "Choose themes": "chevRight", "Native": "terminal", "Safe": "check", "Claude Code": "claude", "Codex": "codex", "Terminal": "terminal", "Refresh tools": "refresh", "Preferences": "chevRight", "Archived projects": "folder", "Dark": "moon", "Light": "sun", "Apply": "check", "New theme": "plus", "Duplicate": "copy", "Rename": "edit", "Delete": "trash", "Delete theme": "trash", "Save theme": "check", "Edit scripts": "edit", "Terminal theme": "chevRight", "Archive project": "trash", "Remove project": "trash", "Save": "check", "Restore": "refresh", "Close all sessions": "close", "Choose theme": "chevRight", "Advanced session": "dots", "OpenCode": "terminal", "Start session": "play", "Close session": "close", "Get started": "chevRight", "Browse": "folder", "Tree": "folder", "Flat": "list", "Unified": "list", "Split": "grid", "Copy release URL": "copy", "Update": "refresh", "Restart": "refresh", "New terminal": "plus", "Copy": "copy", "Paste": "paste", "Open": "external", "Skip script": "chevRight", "Confirm": "check", "Current HEAD": "chevDown", "Open session": "terminal", "New worktree": "plus", "Remove worktree": "trash", "Terminal 1": "terminal", "grove \u00b7 Shell": "terminal", "Tmux": "terminal"};
+const button=(label,kind='')=>{const name=actionIcons[label];if(!name)throw new Error('Missing semantic icon mapping: '+label);return '<button class="btn '+kind+'" data-action="'+esc(label)+'">'+svg[name]+esc(label)+'</button>';};
+const row=(label,value)=>'<div class="supp-row"><span>'+esc(label)+'</span><span>'+value+'</span></div>';
+const field=(label,value)=>'<div class="field-wrap"><label>'+esc(label)+'</label><input class="field" aria-label="'+esc(label)+'" value="'+esc(value)+'"></div>';
+const toggle=(label,on=true)=>'<div class="switch-row"><div class="switch-copy"><strong>'+esc(label)+'</strong></div><button class="switch '+(on?'on':'')+'" role="switch" aria-checked="'+on+'" aria-label="'+esc(label)+'"></button></div>';
+const code=text=>'<pre class="supp-code">'+esc(text)+'</pre>';
+const error=text=>'<div class="supp-error" role="alert">'+esc(text)+'</div>';
+function content(r,s){let a=[],actions=[button('Close')];switch(r.id){
+case 'settings':a=['<h2 class="supp-section">Appearance</h2>',row('Chrome appearance',button('Follow system')),row('App size',button('100%')),row('Terminal themes',button('Choose themes')),'<h2 class="supp-section">Agents &amp; Terminal</h2>',row('Backend',button('Native')),row('Permissions',button('Safe')),toggle('Claude in Chrome',false),row('Default agent',button('Claude Code')),'<h2 class="supp-section">Tools</h2>',row('Codex',s==='tool unavailable'?'Not detected': 'Detected'),row('Claude Code','Detected'),button('Refresh tools'),'<h2 class="supp-section">Data &amp; Projects</h2>',row('Telemetry',button('Preferences')),button('Archived projects')];break;
+case 'theme-picker':a=[field('Search terminal themes',s==='empty search'?'no-matches':''),'<div class="choices-row">'+button('Dark','primary')+button('Light')+'</div>',...(s==='empty search'?[row('No matching themes','')]:['Grove Dark','Tokyo Night','Catppuccin'].map((x,i)=>row(x,i?'': '✓ Selected'))),...(s==='project override'?[toggle('Use default theme',false)]:[]),code('$ grove session attach\nTerminal colors preview\n› Ready')];actions=[button('Cancel'),button('Apply','primary')];break;
+case 'theme-manager':a=[row('Custom terminal themes',button('New theme')),row('My Grove',button('Duplicate')+button('Rename')+button('Delete','danger')),field('Theme name','My Grove'),s==='rename error'?error('A theme with this name already exists.'): '',s==='delete confirmation'?error('Delete My Grove? Existing theme selections need their supported fallback.'): '', '<label for="json">Theme JSON</label><textarea id="json" class="supp-code" rows="14" spellcheck="false">{\n  "name": "My Grove",\n  "kind": "dark",\n  "colors": {\n    "bg": "#0d0d0f",\n    "bg_highlight": "#232327",\n    "fg": "#ededee",\n    "fg_dark": "#aaaab2",\n    "comment": "#707078",\n    "blue": "#79a9e8",\n    "cyan": "#79a9e8",\n    "magenta": "#a78bfa",\n    "green": "#78d98b",\n    "yellow": "#e0ad63",\n    "red": "#ef7d8e"\n  }\n}</textarea>',s==='JSON error'?error('Invalid JSON. Correct the highlighted value before saving.'): ''];actions=[button('Cancel'),button(s==='delete confirmation'?'Delete theme':'Save theme',s==='delete confirmation'?'danger':'primary')];break;
+case 'project-actions':a=[field('Project name','grove'),row('Repository','/projects/grove'),button('Edit scripts'),button('Terminal theme'),button('Archive project','danger'),button('Remove project','danger')];if(s.includes('error'))a.push(error('A project with this name already exists.'));if(s.includes('confirmation'))a.push(error('Remove grove from this workspace? Review on-disk worktree removal separately.'));actions=[button('Cancel'),button('Save','primary')];break;
+case 'archived-projects':a=s==='empty'?[row('No archived projects','')]:[row('api · Grove',button('Restore')+button('Delete','danger')),row('legacy-web · Grove',button('Restore')+button('Delete','danger'))];if(s==='sessions must close')a.unshift(error('2 sessions remain, including 1 exited session. Close all before archiving.'),button('Close all sessions','danger'));if(s==='delete confirmation')a.push(error('Delete archived project api?'));break;
+case 'scripts-editor':a=[field('Project name','grove'),field('Setup','npm install'),field('Run','npm run dev'),field('Teardown',''),row('Terminal theme',button('Choose theme')),button('Archive project','danger')];actions=[button('Cancel'),button('Save','primary')];break;
+case 'navigation-palette':a=[field('Search sessions and settings',s==='empty search'?'unmatched session':'grove'),...(s==='empty search'?[row('No matching sessions','')]:[row('Codex · add-auth','grove / feature/add-auth'),row('Terminal · tests','grove / main'),row('Settings','Appearance, tools and projects')])];break;
+case 'creation-rehome':a=[row('Workspace','Grove'),row('Project / worktree',s==='no worktree'?'Select a worktree before creating a session.':'grove / feature/add-auth'),'<div class="choices-row">'+button('Codex')+button('Claude Code')+button('Terminal')+'</div>',button('Advanced session')];if(s==='tool unavailable')a.push(error('Codex is not detected. Refresh tools in Settings.'));break;
+case 'advanced-launch':a=[row('Primary worktree','grove / feature/add-auth'),field('Search worktrees',''),row('Agent',button('OpenCode')),row('grove / feature/add-auth','✓ Primary'),row('api / main','<input type="checkbox" aria-label="Include api / main" checked>'),row('web / main','<input type="checkbox" aria-label="Include web / main">')];actions=[button('Cancel'),button('Start session','primary')];if(s==='tool unavailable')a.push(error('OpenCode is not detected. Refresh tools in Settings.'));break;
+case 'existing-agents':a=[row('OpenCode · add-auth',s==='exited session'?'Exited':'Working'),row('Claude Code · review','Waiting'),row('Terminal · tests','Running')];if(s==='close confirmation')a.push(error('Close OpenCode in add-auth? This stops its process.'),button('Close session','danger'));break;
+case 'onboarding':a=s==='welcome'?[row('Grove','Keep work organized by workspace and project.'),button('Get started','primary')]:s==='environment'||s==='detection unavailable'?[row('Git','Detected'),row('Codex',s==='detection unavailable'?'Not detected':'Detected'),button('Refresh tools')]:s==='session'?[row('grove / main','Choose a session for this worktree'),button('Codex')+button('Claude Code')+button('Terminal'),toggle('Skip permissions',false)]:[field('Repository folder','/projects/grove'),button('Browse'),field('Project name','grove')];if(s==='path error')a.push(error('This folder could not be found.'));actions=[button('Back'),button('Skip'),button('Continue','primary')];break;
+case 'shortcuts':a=[row('Scope',esc(s==='grid scope'?'Grid':s==='zen scope'?'Zen':'Workspace')),row('Switch to session','⌘ S'),row('Settings','⌘ ,'),row('Worktree session','⌘ ⌥ N'),row('Close focused session','⌘ W'),row('Terminal utilities','Platform registry bindings'),row('Dismiss','Escape')];break;
+case 'diff-viewer':a=['<div class="choices-row">'+button('Tree')+button('Flat')+button('Unified')+button('Split')+'</div>','<div class="diff-columns"><div>'+row('src/','')+row('workspace.rs','+8 −3')+row('theme.rs','+4 −1')+'</div>'+code(s==='binary'?'Binary file changed.':s==='empty'?'No changes in this worktree.':s==='no longer changed'?'This file no longer has changes.':s==='loading'?'Loading changes…':'@@ workspace.rs @@\n  fn select_workspace(id: WorkspaceId) {\n-     clear_sessions();\n+     restore_selection(id);\n  }')+'</div>'];if(s==='error')a.push(error('Could not read changes. Close and reopen after checking the repository.'));break;
+case 'updates':a=[row('Grove update',s==='updated'?'Ready to restart':s==='available'?'A new version is available':esc(s)),s==='failed'?error('Update failed. Your current application remains available.'):row('Progress',esc(s)),button('Copy release URL')];actions=s==='updated'?[button('Later'),button('Restart','primary')]:s==='available'?[button('Later'),button('Update','primary')]:[button('Later')];break;
+case 'utility-terminals':a=['<div class="choices-row">'+button(s==='worktree shell'?'grove · Shell':'Terminal 1')+button('New terminal')+button('Close','danger')+'</div>',code(s==='exited'?'Process exited.\nRestart to open this utility terminal.':'$ pwd\n/projects/grove\n$ '),s==='exited'?button('Restart'): ''];if(s==='close confirmation')a.push(error('Close this utility terminal?'));break;
+case 'terminal-tools':a=[row('Terminal tools',button('Copy')+button('Paste')),code('$ npm run dev\nLocal: http://localhost:3000\nReady for input'),s==='detected port'?row('localhost:3000',button('Open')):''];break;
+case 'remove-project':a=[row('Project','grove'),toggle('Also remove worktrees from disk',false),row('Main repository','Kept on disk'),s==='partial failure'?error('api: could not remove worktree. Review this item before retrying.'): ''];actions=[button('Cancel'),button('Remove project','danger')];break;
+case 'teardown':a=[row('Worktree','grove / feature/add-auth'),code(s==='running script'?'$ npm run teardown\nStopping local services…':s==='removing'?'Removing worktree…':s==='failure'?'Worktree removal failed.':'Worktree removed.'),row('Escape',s==='running script'?'Skip script':s==='removing'?'Unavailable while removing':'Dismiss')];actions=s==='running script'?[button('Skip script')]:s==='removing'?[]:[button('Close')];break;
+case 'confirmations':a=[row('Action',esc(s)),s==='remove worktree'?error('Remove feature/add-auth and its worktree directory?'):s==='initialize and create'?[field('Name','fix-billing-retry'),row('Base','Current HEAD'),row('Initialize Git','Create the repository before adding this worktree.')].join(''):row('Quit Grove?','Your existing quit policy applies to active processes.')];actions=[button('Cancel'),button('Confirm',s==='initialize and create'?'primary':'danger')];break;
+case 'messages-inputs':a=s==='backend choice'?[row('Terminal backend','Choose how sessions run'),button('Native'),button('Tmux')]:s==='message'?[row('Grove','The requested action could not be completed.')]:[field('Worktree name','fix-billing-retry'),row('Base',button('Current HEAD'))];if(s==='validation error')a.push(error('A worktree with this name already exists.'));actions=[button('Cancel'),button('Continue','primary')];break;
+case 'changelog':a=s==='error'?[error('Release notes could not be loaded.')]:s==='loading'?[row('Loading release notes…','')]:s==='empty'?[row('No release notes available','')]:[row('Latest release','Grove'),'<p>Release notes appear in a bounded scrolling list.</p>',row('Earlier release','Grove')];break;
+case 'attention':a=s==='zero'?[row('No sessions need attention','')]:[row('Grove · Codex · add-auth',button('Open session')), ...(s==='multiple requests'?[row('CareConvoy · Claude Code · triage',button('Open session'))]:[])];if(s==='switch failure')a.push(error('Could not switch to CareConvoy. Grove remains active.'));break;
+case 'return-focus':a=[row('Return destination',s==='scripts theme return'?'Project scripts':s==='changelog return'?'Settings': 'Focused terminal'),field('Retained draft','npm run dev'),row('Current presentation',s==='zen'?'Zen':'Workspace')];break;
+case 'transient-surfaces':a=[row('grove / feature/add-auth',''),button('New worktree'),button('Advanced session'),button('Remove worktree','danger')];if(s==='persistent error')a.push(error('The action failed. Your worktree remains selected.'));if(s==='confirmation')a.push(error('Remove this worktree? Review its active sessions first.'));break;
+}return {body:a.join(''),actions:actions.join('')};}
+function draw(){const r=records[surface.selectedIndex],s=state.value,c=content(r,s);const policy=r.policies[s];const busy=policy.busy;document.getElementById('preview').innerHTML='<div class="supp-appbar"><strong>GROVE</strong><span class="choices-row">'+svg.folder+'Grove'+svg.chevDown+'</span></div><section id="'+r.id+'" class="supp-pane '+(['diff-viewer','utility-terminals','terminal-tools'].includes(r.id)?'wide':['project-actions','creation-rehome','existing-agents','remove-project','confirmations','messages-inputs','attention','transient-surfaces'].includes(r.id)?'attached':'')+'" aria-busy="'+busy+'"><header class="supp-head"><h1>'+r.title+'</h1>'+(policy.close?'<button class="icon-btn" aria-label="Close">'+svg.close+'</button>':'')+'</header><div class="supp-body">'+c.body+(busy?'<div role="status">'+esc(s)+'…</div><div class="supp-progress"><span></span></div>':'')+'</div><footer class="supp-actions">'+c.actions+'</footer></section>';if(policy.lockInputs)document.querySelectorAll('.supp-pane input,.supp-pane textarea').forEach(b=>b.disabled=true);document.querySelectorAll('.supp-pane [data-action]').forEach(b=>{if(policy.disabledActions.includes(b.dataset.action))b.disabled=true;});if(policy.hideActions)document.querySelector('.supp-actions').replaceChildren();if(s==='keyboard focus')document.querySelector('.supp-body input,.supp-body button,.supp-actions button')?.classList.add('demo-focus');document.getElementById('notes').innerHTML='<h2>'+esc(r.matrix)+'</h2><p>'+esc(r.contract)+'</p><p><strong>Route:</strong> '+esc(r.route)+'</p><p><strong>Focus:</strong> '+esc(r.focus)+'</p><p><strong>Native owners:</strong> '+r.owners.map(esc).join(', ')+'</p><p>Reference review pending · Native captures and interaction acceptance pending.</p>';history.replaceState(null,'','#'+r.id);}
+function choose(){const r=records[surface.selectedIndex];state.innerHTML=r.states.map(s=>'<option>'+esc(s)+'</option>').join('');draw();}
+surface.innerHTML=records.map(r=>'<option>'+r.title+'</option>').join('');surface.selectedIndex=Math.max(0,records.findIndex(r=>r.id===location.hash.slice(1)));surface.onchange=choose;state.onchange=draw;document.getElementById('theme').onclick=()=>{const light=document.documentElement.dataset.theme!=='light';document.documentElement.dataset.theme=light?'light':'dark';document.getElementById('theme').textContent=light?'Dark appearance':'Light appearance';};choose();
+</script></body></html>

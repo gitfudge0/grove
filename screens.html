@@ -29,14 +29,14 @@
   --red-500: #ef7d8e;
   --blue-500: #79a9e8;
   --color-board: #0d0d0f;
-  --color-bg: #141416;
-  --color-bg-subtle: #0d0d0f;
-  --color-surface: #1b1b1e;
-  --color-surface-raised: #232327;
-  --color-hover: #34343a;
+  --color-bg: #000000;
+  --color-bg-subtle: #000000;
+  --color-surface: #000000;
+  --color-surface-raised: #1b1b1b;
+  --color-hover: #232327;
   --color-selected: #232327;
   --color-text-primary: #f7f7f8;
-  --color-text-secondary: #c3c3c7;
+  --color-text-secondary: #aaaab2;
   --color-text-muted: #707078;
   --color-brand: #f7f7f8;
   --color-brand-hover: #ededee;
@@ -46,7 +46,7 @@
   --color-accent: #8b5cf6;
   --color-accent-hover: #a78bfa;
   --color-accent-pressed: #7c3aed;
-  --color-focus: #a78bfa;
+  --color-focus: #f7f7f8;
   --color-accent-wash: rgba(139,92,246,.14);
   --color-running: #78d98b;
   --color-needs-you: #e0ad63;
@@ -61,12 +61,18 @@
   --shadow-sm: 0 1px 2px rgba(0,0,0,.36);
   --shadow-md: 0 8px 24px rgba(0,0,0,.42);
   --shadow-lg: 0 16px 48px rgba(0,0,0,.50);
-  --font-ui: "IBM Plex Sans", Arial, sans-serif;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "BlexMono Nerd Font Mono", "IBM Plex Mono", monospace;
   --text-10: .625rem;
   --text-11: .6875rem;
   --text-12: .75rem;
   --text-13: .8125rem;
+  --text-14: .875rem;
+  --text-16: 1rem;
+  --line-14: 1.429;
+  --line-16: 1.375;
+  --line-field-label: 16px;
+  --line-field-value: 22px;
   --text-15: .9375rem;
   --text-18: 1.125rem;
   --text-24: 1.5rem;
@@ -86,6 +92,7 @@
   --radius-4: 4px;
   --radius-8: 8px;
   --radius-12: 12px;
+  --radius-16: 16px;
   --radius-full: 999px;
   --space-2: 2px;
   --space-4: 4px;
@@ -126,7 +133,7 @@
   --icon-20: 20px;
   --icon-24: 24px;
   --icon-32: 32px;
-  --opacity-disabled: .38;
+  --opacity-disabled: .58;
   --opacity-muted: .62;
   --opacity-hover: .08;
   --opacity-pressed: .14;
@@ -141,18 +148,42 @@
   --status-h: 26px;
   --row-h: 28px;
   --control-h: 24px;
+  --field-h: 60px;
+  --form-button-h: 44px;
+  --field-inset-x: 14px;
+  --field-inset-top: 8px;
+  --field-value-top: 27px;
+  --textarea-h: 130px;
+  --switch-w: 48px;
+  --switch-h: 28px;
+  --switch-thumb: 22px;
+  --switch-inset: 3px;
+  --tile-min-w: 42px;
+  --tile-h: 44px;
+  --category-dot-size: 8px;
+  --shadow-none: none;
+  --color-field-fill: #1b1b1b;
+  --color-switch-on: #39b76c;
+  --color-switch-thumb: #ffffff;
+  --color-category-dot: #79a9e8;
+  --color-error-wash: rgba(239,125,142,.09);
 }
 [data-theme="light"] {
   color-scheme: light;
   --color-board: #efeeeb;
-  --color-bg: #fbfaf7;
+  --color-field-fill: #efefef;
+  --color-switch-on: #39b76c;
+  --color-switch-thumb: #ffffff;
+  --color-category-dot: #79a9e8;
+  --color-error-wash: rgba(182,56,76,.09);
+  --color-bg: #ffffff;
   --color-bg-subtle: #f7f7f8;
   --color-surface: #ffffff;
-  --color-surface-raised: #ffffff;
+  --color-surface-raised: #efefef;
   --color-hover: #ededee;
   --color-selected: #ededee;
   --color-text-primary: #141416;
-  --color-text-secondary: #515158;
+  --color-text-secondary: #66666d;
   --color-text-muted: #707078;
   --color-brand: #141416;
   --color-brand-hover: #232327;
@@ -162,11 +193,11 @@
   --color-accent: #7c3aed;
   --color-accent-hover: #8b5cf6;
   --color-accent-pressed: #7c3aed;
-  --color-focus: #7c3aed;
+  --color-focus: #141416;
   --color-accent-wash: rgba(124,58,237,.10);
   --color-running: #78d98b;
   --color-needs-you: #e0ad63;
-  --color-destructive: #ef7d8e;
+  --color-destructive: #b6384c;
   --color-tertiary: #79a9e8;
   --color-border: #dedee0;
   --color-border-strong: #c3c3c7;
@@ -178,12 +209,13 @@
   --shadow-md: 0 8px 24px rgba(13,13,15,.14);
   --shadow-lg: 0 16px 48px rgba(13,13,15,.18);
 }
-
 *{box-sizing:border-box}
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--color-board);color:var(--color-text-primary);font-family:var(--font-ui)}
 button,input{font:inherit;color:inherit}
-button{cursor:pointer}
+button{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-6);cursor:pointer}
 button:disabled{cursor:not-allowed;opacity:var(--opacity-disabled)}
+.icon{display:block;flex:none;width:var(--icon-14);height:var(--icon-14);fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.icon-button-content{display:inline-flex;align-items:center;gap:var(--space-6)}
 #viewport{position:fixed;inset:0;overflow:hidden;cursor:grab}
 #viewport.dragging{cursor:grabbing}
 #canvas{position:absolute;left:0;top:0;width:max-content;padding:calc(var(--space-32)*2);transform-origin:0 0}
@@ -216,9 +248,10 @@ h1{margin:var(--space-8) 0;font:var(--weight-bold) var(--text-32)/var(--line-32)
 .frame-desc{margin:var(--space-8) 0 0;color:var(--color-text-secondary);font:var(--text-12)/var(--line-12) var(--font-ui)}
 .screen{position:relative;display:flex;flex-direction:column;width:calc(var(--space-48)*26 + var(--space-32));height:calc(var(--space-48)*16 + var(--space-32));overflow:hidden;border:var(--border-thin) solid var(--color-border-strong);background:var(--color-bg)}
 .appbar{height:var(--appbar-h);flex:none;display:flex;align-items:center;padding:0 var(--space-12);border-bottom:var(--border-thin) solid var(--color-border-strong);background:var(--color-bg-subtle);font-size:var(--text-11)}
-.wordmark{font-weight:var(--weight-bold)}
+.wordmark{font:var(--weight-bold) var(--text-15)/var(--line-15) var(--font-ui)}
 .workspace-anchor{position:relative;display:inline-flex;margin-left:var(--space-12)}
-.workspace-trigger{height:var(--control-h);padding:0 var(--space-10);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-bg);font:var(--text-10) var(--font-ui)}
+.workspace-trigger{height:var(--control-h);display:inline-flex;align-items:center;gap:var(--space-6);padding:0 var(--space-6);border:var(--border-thin) solid var(--color-bg-subtle);background:var(--color-bg-subtle);font:var(--text-11) var(--font-ui)}
+.workspace-trigger:hover,.workspace-trigger[aria-expanded="true"]{border-color:var(--color-border);background:var(--color-selected)}
 .app-spacer,.spacer{flex:1}
 .box{display:inline-flex;align-items:center;min-height:var(--control-h);padding:var(--space-2) var(--space-8);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-surface-raised);font:var(--text-10) var(--font-ui)}
 .body{display:flex;flex:1;min-height:0}
@@ -227,20 +260,19 @@ h1{margin:var(--space-8) 0;font:var(--weight-bold) var(--text-32)/var(--line-32)
 .side-title{margin-right:auto;font:var(--weight-bold) var(--text-10) var(--font-mono);}
 .mini,.secondary,.new-session{height:var(--control-h);padding:0 var(--space-6);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-bg);font:var(--text-10) var(--font-ui)}
 .new-session{color:var(--color-text-secondary)}
-.view-button[aria-pressed="true"]{outline:var(--focus-ring) solid var(--color-border-strong);background:var(--color-selected)}
 .tree{flex:1;overflow:hidden;padding:var(--space-8) 0}
-.tree-row{min-height:var(--row-h);display:flex;align-items:center;gap:var(--space-6);padding:var(--space-4) var(--space-10);color:var(--color-text-secondary);font-size:var(--text-11)}
+.tree-row{height:var(--row-h);min-height:var(--row-h);display:flex;align-items:center;gap:var(--space-6);padding:0 var(--space-8);border-radius:var(--radius-8);color:var(--color-text-secondary);font:var(--weight-medium) var(--text-12)/var(--line-12) var(--font-ui)}
 .tree-row.project{color:var(--color-text-primary);font-weight:var(--weight-bold)}
-.tree-row.worktree{padding-left:var(--space-24)}
-.tree-row.session{padding-left:var(--space-48)}
-.tree-row.selected{outline:var(--focus-ring) solid var(--color-border-strong);outline-offset:calc(var(--space-2)*-1);background:var(--color-selected);color:var(--color-text-primary)}
-.tree-row button{border:0;background:var(--color-bg);padding:0;color:inherit}
-.tree-row .ellipsis{margin-left:auto;padding:var(--space-2) var(--space-6);border:var(--border-thin) solid var(--color-bg)}
+.tree-row.worktree{padding-left:var(--space-20)}
+.tree-row.session{padding-left:var(--space-32)}
+.tree-row.selected{background:var(--color-selected);color:var(--color-text-primary)}
+.tree-row button{border:0;background:transparent;padding:0;color:inherit;flex:none}
+.tree-row .ellipsis{width:var(--control-h);height:var(--control-h);padding:0;border:0;background:transparent}
 .tree-row .status-dot{width:var(--space-8);height:var(--space-8);border:var(--border-thin) solid var(--color-border-strong);border-radius:var(--radius-full)}
-.worktree-agents{position:relative;display:flex;gap:var(--space-4);margin-left:auto}
-.agent-quick{display:grid;place-items:center;width:var(--control-h);height:var(--control-h);padding:var(--space-4);border:var(--border-thin) solid var(--color-border-strong)!important;background:var(--color-bg)}
-.agent-quick svg{width:var(--space-16);height:var(--space-16);fill:none;stroke:currentColor;stroke-width:var(--border-medium);stroke-linecap:round;stroke-linejoin:round}
-.agent-tooltip{position:absolute;left:calc(var(--space-8)*-1);top:calc(var(--control-h) + var(--space-6));z-index:var(--z-sticky);width:max-content;padding:var(--space-4) var(--space-8);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-surface-raised);color:var(--color-text-primary);font:var(--text-10) var(--font-ui);box-shadow:var(--shadow-md)}
+.worktree-agents{position:absolute;right:0;display:flex;gap:var(--space-4);padding:var(--space-2);border-radius:var(--radius-8);background:var(--color-surface-raised);z-index:var(--z-raised)}
+.agent-quick{display:grid;place-items:center;width:var(--control-h);height:var(--control-h);padding:0;border:0;background:transparent}
+.agent-quick svg{width:var(--space-16);height:var(--space-16);fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.agent-tooltip{position:absolute;left:calc(var(--space-8)*-1);top:calc(var(--control-h) + var(--space-6));z-index:var(--z-sticky);width:max-content;padding:var(--space-4) var(--space-8);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-surface-raised);color:var(--color-text-primary);font:var(--text-10) var(--font-ui);box-shadow:var(--shadow-none)}
 .terminals{border-top:var(--border-thin) solid var(--color-border-strong);padding:var(--space-8) var(--space-10);color:var(--color-text-secondary);font:var(--text-10) var(--font-mono)}
 .content{position:relative;display:flex;flex:1;min-width:0;flex-direction:column;background:var(--color-bg)}
 .session-head{height:var(--header-h);display:flex;align-items:center;gap:var(--space-10);padding:0 var(--space-12);border-bottom:var(--border-thin) solid var(--color-border-strong);color:var(--color-text-secondary);font-size:var(--text-11)}
@@ -252,60 +284,80 @@ h1{margin:var(--space-8) 0;font:var(--weight-bold) var(--text-32)/var(--line-32)
 .stroke{display:block;width:86%;height:var(--space-10);margin:var(--space-12) 0;border:var(--border-thin) solid var(--color-border);background:var(--color-selected)}
 .stroke.mid{width:60%}.stroke.short{width:33%}
 .statusbar{height:var(--status-h);flex:none;display:flex;align-items:center;gap:var(--space-32);padding:0 var(--space-12);border-top:var(--border-thin) solid var(--color-border-strong);background:var(--color-bg-subtle);color:var(--color-text-secondary);font:var(--text-10) var(--font-mono)}
-.workspace-menu{position:absolute;z-index:var(--z-overlay);left:0;top:calc(var(--control-h) + var(--space-8));width:calc(var(--sidebar-w) + var(--space-2));padding:var(--space-8);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-surface-raised);box-shadow:var(--shadow-md)}
-.menu-title{padding:var(--space-4) var(--space-8) var(--space-8);font:var(--weight-bold) var(--text-10) var(--font-ui)}
+.workspace-menu{position:absolute;z-index:var(--z-overlay);left:0;top:calc(var(--control-h) + var(--space-8));width:calc(var(--sidebar-w) + var(--space-2));padding:var(--space-8);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-surface-raised);box-shadow:var(--shadow-none)}
+.menu-title{padding:var(--space-6) var(--space-8);font:var(--text-10)/var(--line-10) var(--font-mono);color:var(--color-text-muted)}
 .menu-scroll{max-height:calc(var(--row-h)*6 + var(--space-16));overflow-y:auto}
-.menu-row{display:flex;align-items:center;gap:var(--space-8);width:100%;min-height:var(--control-h);padding:var(--space-6) var(--space-8);border:0;background:var(--color-bg);text-align:left;font:var(--text-11) var(--font-ui)}
-.menu-row.active{background:var(--color-selected)}
+.menu-row{display:flex;align-items:center;gap:var(--space-6);width:100%;min-height:var(--row-h);padding:0 var(--space-8);border:0;border-radius:var(--radius-8);background:transparent;text-align:left;font:var(--text-13)/var(--line-13) var(--font-ui)}
+.menu-row.active{background:transparent}
 .menu-state{color:var(--color-text-secondary);font-size:var(--text-10)}
-.badge{padding:var(--space-2) var(--space-6);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-bg);font:var(--text-10) var(--font-mono)}
-.menu-divider{height:var(--border-thin);margin:var(--space-6) var(--space-4);border-top:var(--border-thin) dashed var(--color-border-strong)}
-.menu-error{margin:var(--space-6);padding:var(--space-8);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-bg);font-size:var(--text-10);color:var(--color-text-secondary)}
+.badge{padding:0;border:0;background:transparent;font:var(--text-10) var(--font-mono)}
+.menu-divider{height:var(--border-thin);margin:var(--space-4) 0;background:var(--color-divider-soft)}
+.menu-error{margin:var(--space-6);padding:var(--space-8);border:var(--border-thin) solid var(--color-destructive);border-radius:var(--radius-8);background:var(--color-error-wash);font-size:var(--text-12);color:var(--color-destructive)}
 .pinned-actions{border-top:var(--border-thin) solid var(--color-border-strong);background:var(--color-surface-raised)}
-.scrim{position:absolute;z-index:var(--z-overlay);inset:var(--appbar-h) 0 var(--status-h);background:var(--color-scrim)}
-.dialog{position:absolute;z-index:var(--z-modal);left:50%;top:50%;width:calc(var(--space-48)*10 - var(--space-10));transform:translate(-50%,-50%);padding:var(--space-20);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-surface-raised);box-shadow:var(--shadow-md)}
-.dialog.wide{width:calc(var(--space-48)*13 + var(--space-24) + var(--space-2))}
-.dialog h3{margin:0 0 var(--space-6);font:var(--weight-bold) var(--text-15) var(--font-ui)}
-.dialog-intro{margin:0 0 var(--space-16);color:var(--color-text-secondary);font-size:var(--text-11);line-height:var(--line-11)}
-.field{margin:var(--space-12) 0}
-.field label{display:block;margin-bottom:var(--space-6);font:var(--weight-bold) var(--text-10) var(--font-ui)}
-.field input{width:100%;height:var(--control-h);padding:0 var(--space-8);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-bg)}
+.neutral-veil{position:absolute;z-index:var(--z-overlay);inset:var(--appbar-h) 0 var(--status-h);background:var(--color-scrim);opacity:var(--opacity-pressed);pointer-events:auto}
+.editor{width:min(100%,calc(var(--space-48)*13));display:flex;flex-direction:column;gap:var(--space-12);margin:var(--space-24);padding:var(--space-16);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-16);background:var(--color-bg);overflow:auto;max-height:calc(100% - var(--header-h) - var(--space-48))}
+.editor small{color:var(--color-text-secondary);font:var(--text-13)/var(--line-13) var(--font-ui)}
+.quick-create h3,.confirmation-tray h3,.manager-popover h3{margin:0 0 var(--space-6);font:var(--weight-bold) var(--text-15) var(--font-ui)}
+.dialog-intro{margin:0 0 var(--space-12);color:var(--color-text-secondary);font-size:var(--text-11);line-height:var(--line-11)}
+.quick-create{position:absolute;z-index:var(--z-modal);left:calc(var(--space-12) + var(--space-48) + var(--space-8));top:var(--appbar-h);width:calc(var(--space-48)*9);height:auto;overflow:hidden;padding:var(--space-12);border:var(--border-thin) solid var(--color-border);border-radius:0 0 var(--radius-8) var(--radius-8);background:var(--color-bg);box-shadow:var(--shadow-none)}
+.quick-create h3{display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-12)}
+.manager-popover{position:absolute;z-index:var(--z-modal);left:calc(var(--space-12) + var(--space-48) + var(--space-8));top:var(--appbar-h);width:calc(var(--space-48)*13 + var(--space-24));max-height:calc(100% - var(--appbar-h) - var(--status-h) - var(--space-16));overflow:auto;padding:var(--space-12);border:var(--border-thin) solid var(--color-border);border-radius:0 0 var(--radius-8) var(--radius-8);background:var(--color-surface-raised);box-shadow:var(--shadow-none)}
+.manager-confirm{grid-column:1/-1;padding-top:var(--space-8);border-top:var(--border-thin) solid var(--color-border);color:var(--color-text-secondary)}
+.manager-confirm .dialog-actions{margin-top:var(--space-8);padding-top:0;border-top:0}
+.session-confirm-anchor{position:absolute;z-index:var(--z-modal);left:0;top:calc(var(--appbar-h) + var(--header-h) + var(--row-h)*2 + var(--space-8));width:calc(var(--space-48)*9)}
+.session-origin{width:var(--sidebar-w);height:var(--row-h);display:flex;align-items:center;gap:var(--space-6);padding:0 var(--space-10);outline:var(--focus-ring) solid var(--color-focus);outline-offset:0;background:var(--color-surface-raised);font-size:var(--text-11)}
+.session-origin svg{width:var(--icon-14);height:var(--icon-14);fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.confirmation-tray{padding:var(--space-10);border:var(--border-thin) solid var(--color-border);border-radius:0 var(--radius-8) var(--radius-8) var(--radius-8);background:var(--color-surface-raised);box-shadow:var(--shadow-none)}
+.confirmation-title{display:flex;align-items:center;gap:var(--space-6)}
+.confirmation-title h3{margin:0}
+.confirmation-facts{margin:var(--space-8) 0;color:var(--color-text-secondary);font-size:var(--text-11)}
+.confirmation-actions{display:flex;justify-content:flex-end;gap:var(--space-8)}
+.field{position:relative;margin:0;min-width:0}
+.field label{position:absolute;z-index:var(--z-raised);left:var(--field-inset-x);top:var(--field-inset-top);font:var(--weight-regular) var(--text-12)/var(--line-field-label) var(--font-ui);color:var(--color-text-secondary);pointer-events:none}
+.field input{display:block;width:100%;min-width:0;height:var(--field-h);padding:var(--field-value-top) var(--field-inset-x) var(--space-8);border:var(--border-thin) solid transparent;border-radius:var(--radius-12);background:var(--color-field-fill);color:var(--color-text-primary);font:var(--weight-regular) var(--text-16)/var(--line-field-value) var(--font-ui)}
+.field input[aria-invalid="true"]{border-color:var(--color-destructive);border-radius:var(--radius-12) var(--radius-12) 0 0}
 .field input[readonly]{color:var(--color-text-secondary)}
+.browse-field{position:relative}
+.browse-field input{padding-right:calc(var(--field-inset-x) + var(--control-h) + var(--space-8))}
+.browse-field .icon-btn{position:absolute;right:var(--field-inset-x);top:calc((var(--field-h) - var(--control-h))/2);border:0;background:transparent}
 .hint{margin-top:var(--space-6);color:var(--color-text-secondary);font-size:var(--text-10)}
-.inline-error{margin-top:var(--space-6);padding:var(--space-6) var(--space-8);border-left:var(--border-thin) solid var(--color-border-strong);background:var(--color-bg);color:var(--color-text-primary);font-size:var(--text-10)}
-.dialog-actions{display:flex;justify-content:flex-end;gap:var(--space-8);margin-top:var(--space-16);padding-top:var(--space-12);border-top:var(--border-thin) dashed var(--color-border)}
-.action{height:var(--control-h);padding:0 var(--space-12);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-bg)}
-.primary{border:var(--border-thin) solid var(--color-text-primary);background:var(--color-text-primary);color:var(--color-bg);font-weight:var(--weight-bold)}
-.danger{border:var(--border-thin) solid var(--color-border-strong);background:var(--color-text-primary);color:var(--color-bg)}
+.inline-error{display:block;margin:0;padding:var(--space-10) var(--space-12);border:var(--border-thin) solid var(--color-destructive);border-top:0;border-radius:0 0 var(--radius-12) var(--radius-12);background:var(--color-error-wash);color:var(--color-destructive);font:var(--text-12)/var(--line-12) var(--font-ui)}
+.dialog-actions{display:flex;justify-content:flex-end;gap:var(--space-8);margin-top:var(--space-12)}
+.action{height:var(--form-button-h);padding:0 var(--space-16);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-12);background:var(--color-bg);font:var(--text-14)/var(--line-14) var(--font-ui);white-space:nowrap}
+.primary{border:var(--border-thin) solid var(--color-text-primary);background:var(--color-text-primary);color:var(--color-bg);font-weight:var(--weight-regular)}
+.danger{border:var(--border-thin) solid var(--color-destructive);background:var(--color-surface-raised);color:var(--color-destructive)}
 .progress{padding:var(--space-16);border:var(--border-thin) dashed var(--color-border-strong);background:var(--color-bg);font-size:var(--text-11)}
 .progress-line{height:var(--space-10);margin-top:var(--space-10);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-selected)}
 .empty-state{display:grid;place-items:center;flex:1;text-align:center;padding:var(--space-40)}
-.empty-card{width:calc(var(--space-48)*9 - var(--space-2));padding:var(--space-24);border:var(--border-thin) dashed var(--color-border-strong);background:var(--color-surface-raised)}
+.empty-card{width:calc(var(--space-48)*9 - var(--space-2));padding:var(--space-24);text-align:center;background:transparent}
 .empty-card h3{margin:0 0 var(--space-8);font:var(--weight-bold) var(--text-18) var(--font-ui)}
 .empty-card p{margin:0 0 var(--space-16);color:var(--color-text-secondary);font-size:var(--text-12)}
-.empty-card .primary{height:var(--control-h);padding:0 var(--space-12)}
+.empty-card .primary{height:var(--form-button-h);padding:0 var(--space-16);border-radius:var(--radius-12);font-size:var(--text-14)}
 .prompt{margin:var(--space-40);padding:var(--space-24);border:var(--border-thin) dashed var(--color-border-strong);color:var(--color-text-secondary);text-align:center;font-size:var(--text-12)}
 .banner{margin:var(--space-12) 0;padding:var(--space-10);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-bg);font-size:var(--text-11)}
 .banner[role="alert"]{border-style:dashed}
 .group-label{padding:var(--space-8) var(--space-10) var(--space-4);color:var(--color-text-secondary);font:var(--weight-bold) var(--text-10) var(--font-mono)}
-.session-card,.grid-card,.manager-row{margin:var(--space-6) var(--space-8);padding:var(--space-10);border:var(--border-thin) solid var(--color-border);background:var(--color-bg);font-size:var(--text-10)}
-.session-card.selected,.grid-card.selected{outline:var(--focus-ring) solid var(--color-border-strong);background:var(--color-selected)}
+.session-card,.grid-card,.manager-row{display:grid;grid-template-columns:minmax(0,1fr) 72px 72px 72px;gap:var(--space-8);align-items:center;margin:var(--space-8) 0;padding:var(--space-10);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-bg);font-size:var(--text-12)}
+.session-card.selected,.grid-card.selected{background:var(--color-selected)}
 .grid-wrap{display:grid;grid-template-columns:1fr 1fr;gap:var(--space-8);padding:var(--space-8)}
 .grid-card{margin:0;min-height:calc(var(--space-48) + var(--space-24))}
-.canvas-views{display:flex;gap:var(--space-4);margin-left:var(--space-12)}
-.canvas-views button{height:var(--control-h);padding:0 var(--space-8);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-bg);font:var(--text-10) var(--font-ui)}
-.canvas-views button[aria-pressed="true"]{outline:var(--focus-ring) solid var(--color-border-strong);background:var(--color-selected)}
+.canvas-views{display:flex;align-items:center;gap:var(--space-2);margin-left:var(--space-12)}
+.canvas-views button{width:var(--control-h);height:var(--control-h);padding:0;border:0;background:transparent;color:var(--color-text-secondary);display:inline-flex;align-items:center;justify-content:center}
+.canvas-views button:hover{background:var(--color-hover)}
+.canvas-views button[aria-pressed="true"]{background:var(--color-selected);color:var(--color-text-primary)}
+.canvas-views button:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-offset:var(--space-2)}
+.canvas-views .icon{width:var(--icon-14);height:var(--icon-14)}
 .active-grid-canvas{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-16);flex:1;min-height:0;padding:var(--space-20);background:var(--color-bg)}
-.active-tile{display:flex;min-width:0;flex-direction:column;padding:var(--space-16);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-surface-raised)}
-.tile-head{display:flex;align-items:center;gap:var(--space-10);padding-bottom:var(--space-12);border-bottom:var(--border-thin) dashed var(--color-border)}
-.tile-agent-icon{display:grid;place-items:center;width:var(--space-32);height:var(--space-32);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-surface)}
-.tile-agent-icon svg{width:var(--space-20);height:var(--space-20);fill:none;stroke:currentColor;stroke-width:var(--border-medium);stroke-linecap:round;stroke-linejoin:round}
-.tile-name{font:var(--weight-bold) var(--text-13) var(--font-ui)}.tile-task{display:block;margin-top:var(--space-4);color:var(--color-text-secondary);font-size:var(--text-10)}
-.tile-status{margin-left:auto;padding:var(--space-2) var(--space-6);border:var(--border-thin) solid var(--color-border-strong);font:var(--weight-bold) var(--text-10) var(--font-mono)}
-.tile-context{margin:var(--space-12) 0 var(--space-10);color:var(--color-text-secondary);font:var(--text-10) var(--font-mono)}
-.tile-pty{flex:1;min-height:0;overflow:hidden;padding:var(--space-12);border:var(--border-thin) solid var(--color-border);background:var(--color-surface);font:var(--text-10)/var(--line-10) var(--font-mono)}
+.active-tile{display:flex;min-width:0;flex-direction:column;padding:0;overflow:hidden;border:var(--border-thin) solid var(--color-border);background:var(--color-surface)}
+.tile-head{display:flex;align-items:flex-start;gap:var(--space-6);min-height:var(--header-h);padding:var(--space-12) var(--space-8);border-bottom:var(--border-thin) solid var(--color-border)}
+.tile-agent-icon{display:inline-flex;justify-content:center;align-items:flex-start;flex:none;width:var(--space-24);padding-top:var(--space-2)}
+.tile-agent-icon svg{width:var(--space-20);height:var(--space-20);fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.tile-identity{min-width:0;display:flex;flex:1;flex-direction:column;gap:var(--space-6);overflow:hidden}.tile-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:var(--weight-bold) var(--text-15)/var(--line-15) var(--font-ui)}.tile-task{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text-secondary);font:var(--text-12)/var(--line-12) var(--font-ui)}
+.tile-status{flex:none;white-space:nowrap;font:var(--text-10)/var(--line-10) var(--font-mono)}
+.tile-context{margin:0;padding:var(--space-6) var(--space-10);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text-muted);font:var(--text-10)/var(--line-10) var(--font-mono)}
+.tile-pty{flex:1;min-height:0;overflow:hidden;padding:var(--space-10);background:var(--color-terminal-bg);color:var(--color-terminal-text);font:var(--text-11)/var(--line-11) var(--font-mono)}
 .manager-row{display:grid;grid-template-columns:1.3fr calc(var(--space-48) + var(--space-24)) calc(var(--space-48) + var(--space-24)) calc(var(--space-48) + var(--space-12));gap:var(--space-8);align-items:center}
-.manager-row button{height:var(--control-h);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-bg);font-size:var(--text-10)}
+.manager-row button{height:var(--control-h);padding:0 var(--space-6);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-bg);font-size:var(--text-11)}
 .stable-note{margin:var(--space-10) 0;padding:var(--space-8);border:var(--border-thin) dashed var(--color-border-strong);color:var(--color-text-secondary);font-size:var(--text-10)}
 .error-examples{display:grid;grid-template-columns:1fr 1fr;gap:var(--space-12)}
 .sticky-note{position:absolute;z-index:var(--z-modal);right:var(--space-48);bottom:var(--space-48);width:calc(var(--space-48)*8 + var(--space-6));padding:var(--space-12) var(--space-16);border:var(--border-thin) dashed var(--color-border-strong);background:var(--color-surface-raised);font:var(--text-12)/var(--line-12) var(--font-ui);transform:rotate(.6deg)}
@@ -320,18 +372,18 @@ h1{margin:var(--space-8) 0;font:var(--weight-bold) var(--text-32)/var(--line-32)
 .loading-card h3{margin:0 0 var(--space-8);font:var(--weight-bold) var(--text-15) var(--font-ui)}
 .loading-card p{color:var(--color-text-secondary);font-size:var(--text-11)}
 
-.screen,.artifact,.selected-note,.workspace-menu,.dialog,.empty-card,.loading-card,.active-tile{border-radius:var(--radius-8)}
-.screen{box-shadow:var(--shadow-lg)}
-.workspace-menu{display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--shadow-md)}
+.screen,.artifact,.selected-note,.workspace-menu,.empty-card,.loading-card,.active-tile{border-radius:var(--radius-8)}
+.screen{box-shadow:var(--shadow-none)}
+.workspace-menu{display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--shadow-none)}
 .menu-scroll{overflow-y:auto}
 .pinned-actions{flex:none}
-.dialog,.empty-card,.loading-card{border-radius:var(--radius-12);box-shadow:var(--shadow-lg)}
-.workspace-trigger,.box,.mini,.secondary,.new-session,.action,.field input,.canvas-views button,.manager-row button,.agent-quick{border-radius:var(--radius-4)}
+.empty-card,.loading-card{border-radius:var(--radius-12);box-shadow:var(--shadow-none)}
+.workspace-trigger,.box,.mini,.secondary,.new-session,.canvas-views button,.manager-row button,.agent-quick{border-radius:var(--radius-8)}
 .new-session{background:var(--color-bg);color:var(--color-text-secondary)}
 .primary{border-color:var(--color-inverse-cta-bg);background:var(--color-inverse-cta-bg);color:var(--color-inverse-cta-text)}
-.danger,.inline-error,.menu-error{color:var(--color-destructive);border-color:var(--color-destructive)}
+.danger,.menu-error{color:var(--color-destructive);border-color:var(--color-destructive)}
 .badge{color:var(--color-needs-you);border-color:var(--color-needs-you);border-radius:var(--radius-full)}
-.agent-quick,.tile-agent-icon{color:var(--color-accent);border-color:var(--color-accent)!important}
+.agent-quick,.tile-agent-icon{color:var(--color-accent)}
 .tree-row .status-dot{border:0;background:var(--color-running)}
 .tile-status{color:var(--color-running);border-radius:var(--radius-full)}
 .active-tile:nth-child(2) .tile-status{color:var(--color-needs-you)}
@@ -340,18 +392,85 @@ h1{margin:var(--space-8) 0;font:var(--weight-bold) var(--text-32)/var(--line-32)
 .click-cursor:before{background:var(--color-brand)}
 .click-cursor:after{background:var(--color-on-brand)}
 .project-actions{left:calc(var(--sidebar-w) - var(--space-16));top:calc(var(--appbar-h) + var(--header-h) + var(--space-20))}
+
+/* Component reference: embedded form labels, fixed row slots, and dense chrome. */
+button:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-offset:var(--space-2)}
+.field input:hover{border-color:var(--color-border)}
+.field input:focus{border-color:var(--color-focus);outline:var(--border-thin) solid var(--color-focus);outline-offset:0}
+.field input[aria-invalid="true"]:hover{border-color:var(--color-destructive)}
+.field:has(input:disabled){opacity:var(--opacity-disabled)}
+.field input:disabled{cursor:not-allowed;opacity:1}
+.browse-field:focus-within input{border-color:var(--color-focus);outline:var(--border-thin) solid var(--color-focus);outline-offset:0}
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;flex:none;width:var(--control-h);height:var(--control-h);padding:0;border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-bg);color:var(--color-text-secondary)}
+.icon-btn:hover,.menu-row:hover,.action:not(.primary):hover{background:var(--color-hover)}
+.editor>.primary{align-self:flex-end;height:var(--form-button-h);padding:0 var(--space-16);border-radius:var(--radius-12);font-size:var(--text-14)}
+.editor>label{display:flex;align-items:center;gap:var(--space-8);font-size:var(--text-13)}
+.manager-popover>.field{margin:var(--space-12) 0}
+.quick-create .inline-error{margin:0}
+.field-wrap{position:relative;display:block;min-width:0}
+.field-wrap label{position:absolute;z-index:var(--z-raised);left:var(--field-inset-x);top:var(--field-inset-top);font:var(--weight-regular) var(--text-12)/var(--line-field-label) var(--font-ui);color:var(--color-text-secondary);pointer-events:none}
+.compound-well{position:relative;height:var(--field-h);min-height:var(--field-h);display:flex;align-items:center;gap:var(--gap-8);padding:calc(var(--field-value-top) - var(--border-thin)) calc(var(--field-inset-x) + var(--control-h) + var(--gap-8)) calc(var(--field-h) - var(--field-value-top) - var(--line-field-value) - var(--border-thin)) var(--field-inset-x);border:var(--border-thin) solid transparent;border-radius:var(--radius-12);background:var(--color-field-fill)}
+.compound-well>.icon-btn{position:absolute;right:var(--field-inset-x);top:calc((var(--field-h) - var(--control-h)) / 2 - var(--border-thin));border:0;background:transparent}
+.compound-well:focus-within,.compound-well.demo-focus{border-color:var(--color-focus);outline:var(--border-thin) solid var(--color-focus);outline-offset:0}
+.compound-well .field{height:var(--line-field-value);min-width:0;flex:1;padding:0;border:0;border-radius:0;background:transparent;outline:none}
+.compound-well .field{margin:0;width:100%;color:var(--color-text-primary);font:var(--weight-regular) var(--text-16)/var(--line-field-value) var(--font-ui)}
+.compound-well .field:disabled{opacity:var(--opacity-disabled);cursor:not-allowed}
+.compound-well.invalid{border-color:var(--color-destructive);border-radius:var(--radius-12) var(--radius-12) 0 0}
+.quick-create .icon-btn.flat{border:0;background:transparent}
+.quick-create .icon-btn.flat:hover:not(:disabled){background:var(--color-hover)}
+.quick-create .progress{padding:0;border:0;margin-top:var(--space-12);height:var(--space-4);border-radius:var(--radius-8);background:var(--color-selected);overflow:hidden}
+.quick-create .progress span{display:block;width:66%;height:100%;background:var(--color-text-secondary)}
+.manager-confirm .field{margin-top:var(--space-12)}
+.manager-row .dialog-actions button{height:var(--form-button-h);border-radius:var(--radius-12);font-size:var(--text-14);padding:0 var(--space-16)}
+.manager-row .dialog-actions .danger{border-color:var(--color-destructive);color:var(--color-destructive)}
+.manager-popover{background:var(--color-bg)}
+.confirmation-tray{border-radius:0 0 var(--radius-8) var(--radius-8)}
+.dialog-intro,.confirmation-facts{font:var(--text-13)/var(--line-13) var(--font-ui)}
+.workspace-trigger{font:var(--weight-medium) var(--text-12)/var(--line-12) var(--font-ui)}
+.workspace-menu{padding:var(--space-6);border-color:var(--color-border)}
+.menu-row>span:not(.spacer):not(.badge):not(.menu-state){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.menu-row .badge{flex:none}
+.row-leading{display:inline-flex;align-items:center;justify-content:center;flex:none;width:var(--space-24)}
+.row-leading button{width:var(--control-h);height:var(--control-h)}
+.row-label{display:flex;align-items:center;gap:var(--space-6);flex:1;min-width:0;overflow:hidden}
+.row-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row-title>button{display:flex;max-width:100%;height:var(--control-h);font:inherit}
+.row-title>button span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row-meta{color:var(--color-text-muted);font:var(--text-10)/var(--line-10) var(--font-mono)}
+.row-trailing{position:relative;display:inline-flex;align-items:center;justify-content:flex-end;flex:none;width:calc(var(--space-24) + var(--space-4))}
+.tree{padding:var(--space-8)}
+.tree-row:has(.worktree-agents){background:var(--color-hover)}
+.agent-tooltip{border-radius:var(--radius-8)}
+.session-card,.grid-card{border-radius:var(--radius-8);font-size:var(--text-12)}
+.session-card small{color:var(--color-text-muted);font:var(--text-10)/var(--line-10) var(--font-mono)}
+.attention{height:var(--control-h);padding:0 var(--space-8);margin-right:var(--space-8);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-full);background:transparent;color:var(--color-needs-you);font-size:var(--text-11)}
+.banner{display:flex;align-items:center;gap:var(--space-8);border-radius:var(--radius-8);font-size:var(--text-13)}
+.banner[role="alert"]{border-style:solid;border-color:var(--color-destructive);background:var(--color-error-wash)}
+.progress-line{height:var(--space-4);border:0;border-radius:var(--radius-8);background:linear-gradient(to right,var(--color-text-secondary) 66%,var(--color-selected) 66%)}
+.terminal{font-size:var(--text-12);line-height:var(--line-12)}
+.skeleton{border:0;border-radius:var(--radius-8);opacity:var(--opacity-muted)}
+.tile-agent-icon svg{width:var(--icon-14);height:var(--icon-14)}
+.tile-name{font-weight:var(--weight-regular)}
+
+.switch-row{display:flex;align-items:center;gap:var(--space-16);padding:var(--space-12) 0}
+.switch-copy{flex:1;min-width:0;font:var(--weight-medium) var(--text-16)/var(--line-16) var(--font-ui)}
+.switch{appearance:none;display:block;position:relative;flex:none;width:var(--switch-w);height:var(--switch-h);margin:0;padding:var(--switch-inset);border:0;border-radius:var(--radius-full);background:var(--color-border);cursor:pointer}
+.switch:before{content:"";display:block;width:var(--switch-thumb);height:var(--switch-thumb);border-radius:var(--radius-full);background:var(--color-switch-thumb);transition:transform var(--duration-base) var(--ease-standard)}
+.switch:checked{background:var(--color-switch-on)}
+.switch:checked:before{transform:translateX(calc(var(--switch-w) - var(--switch-thumb) - var(--switch-inset)*2))}
+.switch:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-offset:var(--space-4)}
 @media(prefers-reduced-motion:reduce){*{transition-duration:0!important;animation-duration:0!important}.sticky-note,.click-tag{transform:none!important}}
 </style>
 </head>
 <body>
-<button class="theme" id="theme" type="button" aria-label="Switch to light theme">Light theme</button>
-<div class="hud"><button id="minus" type="button" aria-label="Zoom out">−</button><span class="zoom" id="zoom">100%</span><button id="plus" type="button" aria-label="Zoom in">+</button><button class="fit" id="fit" type="button">Fit</button></div>
+<button class="theme" id="theme" type="button" aria-label="Switch to light theme"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5 13 13M13 3l-1.5 1.5M4.5 11.5 3 13"/></svg><span>Light theme</span></button>
+<div class="hud"><button id="minus" type="button" aria-label="Zoom out" title="Zoom out"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 6 5 5 5-5"/></svg></button><span class="zoom" id="zoom">100%</span><button id="plus" type="button" aria-label="Zoom in" title="Zoom in"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button><button class="fit" id="fit" type="button"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="4" height="4"/><rect x="9.5" y="2.5" width="4" height="4"/><rect x="2.5" y="9.5" width="4" height="4"/><rect x="9.5" y="9.5" width="4" height="4"/></svg><span>Fit</span></button></div>
 <div id="viewport"><main id="canvas">
 <header class="page">
 <div class="kicker">Selected direction review</div>
 <h1>Workspace hierarchy flow board</h1>
 <p class="intro"><b>A4 is selected.</b> The compact app-header dropdown keeps the nested Project &gt; Worktree &gt; Session model and the full content width.</p>
-<div class="selected-note">Review the whole path before implementation. Workspace switches restore remembered content, local setup errors stay in their forms, and session processes keep running until a person closes them.</div><div class="selected-note">Invented stand-ins: inline agent icon glyphs and representative PTY lines only.</div>
+<div class="selected-note">Review the whole path before implementation. Workspace switches restore remembered content, local setup errors stay in their forms, and session processes keep running until a person closes them.</div>
 <div class="artifacts">
 <article class="artifact"><h2>Behavior rules</h2><ul>
 <li>Switching restores the target workspace's last session or its closest scoped landing state. Sessions in other workspaces keep running.</li>
@@ -364,7 +483,7 @@ h1{margin:var(--space-8) 0;font:var(--weight-bold) var(--text-32)/var(--line-32)
 <article class="artifact"><h2>Flow inventory</h2><table class="matrix"><thead><tr><th>Section</th><th>Flow</th><th>Frames</th></tr></thead><tbody>
 <tr><td>A</td><td>Switch and restore</td><td>A1 to A5</td></tr>
 <tr><td>B</td><td>Create workspace</td><td>B1 to B7</td></tr>
-<tr><td>C</td><td>Add local project</td><td>C1 to C5</td></tr>
+<tr><td>C</td><td>Add local project</td><td>C1 to C7</td></tr>
 <tr><td>D</td><td>Create worktree</td><td>D1 to D6</td></tr>
 <tr><td>E</td><td>Start, use, and close session</td><td>E1 to E7</td></tr>
 <tr><td>F</td><td>Change scoped view</td><td>F1 to F5</td></tr>
@@ -408,10 +527,12 @@ var sectionData=[
 ]},
 {letter:"C",title:"Add local project",frames:[
 ["C1","Add project action","Platform has no projects and offers one clear next action."],
-["C2","Local repository selected","The picker accepts a local Git repository and waits for confirmation."],
-["C3","Importing project","Platform stays active while the repository import runs."],
-["C4","Project ready","platform-api expands to main without selecting or starting a session."],
-["C5","Project path errors","Non-Git and duplicate paths stay visible with inline errors."]
+["C2","Choose project folder","The center pane accepts Browse, drag and drop, typed paths, and directory suggestions."],
+["C3","Git repository detected","The canonical path and current branch are verified before adding the project."],
+["C4","Importing project","Platform stays active while the repository import runs."],
+["C5","Project ready","platform-api expands to main without selecting or starting a session."],
+["C6","Not a Git repository","Initialize Git is an explicit visible choice before adding the project."],
+["C7","Project path errors","Not-folder, duplicate path, and duplicate name errors stay attached to preserved values."]
 ]},
 {letter:"D",title:"Create worktree",frames:[
 ["D1","Project actions","The project overflow keeps worktree setup next to platform-api."],
@@ -422,7 +543,7 @@ var sectionData=[
 ["D6","Worktree ready","The zero-session row reveals three direct-start agent icons on hover."]
 ]},
 {letter:"E",title:"Create, use, and close a session",frames:[
-["E1","New session action","Hovering the selected worktree reveals Codex, Claude Code, and Terminal shortcuts."],
+["E1","Worktree launch action","Hovering the selected worktree reveals Codex, Claude Code, and Terminal shortcuts."],
 ["E2","Worktree hover affordance","Hovering billing-retry reveals direct-start agents before any process begins."],
 ["E3","Starting session","The tree and content show one shared starting state."],
 ["E4","Running session","The selected billing-retry session opens its running PTY."],
@@ -451,17 +572,42 @@ var sectionData=[
 
 var cursors={
 A1:[112,19],A2:[127,113],A4:[130,145],
-B1:[130,194],B2:[590,395],B4:[760,478],B6:[792,480],
-C1:[792,480],C2:[758,480],C4:[110,130],
+B1:[130,194],B2:[190,108],B4:[446,146],B6:[792,480],
+C1:[792,480],C2:[914,310],C3:[902,493],C5:[110,130],C6:[900,510],
 D1:[242,101],D2:[280,151],D3:[759,544],D6:[158,151],
-E1:[158,151],E2:[158,151],E4:[126,190],E5:[875,225],E6:[760,220],E7:[754,420],
+E1:[158,151],E2:[158,151],E4:[126,190],E5:[875,225],E6:[760,220],E7:[372,250],
 F1:[95,63],F2:[137,63],F3:[160,18],F4:[25,101],
-G1:[126,250],G2:[650,319],G5:[755,480],G8:[1000,474]
+G1:[126,250],G2:[650,319],G5:[648,314],G8:[1000,474]
+};
+
+const icons={
+chevRight:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg>',
+chevDown:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 6 5 5 5-5"/></svg>',
+plus:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>',
+more:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h.01M8 8h.01M13 8h.01"/></svg>',
+close:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg>',
+folder:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h5l2 2h5v7H2z"/></svg>',
+branch:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="6" r="1.5"/><path d="M4 4.5v7M5.5 10C9 10 8.5 6 10.5 6"/></svg>',
+list:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4h8M6 8h8M6 12h8M2 4h.01M2 8h.01M2 12h.01"/></svg>',
+grid:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="4" height="4"/><rect x="9.5" y="2.5" width="4" height="4"/><rect x="2.5" y="9.5" width="4" height="4"/><rect x="9.5" y="9.5" width="4" height="4"/></svg>',
+check:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg>',
+warning:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2 14 13H2zM8 6v3M8 11.5h.01"/></svg>',
+sun:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5 13 13M13 3l-1.5 1.5M4.5 11.5 3 13"/></svg>',
+moon:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.5 10.5A5.5 5.5 0 0 1 5.5 3.5 5.5 5.5 0 1 0 12.5 10.5z"/></svg>',
+trash:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M6 4V2.5h4V4M4.5 4l.5 9h6l.5-9M7 6.5v4M9 6.5v4"/></svg>',
+refresh:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 5V2l-2 2a5 5 0 1 0 1.5 5M13 2v3h-3"/></svg>',
+play:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 3 7 5-7 5z"/></svg>',
+settings:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.5"/><path d="M8 2v2M8 12v2M2 8h2M12 8h2M3.8 3.8l1.4 1.4M10.8 10.8l1.4 1.4M12.2 3.8l-1.4 1.4M5.2 10.8l-1.4 1.4"/></svg>'
 };
 
 function esc(value){return String(value).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
 function cursor(id){var p=cursors[id];return p?'<div class="click-cursor" style="--cx:'+p[0]+';--cy:'+p[1]+'"><span class="click-tag">CLICK</span></div>':""}
-function menuRow(label,tail,active,extra){return '<button class="menu-row'+(active?' active':'')+'" type="button" role="menuitem"'+(active?' aria-current="true"':'')+(extra||"")+'><span>'+label+'</span><span class="spacer"></span>'+(tail||"")+'</button>'}
+function viewControls(active,remembered){remembered=remembered||'Project';var destination=active==='Project'?'List':active==='List'?'Project':remembered;var toggleIcon=destination==='List'?'list':'folder';return '<div class="canvas-views" role="group" aria-label="Workspace view"><button class="" type="button" aria-label="Switch to '+destination.toLowerCase()+' view" title="Switch to '+destination.toLowerCase()+' view" aria-pressed="false">'+icons[toggleIcon]+'</button><button class="" type="button" aria-label="Open grid view" title="Open grid view" aria-pressed="'+(active==='Grid')+'">'+icons.grid+'</button></div>'}
+function productButton(label,icon,classes,attrs){return '<button class="'+(classes||"action")+'" type="button" '+(attrs||"")+'>'+icons[icon]+'<span>'+esc(label)+'</span></button>'}
+function disclosureButton(expanded,label){return '<button type="button" aria-expanded="'+expanded+'" aria-label="'+(expanded?'Collapse ':'Expand ')+esc(label)+'" title="'+(expanded?'Collapse ':'Expand ')+esc(label)+'">'+(expanded?icons.chevDown:icons.chevRight)+'</button>'}
+function moreButton(label){return '<button class="ellipsis" type="button" aria-label="'+esc(label)+' actions" title="'+esc(label)+' actions">'+icons.more+'</button>'}
+function menuIcon(label){var plain=String(label).replace(/<[^>]+>/g,"").toLowerCase();if(plain.includes("retry"))return "refresh";if(plain.includes("dismiss"))return "close";if(plain.includes("create"))return "plus";if(plain.includes("manage"))return "more";if(plain.includes("remove"))return "trash";if(plain.includes("new worktree"))return "plus";return "folder"}
+function menuRow(label,tail,active,extra){return '<button class="menu-row'+(active?' active':'')+'" type="button" role="menuitem"'+(active?' aria-current="true"':'')+(extra||"")+'>'+icons[menuIcon(label)]+'<span>'+label+'</span><span class="spacer"></span>'+(tail||"")+'</button>'}
 function workspaceMenu(current,kind){
 var rows="";
 if(kind==="overflow"){
@@ -481,9 +627,9 @@ return '<div class="workspace-menu" role="menu" aria-label="Switch workspace"><d
 }
 function treeRow(cls,body){return '<div class="tree-row '+cls+'" role="treeitem">'+body+'</div>'}
 function agentGlyph(agent){
-if(agent==="Codex")return '<svg viewBox="0 0 16 16" aria-hidden="true" stroke="currentColor"><circle cx="8" cy="8" r="5"></circle><path d="M8 3v10M3 8h10"></path></svg>';
-if(agent==="Claude Code")return '<svg viewBox="0 0 16 16" aria-hidden="true" stroke="currentColor"><path d="M8 2v12M2 8h12M3.8 3.8l8.4 8.4M12.2 3.8l-8.4 8.4"></path></svg>';
-return '<svg viewBox="0 0 16 16" aria-hidden="true" stroke="currentColor"><rect x="2" y="3" width="12" height="10"></rect><path d="M4 6l2 2-2 2M8 10h3"></path></svg>';
+if(agent==="Codex")return '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2 13 5v6l-5 3-5-3V5z"/><path d="m5 6 3 2 3-2M8 8v4"/></svg>';
+if(agent==="Claude Code")return '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h12M4 4l8 8M12 4l-8 8"/></svg>';
+return '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 4 4 4-4 4M8 12h5"/></svg>';
 }
 function worktreeAgentActions(showTooltip){
 return '<span class="worktree-agents" aria-label="Start an agent in billing-retry"><button class="agent-quick" type="button" aria-label="Start Codex in billing-retry" title="Start Codex in billing-retry">'+agentGlyph("Codex")+'</button><button class="agent-quick" type="button" aria-label="Start Claude Code in billing-retry" title="Start Claude Code in billing-retry">'+agentGlyph("Claude Code")+'</button><button class="agent-quick" type="button" aria-label="Start Terminal in billing-retry" title="Start Terminal in billing-retry">'+agentGlyph("Terminal")+'</button>'+(showTooltip?'<span class="agent-tooltip" role="tooltip">Start with Codex</span>':'')+'</span>';
@@ -491,15 +637,15 @@ return '<span class="worktree-agents" aria-label="Start an agent in billing-retr
 function tree(kind){
 if(kind==="loading")return '<div class="skeleton"></div><div class="skeleton short"></div><div class="skeleton"></div><div class="skeleton short"></div>';
 if(kind==="empty")return '<div class="tree-row">No projects</div>';
-if(kind==="platformMain")return treeRow("project",'<button aria-expanded="true">⌄</button> platform-api <button class="ellipsis" aria-label="Project actions for platform-api">...</button>')+treeRow("worktree",'<button aria-expanded="true">⌄</button> main');
-if(kind==="platformZero"||kind==="platformHover")return treeRow("project",'<button aria-expanded="true">⌄</button> platform-api <button class="ellipsis" aria-label="Project actions for platform-api">...</button>')+treeRow("worktree",'<button aria-expanded="true">⌄</button> main')+treeRow("worktree",'<button aria-expanded="true">⌄</button> billing-retry '+worktreeAgentActions(kind==="platformHover"))+treeRow("session",'No sessions');
-if(kind==="starting")return treeRow("project",'<button aria-expanded="true">⌄</button> platform-api <button class="ellipsis" aria-label="Project actions for platform-api">...</button>')+treeRow("worktree",'<button aria-expanded="true">⌄</button> billing-retry')+treeRow("session selected",'<span class="status-dot"></span> Starting Codex...');
-if(kind==="sessions")return treeRow("project",'<button aria-expanded="true">⌄</button> platform-api <button class="ellipsis" aria-label="Project actions for platform-api">...</button>')+treeRow("worktree",'<button aria-expanded="true">⌄</button> billing-retry')+treeRow("session selected",'<span class="status-dot"></span> Codex · Fix billing retry')+treeRow("session",'<button type="button" aria-label="Open Claude Code waiting session"><span class="status-dot"></span> Claude · Approve schema</button>')+treeRow("session",'<span class="status-dot"></span> Terminal · logs');
-if(kind==="needs")return treeRow("project",'<button aria-expanded="true">⌄</button> platform-api')+treeRow("worktree",'<button aria-expanded="true">⌄</button> billing-retry')+treeRow("session selected",'<span class="status-dot"></span> Claude · Approve migration edit')+treeRow("session",'<span class="status-dot"></span> Codex · Fix billing retry');
-if(kind==="failed")return treeRow("project",'<button aria-expanded="true">⌄</button> platform-api')+treeRow("worktree",'<button aria-expanded="true">⌄</button> billing-retry')+treeRow("session selected",'<span class="status-dot"></span> Codex · Session failed');
-if(kind==="collapsed")return treeRow("project selected",'<button aria-expanded="false" aria-label="Expand platform-api">›</button> platform-api <span class="spacer"></span><span class="menu-state">selection retained</span>');
-if(kind==="care")return treeRow("project",'<button aria-expanded="true">⌄</button> care-web <button class="ellipsis" aria-label="Project actions for care-web">...</button>')+treeRow("worktree",'<button aria-expanded="true">⌄</button> migration')+treeRow("session selected",'<span class="status-dot"></span> claude · Approve migration edit')+treeRow("session",'<span class="status-dot"></span> Codex · Update fixtures');
-return treeRow("project",'<button aria-expanded="true">⌄</button> grove <button class="ellipsis" aria-label="Project actions for grove">...</button>')+treeRow("worktree",'<button aria-expanded="true">⌄</button> main')+treeRow("session selected",'<span class="status-dot"></span> Codex · Workspace hierarchy')+treeRow("session",'<span class="status-dot"></span> Terminal · tests');
+if(kind==="platformMain")return treeRow("project",disclosureButton(true,"platform-api")+' platform-api '+moreButton("platform-api"))+treeRow("worktree",disclosureButton(true,"main")+' main');
+if(kind==="platformZero"||kind==="platformHover")return treeRow("project",disclosureButton(true,"platform-api")+' platform-api '+moreButton("platform-api"))+treeRow("worktree",disclosureButton(true,"main")+' main')+treeRow("worktree",disclosureButton(true,"billing-retry")+' billing-retry '+worktreeAgentActions(kind==="platformHover"))+treeRow("session",'No sessions');
+if(kind==="starting")return treeRow("project",disclosureButton(true,"platform-api")+' platform-api '+moreButton("platform-api"))+treeRow("worktree",disclosureButton(true,"billing-retry")+' billing-retry')+treeRow("session selected",'<span class="status-dot"></span> Starting Codex...');
+if(kind==="sessions")return treeRow("project",disclosureButton(true,"platform-api")+' platform-api '+moreButton("platform-api"))+treeRow("worktree",disclosureButton(true,"billing-retry")+' billing-retry')+treeRow("session selected",'<span class="status-dot"></span> Codex · Fix billing retry')+treeRow("session",productButton("Claude · Approve schema","play","","aria-label=\"Open Claude Code waiting session\"")+"")+treeRow("session",'<span class="status-dot"></span> Terminal · logs');
+if(kind==="needs")return treeRow("project",disclosureButton(true,"platform-api")+' platform-api')+treeRow("worktree",disclosureButton(true,"billing-retry")+' billing-retry')+treeRow("session selected",'<span class="status-dot"></span> Claude · Approve migration edit')+treeRow("session",'<span class="status-dot"></span> Codex · Fix billing retry');
+if(kind==="failed")return treeRow("project",disclosureButton(true,"platform-api")+' platform-api')+treeRow("worktree",disclosureButton(true,"billing-retry")+' billing-retry')+treeRow("session selected",'<span class="status-dot"></span> Codex · Session failed');
+if(kind==="collapsed")return treeRow("project selected",disclosureButton(false,"platform-api")+' platform-api <span class="spacer"></span><span class="menu-state">selection retained</span>');
+if(kind==="care")return treeRow("project",disclosureButton(true,"care-web")+' care-web '+moreButton("care-web"))+treeRow("worktree",disclosureButton(true,"migration")+' migration')+treeRow("session selected",'<span class="status-dot"></span> claude · Approve migration edit')+treeRow("session",'<span class="status-dot"></span> Codex · Update fixtures');
+return treeRow("project",disclosureButton(true,"grove")+' grove '+moreButton("grove"))+treeRow("worktree",disclosureButton(true,"main")+' main')+treeRow("session selected",'<span class="status-dot"></span> Codex · Workspace hierarchy')+treeRow("session",'<span class="status-dot"></span> Terminal · tests');
 }
 function listView(){
 return '<div class="group-label">NEEDS YOU</div><div class="session-card">Claude · Approve migration edit</div><div class="group-label">WORKING</div><div class="session-card selected">Codex · Fix billing retry<br><small>Platform / platform-api / billing-retry</small></div><div class="group-label">IDLE</div><div class="session-card">Terminal · logs</div>';
@@ -511,72 +657,72 @@ function sidebar(o){
 var mode=o.mode||"Project";
 var modeBody=mode==="List"?listView():mode==="Grid"?gridView():tree(o.tree||"grove");
 var disabled=o.sessionDisabled?' disabled aria-disabled="true"':"";
-return '<aside class="sidebar" aria-label="'+esc(o.workspace)+' workspace navigation"><div class="side-head"><span class="side-title">PROJECTS</span>'+
-'<button class="mini view-button" type="button" aria-label="List view" aria-pressed="'+(mode==="List")+'">List</button>'+
-'<button class="mini view-button" type="button" aria-label="Grid view" aria-pressed="'+(mode==="Grid")+'">Grid</button>'+
-'<button class="mini view-button" type="button" aria-label="Project view" aria-pressed="'+(mode==="Project")+'">Project</button>'+
-'<button class="new-session" type="button"'+disabled+'>New session</button></div><div class="tree" role="tree" aria-label="'+esc(o.workspace)+' projects">'+modeBody+'</div><div class="terminals">TERMINALS <span style="float:right">[add] [fold]</span></div></aside>';
+return '<aside class="sidebar" aria-label="'+esc(o.workspace)+' workspace navigation"><div class="side-head"><span class="side-title">PROJECTS</span>'+viewControls(mode)+'</div><div class="tree" role="tree" aria-label="'+esc(o.workspace)+' projects">'+modeBody+'</div><div class="terminals">TERMINALS <span style="float:right">[add] [fold]</span></div></aside>';
 }
 function sessionContent(workspace,breadcrumb,title,text,actions){
-return '<section class="content"><div class="session-head"><b>'+esc(title)+'</b><span>'+esc(breadcrumb)+'</span><span class="spacer"></span><button class="new-session" type="button">New session</button><span>'+esc(workspace)+'</span></div><div class="pty"><h3>'+esc(title)+'</h3><p>'+text+'</p>'+(actions||"")+'<div class="terminal" aria-label="PTY output">$ grove session attach<br>Session process is running.<br><span class="stroke mid"></span><span class="stroke"></span><span class="stroke short"></span></div></div></section>';
+return '<section class="content"><div class="session-head"><b>'+esc(title)+'</b><span>'+esc(breadcrumb)+'</span><span class="spacer"></span><span>'+esc(workspace)+'</span></div><div class="pty"><h3>'+esc(title)+'</h3><p>'+text+'</p>'+(actions||"")+'<div class="terminal" aria-label="PTY output">$ grove session attach<br>Session process is running.<br><span class="stroke mid"></span><span class="stroke"></span><span class="stroke short"></span></div></div></section>';
 }
 function emptyContent(title,text,disabled){
-return '<section class="content"><div class="session-head"><b>'+esc(title)+'</b><span class="spacer"></span><button class="new-session" type="button" disabled aria-disabled="true">New session</button></div><div class="empty-state"><div class="empty-card"><h3>'+esc(title)+'</h3><p>'+text+'</p><button class="primary" type="button">Add project</button></div></div></section>';
+return '<section class="content"><div class="session-head"><b>'+esc(title)+'</b><span class="spacer"></span></div><div class="empty-state"><div class="empty-card"><h3>'+esc(title)+'</h3><p>'+text+'</p>'+productButton("Add project","plus","primary","")+'</div></div></section>';
 }
 function promptContent(title,text){
-return '<section class="content"><div class="session-head"><b>'+esc(title)+'</b><span class="spacer"></span><button class="new-session" type="button" disabled aria-disabled="true">New session</button></div><div class="prompt">'+text+'</div></section>';
+return '<section class="content"><div class="session-head"><b>'+esc(title)+'</b><span class="spacer"></span></div><div class="prompt">'+text+'</div></section>';
 }
 function loadingContent(title,text){
 return '<section class="content"><div class="loading-content"><div class="loading-card" role="status" aria-live="polite"><h3>'+esc(title)+'</h3><p>'+text+'</p><div class="progress-line"></div></div></div></section>';
 }
-function field(label,value,id,error,readonly){
-return '<div class="field"><label for="'+id+'">'+label+'</label><input id="'+id+'" value="'+esc(value||"")+'"'+(readonly?' readonly':'')+(error?' aria-describedby="'+id+'-error" aria-invalid="true"':'')+'>'+(error?'<div class="inline-error" id="'+id+'-error" role="alert">'+error+'</div>':'')+'</div>';
-}
-function dialog(title,intro,body,actions,wide){
-return '<div class="scrim"></div><section class="dialog'+(wide?' wide':'')+'" role="dialog" aria-modal="true" aria-label="'+esc(title)+'"><h3>'+esc(title)+'</h3><p class="dialog-intro">'+intro+'</p>'+body+'<div class="dialog-actions">'+actions+'</div></section>';
+function field(label,value,id,error,readonly,disabled){
+return '<div class="field"><label for="'+id+'">'+label+'</label><input id="'+id+'" value="'+esc(value||"")+'"'+(readonly?' readonly':'')+(disabled?' disabled':'')+(error?' aria-describedby="'+id+'-error" aria-invalid="true"':'')+'>'+(error?'<div class="inline-error" id="'+id+'-error" role="alert">'+error+'</div>':'')+'</div>';
 }
 function createWorkspaceDialog(kind){
-if(kind==="empty")return dialog("Create workspace","Workspaces keep projects, worktrees, and sessions scoped together.",field("Workspace name","","workspace-name","",false),'<button class="action secondary" type="button">Cancel</button><button class="action primary" type="button" disabled>Create workspace</button>');
-if(kind==="duplicate")return dialog("Create workspace","Choose a unique local workspace name.",field("Workspace name","Grove","workspace-name-duplicate","A workspace named Grove already exists.",false),'<button class="action secondary" type="button">Cancel</button><button class="action primary" type="button">Create workspace</button>');
-if(kind==="valid")return dialog("Create workspace","Platform is available.",field("Workspace name","Platform","workspace-name-valid","",false),'<button class="action secondary" type="button">Cancel</button><button class="action primary" type="button">Create workspace</button>');
-if(kind==="pending")return dialog("Creating workspace","The form is locked until local setup finishes.",field("Workspace name","Platform","workspace-name-pending","",true)+'<div class="progress" role="status">Creating Platform...<div class="progress-line"></div></div>','<button class="action secondary" type="button" disabled>Cancel</button><button class="action primary" type="button" disabled>Creating...</button>');
-return dialog("Workspace creation failed","The local workspace was not created. Fix the error or retry.",field("Workspace name","Platform","workspace-name-failed","Could not create the local workspace directory. The name is preserved.",false),'<button class="action secondary" type="button">Cancel</button><button class="action primary" type="button">Retry</button>');
+var value=kind==="empty"?"":kind==="duplicate"?"Grove":"Platform";
+var error=kind==="duplicate"?"Grove already exists. Try Grove personal.":kind==="error"?"Could not create the local workspace directory. The name is preserved.":"";
+var locked=kind==="pending",id="workspace-name-"+kind;
+var action=locked?"Creating workspace":kind==="error"?"Retry create workspace":"Create workspace";
+var close=locked?"Close unavailable":"Close";
+var well='<div class="field-wrap"'+(locked?' aria-busy="true"':'')+'><label for="'+id+'">Workspace</label><div class="compound-well'+(error?' invalid':'')+'"><input id="'+id+'" class="field" placeholder="Workspace name" value="'+esc(value)+'"'+(locked?' disabled':'')+(error?' aria-invalid="true" aria-describedby="'+id+'-error"':'')+'><button class="icon-btn flat" type="button"'+(locked||kind==="empty"?' disabled':'')+' aria-label="'+action+'" title="'+action+'">'+(locked||kind==="error"?icons.refresh:icons.check)+'</button></div>'+(error?'<span class="inline-error" id="'+id+'-error" role="alert">'+error+'</span>':'')+'</div>';
+return '<section class="quick-create" role="dialog" aria-label="'+(locked?'Creating workspace':kind==="duplicate"?'Duplicate workspace name':'New workspace')+'"'+(locked?' aria-busy="true"':'')+'><h3>New workspace<button class="icon-btn flat" type="button"'+(locked?' disabled':'')+' aria-label="'+close+'" title="'+close+'">'+icons.close+'</button></h3>'+well+(locked?'<div class="progress" role="progressbar" aria-label="Creating workspace"><span></span></div>':'')+'</section>';
 }
-function projectDialog(kind){
-if(kind==="selected")return dialog("Add local project","Only local Git repositories can be added.",field("Repository path","/Users/digvijaymahapatra/Sandbox/platform-api","repo-path","",true),'<button class="action secondary" type="button">Cancel</button><button class="action primary" type="button">Add project</button>');
-if(kind==="pending")return dialog("Importing project","Reading the local repository and its default branch.",field("Repository path","/Users/digvijaymahapatra/Sandbox/platform-api","repo-path-pending","",true)+'<div class="progress" role="status">Importing platform-api...<div class="progress-line"></div></div>','<button class="action secondary" type="button" disabled>Cancel</button><button class="action primary" type="button" disabled>Importing...</button>');
-var examples='<div class="error-examples"><div>'+field("Repository path","/Users/digvijaymahapatra/Sandbox/notes","repo-path-nongit","This folder is not a Git repository.",true)+'</div><div>'+field("Repository path","/Users/digvijaymahapatra/Sandbox/platform-api","repo-path-duplicate","platform-api is already in Platform.",true)+'</div></div>';
-return dialog("Project path errors","Both local paths stay visible so the cause can be corrected.",examples,'<button class="action secondary" type="button">Cancel</button><button class="action primary" type="button">Choose another</button>',true);
+function centerProjectEditor(kind){
+var path='/Users/digvijaymahapatra/Sandbox/platform-api', close='<button class="icon-btn" aria-label="Cancel add project" title="Cancel">'+icons.close+'</button>';
+if(kind==='choose')return '<section class="content"><div class="session-head"><b>Choose project folder</b><span class="spacer"></span>'+close+'</div><div class="editor"><div class="field browse-field"><label for="repo-folder">Repository folder</label><input id="repo-folder" value="'+path+'"><button class="icon-btn" type="button" aria-label="Browse folders" title="Browse folders">'+icons.folder+'</button></div><small>Drop a folder, type a path, or choose a directory match.</small></div></section>';
+if(kind==='repo')return '<section class="content"><div class="session-head"><b>Git repository detected</b><span class="spacer"></span>'+close+'</div><div class="editor"><div><b>Git repository</b> · branch main</div>'+field('Canonical path',path,'canonical','',true)+field('Project name','platform-api','project-name','',false)+productButton('Add project','plus','primary','')+'</div></section>';
+if(kind==='notgit')return '<section class="content"><div class="session-head"><b>Not a Git repository</b><span class="spacer"></span>'+close+'</div><div class="editor">'+field('Repository folder','/Users/digvijaymahapatra/Sandbox/notes','notgit-path','',true)+'<label class="switch-row"><span class="switch-copy">Initialize Git repository</span><input class="switch" type="checkbox" role="switch" aria-label="Initialize Git repository" aria-checked="true" checked></label>'+productButton('Add project','plus','primary','')+'</div></section>';
+return '<section class="content"><div class="session-head"><b>Fix project details</b><span class="spacer"></span>'+close+'</div><div class="editor">'+field('Repository folder','/Users/digvijaymahapatra/Sandbox/missing','bad-folder','Choose a folder that exists.',false)+field('Repository path',path,'duplicate-path','This repository already exists in Platform.',false)+field('Project name','platform-api','duplicate-name','This project name is already used.',false)+'</div></section>';
 }
 function worktreeDialog(kind){
 var suffix=kind==="valid"?"details":kind;
 var values=field("Worktree name","billing-retry","wt-name-"+suffix,"",kind==="pending")+field("Branch","feat/billing-retry","wt-branch-"+suffix,kind==="conflict"?"Branch feat/billing-retry already exists.":"",kind==="pending")+field("Base","main","wt-base-"+suffix,kind==="conflict"?"A billing-retry worktree path already exists.":"",kind==="pending");
 if(kind==="pending")values+='<div class="progress" role="status">Creating billing-retry...<div class="progress-line"></div></div>';
-return dialog(kind==="pending"?"Creating worktree":"New worktree",kind==="conflict"?"Resolve both conflicts. All values remain in the form.":"Create a worktree without starting a session.",values,'<button class="action secondary" type="button"'+(kind==="pending"?' disabled':'')+'>Cancel</button><button class="action primary" type="button"'+(kind==="pending"?' disabled':'')+'>'+(kind==="pending"?"Creating...":"Create worktree")+'</button>');
+return '<section class="content"><div class="session-head"><b>'+(kind==="pending"?'Creating worktree':'New worktree')+'</b><span class="spacer"></span><button class="icon-btn" aria-label="Cancel" title="Cancel">'+icons.close+'</button></div><div class="editor">'+values+productButton(kind==="pending"?'Creating...':'Create worktree',kind==="pending"?'refresh':'plus','primary',kind==="pending"?'disabled':'')+'</div></section>';
 }
 function projectActionsMenu(){
 return '<div class="workspace-menu project-actions" role="menu" aria-label="platform-api actions"><div class="menu-title">platform-api</div>'+menuRow("New worktree","",false)+menuRow("Open in file manager","",false)+'<div class="menu-divider"></div>'+menuRow("Remove project","",false)+'</div>';
 }
 function managerDialog(kind){
-var header=kind==="renamed"?"Infrastructure Platform":"Platform";
-var rows='<div class="manager-row"><b>'+header+'</b><span>1 project</span><button type="button">Move</button><button type="button">Delete</button></div><div class="manager-row"><b>Grove</b><span>2 projects</span><button type="button">Move</button><button type="button">Delete</button></div><div class="manager-row"><b>Orchard</b><span>0 projects</span><button type="button">Move</button><button type="button">Delete</button></div>';
+var header=kind==="renamed"||kind==="blocked"?"Infrastructure Platform":"Platform";
+var platformConfirm=kind==="blocked"?'<div class="manager-confirm" role="alert"><b>Delete blocked.</b> Infrastructure Platform contains 1 project and 2 sessions. Remove its projects first.<div class="dialog-actions">'+productButton("Close","close","action secondary","")+'</div></div>':"";
+var orchardConfirm=kind==="delete"?'<div class="manager-confirm" role="alertdialog" aria-label="Delete Orchard"><b>Orchard is empty.</b> Grove opens next.'+field("Type workspace name","Orchard","confirm-delete","",false)+'<div class="dialog-actions">'+productButton("Cancel","close","action secondary","")+productButton("Delete workspace","trash","action danger","")+'</div></div>':"";
+var rows='<div class="manager-row"><b>'+header+'</b><span>1 project</span>'+productButton("Move","branch","","aria-label=\"Move "+header+"\"")+productButton("Delete","trash","","aria-label=\"Delete "+header+"\"")+platformConfirm+'</div><div class="manager-row"><b>Grove</b><span>2 projects</span>'+productButton("Move","branch","","aria-label=\"Move Grove\"")+productButton("Delete","trash","","aria-label=\"Delete Grove\"")+'</div><div class="manager-row"><b>Orchard</b><span>0 projects</span>'+productButton("Move","branch","","aria-label=\"Move Orchard\"")+productButton("Delete","trash","","aria-label=\"Delete Orchard\"")+orchardConfirm+'</div>';
 var extra=kind==="renamed"?'<div class="stable-note">Stable identity ws_platform_01 is unchanged. Only the visible name changed.</div>':field("Rename Platform",kind==="edit"?"Platform":"Infrastructure Platform","rename-platform","",false);
-return dialog("Manage workspaces","Rename workspaces, review local counts, move order, or request deletion.",extra+rows,'<button class="action secondary" type="button">Close</button><button class="action primary" type="button">Save rename</button>',true);
+if(kind==="blocked"||kind==="delete")extra="";
+return '<section class="manager-popover" role="dialog" aria-label="Manage workspaces"><h3>Manage workspaces</h3><p class="dialog-intro">Rename workspaces, review local counts, move order, or request deletion.</p>'+extra+rows+(kind==="edit"||kind==="renamed"?'<div class="dialog-actions">'+productButton("Close","close","action secondary","")+productButton("Save rename","check","action primary","")+'</div>':'')+'</section>';
 }
+function sessionCloseTray(){return '<div class="neutral-veil"></div><div class="session-confirm-anchor"><div class="session-origin">'+agentGlyph("Codex")+'<b>Codex · Fix billing retry</b></div><section class="confirmation-tray" role="alertdialog" aria-modal="true" aria-label="Close running session"><div class="confirmation-title">'+icons.warning+'<h3>Close running session?</h3></div><p class="confirmation-facts"><b>Process</b> Stops now · <b>Worktree</b> Stays on disk</p><div class="confirmation-actions">'+productButton("Cancel","close","action secondary","")+productButton("Close session","trash","action danger","")+'</div></section></div>'}
 function shell(o){
 var expanded=!!o.menu;
 var content=o.content||sessionContent(o.workspace,o.breadcrumb||o.workspace+" / project / worktree",o.session||"Selected session","The selected session remains in this workspace.");
 var overlay=o.overlay||"";
 var floating=o.floating||"";
 var note=o.note?'<aside class="sticky-note">'+o.note+'</aside>':"";
-return '<div class="screen" id="screen-'+o.id+'"><div class="appbar"><span class="wordmark">GROVE</span><span class="workspace-anchor"><button class="workspace-trigger" type="button" aria-label="Switch workspace, '+esc(o.workspace)+' selected" aria-expanded="'+expanded+'">'+esc(o.workspace)+' <span aria-hidden="true">▾</span></button>'+(o.menu||"")+'</span><span class="app-spacer"></span><span class="box">existing app controls</span></div><div class="body">'+sidebar(o)+content+'</div><div class="statusbar"><span>'+esc(o.workspace)+'</span><span>local backend</span><span class="spacer"></span><span>sessions keep running across workspace switches</span></div>'+floating+overlay+note+cursor(o.id)+'</div>';
+return '<div class="screen" id="screen-'+o.id+'"><div class="appbar"><span class="wordmark">GROVE</span><span class="workspace-anchor"><button class="workspace-trigger" type="button" aria-label="Switch workspace, '+esc(o.workspace)+' selected" aria-expanded="'+expanded+'">'+icons.folder+'<span>'+esc(o.workspace)+'</span>'+icons.chevDown+'</button>'+(o.menu||"")+'</span><span class="app-spacer"></span>'+productButton('Needs you 2','warning','attention','aria-label="Needs you, 2 sessions"')+'<button class="icon-btn" aria-label="Settings" title="Settings">'+icons.settings+'</button></div><div class="body">'+sidebar(o)+content+'</div><div class="statusbar"><span>'+esc(o.workspace)+'</span><span>local backend</span><span class="spacer"></span><span>sessions keep running across workspace switches</span></div>'+floating+overlay+note+cursor(o.id)+'</div>';
 }
 function activeTile(agent,status,task,lines){
-return '<article class="active-tile" aria-label="'+agent+' '+status+' session"><div class="tile-head"><span class="tile-agent-icon">'+agentGlyph(agent)+'</span><span><span class="tile-name">'+agent+'</span><span class="tile-task">'+task+'</span></span><span class="tile-status">'+status+'</span></div><div class="tile-context">Platform / platform-api / billing-retry</div><div class="tile-pty" aria-label="Clipped PTY excerpt">'+lines+'</div></article>';
+return '<article class="active-tile" aria-label="'+agent+' '+status+' session"><div class="tile-head"><span class="tile-agent-icon">'+agentGlyph(agent)+'</span><span class="tile-identity"><span class="tile-name">'+agent+'</span><span class="tile-task">'+task+'</span></span><span class="tile-status">'+status+'</span></div><div class="tile-context">Platform / platform-api / billing-retry</div><div class="tile-pty" aria-label="Clipped PTY excerpt">'+lines+'</div></article>';
 }
 function fullGridShell(id){
 var tiles=activeTile("Codex","WORKING","Fix billing retry","$ codex resume billing-retry<br>Editing retry policy...<br>Running focused checks...<br>Waiting for command output...")+activeTile("Claude Code","NEEDS YOU","Approve migration edit","$ claude continue migration<br>Migration edit is ready.<br>Review schema changes.<br>Approval required to continue.")+activeTile("Terminal","RUNNING","billing-retry logs","$ pnpm test billing-retry<br>watch mode active<br>12 tests passed<br>Waiting for file changes...");
-return '<div class="screen" id="screen-'+id+'"><div class="appbar"><span class="wordmark">GROVE</span><span class="workspace-anchor"><button class="workspace-trigger" type="button" aria-label="Switch workspace, Platform selected" aria-expanded="false">Platform <span aria-hidden="true">▾</span></button></span><div class="canvas-views" role="group" aria-label="Workspace view"><button type="button" aria-pressed="false">Project</button><button type="button" aria-pressed="false">List</button><button type="button" aria-pressed="true">Grid</button></div><span class="app-spacer"></span><span class="box">existing app controls</span></div><section class="active-grid-canvas" aria-label="Platform active sessions">'+tiles+'</section><div class="statusbar"><span>Platform</span><span>local backend</span><span class="spacer"></span><span>3 active sessions</span></div>'+cursor(id)+'</div>';
+return '<div class="screen" id="screen-'+id+'"><div class="appbar"><span class="wordmark">GROVE</span><span class="workspace-anchor"><button class="workspace-trigger" type="button" aria-label="Switch workspace, Platform selected" aria-expanded="false">'+icons.folder+'<span>Platform</span>'+icons.chevDown+'</button></span>'+viewControls('Grid')+'<span class="app-spacer"></span>'+productButton('Needs you 2','warning','attention','aria-label="Needs you, 2 sessions"')+'<button class="icon-btn" aria-label="Settings" title="Settings">'+icons.settings+'</button></div><section class="active-grid-canvas" aria-label="Platform active sessions">'+tiles+'</section><div class="statusbar"><span>Platform</span><span>local backend</span><span class="spacer"></span><span>3 active sessions</span></div>'+cursor(id)+'</div>';
 }
 function state(id){
 var o={id:id,workspace:"Grove",tree:"grove",mode:"Project",session:"Codex · Workspace hierarchy",breadcrumb:"Grove / grove / main"};
@@ -585,7 +731,7 @@ case"A1":break;
 case"A2":o.menu=workspaceMenu("Grove","standard");break;
 case"A3":o.workspace="CareConvoy";o.tree="loading";o.sessionDisabled=true;o.content=loadingContent("Opening CareConvoy","Loading its remembered view. Grove sessions keep running.");break;
 case"A4":o.workspace="CareConvoy";o.tree="care";o.menu=workspaceMenu("CareConvoy","standard");o.session="claude · Approve migration edit";o.breadcrumb="CareConvoy / care-web / migration";o.content=sessionContent(o.workspace,o.breadcrumb,o.session,"Migration edit approval is waiting. Open the workspace menu and choose Orchard for the next path.");break;
-case"A5":o.workspace="Orchard";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No sessions","Add a local Git project to start work in Orchard.",true);break;
+case"A5":o.workspace="Orchard";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No projects","Add a local project to Orchard.",true);break;
 case"B1":o.menu=workspaceMenu("Grove","standard");break;
 case"B2":o.overlay=createWorkspaceDialog("empty");break;
 case"B3":o.overlay=createWorkspaceDialog("duplicate");break;
@@ -594,23 +740,25 @@ case"B5":o.overlay=createWorkspaceDialog("pending");break;
 case"B6":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No projects","Add a local Git repository to Platform.",true);break;
 case"B7":o.overlay=createWorkspaceDialog("error");break;
 case"C1":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No projects","Add a local Git repository to Platform.",true);break;
-case"C2":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No projects","Add a local Git repository to Platform.",true);o.overlay=projectDialog("selected");break;
-case"C3":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No projects","Repository import is in progress.",true);o.overlay=projectDialog("pending");break;
-case"C4":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=promptContent("platform-api","Select main, then create a worktree or start a session.");break;
-case"C5":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No projects","Choose a valid local Git repository.",true);o.overlay=projectDialog("errors");break;
+case"C2":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=centerProjectEditor("choose");break;
+case"C3":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=centerProjectEditor("repo");break;
+case"C4":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=loadingContent("Importing platform-api","Reading main from the local repository.");break;
+case"C5":o.workspace="Platform";o.tree="platformMain";o.content=promptContent("platform-api","Select main or launch an agent from its worktree row.");break;
+case"C6":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=centerProjectEditor("notgit");break;
+case"C7":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=centerProjectEditor("errors");break;
 case"D1":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=promptContent("platform-api","Project actions include worktree creation and local project removal.");break;
 case"D2":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=promptContent("platform-api","Choose New worktree to add an isolated branch checkout.");o.floating=projectActionsMenu();break;
-case"D3":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=promptContent("platform-api","Worktree creation does not start a session.");o.overlay=worktreeDialog("valid");break;
-case"D4":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=promptContent("platform-api","Resolve the local conflicts before creating the worktree.");o.overlay=worktreeDialog("conflict");break;
-case"D5":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=promptContent("platform-api","Local worktree creation is in progress.");o.overlay=worktreeDialog("pending");break;
+case"D3":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=worktreeDialog("valid");break;
+case"D4":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=worktreeDialog("conflict");break;
+case"D5":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=worktreeDialog("pending");break;
 case"D6":o.workspace="Platform";o.tree="platformZero";o.content=promptContent("billing-retry","Worktree ready. No session was started.");break;
 case"E1":o.workspace="Platform";o.tree="platformZero";o.content=promptContent("billing-retry","Choose a hover icon to start with an agent.");break;
 case"E2":o.workspace="Platform";o.tree="platformHover";o.content=promptContent("billing-retry","Choose Codex from the hovered worktree to start the session.");break;
 case"E3":o.workspace="Platform";o.tree="starting";o.content=loadingContent("Starting Codex session","Preparing the PTY for Platform / platform-api / billing-retry.");break;
 case"E4":o.workspace="Platform";o.tree="sessions";o.session="Codex · Fix billing retry";o.breadcrumb="Platform / platform-api / billing-retry";o.content=sessionContent(o.workspace,o.breadcrumb,o.session,"The selected process is running. Another session is waiting in the same worktree.");break;
-case"E5":o.workspace="Platform";o.tree="needs";o.session="Claude · Approve migration edit";o.breadcrumb="Platform / platform-api / billing-retry";o.content=sessionContent(o.workspace,o.breadcrumb,o.session,"Task: review the generated migration and approve the edit before the agent continues.",'<div class="banner"><button class="action primary" type="button">Approve and continue</button></div>');break;
-case"E6":o.workspace="Platform";o.tree="failed";o.session="Codex · Session failed";o.breadcrumb="Platform / platform-api / billing-retry";o.content=sessionContent(o.workspace,o.breadcrumb,o.session,"The agent process exited before the task completed.",'<div class="banner" role="alert">Exit code 1. The worktree is unchanged. <button class="action primary" type="button">Retry</button> <button class="action secondary" type="button">Remove</button></div>');break;
-case"E7":o.workspace="Platform";o.tree="sessions";o.session="Codex · Fix billing retry";o.breadcrumb="Platform / platform-api / billing-retry";o.content=sessionContent(o.workspace,o.breadcrumb,o.session,"The process is still running.");o.overlay=dialog("Close running session","Closing this session stops its running process. The billing-retry worktree remains.","",'<button class="action secondary" type="button">Cancel</button><button class="action danger" type="button">Close session</button>');break;
+case"E5":o.workspace="Platform";o.tree="needs";o.session="Claude · Approve migration edit";o.breadcrumb="Platform / platform-api / billing-retry";o.content=sessionContent(o.workspace,o.breadcrumb,o.session,"Task: review the generated migration and approve the edit before the agent continues.",'<div class="banner">'+productButton("Approve and continue","check","action primary","")+'</div>');break;
+case"E6":o.workspace="Platform";o.tree="failed";o.session="Codex · Session failed";o.breadcrumb="Platform / platform-api / billing-retry";o.content=sessionContent(o.workspace,o.breadcrumb,o.session,"The agent process exited before the task completed.",'<div class="banner" role="alert">Exit code 1. The worktree is unchanged. '+productButton("Retry","refresh","action primary","")+productButton("Remove","trash","action secondary","")+'</div>');break;
+case"E7":o.workspace="Platform";o.tree="sessions";o.session="Codex · Fix billing retry";o.breadcrumb="Platform / platform-api / billing-retry";o.content=sessionContent(o.workspace,o.breadcrumb,o.session,"The process is still running.");o.overlay=sessionCloseTray();break;
 case"F1":o.workspace="Platform";o.tree="sessions";o.session="Codex · Fix billing retry";o.breadcrumb="Platform / platform-api / billing-retry";break;
 case"F2":o.workspace="Platform";o.mode="List";o.session="Codex · Fix billing retry";o.breadcrumb="Platform / platform-api / billing-retry";o.content=sessionContent(o.workspace,o.breadcrumb,o.session,"List groups only Platform sessions and keeps this selection.");break;
 case"F3":return fullGridShell(id);
@@ -619,8 +767,8 @@ case"F5":o.workspace="Platform";o.tree="collapsed";o.session="Codex · Fix billi
 case"G1":o.workspace="Platform";o.tree="sessions";o.menu=workspaceMenu("Platform","standard");o.session="Codex · Fix billing retry";o.breadcrumb="Platform / platform-api / billing-retry";break;
 case"G2":o.workspace="Platform";o.tree="sessions";o.overlay=managerDialog("edit");o.session="Codex · Fix billing retry";o.breadcrumb="Platform / platform-api / billing-retry";break;
 case"G3":o.workspace="Infrastructure Platform";o.tree="sessions";o.overlay=managerDialog("renamed");o.session="Codex · Fix billing retry";o.breadcrumb="Infrastructure Platform / platform-api / billing-retry";o.content=sessionContent(o.workspace,o.breadcrumb,o.session,"The rename changes labels only. Project, worktree, session, and PTY stay attached to the same workspace identity.");break;
-case"G4":o.workspace="Infrastructure Platform";o.tree="sessions";o.session="Codex · Fix billing retry";o.breadcrumb="Infrastructure Platform / platform-api / billing-retry";o.overlay=dialog("Cannot delete workspace","Infrastructure Platform contains 1 project and 2 sessions. Remove its projects before deletion.",'<div class="banner" role="alert">Nonempty workspace deletion is blocked.</div>','<button class="action secondary" type="button">Close</button>');break;
-case"G5":o.workspace="Orchard";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No projects","Orchard is empty and can be deleted.",true);o.overlay=dialog("Delete empty workspace","Type Orchard to confirm. After deletion, Grove opens as the most recently used workspace.",field("Type workspace name","Orchard","confirm-delete","",false),'<button class="action secondary" type="button">Cancel</button><button class="action danger" type="button">Delete workspace</button>');break;
+case"G4":o.workspace="Infrastructure Platform";o.tree="sessions";o.session="Codex · Fix billing retry";o.breadcrumb="Infrastructure Platform / platform-api / billing-retry";o.overlay=managerDialog("blocked");break;
+case"G5":o.workspace="Orchard";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No projects","Orchard is empty and can be deleted.",true);o.overlay=managerDialog("delete");break;
 case"G6":o.workspace="Infrastructure Platform";o.tree="sessions";o.menu=workspaceMenu("Infrastructure Platform","overflow");o.session="Codex · Fix billing retry";o.breadcrumb="Infrastructure Platform / platform-api / billing-retry";break;
 case"G7":o.workspace="Infrastructure Platform";o.tree="sessions";o.menu=workspaceMenu("Infrastructure Platform","failure");o.session="Codex · Fix billing retry";o.breadcrumb="Infrastructure Platform / platform-api / billing-retry";o.content=sessionContent(o.workspace,o.breadcrumb,o.session,"Orchard failed to open. No project, worktree, session, or PTY was swapped.");break;
 case"G8":o.workspace="Infrastructure Platform";o.tree="sessions";o.menu=workspaceMenu("Infrastructure Platform","standard");o.session="Codex · Fix billing retry";o.breadcrumb="Infrastructure Platform / platform-api / billing-retry";o.note="Escape/outside click closes it, arrow keys move, Enter selects, focus returns to trigger.";break;
@@ -628,7 +776,7 @@ case"G8":o.workspace="Infrastructure Platform";o.tree="sessions";o.menu=workspac
 return shell(o);
 }
 function renderFrame(f){
-return '<article class="frame" id="frame-'+f[0]+'" data-frame-id="'+f[0]+'"><div class="caption"><span class="id">'+f[0]+'</span><span class="frame-name">'+f[1]+'</span><p class="frame-desc">'+f[2]+'</p></div>'+state(f[0])+'</article>';
+return '<article class="frame" id="frame-'+f[0]+'" data-frame-id="'+f[0]+'"'+(f[0]==='D4'?' data-path-error-attachment="underBase"':'')+'><div class="caption"><span class="id">'+f[0]+'</span><span class="frame-name">'+f[1]+'</span><p class="frame-desc">'+f[2]+'</p></div>'+state(f[0])+'</article>';
 }
 var sections=document.getElementById("sections");
 sections.innerHTML=sectionData.map(function(section){
@@ -636,19 +784,103 @@ var row=section.frames.map(function(f,i){return (i?'<div class="connector" aria-
 return '<section class="section"><div class="section-title"><span class="letter">'+section.letter+'</span>'+section.title+'</div><div class="frames">'+row+'</div></section>';
 }).join("");
 
+// Repeated scenarios have local input identities while preserving their labels and errors.
+document.querySelectorAll(".frame").forEach(function(frame){
+frame.querySelectorAll("[id]").forEach(function(node){
+if(node.closest(".field,.field-wrap") && !node.id.startsWith("screen-"))node.id=frame.dataset.frameId+"-"+node.id;
+});
+frame.querySelectorAll(".field label[for],.field-wrap label[for]").forEach(function(label){label.htmlFor=frame.dataset.frameId+"-"+label.htmlFor});
+frame.querySelectorAll(".field input[aria-describedby],.field-wrap input[aria-describedby]").forEach(function(input){input.setAttribute("aria-describedby",frame.dataset.frameId+"-"+input.getAttribute("aria-describedby"))});
+frame.querySelectorAll(".tree-row").forEach(function(row){
+var leading=document.createElement("span"),label=document.createElement("span"),title=document.createElement("span"),trailing=document.createElement("span");
+leading.className="row-leading";label.className="row-label";title.className="row-title";trailing.className="row-trailing";
+Array.from(row.childNodes).forEach(function(node){
+if(node.nodeType===1 && node.matches("button[aria-expanded],.status-dot"))leading.append(node);
+else if(node.nodeType===1 && node.matches(".ellipsis,.worktree-agents"))trailing.append(node);
+else if(node.nodeType===1 && node.matches(".spacer"))node.remove();
+else title.append(node);
+});
+label.append(title);row.append(leading,label,trailing);
+if(title.textContent.trim())title.title=title.textContent.trim();
+});
+});
+
+function semanticButtonIcon(button){
+var label=(button.getAttribute("aria-label")||button.textContent||"").trim().toLowerCase();
+if(label.includes("delete")||label.includes("remove")||label.includes("close session"))return icons.trash;
+if(label.includes("retry")||label.includes("creating")||label.includes("importing"))return icons.refresh;
+if(label.includes("cancel")||label.includes("close")||label.includes("dismiss"))return icons.close;
+if(label.includes("approve")||label.includes("save"))return icons.check;
+if(label.includes("open claude")||label.includes("start"))return icons.play;
+if(label.includes("create")||label.includes("add")||label.includes("new worktree"))return icons.plus;
+if(label.includes("manage")||label.includes("actions"))return icons.more;
+if(label.includes("move"))return icons.branch;
+if(label.includes("list"))return icons.list;
+if(label.includes("grid")||label.includes("fit"))return icons.grid;
+if(label.includes("project")||label.includes("workspace")||label.includes("platform")||label.includes("grove")||label.includes("careconvoy")||label.includes("orchard")||label.includes("file manager"))return icons.folder;
+return icons.check;
+}
+document.querySelectorAll("button").forEach(function(button){
+var text=button.textContent.trim();
+if(button.closest(".tree-row")&&(text==="⌄"||text==="›"||text==="...")){
+var expanded=button.getAttribute("aria-expanded")==="true";
+var action=text==="..."?"Actions":expanded?"Collapse":"Expand";
+button.innerHTML=text==="..."?icons.more:(expanded?icons.chevDown:icons.chevRight);
+if(!button.getAttribute("aria-label"))button.setAttribute("aria-label",action);
+button.setAttribute("title",button.getAttribute("aria-label"));
+}else if(!button.querySelector("svg")){
+button.insertAdjacentHTML("afterbegin",semanticButtonIcon(button));
+}
+if(!button.textContent.trim()){
+var name=button.getAttribute("aria-label")||"Action";
+button.setAttribute("aria-label",name);
+button.setAttribute("title",button.getAttribute("title")||name);
+}
+});
+
+var cursorTargets={
+A1:'.workspace-trigger',A2:'.workspace-menu>.menu-row:nth-of-type(2)',A4:'.workspace-menu>.menu-row:nth-of-type(3)',
+B1:'.pinned-actions .menu-row:first-child',B2:'.quick-create input',B4:'.quick-create .compound-well>.icon-btn',B6:'.empty-card .primary',
+C1:'.empty-card .primary',C2:'.browse-field .icon-btn',C3:'.editor>.primary',C5:'.tree-row.worktree .row-leading button',C6:'.editor>.primary',
+D1:'.tree-row.project .ellipsis',D2:'.project-actions .menu-row',D3:'.editor>.primary',D6:'.agent-quick',
+E1:'.agent-quick',E2:'.agent-quick',E4:'.tree-row.session.selected .row-label',E5:'.banner .primary',E6:'.banner .primary',E7:'.confirmation-actions .danger',
+F1:'.canvas-views button:first-child',F2:'.canvas-views button:last-child',F3:'.canvas-views button:first-child',F4:'.tree-row.project .row-leading button',
+G1:'.pinned-actions .menu-row:last-child',G2:'.manager-popover>.dialog-actions .primary',G5:'.manager-confirm .danger',G8:'.content .pty'
+};
+function alignCursors(){
+Object.keys(cursorTargets).forEach(function(id){
+var screen=document.getElementById('screen-'+id),target=screen.querySelector(cursorTargets[id]),marker=screen.querySelector('.click-cursor');
+if(!target||!marker)return;
+var bounds=screen.getBoundingClientRect(),rect=target.getBoundingClientRect(),scale=bounds.width/screen.offsetWidth;
+marker.style.setProperty('--cx',(rect.left-bounds.left+rect.width*.65)/scale);
+marker.style.setProperty('--cy',(rect.top-bounds.top+rect.height*.5)/scale);
+});
+}
+document.querySelectorAll('.switch').forEach(function(control){control.addEventListener('change',function(){control.setAttribute('aria-checked',String(control.checked))})});
+alignCursors();
+
+var themeButton=document.getElementById("theme");
+function syncThemeButton(){var light=document.documentElement.getAttribute("data-theme")==="light";themeButton.innerHTML=(light?icons.moon:icons.sun)+"<span>"+(light?"Dark theme":"Light theme")+"</span>";themeButton.setAttribute("aria-label",light?"Switch to dark theme":"Switch to light theme")}
+document.getElementById("minus").innerHTML=icons.chevDown;
+document.getElementById("minus").setAttribute("title","Zoom out");
+document.getElementById("plus").innerHTML=icons.plus;
+document.getElementById("plus").setAttribute("title","Zoom in");
+document.getElementById("fit").innerHTML=icons.grid+"<span>Fit</span>";
+syncThemeButton();
+
 var vp=document.getElementById("viewport"),cv=document.getElementById("canvas"),zl=document.getElementById("zoom");
 var x=0,y=0,z=1,drag=false,lx=0,ly=0,MIN=.1,MAX=2.5;
 function draw(){cv.style.setProperty("--pan-x",x);cv.style.setProperty("--pan-y",y);cv.style.setProperty("--zoom",z);cv.style.transform="translate(calc(var(--pan-x)*var(--border-thin)),calc(var(--pan-y)*var(--border-thin))) scale(var(--zoom))";zl.textContent=Math.round(z*100)+"%"}
 function fit(){var w=cv.scrollWidth,h=cv.scrollHeight;z=Math.max(MIN,Math.min(MAX,Math.min((innerWidth-80)/w,(innerHeight-80)/h)));x=(innerWidth-w*z)/2;y=28;draw()}
 function zoomAt(next,cx,cy){next=Math.max(MIN,Math.min(MAX,next));cx=cx||innerWidth/2;cy=cy||innerHeight/2;x=cx-(cx-x)*(next/z);y=cy-(cy-y)*(next/z);z=next;draw()}
-vp.addEventListener("pointerdown",function(e){if(e.target.closest("button,input,[role=dialog],[role=menu]"))return;drag=true;lx=e.clientX;ly=e.clientY;vp.classList.add("dragging");vp.setPointerCapture(e.pointerId)});
+vp.addEventListener("pointerdown",function(e){if(e.target.closest("button,input,[role=dialog],[role=menu],.neutral-veil"))return;drag=true;lx=e.clientX;ly=e.clientY;vp.classList.add("dragging");vp.setPointerCapture(e.pointerId)});
 vp.addEventListener("pointermove",function(e){if(!drag)return;x+=e.clientX-lx;y+=e.clientY-ly;lx=e.clientX;ly=e.clientY;draw()});
 vp.addEventListener("pointerup",function(){drag=false;vp.classList.remove("dragging")});
 vp.addEventListener("wheel",function(e){e.preventDefault();if(e.ctrlKey)zoomAt(z*Math.exp(-e.deltaY*.002),e.clientX,e.clientY);else{x-=e.deltaX;y-=e.deltaY;draw()}},{passive:false});
 document.getElementById("plus").onclick=function(){zoomAt(z*1.2)};
 document.getElementById("minus").onclick=function(){zoomAt(z/1.2)};
 document.getElementById("fit").onclick=fit;
-document.getElementById("theme").onclick=function(){var light=document.documentElement.getAttribute("data-theme")==="light";if(light){document.documentElement.removeAttribute("data-theme");this.textContent="Light theme";this.setAttribute("aria-label","Switch to light theme")}else{document.documentElement.setAttribute("data-theme","light");this.textContent="Dark theme";this.setAttribute("aria-label","Switch to dark theme")}};
+document.getElementById("theme").onclick=function(){var light=document.documentElement.getAttribute("data-theme")==="light";if(light)document.documentElement.removeAttribute("data-theme");else document.documentElement.setAttribute("data-theme","light");syncThemeButton()};
 addEventListener("resize",fit);
 requestAnimationFrame(fit);
 })();

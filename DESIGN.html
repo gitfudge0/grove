@@ -29,14 +29,14 @@
   --red-500: #ef7d8e;
   --blue-500: #79a9e8;
   --color-board: #0d0d0f;
-  --color-bg: #141416;
-  --color-bg-subtle: #0d0d0f;
-  --color-surface: #1b1b1e;
-  --color-surface-raised: #232327;
-  --color-hover: #34343a;
+  --color-bg: #000000;
+  --color-bg-subtle: #000000;
+  --color-surface: #000000;
+  --color-surface-raised: #1b1b1b;
+  --color-hover: #232327;
   --color-selected: #232327;
   --color-text-primary: #f7f7f8;
-  --color-text-secondary: #c3c3c7;
+  --color-text-secondary: #aaaab2;
   --color-text-muted: #707078;
   --color-brand: #f7f7f8;
   --color-brand-hover: #ededee;
@@ -46,7 +46,7 @@
   --color-accent: #8b5cf6;
   --color-accent-hover: #a78bfa;
   --color-accent-pressed: #7c3aed;
-  --color-focus: #a78bfa;
+  --color-focus: #f7f7f8;
   --color-accent-wash: rgba(139,92,246,.14);
   --color-running: #78d98b;
   --color-needs-you: #e0ad63;
@@ -61,12 +61,18 @@
   --shadow-sm: 0 1px 2px rgba(0,0,0,.36);
   --shadow-md: 0 8px 24px rgba(0,0,0,.42);
   --shadow-lg: 0 16px 48px rgba(0,0,0,.50);
-  --font-ui: "IBM Plex Sans", Arial, sans-serif;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "BlexMono Nerd Font Mono", "IBM Plex Mono", monospace;
   --text-10: .625rem;
   --text-11: .6875rem;
   --text-12: .75rem;
   --text-13: .8125rem;
+  --text-14: .875rem;
+  --text-16: 1rem;
+  --line-14: 1.429;
+  --line-16: 1.375;
+  --line-field-label: 16px;
+  --line-field-value: 22px;
   --text-15: .9375rem;
   --text-18: 1.125rem;
   --text-24: 1.5rem;
@@ -86,6 +92,7 @@
   --radius-4: 4px;
   --radius-8: 8px;
   --radius-12: 12px;
+  --radius-16: 16px;
   --radius-full: 999px;
   --space-2: 2px;
   --space-4: 4px;
@@ -126,7 +133,7 @@
   --icon-20: 20px;
   --icon-24: 24px;
   --icon-32: 32px;
-  --opacity-disabled: .38;
+  --opacity-disabled: .58;
   --opacity-muted: .62;
   --opacity-hover: .08;
   --opacity-pressed: .14;
@@ -141,18 +148,42 @@
   --status-h: 26px;
   --row-h: 28px;
   --control-h: 24px;
+  --field-h: 60px;
+  --form-button-h: 44px;
+  --field-inset-x: 14px;
+  --field-inset-top: 8px;
+  --field-value-top: 27px;
+  --textarea-h: 130px;
+  --switch-w: 48px;
+  --switch-h: 28px;
+  --switch-thumb: 22px;
+  --switch-inset: 3px;
+  --tile-min-w: 42px;
+  --tile-h: 44px;
+  --category-dot-size: 8px;
+  --shadow-none: none;
+  --color-field-fill: #1b1b1b;
+  --color-switch-on: #39b76c;
+  --color-switch-thumb: #ffffff;
+  --color-category-dot: #79a9e8;
+  --color-error-wash: rgba(239,125,142,.09);
 }
 [data-theme="light"] {
   color-scheme: light;
   --color-board: #efeeeb;
-  --color-bg: #fbfaf7;
+  --color-field-fill: #efefef;
+  --color-switch-on: #39b76c;
+  --color-switch-thumb: #ffffff;
+  --color-category-dot: #79a9e8;
+  --color-error-wash: rgba(182,56,76,.09);
+  --color-bg: #ffffff;
   --color-bg-subtle: #f7f7f8;
   --color-surface: #ffffff;
-  --color-surface-raised: #ffffff;
+  --color-surface-raised: #efefef;
   --color-hover: #ededee;
   --color-selected: #ededee;
   --color-text-primary: #141416;
-  --color-text-secondary: #515158;
+  --color-text-secondary: #66666d;
   --color-text-muted: #707078;
   --color-brand: #141416;
   --color-brand-hover: #232327;
@@ -162,11 +193,11 @@
   --color-accent: #7c3aed;
   --color-accent-hover: #8b5cf6;
   --color-accent-pressed: #7c3aed;
-  --color-focus: #7c3aed;
+  --color-focus: #141416;
   --color-accent-wash: rgba(124,58,237,.10);
   --color-running: #78d98b;
   --color-needs-you: #e0ad63;
-  --color-destructive: #ef7d8e;
+  --color-destructive: #b6384c;
   --color-tertiary: #79a9e8;
   --color-border: #dedee0;
   --color-border-strong: #c3c3c7;
@@ -193,19 +224,19 @@
 html,body{margin:0;min-height:100%;background:var(--color-board);color:var(--color-text-primary);font-family:var(--font-ui)}
 body{padding:var(--space-32)}
 button{font:inherit;color:inherit}
-.theme-toggle{position:fixed;right:var(--space-16);top:var(--space-16);z-index:var(--z-toast);height:var(--control-h);padding:0 var(--space-10);border:var(--border-thin) solid var(--color-border-strong);border-radius:var(--radius-4);background:var(--color-surface-raised);box-shadow:var(--shadow-sm);font-size:var(--text-11)}
-main{max-width:1440px;margin:0 auto}
+.theme-toggle{position:fixed;right:var(--space-16);top:var(--space-16);z-index:var(--z-toast);height:var(--control-h);padding:0 var(--space-10);border:var(--border-thin) solid var(--color-border-strong);border-radius:var(--radius-4);background:var(--color-surface-raised);box-shadow:var(--shadow-none);font-size:var(--text-11)}
+main{max-width:calc(var(--space-48) * 30);margin:0 auto}
 header{margin-bottom:var(--space-32)}
 .eyebrow{color:var(--color-text-muted);font-size:var(--text-10);font-weight:var(--weight-semibold);letter-spacing:.08em;text-transform:uppercase}
 h1{margin:var(--space-8) 0;font-size:var(--text-32);line-height:var(--line-32)}
-.intro{max-width:920px;margin:0;color:var(--color-text-secondary);font-size:var(--text-13);line-height:var(--line-13)}
+.intro{max-width:calc(var(--space-48) * 19 + var(--space-8));margin:0;color:var(--color-text-secondary);font-size:var(--text-13);line-height:var(--line-13)}
 .notice{margin-top:var(--space-16);padding:var(--space-12);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-surface)}
 section{margin-top:var(--space-40)}
 h2{margin:0 0 var(--space-16);font-size:var(--text-18);line-height:var(--line-18)}
 h3{margin:var(--space-24) 0 var(--space-10);font-size:var(--text-15)}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:var(--gap-12)}
-.card{min-width:0;padding:var(--space-12);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-surface);box-shadow:var(--shadow-sm)}
-.swatch{height:72px;margin-bottom:var(--space-10);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-4);background:var(--sample)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(calc(var(--sidebar-w) - var(--space-6)),1fr));gap:var(--gap-12)}
+.card{min-width:0;padding:var(--space-12);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-surface);box-shadow:var(--shadow-none)}
+.swatch{height:calc(var(--space-48) + var(--space-24));margin-bottom:var(--space-10);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-4);background:var(--sample)}
 .name{font-size:var(--text-12);font-weight:var(--weight-semibold)}
 .value{margin-top:var(--space-4);color:var(--color-text-secondary);font:var(--text-11)/var(--line-11) var(--font-mono)}
 .code{margin-top:var(--space-6);overflow-wrap:anywhere;color:var(--color-text-muted);font:var(--text-10)/var(--line-10) var(--font-mono)}
@@ -213,43 +244,104 @@ table{width:100%;border-collapse:collapse;background:var(--color-surface);font-s
 th,td{padding:var(--space-8) var(--space-10);border:var(--border-thin) solid var(--color-border);text-align:left;vertical-align:top}
 th{background:var(--color-bg-subtle);font-weight:var(--weight-semibold)}
 td code{font-family:var(--font-mono);font-size:var(--text-10);color:var(--color-text-muted)}
-.type-spec{display:grid;grid-template-columns:120px minmax(300px,1fr) minmax(260px,.8fr);gap:var(--gap-12);align-items:baseline;padding:var(--space-12);border-bottom:var(--border-thin) solid var(--color-divider-soft)}
+.type-spec{display:grid;grid-template-columns:calc(var(--space-48) * 2 + var(--space-24)) minmax(calc(var(--space-48) * 6 + var(--space-12)),1fr) minmax(calc(var(--space-48) * 5 + var(--space-20)),.8fr);gap:var(--gap-12);align-items:baseline;padding:var(--space-12);border-bottom:var(--border-thin) solid var(--color-divider-soft)}
 .type-spec:last-child{border-bottom:0}
 .specimen{font-family:var(--family);font-size:var(--size);line-height:var(--line);font-weight:var(--weight)}
 .scale-row{display:flex;align-items:end;gap:var(--gap-12);flex-wrap:wrap}
-.radius-box{width:72px;height:72px;border:var(--border-medium) solid var(--color-border-strong);border-radius:var(--radius);background:var(--color-surface-raised)}
-.space-bar{height:12px;width:calc(var(--measure) * 4);max-width:100%;background:var(--color-text-secondary)}
-.border-demo{height:50px;border-style:solid;border-color:var(--color-border-strong);border-width:var(--measure);background:var(--color-surface-raised)}
-.shadow-demo{height:88px;border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-surface-raised);box-shadow:var(--shadow)}
-.motion-track{height:42px;padding:var(--space-8);border:var(--border-thin) solid var(--color-border);background:var(--color-bg-subtle)}
-.motion-dot{width:24px;height:24px;border-radius:var(--radius-full);background:var(--color-accent);transition:margin-left var(--duration) var(--ease)}
-.motion-track:hover .motion-dot{margin-left:calc(100% - 24px)}
-.z-demo{position:relative;height:150px}
-.z-layer{position:absolute;width:130px;height:76px;padding:var(--space-8);border:var(--border-thin) solid var(--color-border-strong);border-radius:var(--radius-4);background:var(--color-surface-raised);box-shadow:var(--shadow-sm)}
-.icon-demo{display:grid;place-items:center;width:var(--measure);height:var(--measure);min-width:var(--measure);border:var(--border-thin) solid var(--color-border-strong);border-radius:var(--radius-4);color:var(--color-accent)}
-.opacity-demo{height:64px;background:var(--color-text-primary);opacity:var(--measure)}
-.blur-wrap{height:70px;overflow:hidden;border:var(--border-thin) solid var(--color-border)}
+.radius-box{width:calc(var(--space-48) + var(--space-24));height:calc(var(--space-48) + var(--space-24));border:var(--border-medium) solid var(--color-border-strong);border-radius:var(--radius);background:var(--color-surface-raised)}
+.space-bar{height:var(--space-12);width:calc(var(--measure) * 4);max-width:100%;background:var(--color-text-secondary)}
+.border-demo{height:calc(var(--space-48) + var(--space-2));border-style:solid;border-color:var(--color-border-strong);border-width:var(--measure);background:var(--color-surface-raised)}
+.shadow-demo{height:calc(var(--space-48) + var(--space-40));border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-surface-raised);box-shadow:var(--shadow)}
+.motion-track{height:calc(var(--space-40) + var(--space-2));padding:var(--space-8);border:var(--border-thin) solid var(--color-border);background:var(--color-bg-subtle)}
+.motion-dot{width:var(--control-h);height:var(--control-h);border-radius:var(--radius-full);background:var(--color-text-primary);transition:margin-left var(--duration) var(--ease)}
+.motion-track:hover .motion-dot{margin-left:calc(100% - var(--control-h))}
+.z-demo{position:relative;height:calc(var(--space-48) * 3 + var(--space-6))}
+.z-layer{position:absolute;width:calc(var(--space-48) * 2 + var(--space-32) + var(--space-2));height:calc(var(--space-48) + var(--space-24) + var(--space-4));padding:var(--space-8);border:var(--border-thin) solid var(--color-border-strong);border-radius:var(--radius-4);background:var(--color-surface-raised);box-shadow:var(--shadow-none)}
+.icon{display:block;flex:none;width:var(--icon-14);height:var(--icon-14);fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.icon-size-row,.icon-button-row{display:flex;align-items:center;gap:var(--gap-8);flex-wrap:wrap}
+.icon-size{display:grid;place-items:center;width:var(--measure);height:var(--measure);color:var(--color-text-secondary)}
+.icon-size .icon{width:var(--measure);height:var(--measure)}
+.icon-button-demo{display:inline-flex;align-items:center;justify-content:center;width:var(--control-h);height:var(--control-h);padding:0;border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-4);background:var(--color-bg);color:var(--color-text-secondary)}
+.icon-button-demo.agent{color:var(--color-accent)}
+.icon-button-row.baseline{min-height:var(--space-32);padding-bottom:var(--space-2);border-bottom:var(--border-thin) solid var(--color-divider-soft)}
+.opacity-demo{height:calc(var(--space-32) * 2);background:var(--color-text-primary);opacity:var(--measure)}
+.blur-wrap{height:calc(var(--space-48) + var(--space-20) + var(--space-2));overflow:hidden;border:var(--border-thin) solid var(--color-border)}
 .blur-demo{height:100%;padding:var(--space-16);background:var(--color-accent-wash);filter:blur(var(--measure))}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap-12)}
 .semantic-card{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap-8)}
 .semantic-side{padding:var(--space-8);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-4)}
-.semantic-side .swatch{height:48px}
+.semantic-side{min-width:0}
+.semantic-side .value{overflow-wrap:anywhere}
+.semantic-side .swatch{height:var(--space-48)}
 .assumption-list{margin:0;padding-left:var(--space-20);color:var(--color-text-secondary);font-size:var(--text-12);line-height:var(--line-12)}
-@media (max-width:800px){body{padding:var(--space-16)}.two{grid-template-columns:1fr}.type-spec{grid-template-columns:1fr}}
+.form-spec{display:grid;gap:var(--space-12);max-width:calc(var(--space-48) * 10)}
+.form-spec.card{padding:0;border:0;background:transparent;box-shadow:var(--shadow-none)}
+.form-row{position:relative;display:block;min-width:0}
+.form-label{position:absolute;left:var(--field-inset-x);top:var(--field-inset-top);font:var(--weight-regular) var(--text-12)/var(--line-field-label) var(--font-ui);color:var(--color-text-secondary);pointer-events:none}
+.form-well{position:relative;min-height:var(--field-h);display:flex;align-items:center;gap:var(--space-8);padding:var(--field-value-top) var(--field-inset-x) var(--field-inset-top);border:var(--border-thin) solid transparent;border-radius:var(--radius-12);background:var(--color-field-fill);color:var(--color-text-primary);box-shadow:var(--shadow-none)}
+.form-well:focus-within,.form-well.focused{outline:var(--border-thin) solid var(--color-focus);outline-offset:0;border-color:var(--color-focus)}
+.form-well input,.form-well textarea,.form-well select{min-width:0;width:100%;flex:1;margin:0;padding:0;border:0;background:transparent;color:inherit;font:var(--weight-regular) var(--text-16)/var(--line-field-value) var(--font-ui);outline:0}
+.form-well input::placeholder,.form-well textarea::placeholder{color:var(--color-text-secondary);opacity:1}
+.form-well textarea{min-height:calc(var(--textarea-h) - var(--field-value-top) - var(--field-inset-top));resize:vertical}
+.form-well select{appearance:auto}.form-well select option{background:var(--color-field-fill);color:var(--color-text-primary)}
+.form-well.invalid{border-color:var(--color-destructive);border-radius:var(--radius-12) var(--radius-12) 0 0}
+.form-error{margin:0;padding:var(--space-8) var(--field-inset-x);border:var(--border-thin) solid var(--color-destructive);border-top:0;border-radius:0 0 var(--radius-12) var(--radius-12);background:var(--color-error-wash);color:var(--color-destructive);font-size:var(--text-12);line-height:var(--line-12)}
+.form-helper{margin:var(--space-6) 0 0;color:var(--color-text-secondary);font-size:var(--text-12);line-height:var(--line-12)}
+.form-well.disabled{opacity:var(--opacity-disabled)}.form-well input:disabled{cursor:not-allowed}.form-well.readonly{border-color:var(--color-border)}
+.form-action{display:inline-flex;align-items:center;justify-content:center;width:var(--control-h);height:var(--control-h);padding:0;border:0;border-radius:var(--radius-8);background:transparent;color:var(--color-text-secondary)}
+.form-action svg,.form-well>.icon{display:block;flex:none;width:var(--icon-14);height:var(--icon-14);fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.form-group{padding:var(--space-16);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-16);background:var(--color-surface)}
+.switch-row{display:flex;align-items:center;justify-content:space-between;gap:var(--gap-16);padding:var(--space-12) 0}.switch-row+.switch-row{border-top:var(--border-thin) solid var(--color-border)}
+.switch-copy{font-size:var(--text-16);line-height:var(--line-16)}.switch-copy small{display:block;margin-top:var(--space-4);color:var(--color-text-secondary);font-size:var(--text-12)}
+.switch{flex:none;width:var(--switch-w);height:var(--switch-h);padding:var(--switch-inset);border:0;border-radius:var(--radius-full);background:var(--color-border-strong);cursor:pointer}
+.switch::before{content:"";display:block;width:var(--switch-thumb);height:var(--switch-thumb);border-radius:var(--radius-full);background:var(--color-switch-thumb);transition:transform var(--duration-base) var(--ease-standard)}
+.switch[aria-checked="true"]{background:var(--color-switch-on)}.switch[aria-checked="true"]::before{transform:translateX(calc(var(--switch-w) - var(--switch-thumb) - var(--switch-inset) * 2))}.switch:disabled{opacity:var(--opacity-disabled);cursor:not-allowed}
+.tiles{display:flex;flex-wrap:wrap;gap:var(--gap-8)}.tile{min-width:var(--tile-min-w);height:var(--tile-h);padding:0 var(--space-12);border:var(--border-thin) solid transparent;border-radius:var(--radius-12);background:var(--color-field-fill);font-size:var(--text-14);cursor:pointer}
+.tile[aria-pressed="true"]{border-color:var(--color-focus);outline:var(--border-thin) solid var(--color-focus);outline-offset:0;background:var(--color-selected)}
+.category-dot{display:inline-block;width:var(--category-dot-size);height:var(--category-dot-size);margin-right:var(--space-6);border-radius:var(--radius-full);background:var(--color-category-dot)}
+.form-button{display:inline-flex;align-items:center;gap:var(--gap-8);height:var(--form-button-h);padding:0 var(--space-16);border:var(--border-thin) solid var(--color-brand);border-radius:var(--radius-12);background:var(--color-brand);color:var(--color-on-brand);font-size:var(--text-14)}
+button:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-offset:var(--space-2)}
+.form-spec-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,calc(var(--space-48) * 8)),1fr));gap:var(--space-24)}
+@media(max-width:600px){.form-spec .two{grid-template-columns:1fr}table{display:block;overflow-x:auto}.type-spec{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){.switch::before{transition:none}}
+@media (orientation:portrait){body{padding:var(--space-16)}.two{grid-template-columns:1fr}.type-spec{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
-<button class="theme-toggle" id="themeToggle" type="button">Light reference</button>
+<aside class="notice"><strong>Form foundation.</strong> The approved form moodboard sets black surfaces, charcoal controls, neutral focus, and green switches. Rust source migration is pending.</aside>
+<button class="theme-toggle" id="themeToggle" type="button"><span id="themeIcon"></span><span id="themeLabel">Light reference</span></button>
 <main>
 <header>
 <div class="eyebrow">Phases 1 and 2</div>
 <h1>Grove design system</h1>
-<p class="intro">One dark-first semantic scheme for the selected A4 workspace shell, mapped to Rust and GPUI. Light is its derived counterpart. Violet is reserved for agent identity, connection, focus, and active ports.</p>
-<div class="notice"><strong>Source of truth.</strong> DESIGN.html generated JavaScript values win if the Markdown copy drifts.</div>
+<p class="intro">One dark-first semantic scheme combining the existing workspace shell with the approved form moodboard. Rust mappings document the target design; source migration is pending. Light is its derived counterpart. Violet is reserved for agent identity, connection, and active ports.</p>
+<div class="notice"><strong>Source of truth.</strong> DESIGN.html CSS tokens drive the rendered catalog; DESIGN.md mirrors this specification. Changed and new Rust mappings are targets pending source migration.</div>
 </header>
 <section><h2>Primitives</h2><div class="grid" id="primitives"></div></section>
 <section><h2>Semantic light and dark</h2><div class="grid" id="semantic"></div></section>
 <section><h2>Typography</h2><h3>Families</h3><div id="families"></div><h3>Scale</h3><div class="card" id="typeScale"></div><h3>Weights</h3><div id="weights"></div><h3>Type roles</h3><div class="card" id="typeRoles"></div></section>
+<section><h2>Forms and inputs</h2><p class="intro">Flat 60px controls with 12px embedded labels and 16px values. Field labels use supporting text; focus and selection use neutral outlines. Form actions are 44px; dense application chrome stays 24px.</p>
+<div class="form-spec-grid">
+<div class="form-spec"><h3>Field states</h3>
+<div class="form-row"><div class="form-well "><label class="form-label" for="form-name">Project name</label><input id="form-name" value="Grove desktop" ></div></div>
+<div class="form-row"><div class="form-well "><label class="form-label" for="form-empty">Project name · empty</label><input id="form-empty" placeholder="Name this project" ></div></div>
+<div class="form-row"><div class="form-well focused"><label class="form-label" for="form-focus">Session branch · focus</label><input id="form-focus" value="feat/form-elements" ></div></div>
+<div class="form-row"><div class="form-well invalid"><label class="form-label" for="form-error">Repository path · invalid</label><input id="form-error" value="/Sandbox/notes" aria-invalid="true" aria-describedby="form-error-note"></div><p class="form-error" id="form-error-note">Choose a folder containing a Git repository.</p></div>
+<div class="form-row"><div class="form-well disabled"><label class="form-label" for="form-disabled">Session template · disabled</label><input id="form-disabled" value="Feature work" disabled></div></div>
+<div class="form-row"><div class="form-well readonly"><label class="form-label" for="form-readonly">Repository root · readonly</label><input id="form-readonly" value="~/Sandbox/grove" readonly></div></div>
+<p class="form-helper">Readonly values remain selectable. Disabled controls cannot receive input.</p></div>
+<div class="form-spec"><h3>Compound fields</h3><div class="form-well"><label class="form-label" for="form-template">Session template</label><select id="form-template"><option>Feature work</option><option>Bug investigation</option><option>Review only</option></select></div>
+<div class="two"><div class="form-row"><div class="form-well "><label class="form-label" for="form-base">Base branch</label><input id="form-base" value="main" ></div></div><div class="form-row"><div class="form-well "><label class="form-label" for="form-remote">Remote</label><input id="form-remote" value="origin" ></div></div></div>
+<div class="form-well"><label class="form-label" for="form-context">Session note · optional</label><textarea id="form-context">Explore the new Grove form elements and attached validation.</textarea></div>
+<div class="two"><div class="form-well"><label class="form-label" for="form-date">Review date</label><input id="form-date" type="date" value="2026-09-06"></div><div class="form-well"><label class="form-label" for="form-time">Time</label><input id="form-time" type="time" value="09:00"></div></div>
+<button class="form-button" type="button" id="form-save"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg>Save preview</button><p class="form-helper" id="form-save-status" aria-live="polite">Changes here affect this reference only.</p></div>
+<div class="form-spec"><h3>Grouped preferences</h3><div class="form-group">
+<div class="switch-row"><div class="switch-copy" id="switch-isolated">Isolated worktree<small>Keep session changes in a separate folder.</small></div><button class="switch" type="button" role="switch" aria-checked="true" aria-labelledby="switch-isolated"></button></div>
+<div class="switch-row"><div class="switch-copy" id="switch-env">Copy environment files<small>Include local configuration.</small></div><button class="switch" type="button" role="switch" aria-checked="false" aria-labelledby="switch-env"></button></div>
+<div class="switch-row"><div class="switch-copy" id="switch-sync">Sync settings<small>Unavailable while offline.</small></div><button class="switch" type="button" role="switch" aria-checked="false" aria-labelledby="switch-sync" disabled></button></div></div>
+<p class="form-helper" id="category-label">Work type · select one</p><div class="tiles single" role="group" aria-labelledby="category-label"><button class="tile" type="button" aria-pressed="true"><span class="category-dot"></span>Feature</button><button class="tile" type="button" aria-pressed="false">Bug fix</button><button class="tile" type="button" aria-pressed="false">Review</button></div>
+<p class="form-helper" id="days-label">Review reminders · select any days</p><div class="tiles" role="group" aria-labelledby="days-label"><button class="tile" type="button" aria-label="Sunday" aria-pressed="false">S</button><button class="tile" type="button" aria-label="Monday" aria-pressed="false">M</button><button class="tile" type="button" aria-label="Tuesday" aria-pressed="false">T</button><button class="tile" type="button" aria-label="Wednesday" aria-pressed="false">W</button><button class="tile" type="button" aria-label="Thursday" aria-pressed="true">T</button><button class="tile" type="button" aria-label="Friday" aria-pressed="false">F</button><button class="tile" type="button" aria-label="Saturday" aria-pressed="false">S</button></div></div>
+</div></section>
 <section><h2>Radius</h2><div class="grid" id="radius"></div></section>
 <section><h2>Spacing</h2><div class="grid" id="spacing"></div><h3>Geometry</h3><div id="geometry"></div></section>
 <section><h2>Gaps</h2><div class="grid" id="gaps"></div></section>
@@ -258,61 +350,1218 @@ td code{font-family:var(--font-mono);font-size:var(--text-10);color:var(--color-
 <section><h2>Motion</h2><div class="grid" id="motion"></div></section>
 <section><h2>Z-index</h2><div class="card z-demo" id="zIndex"></div></section>
 <section><h2>Icons</h2><div class="grid" id="icons"></div></section>
-<section><h2>Opacity</h2><div class="grid" id="opacity"></div></section>
+<section><h2>Opacity</h2><div class="grid" id="opacity"></div><h3>Overlay behavior</h3><div class="grid" id="overlayBehavior"></div></section>
 <section><h2>Blur</h2><div class="grid" id="blur"></div></section>
 <section><h2>Assumptions</h2><ul class="assumption-list" id="assumptions"></ul><h3>Computed contrast</h3><div id="contrast"></div></section>
+<section id="gpui-implementation"><h2>GPUI implementation token map</h2><p>Audited against the pinned GPUI source and current Grove seams. verified = existing value/API; adapt = existing seam differs; add = absent token/helper; reference = board-only or unsupported semantics. A verified primitive does not mean a component is migrated. Values below come directly from the CSS token blocks; light inherits dark unless overridden.</p><div id="gpuiTokenTable"></div></section>
 </main>
 <script>
 const primitives=[
-["neutral-0","--neutral-0","c::NEUTRAL_0()"],["neutral-50","--neutral-50","c::NEUTRAL_50()"],["neutral-100","--neutral-100","c::NEUTRAL_100()"],["neutral-200","--neutral-200","c::NEUTRAL_200()"],["neutral-300","--neutral-300","c::NEUTRAL_300()"],["neutral-400","--neutral-400","c::NEUTRAL_400()"],["neutral-500","--neutral-500","c::NEUTRAL_500()"],["neutral-600","--neutral-600","c::NEUTRAL_600()"],["neutral-700","--neutral-700","c::NEUTRAL_700()"],["neutral-800","--neutral-800","c::NEUTRAL_800()"],["neutral-850","--neutral-850","c::NEUTRAL_850()"],["neutral-900","--neutral-900","c::NEUTRAL_900()"],["neutral-950","--neutral-950","c::NEUTRAL_950()"],["warm-white","--warm-white","c::WARM_WHITE()"],["violet-400","--violet-400","c::VIOLET_400()"],["violet-500","--violet-500","c::VIOLET_500()"],["violet-600","--violet-600","c::VIOLET_600()"],["green-500","--green-500","c::GREEN()"],["amber-500","--amber-500","c::AMBER()"],["red-500","--red-500","c::RED()"],["blue-500","--blue-500","c::BLUE()"]
+["neutral-0", "--neutral-0", "add: c::NEUTRAL_0() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["neutral-50", "--neutral-50", "add: c::NEUTRAL_50() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["neutral-100", "--neutral-100", "add: c::NEUTRAL_100() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["neutral-200", "--neutral-200", "add: c::NEUTRAL_200() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["neutral-300", "--neutral-300", "add: c::NEUTRAL_300() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["neutral-400", "--neutral-400", "add: c::NEUTRAL_400() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["neutral-500", "--neutral-500", "add: c::NEUTRAL_500() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["neutral-600", "--neutral-600", "add: c::NEUTRAL_600() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["neutral-700", "--neutral-700", "add: c::NEUTRAL_700() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["neutral-800", "--neutral-800", "add: c::NEUTRAL_800() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["neutral-850", "--neutral-850", "add: c::NEUTRAL_850() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["neutral-900", "--neutral-900", "add: c::NEUTRAL_900() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["neutral-950", "--neutral-950", "add: c::NEUTRAL_950() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["warm-white", "--warm-white", "add: c::WARM_WHITE() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["violet-400", "--violet-400", "add: c::VIOLET_400() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["violet-500", "--violet-500", "add: c::VIOLET_500() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["violet-600", "--violet-600", "add: c::VIOLET_600() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["green-500", "--green-500", "add: c::GREEN_500() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["amber-500", "--amber-500", "add: c::AMBER_500() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["red-500", "--red-500", "add: c::RED_500() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."],["blue-500", "--blue-500", "add: c::BLUE_500() — Add immutable palette primitive; do not alias to a theme-dependent status accessor."]
 ];
 const semantic=[
-["bg","--color-bg","main application background","c::BG()"],["bg-subtle","--color-bg-subtle","appbar and statusbar","c::BG_STRIP()"],["surface","--color-surface","sidebar, panels, and bounded regions","c::SURFACE()"],["surface-raised","--color-surface-raised","menus, dialogs, and floating panels","c::SURFACE_RAISED()"],["hover","--color-hover","neutral pointer hover","c::BG_HOVER()"],["selected","--color-selected","neutral selected row fill","c::BG_HL()"],["text-primary","--color-text-primary","required copy and primary labels","c::FG()"],["text-secondary","--color-text-secondary","supporting copy","c::FG_DIM()"],["text-muted","--color-text-muted","nonessential metadata","c::FG_MUTE()"],["brand","--color-brand","Grove mark and high-contrast brand fill","c::BRAND()"],["brand-hover","--color-brand-hover","hover for brand-filled actions","c::BRAND_HOVER()"],["on-brand","--color-on-brand","content on brand","c::ON_BRAND()"],["inverse-cta-bg","--color-inverse-cta-bg","dominant inverse call to action","c::INVERSE_CTA_BG()"],["inverse-cta-text","--color-inverse-cta-text","content on inverse call to action","c::INVERSE_CTA_TEXT()"],["accent","--color-accent","agent identity, connection, and active port","c::MAGENTA()"],["accent-hover","--color-accent-hover","hover for violet-only roles","c::ACCENT_HOVER()"],["accent-pressed","--color-accent-pressed","pressed violet-only roles","c::ACCENT_PRESSED()"],["focus","--color-focus","keyboard focus ring","c::SEL_RING()"],["accent-wash","--color-accent-wash","quiet agent or connection backing","c::SEL_TINT_SOFT()"],["running / success","--color-running","running process or completed action","c::GREEN()"],["needs-you / warning","--color-needs-you","required input or caution","c::AMBER()"],["destructive / error","--color-destructive","destructive action or failure","c::RED()"],["tertiary / info","--color-tertiary","tertiary information only","c::BLUE()"],["border","--color-border","standard one-pixel seam","c::BORDER()"],["border-strong","--color-border-strong","emphasized structure","c::BORDER_STRONG()"],["divider-soft","--color-divider-soft","quiet internal divider","c::BORDER_SOFT()"],["scrim","--color-scrim","modal and blocking overlay","c::SCRIM()"],["terminal-bg","--color-terminal-bg","PTY background","c::TERMINAL_BG()"],["terminal-text","--color-terminal-text","PTY foreground","c::TERMINAL_TEXT()"]
+["field-fill", "--color-field-fill", "filled form controls", "add: c::FIELD_FILL() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],["switch-on", "--color-switch-on", "enabled switch track", "add: c::SWITCH_ON() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],["switch-thumb", "--color-switch-thumb", "switch thumb", "add: c::SWITCH_THUMB() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],["category-dot", "--color-category-dot", "category indicator; pair with text", "add: c::CATEGORY_DOT() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],["error-wash", "--color-error-wash", "attached validation backing", "add: c::ERROR_WASH() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],
+["bg", "--color-bg", "main application background", "adapt: c::BG() — Existing accessor resolves legacy theme values; migrate both appearances to this row."],["bg-subtle", "--color-bg-subtle", "appbar and statusbar", "adapt: c::BG_STRIP() — Existing accessor resolves legacy theme values; migrate both appearances to this row."],["surface", "--color-surface", "sidebar, panels, and bounded regions", "add: c::SURFACE() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],["surface-raised", "--color-surface-raised", "menus, dialogs, and floating panels", "add: c::SURFACE_RAISED() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],["hover", "--color-hover", "neutral pointer hover", "adapt: c::BG_HOVER() — Existing accessor resolves legacy theme values; migrate both appearances to this row."],["selected", "--color-selected", "neutral selected row fill", "adapt: c::BG_HL() — Existing accessor resolves legacy theme values; migrate both appearances to this row."],["text-primary", "--color-text-primary", "required copy and primary labels", "adapt: c::FG() — Existing accessor resolves legacy theme values; migrate both appearances to this row."],["text-secondary", "--color-text-secondary", "supporting copy and embedded labels", "adapt: c::FG_DIM() — Existing accessor resolves legacy theme values; migrate both appearances to this row."],["text-muted", "--color-text-muted", "nonessential metadata", "adapt: c::FG_MUTE() — Existing accessor resolves legacy theme values; migrate both appearances to this row."],["brand", "--color-brand", "Grove mark and high-contrast brand fill", "add: c::BRAND() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],["brand-hover", "--color-brand-hover", "hover for brand-filled actions", "add: c::BRAND_HOVER() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],["on-brand", "--color-on-brand", "content on brand", "add: c::ON_BRAND() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],["inverse-cta-bg", "--color-inverse-cta-bg", "dominant inverse call to action", "add: c::INVERSE_CTA_BG() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],["inverse-cta-text", "--color-inverse-cta-text", "content on inverse call to action", "add: c::INVERSE_CTA_TEXT() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],["accent", "--color-accent", "agent identity, connection, and active port", "adapt: c::MAGENTA() — Existing accessor resolves legacy theme values; migrate both appearances to this row."],["accent-hover", "--color-accent-hover", "hover for violet-only roles", "add: c::ACCENT_HOVER() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],["accent-pressed", "--color-accent-pressed", "pressed violet-only roles", "add: c::ACCENT_PRESSED() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],["focus", "--color-focus", "neutral keyboard focus and selected-tile outline", "adapt: c::SEL_RING() — Existing SEL_RING derives cyan; replace with neutral dark/light focus. Color alone does not implement ring geometry."],["accent-wash", "--color-accent-wash", "quiet agent or connection backing", "adapt: c::SEL_TINT_SOFT() — Existing SEL_TINT_SOFT uses legacy color/alpha; match violet .14 dark / .10 light."],["running / success", "--color-running", "running process or completed action", "adapt: c::GREEN() — Existing accessor resolves legacy theme values; migrate both appearances to this row."],["needs-you / warning", "--color-needs-you", "required input or caution", "adapt: c::AMBER() — Existing accessor resolves legacy theme values; migrate both appearances to this row."],["destructive / error", "--color-destructive", "destructive action or failure", "adapt: c::RED() — Existing accessor resolves legacy theme values; migrate both appearances to this row."],["tertiary / info", "--color-tertiary", "tertiary information only", "adapt: c::BLUE() — Existing accessor resolves legacy theme values; migrate both appearances to this row."],["border", "--color-border", "standard one-pixel seam", "adapt: c::BORDER() — Existing accessor resolves legacy theme values; migrate both appearances to this row."],["border-strong", "--color-border-strong", "emphasized structure", "add: c::BORDER_STRONG() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row."],["divider-soft", "--color-divider-soft", "quiet internal divider", "adapt: c::BORDER_SOFT() — Existing BORDER_SOFT is an opaque mix; replace with alpha-bearing foreground, preserving .08 dark / .09 light."],["scrim", "--color-scrim", "neutral veil source, reduced with an opacity token", "adapt: c::SCRIM() — Existing accessor resolves legacy theme values; migrate both appearances to this row."],["terminal-bg", "--color-terminal-bg", "PTY background", "add: c::TERMINAL_BG() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row. Coordinate PTY palette separately; preserve cell metrics and ANSI contrast."],["terminal-text", "--color-terminal-text", "PTY foreground", "add: c::TERMINAL_TEXT() — Add accessor; absent in current theme. Resolve the exact dark/light values in this row. Coordinate PTY palette separately; preserve cell metrics and ANSI contrast."]
 ];
 const families=[
-["font-ui","--font-ui","all application UI","gpui::font(fonts::UI_FAMILY) through ui(text, size, color)"],["font-mono","--font-mono","terminal, path, branch, keycap, status","gpui::font(fonts::MONO_FAMILY) through mono(text, size, color)"]
+["font-ui", "--font-ui", "system UI and all form values", "adapt: gpui::Font::default() — System UI target: current ui() uses IBM Plex Sans. Update root font and ui(), retaining bold/medium weights. CSS fallback stack is platform-specific."],["font-mono", "--font-mono", "terminal, code metadata, keycap, status", "verified: gpui::font(crate::fonts::MONO_FAMILY) — BlexMono primary family is bundled. CSS fallback stack is not reproduced automatically. PTY remains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17."]
 ];
 const typeScale=[
-["text-10","--text-10","--line-10","--weight-medium",".text_size(rpx(TEXT_10))"],["text-11","--text-11","--line-11","--weight-regular",".text_size(rpx(TEXT_11))"],["text-12","--text-12","--line-12","--weight-regular",".text_size(rpx(TEXT_12))"],["text-13","--text-13","--line-13","--weight-regular",".text_size(rpx(TEXT_13))"],["text-15","--text-15","--line-15","--weight-semibold",".text_size(rpx(TEXT_15))"],["text-18","--text-18","--line-18","--weight-semibold",".text_size(rpx(TEXT_18))"],["text-24","--text-24","--line-24","--weight-bold",".text_size(rpx(TEXT_24))"],["text-32","--text-32","--line-32","--weight-bold",".text_size(rpx(TEXT_32))"]
+["text-14", "--text-14", "--line-14", "--weight-regular", "add: .text_size(rpx(TEXT_14)) — Add TEXT_14 = 14.0; TEXT_DISPLAY is 20, not 24. Set line height separately."],["text-16", "--text-16", "--line-16", "--weight-regular", "add: .text_size(rpx(TEXT_16)) — Add TEXT_16 = 16.0; TEXT_DISPLAY is 20, not 24. Set line height separately."],
+["text-10", "--text-10", "--line-10", "--weight-medium", "verified: .text_size(rpx(TEXT_MICRO)) — Existing size matches; ui()/mono() do not set explicit line height."],["text-11", "--text-11", "--line-11", "--weight-regular", "verified: .text_size(rpx(TEXT_SMALL)) — Existing size matches; ui()/mono() do not set explicit line height."],["text-12", "--text-12", "--line-12", "--weight-regular", "verified: .text_size(rpx(TEXT_BODY)) — Existing size matches; ui()/mono() do not set explicit line height."],["text-13", "--text-13", "--line-13", "--weight-regular", "verified: .text_size(rpx(TEXT_TITLE)) — Existing size matches; ui()/mono() do not set explicit line height."],["text-15", "--text-15", "--line-15", "--weight-semibold", "add: .text_size(rpx(TEXT_15)) — Add TEXT_15 = 15.0; TEXT_DISPLAY is 20, not 24. Set line height separately."],["text-18", "--text-18", "--line-18", "--weight-semibold", "add: .text_size(rpx(TEXT_18)) — Add TEXT_18 = 18.0; TEXT_DISPLAY is 20, not 24. Set line height separately."],["text-24", "--text-24", "--line-24", "--weight-bold", "add: .text_size(rpx(TEXT_24)) — Add TEXT_24 = 24.0; TEXT_DISPLAY is 20, not 24. Set line height separately."],["text-32", "--text-32", "--line-32", "--weight-bold", "verified: .text_size(rpx(TEXT_DISPLAY_LG)) — Existing size matches; ui()/mono() do not set explicit line height."]
 ];
 const weights=[
-["regular","--weight-regular","gpui::FontWeight::NORMAL"],["medium","--weight-medium","gpui::FontWeight::MEDIUM"],["semibold","--weight-semibold","gpui::FontWeight::SEMIBOLD"],["bold","--weight-bold","gpui::FontWeight::BOLD"]
+["regular", "--weight-regular", "verified: gpui::FontWeight::NORMAL — Apply with .font_weight(...); ensure the chosen font supplies or synthesizes the weight."],["medium", "--weight-medium", "verified: gpui::FontWeight::MEDIUM — Apply with .font_weight(...); ensure the chosen font supplies or synthesizes the weight."],["semibold", "--weight-semibold", "verified: gpui::FontWeight::SEMIBOLD — Apply with .font_weight(...); ensure the chosen font supplies or synthesizes the weight."],["bold", "--weight-bold", "verified: gpui::FontWeight::BOLD — Apply with .font_weight(...); ensure the chosen font supplies or synthesizes the weight."]
 ];
 const typeRoles=[
-["Brand mark","--font-ui","--text-15","--line-15","--weight-bold","GROVE","ui(\"GROVE\", TEXT_15, c::BRAND()).font_weight(FontWeight::BOLD)"],["Workspace trigger","--font-ui","--text-12","--line-12","--weight-medium","Platform","ui(name, TEXT_12, c::FG()).font_weight(FontWeight::MEDIUM)"],["Section heading","--font-ui","--text-18","--line-18","--weight-semibold","Active sessions","ui(label, TEXT_18, c::FG()).font_weight(FontWeight::SEMIBOLD)"],["Row label","--font-ui","--text-12","--line-12","--weight-medium","billing-retry","ui(label, TEXT_12, c::FG()).font_weight(FontWeight::MEDIUM)"],["Body","--font-ui","--text-13","--line-13","--weight-regular","Choose a worktree to begin.","ui(copy, TEXT_13, c::FG())"],["Metadata","--font-mono","--text-11","--line-11","--weight-regular","platform-api / main","mono(meta, TEXT_11, c::FG_DIM())"],["Status","--font-mono","--text-10","--line-10","--weight-medium","3 running · local","mono(status, TEXT_10, c::FG_DIM()).font_weight(FontWeight::MEDIUM)"],["Terminal","--font-mono","--text-12","--line-12","--weight-regular","$ cargo test theme","mono(line, TEXT_12, c::TERMINAL_TEXT())"],["Display","--font-ui","--text-32","--line-32","--weight-bold","No sessions","ui(title, TEXT_32, c::FG()).font_weight(FontWeight::BOLD)"]
+["Embedded label", "--font-ui", "--text-12", "--line-field-label", "--weight-regular", "Repository path", "adapt: gpui::Font::default() — System UI target: current ui() uses IBM Plex Sans. Update root font and ui(), retaining bold/medium weights. CSS fallback stack is platform-specific."],["Form value", "--font-ui", "--text-16", "--line-field-value", "--weight-regular", "~/Sandbox/grove", "adapt: gpui::Font::default() — System UI target: current ui() uses IBM Plex Sans. Update root font and ui(), retaining bold/medium weights. CSS fallback stack is platform-specific."],
+["Brand mark", "--font-ui", "--text-15", "--line-15", "--weight-bold", "GROVE", "adapt: gpui::Font::default() — System UI target: current ui() uses IBM Plex Sans. Update root font and ui(), retaining bold/medium weights. CSS fallback stack is platform-specific."],["Workspace trigger", "--font-ui", "--text-12", "--line-12", "--weight-medium", "Platform", "adapt: gpui::Font::default() — System UI target: current ui() uses IBM Plex Sans. Update root font and ui(), retaining bold/medium weights. CSS fallback stack is platform-specific."],["Section heading", "--font-ui", "--text-18", "--line-18", "--weight-semibold", "Active sessions", "adapt: gpui::Font::default() — System UI target: current ui() uses IBM Plex Sans. Update root font and ui(), retaining bold/medium weights. CSS fallback stack is platform-specific."],["Row label", "--font-ui", "--text-12", "--line-12", "--weight-medium", "billing-retry", "adapt: gpui::Font::default() — System UI target: current ui() uses IBM Plex Sans. Update root font and ui(), retaining bold/medium weights. CSS fallback stack is platform-specific."],["Body", "--font-ui", "--text-13", "--line-13", "--weight-regular", "Choose a worktree to begin.", "adapt: gpui::Font::default() — System UI target: current ui() uses IBM Plex Sans. Update root font and ui(), retaining bold/medium weights. CSS fallback stack is platform-specific."],["Metadata", "--font-mono", "--text-11", "--line-11", "--weight-regular", "platform-api / main", "verified: gpui::font(crate::fonts::MONO_FAMILY) — BlexMono primary family is bundled. CSS fallback stack is not reproduced automatically. PTY remains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17."],["Status", "--font-mono", "--text-10", "--line-10", "--weight-medium", "3 running · local", "verified: gpui::font(crate::fonts::MONO_FAMILY) — BlexMono primary family is bundled. CSS fallback stack is not reproduced automatically. PTY remains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17."],["Terminal", "--font-mono", "--text-12", "--line-12", "--weight-regular", "$ cargo test theme", "verified: gpui::font(crate::fonts::MONO_FAMILY) — BlexMono primary family is bundled. CSS fallback stack is not reproduced automatically. PTY remains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17."],["Display", "--font-ui", "--text-32", "--line-32", "--weight-bold", "No sessions", "adapt: gpui::Font::default() — System UI target: current ui() uses IBM Plex Sans. Update root font and ui(), retaining bold/medium weights. CSS fallback stack is platform-specific."]
 ];
-const radii=[["radius-4","--radius-4",".rounded(rpx(RADIUS_4))"],["radius-8","--radius-8",".rounded(rpx(RADIUS_8))"],["radius-12","--radius-12",".rounded(rpx(RADIUS_12))"],["radius-full","--radius-full",".rounded_full() for status pills and indicators only"]];
-const spacing=[2,4,6,8,10,12,16,20,24,32,40,48].map(function(v){return["space-"+v,"--space-"+v,"rpx(SPACE_"+v+")"]});
-const geometry=[["appbar-h","--appbar-h","rpx(APPBAR_H)"],["sidebar-w","--sidebar-w","rpx(SIDEBAR_W)"],["header-h","--header-h","rpx(HEADER_H)"],["status-h","--status-h","rpx(STATUS_H)"],["row-h","--row-h","rpx(ROW_H)"],["control-h","--control-h","rpx(CONTROL_H)"]];
-const gaps=[2,4,6,8,12,16].map(function(v){return["gap-"+v,"--gap-"+v,".gap(rpx(GAP_"+v+"))"]});
-const borders=[["border-thin","--border-thin",".border_1().border_color(c::BORDER())"],["border-medium","--border-medium",".border(rpx(BORDER_MEDIUM)).border_color(c::BORDER_STRONG())"],["focus-ring","--focus-ring",".border(rpx(FOCUS_RING)).border_color(c::SEL_RING())"]];
+const radii=[["radius-16", "--radius-16", "add: .rounded(rpx(RADIUS_16)) — Add RADIUS_16 = 16.0; RADIUS_GROUP is 6 and cannot substitute."],["radius-4", "--radius-4", "verified: .rounded(rpx(RADIUS_CONTROL)) — Existing radius matches."],["radius-8", "--radius-8", "add: .rounded(rpx(RADIUS_8)) — Add RADIUS_8 = 8.0; RADIUS_GROUP is 6 and cannot substitute."],["radius-12", "--radius-12", "verified: .rounded(rpx(RADIUS_PANEL)) — Existing radius matches."],["radius-full", "--radius-full", "verified: .rounded_full() — Existing radius matches."]];
+const spacing=[2,4,6,8,10,12,16,20,24,32,40,48].map(function(v){return["space-"+v,"--space-"+v,"See audited GPUI token map"]});
+const geometry=[["field-h", "--field-h", "add: rpx(FIELD_H) — Add FIELD_H = 60.0; geometry constant absent."],["form-button-h", "--form-button-h", "add: rpx(FORM_BUTTON_H) — Add FORM_BUTTON_H = 44.0; geometry constant absent."],["field-inset-x", "--field-inset-x", "add: rpx(FIELD_INSET_X) — Add FIELD_INSET_X = 14.0; geometry constant absent."],["field-inset-top", "--field-inset-top", "add: rpx(FIELD_INSET_TOP) — Add FIELD_INSET_TOP = 8.0; geometry constant absent."],["field-value-top", "--field-value-top", "add: rpx(FIELD_VALUE_TOP) — Add FIELD_VALUE_TOP = 27.0; geometry constant absent."],["textarea-h", "--textarea-h", "add: rpx(TEXTAREA_H) — Add TEXTAREA_H = 130.0; geometry constant absent."],["switch-w", "--switch-w", "add: rpx(SWITCH_W) — Add SWITCH_W = 48.0; geometry constant absent."],["switch-h", "--switch-h", "add: rpx(SWITCH_H) — Add SWITCH_H = 28.0; geometry constant absent."],["switch-thumb", "--switch-thumb", "add: rpx(SWITCH_THUMB) — Add SWITCH_THUMB = 22.0; geometry constant absent."],["switch-inset", "--switch-inset", "add: rpx(SWITCH_INSET) — Add SWITCH_INSET = 3.0; geometry constant absent."],["tile-min-w", "--tile-min-w", "add: rpx(TILE_MIN_W) — Add TILE_MIN_W = 42.0; geometry constant absent."],["tile-h", "--tile-h", "add: rpx(TILE_H) — Add TILE_H = 44.0; geometry constant absent."],["category-dot-size", "--category-dot-size", "add: rpx(CATEGORY_DOT_SIZE) — Add CATEGORY_DOT_SIZE = 8.0; geometry constant absent."],["appbar-h", "--appbar-h", "add: rpx(APPBAR_H) — Add APPBAR_H = 40.0; geometry constant absent."],["sidebar-w", "--sidebar-w", "add: rpx(SIDEBAR_W) — Add SIDEBAR_W = 236.0; geometry constant absent."],["header-h", "--header-h", "add: rpx(HEADER_H) — Add HEADER_H = 36.0; geometry constant absent."],["status-h", "--status-h", "add: rpx(STATUS_H) — Add STATUS_H = 26.0; geometry constant absent."],["row-h", "--row-h", "add: rpx(ROW_H) — Add ROW_H = 28.0; geometry constant absent."],["control-h", "--control-h", "adapt: rpx(CONTROL_H) — Current CONTROL_H = 22.0; target 24px. Audit all dependent geometry."]];
+const gaps=[2,4,6,8,12,16].map(function(v){return["gap-"+v,"--gap-"+v,"See audited GPUI token map"]});
+const borders=[["border-thin", "--border-thin", "verified: .border_1() — One unscaled logical pixel, not one device pixel. Apply semantic border color separately."],["border-medium", "--border-medium", "verified: .border_2() — Two unscaled logical pixels; CSS px border stays unscaled by app rem zoom. Apply semantic border color separately."],["focus-ring", "--focus-ring", "add: Add shared focus-ring composition: 1 logical px border + 1 logical px outer ring — Do not substitute a 2px layout border: preserve outside ring and content geometry. Neutral c::SEL_RING also needs migration."]];
 const shadows=[
-["shadow-sm","--shadow-sm","gpui::BoxShadow { color: c::SHADOW_SM(), offset: gpui::point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false }"],["shadow-md","--shadow-md","gpui::BoxShadow { color: c::SHADOW_MD(), offset: gpui::point(px(0.), px(8.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }"],["shadow-lg","--shadow-lg","gpui::BoxShadow { color: c::SHADOW_LG(), offset: gpui::point(px(0.), px(16.)), blur_radius: px(48.), spread_radius: px(0.), inset: false }"]
+["shadow-none", "--shadow-none", "verified: No BoxShadow — Flat forms/cards: omit shadow."],
+["shadow-sm", "--shadow-sm", "add: Add named gpui::BoxShadow recipe from this row (color, offset, blur, spread=0, inset=false) — Add SHADOW_SM_Y = 1.0, SHADOW_SM_BLUR = 2.0 and theme alpha accessor. BoxShadow requires Pixels, so convert rem-scaled design dimensions with current rem_size. Hairlines remain unscaled logical px. Do not reuse PANEL_SHADOW."],["shadow-md", "--shadow-md", "add: Add named gpui::BoxShadow recipe from this row (color, offset, blur, spread=0, inset=false) — Add SHADOW_SM_Y = 1.0, SHADOW_SM_BLUR = 2.0 and theme alpha accessor. BoxShadow requires Pixels, so convert rem-scaled design dimensions with current rem_size. Hairlines remain unscaled logical px. Do not reuse PANEL_SHADOW."],["shadow-lg", "--shadow-lg", "add: Add named gpui::BoxShadow recipe from this row (color, offset, blur, spread=0, inset=false) — Add SHADOW_SM_Y = 1.0, SHADOW_SM_BLUR = 2.0 and theme alpha accessor. BoxShadow requires Pixels, so convert rem-scaled design dimensions with current rem_size. Hairlines remain unscaled logical px. Do not reuse PANEL_SHADOW."]
 ];
 const motion=[
-["duration-fast","--duration-fast","--ease-standard","Duration::from_millis(80)"],["duration-base","--duration-base","--ease-decelerate","Duration::from_millis(140)"],["duration-slow","--duration-slow","--ease-accelerate","Duration::from_millis(220)"],["ease-standard","--ease-standard","","cubic_bezier(0.2, 0.8, 0.2, 1.0)"],["ease-decelerate","--ease-decelerate","","cubic_bezier(0.16, 1.0, 0.3, 1.0)"],["ease-accelerate","--ease-accelerate","","cubic_bezier(0.4, 0.0, 1.0, 1.0)"]
+["duration-fast", "--duration-fast", "--ease-standard", "verified: std::time::Duration::from_millis(80) — Duration API exists; add shared motion tokens and reduced-motion policy. Duration::ZERO alone does not skip every animation path."],["duration-base", "--duration-base", "--ease-decelerate", "verified: std::time::Duration::from_millis(140) — Duration API exists; add shared motion tokens and reduced-motion policy. Duration::ZERO alone does not skip every animation path."],["duration-slow", "--duration-slow", "--ease-accelerate", "verified: std::time::Duration::from_millis(220) — Duration API exists; add shared motion tokens and reduced-motion policy. Duration::ZERO alone does not skip every animation path."],["ease-standard", "--ease-standard", "", "add: Add CSS bezier solver for cubic-bezier(.2,.8,.2,1); pass closure to gpui::Animation::with_easing — gpui_component::animation::cubic_bezier in vendor/gpui-component/ui/src/animation.rs ignores computed x and returns y(progress). Exact CSS requires solving x(u)=progress before y(u); add an inverse-x solver."],["ease-decelerate", "--ease-decelerate", "", "add: Add CSS bezier solver for cubic-bezier(.16,1,.3,1); pass closure to gpui::Animation::with_easing — gpui_component::animation::cubic_bezier in vendor/gpui-component/ui/src/animation.rs ignores computed x and returns y(progress). Exact CSS requires solving x(u)=progress before y(u); add an inverse-x solver."],["ease-accelerate", "--ease-accelerate", "", "add: Add CSS bezier solver for cubic-bezier(.4,0,1,1); pass closure to gpui::Animation::with_easing — gpui_component::animation::cubic_bezier in vendor/gpui-component/ui/src/animation.rs ignores computed x and returns y(progress). Exact CSS requires solving x(u)=progress before y(u); add an inverse-x solver."]
 ];
-const zTokens=[["base","--z-base","paint order 0, first normal Stack child"],["raised","--z-raised","paint order 10, later Stack child"],["sticky","--z-sticky","paint order 20, after scrolling content"],["overlay","--z-overlay","paint order 40, first Overlay entry"],["modal","--z-modal","paint order 60, later Overlay entry"],["toast","--z-toast","paint order 80, last Overlay entry"]];
-const icons=[12,14,16,20,24,32].map(function(v){return["icon-"+v,"--icon-"+v,".size(rpx(ICON_"+v+"))"]});
-const opacities=[["disabled","--opacity-disabled","c::alpha(color, 0.38)"],["muted","--opacity-muted","c::alpha(color, 0.62)"],["hover","--opacity-hover","c::alpha(color, 0.08)"],["pressed","--opacity-pressed","c::alpha(color, 0.14)"],["scrim","--opacity-scrim","c::alpha(c::NEUTRAL_950(), 0.76)"]];
-const blurs=[["blur-0","--blur-0","no filter; paint content directly"],["blur-4","--blur-4","platform compositor helper with 4px radius"],["blur-8","--blur-8","platform compositor helper with 8px radius"],["blur-16","--blur-16","platform compositor helper with 16px radius"]];
+const zTokens=[["base", "--z-base", "reference: No numeric z-index equivalent; normal child paint order — CSS number is an ordering role, not a GPUI depth or Stack/Overlay API. Verify hit testing and focus separately."],["raised", "--z-raised", "reference: No numeric z-index equivalent; later sibling paint order — CSS number is an ordering role, not a GPUI depth or Stack/Overlay API. Verify hit testing and focus separately."],["sticky", "--z-sticky", "reference: No numeric z-index equivalent; paint after scroll content — CSS number is an ordering role, not a GPUI depth or Stack/Overlay API. Verify hit testing and focus separately."],["overlay", "--z-overlay", "reference: No numeric z-index equivalent; deferred anchored layer — CSS number is an ordering role, not a GPUI depth or Stack/Overlay API. Verify hit testing and focus separately."],["modal", "--z-modal", "reference: No numeric z-index equivalent; deferred blocking layer with focus/input ownership — CSS number is an ordering role, not a GPUI depth or Stack/Overlay API. Verify hit testing and focus separately."],["toast", "--z-toast", "reference: No numeric z-index equivalent; last nonblocking notification layer — CSS number is an ordering role, not a GPUI depth or Stack/Overlay API. Verify hit testing and focus separately."]];
+const iconSizes=[12,14,16,20,24,32].map(function(v){return["icon-"+v,"--icon-"+v,"See audited GPUI token map"]});
+const iconSvg={
+"chevron-right":'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg>',
+"chevron-down":'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 6 5 5 5-5"/></svg>',
+plus:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>',
+more:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h.01M8 8h.01M13 8h.01"/></svg>',
+close:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg>',
+folder:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h5l2 2h5v7H2z"/></svg>',
+branch:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="6" r="1.5"/><path d="M4 4.5v7M5.5 10C9 10 8.5 6 10.5 6"/></svg>',
+list:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4h8M6 8h8M6 12h8M2 4h.01M2 8h.01M2 12h.01"/></svg>',
+grid:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="4" height="4"/><rect x="9.5" y="2.5" width="4" height="4"/><rect x="2.5" y="9.5" width="4" height="4"/><rect x="9.5" y="9.5" width="4" height="4"/></svg>',
+check:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg>',
+warning:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2 14 13H2zM8 6v3M8 11.5h.01"/></svg>',
+codex:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m8 2 5 3v6l-5 3-5-3V5zM5 6l3 2 3-2M8 8v4"/></svg>',
+claude:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h12M4 4l8 8M12 4l-8 8"/></svg>',
+terminal:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 4 4 4-4 4M8 12h5"/></svg>',
+sun:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5 13 13M13 3l-1.5 1.5M4.5 11.5 3 13"/></svg>',
+moon:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.5 10.5A5.5 5.5 0 0 1 5.5 3.5 5.5 5.5 0 1 0 12.5 10.5z"/></svg>',
+trash:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M6 4V2.5h4V4M4.5 4l.5 9h6l.5-9M7 6.5v4M9 6.5v4"/></svg>',
+refresh:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 5V2l-2 2a5 5 0 1 0 1.5 5M13 2v3h-3"/></svg>',
+play:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 3 7 5-7 5z"/></svg>'
+};
+const iconCatalog=["chevron-right","chevron-down","plus","more","close","folder","branch","list","grid","check","warning","codex","claude","terminal","sun","moon","trash","refresh","play"];
+const opacities=[["disabled", "--opacity-disabled", "verified: .opacity(.58) — Element opacity composes the subtree and does not disable input. For one paint use color.opacity(factor); c::alpha replaces alpha. Quiet veil uses opacity-pressed .14; see audited token mapping for composition."],["muted", "--opacity-muted", "verified: .opacity(.62) — Element opacity composes the subtree and does not disable input. For one paint use color.opacity(factor); c::alpha replaces alpha. Quiet veil uses opacity-pressed .14; see audited token mapping for composition."],["hover", "--opacity-hover", "verified: .opacity(.08) — Element opacity composes the subtree and does not disable input. For one paint use color.opacity(factor); c::alpha replaces alpha. Quiet veil uses opacity-pressed .14; see audited token mapping for composition."],["pressed", "--opacity-pressed", "verified: .opacity(.14) — Element opacity composes the subtree and does not disable input. For one paint use color.opacity(factor); c::alpha replaces alpha. Quiet veil uses opacity-pressed .14; see audited token mapping for composition."],["scrim", "--opacity-scrim", "verified: .opacity(.76) — Element opacity composes the subtree and does not disable input. For one paint use color.opacity(factor); c::alpha replaces alpha. Quiet veil uses opacity-pressed .14; see audited token mapping for composition."]];
+const overlayRules=[["Attachment","Confirmation trays share the source row or tile edge and never center."],["Veil","Use the scrim semantic at low opacity, keep the app visible, and do not blur."],["Aperture","Keep the source above the veil with the crisp focus-ring token."],["Workspace flows","Quick-create morphs in its switcher popover; delete expands inside workspace management."]];
+const blurs=[["blur-0", "--blur-0", "reference: No filter; paint directly — Product overlays never blur. No platform compositor helper exists in Grove; do not invent one."],["blur-4", "--blur-4", "reference: No core GPUI CSS blur equivalent; reference only — Product overlays never blur. No platform compositor helper exists in Grove; do not invent one."],["blur-8", "--blur-8", "reference: No core GPUI CSS blur equivalent; reference only — Product overlays never blur. No platform compositor helper exists in Grove; do not invent one."],["blur-16", "--blur-16", "reference: No core GPUI CSS blur equivalent; reference only — Product overlays never blur. No platform compositor helper exists in Grove; do not invent one."]];
 const assumptions=[
-"Palette, geometry, and density come from the selected A4 wireframe and written brief.",
+"The approved form moodboard now sets surface, focus, typography, radius, and form geometry; existing dense workspace chrome keeps its documented dimensions.",
 "One semantic scheme drives the dark default and its derived light counterpart.",
-"Dark received primary scrutiny. Light is the derived warm-white counterpart.",
-"IBM Plex Sans and Blex Mono Nerd Font Mono are bundled in src/fonts.rs.",
+"Dark received primary scrutiny. Light is the derived white counterpart.",
+"System sans is the target UI family, including form paths and branches. Blex Mono remains for terminal and code metadata; source font migration is pending.",
 "One rem is 16 design pixels. Layout uses rpx(), while hairlines use px(1.).",
 "Spacing and radius are tidy scales rather than traced values.",
-"Existing c::BG*(), c::FG*(), status colors, and c::SEL_*() map directly. New contract aliases must become thin accessors in src/theme.rs.",
-"Shadows, motion, paint order, opacity, and blur are defaults because a static wireframe cannot specify them.",
-"Reduced motion sets every duration to 0ms and skips transform-based transitions.",
+"Changed colors, typography, form geometry, and new aliases are targets pending Rust migration. Every mapping now has an audited status; existing theme colors still require migration.",
+"Forms and cards default to shadow-none; no bevels or inset shadows. Floating separation may use the documented shadows. Product overlays do not blur.",
+"Reduced motion sets every duration to Duration::ZERO and skips transform-based transitions.",
 "Workspace switching is appbar content and owns no separate side-strip width.",
-"Green, amber, red, and blue are role colors, not default copy colors. On warm white, pair their indicators with c::FG() text until each small-text pairing is separately validated."
+"Green, amber, red, and blue are role colors, not default copy colors. On white, pair indicators with primary text; destructive text uses the validated light error token.",
+"The 19 currentColor SVG paths regularize wireframe glyphs. Codex and Claude marks remain geometric stand-ins until final brand artwork exists."
+,"Action buttons retain catalog icons; switches and selection tiles express state directly and need no decorative action icon. Product icons use one viewBox and currentColor. Do not substitute text glyphs, mix viewBoxes, add decorative wrapper boxes, or place glyphs on violet squares. Project and List share one borderless 24px destination toggle; Grid is a separate borderless 24px button. The toggle displays the destination icon and remembers the non-grid view. Both use 14px icons, labels, tooltips, and pressed state."
 ];
 const contrastPairs=[
-["brand / bg","--color-brand","--color-bg","AAA for normal text"],["on-brand / brand","--color-on-brand","--color-brand","AAA for normal text"],["primary / bg","--color-text-primary","--color-bg","AAA for normal text"],["secondary / bg","--color-text-secondary","--color-bg","AAA for normal text"],["muted / bg","--color-text-muted","--color-bg","Dark is nonessential metadata or large text only. Light passes AA for normal text."],["accent / bg","--color-accent","--color-bg","Keep out of body copy. Use for agent identity, connection, focus, and active ports."]
+["label / field","--color-text-secondary","--color-field-fill","AA for normal text"],["value / field","--color-text-primary","--color-field-fill","AAA for normal text"],["focus / field","--color-focus","--color-field-fill","At least 3:1 for control focus"],["error / field","--color-destructive","--color-field-fill","AA for normal text"],
+["brand / bg","--color-brand","--color-bg","AAA for normal text"],["on-brand / brand","--color-on-brand","--color-brand","AAA for normal text"],["primary / bg","--color-text-primary","--color-bg","AAA for normal text"],["secondary / bg","--color-text-secondary","--color-bg","AA for normal text"],["muted / bg","--color-text-muted","--color-bg","Quiet metadata only; do not use for embedded field labels."],["accent / bg","--color-accent","--color-bg","Keep out of body copy. Use for agent identity, connection, and active ports."]
 ];
 
+var gpuiTokenMap = [
+  {
+    "token": "--neutral-0",
+    "target": "c::NEUTRAL_0()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--neutral-50",
+    "target": "c::NEUTRAL_50()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--neutral-100",
+    "target": "c::NEUTRAL_100()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--neutral-200",
+    "target": "c::NEUTRAL_200()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--neutral-300",
+    "target": "c::NEUTRAL_300()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--neutral-400",
+    "target": "c::NEUTRAL_400()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--neutral-500",
+    "target": "c::NEUTRAL_500()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--neutral-600",
+    "target": "c::NEUTRAL_600()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--neutral-700",
+    "target": "c::NEUTRAL_700()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--neutral-800",
+    "target": "c::NEUTRAL_800()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--neutral-850",
+    "target": "c::NEUTRAL_850()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--neutral-900",
+    "target": "c::NEUTRAL_900()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--neutral-950",
+    "target": "c::NEUTRAL_950()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--warm-white",
+    "target": "c::WARM_WHITE()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--violet-400",
+    "target": "c::VIOLET_400()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--violet-500",
+    "target": "c::VIOLET_500()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--violet-600",
+    "target": "c::VIOLET_600()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--green-500",
+    "target": "c::GREEN_500()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--amber-500",
+    "target": "c::AMBER_500()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--red-500",
+    "target": "c::RED_500()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--blue-500",
+    "target": "c::BLUE_500()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add immutable palette primitive; do not alias to a theme-dependent status accessor."
+  },
+  {
+    "token": "--color-board",
+    "target": "No native equivalent; HTML catalog/flow canvas only",
+    "status": "reference",
+    "source": "DESIGN.html",
+    "note": "Do not use the board background as the application background."
+  },
+  {
+    "token": "--color-bg",
+    "target": "c::BG()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing accessor resolves legacy theme values; migrate both appearances to this row."
+  },
+  {
+    "token": "--color-bg-subtle",
+    "target": "c::BG_STRIP()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing accessor resolves legacy theme values; migrate both appearances to this row."
+  },
+  {
+    "token": "--color-surface",
+    "target": "c::SURFACE()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  },
+  {
+    "token": "--color-surface-raised",
+    "target": "c::SURFACE_RAISED()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  },
+  {
+    "token": "--color-hover",
+    "target": "c::BG_HOVER()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing accessor resolves legacy theme values; migrate both appearances to this row."
+  },
+  {
+    "token": "--color-selected",
+    "target": "c::BG_HL()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing accessor resolves legacy theme values; migrate both appearances to this row."
+  },
+  {
+    "token": "--color-text-primary",
+    "target": "c::FG()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing accessor resolves legacy theme values; migrate both appearances to this row."
+  },
+  {
+    "token": "--color-text-secondary",
+    "target": "c::FG_DIM()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing accessor resolves legacy theme values; migrate both appearances to this row."
+  },
+  {
+    "token": "--color-text-muted",
+    "target": "c::FG_MUTE()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing accessor resolves legacy theme values; migrate both appearances to this row."
+  },
+  {
+    "token": "--color-brand",
+    "target": "c::BRAND()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  },
+  {
+    "token": "--color-brand-hover",
+    "target": "c::BRAND_HOVER()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  },
+  {
+    "token": "--color-on-brand",
+    "target": "c::ON_BRAND()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  },
+  {
+    "token": "--color-inverse-cta-bg",
+    "target": "c::INVERSE_CTA_BG()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  },
+  {
+    "token": "--color-inverse-cta-text",
+    "target": "c::INVERSE_CTA_TEXT()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  },
+  {
+    "token": "--color-accent",
+    "target": "c::MAGENTA()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing accessor resolves legacy theme values; migrate both appearances to this row."
+  },
+  {
+    "token": "--color-accent-hover",
+    "target": "c::ACCENT_HOVER()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  },
+  {
+    "token": "--color-accent-pressed",
+    "target": "c::ACCENT_PRESSED()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  },
+  {
+    "token": "--color-focus",
+    "target": "c::SEL_RING()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing SEL_RING derives cyan; replace with neutral dark/light focus. Color alone does not implement ring geometry."
+  },
+  {
+    "token": "--color-accent-wash",
+    "target": "c::SEL_TINT_SOFT()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing SEL_TINT_SOFT uses legacy color/alpha; match violet .14 dark / .10 light."
+  },
+  {
+    "token": "--color-running",
+    "target": "c::GREEN()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing accessor resolves legacy theme values; migrate both appearances to this row."
+  },
+  {
+    "token": "--color-needs-you",
+    "target": "c::AMBER()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing accessor resolves legacy theme values; migrate both appearances to this row."
+  },
+  {
+    "token": "--color-destructive",
+    "target": "c::RED()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing accessor resolves legacy theme values; migrate both appearances to this row."
+  },
+  {
+    "token": "--color-tertiary",
+    "target": "c::BLUE()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing accessor resolves legacy theme values; migrate both appearances to this row."
+  },
+  {
+    "token": "--color-border",
+    "target": "c::BORDER()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing accessor resolves legacy theme values; migrate both appearances to this row."
+  },
+  {
+    "token": "--color-border-strong",
+    "target": "c::BORDER_STRONG()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  },
+  {
+    "token": "--color-divider-soft",
+    "target": "c::BORDER_SOFT()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing BORDER_SOFT is an opaque mix; replace with alpha-bearing foreground, preserving .08 dark / .09 light."
+  },
+  {
+    "token": "--color-scrim",
+    "target": "c::SCRIM()",
+    "status": "adapt",
+    "source": "src/theme.rs",
+    "note": "Existing accessor resolves legacy theme values; migrate both appearances to this row."
+  },
+  {
+    "token": "--color-terminal-bg",
+    "target": "c::TERMINAL_BG()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row. Coordinate PTY palette separately; preserve cell metrics and ANSI contrast."
+  },
+  {
+    "token": "--color-terminal-text",
+    "target": "c::TERMINAL_TEXT()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row. Coordinate PTY palette separately; preserve cell metrics and ANSI contrast."
+  },
+  {
+    "token": "--shadow-sm",
+    "target": "gpui::BoxShadow { color: c::SHADOW_SM(), offset: gpui::point(gpui::px(0.), rpx(SHADOW_SM_Y).to_pixels(window.rem_size())), blur_radius: rpx(SHADOW_SM_BLUR).to_pixels(window.rem_size()), spread_radius: gpui::px(0.), inset: false }",
+    "status": "add",
+    "source": "src/views/components.rs; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs",
+    "note": "Add SHADOW_SM_Y = 1.0, SHADOW_SM_BLUR = 2.0 and theme alpha accessor. BoxShadow requires Pixels, so convert rem-scaled design dimensions with current rem_size. Hairlines remain unscaled logical px. Do not reuse PANEL_SHADOW."
+  },
+  {
+    "token": "--shadow-md",
+    "target": "gpui::BoxShadow { color: c::SHADOW_MD(), offset: gpui::point(gpui::px(0.), rpx(SHADOW_MD_Y).to_pixels(window.rem_size())), blur_radius: rpx(SHADOW_MD_BLUR).to_pixels(window.rem_size()), spread_radius: gpui::px(0.), inset: false }",
+    "status": "add",
+    "source": "src/views/components.rs; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs",
+    "note": "Add SHADOW_MD_Y = 8.0, SHADOW_MD_BLUR = 24.0 and theme alpha accessor. BoxShadow requires Pixels, so convert rem-scaled design dimensions with current rem_size. Hairlines remain unscaled logical px. Do not reuse PANEL_SHADOW."
+  },
+  {
+    "token": "--shadow-lg",
+    "target": "gpui::BoxShadow { color: c::SHADOW_LG(), offset: gpui::point(gpui::px(0.), rpx(SHADOW_LG_Y).to_pixels(window.rem_size())), blur_radius: rpx(SHADOW_LG_BLUR).to_pixels(window.rem_size()), spread_radius: gpui::px(0.), inset: false }",
+    "status": "add",
+    "source": "src/views/components.rs; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs",
+    "note": "Add SHADOW_LG_Y = 16.0, SHADOW_LG_BLUR = 48.0 and theme alpha accessor. BoxShadow requires Pixels, so convert rem-scaled design dimensions with current rem_size. Hairlines remain unscaled logical px. Do not reuse PANEL_SHADOW."
+  },
+  {
+    "token": "--font-ui",
+    "target": "gpui::Font::default()",
+    "status": "adapt",
+    "source": "src/fonts.rs; src/views/mod.rs",
+    "note": "System UI target: current ui() uses IBM Plex Sans. Update root font and ui(), retaining bold/medium weights. CSS fallback stack is platform-specific."
+  },
+  {
+    "token": "--font-mono",
+    "target": "gpui::font(crate::fonts::MONO_FAMILY)",
+    "status": "verified",
+    "source": "src/fonts.rs; src/views/mod.rs",
+    "note": "BlexMono primary family is bundled. CSS fallback stack is not reproduced automatically. PTY remains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17."
+  },
+  {
+    "token": "--text-10",
+    "target": ".text_size(rpx(TEXT_MICRO))",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing size matches; ui()/mono() do not set explicit line height."
+  },
+  {
+    "token": "--text-11",
+    "target": ".text_size(rpx(TEXT_SMALL))",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing size matches; ui()/mono() do not set explicit line height."
+  },
+  {
+    "token": "--text-12",
+    "target": ".text_size(rpx(TEXT_BODY))",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing size matches; ui()/mono() do not set explicit line height."
+  },
+  {
+    "token": "--text-13",
+    "target": ".text_size(rpx(TEXT_TITLE))",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing size matches; ui()/mono() do not set explicit line height."
+  },
+  {
+    "token": "--text-14",
+    "target": ".text_size(rpx(TEXT_14))",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add TEXT_14 = 14.0; TEXT_DISPLAY is 20, not 24. Set line height separately."
+  },
+  {
+    "token": "--text-16",
+    "target": ".text_size(rpx(TEXT_16))",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add TEXT_16 = 16.0; TEXT_DISPLAY is 20, not 24. Set line height separately."
+  },
+  {
+    "token": "--line-14",
+    "target": ".line_height(rpx(LINE_14))",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; src/views/mod.rs",
+    "note": "Add LINE_14 = 14.0 * 1.429 in src/views/tokens.rs. Preserve exact CSS fractional multiplier. ui()/mono() set no line height; PTY is excluded."
+  },
+  {
+    "token": "--line-16",
+    "target": ".line_height(rpx(LINE_16))",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; src/views/mod.rs",
+    "note": "Add LINE_16 = 16.0 * 1.375 in src/views/tokens.rs. Preserve exact CSS fractional multiplier. ui()/mono() set no line height; PTY is excluded."
+  },
+  {
+    "token": "--line-field-label",
+    "target": ".line_height(rpx(LINE_FIELD_LABEL))",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; src/views/mod.rs",
+    "note": "Add LINE_FIELD_LABEL = 16.0 in src/views/tokens.rs. Preserve exact CSS fractional multiplier. ui()/mono() set no line height; PTY is excluded."
+  },
+  {
+    "token": "--line-field-value",
+    "target": ".line_height(rpx(LINE_FIELD_VALUE))",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; src/views/mod.rs",
+    "note": "Add LINE_FIELD_VALUE = 22.0 in src/views/tokens.rs. Preserve exact CSS fractional multiplier. ui()/mono() set no line height; PTY is excluded."
+  },
+  {
+    "token": "--text-15",
+    "target": ".text_size(rpx(TEXT_15))",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add TEXT_15 = 15.0; TEXT_DISPLAY is 20, not 24. Set line height separately."
+  },
+  {
+    "token": "--text-18",
+    "target": ".text_size(rpx(TEXT_18))",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add TEXT_18 = 18.0; TEXT_DISPLAY is 20, not 24. Set line height separately."
+  },
+  {
+    "token": "--text-24",
+    "target": ".text_size(rpx(TEXT_24))",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add TEXT_24 = 24.0; TEXT_DISPLAY is 20, not 24. Set line height separately."
+  },
+  {
+    "token": "--text-32",
+    "target": ".text_size(rpx(TEXT_DISPLAY_LG))",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing size matches; ui()/mono() do not set explicit line height."
+  },
+  {
+    "token": "--line-10",
+    "target": ".line_height(rpx(LINE_10))",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; src/views/mod.rs",
+    "note": "Add LINE_10 = 10.0 * 1.3 in src/views/tokens.rs. Preserve exact CSS fractional multiplier. ui()/mono() set no line height; PTY is excluded."
+  },
+  {
+    "token": "--line-11",
+    "target": ".line_height(rpx(LINE_11))",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; src/views/mod.rs",
+    "note": "Add LINE_11 = 11.0 * 1.364 in src/views/tokens.rs. Preserve exact CSS fractional multiplier. ui()/mono() set no line height; PTY is excluded."
+  },
+  {
+    "token": "--line-12",
+    "target": ".line_height(rpx(LINE_12))",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; src/views/mod.rs",
+    "note": "Add LINE_12 = 12.0 * 1.417 in src/views/tokens.rs. Preserve exact CSS fractional multiplier. ui()/mono() set no line height; PTY is excluded."
+  },
+  {
+    "token": "--line-13",
+    "target": ".line_height(rpx(LINE_13))",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; src/views/mod.rs",
+    "note": "Add LINE_13 = 13.0 * 1.462 in src/views/tokens.rs. Preserve exact CSS fractional multiplier. ui()/mono() set no line height; PTY is excluded."
+  },
+  {
+    "token": "--line-15",
+    "target": ".line_height(rpx(LINE_15))",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; src/views/mod.rs",
+    "note": "Add LINE_15 = 15.0 * 1.333 in src/views/tokens.rs. Preserve exact CSS fractional multiplier. ui()/mono() set no line height; PTY is excluded."
+  },
+  {
+    "token": "--line-18",
+    "target": ".line_height(rpx(LINE_18))",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; src/views/mod.rs",
+    "note": "Add LINE_18 = 18.0 * 1.278 in src/views/tokens.rs. Preserve exact CSS fractional multiplier. ui()/mono() set no line height; PTY is excluded."
+  },
+  {
+    "token": "--line-24",
+    "target": ".line_height(rpx(LINE_24))",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; src/views/mod.rs",
+    "note": "Add LINE_24 = 24.0 * 1.208 in src/views/tokens.rs. Preserve exact CSS fractional multiplier. ui()/mono() set no line height; PTY is excluded."
+  },
+  {
+    "token": "--line-32",
+    "target": ".line_height(rpx(LINE_32))",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; src/views/mod.rs",
+    "note": "Add LINE_32 = 32.0 * 1.125 in src/views/tokens.rs. Preserve exact CSS fractional multiplier. ui()/mono() set no line height; PTY is excluded."
+  },
+  {
+    "token": "--weight-regular",
+    "target": "gpui::FontWeight::NORMAL",
+    "status": "verified",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/text_system.rs",
+    "note": "Apply with .font_weight(...); ensure the chosen font supplies or synthesizes the weight."
+  },
+  {
+    "token": "--weight-medium",
+    "target": "gpui::FontWeight::MEDIUM",
+    "status": "verified",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/text_system.rs",
+    "note": "Apply with .font_weight(...); ensure the chosen font supplies or synthesizes the weight."
+  },
+  {
+    "token": "--weight-semibold",
+    "target": "gpui::FontWeight::SEMIBOLD",
+    "status": "verified",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/text_system.rs",
+    "note": "Apply with .font_weight(...); ensure the chosen font supplies or synthesizes the weight."
+  },
+  {
+    "token": "--weight-bold",
+    "target": "gpui::FontWeight::BOLD",
+    "status": "verified",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/text_system.rs",
+    "note": "Apply with .font_weight(...); ensure the chosen font supplies or synthesizes the weight."
+  },
+  {
+    "token": "--radius-4",
+    "target": ".rounded(rpx(RADIUS_CONTROL))",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing radius matches."
+  },
+  {
+    "token": "--radius-8",
+    "target": ".rounded(rpx(RADIUS_8))",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add RADIUS_8 = 8.0; RADIUS_GROUP is 6 and cannot substitute."
+  },
+  {
+    "token": "--radius-12",
+    "target": ".rounded(rpx(RADIUS_PANEL))",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing radius matches."
+  },
+  {
+    "token": "--radius-16",
+    "target": ".rounded(rpx(RADIUS_16))",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add RADIUS_16 = 16.0; RADIUS_GROUP is 6 and cannot substitute."
+  },
+  {
+    "token": "--radius-full",
+    "target": ".rounded_full()",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing radius matches."
+  },
+  {
+    "token": "--space-2",
+    "target": "rpx(SPACE_XS)",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing named spacing matches."
+  },
+  {
+    "token": "--space-4",
+    "target": "rpx(SPACE_SM)",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing named spacing matches."
+  },
+  {
+    "token": "--space-6",
+    "target": "rpx(SPACE_MD)",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing named spacing matches."
+  },
+  {
+    "token": "--space-8",
+    "target": "rpx(SPACE_LG)",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing named spacing matches."
+  },
+  {
+    "token": "--space-10",
+    "target": "rpx(SPACE_XL)",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing named spacing matches."
+  },
+  {
+    "token": "--space-12",
+    "target": "rpx(SPACE_2XL)",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing named spacing matches."
+  },
+  {
+    "token": "--space-16",
+    "target": "rpx(SPACE_3XL)",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Existing named spacing matches."
+  },
+  {
+    "token": "--space-20",
+    "target": "rpx(SPACE_20)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add SPACE_20 = 20.0; numeric SPACE_* names are not existing constants."
+  },
+  {
+    "token": "--space-24",
+    "target": "rpx(SPACE_24)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add SPACE_24 = 24.0; numeric SPACE_* names are not existing constants."
+  },
+  {
+    "token": "--space-32",
+    "target": "rpx(SPACE_32)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add SPACE_32 = 32.0; numeric SPACE_* names are not existing constants."
+  },
+  {
+    "token": "--space-40",
+    "target": "rpx(SPACE_40)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add SPACE_40 = 40.0; numeric SPACE_* names are not existing constants."
+  },
+  {
+    "token": "--space-48",
+    "target": "rpx(SPACE_48)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add SPACE_48 = 48.0; numeric SPACE_* names are not existing constants."
+  },
+  {
+    "token": "--gap-2",
+    "target": ".gap(rpx(SPACE_XS))",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Alias to --space-2; no separate GAP_* constant exists."
+  },
+  {
+    "token": "--gap-4",
+    "target": ".gap(rpx(SPACE_SM))",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Alias to --space-4; no separate GAP_* constant exists."
+  },
+  {
+    "token": "--gap-6",
+    "target": ".gap(rpx(SPACE_MD))",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Alias to --space-6; no separate GAP_* constant exists."
+  },
+  {
+    "token": "--gap-8",
+    "target": ".gap(rpx(SPACE_LG))",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Alias to --space-8; no separate GAP_* constant exists."
+  },
+  {
+    "token": "--gap-12",
+    "target": ".gap(rpx(SPACE_2XL))",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Alias to --space-12; no separate GAP_* constant exists."
+  },
+  {
+    "token": "--gap-16",
+    "target": ".gap(rpx(SPACE_3XL))",
+    "status": "verified",
+    "source": "src/views/tokens.rs",
+    "note": "Alias to --space-16; no separate GAP_* constant exists."
+  },
+  {
+    "token": "--border-thin",
+    "target": ".border_1()",
+    "status": "verified",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs",
+    "note": "One unscaled logical pixel, not one device pixel. Apply semantic border color separately."
+  },
+  {
+    "token": "--border-medium",
+    "target": ".border_2()",
+    "status": "verified",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs",
+    "note": "Two unscaled logical pixels; CSS px border stays unscaled by app rem zoom. Apply semantic border color separately."
+  },
+  {
+    "token": "--focus-ring",
+    "target": "Add shared focus-ring composition: 1 logical px border + 1 logical px outer ring",
+    "status": "add",
+    "source": "src/views/components.rs",
+    "note": "Do not substitute a 2px layout border: preserve outside ring and content geometry. Neutral c::SEL_RING also needs migration."
+  },
+  {
+    "token": "--duration-fast",
+    "target": "std::time::Duration::from_millis(80)",
+    "status": "verified",
+    "source": "Rust std::time::Duration; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/animation.rs",
+    "note": "Duration API exists; add shared motion tokens and reduced-motion policy. Duration::ZERO alone does not skip every animation path."
+  },
+  {
+    "token": "--duration-base",
+    "target": "std::time::Duration::from_millis(140)",
+    "status": "verified",
+    "source": "Rust std::time::Duration; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/animation.rs",
+    "note": "Duration API exists; add shared motion tokens and reduced-motion policy. Duration::ZERO alone does not skip every animation path."
+  },
+  {
+    "token": "--duration-slow",
+    "target": "std::time::Duration::from_millis(220)",
+    "status": "verified",
+    "source": "Rust std::time::Duration; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/animation.rs",
+    "note": "Duration API exists; add shared motion tokens and reduced-motion policy. Duration::ZERO alone does not skip every animation path."
+  },
+  {
+    "token": "--ease-standard",
+    "target": "Add CSS bezier solver for cubic-bezier(.2,.8,.2,1); pass closure to gpui::Animation::with_easing",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/animation.rs",
+    "note": "gpui_component::animation::cubic_bezier in vendor/gpui-component/ui/src/animation.rs ignores computed x and returns y(progress). Exact CSS requires solving x(u)=progress before y(u); add an inverse-x solver."
+  },
+  {
+    "token": "--ease-decelerate",
+    "target": "Add CSS bezier solver for cubic-bezier(.16,1,.3,1); pass closure to gpui::Animation::with_easing",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/animation.rs",
+    "note": "gpui_component::animation::cubic_bezier in vendor/gpui-component/ui/src/animation.rs ignores computed x and returns y(progress). Exact CSS requires solving x(u)=progress before y(u); add an inverse-x solver."
+  },
+  {
+    "token": "--ease-accelerate",
+    "target": "Add CSS bezier solver for cubic-bezier(.4,0,1,1); pass closure to gpui::Animation::with_easing",
+    "status": "add",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/animation.rs",
+    "note": "gpui_component::animation::cubic_bezier in vendor/gpui-component/ui/src/animation.rs ignores computed x and returns y(progress). Exact CSS requires solving x(u)=progress before y(u); add an inverse-x solver."
+  },
+  {
+    "token": "--z-base",
+    "target": "No numeric z-index equivalent; normal child paint order",
+    "status": "reference",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/deferred.rs; elements/anchored.rs",
+    "note": "CSS number is an ordering role, not a GPUI depth or Stack/Overlay API. Verify hit testing and focus separately."
+  },
+  {
+    "token": "--z-raised",
+    "target": "No numeric z-index equivalent; later sibling paint order",
+    "status": "reference",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/deferred.rs; elements/anchored.rs",
+    "note": "CSS number is an ordering role, not a GPUI depth or Stack/Overlay API. Verify hit testing and focus separately."
+  },
+  {
+    "token": "--z-sticky",
+    "target": "No numeric z-index equivalent; paint after scroll content",
+    "status": "reference",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/deferred.rs; elements/anchored.rs",
+    "note": "CSS number is an ordering role, not a GPUI depth or Stack/Overlay API. Verify hit testing and focus separately."
+  },
+  {
+    "token": "--z-overlay",
+    "target": "No numeric z-index equivalent; deferred anchored layer",
+    "status": "reference",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/deferred.rs; elements/anchored.rs",
+    "note": "CSS number is an ordering role, not a GPUI depth or Stack/Overlay API. Verify hit testing and focus separately."
+  },
+  {
+    "token": "--z-modal",
+    "target": "No numeric z-index equivalent; deferred blocking layer with focus/input ownership",
+    "status": "reference",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/deferred.rs; elements/anchored.rs",
+    "note": "CSS number is an ordering role, not a GPUI depth or Stack/Overlay API. Verify hit testing and focus separately."
+  },
+  {
+    "token": "--z-toast",
+    "target": "No numeric z-index equivalent; last nonblocking notification layer",
+    "status": "reference",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/deferred.rs; elements/anchored.rs",
+    "note": "CSS number is an ordering role, not a GPUI depth or Stack/Overlay API. Verify hit testing and focus separately."
+  },
+  {
+    "token": "--icon-12",
+    "target": "crate::icons::icon(name, ICON_SM, color)",
+    "status": "verified",
+    "source": "src/views/tokens.rs; src/icons.rs",
+    "note": "Existing size matches; icon() applies rpx once. Verify sprite path independently."
+  },
+  {
+    "token": "--icon-14",
+    "target": "crate::icons::icon(name, ICON_MD, color)",
+    "status": "verified",
+    "source": "src/views/tokens.rs; src/icons.rs",
+    "note": "Existing size matches; icon() applies rpx once. Verify sprite path independently."
+  },
+  {
+    "token": "--icon-16",
+    "target": "crate::icons::icon(name, ICON_LG, color)",
+    "status": "verified",
+    "source": "src/views/tokens.rs; src/icons.rs",
+    "note": "Existing size matches; icon() applies rpx once. Verify sprite path independently."
+  },
+  {
+    "token": "--icon-20",
+    "target": "crate::icons::icon(name, ICON_20, color)",
+    "status": "add",
+    "source": "src/views/tokens.rs; src/icons.rs",
+    "note": "Add ICON_20 = 20.0; illustration only, not chrome."
+  },
+  {
+    "token": "--icon-24",
+    "target": "crate::icons::icon(name, ICON_24, color)",
+    "status": "add",
+    "source": "src/views/tokens.rs; src/icons.rs",
+    "note": "Add ICON_24 = 24.0; illustration only, not chrome."
+  },
+  {
+    "token": "--icon-32",
+    "target": "crate::icons::icon(name, ICON_DISPLAY, color)",
+    "status": "verified",
+    "source": "src/views/tokens.rs; src/icons.rs",
+    "note": "Existing size matches; icon() applies rpx once. Verify sprite path independently."
+  },
+  {
+    "token": "--opacity-disabled",
+    "target": ".opacity(.58)",
+    "status": "verified",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; color.rs; src/theme.rs",
+    "note": "Element opacity composes the subtree and does not disable input. For one paint use color.opacity(factor); c::alpha replaces alpha."
+  },
+  {
+    "token": "--opacity-muted",
+    "target": ".opacity(.62)",
+    "status": "verified",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; color.rs; src/theme.rs",
+    "note": "Element opacity composes the subtree and does not disable input. For one paint use color.opacity(factor); c::alpha replaces alpha."
+  },
+  {
+    "token": "--opacity-hover",
+    "target": ".opacity(.08)",
+    "status": "verified",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; color.rs; src/theme.rs",
+    "note": "Element opacity composes the subtree and does not disable input. For one paint use color.opacity(factor); c::alpha replaces alpha."
+  },
+  {
+    "token": "--opacity-pressed",
+    "target": ".opacity(.14)",
+    "status": "verified",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; color.rs; src/theme.rs",
+    "note": "Element opacity composes the subtree and does not disable input. For one paint use color.opacity(factor); c::alpha replaces alpha. Quiet veil uses this .14 over scrim .76 dark / .38 light, giving .1064 / .0532 effective alpha."
+  },
+  {
+    "token": "--opacity-scrim",
+    "target": ".opacity(.76)",
+    "status": "verified",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; color.rs; src/theme.rs",
+    "note": "Element opacity composes the subtree and does not disable input. For one paint use color.opacity(factor); c::alpha replaces alpha. This standalone .76 token is not the quiet veil multiplier: current COMPONENTS/screens use --opacity-pressed (.14) over scrim .76 dark / .38 light, giving .1064 / .0532 effective alpha."
+  },
+  {
+    "token": "--blur-0",
+    "target": "No filter; paint directly",
+    "status": "reference",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs",
+    "note": "Product overlays never blur. No platform compositor helper exists in Grove; do not invent one."
+  },
+  {
+    "token": "--blur-4",
+    "target": "No core GPUI CSS blur equivalent; reference only",
+    "status": "reference",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs",
+    "note": "Product overlays never blur. No platform compositor helper exists in Grove; do not invent one."
+  },
+  {
+    "token": "--blur-8",
+    "target": "No core GPUI CSS blur equivalent; reference only",
+    "status": "reference",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs",
+    "note": "Product overlays never blur. No platform compositor helper exists in Grove; do not invent one."
+  },
+  {
+    "token": "--blur-16",
+    "target": "No core GPUI CSS blur equivalent; reference only",
+    "status": "reference",
+    "source": "GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs",
+    "note": "Product overlays never blur. No platform compositor helper exists in Grove; do not invent one."
+  },
+  {
+    "token": "--appbar-h",
+    "target": "rpx(APPBAR_H)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add APPBAR_H = 40.0; geometry constant absent."
+  },
+  {
+    "token": "--sidebar-w",
+    "target": "rpx(SIDEBAR_W)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add SIDEBAR_W = 236.0; geometry constant absent."
+  },
+  {
+    "token": "--header-h",
+    "target": "rpx(HEADER_H)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add HEADER_H = 36.0; geometry constant absent."
+  },
+  {
+    "token": "--status-h",
+    "target": "rpx(STATUS_H)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add STATUS_H = 26.0; geometry constant absent."
+  },
+  {
+    "token": "--row-h",
+    "target": "rpx(ROW_H)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add ROW_H = 28.0; geometry constant absent."
+  },
+  {
+    "token": "--control-h",
+    "target": "rpx(CONTROL_H)",
+    "status": "adapt",
+    "source": "src/views/tokens.rs",
+    "note": "Current CONTROL_H = 22.0; target 24px. Audit all dependent geometry."
+  },
+  {
+    "token": "--field-h",
+    "target": "rpx(FIELD_H)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add FIELD_H = 60.0; geometry constant absent."
+  },
+  {
+    "token": "--form-button-h",
+    "target": "rpx(FORM_BUTTON_H)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add FORM_BUTTON_H = 44.0; geometry constant absent."
+  },
+  {
+    "token": "--field-inset-x",
+    "target": "rpx(FIELD_INSET_X)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add FIELD_INSET_X = 14.0; geometry constant absent."
+  },
+  {
+    "token": "--field-inset-top",
+    "target": "rpx(FIELD_INSET_TOP)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add FIELD_INSET_TOP = 8.0; geometry constant absent."
+  },
+  {
+    "token": "--field-value-top",
+    "target": "rpx(FIELD_VALUE_TOP)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add FIELD_VALUE_TOP = 27.0; geometry constant absent."
+  },
+  {
+    "token": "--textarea-h",
+    "target": "rpx(TEXTAREA_H)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add TEXTAREA_H = 130.0; geometry constant absent."
+  },
+  {
+    "token": "--switch-w",
+    "target": "rpx(SWITCH_W)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add SWITCH_W = 48.0; geometry constant absent."
+  },
+  {
+    "token": "--switch-h",
+    "target": "rpx(SWITCH_H)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add SWITCH_H = 28.0; geometry constant absent."
+  },
+  {
+    "token": "--switch-thumb",
+    "target": "rpx(SWITCH_THUMB)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add SWITCH_THUMB = 22.0; geometry constant absent."
+  },
+  {
+    "token": "--switch-inset",
+    "target": "rpx(SWITCH_INSET)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add SWITCH_INSET = 3.0; geometry constant absent."
+  },
+  {
+    "token": "--tile-min-w",
+    "target": "rpx(TILE_MIN_W)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add TILE_MIN_W = 42.0; geometry constant absent."
+  },
+  {
+    "token": "--tile-h",
+    "target": "rpx(TILE_H)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add TILE_H = 44.0; geometry constant absent."
+  },
+  {
+    "token": "--category-dot-size",
+    "target": "rpx(CATEGORY_DOT_SIZE)",
+    "status": "add",
+    "source": "src/views/tokens.rs",
+    "note": "Add CATEGORY_DOT_SIZE = 8.0; geometry constant absent."
+  },
+  {
+    "token": "--shadow-none",
+    "target": "No BoxShadow",
+    "status": "verified",
+    "source": "src/views/components.rs; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs",
+    "note": "Flat forms/cards: omit shadow."
+  },
+  {
+    "token": "--color-field-fill",
+    "target": "c::FIELD_FILL()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  },
+  {
+    "token": "--color-switch-on",
+    "target": "c::SWITCH_ON()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  },
+  {
+    "token": "--color-switch-thumb",
+    "target": "c::SWITCH_THUMB()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  },
+  {
+    "token": "--color-category-dot",
+    "target": "c::CATEGORY_DOT()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  },
+  {
+    "token": "--color-error-wash",
+    "target": "c::ERROR_WASH()",
+    "status": "add",
+    "source": "src/theme.rs",
+    "note": "Add accessor; absent in current theme. Resolve the exact dark/light values in this row."
+  }
+];
+var gpuiTokenByName = Object.fromEntries(gpuiTokenMap.map(function(row){return [row.token,row]}));
+function gpuiMapping(token){var row=gpuiTokenByName[token];return row.status+": "+row.target+" — "+row.note}
+[primitives,semantic,families,typeScale,weights,radii,spacing,geometry,gaps,borders,shadows,motion,zTokens,iconSizes,opacities,blurs].forEach(function(items){items.forEach(function(item){item[item.length-1]=gpuiMapping(item[1])})});
+typeRoles.forEach(function(item){item[6]="Composition target: "+[item[1],item[2],item[3],item[4]].map(gpuiMapping).join("; ")+". Semantic color must also migrate; terminal specimen does not redefine PTY cell metrics."});
 const root=document.documentElement;
 function value(name){return getComputedStyle(root).getPropertyValue(name).trim()}
 function escapeHtml(text){return String(text).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")}
@@ -320,6 +1569,9 @@ function card(name,val,code,sample){return '<article class="card"><div class="sw
 function snapshot(items,theme){var previous=root.getAttribute("data-theme");if(theme==="light")root.setAttribute("data-theme","light");else root.removeAttribute("data-theme");var out={};items.forEach(function(item){out[item[1]]=value(item[1])});if(previous===null)root.removeAttribute("data-theme");else root.setAttribute("data-theme",previous);return out}
 function simpleTable(items,headers){return '<table><thead><tr>'+headers.map(function(h){return"<th>"+h+"</th>"}).join("")+'</tr></thead><tbody>'+items.map(function(row){return"<tr>"+row.map(function(cell,i){return"<td>"+(i===row.length-1?"<code>"+escapeHtml(cell)+"</code>":escapeHtml(cell))+"</td>"}).join("")+"</tr>"}).join("")+"</tbody></table>"}
 
+var gpuiSnapshotItems=gpuiTokenMap.map(function(row){return [row.token,row.token]});
+var gpuiDark=snapshot(gpuiSnapshotItems,"dark"),gpuiLight=snapshot(gpuiSnapshotItems,"light");
+document.getElementById("gpuiTokenTable").innerHTML=simpleTable(gpuiTokenMap.map(function(row){return [row.token,gpuiDark[row.token],gpuiLight[row.token],row.target,row.status,row.source,row.note]}),["Exact CSS token","Dark / default","Light","GPUI target","Status","Source","Constraint"]);
 primitives.forEach(function(item){var val=value(item[1]);document.getElementById("primitives").insertAdjacentHTML("beforeend",card(item[0],val,item[2],val))});
 var dark=snapshot(semantic,"dark"),light=snapshot(semantic,"light");
 semantic.forEach(function(item){document.getElementById("semantic").insertAdjacentHTML("beforeend",'<article class="card"><div class="name">'+item[0]+'</div><div class="value">'+item[2]+'</div><div class="semantic-card"><div class="semantic-side"><div class="swatch" style="--sample:'+dark[item[1]]+'"></div><div class="value">Dark '+escapeHtml(dark[item[1]])+'</div></div><div class="semantic-side"><div class="swatch" style="--sample:'+light[item[1]]+'"></div><div class="value">Light '+escapeHtml(light[item[1]])+'</div></div></div><div class="code">'+escapeHtml(item[3])+'</div></article>')});
@@ -335,9 +1587,11 @@ borders.forEach(function(item){document.getElementById("borders").insertAdjacent
 var darkShadows=snapshot(shadows,"dark"),lightShadows=snapshot(shadows,"light");
 shadows.forEach(function(item){document.getElementById("shadows").insertAdjacentHTML("beforeend",'<article class="card"><div class="two"><div><div class="shadow-demo" style="--shadow:'+darkShadows[item[1]]+'"></div><div class="value">Dark '+escapeHtml(darkShadows[item[1]])+'</div></div><div><div class="shadow-demo" style="--shadow:'+lightShadows[item[1]]+'"></div><div class="value">Light '+escapeHtml(lightShadows[item[1]])+'</div></div></div><div class="name">'+item[0]+'</div><div class="code">'+escapeHtml(item[2])+'</div></article>')});
 motion.forEach(function(item){document.getElementById("motion").insertAdjacentHTML("beforeend",'<article class="card"><div class="motion-track" style="--duration:var('+item[1]+');--ease:'+(item[2]?'var('+item[2]+')':'var(--ease-standard)')+'"><div class="motion-dot"></div></div><div class="name">'+item[0]+'</div><div class="value">'+escapeHtml(value(item[1]))+'</div><div class="code">'+escapeHtml(item[3])+'</div></article>')});
-zTokens.forEach(function(item,index){document.getElementById("zIndex").insertAdjacentHTML("beforeend",'<div class="z-layer" style="left:calc('+index+' * 100px);top:calc('+index+' * 10px);z-index:var('+item[1]+')"><div class="name">'+item[0]+'</div><div class="value">'+escapeHtml(value(item[1]))+'</div><div class="code">'+escapeHtml(item[2])+'</div></div>')});
-icons.forEach(function(item){document.getElementById("icons").insertAdjacentHTML("beforeend",'<article class="card"><div class="icon-demo" style="--measure:var('+item[1]+')">+</div><div class="name">'+item[0]+'</div><div class="value">'+escapeHtml(value(item[1]))+'</div><div class="code">'+escapeHtml(item[2])+'</div></article>')});
+zTokens.forEach(function(item,index){document.getElementById("zIndex").insertAdjacentHTML("beforeend",'<div class="z-layer" style="left:calc('+index+' * (var(--space-48) * 2 + var(--space-4)));top:calc('+index+' * var(--space-10));z-index:var('+item[1]+')"><div class="name">'+item[0]+'</div><div class="value">'+escapeHtml(value(item[1]))+'</div><div class="code">'+escapeHtml(item[2])+'</div></div>')});
+document.getElementById("icons").insertAdjacentHTML("beforeend",'<article class="card"><div class="name">Size roles</div><div class="icon-size-row">'+iconSizes.map(function(item){return '<span class="icon-size" style="--measure:var('+item[1]+')" title="'+item[0]+'">'+iconSvg.folder+'</span>'}).join("")+'</div><div class="value">12/14/16 chrome. 20/24/32 illustration only.</div></article><article class="card"><div class="name">Control baseline</div><div class="icon-button-row baseline"><button class="icon-button-demo" type="button" aria-label="Open workspace" title="Open workspace"><span>'+iconSvg.folder+'</span></button><span>Workspace</span></div><div class="value">A real control-h button owns hover, focus, and click state.</div></article><article class="card"><div class="name">Do and do not</div><div class="value">Do use one viewBox, currentColor, and the standard control box. Do not use text glyphs, mixed viewBoxes, wrapper boxes, or violet square backplates.</div></article>');
+iconCatalog.forEach(function(name){var agent=name==="codex"||name==="claude"||name==="terminal";document.getElementById("icons").insertAdjacentHTML("beforeend",'<article class="card"><div class="icon-button-row"><button class="icon-button-demo'+(agent?' agent':'')+'" type="button" aria-label="'+name+' icon" title="'+name+'">'+iconSvg[name]+'</button><span class="name">'+name+'</span></div><div class="value">16-unit currentColor SVG in an actual control-h button</div><div class="code">'+escapeHtml('adapt: verify catalog SVG parity; crate::icons::icon("'+(name==="terminal"?'term':name==="chevron-right"?'chev-right':name==="chevron-down"?'chev-down':name)+'", ICON_MD, current_color)')+'</div></article>')});
 opacities.forEach(function(item){document.getElementById("opacity").insertAdjacentHTML("beforeend",'<article class="card"><div class="opacity-demo" style="--measure:var('+item[1]+')"></div><div class="name">'+item[0]+'</div><div class="value">'+escapeHtml(value(item[1]))+'</div><div class="code">'+escapeHtml(item[2])+'</div></article>')});
+overlayRules.forEach(function(item){document.getElementById("overlayBehavior").insertAdjacentHTML("beforeend",'<article class="card"><div class="name">'+item[0]+'</div><div class="value">'+item[1]+'</div></article>')});
 blurs.forEach(function(item){document.getElementById("blur").insertAdjacentHTML("beforeend",'<article class="card"><div class="blur-wrap"><div class="blur-demo" style="--measure:var('+item[1]+')">Platform / platform-api / billing-retry</div></div><div class="name">'+item[0]+'</div><div class="value">'+escapeHtml(value(item[1]))+'</div><div class="code">'+escapeHtml(item[2])+'</div></article>')});
 assumptions.forEach(function(item){document.getElementById("assumptions").insertAdjacentHTML("beforeend","<li>"+escapeHtml(item)+"</li>")});
 
@@ -348,7 +1602,12 @@ var contrastVars=contrastPairs.reduce(function(all,item){all.push(["",item[1],""
 var darkContrast=snapshot(contrastVars,"dark"),lightContrast=snapshot(contrastVars,"light");
 document.getElementById("contrast").innerHTML=simpleTable(contrastPairs.map(function(item){return[item[0],ratio(darkContrast[item[1]],darkContrast[item[2]]),ratio(lightContrast[item[1]],lightContrast[item[2]]),item[3]]}),["Pair","Dark","Light","Restriction"]);
 
-document.getElementById("themeToggle").onclick=function(){var lightMode=root.getAttribute("data-theme")==="light";if(lightMode)root.removeAttribute("data-theme");else root.setAttribute("data-theme","light");this.textContent=lightMode?"Light reference":"Dark product"};
+function syncThemeButton(){var light=root.getAttribute("data-theme")==="light";document.getElementById("themeIcon").innerHTML=light?iconSvg.moon:iconSvg.sun;document.getElementById("themeLabel").textContent=light?"Dark product":"Light reference"}
+document.querySelectorAll('.switch').forEach(function(button){button.onclick=function(){this.setAttribute('aria-checked',this.getAttribute('aria-checked')==='true'?'false':'true')}});
+document.querySelectorAll('.tile').forEach(function(button){button.onclick=function(){var selected=this.getAttribute('aria-pressed')==='true';if(this.parentNode.classList.contains('single')){this.parentNode.querySelectorAll('.tile').forEach(function(tile){tile.setAttribute('aria-pressed','false')});this.setAttribute('aria-pressed','true')}else this.setAttribute('aria-pressed',selected?'false':'true')}});
+document.getElementById('form-save').onclick=function(){document.getElementById('form-save-status').textContent='Preview preferences saved for this page.'};
+syncThemeButton();
+document.getElementById("themeToggle").onclick=function(){var lightMode=root.getAttribute("data-theme")==="light";if(lightMode)root.removeAttribute("data-theme");else root.setAttribute("data-theme","light");syncThemeButton()};
 </script>
 </body>
 </html>

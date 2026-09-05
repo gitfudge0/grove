@@ -55,7 +55,6 @@ h1{margin:8px 0;font:700 30px/1.2 "Comic Sans MS","Segoe Print","Bradley Hand",c
 .side-title{margin-right:auto;font:700 9px monospace;letter-spacing:.07em}
 .mini,.secondary,.new-session{height:23px;padding:0 6px;border:1px solid var(--line);background:transparent;font:9px "Comic Sans MS","Segoe Print","Bradley Hand",cursive}
 .new-session{color:var(--mid)}
-.view-button[aria-pressed="true"]{outline:1px solid var(--line);background:var(--wash)}
 .tree{flex:1;overflow:hidden;padding:8px 0}
 .tree-row{min-height:29px;display:flex;align-items:center;gap:6px;padding:4px 9px;color:var(--mid);font-size:11px}
 .tree-row.project{color:var(--ink);font-weight:700}
@@ -84,7 +83,8 @@ h1{margin:8px 0;font:700 30px/1.2 "Comic Sans MS","Segoe Print","Bradley Hand",c
 .menu-title{padding:3px 7px 8px;font:700 10px "Comic Sans MS","Segoe Print","Bradley Hand",cursive}
 .menu-scroll{max-height:182px;overflow-y:auto}
 .menu-row{display:flex;align-items:center;gap:7px;width:100%;min-height:31px;padding:5px 7px;border:0;background:transparent;text-align:left;font:11px "Comic Sans MS","Segoe Print","Bradley Hand",cursive}
-.menu-row.active{background:var(--wash)}
+.menu-row.active{background:transparent}
+.menu-row:hover{background:var(--wash)}
 .menu-state{color:var(--mid);font-size:9px}
 .badge{padding:1px 5px;border:1px solid var(--line);background:var(--paper);font:9px monospace}
 .menu-divider{height:1px;margin:6px 3px;border-top:1px dashed var(--line)}
@@ -97,10 +97,12 @@ h1{margin:8px 0;font:700 30px/1.2 "Comic Sans MS","Segoe Print","Bradley Hand",c
 .dialog-intro{margin:0 0 16px;color:var(--mid);font-size:11px;line-height:1.45}
 .field{margin:13px 0}
 .field label{display:block;margin-bottom:5px;font:700 10px "Comic Sans MS","Segoe Print","Bradley Hand",cursive}
-.field input{width:100%;height:34px;padding:0 8px;border:2px solid var(--line);background:var(--paper)}
+.field input{width:100%;height:32px;padding:0 8px;border:2px solid var(--line);background:var(--paper)}
 .field input[readonly]{color:var(--mid)}
+.browse-field{position:relative}.browse-field input{padding-right:38px}.browse-field button{position:absolute;right:4px;bottom:4px;width:24px;height:24px}
 .hint{margin-top:5px;color:var(--mid);font-size:10px}
-.inline-error{margin-top:5px;padding:6px 8px;border-left:3px solid var(--line);background:var(--paper);color:var(--ink);font-size:10px}
+.inline-error{margin-top:2px;padding:0;border:0;background:transparent;color:var(--ink);font-size:11px}
+.editor{width:560px;display:flex;flex-direction:column;gap:12px;padding:16px}
 .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:17px;padding-top:12px;border-top:1px dashed var(--soft)}
 .action{height:30px;padding:0 11px;border:1px solid var(--line);background:transparent}
 .primary{border:2px solid var(--ink);background:var(--ink);color:var(--paper);font-weight:700}
@@ -108,7 +110,7 @@ h1{margin:8px 0;font:700 30px/1.2 "Comic Sans MS","Segoe Print","Bradley Hand",c
 .progress{padding:14px;border:1px dashed var(--line);background:var(--paper);font-size:11px}
 .progress-line{height:9px;margin-top:10px;border:1px solid var(--line);background:var(--wash)}
 .empty-state{display:grid;place-items:center;flex:1;text-align:center;padding:40px}
-.empty-card{width:430px;padding:25px;border:2px dashed var(--line);background:var(--raised)}
+.empty-card{width:430px;padding:25px;text-align:center;background:transparent}
 .empty-card h3{margin:0 0 8px;font:700 18px "Comic Sans MS","Segoe Print","Bradley Hand",cursive}
 .empty-card p{margin:0 0 17px;color:var(--mid);font-size:12px}
 .empty-card .primary{height:34px;padding:0 13px}
@@ -120,9 +122,12 @@ h1{margin:8px 0;font:700 30px/1.2 "Comic Sans MS","Segoe Print","Bradley Hand",c
 .session-card.selected,.grid-card.selected{outline:2px solid var(--line);background:var(--wash)}
 .grid-wrap{display:grid;grid-template-columns:1fr 1fr;gap:7px;padding:8px}
 .grid-card{margin:0;min-height:72px}
-.canvas-views{display:flex;gap:3px;margin-left:12px}
-.canvas-views button{height:25px;padding:0 8px;border:1px solid var(--line);background:transparent;font:9px "Comic Sans MS","Segoe Print","Bradley Hand",cursive}
-.canvas-views button[aria-pressed="true"]{outline:1px solid var(--line);background:var(--wash)}
+.canvas-views{display:flex;align-items:center;gap:2px;margin-left:12px}
+.canvas-views button{width:24px;height:24px;padding:0;border:0;background:transparent;color:var(--mid);display:inline-flex;align-items:center;justify-content:center}
+.canvas-views button:hover{background:var(--wash)}
+.canvas-views button[aria-pressed="true"]{background:var(--wash);color:var(--ink)}
+.canvas-views button:focus-visible{outline:2px solid var(--line);outline-offset:2px}
+.canvas-views svg{display:block;width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
 .active-grid-canvas{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;flex:1;min-height:0;padding:18px;background:var(--paper)}
 .active-tile{display:flex;min-width:0;flex-direction:column;padding:16px;border:2px solid var(--line);background:var(--raised)}
 .tile-head{display:flex;align-items:center;gap:9px;padding-bottom:12px;border-bottom:1px dashed var(--soft)}
@@ -170,7 +175,7 @@ h1{margin:8px 0;font:700 30px/1.2 "Comic Sans MS","Segoe Print","Bradley Hand",c
 <article class="artifact"><h2>Flow inventory</h2><table class="matrix"><thead><tr><th>Section</th><th>Flow</th><th>Frames</th></tr></thead><tbody>
 <tr><td>A</td><td>Switch and restore</td><td>A1 to A5</td></tr>
 <tr><td>B</td><td>Create workspace</td><td>B1 to B7</td></tr>
-<tr><td>C</td><td>Add local project</td><td>C1 to C5</td></tr>
+<tr><td>C</td><td>Add local project</td><td>C1 to C7</td></tr>
 <tr><td>D</td><td>Create worktree</td><td>D1 to D6</td></tr>
 <tr><td>E</td><td>Start, use, and close session</td><td>E1 to E7</td></tr>
 <tr><td>F</td><td>Change scoped view</td><td>F1 to F5</td></tr>
@@ -214,10 +219,12 @@ var sectionData=[
 ]},
 {letter:"C",title:"Add local project",frames:[
 ["C1","Add project action","Platform has no projects and offers one clear next action."],
-["C2","Local repository selected","The picker accepts a local Git repository and waits for confirmation."],
-["C3","Importing project","Platform stays active while the repository import runs."],
-["C4","Project ready","platform-api expands to main without selecting or starting a session."],
-["C5","Project path errors","Non-Git and duplicate paths stay visible with inline errors."]
+["C2","Choose project folder","The center pane accepts Browse, drag and drop, typed paths, and directory suggestions."],
+["C3","Git repository detected","The canonical path and current branch are verified before adding the project."],
+["C4","Importing project","Platform stays active while the repository import runs."],
+["C5","Project ready","platform-api expands to main without selecting or starting a session."],
+["C6","Not a Git repository","Initialize Git is an explicit visible choice before adding the project."],
+["C7","Project path errors","Not-folder, duplicate path, and duplicate name errors stay attached to preserved values."]
 ]},
 {letter:"D",title:"Create worktree",frames:[
 ["D1","Project actions","The project overflow keeps worktree setup next to platform-api."],
@@ -228,7 +235,7 @@ var sectionData=[
 ["D6","Worktree ready","The zero-session row reveals three direct-start agent icons on hover."]
 ]},
 {letter:"E",title:"Create, use, and close a session",frames:[
-["E1","New session action","Hovering the selected worktree reveals Codex, Claude Code, and Terminal shortcuts."],
+["E1","Worktree launch action","Hovering the selected worktree reveals Codex, Claude Code, and Terminal shortcuts."],
 ["E2","Worktree hover affordance","Hovering billing-retry reveals direct-start agents before any process begins."],
 ["E3","Starting session","The tree and content show one shared starting state."],
 ["E4","Running session","The selected billing-retry session opens its running PTY."],
@@ -258,7 +265,7 @@ var sectionData=[
 var cursors={
 A1:[112,19],A2:[127,113],A4:[130,145],
 B1:[130,194],B2:[590,395],B4:[760,478],B6:[792,480],
-C1:[792,480],C2:[758,480],C4:[110,130],
+C1:[792,480],C2:[914,310],C3:[902,493],C5:[110,130],C6:[900,510],
 D1:[242,101],D2:[280,151],D3:[759,544],D6:[158,151],
 E1:[158,151],E2:[158,151],E4:[126,190],E5:[875,225],E6:[760,220],E7:[754,420],
 F1:[95,63],F2:[137,63],F3:[160,18],F4:[25,101],
@@ -313,24 +320,23 @@ return '<div class="group-label">NEEDS YOU</div><div class="session-card">Claude
 function gridView(){
 return '<div class="grid-wrap"><div class="grid-card">Claude · Approve migration edit<br><small>Needs you</small></div><div class="grid-card selected">Codex · Fix billing retry<br><small>Working, selected</small></div><div class="grid-card">Terminal · logs<br><small>Idle</small></div></div>';
 }
+function viewGlyph(name){if(name==="Project")return '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h4L8 6h5.5v7h-11z"/></svg>';if(name==="List")return '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4h8M6 8h8M6 12h8M2 4h.01M2 8h.01M2 12h.01"/></svg>';return '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="4" height="4"/><rect x="9.5" y="2.5" width="4" height="4"/><rect x="2.5" y="9.5" width="4" height="4"/><rect x="9.5" y="9.5" width="4" height="4"/></svg>'}
+function viewControls(active,remembered){remembered=remembered||'Project';var destination=active==='Project'?'List':active==='List'?'Project':remembered;var toggleIcon=destination==='List'?'List':'Project';return '<div class="canvas-views" role="group" aria-label="Workspace view"><button type="button" aria-label="Switch to '+destination.toLowerCase()+' view" title="Switch to '+destination.toLowerCase()+' view" aria-pressed="false">'+viewGlyph(toggleIcon)+'</button><button type="button" aria-label="Open grid view" title="Open grid view" aria-pressed="'+(active==='Grid')+'">'+viewGlyph('Grid')+'</button></div>'}
 function sidebar(o){
 var mode=o.mode||"Project";
 var modeBody=mode==="List"?listView():mode==="Grid"?gridView():tree(o.tree||"grove");
 var disabled=o.sessionDisabled?' disabled aria-disabled="true"':"";
 return '<aside class="sidebar" aria-label="'+esc(o.workspace)+' workspace navigation"><div class="side-head"><span class="side-title">PROJECTS</span>'+
-'<button class="mini view-button" type="button" aria-label="List view" aria-pressed="'+(mode==="List")+'">List</button>'+
-'<button class="mini view-button" type="button" aria-label="Grid view" aria-pressed="'+(mode==="Grid")+'">Grid</button>'+
-'<button class="mini view-button" type="button" aria-label="Project view" aria-pressed="'+(mode==="Project")+'">Project</button>'+
-'<button class="new-session" type="button"'+disabled+'>New session</button></div><div class="tree" role="tree" aria-label="'+esc(o.workspace)+' projects">'+modeBody+'</div><div class="terminals">TERMINALS <span style="float:right">[add] [fold]</span></div></aside>';
+viewControls(mode)+'</div><div class="tree" role="tree" aria-label="'+esc(o.workspace)+' projects">'+modeBody+'</div><div class="terminals">TERMINALS <span style="float:right">[add] [fold]</span></div></aside>';
 }
 function sessionContent(workspace,breadcrumb,title,text,actions){
-return '<section class="content"><div class="session-head"><b>'+esc(title)+'</b><span>'+esc(breadcrumb)+'</span><span class="spacer"></span><button class="new-session" type="button">New session</button><span>'+esc(workspace)+'</span></div><div class="pty"><h3>'+esc(title)+'</h3><p>'+text+'</p>'+(actions||"")+'<div class="terminal" aria-label="PTY output">$ grove session attach<br>Session process is running.<br><span class="stroke mid"></span><span class="stroke"></span><span class="stroke short"></span></div></div></section>';
+return '<section class="content"><div class="session-head"><b>'+esc(title)+'</b><span>'+esc(breadcrumb)+'</span><span class="spacer"></span><span>'+esc(workspace)+'</span></div><div class="pty"><h3>'+esc(title)+'</h3><p>'+text+'</p>'+(actions||"")+'<div class="terminal" aria-label="PTY output">$ grove session attach<br>Session process is running.<br><span class="stroke mid"></span><span class="stroke"></span><span class="stroke short"></span></div></div></section>';
 }
 function emptyContent(title,text,disabled){
-return '<section class="content"><div class="session-head"><b>'+esc(title)+'</b><span class="spacer"></span><button class="new-session" type="button" disabled aria-disabled="true">New session</button></div><div class="empty-state"><div class="empty-card"><h3>'+esc(title)+'</h3><p>'+text+'</p><button class="primary" type="button">Add project</button></div></div></section>';
+return '<section class="content"><div class="session-head"><b>'+esc(title)+'</b><span class="spacer"></span></div><div class="empty-state"><div class="empty-card"><h3>'+esc(title)+'</h3><p>'+text+'</p><button class="primary" type="button">Add project</button></div></div></section>';
 }
 function promptContent(title,text){
-return '<section class="content"><div class="session-head"><b>'+esc(title)+'</b><span class="spacer"></span><button class="new-session" type="button" disabled aria-disabled="true">New session</button></div><div class="prompt">'+text+'</div></section>';
+return '<section class="content"><div class="session-head"><b>'+esc(title)+'</b><span class="spacer"></span></div><div class="prompt">'+text+'</div></section>';
 }
 function loadingContent(title,text){
 return '<section class="content"><div class="loading-content"><div class="loading-card" role="status" aria-live="polite"><h3>'+esc(title)+'</h3><p>'+text+'</p><div class="progress-line"></div></div></div></section>';
@@ -354,11 +360,18 @@ if(kind==="pending")return dialog("Importing project","Reading the local reposit
 var examples='<div class="error-examples"><div>'+field("Repository path","/Users/digvijaymahapatra/Sandbox/notes","repo-path-nongit","This folder is not a Git repository.",true)+'</div><div>'+field("Repository path","/Users/digvijaymahapatra/Sandbox/platform-api","repo-path-duplicate","platform-api is already in Platform.",true)+'</div></div>';
 return dialog("Project path errors","Both local paths stay visible so the cause can be corrected.",examples,'<button class="action secondary" type="button">Cancel</button><button class="action primary" type="button">Choose another</button>',true);
 }
+function centerProjectEditor(kind){
+var path='/Users/digvijaymahapatra/Sandbox/platform-api';
+if(kind==='choose')return '<section class="content"><div class="session-head"><b>Choose project folder</b><span class="spacer"></span><button aria-label="Cancel add project">×</button></div><div class="editor"><div class="field browse-field"><label for="repo-folder">Repository folder</label><input id="repo-folder" value="'+path+'"><button type="button" aria-label="Browse folders" title="Browse folders">▣</button></div><small>Drop a folder, type a path, or choose a directory match.</small></div></section>';
+if(kind==='repo')return '<section class="content"><div class="session-head"><b>Git repository detected</b></div><div class="editor"><div><b>Git repository</b> · branch main</div>'+field('Canonical path',path,'canonical','',true)+field('Project name','platform-api','project-name','',false)+'<button class="primary" type="button">Add project</button></div></section>';
+if(kind==='notgit')return '<section class="content"><div class="session-head"><b>Not a Git repository</b></div><div class="editor">'+field('Repository folder','/Users/digvijaymahapatra/Sandbox/notes','notgit-path','',true)+'<label><input type="checkbox" checked> Initialize Git repository</label><button class="primary" type="button">Add project</button></div></section>';
+return '<section class="content"><div class="session-head"><b>Fix project details</b></div><div class="editor">'+field('Repository folder','/Users/digvijaymahapatra/Sandbox/missing','bad-folder','Choose a folder that exists.',false)+field('Repository path',path,'duplicate-path','This repository already exists in Platform.',false)+field('Project name','platform-api','duplicate-name','This project name is already used.',false)+'</div></section>';
+}
 function worktreeDialog(kind){
 var suffix=kind==="valid"?"details":kind;
 var values=field("Worktree name","billing-retry","wt-name-"+suffix,"",kind==="pending")+field("Branch","feat/billing-retry","wt-branch-"+suffix,kind==="conflict"?"Branch feat/billing-retry already exists.":"",kind==="pending")+field("Base","main","wt-base-"+suffix,kind==="conflict"?"A billing-retry worktree path already exists.":"",kind==="pending");
 if(kind==="pending")values+='<div class="progress" role="status">Creating billing-retry...<div class="progress-line"></div></div>';
-return dialog(kind==="pending"?"Creating worktree":"New worktree",kind==="conflict"?"Resolve both conflicts. All values remain in the form.":"Create a worktree without starting a session.",values,'<button class="action secondary" type="button"'+(kind==="pending"?' disabled':'')+'>Cancel</button><button class="action primary" type="button"'+(kind==="pending"?' disabled':'')+'>'+(kind==="pending"?"Creating...":"Create worktree")+'</button>');
+return '<section class="content"><div class="session-head"><b>'+(kind==="pending"?'Creating worktree':'New worktree')+'</b><span class="spacer"></span><button aria-label="Cancel">×</button></div><div class="editor">'+values+'<button class="primary" type="button"'+(kind==="pending"?' disabled':'')+'>'+(kind==="pending"?'Creating...':'Create worktree')+'</button></div></section>';
 }
 function projectActionsMenu(){
 return '<div class="workspace-menu" style="left:219px;top:97px" role="menu" aria-label="platform-api actions"><div class="menu-title">platform-api</div>'+menuRow("New worktree","",false)+menuRow("Open in file manager","",false)+'<div class="menu-divider"></div>'+menuRow("Remove project","",false)+'</div>';
@@ -375,14 +388,14 @@ var content=o.content||sessionContent(o.workspace,o.breadcrumb||o.workspace+" / 
 var overlay=o.overlay||"";
 var floating=o.floating||"";
 var note=o.note?'<aside class="sticky-note">'+o.note+'</aside>':"";
-return '<div class="screen" id="screen-'+o.id+'"><div class="appbar"><span class="wordmark">GROVE</span><span class="workspace-anchor"><button class="workspace-trigger" type="button" aria-label="Switch workspace, '+esc(o.workspace)+' selected" aria-expanded="'+expanded+'">'+esc(o.workspace)+' <span aria-hidden="true">▾</span></button>'+(o.menu||"")+'</span><span class="app-spacer"></span><span class="box">existing app controls</span></div><div class="body">'+sidebar(o)+content+'</div><div class="statusbar"><span>'+esc(o.workspace)+'</span><span>local backend</span><span class="spacer"></span><span>sessions keep running across workspace switches</span></div>'+floating+overlay+note+cursor(o.id)+'</div>';
+return '<div class="screen" id="screen-'+o.id+'"><div class="appbar"><span class="wordmark">GROVE</span><span class="workspace-anchor"><button class="workspace-trigger" type="button" aria-label="Switch workspace, '+esc(o.workspace)+' selected" aria-expanded="'+expanded+'">'+esc(o.workspace)+' <span aria-hidden="true">▾</span></button>'+(o.menu||"")+'</span><span class="app-spacer"></span><button class="attention" aria-label="Needs you, 2 sessions"><span class="status-dot"></span>Needs you 2</button><button class="icon-btn" aria-label="Settings" title="Settings">⚙</button></div><div class="body">'+sidebar(o)+content+'</div><div class="statusbar"><span>'+esc(o.workspace)+'</span><span>local backend</span><span class="spacer"></span><span>sessions keep running across workspace switches</span></div>'+floating+overlay+note+cursor(o.id)+'</div>';
 }
 function activeTile(agent,status,task,lines){
 return '<article class="active-tile" aria-label="'+agent+' '+status+' session"><div class="tile-head"><span class="tile-agent-icon">'+agentGlyph(agent)+'</span><span><span class="tile-name">'+agent+'</span><span class="tile-task">'+task+'</span></span><span class="tile-status">'+status+'</span></div><div class="tile-context">Platform / platform-api / billing-retry</div><div class="tile-pty" aria-label="Clipped PTY excerpt">'+lines+'</div></article>';
 }
 function fullGridShell(id){
 var tiles=activeTile("Codex","WORKING","Fix billing retry","$ codex resume billing-retry<br>Editing retry policy...<br>Running focused checks...<br>Waiting for command output...")+activeTile("Claude Code","NEEDS YOU","Approve migration edit","$ claude continue migration<br>Migration edit is ready.<br>Review schema changes.<br>Approval required to continue.")+activeTile("Terminal","RUNNING","billing-retry logs","$ pnpm test billing-retry<br>watch mode active<br>12 tests passed<br>Waiting for file changes...");
-return '<div class="screen" id="screen-'+id+'"><div class="appbar"><span class="wordmark">GROVE</span><span class="workspace-anchor"><button class="workspace-trigger" type="button" aria-label="Switch workspace, Platform selected" aria-expanded="false">Platform <span aria-hidden="true">▾</span></button></span><div class="canvas-views" role="group" aria-label="Workspace view"><button type="button" aria-pressed="false">Project</button><button type="button" aria-pressed="false">List</button><button type="button" aria-pressed="true">Grid</button></div><span class="app-spacer"></span><span class="box">existing app controls</span></div><section class="active-grid-canvas" aria-label="Platform active sessions">'+tiles+'</section><div class="statusbar"><span>Platform</span><span>local backend</span><span class="spacer"></span><span>3 active sessions</span></div>'+cursor(id)+'</div>';
+return '<div class="screen" id="screen-'+id+'"><div class="appbar"><span class="wordmark">GROVE</span><span class="workspace-anchor"><button class="workspace-trigger" type="button" aria-label="Switch workspace, Platform selected" aria-expanded="false">Platform <span aria-hidden="true">▾</span></button></span>'+viewControls('Grid')+'<span class="app-spacer"></span><button class="attention" aria-label="Needs you, 2 sessions"><span class="status-dot"></span>Needs you 2</button><button class="icon-btn" aria-label="Settings" title="Settings">⚙</button></div><section class="active-grid-canvas" aria-label="Platform active sessions">'+tiles+'</section><div class="statusbar"><span>Platform</span><span>local backend</span><span class="spacer"></span><span>3 active sessions</span></div>'+cursor(id)+'</div>';
 }
 function state(id){
 var o={id:id,workspace:"Grove",tree:"grove",mode:"Project",session:"Codex · Workspace hierarchy",breadcrumb:"Grove / grove / main"};
@@ -391,7 +404,7 @@ case"A1":break;
 case"A2":o.menu=workspaceMenu("Grove","standard");break;
 case"A3":o.workspace="CareConvoy";o.tree="loading";o.sessionDisabled=true;o.content=loadingContent("Opening CareConvoy","Loading its remembered view. Grove sessions keep running.");break;
 case"A4":o.workspace="CareConvoy";o.tree="care";o.menu=workspaceMenu("CareConvoy","standard");o.session="claude · Approve migration edit";o.breadcrumb="CareConvoy / care-web / migration";o.content=sessionContent(o.workspace,o.breadcrumb,o.session,"Migration edit approval is waiting. Open the workspace menu and choose Orchard for the next path.");break;
-case"A5":o.workspace="Orchard";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No sessions","Add a local Git project to start work in Orchard.",true);break;
+case"A5":o.workspace="Orchard";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No projects","Add a local project to Orchard.",true);break;
 case"B1":o.menu=workspaceMenu("Grove","standard");break;
 case"B2":o.overlay=createWorkspaceDialog("empty");break;
 case"B3":o.overlay=createWorkspaceDialog("duplicate");break;
@@ -400,15 +413,17 @@ case"B5":o.overlay=createWorkspaceDialog("pending");break;
 case"B6":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No projects","Add a local Git repository to Platform.",true);break;
 case"B7":o.overlay=createWorkspaceDialog("error");break;
 case"C1":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No projects","Add a local Git repository to Platform.",true);break;
-case"C2":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No projects","Add a local Git repository to Platform.",true);o.overlay=projectDialog("selected");break;
-case"C3":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No projects","Repository import is in progress.",true);o.overlay=projectDialog("pending");break;
-case"C4":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=promptContent("platform-api","Select main, then create a worktree or start a session.");break;
-case"C5":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=emptyContent("No projects","Choose a valid local Git repository.",true);o.overlay=projectDialog("errors");break;
+case"C2":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=centerProjectEditor("choose");break;
+case"C3":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=centerProjectEditor("repo");break;
+case"C4":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=loadingContent("Importing platform-api","Reading main from the local repository.");break;
+case"C5":o.workspace="Platform";o.tree="platformMain";o.content=promptContent("platform-api","Select main or launch an agent from its worktree row.");break;
+case"C6":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=centerProjectEditor("notgit");break;
+case"C7":o.workspace="Platform";o.tree="empty";o.sessionDisabled=true;o.content=centerProjectEditor("errors");break;
 case"D1":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=promptContent("platform-api","Project actions include worktree creation and local project removal.");break;
 case"D2":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=promptContent("platform-api","Choose New worktree to add an isolated branch checkout.");o.floating=projectActionsMenu();break;
-case"D3":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=promptContent("platform-api","Worktree creation does not start a session.");o.overlay=worktreeDialog("valid");break;
-case"D4":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=promptContent("platform-api","Resolve the local conflicts before creating the worktree.");o.overlay=worktreeDialog("conflict");break;
-case"D5":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=promptContent("platform-api","Local worktree creation is in progress.");o.overlay=worktreeDialog("pending");break;
+case"D3":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=worktreeDialog("valid");break;
+case"D4":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=worktreeDialog("conflict");break;
+case"D5":o.workspace="Platform";o.tree="platformMain";o.sessionDisabled=true;o.content=worktreeDialog("pending");break;
 case"D6":o.workspace="Platform";o.tree="platformZero";o.content=promptContent("billing-retry","Worktree ready. No session was started.");break;
 case"E1":o.workspace="Platform";o.tree="platformZero";o.content=promptContent("billing-retry","Choose a hover icon to start with an agent.");break;
 case"E2":o.workspace="Platform";o.tree="platformHover";o.content=promptContent("billing-retry","Choose Codex from the hovered worktree to start the session.");break;
