@@ -685,9 +685,9 @@ fn zen_focus_bindings() -> Vec<KeyBinding> {
     ]
 }
 
-/// Derived from [`crate::views::modals::input::InputPolicy`] so bindings and the field's own policy can't disagree.
+/// Derived from [`crate::input_policy::InputPolicy`] so bindings and the field's own policy can't disagree.
 pub fn modal_input_bindings() -> Vec<KeyBinding> {
-    use crate::views::modals::input::{InputPolicy, ModalInput};
+    use crate::input_policy::{override_context, InputPolicy};
 
     let mut out = Vec::new();
     for kind in crate::modal::ModalKind::ALL {
@@ -695,7 +695,7 @@ pub fn modal_input_bindings() -> Vec<KeyBinding> {
         if policy.multi_line {
             continue;
         }
-        let ctx = ModalInput::override_context(kind);
+        let ctx = override_context(kind);
         let ctx = Some(ctx.as_str());
         out.push(KeyBinding::new("up", ModalUp, ctx));
         out.push(KeyBinding::new("down", ModalDown, ctx));

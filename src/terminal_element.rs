@@ -165,7 +165,7 @@ impl Element for TerminalElement {
         // Deliberately not memoized (unlike the old iced build): resolving is cheap, so toggling `project_themes_enabled` re-colors next frame with no bookkeeping.
         let pinned = self.project.as_ref().and_then(|name| {
             // `Some(None)` means "preview the global theme"; `None` means "no preview, use the persisted pin".
-            let preview = crate::views::modals::theme_picker::ThemePreview::for_project(cx, name);
+            let preview = crate::theme_preview::ThemePreview::for_project(cx, name);
             project_theme_override(
                 &cx.global::<crate::settings::SettingsState>().store,
                 name,

@@ -500,7 +500,7 @@ fn every_registry_row_with_a_label_reaches_the_overlay() {
         }
         let shown = SCREENS
             .into_iter()
-            .any(|s| crate::views::modals::settings::scope_allows(def, s));
+            .any(|s| crate::keymap::scope_allows(def.scopes, s));
         assert!(shown, "{:?} is invisible on every screen", def.description);
     }
 }
@@ -583,7 +583,7 @@ fn winning_action(kind: ModalKind, key: &str) -> String {
 
 #[test]
 fn every_single_line_modal_binds_the_keys_its_field_would_swallow() {
-    use crate::views::modals::input::InputPolicy;
+    use crate::input_policy::InputPolicy;
 
     for kind in ModalKind::ALL {
         let policy = InputPolicy::for_modal(kind);
