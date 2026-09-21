@@ -600,6 +600,13 @@ impl WorkspaceState {
     }
 
     /// `sessions.rs:22-33` + `switch_active_project` (`mod.rs:1121-1130`); the worktree-cache hand-off that function also performs belongs to [`crate::entities::project_tree::ProjectTree`], not to selection.
+    /// Clear the visible canvas selection when changing workspace or opening an overview.
+    pub fn clear_canvas_selection(&mut self) {
+        self.set_active_session(None);
+        self.active_terminal = None;
+        self.terminal_focused = false;
+    }
+
     pub fn select_project(&mut self, proj: usize) {
         self.open_agent_menu = None;
         self.pending_kill = None;

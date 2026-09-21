@@ -309,6 +309,46 @@ pub fn add_worktree(
     name: &str,
     base: Option<&str>,
 ) -> Result<String> {
+    add_worktree_impl(project_path, worktree_dir, name, name, base, false)
+}
+
+/// Create a new branch independently from the worktree directory name.
+pub fn add_worktree_with_branch(
+    project_path: &str,
+    worktree_dir: &str,
+    name: &str,
+    branch: &str,
+    base: Option<&str>,
+) -> Result<String> {
+    add_worktree_impl(project_path, worktree_dir, name, branch, base, true)
+}
+
+fn worktree_branch_error(message: String) -> GitError {
+    GitError::Command {
+        cmd: "worktree add".into(),
+        stderr: message,
+    }
+}
+
+fn add_worktree_impl(
+    project_path: &str,
+    worktree_dir: &str,
+    name: &str,
+    branch: &str,
+    base: Option<&str>,
+    require_new_branch: bool,
+) -> Result<String> {
+    if require_new_branch {
+        let valid = !branch.starts_with('-')
+            && Command::new("git")
+                .args(["check-ref-format", "--branch", branch])
+                .output()?
+                .status
+                .success();
+        if !valid {
+            return Err(worktree_branch_error("Enter a valid branch name.".into()));
+        }
+    }
     if !valid_worktree_name(name) {
         return Err(GitError::InvalidWorktreeName);
     }
@@ -316,6 +356,9 @@ pub fn add_worktree(
         return Err(GitError::InvalidProjectName);
     }
     if let Some(b) = base {
+        if b.is_empty() || b.starts_with('-') {
+            return Err(worktree_branch_error("Enter a valid base revision.".into()));
+        }
         tracing::debug!(
             args = format!("rev-parse --verify --quiet {b}"),
             cwd = %project_path,
@@ -340,7 +383,7 @@ pub fn add_worktree(
     let dest_str = dest.to_string_lossy().to_string();
 
     tracing::debug!(
-        args = format!("show-ref --verify --quiet refs/heads/{name}"),
+        args = format!("show-ref --verify --quiet refs/heads/{branch}"),
         cwd = %project_path,
         "running git command"
     );
@@ -351,7 +394,7 @@ pub fn add_worktree(
             "show-ref",
             "--verify",
             "--quiet",
-            &format!("refs/heads/{name}"),
+            &format!("refs/heads/{branch}"),
         ])
         .status();
     if let Ok(s) = &branch_exists_status {
@@ -361,16 +404,27 @@ pub fn add_worktree(
     }
     let branch_exists = branch_exists_status.is_ok_and(|s| s.success());
 
+    if require_new_branch && branch_exists {
+        return Err(worktree_branch_error(format!(
+            "Branch {branch} already exists."
+        )));
+    }
+    if require_new_branch && dest.exists() {
+        return Err(worktree_branch_error(format!(
+            "Worktree path {} already exists.",
+            dest.display()
+        )));
+    }
     let mut args = vec!["-C", project_path, "worktree", "add"];
     if !branch_exists {
-        args.extend(["-b", name]);
+        args.extend(["-b", branch]);
         args.push(&dest_str);
         if let Some(b) = base {
             args.push(b);
         }
     } else {
         args.push(&dest_str);
-        args.push(name);
+        args.push(branch);
     }
     tracing::debug!(args = ?args, cwd = %project_path, "running git command");
     let out = Command::new("git").args(&args).output()?;
@@ -1167,6 +1221,56 @@ mod branch_tests {
         let wt_head = rev_parse(Path::new(&path), "HEAD");
         assert_eq!(wt_head, existing_tip);
         cleanup(&path);
+    }
+
+    #[test]
+    fn named_worktree_uses_distinct_branch_and_base_and_rejects_conflicts() {
+        let repo = init_repo();
+        run(repo.path(), &["checkout", "-q", "-b", "base"]);
+        run(
+            repo.path(),
+            &["commit", "-q", "--allow-empty", "-m", "base-tip"],
+        );
+        let base_tip = head_sha(repo.path());
+        run(repo.path(), &["checkout", "-q", "main"]);
+        let repo_str = repo.path().to_string_lossy().into_owned();
+        let directory = unique_worktree_dir();
+        let path = add_worktree_with_branch(
+            &repo_str,
+            &directory,
+            "billing",
+            "feat/billing",
+            Some("base"),
+        )
+        .expect("create named worktree");
+        assert!(path.ends_with("/billing"));
+        assert_eq!(current_branch(&path), "feat/billing");
+        assert_eq!(head_sha(Path::new(&path)), base_tip);
+        let before = list_worktrees(&repo_str).len();
+        assert!(add_worktree_with_branch(
+            &repo_str,
+            &directory,
+            "other",
+            "feat/billing",
+            Some("main")
+        )
+        .is_err());
+        assert!(add_worktree_with_branch(
+            &repo_str,
+            &directory,
+            "billing",
+            "feat/other",
+            Some("main")
+        )
+        .is_err());
+        assert_eq!(list_worktrees(&repo_str).len(), before);
+        let absent = git_cmd(repo.path())
+            .args(["show-ref", "--verify", "refs/heads/feat/other"])
+            .output()
+            .expect("query branch");
+        assert!(!absent.status.success());
+        remove_worktree(&repo_str, &path).expect("remove test worktree");
+        let _ = fs::remove_dir(Path::new(&path).parent().expect("worktree parent"));
     }
 
     #[test]

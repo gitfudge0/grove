@@ -89,7 +89,7 @@ fn cleanup_orphaned_in(root: &Path, active: &[PathBuf]) -> usize {
     let mut removed = 0;
     for entry in entries.flatten() {
         let path = entry.path();
-        if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false)
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir())
             || !is_owned_path_in(&path, root)
             || active.contains(&path)
         {

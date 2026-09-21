@@ -131,3 +131,10 @@ pub const SESSION_CARD_H: f32 = SPACE_LG * 2.0
 
 /// The Settings cards' label indent: card hairline (1px) + row inset (`SPACE_2XL`) = 13px.
 pub const CARD_LABEL_INDENT: f32 = SPACE_2XL + 1.0;
+
+/// Reference app header geometry.
+pub const APPBAR_H: f32 = 40.0;
+pub const CHROME_CONTROL_H: f32 = 24.0;
+pub const TEXT_BRAND: f32 = 15.0;
+pub const RADIUS_CHROME: f32 = 8.0;
+pub const OPACITY_DISABLED: f32 = 0.58;

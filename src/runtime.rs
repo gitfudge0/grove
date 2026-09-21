@@ -343,7 +343,7 @@ impl Runtime {
         });
     }
 
-    /// Always ≥1 home terminal: closing the last one immediately respawns a fresh shell.
+    /// Closing the last standalone terminal leaves the workspace empty.
     pub(crate) fn close_home_terminal(&mut self, i: usize, cx: &mut Context<Self>) {
         let remaining = self.registry.update(cx, |r, cx| {
             r.close_home(i);
@@ -354,12 +354,9 @@ impl Runtime {
             s.close_home_terminal(i, remaining);
             cx.notify();
         });
-        if remaining == 0 {
-            self.spawn_home_terminal(cx);
-        }
     }
 
-    fn snapshot(&self, cx: &mut App) -> crate::entities::workspace_state::TreeSnapshot {
+    pub(crate) fn snapshot(&self, cx: &mut App) -> crate::entities::workspace_state::TreeSnapshot {
         let active_proj = self.state.read(cx).proj_idx();
         let registry = self.registry.clone();
         self.tree.clone().update(cx, |tree, cx| {
@@ -696,6 +693,8 @@ mod tests {
             cx.set_global(crate::zoom::CurrentPtyDims::default());
             let runtime = cx.new(Runtime::new);
             assert!(runtime.read(cx).registry.read(cx).is_empty());
+            assert_eq!(runtime.read(cx).registry.read(cx).home_terminal_count(), 0);
+            runtime.update(cx, |runtime, cx| runtime.close_home_terminal(0, cx));
             assert_eq!(runtime.read(cx).registry.read(cx).home_terminal_count(), 0);
             runtime.update(cx, Runtime::shutdown);
             assert_eq!(

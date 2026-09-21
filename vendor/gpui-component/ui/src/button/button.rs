@@ -1,18 +1,18 @@
 use std::rc::Rc;
 
 use crate::{
-    ActiveTheme, Colorize as _, Disableable, FocusableExt as _, Icon, Selectable, Sizable, Size,
-    StyleSized, StyledExt,
     button::ButtonIcon,
     h_flex,
     select::Caret,
     tooltip::{ManagedTooltipExt as _, Tooltip},
+    ActiveTheme, Colorize as _, Disableable, FocusableExt as _, Icon, Selectable, Sizable, Size,
+    StyleSized, StyledExt,
 };
 use gpui::{
-    AnyElement, App, Background, ClickEvent, Corners, Div, Edges, ElementId, Hsla,
-    InteractiveElement, Interactivity, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce,
-    Role, SharedString, Stateful, StatefulInteractiveElement as _, StyleRefinement, Styled, Window,
-    div, prelude::FluentBuilder as _, px, relative, transparent_white,
+    div, prelude::FluentBuilder as _, px, relative, transparent_white, AnyElement, App, Background,
+    ClickEvent, Corners, Div, Edges, ElementId, Hsla, InteractiveElement, Interactivity,
+    IntoElement, MouseButton, ParentElement, Pixels, RenderOnce, Role, SharedString, Stateful,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, Window,
 };
 
 #[derive(Default, Clone, Copy)]
@@ -735,7 +735,7 @@ impl ButtonVariant {
             Self::Success => cx.theme().tokens.button_success.into(),
             Self::Info => cx.theme().tokens.button_info.into(),
             Self::Ghost | Self::Link | Self::Text => cx.theme().transparent.into(),
-            Self::Custom(colors) => colors.color.mix_oklab(cx.theme().transparent, 0.2).into(),
+            Self::Custom(colors) => colors.color.into(),
         }
     }
 
@@ -787,7 +787,7 @@ impl ButtonVariant {
             }
             Self::Link => cx.theme().link,
             Self::Text => cx.theme().foreground.opacity(0.9),
-            Self::Custom(colors) => colors.color,
+            Self::Custom(colors) => colors.foreground,
         }
     }
 
@@ -916,12 +916,7 @@ impl ButtonVariant {
                     cx.theme().tokens.button_info_hover.into()
                 }
             }
-            Self::Custom(colors) => if outline {
-                colors.color.mix_oklab(cx.theme().transparent, 0.2)
-            } else {
-                colors.color.mix_oklab(cx.theme().transparent, 0.3)
-            }
-            .into(),
+            Self::Custom(colors) => colors.hover.into(),
             Self::Ghost => if cx.theme().mode.is_dark() {
                 cx.theme().secondary.lighten(0.1).opacity(0.8)
             } else {
@@ -1008,7 +1003,7 @@ impl ButtonVariant {
                     cx.theme().tokens.button_info_active.into()
                 }
             }
-            Self::Custom(colors) => colors.color.mix_oklab(cx.theme().transparent, 0.4).into(),
+            Self::Custom(colors) => colors.active.into(),
             Self::Link => cx.theme().transparent.into(),
             Self::Text => cx.theme().transparent.into(),
         };
@@ -1081,9 +1076,12 @@ impl ButtonVariant {
             Self::Success => cx.theme().tokens.button_success.background.opacity(0.15),
             Self::Info => cx.theme().tokens.button_info.background.opacity(0.15),
             Self::Secondary => cx.theme().tokens.button_secondary.background.opacity(1.5),
-            Self::Custom(style) => style.color.opacity(0.15).into(),
+            Self::Custom(style) => style.color.opacity(0.5).into(),
         };
-        let fg = cx.theme().muted_foreground.opacity(0.5);
+        let fg = match self {
+            Self::Custom(style) => style.foreground.opacity(0.5),
+            _ => cx.theme().muted_foreground.opacity(0.5),
+        };
         let (bg, border) = if outline {
             (
                 self.outline_background(ButtonStyleState::Normal, cx)
@@ -1126,6 +1124,38 @@ impl ButtonVariant {
 mod tests {
     use super::*;
     use gpui::{linear_color_stop, linear_gradient};
+
+    #[gpui::test]
+    fn custom_palette_preserves_distinct_foreground_and_state_fills(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let window = cx.add_empty_window();
+        window.update(|_, cx| {
+            for (fill, foreground) in [(0x1b1b1b, 0xf7f7f8), (0xefefef, 0x141416)] {
+                let fill: Hsla = gpui::rgb(fill).into();
+                let foreground: Hsla = gpui::rgb(foreground).into();
+                let hover: Hsla = gpui::rgb(0x333333).into();
+                let active: Hsla = gpui::rgb(0x444444).into();
+                let variant = ButtonVariant::Custom(
+                    ButtonCustomVariant::new(cx)
+                        .color(fill)
+                        .foreground(foreground)
+                        .hover(hover)
+                        .active(active),
+                );
+                assert_eq!(variant.normal(false, cx).bg, fill.into());
+                assert_eq!(variant.normal(false, cx).fg, foreground);
+                assert_eq!(variant.hovered(false, cx).bg, hover.into());
+                assert_eq!(variant.hovered(false, cx).fg, foreground);
+                assert_eq!(variant.active(false, cx).bg, active.into());
+                assert_eq!(variant.active(false, cx).fg, foreground);
+                assert_eq!(variant.disabled(false, cx).fg, foreground.opacity(0.5));
+                assert_ne!(
+                    variant.disabled(false, cx).bg,
+                    variant.disabled(false, cx).fg.into()
+                );
+            }
+        });
+    }
 
     #[gpui::test]
     fn test_button_builder(_cx: &mut gpui::TestAppContext) {

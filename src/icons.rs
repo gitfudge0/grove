@@ -97,7 +97,7 @@ fn svg_for(name: &str) -> String {
         // Three stacked full-width bars — "show the flat session list".
         // Deliberately unlike `expand-*` (which pair chevrons with hatches):
         // the rail's content-mode button must not read as a cycle button.
-        "rail-sessions" => r#"<path d="M2.5 4h11M2.5 8h11M2.5 12h11"/>"#,
+        "list" | "rail-sessions" => r#"<path d="M2.5 4h11M2.5 8h11M2.5 12h11"/>"#,
         // A trunk with two indented branch stubs — "show the project tree".
         "rail-tree" => {
             r#"<path d="M4 2.5v9.5"/><path d="M4 6h4M4 11h4"/><path d="M10.5 6h3M10.5 11h3"/>"#
@@ -116,7 +116,7 @@ fn svg_for(name: &str) -> String {
         }
         "dot" => r#"<circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/>"#,
         "ring" => r#"<circle cx="8" cy="8" r="3.5"/>"#,
-        "term" => {
+        "terminal" | "term" => {
             r#"<rect x="1.5" y="3" width="13" height="10" rx="1.5"/><path d="M4.5 7l2 1.5-2 1.5M8 10h3.5"/>"#
         }
         "more" => {
@@ -212,11 +212,13 @@ mod tests {
             "expand-all",
             "expand-sessions",
             "rail-sessions",
+            "list",
             "rail-tree",
             "git",
             "no-git",
             "play",
             "term",
+            "terminal",
             "more",
             "trash",
             "close",

@@ -368,7 +368,7 @@ impl Element for TerminalElement {
                     ),
                     size(px(cell_w), px(cell_h)),
                 ),
-                c::FG(),
+                Hsla::from(grove_core::theme::with_current(c::fg_of)),
             ))
         } else {
             None
@@ -392,7 +392,10 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.paint_quad(fill(bounds, c::BG()));
+        window.paint_quad(fill(
+            bounds,
+            Hsla::from(grove_core::theme::with_current(c::bg_of)),
+        ));
         // Scene is read by reference, not drained, since it's shared with the session's cache.
         // All backgrounds go down before any text — interleaving per row would let one row's background paint over the previous row's descenders.
         for (r, row) in pre.scene.rows.iter().enumerate() {

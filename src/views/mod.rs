@@ -14,3 +14,10 @@ pub fn rpx(v: f32) -> Rems {
 
 pub mod shell;
 pub mod tokens;
+
+pub mod components;
+
+mod workspace_manager;
+
+pub mod sidebar;
+mod terminal_view;

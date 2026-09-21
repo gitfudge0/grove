@@ -32,7 +32,8 @@ pub struct SettingsState {
 impl gpui::Global for SettingsState {}
 
 impl SettingsState {
-    pub fn new(store: Store) -> Self {
+    pub fn new(mut store: Store) -> Self {
+        store.normalize_workspaces();
         Self {
             store,
             dirty: false,
@@ -73,6 +74,7 @@ impl SettingsState {
             let before = this.store.clone();
             let was_dirty = this.dirty;
             let result = f(&mut this.store);
+            this.store.normalize_workspaces();
             this.dirty = true;
             this.epoch += 1;
             let saved = storage::save(&this.store);
@@ -90,6 +92,7 @@ impl SettingsState {
     /// bookkeeping is testable without a gpui `App`.
     fn mark(&mut self, f: impl FnOnce(&mut Store)) -> u64 {
         f(&mut self.store);
+        self.store.normalize_workspaces();
         self.dirty = true;
         self.epoch += 1;
         self.epoch

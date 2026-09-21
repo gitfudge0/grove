@@ -683,10 +683,10 @@ mod tests {
     fn output_is_stale_until_the_pty_produces_bytes() {
         let now = Instant::now();
         assert_eq!(output_age_at(None, now), Duration::MAX);
-        assert_eq!(
-            output_age_at(Some(now - Duration::from_secs(2)), now),
-            Duration::from_secs(2)
-        );
+        let earlier = now
+            .checked_sub(Duration::from_secs(2))
+            .expect("test clock supports a two-second interval");
+        assert_eq!(output_age_at(Some(earlier), now), Duration::from_secs(2));
     }
 
     #[test]

@@ -126,6 +126,15 @@ pub fn boot(cx: &mut gpui::App) {
     crate::telemetry::start_heartbeat();
 
     // 8. In dependency order.
+    // The reference chrome defaults dark. Only an explicitly selected light
+    // theme opts into its light palette; PTY follow-system remains independent.
+    crate::theme::set_chrome_light(
+        store
+            .theme
+            .as_deref()
+            .and_then(theme::by_name)
+            .is_some_and(|t| matches!(t.kind, theme::ThemeKind::Light)),
+    );
     cx.set_global(SettingsState::new(store));
     cx.set_global(ThemeState::new(follow_system, dark_name, light_name));
     cx.set_global(ZoomState::new(zoom));

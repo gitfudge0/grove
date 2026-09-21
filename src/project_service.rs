@@ -88,6 +88,36 @@ impl ProjectService {
         }
     }
 
+    pub fn create_worktree_with_branch(
+        &mut self,
+        project: &storage::Project,
+        name: &str,
+        branch: &str,
+        base: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> Result<String, String> {
+        match git::add_worktree_with_branch(
+            &project.path,
+            project.worktree_dir(),
+            name,
+            branch,
+            base,
+        ) {
+            Ok(path) => {
+                if let Err(e) = git::copy_worktree_includes(&project.path, &path) {
+                    tracing::warn!("grove-gpui: worktree includes not copied: {e}");
+                }
+                crate::telemetry::track("worktree_created", vec![]);
+                cx.emit(ProjectEvent::WorktreeAdded { path: path.clone() });
+                Ok(path)
+            }
+            Err(e) => {
+                crate::telemetry::track("error", vec![("kind", "worktree_failed".into())]);
+                Err(format!("Worktree failed: {e}"))
+            }
+        }
+    }
+
     pub fn kill_sessions_for_project(&mut self, project: &str, cx: &mut Context<Self>) {
         self.kill_sessions(|m| m.project == project, cx);
     }

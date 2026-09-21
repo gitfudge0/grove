@@ -261,8 +261,119 @@ pub enum DiffMode {
     Split,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Workspace {
+    pub id: u64,
+    pub name: String,
+    #[serde(skip)]
+    pub projects: usize,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Workspaces {
+    pub rows: Vec<Workspace>,
+    pub active: u64,
+    mru: Vec<u64>,
+    next_id: u64,
+}
+impl Workspaces {
+    pub fn new() -> Self {
+        Self {
+            rows: vec![Workspace {
+                id: 1,
+                name: "Grove".into(),
+                projects: 0,
+            }],
+            active: 1,
+            mru: vec![1],
+            next_id: 2,
+        }
+    }
+    pub fn name(&self, id: u64) -> &str {
+        self.rows
+            .iter()
+            .find(|row| row.id == id)
+            .map_or("", |row| row.name.as_str())
+    }
+    fn validate(&self, value: &str, except: Option<u64>) -> Result<String, String> {
+        let name = value.trim();
+        if name.is_empty() {
+            return Err("Enter a workspace name.".into());
+        }
+        if self
+            .rows
+            .iter()
+            .any(|row| Some(row.id) != except && row.name.to_lowercase() == name.to_lowercase())
+        {
+            return Err("A workspace with this name already exists.".into());
+        }
+        Ok(name.into())
+    }
+    pub fn select(&mut self, id: u64) {
+        if self.rows.iter().any(|row| row.id == id) {
+            self.active = id;
+            self.mru.retain(|entry| *entry != id);
+            self.mru.insert(0, id);
+        }
+    }
+    pub fn create(&mut self, value: &str) -> Result<(), String> {
+        let name = self.validate(value, None)?;
+        let id = self.next_id;
+        self.next_id += 1;
+        self.rows.push(Workspace {
+            id,
+            name,
+            projects: 0,
+        });
+        self.select(id);
+        Ok(())
+    }
+    pub fn rename(&mut self, id: u64, value: &str) -> Result<(), String> {
+        let name = self.validate(value, Some(id))?;
+        if let Some(row) = self.rows.iter_mut().find(|row| row.id == id) {
+            row.name = name;
+        }
+        Ok(())
+    }
+    pub fn delete_guard(&self, id: u64) -> Result<(), String> {
+        if self.rows.len() == 1 {
+            return Err("Keep at least one workspace.".into());
+        }
+        let row = self
+            .rows
+            .iter()
+            .find(|row| row.id == id)
+            .ok_or("Workspace no longer exists.")?;
+        if row.projects > 0 {
+            return Err("Move or remove its projects before deleting this workspace.".into());
+        }
+        Ok(())
+    }
+    pub fn delete(&mut self, id: u64, typed: &str) -> Result<(), String> {
+        self.delete_guard(id)?;
+        if typed != self.name(id) {
+            return Err("Type the exact workspace name to confirm.".into());
+        }
+        self.rows.retain(|row| row.id != id);
+        self.mru.retain(|entry| *entry != id);
+        if self.active == id {
+            self.active = self.mru.first().copied().unwrap_or(self.rows[0].id);
+        }
+        Ok(())
+    }
+}
+impl Default for Workspaces {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Store {
+    #[serde(default)]
+    pub workspaces: Workspaces,
+    /// Membership uses repository paths so project renames preserve identity.
+    #[serde(default)]
+    pub project_workspaces: std::collections::BTreeMap<String, u64>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]
@@ -315,6 +426,75 @@ pub struct Store {
 }
 
 impl Store {
+    /// Upgrade old flat project stores without moving or removing any repository.
+    pub fn normalize_workspaces(&mut self) {
+        if self.workspaces.rows.is_empty() {
+            self.workspaces = Workspaces::default();
+        }
+        let fallback = self.workspaces.rows[0].id;
+        if !self
+            .workspaces
+            .rows
+            .iter()
+            .any(|row| row.id == self.workspaces.active)
+        {
+            self.workspaces.active = fallback;
+        }
+        let mut seen = std::collections::HashSet::new();
+        self.workspaces
+            .mru
+            .retain(|id| self.workspaces.rows.iter().any(|row| row.id == *id) && seen.insert(*id));
+        if !self.workspaces.mru.contains(&self.workspaces.active) {
+            self.workspaces.mru.insert(0, self.workspaces.active);
+        }
+        self.workspaces.next_id = self.workspaces.next_id.max(
+            self.workspaces
+                .rows
+                .iter()
+                .map(|row| row.id)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        );
+        self.project_workspaces
+            .retain(|path, _| self.projects.iter().any(|p| &p.path == path));
+        for project in &self.projects {
+            let id = self
+                .project_workspaces
+                .entry(project.path.clone())
+                .or_insert(fallback);
+            if !self.workspaces.rows.iter().any(|row| row.id == *id) {
+                *id = fallback;
+            }
+        }
+        for row in &mut self.workspaces.rows {
+            row.projects = self
+                .projects
+                .iter()
+                .filter(|p| self.project_workspaces.get(&p.path) == Some(&row.id))
+                .count();
+        }
+    }
+
+    pub fn project_workspace_id(&self, path: &str) -> u64 {
+        self.project_workspaces
+            .get(path)
+            .copied()
+            .filter(|id| self.workspaces.rows.iter().any(|row| row.id == *id))
+            .unwrap_or_else(|| self.workspaces.rows.first().map_or(1, |row| row.id))
+    }
+
+    pub fn assign_project_to_active_workspace(&mut self, path: &str) {
+        self.project_workspaces
+            .insert(path.to_string(), self.workspaces.active);
+    }
+
+    /// Retains canonical project indices for existing project actions.
+    pub fn workspace_projects(&self, id: u64) -> impl Iterator<Item = (usize, &Project)> {
+        self.active_projects()
+            .filter(move |(_, p)| self.project_workspace_id(&p.path) == id)
+    }
+
     /// Callers MUST use the yielded index, never re-`enumerate` — `.enumerate()` must stay BEFORE `.filter()`.
     pub fn active_projects(&self) -> impl Iterator<Item = (usize, &Project)> {
         self.projects
@@ -372,8 +552,11 @@ pub fn load() -> Result<Store> {
         tracing::warn!(path = %p.display(), error = %e, "config load failed: read error");
         e
     })?;
-    match serde_json::from_str(&s) {
-        Ok(store) => Ok(store),
+    match serde_json::from_str::<Store>(&s) {
+        Ok(mut store) => {
+            store.normalize_workspaces();
+            Ok(store)
+        }
         Err(e) => {
             // Keep the corrupted file aside for recovery rather than silently resetting.
             tracing::warn!(path = %p.display(), error = %e, "config load failed: corrupt JSON");
@@ -533,6 +716,7 @@ pub(crate) mod tests {
                 },
             ],
             diff_mode: DiffMode::Split,
+            ..Store::default()
         };
 
         let json = serde_json::to_string_pretty(&original).expect("serialize");
@@ -1296,5 +1480,77 @@ pub(crate) mod tests {
             0
         );
         assert!(projects[0].worktree_dir.is_none());
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    fn legacy_store() -> Store {
+        serde_json::from_str(r#"{"projects":[{"name":"Repo","path":"/repo"},{"name":"Archived","path":"/archived","archived":true}]}"#).unwrap()
+    }
+
+    #[test]
+    fn workspace_migration_retains_existing_and_archived_repositories() {
+        let mut store = legacy_store();
+        store.normalize_workspaces();
+        assert_eq!(store.workspaces.name(store.workspaces.active), "Grove");
+        assert_eq!(store.workspaces.rows[0].projects, 2);
+        assert_eq!(
+            store
+                .workspace_projects(1)
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>(),
+            vec![0]
+        );
+        store.workspaces.create("Other").unwrap();
+        assert!(store.workspaces.delete(1, "Grove").is_err());
+        assert_eq!(store.projects.len(), 2);
+    }
+
+    #[test]
+    fn workspace_membership_and_active_selection_survive_roundtrip_and_rename() {
+        let mut store = legacy_store();
+        store.normalize_workspaces();
+        store.workspaces.create("Platform").unwrap();
+        let id = store.workspaces.active;
+        store.assign_project_to_active_workspace("/repo");
+        store.projects[0].name = "Renamed".into();
+        store.workspaces.rename(id, "Tools").unwrap();
+        store.normalize_workspaces();
+        let mut restored: Store =
+            serde_json::from_str(&serde_json::to_string(&store).unwrap()).unwrap();
+        restored.normalize_workspaces();
+        assert_eq!(restored.workspaces.active, id);
+        assert_eq!(restored.project_workspace_id("/repo"), id);
+        assert_eq!(restored.workspace_projects(id).next().unwrap().0, 0);
+        assert_eq!(restored.workspaces.name(id), "Tools");
+        assert_eq!(restored.workspaces.rows[1].projects, 1);
+    }
+
+    #[test]
+    fn workspace_recovery_repairs_missing_ids_and_validates_deletion() {
+        let mut store = legacy_store();
+        store.project_workspaces.insert("/repo".into(), 99);
+        store.workspaces.active = 99;
+        store.normalize_workspaces();
+        assert_eq!(store.workspaces.active, 1);
+        assert_eq!(store.project_workspace_id("/repo"), 1);
+        assert!(store.workspaces.create(" grove ").is_err());
+        assert!(store.workspaces.create(" ").is_err());
+        store.workspaces.create("Empty").unwrap();
+        let removed = store.workspaces.active;
+        store.workspaces.mru = vec![99, removed, removed, 1];
+        store.normalize_workspaces();
+        assert_eq!(store.workspaces.mru, vec![removed, 1]);
+        assert!(store.workspaces.delete(removed, "empty").is_err());
+        store.workspaces.delete(removed, "Empty").unwrap();
+        assert_eq!(store.workspaces.active, 1);
+        store.workspaces.create("Next").unwrap();
+        assert!(store.workspaces.active > removed);
+        store.workspaces.rows.clear();
+        store.normalize_workspaces();
+        assert_eq!(store.workspaces.rows[0].projects, 2);
     }
 }

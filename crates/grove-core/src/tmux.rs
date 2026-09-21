@@ -250,11 +250,26 @@ pub fn selection_text(
         (p2, p1)
     };
 
+    // tmux's vi selection includes its cursor cell; emacs excludes it.
+    // Grove endpoints always identify inclusive cells, matching GroveTerm.
+    let mode = tmux()
+        .args(["display-message", "-p", "-t", name, "#{mode-keys}"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !mode.status.success() {
+        return None;
+    }
+    let end_col = if String::from_utf8_lossy(&mode.stdout).trim() == "vi" {
+        end.1
+    } else {
+        end.1.saturating_add(1)
+    };
     let mut c = tmux();
     c.args(["copy-mode", "-e", "-t", name, ";"]);
-    push_copy_cursor(&mut c, name, start.0, start.1.saturating_add(1));
+    push_copy_cursor(&mut c, name, start.0, start.1);
     c.args(["send-keys", "-t", name, "-X", "begin-selection", ";"]);
-    push_copy_cursor(&mut c, name, end.0, end.1.saturating_add(1));
+    push_copy_cursor(&mut c, name, end.0, end_col);
     c.args(["send-keys", "-t", name, "-X", "copy-selection", ";"]);
     if restore_offset == 0 {
         c.args(["send-keys", "-t", name, "-X", "cancel", ";"]);
@@ -288,20 +303,7 @@ pub fn selection_text(
 }
 
 fn push_copy_cursor(c: &mut Command, name: &str, a_row: usize, col: usize) {
-    c.args([
-        "send-keys",
-        "-t",
-        name,
-        "-X",
-        "history-bottom",
-        ";",
-        "send-keys",
-        "-t",
-        name,
-        "-X",
-        "start-of-line",
-        ";",
-    ]);
+    c.args(["send-keys", "-t", name, "-X", "history-bottom", ";"]);
     if a_row > 0 {
         c.args([
             "send-keys",
@@ -314,6 +316,10 @@ fn push_copy_cursor(c: &mut Command, name: &str, a_row: usize, col: usize) {
             ";",
         ]);
     }
+    // Reset the horizontal goal on the target row. Doing this on the blank
+    // bottom row first lets tmux restore its preferred column during cursor-up,
+    // and cursor-right can then wrap onto the wrong row.
+    c.args(["send-keys", "-t", name, "-X", "start-of-line", ";"]);
     if col > 0 {
         c.args([
             "send-keys",
@@ -655,23 +661,39 @@ mod tests {
         );
         std::thread::sleep(std::time::Duration::from_millis(300));
 
-        // The six-row live viewport cannot contain this eleven-row span. Both
-        // endpoint orders must still copy the same text from tmux history.
-        let expected = "-abcdefghij\nline-06-abcdefghij\nline-07-abcdefghij\nline-08-abcdefghij\nline-09-abcdefghij\nline-10-abcdefghij\nline-11-abcdefghij\nline-12-abcdefghij\nline-13-abcdefghij\nline-14-abcdefghij\nline-";
-        assert_eq!(
-            selection_text(name, (12, 7), (2, 5), 0).as_deref(),
-            Some(expected)
-        );
-        let offset = scroll(name, true, 3).expect("scroll position");
-        assert_eq!(
-            selection_text(name, (2, 5), (12, 7), offset).as_deref(),
-            Some(expected)
-        );
-        assert_eq!(
-            display(name, "#{scroll_position}"),
-            offset.to_string(),
-            "copy should restore the drag viewport"
-        );
+        // Output ends in a newline: absolute row 0 is blank, row 1 is
+        // line-15, row 2 is line-14, and row 12 is line-04. Endpoint columns
+        // are zero-based and inclusive, exactly as GroveTerm::selection_text.
+        let expected = "-abcdefghij\nline-05-abcdefghij\nline-06-abcdefghij\nline-07-abcdefghij\nline-08-abcdefghij\nline-09-abcdefghij\nline-10-abcdefghij\nline-11-abcdefghij\nline-12-abcdefghij\nline-13-abcdefghij\nline-1";
+        for mode in ["emacs", "vi"] {
+            let mut set_mode = tmux();
+            set_mode.args(["set-window-option", "-t", name, "mode-keys", mode]);
+            assert!(run_silent(set_mode).expect("set mode").success());
+            assert_eq!(
+                selection_text(name, (12, 7), (2, 5), 0).as_deref(),
+                Some(expected),
+                "history selection with {mode} keys"
+            );
+            let offset = scroll(name, true, 3).expect("scroll position");
+            assert_eq!(
+                selection_text(name, (2, 5), (12, 7), offset).as_deref(),
+                Some(expected),
+                "reversed history selection with {mode} keys"
+            );
+            assert_eq!(
+                display(name, "#{scroll_position}"),
+                offset.to_string(),
+                "copy should restore the drag viewport"
+            );
+            assert_eq!(
+                selection_text(name, (2, 0), (2, 0), 0).as_deref(),
+                Some("l")
+            );
+            assert_eq!(
+                selection_text(name, (2, 5), (2, 7), 0).as_deref(),
+                Some("14-")
+            );
+        }
 
         kill_session(name);
     }

@@ -2778,6 +2778,7 @@ dependencies = [
  "grove-terminal",
  "objc",
  "portable-pty",
+ "raw-window-handle",
  "rust-embed",
  "semver",
  "serde_json",

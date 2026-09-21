@@ -156,7 +156,7 @@ impl Agent {
             ];
             shell_args.extend(prefix_args);
             shell_args.extend(args.iter().cloned());
-            return (crate::env_path::login_shell(), shell_args);
+            (crate::env_path::login_shell(), shell_args)
         }
 
         #[cfg(windows)]

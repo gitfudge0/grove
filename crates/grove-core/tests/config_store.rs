@@ -113,6 +113,7 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
             agent: Agent::Claude,
         }],
         diff_mode: grove_core::storage::DiffMode::Split,
+        ..Store::default()
     };
 
     let serialized = serde_json::to_string_pretty(&original).expect("serialize Store");
