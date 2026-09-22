@@ -236,7 +236,7 @@ impl WorkspaceManager {
                     },
                 )
                 .when(enabled, |el| el.tab_index(0))
-                .focus(|s| s.bg(c::BG_HOVER()))
+                .focus_visible(|s| s.bg(c::BG_HOVER()))
                 .when(!enabled, |el| el.opacity(OPACITY_DISABLED))
                 .when(enabled, |el| {
                     el.on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))
@@ -391,7 +391,7 @@ impl WorkspaceManager {
                         .child(
                             header_control("close-workspace-panel", "Close workspace panel")
                                 .tab_index(0)
-                                .focus(|s| s.bg(c::BG_HOVER()))
+                                .focus_visible(|s| s.bg(c::BG_HOVER()))
                                 .child(icon("close", ICON_MD, c::FG_DIM()))
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.close(window, cx)),
@@ -418,7 +418,7 @@ impl WorkspaceManager {
                                 .id((key, id))
                                 .role(gpui::Role::Button)
                                 .tab_index(0)
-                                .focus(|s| s.bg(c::BG_HOVER()))
+                                .focus_visible(|s| s.bg(c::BG_HOVER()))
                                 .aria_label(format!("{} {}", label, row.name))
                                 .size(rpx(CHROME_CONTROL_H))
                                 .flex()
@@ -426,6 +426,10 @@ impl WorkspaceManager {
                                 .justify_center()
                                 .rounded(rpx(RADIUS_CONTROL))
                                 .hover(|s| s.bg(c::BG_HOVER()))
+                                .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                })
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     if key == "rename" {
                                         this.open(Panel::Rename(id), window, cx);
@@ -514,7 +518,7 @@ impl WorkspaceManager {
                     div()
                         .id("manager-create-workspace")
                         .tab_index(0)
-                        .focus(|s| s.bg(c::BG_HOVER()))
+                        .focus_visible(|s| s.bg(c::BG_HOVER()))
                         .role(gpui::Role::Button)
                         .aria_label("Create workspace")
                         .h(rpx(ROW_H))
@@ -523,6 +527,10 @@ impl WorkspaceManager {
                         .items_center()
                         .gap(rpx(SPACE_LG))
                         .hover(|s| s.bg(c::BG_HOVER()))
+                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        })
                         .child(icon("plus", ICON_SM, c::FG()))
                         .child("Create workspace")
                         .on_click(
@@ -627,8 +635,12 @@ impl Render for WorkspaceManager {
                     .gap(rpx(SPACE_MD))
                     .rounded(rpx(RADIUS_PANEL))
                     .hover(|s| s.bg(c::BG_HOVER()))
-                    .focus(|s| s.bg(c::BG_HOVER()))
+                    .focus_visible(|s| s.bg(c::BG_HOVER()))
                     .when(self.panel != Panel::Closed, |el| el.bg(c::BG_HOVER()))
+                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    })
                     .child(
                         gpui::canvas(
                             move |bounds, _, _| trigger_bounds.set(bounds),

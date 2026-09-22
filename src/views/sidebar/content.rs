@@ -86,62 +86,157 @@ impl Sidebar {
         }
         cx.notify();
     }
-    pub(super) fn add_project(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn add_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_new_worktree = None;
+        self.project_return_path = None;
+        self.project_return_focus = window.focused(cx);
+        self.project_panel = None;
+        self.project_decision = false;
+        self.mode = ViewMode::Project;
         let workspace = cx.global::<SettingsState>().store.workspaces.active;
-        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Add project".into()),
-        });
-        cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(paths))) = receiver.await else {
-                return;
-            };
-            let Some(path) = paths.first() else {
-                return;
-            };
-            let canonical = fs_err::canonicalize(path).and_then(|path| {
-                if path.is_dir() { Ok(path) } else { Err(std::io::Error::other("Select an existing directory.")) }
-            });
-            let path = match canonical {
-                Ok(path) => path.to_string_lossy().into_owned(),
-                Err(error) => { let _ = this.update(cx, |this,cx| { this.content_error = Some(error.to_string()); cx.notify(); }); return; }
-            };
-            let name = crate::add_project::path_basename(&path);
-            let _ = this.update(cx, |this, cx| {
-                let store = &cx.global::<SettingsState>().store;
-                if store.workspaces.active != workspace {
-                    this.content_error = Some("Workspace changed while choosing a folder. Add the project again in the intended workspace.".into()); cx.notify(); return;
-                }
-                if store
-                    .projects
-                    .iter()
-                    .any(|p| p.path == path || p.name == name || fs_err::canonicalize(&p.path).is_ok_and(|existing| existing.to_string_lossy() == path))
-                {
-                    this.content_error =
-                        Some("This project is already added, or its name is in use.".into());
-                    cx.notify();
-                    return;
-                }
-                let service = this.runtime.read(cx).projects.clone();
-                match service.update(cx, |service, cx| {
-                    service.register_project(name, path.clone(), cx)
-                }) {
-                    Ok(idx) => {
+        let service = self.runtime.read(cx).projects.clone();
+        let setup =
+            cx.new(|cx| super::project_setup::ProjectSetup::new(window, cx, workspace, service));
+        self.observers.push(
+            cx.subscribe_in(&setup, window, |this, _, event, window, cx| {
+                match event {
+                    super::project_setup::ProjectSetupEvent::Completed { path, workspace } => {
                         SettingsState::update(cx, |store| {
-                            store.assign_project_to_active_workspace(&path);
+                            store.workspaces.select(*workspace);
                         });
-                        SettingsState::flush_now(cx);
-                        this.content_error = None;
-                        this.select(Selection::Project(idx), cx);
+                        this.project_setup = None;
+                        this.finish_project_selection(path, window, cx);
                     }
-                    Err(error) => this.content_error = Some(error),
+                    super::project_setup::ProjectSetupEvent::Cancelled => {
+                        this.project_setup = None;
+                        if let Some(f) = this.project_return_focus.take() {
+                            f.focus(window, cx);
+                        }
+                    }
                 }
                 cx.notify();
-            });
-        })
-        .detach();
+            }),
+        );
+        setup.focus_handle(cx).focus(window, cx);
+        self.project_setup = Some(setup);
+        cx.notify();
+    }
+    pub(super) fn project_path_is_active(&self, path: &str, cx: &gpui::App) -> bool {
+        let store = &cx.global::<SettingsState>().store;
+        store.projects.iter().any(|p| p.path == path && !p.archived)
+            && store.project_workspace_id(path) == store.workspaces.active
+    }
+    pub(super) fn finish_project_selection(
+        &mut self,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace = cx
+            .global::<SettingsState>()
+            .store
+            .project_workspace_id(path);
+        SettingsState::update(cx, |store| {
+            store.workspaces.select(workspace);
+        });
+        self.project_return_focus = None;
+        self.project_return_path = None;
+        self.sync(window, cx);
+        self.select_project_path(path, cx);
+        let index = cx
+            .global::<SettingsState>()
+            .store
+            .projects
+            .iter()
+            .position(|p| p.path == path);
+        let focus = index.map_or_else(
+            || self.focus.clone(),
+            |idx| {
+                self.project_menu_focus
+                    .entry(idx)
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone()
+            },
+        );
+        focus.focus(window, cx);
+    }
+    pub(super) fn select_project_path(&mut self, path: &str, cx: &mut Context<Self>) {
+        if let Some(idx) = cx
+            .global::<SettingsState>()
+            .store
+            .projects
+            .iter()
+            .position(|p| p.path == path)
+        {
+            self.select(Selection::Project(idx), cx);
+        }
+    }
+    pub(super) fn open_project_panel(
+        &mut self,
+        page: super::projects::Page,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_new_worktree = None;
+        self.project_return_path = match &page {
+            super::projects::Page::Edit(path) | super::projects::Page::Remove(path) => {
+                Some(path.clone())
+            }
+            super::projects::Page::Archived => None,
+        };
+        self.project_return_focus = self.menu_return_focus.take().or_else(|| window.focused(cx));
+        self.menu = None;
+        self.project_setup = None;
+        self.mode = ViewMode::Project;
+        let runtime = self.runtime.read(cx);
+        let (service, registry) = (runtime.projects.clone(), runtime.registry.clone());
+        let panel =
+            cx.new(|cx| super::projects::ProjectPanel::new(page, service, registry, window, cx));
+        self.project_decision = panel.read(cx).is_decision();
+        self.observers.push(
+            cx.subscribe_in(&panel, window, |this, _, event, window, cx| {
+                match event {
+                    super::projects::ProjectPanelEvent::Closed => {
+                        this.project_panel = None;
+                        this.project_decision = false;
+                        let source_exists = this.project_return_path.take().is_none_or(|path| {
+                            cx.global::<SettingsState>()
+                                .store
+                                .projects
+                                .iter()
+                                .any(|p| p.path == path && !p.archived)
+                        });
+                        if source_exists {
+                            if let Some(f) = this.project_return_focus.take() {
+                                f.focus(window, cx);
+                            }
+                        } else {
+                            this.project_return_focus = None;
+                            this.focus.focus(window, cx);
+                        }
+                    }
+                    super::projects::ProjectPanelEvent::Selected(path) => {
+                        this.project_panel = None;
+                        this.project_decision = false;
+                        this.finish_project_selection(path, window, cx);
+                    }
+                    super::projects::ProjectPanelEvent::Archived => {
+                        this.project_panel = None;
+                        this.project_decision = false;
+                        this.project_return_focus = None;
+                        this.project_return_path = None;
+                        this.focus.focus(window, cx);
+                        this.selection = None;
+                    }
+                    super::projects::ProjectPanelEvent::Decision(value) => {
+                        this.project_decision = *value;
+                    }
+                }
+                cx.notify();
+            }),
+        );
+        self.project_panel = Some(panel);
+        cx.notify();
     }
     fn terminal_content(
         &mut self,
@@ -236,19 +331,7 @@ impl Sidebar {
             let newly_created = !views.contains_key(&id);
             let terminal = views
                 .entry(id)
-                .or_insert_with(|| {
-                    cx.new(|cx| {
-                        TerminalView::new(
-                            session,
-                            if home {
-                                None
-                            } else {
-                                Some(meta.project.clone())
-                            },
-                            cx,
-                        )
-                    })
-                })
+                .or_insert_with(|| cx.new(|cx| TerminalView::new(session, cx)))
                 .clone();
             self.canvas_focus_observers.entry(id).or_insert_with(|| {
                 cx.on_focus_in(&terminal.focus_handle(cx), window, move |this, _, cx| {
@@ -611,6 +694,12 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if let Some(setup) = &self.project_setup {
+            return setup.clone().into_any_element();
+        }
+        if let Some(panel) = &self.project_panel {
+            return panel.clone().into_any_element();
+        }
         if self.pending_new_worktree.is_some() {
             let errors = validate_worktree_fields(
                 self.worktree_name.read(cx).value().as_ref(),
@@ -788,7 +877,12 @@ impl Sidebar {
                     format!("Add a local project to {workspace_name}."),
                 )
             } else if empty_grid {
-                ("No active sessions", format!("{workspace_name} has no sessions. Switch to Project view and use a worktree’s launch actions to begin."))
+                (
+                    "No active sessions",
+                    format!(
+                        "{workspace_name} has no sessions. Switch to Project view and use a worktree’s launch actions to begin."
+                    ),
+                )
             } else {
                 ("Select a session", "Choose a session in the sidebar, or focus a worktree to reveal its launch actions.".into())
             };
@@ -1124,7 +1218,6 @@ mod tests {
                     name: "demo".into(),
                     path: "/grove-canvas-fixture".into(),
                     scripts: grove_core::storage::ProjectScripts::default(),
-                    theme: None,
                     archived: false,
                     worktree_dir: None,
                 }],

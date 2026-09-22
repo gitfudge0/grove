@@ -160,7 +160,6 @@ pub fn fuzzy_match_indices(
 pub enum SettingRow {
     Theme,
     AppSize,
-    ProjectThemes,
     Backend,
     Permissions,
     Telemetry,
@@ -170,10 +169,9 @@ pub enum SettingRow {
 }
 
 impl SettingRow {
-    pub const ALL: [SettingRow; 9] = [
+    pub const ALL: [SettingRow; 8] = [
         SettingRow::Theme,
         SettingRow::AppSize,
-        SettingRow::ProjectThemes,
         SettingRow::Backend,
         SettingRow::Permissions,
         SettingRow::Telemetry,
@@ -186,7 +184,6 @@ impl SettingRow {
         match self {
             SettingRow::Theme => "App theme",
             SettingRow::AppSize => "App size",
-            SettingRow::ProjectThemes => "Project themes",
             SettingRow::Backend => "Backend",
             SettingRow::Permissions => "Permissions",
             SettingRow::Telemetry => "Telemetry",
@@ -196,12 +193,12 @@ impl SettingRow {
         }
     }
 
-    /// `ProjectThemes`/`Telemetry`/`Chrome` render a checkbox glyph instead and never consult this.
+    /// `Telemetry`/`Chrome` render a checkbox glyph instead and never consult this.
     pub fn icon_name(self) -> &'static str {
         match self {
             SettingRow::Theme => "contrast",
             SettingRow::AppSize => "grid",
-            SettingRow::ProjectThemes | SettingRow::Telemetry | SettingRow::Chrome => "check",
+            SettingRow::Telemetry | SettingRow::Chrome => "check",
             SettingRow::Backend => "term",
             SettingRow::Permissions => "ring",
             SettingRow::DefaultAgent => "sparkle",
@@ -211,7 +208,7 @@ impl SettingRow {
 
     pub fn section(self) -> &'static str {
         match self {
-            SettingRow::Theme | SettingRow::AppSize | SettingRow::ProjectThemes => "APPEARANCE",
+            SettingRow::Theme | SettingRow::AppSize => "APPEARANCE",
             SettingRow::Backend
             | SettingRow::Permissions
             | SettingRow::Telemetry
@@ -224,10 +221,7 @@ impl SettingRow {
     // Exercised only by tests; the rebuilt Settings modal decides toggle-vs-pane at its own call site.
     #[allow(dead_code)]
     pub fn is_toggle(self) -> bool {
-        matches!(
-            self,
-            SettingRow::ProjectThemes | SettingRow::Telemetry | SettingRow::Chrome
-        )
+        matches!(self, SettingRow::Telemetry | SettingRow::Chrome)
     }
 }
 
@@ -1344,19 +1338,12 @@ mod tests {
     }
 
     #[test]
-    fn exactly_three_settings_rows_toggle_in_place() {
+    fn exactly_two_settings_rows_toggle_in_place() {
         let toggles: Vec<_> = SettingRow::ALL
             .into_iter()
             .filter(|s| s.is_toggle())
             .collect();
-        assert_eq!(
-            toggles,
-            vec![
-                SettingRow::ProjectThemes,
-                SettingRow::Telemetry,
-                SettingRow::Chrome
-            ]
-        );
+        assert_eq!(toggles, vec![SettingRow::Telemetry, SettingRow::Chrome]);
     }
 
     #[test]

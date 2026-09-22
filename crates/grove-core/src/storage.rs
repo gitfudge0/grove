@@ -51,8 +51,6 @@ pub struct Project {
     pub path: String,
     #[serde(default)]
     pub scripts: ProjectScripts,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub theme: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub archived: bool,
     /// Pinned on the FIRST rename and never changed after, so renaming can't orphan existing worktrees; `None` means "same as `name`".
@@ -416,8 +414,6 @@ pub struct Store {
     pub theme_dark: Option<String>,
     #[serde(default)]
     pub theme_light: Option<String>,
-    #[serde(default)]
-    pub project_themes_enabled: bool,
     /// Most recent first, capped at 6 (see `push_recent_launch`).
     #[serde(default)]
     pub recent_launches: Vec<RecentLaunch>,
@@ -673,7 +669,6 @@ pub(crate) mod tests {
                     name: "myapp".into(),
                     path: "/home/user/myapp".into(),
                     scripts: ProjectScripts::default(),
-                    theme: None,
                     archived: false,
                     worktree_dir: None,
                 },
@@ -681,7 +676,6 @@ pub(crate) mod tests {
                     name: "other".into(),
                     path: "/tmp/other".into(),
                     scripts: ProjectScripts::default(),
-                    theme: Some("dracula".into()),
                     archived: true,
                     worktree_dir: None,
                 },
@@ -702,7 +696,6 @@ pub(crate) mod tests {
             theme_follow_system: true,
             theme_dark: Some("tokyonight".into()),
             theme_light: Some("tokyonight-day".into()),
-            project_themes_enabled: true,
             recent_launches: vec![
                 RecentLaunch {
                     project: "myapp".into(),
@@ -735,9 +728,7 @@ pub(crate) mod tests {
         assert!(recovered.theme_follow_system);
         assert_eq!(recovered.theme_dark.as_deref(), Some("tokyonight"));
         assert_eq!(recovered.theme_light.as_deref(), Some("tokyonight-day"));
-        assert!(recovered.project_themes_enabled);
         assert_eq!(recovered.diff_mode, DiffMode::Split);
-        assert_eq!(recovered.projects[1].theme.as_deref(), Some("dracula"));
         assert!(
             !recovered.projects[0].archived,
             "active project must round-trip as active"
@@ -761,7 +752,6 @@ pub(crate) mod tests {
         assert!(!store.theme_follow_system);
         assert!(store.theme_dark.is_none());
         assert!(store.theme_light.is_none());
-        assert!(!store.project_themes_enabled);
         assert!(
             !store.onboarded,
             "a fresh config must report onboarded=false so the wizard runs"
@@ -1009,7 +999,6 @@ pub(crate) mod tests {
                     name: format!("p{i}"),
                     path: format!("/tmp/p{i}"),
                     scripts: ProjectScripts::default(),
-                    theme: None,
                     archived: archived.contains(&i),
                     worktree_dir: None,
                 })
@@ -1168,7 +1157,6 @@ pub(crate) mod tests {
             name: "myapp".into(),
             path: "/home/user/myapp".into(),
             scripts: ProjectScripts::default(),
-            theme: None,
             archived: true,
             worktree_dir: None,
         };
@@ -1191,7 +1179,6 @@ pub(crate) mod tests {
             name: name.to_string(),
             path: path.to_string(),
             scripts: ProjectScripts::default(),
-            theme: None,
             archived: false,
             worktree_dir: None,
         }

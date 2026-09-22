@@ -77,7 +77,6 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
                 name: "myapp".into(),
                 path: "/home/user/myapp".into(),
                 scripts: grove_core::storage::ProjectScripts::default(),
-                theme: Some("dracula".into()),
                 archived: false,
                 worktree_dir: None,
             },
@@ -85,7 +84,6 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
                 name: "other".into(),
                 path: "/tmp/other".into(),
                 scripts: grove_core::storage::ProjectScripts::default(),
-                theme: None,
                 archived: false,
                 worktree_dir: None,
             },
@@ -106,7 +104,6 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
         theme_follow_system: true,
         theme_dark: Some("tokyonight".into()),
         theme_light: Some("tokyonight-day".into()),
-        project_themes_enabled: true,
         recent_launches: vec![RecentLaunch {
             project: "myapp".into(),
             wt_path: "/home/user/myapp".into(),
@@ -124,7 +121,6 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
 
     assert_eq!(recovered.projects.len(), 2);
     assert_eq!(recovered.projects[0].name, "myapp");
-    assert_eq!(recovered.projects[0].theme.as_deref(), Some("dracula"));
     assert_eq!(recovered.projects[1].path, "/tmp/other");
     assert_eq!(recovered.default_agent, Some(Agent::Claude));
     assert_eq!(recovered.theme.as_deref(), Some("tokyonight"));
@@ -136,9 +132,25 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
     assert_eq!(recovered.telemetry_enabled, Some(false));
     assert_eq!(recovered.grid_order, original.grid_order);
     assert!(recovered.theme_follow_system);
-    assert!(recovered.project_themes_enabled);
     assert_eq!(recovered.recent_launches, original.recent_launches);
     assert_eq!(recovered.diff_mode, grove_core::storage::DiffMode::Split);
+}
+
+#[test]
+fn legacy_project_theme_keys_are_ignored_and_not_written_again() {
+    let json = r#"{
+      "theme": "tokyonight",
+      "project_themes_enabled": true,
+      "projects": [{"name": "myapp", "path": "/home/user/myapp", "theme": "dracula"}]
+    }"#;
+    let recovered: Store = serde_json::from_str(json).expect("deserialize legacy config");
+    assert_eq!(recovered.theme.as_deref(), Some("tokyonight"));
+    assert_eq!(recovered.projects[0].name, "myapp");
+
+    let written = serde_json::to_value(&recovered).expect("serialize upgraded config");
+    assert_eq!(written["theme"], "tokyonight");
+    assert!(written.get("project_themes_enabled").is_none());
+    assert!(written["projects"][0].get("theme").is_none());
 }
 
 /// Exercises the parse failure against bytes that went through a real `write_atomic` round trip, not a string literal.
@@ -173,7 +185,6 @@ fn save_then_load_round_trips_through_real_paths() {
             name: "myapp".into(),
             path: "/home/user/myapp".into(),
             scripts: grove_core::storage::ProjectScripts::default(),
-            theme: Some("dracula".into()),
             archived: false,
             worktree_dir: None,
         }],
@@ -198,7 +209,6 @@ fn save_then_load_round_trips_through_real_paths() {
 
     assert_eq!(loaded.projects.len(), 1);
     assert_eq!(loaded.projects[0].name, "myapp");
-    assert_eq!(loaded.projects[0].theme.as_deref(), Some("dracula"));
     assert_eq!(loaded.default_agent, Some(Agent::Codex));
     assert_eq!(loaded.theme.as_deref(), Some("tokyonight"));
     assert!(loaded.onboarded);

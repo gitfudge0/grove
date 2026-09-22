@@ -409,7 +409,6 @@ mod tests {
             name: name.to_string(),
             path: path.to_string(),
             scripts: grove_core::storage::ProjectScripts::default(),
-            theme: None,
             archived: false,
             worktree_dir: None,
         }

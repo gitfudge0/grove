@@ -41,27 +41,30 @@ pub struct Worktree {
 }
 
 pub fn list_worktrees(project_path: &str) -> Vec<Worktree> {
-    tracing::debug!(
-        args = "worktree list --porcelain",
-        cwd = %project_path,
-        "running git command"
-    );
+    list_worktrees_checked(project_path).unwrap_or_else(|error| {
+        tracing::warn!(%error, "worktree enumeration failed");
+        vec![root_worktree(project_path)]
+    })
+}
+
+/// Destructive callers must not mistake command failure for an empty worktree list.
+pub fn list_worktrees_checked(project_path: &str) -> Result<Vec<Worktree>> {
     let out = Command::new("git")
         .args(["-C", project_path, "worktree", "list", "--porcelain"])
-        .output();
-    // Not a git repo: surface a synthetic root worktree so the project still has a row.
-    let Ok(out) = out else {
-        return vec![root_worktree(project_path)];
-    };
+        .output()?;
     if !out.status.success() {
-        tracing::warn!(
-            status = ?out.status,
-            stderr = %String::from_utf8_lossy(&out.stderr),
-            "git command failed"
-        );
-        return vec![root_worktree(project_path)];
+        return Err(GitError::Command {
+            cmd: "worktree list --porcelain".into(),
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        });
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    Ok(parse_worktrees(
+        project_path,
+        &String::from_utf8_lossy(&out.stdout),
+    ))
+}
+
+fn parse_worktrees(project_path: &str, stdout: &str) -> Vec<Worktree> {
     let mut result = vec![];
     let mut cur_path: Option<String> = None;
     let mut cur_branch: String = String::new();
@@ -653,6 +656,28 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn checked_worktree_enumeration_reports_failure_without_synthetic_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing");
+        assert!(matches!(
+            list_worktrees_checked(missing.to_str().unwrap()),
+            Err(GitError::Command { .. })
+        ));
+        assert!(list_worktrees_checked(directory.path().to_str().unwrap()).is_err());
+        assert_eq!(list_worktrees(missing.to_str().unwrap()).len(), 1);
+    }
+
+    #[test]
+    fn worktree_parser_preserves_main_branch_and_detached_identity() {
+        let parsed = parse_worktrees("/fixture/main", "worktree /fixture/main\nbranch refs/heads/main\n\nworktree /fixture/second\ndetached\n");
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed[0].is_main);
+        assert_eq!(parsed[0].branch, "main");
+        assert!(!parsed[1].is_main);
+        assert_eq!(parsed[1].branch, "(detached)");
+    }
 
     #[test]
     fn list_worktrees_many_short_circuits_on_len_le_1() {

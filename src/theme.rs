@@ -250,7 +250,7 @@ pub fn SEL_RING() -> Hsla {
     alpha_rgba(cyan_rgba(), 0.5).into()
 }
 
-// Renders PTY content under a per-project theme override, decoupled from the global `theme::current()`. Return Rgba (not Hsla) since they're blend inputs to each other.
+// Palette helpers for PTY cells. Return Rgba (not Hsla) because these are blend inputs.
 fn is_dark_of(t: &theme::Theme) -> bool {
     matches!(t.kind, theme::ThemeKind::Dark)
 }
@@ -288,7 +288,7 @@ pub fn bg_rail_of(t: &theme::Theme) -> Rgba {
     mix(ic(t.bg), BLACK, d)
 }
 
-/// Used for ANSI color 0 inside PTY content rendered under a per-project override theme.
+/// Used for ANSI color 0 inside PTY content.
 pub fn bg_strip_of(t: &theme::Theme) -> Rgba {
     let bg = ic(t.bg);
     if is_dark_of(t) {
@@ -298,7 +298,7 @@ pub fn bg_strip_of(t: &theme::Theme) -> Rgba {
     }
 }
 
-/// Reserved, no consumer yet — exists so a per-project theme can tint selected/highlighted PTY regions later; not dead code. `bg_hover_of` does read it.
+/// Reserved for selected/highlighted PTY regions; `bg_hover_of` reads it.
 pub fn bg_hl_of(t: &theme::Theme) -> Rgba {
     ic(t.bg_highlight)
 }
@@ -308,7 +308,7 @@ pub fn bg_hover_of(t: &theme::Theme) -> Rgba {
 pub fn border_of(t: &theme::Theme) -> Rgba {
     mix(bg_of(t), fg_of(t), 0.16)
 }
-/// Reserved, no consumer yet — for a future PTY selection outline in the project's pinned theme; chrome selection uses `SEL_RING()`.
+/// Reserved for a future PTY selection outline; chrome selection uses `SEL_RING()`.
 pub fn sel_ring_of(t: &theme::Theme) -> Rgba {
     alpha_rgba(cyan_of(t), 0.5)
 }
@@ -319,7 +319,7 @@ pub struct ThemeState {
     pub dark_name: String,
     pub light_name: String,
     pub system_mode: WindowAppearance,
-    /// Bumped on every change; the terminal element uses it as a repaint/cache key.
+    /// Bumped on every change; the terminal element uses it to invalidate its row cache.
     pub generation: u64,
 }
 

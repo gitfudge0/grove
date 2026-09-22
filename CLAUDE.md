@@ -1,5 +1,8 @@
 # CLAUDE.md
 
+- For Grove UI changes, screenshot/mock implementation, and visual review, load
+  [grove-ui](.claude/skills/grove-ui/SKILL.md) before editing. It defines the
+  native inspection and interaction-state checks that prevent layout drift.
 - Run `./install.sh` after finishing any code changes.
 - `DESIGN.md` is normative for all UI work. Every numeric value comes from
   `src/views/tokens.rs` and every colour from `src/theme.rs` — never a bare
@@ -14,5 +17,10 @@
   design seems to need a token or tier that does not exist, that is a signal
   the design is wrong, per DESIGN.md §13.
 
-- Inputs and dropdowns use neutral fill changes with stable borders for focus, open, and clicked states; never add white or foreground-colored outlines. Keep input carets, labels, validation error borders, and other controls’ keyboard focus rings.
+- Inputs and dropdowns use neutral fill changes with stable borders for focus
+  and open states; never add white or foreground-colored outlines. Action
+  buttons do not retain a clicked highlight after release. Keep hover,
+  `focus_visible` for keyboard use, intentional selected/open states, input
+  carets, labels, and validation error borders.
+- The app has one light/dark theme setting. Workspaces and projects do not override it.
 - Placeholders contain meaningful example values, never repeated labels or titles (Workspace: `e.g. Platform`). Destructive confirmations start empty and show the exact target name only as the placeholder.

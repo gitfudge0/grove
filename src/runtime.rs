@@ -209,6 +209,26 @@ impl Runtime {
         temp_bundle_path: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
+        let projects = &cx.global::<SettingsState>().store.projects;
+        let launch_error = std::iter::once(cwd.as_str())
+            .chain(context_roots.iter().map(|root| root.wt_path.as_str()))
+            .find_map(
+                |wt| match grove_core::session_meta::project_owner(projects, wt) {
+                    Ok(project) if self.projects.read(cx).is_removing(&project.path) => Some(
+                        "Cannot launch a session while this project is being removed.".to_string(),
+                    ),
+                    Ok(_) => None,
+                    Err(error) => Some(error),
+                },
+            );
+        if let Some(error) = launch_error {
+            if let Some(path) = temp_bundle_path.as_deref() {
+                grove_core::multi_root::cleanup_path(std::path::Path::new(path));
+            }
+            self.toast
+                .update(cx, |toast, cx| toast.set_error(error, cx));
+            return false;
+        }
         self.state.update(cx, |s, cx| {
             s.set_open_agent_menu(None);
             cx.notify();

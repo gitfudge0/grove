@@ -318,6 +318,41 @@ impl SessionRegistry {
         count
     }
 
+    /// Relabel independently only after all live primary/context paths resolve.
+    pub fn rename_project_by_path(
+        &mut self,
+        projects: &[grove_core::storage::Project],
+        path: &str,
+        to: &str,
+    ) -> Result<usize, String> {
+        for meta in &self.order {
+            grove_core::session_meta::project_owner(projects, &meta.wt_path)?;
+            for root in &meta.context_roots {
+                grove_core::session_meta::project_owner(projects, &root.wt_path)?;
+            }
+        }
+        let owns = |wt: &str| {
+            grove_core::session_meta::project_owner(projects, wt)
+                .is_ok_and(|project| project.path == path)
+        };
+        let mut count = 0;
+        for meta in &mut self.order {
+            let mut changed = false;
+            if owns(&meta.wt_path) && meta.project != to {
+                meta.project = to.to_string();
+                changed = true;
+            }
+            for root in &mut meta.context_roots {
+                if owns(&root.wt_path) && root.project != to {
+                    root.project = to.to_string();
+                    changed = true;
+                }
+            }
+            count += usize::from(changed);
+        }
+        Ok(count)
+    }
+
     #[must_use]
     pub fn home_terminals(&self) -> &[SessionMeta] {
         &self.home

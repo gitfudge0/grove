@@ -71,9 +71,12 @@ impl Shell {
         };
         let traffic = |id, label, color, glyph| {
             header_control(id, label)
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                })
                 .tab_index(0)
-                .focus(|style| style.bg(c::BG_HOVER()))
+                .focus_visible(|style| style.bg(c::BG_HOVER()))
                 .w(rpx(TRAFFIC_CONTROL_W))
                 .child(
                     div()
@@ -292,7 +295,6 @@ mod tests {
             name: "navigation".into(),
             path: "/grove-shell-navigation-test".into(),
             scripts: grove_core::storage::ProjectScripts::default(),
-            theme: None,
             archived: false,
             worktree_dir: None,
         };
@@ -443,7 +445,7 @@ mod tests {
         cx.simulate_mouse_down(menu, MouseButton::Left, gpui::Modifiers::default());
         cx.simulate_mouse_up(menu, MouseButton::Left, gpui::Modifiers::default());
         draw(cx);
-        cx.simulate_keystrokes("enter");
+        cx.simulate_keystrokes("down enter");
         draw(cx);
         let mut fields = Vec::new();
         for selector in [
@@ -594,9 +596,8 @@ mod tests {
                 session.read(cx).spawn_error().is_some(),
                 "NUL script must fail before any PTY reader starts"
             );
-            let terminal = cx.new(|cx| {
-                super::super::terminal_view::TerminalView::new(session.clone(), None, cx)
-            });
+            let terminal =
+                cx.new(|cx| super::super::terminal_view::TerminalView::new(session.clone(), cx));
             TerminalFixture { terminal, session }
         });
         draw(cx);

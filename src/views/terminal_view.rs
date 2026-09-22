@@ -16,22 +16,16 @@ use std::{cell::Cell, rc::Rc};
 
 pub struct TerminalView {
     session: Entity<TerminalSession>,
-    project: Option<String>,
     focus: FocusHandle,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     selection: Option<(AbsCell, AbsCell)>,
     _subscription: Subscription,
 }
 impl TerminalView {
-    pub fn new(
-        session: Entity<TerminalSession>,
-        project: Option<String>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(session: Entity<TerminalSession>, cx: &mut Context<Self>) -> Self {
         let subscription = cx.observe(&session, |_, _, cx| cx.notify());
         Self {
             session,
-            project,
             focus: cx.focus_handle().tab_stop(true),
             bounds: Rc::default(),
             selection: None,
@@ -141,7 +135,6 @@ impl Render for TerminalView {
             }))
             .child(TerminalElement::new(
                 self.session.clone(),
-                self.project.clone(),
                 self.selection,
                 self.focus.is_focused(window),
                 zoom,
