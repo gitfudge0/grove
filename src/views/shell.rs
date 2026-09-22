@@ -4,8 +4,7 @@ use super::{rpx, tokens::*};
 use crate::{icons::icon, theme as c};
 use crate::{runtime::Runtime, theme::ThemeState};
 use gpui::{
-    actions, div, prelude::*, App, Context, Entity, FocusHandle, Focusable, FontWeight,
-    MouseButton, Window,
+    actions, div, prelude::*, App, Context, Entity, FocusHandle, Focusable, MouseButton, Window,
 };
 
 const TRAFFIC_LIGHT_D: f32 = 12.0;
@@ -39,19 +38,27 @@ pub struct Shell {
     runtime: Entity<Runtime>,
     workspaces: Entity<super::workspace_manager::WorkspaceManager>,
     sidebar: Entity<super::sidebar::Sidebar>,
+    statusbar: Entity<super::statusbar::Statusbar>,
     window_observers: Option<Vec<gpui::Subscription>>,
 }
 
 impl Shell {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let runtime = cx.new(Runtime::new);
+        let workspaces = cx.new(|cx| super::workspace_manager::WorkspaceManager::new(window, cx));
         let sidebar = cx.new(|cx| super::sidebar::Sidebar::new(runtime.clone(), window, cx));
+        sidebar.update(cx, |sidebar, _| {
+            sidebar.set_workspace_selector(workspaces.clone());
+        });
         cx.observe(&sidebar, |_, _, cx| cx.notify()).detach();
+        let statusbar =
+            cx.new(|cx| super::statusbar::Statusbar::new(runtime.clone(), sidebar.clone(), cx));
         Self {
+            statusbar,
             sidebar,
             focus: cx.focus_handle(),
             runtime,
-            workspaces: cx.new(|cx| super::workspace_manager::WorkspaceManager::new(window, cx)),
+            workspaces,
             window_observers: None,
         }
     }
@@ -64,6 +71,7 @@ impl Shell {
         };
         let traffic = |id, label, color, glyph| {
             header_control(id, label)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .tab_index(0)
                 .focus(|style| style.bg(c::BG_HOVER()))
                 .w(rpx(TRAFFIC_CONTROL_W))
@@ -84,17 +92,37 @@ impl Shell {
         };
         div()
             .id("app-header")
+            .debug_selector(|| "app-header".into())
             .flex()
             .items_center()
             .flex_shrink_0()
             .h(rpx(APPBAR_H))
-            .px(rpx(SPACE_2XL))
+            .when(self.sidebar.read(cx).is_grid(), |header| {
+                header.pr(rpx(SPACE_2XL))
+            })
             .bg(c::BG_STRIP())
-            .border_b_1()
-            .border_color(c::BORDER_STRONG())
             .child(
                 div()
+                    .id("header-rail-segment")
+                    .debug_selector(|| "header-rail-segment".into())
                     .group("traffic-lights")
+                    .h_full()
+                    .px(rpx(SPACE_2XL))
+                    .flex_shrink_0()
+                    .when(!self.sidebar.read(cx).is_grid(), |segment| {
+                        segment
+                            .w(rpx(super::sidebar::Sidebar::rail_width(window)))
+                            .bg(c::BG_RAIL())
+                            .border_r_1()
+                            .border_color(c::BORDER())
+                    })
+                    .on_mouse_down(MouseButton::Left, |event, window, _| {
+                        if event.click_count == 2 {
+                            window.titlebar_double_click();
+                        } else {
+                            window.start_window_move();
+                        }
+                    })
                     .flex()
                     .items_center()
                     .child(
@@ -130,61 +158,30 @@ impl Shell {
                         }),
                     ),
             )
-            .child(
-                div()
-                    .id("header-drag-region")
-                    .min_w_0()
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .pl(rpx(SPACE_2XL))
-                    .on_mouse_down(MouseButton::Left, |event, window, _| {
-                        if event.click_count == 2 {
-                            window.titlebar_double_click();
-                        } else {
-                            window.start_window_move();
-                        }
-                    })
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(rpx(TEXT_BRAND))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(c::FG())
-                            .child("GROVE"),
-                    ),
-            )
-            .child(div().ml(rpx(SPACE_2XL)).child(self.workspaces.clone()))
-            .child(
-                div()
-                    .id("header-empty-drag-region")
-                    .flex_1()
-                    .h_full()
-                    .on_mouse_down(MouseButton::Left, |event, window, _| {
-                        if event.click_count == 2 {
-                            window.titlebar_double_click();
-                        } else {
-                            window.start_window_move();
-                        }
-                    }),
-            )
+            .when(self.sidebar.read(cx).is_grid(), |header| {
+                header.child(div().ml(rpx(SPACE_2XL)).child(self.workspaces.clone()))
+            })
+            .when(self.sidebar.read(cx).is_grid(), |header| {
+                header.child(
+                    div()
+                        .id("header-empty-drag-region")
+                        .flex_1()
+                        .h_full()
+                        .on_mouse_down(MouseButton::Left, |event, window, _| {
+                            if event.click_count == 2 {
+                                window.titlebar_double_click();
+                            } else {
+                                window.start_window_move();
+                            }
+                        }),
+                )
+            })
             .when(self.sidebar.read(cx).is_grid(), |header| {
                 header.child(
                     self.sidebar
                         .update(cx, |sidebar, cx| sidebar.view_controls(cx)),
                 )
             })
-            .child(
-                header_control("settings", "Settings coming soon")
-                    .role(gpui::Role::Image)
-                    .aria_description("Settings is currently unavailable")
-                    .border_1()
-                    .border_color(c::BORDER())
-                    .rounded(rpx(RADIUS_CHROME))
-                    .opacity(OPACITY_DISABLED)
-                    .child(icon("cog", ICON_MD, c::FG_DIM())),
-            )
     }
 
     fn flush(&self, cx: &mut Context<Self>) {
@@ -238,6 +235,7 @@ impl Render for Shell {
             .track_focus(&self.focus)
             .on_key_down(traverse_unhandled_tab)
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .bg(crate::theme::BG())
@@ -249,10 +247,19 @@ impl Render for Shell {
                 this.flush(cx);
                 window.remove_window();
             }))
-            .child(
-                div()
+            .child({
+                let grid = self.sidebar.read(cx).is_grid();
+                let header = div()
                     .relative()
                     .flex_shrink_0()
+                    .when(!grid, |header| {
+                        header
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w(rpx(super::sidebar::Sidebar::rail_width(window)))
+                            .h(rpx(APPBAR_H))
+                    })
                     .child(self.header(window, cx))
                     .when(self.sidebar.read(cx).confirmation_open(), |header| {
                         header.child(
@@ -263,9 +270,15 @@ impl Render for Shell {
                                 .bg(c::alpha(c::BG(), 0.4))
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
                         )
-                    }),
-            )
+                    });
+                if grid {
+                    header.into_any_element()
+                } else {
+                    gpui::deferred(header).into_any_element()
+                }
+            })
             .child(div().flex_1().min_h_0().child(self.sidebar.clone()))
+            .child(self.statusbar.clone())
     }
 }
 
@@ -306,6 +319,43 @@ mod tests {
     }
 
     #[gpui::test]
+    fn project_marker_and_settings_follow_navigation_cluster(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (_, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        let project = cx.debug_bounds("project-0").expect("project row");
+        let marker = cx.debug_bounds("project-no-git-0").expect("non-git marker");
+        assert!(project.contains(&marker.center()));
+        let grid = cx.debug_bounds("sidebar-grid").expect("grid control");
+        let settings = cx
+            .debug_bounds("sidebar-settings")
+            .expect("settings indicator");
+        assert_eq!(settings.size, grid.size);
+        assert!((f32::from(settings.left() - grid.right()) - SPACE_SM).abs() <= 1.0);
+        assert_eq!(settings.center().y, grid.center().y);
+        assert!(cx.debug_bounds("settings").is_none());
+        cx.simulate_mouse_down(grid.center(), MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(grid.center(), MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("sidebar-rail").is_none());
+        let header = cx.debug_bounds("app-header").unwrap();
+        let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
+        assert_eq!(canvas.top(), header.bottom());
+        assert_eq!(f32::from(header.size.height), APPBAR_H);
+        let grid = cx
+            .debug_bounds("sidebar-grid")
+            .expect("grid control in app header");
+        let settings = cx
+            .debug_bounds("sidebar-settings")
+            .expect("settings in app header");
+        assert_eq!(settings.size, grid.size);
+        assert!((f32::from(settings.left() - grid.right()) - SPACE_SM).abs() <= 1.0);
+        assert_eq!(settings.center().y, grid.center().y);
+        assert!(settings.top() < project.top());
+        assert!(cx.debug_bounds("settings").is_none());
+    }
+
+    #[gpui::test]
     fn ordinary_sidebar_controls_traverse_forward_and_backward(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         let (_, cx) = cx.add_window_view(Shell::new);
@@ -325,10 +375,35 @@ mod tests {
     }
 
     #[gpui::test]
-    fn header_workspace_control_traverses_and_activates(cx: &mut gpui::TestAppContext) {
+    fn sidebar_workspace_control_traverses_and_activates(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.simulate_resize(gpui::size(gpui::px(500.0), gpui::px(600.0)));
         draw(cx);
+        let rail = cx.debug_bounds("sidebar-rail").expect("sidebar rail");
+        let segment = cx
+            .debug_bounds("header-rail-segment")
+            .expect("header rail segment");
+        assert_eq!(segment.right(), rail.right());
+        assert_eq!(segment.top(), rail.top());
+        assert_eq!(
+            cx.debug_bounds("canvas-section-header").unwrap().bottom(),
+            segment.bottom()
+        );
+        let workspace_header = cx.debug_bounds("sidebar-workspace-header").unwrap();
+        assert_eq!(segment.bottom(), workspace_header.top());
+        assert_eq!(
+            cx.debug_bounds("canvas-section-header").unwrap().top(),
+            rail.top()
+        );
+        let header = cx
+            .debug_bounds("sidebar-workspace-header")
+            .expect("workspace header");
+        let trigger = cx
+            .debug_bounds("workspace-picker")
+            .expect("workspace selector");
+        assert!(rail.contains(&trigger.center()));
+        assert!(header.contains(&trigger.center()));
         let picker = cx.update(|window, cx| {
             let picker = shell.read(cx).workspaces.focus_handle(cx);
             picker.focus(window, cx);
@@ -343,7 +418,13 @@ mod tests {
         for key in ["enter", "space"] {
             cx.simulate_keystrokes(key);
             draw(cx);
-            assert!(cx.debug_bounds("workspace-popup").is_some());
+            let popup = cx.debug_bounds("workspace-popup").expect("workspace popup");
+            assert_eq!(popup.left(), trigger.left());
+            assert!(popup.bottom() > header.bottom());
+            assert!(
+                popup.right() > rail.right(),
+                "menu may extend beyond the rail"
+            );
             cx.simulate_keystrokes("escape");
             draw(cx);
             assert!(cx.debug_bounds("workspace-popup").is_none());
@@ -409,6 +490,80 @@ mod tests {
             cx.debug_bounds("worktree-name-field").is_none(),
             "Cancel closes the worktree editor; disabled Create is skipped"
         );
+    }
+
+    #[gpui::test]
+    fn statusbar_spans_narrow_window_and_tracks_toast_lifecycle(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.simulate_resize(gpui::size(
+            gpui::px(crate::WINDOW_MIN_W),
+            gpui::px(crate::WINDOW_MIN_H),
+        ));
+        draw(cx);
+        let footer = cx.debug_bounds("statusbar").expect("persistent footer");
+        assert_eq!(
+            f32::from(footer.size.height),
+            super::super::statusbar::STATUS_H
+        );
+        assert_eq!(f32::from(footer.size.width), crate::WINDOW_MIN_W);
+        assert_eq!(f32::from(footer.bottom()), crate::WINDOW_MIN_H);
+        cx.update(|_, cx| {
+            shell
+                .read(cx)
+                .runtime
+                .read(cx)
+                .toast
+                .clone()
+                .update(cx, |toast, cx| toast.set_error("Example failure", cx));
+        });
+        draw(cx);
+        let toast = cx.debug_bounds("status-toast").expect("error toast");
+        assert!(toast.right() <= footer.right());
+        assert!(toast.left() >= footer.left());
+        cx.executor()
+            .advance_clock(crate::entities::toast::Toast::ttl(
+                crate::entities::toast::ToastKind::Error,
+            ));
+        draw(cx);
+        assert!(cx.debug_bounds("status-toast").is_none());
+    }
+
+    #[gpui::test]
+    fn footer_session_scope_changes_before_sidebar_render(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        cx.update(|_, cx| {
+            let sidebar = shell.read(cx).sidebar.clone();
+            let registry = shell.read(cx).runtime.read(cx).registry.clone();
+            let id = registry.update(cx, |registry, cx| {
+                let id = registry.insert_meta(
+                    "navigation".into(),
+                    "/grove-shell-navigation-test".into(),
+                    grove_core::agent::Agent::Terminal,
+                );
+                cx.notify();
+                id
+            });
+            assert_eq!(
+                sidebar.read(cx).active_canvas_sessions(cx),
+                vec![(id, false)]
+            );
+            cx.update_global::<crate::settings::SettingsState, _>(|settings, _| {
+                settings.store.workspaces.create("Other").unwrap();
+            });
+            // No draw or artificial entity notification between changing the
+            // active workspace and the footer's scope read.
+            assert!(sidebar.read(cx).active_canvas_sessions(cx).is_empty());
+            cx.update_global::<crate::settings::SettingsState, _>(|settings, _| {
+                settings.store.workspaces.select(1);
+            });
+            assert_eq!(
+                sidebar.read(cx).active_canvas_sessions(cx),
+                vec![(id, false)]
+            );
+        });
     }
 
     struct TerminalFixture {

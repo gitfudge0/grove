@@ -283,6 +283,7 @@ impl TerminalSession {
                                 break;
                             }
                         }
+                        let _ = this.update(cx, Self::reader_closed);
                     })
                 },
             )
@@ -528,6 +529,16 @@ impl TerminalSession {
         self.spawn_error.as_deref()
     }
 
+    /// Latched PTY exit, available to renderers without polling the child.
+    pub fn has_exited(&self) -> bool {
+        self.exited
+    }
+
+    fn reader_closed(&mut self, cx: &mut Context<Self>) {
+        self.exited = true;
+        cx.notify();
+    }
+
     pub fn alive(&mut self) -> bool {
         if self.exited {
             return false;
@@ -678,6 +689,20 @@ mod tests {
     use grove_core::agent::Agent;
 
     use super::output_age_at;
+
+    #[gpui::test]
+    fn reader_eof_latches_exit_and_notifies_observers(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let session = cx.new(|cx| super::TerminalSession::spawn_script("\0", "/", cx));
+        assert!(!session.read_with(cx, |session, _| session.has_exited()));
+        let notified = std::rc::Rc::new(std::cell::Cell::new(false));
+        let seen = notified.clone();
+        let _observer = cx.update(|cx| cx.observe(&session, move |_, _| seen.set(true)));
+        session.update(cx, super::TerminalSession::reader_closed);
+        cx.run_until_parked();
+        assert!(session.read_with(cx, |session, _| session.has_exited()));
+        assert!(notified.get());
+    }
 
     #[test]
     fn output_is_stale_until_the_pty_produces_bytes() {

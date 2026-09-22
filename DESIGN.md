@@ -143,7 +143,7 @@ Grove forms use flat filled controls on black or white surfaces. Each field is 6
 | Selection tiles | min 42×44, 12px radius, neutral 2px total selected outline | single or multiple, selected/unselected | Target (pending): `TILE_*`, `c::SEL_RING()`; blue category dot pairs with visible text |
 | Form buttons | 44px height, 12px radius, leading semantic icon | normal, focus, disabled, pending | Target (pending): `FORM_BUTTON_H`; dense chrome remains target `CONTROL_H = 24` (current value: 22) |
 
-Use 14px horizontal inset, 8px label top inset, and a 27px value top inset. Rows and split fields use a 12px rhythm. Textareas start at 130px and grow vertically. Focus uses a 1px border plus a 1px outline, totaling 2px, in the neutral focus token. Fields and cards use no bevel, inset shadow, or default elevation.
+Use 14px horizontal inset, 8px label top inset, and a 27px value top inset. Rows and split fields use a 12px rhythm. Textareas start at 130px and grow vertically. Input focus uses a neutral hover fill and visible caret with a stable border; never add a white or foreground-colored border or outline. Preserve validation error borders and accessible labels. Fields and cards use no bevel, inset shadow, or default elevation.
 
 Readonly values remain selectable. Disabled controls use the disabled opacity and cannot accept input; labels in enabled and readonly controls retain normal supporting contrast. Split fields are only for semantic pairs. Validation stays attached in normal flow and does not become a detached alert card.
 
@@ -331,7 +331,7 @@ Blur is not a surface-building tool in Grove. Product overlays never use it; the
 
 ## Assumptions
 
-Forms use 60px flat filled wells, 12px embedded labels, and attached validation with a shared error border and wash. Neutral focus outlines identify active controls. Existing compact source-anchored popovers and repository Browse behavior remain interaction references; the new form geometry is a target pending implementation.
+Forms use 60px flat filled wells, 12px embedded labels, and attached validation with a shared error border and wash. Neutral fill changes and the caret identify focused inputs; other controls may retain keyboard focus rings. Existing compact source-anchored popovers and repository Browse behavior remain interaction references; the new form geometry is a target pending implementation.
 
 | Assumption | Record | GPUI mapping or restriction |
 |---|---|---|
@@ -360,7 +360,6 @@ Forms use 60px flat filled wells, 12px embedded labels, and attached validation 
 | accent / bg | 4.96:1 | 5.70:1 | adapt: `c::MAGENTA()` — Existing accessor resolves legacy theme values; migrate both appearances to this row. |
 | label / field | 7.47:1 | 4.95:1 | AA for normal text |
 | value / field | 16.09:1 | 16.00:1 | AAA for normal text |
-| focus / field | 16.09:1 | 16.00:1 | adapt: `c::SEL_RING()` — Existing SEL_RING derives cyan; replace with neutral dark/light focus. Color alone does not implement ring geometry. |
 | error / field | 6.56:1 | 4.99:1 | AA for normal text |
 
 Ratios use WCAG relative luminance against final six-digit token values: background `#000000` / `#ffffff`, field fill `#1b1b1b` / `#efefef`. Status colors are indicators unless their text pairing is validated. Required labels use text-secondary.
@@ -539,3 +538,11 @@ No CSS z-index, outline, blur, easing or accessibility attribute should be trans
 | --color-switch-thumb | #ffffff | #ffffff | `c::SWITCH_THUMB()` | add | src/theme.rs | Add accessor; absent in current theme. Resolve the exact dark/light values in this row. |
 | --color-category-dot | #79a9e8 | #79a9e8 | `c::CATEGORY_DOT()` | add | src/theme.rs | Add accessor; absent in current theme. Resolve the exact dark/light values in this row. |
 | --color-error-wash | rgba(239,125,142,.09) | rgba(182,56,76,.09) | `c::ERROR_WASH()` | add | src/theme.rs | Add accessor; absent in current theme. Resolve the exact dark/light values in this row. |
+
+### Workspace controls and input copy
+
+Dropdown triggers and menu items use neutral hover/selected fills for clicked, open, and focused states, with stable borders and no white or foreground-colored outline. Preserve keyboard navigation and accessible names. Other controls retain their keyboard focus rings.
+
+Workspace menu rows are 28px high, with 8px horizontal padding and icon-to-label gap, 6px menu padding, zero adjacent item gap, and 4px vertical separator margins. Create workspace uses the plus icon; Manage workspaces uses the more icon. Pinned actions use the same row spacing. Workspace management offers rename and deletion, without workspace ordering controls. Moving projects between workspaces is a separate operation.
+
+Placeholders show meaningful example values and never repeat the label or title: Workspace uses `e.g. Platform`. Destructive confirmation starts empty, with the exact target workspace name as its placeholder; enable deletion only after the user types the matching name.

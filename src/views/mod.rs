@@ -21,3 +21,5 @@ mod workspace_manager;
 
 pub mod sidebar;
 mod terminal_view;
+
+mod statusbar;

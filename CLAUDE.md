@@ -13,3 +13,6 @@
   exactly one consumer is a module constant, not a scale entry. If a
   design seems to need a token or tier that does not exist, that is a signal
   the design is wrong, per DESIGN.md §13.
+
+- Inputs and dropdowns use neutral fill changes with stable borders for focus, open, and clicked states; never add white or foreground-colored outlines. Keep input carets, labels, validation error borders, and other controls’ keyboard focus rings.
+- Placeholders contain meaningful example values, never repeated labels or titles (Workspace: `e.g. Platform`). Destructive confirmations start empty and show the exact target name only as the placeholder.

@@ -97,7 +97,7 @@ pub fn BG() -> Hsla {
 }
 
 pub fn BG_RAIL() -> Hsla {
-    chrome(0x000000, 0xffffff)
+    chrome(0x242424, 0xf7f7f8)
 }
 
 pub fn BG_STRIP() -> Hsla {
@@ -105,7 +105,7 @@ pub fn BG_STRIP() -> Hsla {
 }
 
 pub fn BG_HOVER() -> Hsla {
-    chrome(0x232327, 0xededee)
+    chrome(0x333337, 0xededee)
 }
 
 pub fn BG_HL() -> Hsla {
@@ -623,14 +623,14 @@ mod tests {
             (
                 false,
                 [
-                    0x000000, 0x000000, 0x000000, 0x232327, 0xf7f7f8, 0xaaaab2, 0x707078, 0x34343a,
+                    0x000000, 0x242424, 0x000000, 0x333337, 0xf7f7f8, 0xaaaab2, 0x707078, 0x34343a,
                     0x515158,
                 ],
             ),
             (
                 true,
                 [
-                    0xffffff, 0xffffff, 0xf7f7f8, 0xededee, 0x141416, 0x66666d, 0x707078, 0xdedee0,
+                    0xffffff, 0xf7f7f8, 0xf7f7f8, 0xededee, 0x141416, 0x66666d, 0x707078, 0xdedee0,
                     0xc3c3c7,
                 ],
             ),
@@ -639,6 +639,20 @@ mod tests {
             for terminal_theme in theme::BUILTINS {
                 theme::set(terminal_theme.clone());
                 assert_eq!(theme::current().bg, terminal_theme.bg);
+                let base = lum_rgba(BG().into());
+                let rail = lum_rgba(BG_RAIL().into());
+                let hover = lum_rgba(BG_HOVER().into());
+                if light {
+                    assert!(
+                        hover < rail && rail < base,
+                        "light hover must darken the rail, which darkens the base"
+                    );
+                } else {
+                    assert!(
+                        hover > rail && rail > base,
+                        "dark hover must lighten the rail, which lightens the base"
+                    );
+                }
                 let actual = [
                     BG(),
                     BG_RAIL(),

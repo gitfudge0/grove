@@ -25,7 +25,16 @@ pub const NAME_PREFIX: &str = "grove__";
 fn tmux() -> Command {
     let mut c = Command::new("tmux");
     // Grove launches from a macOS .app bundle with no LANG/LC_* — without -u/LC_ALL, tmux downgrades Unicode box-drawing to literal q/x.
-    c.args(["-u", "-L", SOCKET]);
+    c.args(["-u", "-L"]);
+    // Unit tests exercise real tmux history/copy mode. A live Grove client can
+    // resize panes on the production socket, invalidating fixed viewport
+    // fixtures and changing the user's paste buffer. Each test process gets
+    // its own server and default configuration instead.
+    #[cfg(test)]
+    c.arg(format!("grove-selftest-{}", std::process::id()))
+        .args(["-f", "/dev/null"]);
+    #[cfg(not(test))]
+    c.arg(SOCKET);
     c.env("LC_ALL", "en_US.UTF-8");
     c.stdin(Stdio::null());
     c
@@ -660,6 +669,12 @@ mod tests {
             "new-session failed"
         );
         std::thread::sleep(std::time::Duration::from_millis(300));
+
+        assert_eq!(
+            display(name, "#{pane_height}"),
+            "6",
+            "selection fixture viewport must stay fixed"
+        );
 
         // Output ends in a newline: absolute row 0 is blank, row 1 is
         // line-15, row 2 is line-14, and row 12 is line-04. Endpoint columns

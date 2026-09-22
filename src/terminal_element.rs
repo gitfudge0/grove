@@ -77,6 +77,8 @@ pub struct GeomKey {
     pub zoom_bits: u32,
     /// Compared by name only; `Theme` is `Clone` but not `PartialEq`.
     pub theme: SharedString,
+    /// Default fill also affects inverse text; chrome or project-pin changes must re-shape it.
+    pub background_bits: [u32; 4],
 }
 
 /// Split deliberately: an equal `geom` with a differing tail means rows are still individually valid, so `prepaint` can re-key by content hash.
@@ -94,6 +96,7 @@ pub struct PrepaintState {
     selection_quads: Vec<PaintQuad>,
     cursor: Option<PaintQuad>,
     line_height: Pixels,
+    background: Hsla,
 }
 
 impl IntoElement for TerminalElement {
@@ -172,7 +175,8 @@ impl Element for TerminalElement {
                 preview,
             )
         });
-        // Keyed by theme name only, so the hit path never needs the resolved `Theme` (`Clone` but not `Eq`).
+        let background = terminal_background(pinned.as_ref());
+        // Keep the palette identity and actual fill in the cache key.
         let theme_name: SharedString = match pinned.as_ref() {
             Some(theme) => SharedString::from(theme.name.to_string()),
             None => grove_core::theme::with_current(|t| SharedString::from(t.name.to_string())),
@@ -183,6 +187,7 @@ impl Element for TerminalElement {
                 height_bits: f32::from(bounds.size.height).to_bits(),
                 zoom_bits: self.zoom.to_bits(),
                 theme: theme_name,
+                background_bits: background_bits(background),
             },
             damage_gen,
             display_offset: scrollback,
@@ -233,8 +238,13 @@ impl Element for TerminalElement {
                             let cell = snapshot.cell(r as u16, col as u16);
                             let (ch, fg, bg, bold) = match cell {
                                 Some(cell) => {
-                                    let (fg, bg) =
-                                        colors::resolve_pair(cell.fg, cell.bg, cell.inverse, theme);
+                                    let (fg, bg) = colors::resolve_pair(
+                                        cell.fg,
+                                        cell.bg,
+                                        cell.inverse,
+                                        theme,
+                                        background,
+                                    );
                                     (cell.c, fg, bg, cell.bold)
                                 }
                                 None => (' ', c::fg_of(theme).into(), None, false),
@@ -379,6 +389,7 @@ impl Element for TerminalElement {
             selection_quads,
             cursor,
             line_height: px(cell_h),
+            background,
         }
     }
 
@@ -392,10 +403,7 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.paint_quad(fill(
-            bounds,
-            Hsla::from(grove_core::theme::with_current(c::bg_of)),
-        ));
+        window.paint_quad(fill(bounds, pre.background));
         // Scene is read by reference, not drained, since it's shared with the session's cache.
         // All backgrounds go down before any text — interleaving per row would let one row's background paint over the previous row's descenders.
         for (r, row) in pre.scene.rows.iter().enumerate() {
@@ -476,6 +484,20 @@ fn forced_width(run_text: &str, cell_w: f32) -> Option<Pixels> {
         return None;
     }
     Some(px(cells as f32 * cell_w))
+}
+
+/// Default cells blend into the app surface unless the project explicitly pins a palette.
+fn terminal_background(pinned: Option<&Theme>) -> Hsla {
+    pinned.map_or_else(c::BG, |theme| c::bg_of(theme).into())
+}
+
+fn background_bits(background: Hsla) -> [u32; 4] {
+    [
+        background.h.to_bits(),
+        background.s.to_bits(),
+        background.l.to_bits(),
+        background.a.to_bits(),
+    ]
 }
 
 /// The theme a PTY for `project_name` renders its content in, or `None` for the global theme. Ported from `theme_picker.rs:65-128`.
@@ -562,6 +584,33 @@ mod tests {
             unreachable!("a builtin theme must resolve")
         };
         t
+    }
+
+    #[test]
+    fn default_fill_tracks_app_surface_and_explicit_project_theme_keeps_its_background() {
+        assert_eq!(terminal_background(None), c::BG());
+        let pinned = a_theme();
+        assert_eq!(terminal_background(Some(&pinned)), c::bg_of(&pinned).into());
+        let disabled = store_with(false, Some("tokyonight-day"));
+        assert_eq!(
+            terminal_background(project_theme_override(&disabled, "alpha", None).as_ref()),
+            c::BG()
+        );
+    }
+
+    #[test]
+    fn different_default_fills_invalidate_cached_inverse_text() {
+        let key = GeomKey {
+            width_bits: 0,
+            height_bits: 0,
+            zoom_bits: 0,
+            theme: "same-palette".into(),
+            background_bits: background_bits(c::BG()),
+        };
+        let pinned = a_theme();
+        let mut changed = key.clone();
+        changed.background_bits = background_bits(c::bg_of(&pinned).into());
+        assert!(key != changed);
     }
 
     #[test]

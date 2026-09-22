@@ -14,7 +14,9 @@ const ROW_H: f32 = 28.0;
 const FIELD_H: f32 = 60.0;
 const FIELD_VALUE: f32 = 16.0;
 const FIELD_INSET: f32 = 14.0;
-const POPUP_TOP: f32 = 32.0;
+const SELECTOR_H: f32 = 32.0;
+const MENU_ROW_H: f32 = 40.0;
+const MENU_ROW_RADIUS: f32 = 8.0;
 
 use crate::settings::SettingsState;
 use grove_core::storage::Workspaces;
@@ -39,6 +41,7 @@ pub struct WorkspaceManager {
     _subscription: Subscription,
     _settings_subscription: Subscription,
     menu_scroll: gpui::ScrollHandle,
+    trigger_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     popup_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
 }
 impl WorkspaceManager {
@@ -72,6 +75,7 @@ impl WorkspaceManager {
             error: None,
             _subscription: subscription,
             _settings_subscription: settings_subscription,
+            trigger_bounds: std::rc::Rc::default(),
             popup_bounds: std::rc::Rc::default(),
             menu_scroll: gpui::ScrollHandle::new(),
         }
@@ -267,11 +271,11 @@ impl WorkspaceManager {
             .max_h(rpx(max_height))
             .flex()
             .flex_col()
-            .p(rpx(if menu { SPACE_MD } else { SPACE_2XL }))
+            .p(rpx(SPACE_2XL))
             .when(!menu, |el| el.gap(rpx(SPACE_LG)))
             .border_1()
             .border_color(c::BORDER())
-            .rounded(rpx(RADIUS_CHROME))
+            .rounded(rpx(RADIUS_PANEL))
             .bg(if menu { c::SURFACE_RAISED() } else { c::BG() })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
         panel = panel.child(
@@ -283,17 +287,7 @@ impl WorkspaceManager {
             .size_full(),
         );
         if menu {
-            panel = panel
-                .role(gpui::Role::Menu)
-                .aria_label("Switch workspace")
-                .child(
-                    div()
-                        .px(rpx(SPACE_LG))
-                        .mb(rpx(SPACE_SM))
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child("Switch workspace"),
-                );
+            panel = panel.role(gpui::Role::Menu).aria_label("Switch workspace");
             let mut rows = div()
                 .id("workspace-menu-list")
                 .min_h_0()
@@ -306,12 +300,15 @@ impl WorkspaceManager {
                         .id(("workspace", id))
                         .role(gpui::Role::MenuItem)
                         .aria_label(row.name.clone())
-                        .h(rpx(ROW_H))
-                        .px(rpx(SPACE_LG))
+                        .min_h(rpx(MENU_ROW_H))
+                        .py(rpx(SPACE_LG))
+                        .text_size(rpx(TEXT_TITLE))
+                        .font_weight(FontWeight::MEDIUM)
+                        .px(rpx(SPACE_2XL))
                         .flex()
                         .items_center()
                         .gap(rpx(SPACE_LG))
-                        .rounded(rpx(RADIUS_CHROME))
+                        .rounded(rpx(MENU_ROW_RADIUS))
                         .when(self.selected == index, |el| el.bg(c::BG_HOVER()))
                         .hover(|s| s.bg(c::BG_HOVER()))
                         .child(icon("folder", ICON_SM, c::FG_DIM()))
@@ -349,13 +346,16 @@ impl WorkspaceManager {
                         .debug_selector(move || format!("workspace-action-{offset}"))
                         .role(gpui::Role::MenuItem)
                         .aria_label(label)
-                        .h(rpx(ROW_H))
+                        .min_h(rpx(MENU_ROW_H))
+                        .py(rpx(SPACE_LG))
+                        .text_size(rpx(TEXT_TITLE))
+                        .font_weight(FontWeight::MEDIUM)
                         .flex_shrink_0()
-                        .px(rpx(SPACE_LG))
+                        .px(rpx(SPACE_2XL))
                         .flex()
                         .items_center()
                         .gap(rpx(SPACE_LG))
-                        .rounded(rpx(RADIUS_CHROME))
+                        .rounded(rpx(MENU_ROW_RADIUS))
                         .when(self.selected == self.state.rows.len() + offset, |el| {
                             el.bg(c::BG_HOVER())
                         })
@@ -532,8 +532,10 @@ impl WorkspaceManager {
             }
         }
         gpui::anchored()
-            .position_mode(gpui::AnchoredPositionMode::Local)
-            .position(gpui::point(gpui::px(0.0), gpui::px(POPUP_TOP * scale)))
+            .position(gpui::point(
+                self.trigger_bounds.get().left(),
+                self.trigger_bounds.get().bottom() + gpui::px(SPACE_MD * scale),
+            ))
             .snap_to_window_with_margin(gpui::px(SPACE_LG * scale))
             .child(panel)
     }
@@ -545,10 +547,14 @@ impl Focusable for WorkspaceManager {
 }
 impl Render for WorkspaceManager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let trigger_bounds = self.trigger_bounds.clone();
         div()
             .id("workspace-management")
+            .flex()
+            .items_start()
             .tab_group()
             .relative()
+            .min_w_0()
             .text_size(rpx(TEXT_BODY))
             .text_color(c::FG())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -611,23 +617,34 @@ impl Render for WorkspaceManager {
                         "Switch workspace, {} selected",
                         self.state.name(self.state.active)
                     ))
-                    .h(rpx(CHROME_CONTROL_H))
-                    .px(rpx(SPACE_LG))
+                    .h(rpx(SELECTOR_H))
+                    .px(rpx(SPACE_2XL))
+                    .relative()
+                    .min_w_0()
                     .max_w(rpx(MENU_W))
                     .flex()
                     .items_center()
                     .gap(rpx(SPACE_MD))
-                    .rounded(rpx(RADIUS_CHROME))
-                    .border_1()
-                    .border_color(c::BORDER())
+                    .rounded(rpx(RADIUS_PANEL))
                     .hover(|s| s.bg(c::BG_HOVER()))
                     .focus(|s| s.bg(c::BG_HOVER()))
                     .when(self.panel != Panel::Closed, |el| el.bg(c::BG_HOVER()))
-                    .child(icon("folder", ICON_SM, c::FG_DIM()))
+                    .child(
+                        gpui::canvas(
+                            move |bounds, _, _| trigger_bounds.set(bounds),
+                            |_, (), _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                    )
                     .child(
                         div()
                             .min_w_0()
                             .truncate()
+                            .text_size(rpx(TEXT_BRAND))
+                            .line_height(rpx(CHROME_CONTROL_H))
                             .font_weight(FontWeight::MEDIUM)
                             .child(self.state.name(self.state.active).to_string()),
                     )

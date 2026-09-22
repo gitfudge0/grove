@@ -251,7 +251,7 @@ h1{margin:var(--space-8) 0;font:var(--weight-bold) var(--text-32)/var(--line-32)
 .wordmark{font:var(--weight-bold) var(--text-15)/var(--line-15) var(--font-ui)}
 .workspace-anchor{position:relative;display:inline-flex;margin-left:var(--space-12)}
 .workspace-trigger{height:var(--control-h);display:inline-flex;align-items:center;gap:var(--space-6);padding:0 var(--space-6);border:var(--border-thin) solid var(--color-bg-subtle);background:var(--color-bg-subtle);font:var(--text-11) var(--font-ui)}
-.workspace-trigger:hover,.workspace-trigger[aria-expanded="true"]{border-color:var(--color-border);background:var(--color-selected)}
+.workspace-trigger:hover,.workspace-trigger[aria-expanded="true"]{background:var(--color-selected)}
 .app-spacer,.spacer{flex:1}
 .box{display:inline-flex;align-items:center;min-height:var(--control-h);padding:var(--space-2) var(--space-8);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-surface-raised);font:var(--text-10) var(--font-ui)}
 .body{display:flex;flex:1;min-height:0}
@@ -287,13 +287,13 @@ h1{margin:var(--space-8) 0;font:var(--weight-bold) var(--text-32)/var(--line-32)
 .workspace-menu{position:absolute;z-index:var(--z-overlay);left:0;top:calc(var(--control-h) + var(--space-8));width:calc(var(--sidebar-w) + var(--space-2));padding:var(--space-8);border:var(--border-thin) solid var(--color-border-strong);background:var(--color-surface-raised);box-shadow:var(--shadow-none)}
 .menu-title{padding:var(--space-6) var(--space-8);font:var(--text-10)/var(--line-10) var(--font-mono);color:var(--color-text-muted)}
 .menu-scroll{max-height:calc(var(--row-h)*6 + var(--space-16));overflow-y:auto}
-.menu-row{display:flex;align-items:center;gap:var(--space-6);width:100%;min-height:var(--row-h);padding:0 var(--space-8);border:0;border-radius:var(--radius-8);background:transparent;text-align:left;font:var(--text-13)/var(--line-13) var(--font-ui)}
+.menu-row{display:flex;align-items:center;gap:var(--space-8);width:100%;min-height:var(--row-h);padding:0 var(--space-8);border:0;border-radius:var(--radius-8);background:transparent;text-align:left;font:var(--text-13)/var(--line-13) var(--font-ui)}
 .menu-row.active{background:transparent}
 .menu-state{color:var(--color-text-secondary);font-size:var(--text-10)}
 .badge{padding:0;border:0;background:transparent;font:var(--text-10) var(--font-mono)}
 .menu-divider{height:var(--border-thin);margin:var(--space-4) 0;background:var(--color-divider-soft)}
 .menu-error{margin:var(--space-6);padding:var(--space-8);border:var(--border-thin) solid var(--color-destructive);border-radius:var(--radius-8);background:var(--color-error-wash);font-size:var(--text-12);color:var(--color-destructive)}
-.pinned-actions{border-top:var(--border-thin) solid var(--color-border-strong);background:var(--color-surface-raised)}
+.pinned-actions{border-top:0;background:var(--color-surface-raised)}
 .neutral-veil{position:absolute;z-index:var(--z-overlay);inset:var(--appbar-h) 0 var(--status-h);background:var(--color-scrim);opacity:var(--opacity-pressed);pointer-events:auto}
 .editor{width:min(100%,calc(var(--space-48)*13));display:flex;flex-direction:column;gap:var(--space-12);margin:var(--space-24);padding:var(--space-16);border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-16);background:var(--color-bg);overflow:auto;max-height:calc(100% - var(--header-h) - var(--space-48))}
 .editor small{color:var(--color-text-secondary);font:var(--text-13)/var(--line-13) var(--font-ui)}
@@ -395,12 +395,12 @@ h1{margin:var(--space-8) 0;font:var(--weight-bold) var(--text-32)/var(--line-32)
 
 /* Component reference: embedded form labels, fixed row slots, and dense chrome. */
 button:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-offset:var(--space-2)}
-.field input:hover{border-color:var(--color-border)}
-.field input:focus{border-color:var(--color-focus);outline:var(--border-thin) solid var(--color-focus);outline-offset:0}
+.field input:hover{background:var(--color-hover)}
+.field input:focus{border-color:transparent;outline:none;background:var(--color-hover)}
 .field input[aria-invalid="true"]:hover{border-color:var(--color-destructive)}
 .field:has(input:disabled){opacity:var(--opacity-disabled)}
 .field input:disabled{cursor:not-allowed;opacity:1}
-.browse-field:focus-within input{border-color:var(--color-focus);outline:var(--border-thin) solid var(--color-focus);outline-offset:0}
+.browse-field:focus-within input{border-color:transparent;outline:none;background:var(--color-hover)}
 .icon-btn{display:inline-flex;align-items:center;justify-content:center;flex:none;width:var(--control-h);height:var(--control-h);padding:0;border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);background:var(--color-bg);color:var(--color-text-secondary)}
 .icon-btn:hover,.menu-row:hover,.action:not(.primary):hover{background:var(--color-hover)}
 .editor>.primary{align-self:flex-end;height:var(--form-button-h);padding:0 var(--space-16);border-radius:var(--radius-12);font-size:var(--text-14)}
@@ -411,7 +411,7 @@ button:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-
 .field-wrap label{position:absolute;z-index:var(--z-raised);left:var(--field-inset-x);top:var(--field-inset-top);font:var(--weight-regular) var(--text-12)/var(--line-field-label) var(--font-ui);color:var(--color-text-secondary);pointer-events:none}
 .compound-well{position:relative;height:var(--field-h);min-height:var(--field-h);display:flex;align-items:center;gap:var(--gap-8);padding:calc(var(--field-value-top) - var(--border-thin)) calc(var(--field-inset-x) + var(--control-h) + var(--gap-8)) calc(var(--field-h) - var(--field-value-top) - var(--line-field-value) - var(--border-thin)) var(--field-inset-x);border:var(--border-thin) solid transparent;border-radius:var(--radius-12);background:var(--color-field-fill)}
 .compound-well>.icon-btn{position:absolute;right:var(--field-inset-x);top:calc((var(--field-h) - var(--control-h)) / 2 - var(--border-thin));border:0;background:transparent}
-.compound-well:focus-within,.compound-well.demo-focus{border-color:var(--color-focus);outline:var(--border-thin) solid var(--color-focus);outline-offset:0}
+.compound-well:focus-within,.compound-well.demo-focus{border-color:transparent;outline:none;background:var(--color-hover)}
 .compound-well .field{height:var(--line-field-value);min-width:0;flex:1;padding:0;border:0;border-radius:0;background:transparent;outline:none}
 .compound-well .field{margin:0;width:100%;color:var(--color-text-primary);font:var(--weight-regular) var(--text-16)/var(--line-field-value) var(--font-ui)}
 .compound-well .field:disabled{opacity:var(--opacity-disabled);cursor:not-allowed}
@@ -460,6 +460,12 @@ button:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-
 .switch:checked:before{transform:translateX(calc(var(--switch-w) - var(--switch-thumb) - var(--switch-inset)*2))}
 .switch:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-offset:var(--space-4)}
 @media(prefers-reduced-motion:reduce){*{transition-duration:0!important;animation-duration:0!important}.sticky-note,.click-tag{transform:none!important}}
+
+.workspace-trigger:focus,.workspace-trigger[aria-expanded="true"],.menu-row:focus{outline:none;background:var(--color-selected)}
+.workspace-menu,.menu-scroll,.pinned-actions{gap:0}
+.manager-row{grid-template-columns:minmax(0,1fr) calc(var(--space-48) + var(--space-24)) calc(var(--space-48) + var(--space-12))}
+.field input[aria-invalid="true"]:focus,.compound-well.invalid:focus-within{border-color:var(--color-destructive)}
+.compound-well .field:focus{background:transparent;outline:none}
 </style>
 </head>
 <body>
@@ -671,8 +677,8 @@ return '<section class="content"><div class="session-head"><b>'+esc(title)+'</b>
 function loadingContent(title,text){
 return '<section class="content"><div class="loading-content"><div class="loading-card" role="status" aria-live="polite"><h3>'+esc(title)+'</h3><p>'+text+'</p><div class="progress-line"></div></div></div></section>';
 }
-function field(label,value,id,error,readonly,disabled){
-return '<div class="field"><label for="'+id+'">'+label+'</label><input id="'+id+'" value="'+esc(value||"")+'"'+(readonly?' readonly':'')+(disabled?' disabled':'')+(error?' aria-describedby="'+id+'-error" aria-invalid="true"':'')+'>'+(error?'<div class="inline-error" id="'+id+'-error" role="alert">'+error+'</div>':'')+'</div>';
+function field(label,value,id,error,readonly,disabled,placeholder){
+return '<div class="field"><label for="'+id+'">'+label+'</label><input id="'+id+'" value="'+esc(value||"")+'"'+(placeholder?' placeholder="'+esc(placeholder)+'"':'')+(readonly?' readonly':'')+(disabled?' disabled':'')+(error?' aria-describedby="'+id+'-error" aria-invalid="true"':'')+'>'+(error?'<div class="inline-error" id="'+id+'-error" role="alert">'+error+'</div>':'')+'</div>';
 }
 function createWorkspaceDialog(kind){
 var value=kind==="empty"?"":kind==="duplicate"?"Grove":"Platform";
@@ -680,7 +686,7 @@ var error=kind==="duplicate"?"Grove already exists. Try Grove personal.":kind===
 var locked=kind==="pending",id="workspace-name-"+kind;
 var action=locked?"Creating workspace":kind==="error"?"Retry create workspace":"Create workspace";
 var close=locked?"Close unavailable":"Close";
-var well='<div class="field-wrap"'+(locked?' aria-busy="true"':'')+'><label for="'+id+'">Workspace</label><div class="compound-well'+(error?' invalid':'')+'"><input id="'+id+'" class="field" placeholder="Workspace name" value="'+esc(value)+'"'+(locked?' disabled':'')+(error?' aria-invalid="true" aria-describedby="'+id+'-error"':'')+'><button class="icon-btn flat" type="button"'+(locked||kind==="empty"?' disabled':'')+' aria-label="'+action+'" title="'+action+'">'+(locked||kind==="error"?icons.refresh:icons.check)+'</button></div>'+(error?'<span class="inline-error" id="'+id+'-error" role="alert">'+error+'</span>':'')+'</div>';
+var well='<div class="field-wrap"'+(locked?' aria-busy="true"':'')+'><label for="'+id+'">Workspace</label><div class="compound-well'+(error?' invalid':'')+'"><input id="'+id+'" class="field" placeholder="e.g. Platform" value="'+esc(value)+'"'+(locked?' disabled':'')+(error?' aria-invalid="true" aria-describedby="'+id+'-error"':'')+'><button class="icon-btn flat" type="button"'+(locked||kind==="empty"?' disabled':'')+' aria-label="'+action+'" title="'+action+'">'+(locked||kind==="error"?icons.refresh:icons.check)+'</button></div>'+(error?'<span class="inline-error" id="'+id+'-error" role="alert">'+error+'</span>':'')+'</div>';
 return '<section class="quick-create" role="dialog" aria-label="'+(locked?'Creating workspace':kind==="duplicate"?'Duplicate workspace name':'New workspace')+'"'+(locked?' aria-busy="true"':'')+'><h3>New workspace<button class="icon-btn flat" type="button"'+(locked?' disabled':'')+' aria-label="'+close+'" title="'+close+'">'+icons.close+'</button></h3>'+well+(locked?'<div class="progress" role="progressbar" aria-label="Creating workspace"><span></span></div>':'')+'</section>';
 }
 function centerProjectEditor(kind){
@@ -702,11 +708,11 @@ return '<div class="workspace-menu project-actions" role="menu" aria-label="plat
 function managerDialog(kind){
 var header=kind==="renamed"||kind==="blocked"?"Infrastructure Platform":"Platform";
 var platformConfirm=kind==="blocked"?'<div class="manager-confirm" role="alert"><b>Delete blocked.</b> Infrastructure Platform contains 1 project and 2 sessions. Remove its projects first.<div class="dialog-actions">'+productButton("Close","close","action secondary","")+'</div></div>':"";
-var orchardConfirm=kind==="delete"?'<div class="manager-confirm" role="alertdialog" aria-label="Delete Orchard"><b>Orchard is empty.</b> Grove opens next.'+field("Type workspace name","Orchard","confirm-delete","",false)+'<div class="dialog-actions">'+productButton("Cancel","close","action secondary","")+productButton("Delete workspace","trash","action danger","")+'</div></div>':"";
-var rows='<div class="manager-row"><b>'+header+'</b><span>1 project</span>'+productButton("Move","branch","","aria-label=\"Move "+header+"\"")+productButton("Delete","trash","","aria-label=\"Delete "+header+"\"")+platformConfirm+'</div><div class="manager-row"><b>Grove</b><span>2 projects</span>'+productButton("Move","branch","","aria-label=\"Move Grove\"")+productButton("Delete","trash","","aria-label=\"Delete Grove\"")+'</div><div class="manager-row"><b>Orchard</b><span>0 projects</span>'+productButton("Move","branch","","aria-label=\"Move Orchard\"")+productButton("Delete","trash","","aria-label=\"Delete Orchard\"")+orchardConfirm+'</div>';
+var orchardConfirm=kind==="delete"?'<div class="manager-confirm" role="alertdialog" aria-label="Delete Orchard"><b>Orchard is empty.</b> Grove opens next.'+field("Type workspace name","","confirm-delete","",false,false,"Orchard")+'<div class="dialog-actions">'+productButton("Cancel","close","action secondary","")+productButton("Delete workspace","trash","action danger","disabled")+'</div></div>':"";
+var rows='<div class="manager-row"><b>'+header+'</b><span>1 project</span>'+productButton("Delete","trash","","aria-label=\"Delete "+header+"\"")+platformConfirm+'</div><div class="manager-row"><b>Grove</b><span>2 projects</span>'+productButton("Delete","trash","","aria-label=\"Delete Grove\"")+'</div><div class="manager-row"><b>Orchard</b><span>0 projects</span>'+productButton("Delete","trash","","aria-label=\"Delete Orchard\"")+orchardConfirm+'</div>';
 var extra=kind==="renamed"?'<div class="stable-note">Stable identity ws_platform_01 is unchanged. Only the visible name changed.</div>':field("Rename Platform",kind==="edit"?"Platform":"Infrastructure Platform","rename-platform","",false);
 if(kind==="blocked"||kind==="delete")extra="";
-return '<section class="manager-popover" role="dialog" aria-label="Manage workspaces"><h3>Manage workspaces</h3><p class="dialog-intro">Rename workspaces, review local counts, move order, or request deletion.</p>'+extra+rows+(kind==="edit"||kind==="renamed"?'<div class="dialog-actions">'+productButton("Close","close","action secondary","")+productButton("Save rename","check","action primary","")+'</div>':'')+'</section>';
+return '<section class="manager-popover" role="dialog" aria-label="Manage workspaces"><h3>Manage workspaces</h3><p class="dialog-intro">Rename workspaces, review local counts, or request deletion.</p>'+extra+rows+(kind==="edit"||kind==="renamed"?'<div class="dialog-actions">'+productButton("Close","close","action secondary","")+productButton("Save rename","check","action primary","")+'</div>':'')+'</section>';
 }
 function sessionCloseTray(){return '<div class="neutral-veil"></div><div class="session-confirm-anchor"><div class="session-origin">'+agentGlyph("Codex")+'<b>Codex · Fix billing retry</b></div><section class="confirmation-tray" role="alertdialog" aria-modal="true" aria-label="Close running session"><div class="confirmation-title">'+icons.warning+'<h3>Close running session?</h3></div><p class="confirmation-facts"><b>Process</b> Stops now · <b>Worktree</b> Stays on disk</p><div class="confirmation-actions">'+productButton("Cancel","close","action secondary","")+productButton("Close session","trash","action danger","")+'</div></section></div>'}
 function shell(o){

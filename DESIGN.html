@@ -279,7 +279,7 @@ td code{font-family:var(--font-mono);font-size:var(--text-10);color:var(--color-
 .form-row{position:relative;display:block;min-width:0}
 .form-label{position:absolute;left:var(--field-inset-x);top:var(--field-inset-top);font:var(--weight-regular) var(--text-12)/var(--line-field-label) var(--font-ui);color:var(--color-text-secondary);pointer-events:none}
 .form-well{position:relative;min-height:var(--field-h);display:flex;align-items:center;gap:var(--space-8);padding:var(--field-value-top) var(--field-inset-x) var(--field-inset-top);border:var(--border-thin) solid transparent;border-radius:var(--radius-12);background:var(--color-field-fill);color:var(--color-text-primary);box-shadow:var(--shadow-none)}
-.form-well:focus-within,.form-well.focused{outline:var(--border-thin) solid var(--color-focus);outline-offset:0;border-color:var(--color-focus)}
+.form-well:focus-within,.form-well.focused{outline:none;border-color:transparent;background:var(--color-hover)}
 .form-well input,.form-well textarea,.form-well select{min-width:0;width:100%;flex:1;margin:0;padding:0;border:0;background:transparent;color:inherit;font:var(--weight-regular) var(--text-16)/var(--line-field-value) var(--font-ui);outline:0}
 .form-well input::placeholder,.form-well textarea::placeholder{color:var(--color-text-secondary);opacity:1}
 .form-well textarea{min-height:calc(var(--textarea-h) - var(--field-value-top) - var(--field-inset-top));resize:vertical}
@@ -305,6 +305,8 @@ button:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-
 @media(max-width:600px){.form-spec .two{grid-template-columns:1fr}table{display:block;overflow-x:auto}.type-spec{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:reduce){.switch::before{transition:none}}
 @media (orientation:portrait){body{padding:var(--space-16)}.two{grid-template-columns:1fr}.type-spec{grid-template-columns:1fr}}
+
+.form-well.invalid:focus-within{border-color:var(--color-destructive)}
 </style>
 </head>
 <body>
@@ -320,11 +322,11 @@ button:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-
 <section><h2>Primitives</h2><div class="grid" id="primitives"></div></section>
 <section><h2>Semantic light and dark</h2><div class="grid" id="semantic"></div></section>
 <section><h2>Typography</h2><h3>Families</h3><div id="families"></div><h3>Scale</h3><div class="card" id="typeScale"></div><h3>Weights</h3><div id="weights"></div><h3>Type roles</h3><div class="card" id="typeRoles"></div></section>
-<section><h2>Forms and inputs</h2><p class="intro">Flat 60px controls with 12px embedded labels and 16px values. Field labels use supporting text; focus and selection use neutral outlines. Form actions are 44px; dense application chrome stays 24px.</p>
+<section><h2>Forms and inputs</h2><p class="intro">Flat 60px controls with 12px embedded labels and 16px values. Field labels use supporting text; input focus uses a neutral fill change and caret; selected tiles retain neutral outlines. Form actions are 44px; dense application chrome stays 24px.</p>
 <div class="form-spec-grid">
 <div class="form-spec"><h3>Field states</h3>
 <div class="form-row"><div class="form-well "><label class="form-label" for="form-name">Project name</label><input id="form-name" value="Grove desktop" ></div></div>
-<div class="form-row"><div class="form-well "><label class="form-label" for="form-empty">Project name · empty</label><input id="form-empty" placeholder="Name this project" ></div></div>
+<div class="form-row"><div class="form-well "><label class="form-label" for="form-empty">Project name · empty</label><input id="form-empty" placeholder="e.g. platform-api" ></div></div>
 <div class="form-row"><div class="form-well focused"><label class="form-label" for="form-focus">Session branch · focus</label><input id="form-focus" value="feat/form-elements" ></div></div>
 <div class="form-row"><div class="form-well invalid"><label class="form-label" for="form-error">Repository path · invalid</label><input id="form-error" value="/Sandbox/notes" aria-invalid="true" aria-describedby="form-error-note"></div><p class="form-error" id="form-error-note">Choose a folder containing a Git repository.</p></div>
 <div class="form-row"><div class="form-well disabled"><label class="form-label" for="form-disabled">Session template · disabled</label><input id="form-disabled" value="Feature work" disabled></div></div>
@@ -432,7 +434,7 @@ const assumptions=[
 ,"Action buttons retain catalog icons; switches and selection tiles express state directly and need no decorative action icon. Product icons use one viewBox and currentColor. Do not substitute text glyphs, mix viewBoxes, add decorative wrapper boxes, or place glyphs on violet squares. Project and List share one borderless 24px destination toggle; Grid is a separate borderless 24px button. The toggle displays the destination icon and remembers the non-grid view. Both use 14px icons, labels, tooltips, and pressed state."
 ];
 const contrastPairs=[
-["label / field","--color-text-secondary","--color-field-fill","AA for normal text"],["value / field","--color-text-primary","--color-field-fill","AAA for normal text"],["focus / field","--color-focus","--color-field-fill","At least 3:1 for control focus"],["error / field","--color-destructive","--color-field-fill","AA for normal text"],
+["label / field","--color-text-secondary","--color-field-fill","AA for normal text"],["value / field","--color-text-primary","--color-field-fill","AAA for normal text"],["error / field","--color-destructive","--color-field-fill","AA for normal text"],
 ["brand / bg","--color-brand","--color-bg","AAA for normal text"],["on-brand / brand","--color-on-brand","--color-brand","AAA for normal text"],["primary / bg","--color-text-primary","--color-bg","AAA for normal text"],["secondary / bg","--color-text-secondary","--color-bg","AA for normal text"],["muted / bg","--color-text-muted","--color-bg","Quiet metadata only; do not use for embedded field labels."],["accent / bg","--color-accent","--color-bg","Keep out of body copy. Use for agent identity, connection, and active ports."]
 ];
 
