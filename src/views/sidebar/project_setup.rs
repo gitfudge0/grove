@@ -517,7 +517,7 @@ impl Render for ProjectSetup {
                             .min_w_0()
                             .truncate()
                             .font_family(crate::fonts::MONO_FAMILY)
-                            .text_size(rpx(TEXT_BODY))
+                            .text_size(rpx(TEXT_CODE))
                             .child(self.state.path.clone()),
                     ),
             );

@@ -3,10 +3,11 @@ use super::{display_task_title, Action, Selection, Sidebar, ViewMode};
 use crate::{
     activity::ActivityState,
     icons::icon,
+    project_service::WorktreeRemovalStage,
     settings::SettingsState,
     theme as c,
     views::{
-        components::{form_action, form_field},
+        components::{form_action, form_field, project_field_well},
         rpx,
         terminal_view::TerminalView,
         tokens::*,
@@ -27,6 +28,260 @@ const EMPTY_TITLE_SIZE: f32 = 18.;
 const PROMPT_INSET: f32 = 40.;
 
 impl Sidebar {
+    fn render_worktree_removal(
+        &self,
+        removal: &super::PendingWorktreeRemoval,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let status = removal
+            .started
+            .then(|| {
+                self.runtime
+                    .read(cx)
+                    .projects
+                    .read(cx)
+                    .worktree_removal_status(&removal.path)
+                    .cloned()
+            })
+            .flatten();
+        let stage = status.as_ref().map(|status| status.stage);
+        let error = removal
+            .error
+            .clone()
+            .or_else(|| status.as_ref().and_then(|status| status.error.clone()));
+        let finished = removal.started
+            && (removal.error.is_some() || stage == Some(WorktreeRemovalStage::Finished));
+        let success = finished && error.is_none();
+        let title = if !removal.started {
+            format!("Delete {}?", removal.name)
+        } else if success {
+            "Worktree removed".into()
+        } else if finished {
+            "Could not remove worktree".into()
+        } else {
+            format!("Removing {}", removal.name)
+        };
+        let description = if !removal.started {
+            "Registered sessions using this worktree will stop. Deleting its folder can erase uncommitted changes and untracked files. The main project folder stays on disk."
+        } else if success {
+            "The worktree folder was removed. The main project folder stays on disk."
+        } else if finished {
+            "Grove could not confirm removal. Review the error below before trying again."
+        } else {
+            "Registered sessions have stopped. Keep this view open while removal finishes."
+        };
+        let mut actions = div()
+            .flex()
+            .flex_wrap()
+            .gap(rpx(SPACE_LG))
+            .mt(rpx(SPACE_2XL));
+        if !removal.started {
+            actions = actions
+                .child(
+                    self.control("cancel-worktree-removal", "Cancel", Action::Cancel, cx)
+                        .debug_selector(|| "cancel-worktree-removal".into())
+                        .h(rpx(FORM_ACTION_H))
+                        .w_auto()
+                        .min_w(rpx(FORM_SECONDARY_MIN_W))
+                        .px(rpx(SPACE_3XL))
+                        .rounded(rpx(RADIUS_PANEL))
+                        .bg(c::FIELD_FILL())
+                        .child("Cancel"),
+                )
+                .child(
+                    self.control(
+                        "confirm-worktree-removal",
+                        "Delete worktree",
+                        Action::ConfirmWorktreeRemoval,
+                        cx,
+                    )
+                    .debug_selector(|| "confirm-worktree-removal".into())
+                    .track_focus(&self.confirm_focus)
+                    .h(rpx(FORM_ACTION_H))
+                    .w_auto()
+                    .min_w(rpx(FORM_PRIMARY_MIN_W))
+                    .px(rpx(SPACE_3XL))
+                    .rounded(rpx(RADIUS_PANEL))
+                    .bg(c::RED())
+                    .text_color(c::BG())
+                    .child("Delete worktree"),
+                );
+        } else if finished {
+            actions = actions.child(
+                self.control(
+                    "dismiss-worktree-removal",
+                    if success { "Done" } else { "Dismiss" },
+                    Action::DismissWorktreeRemoval,
+                    cx,
+                )
+                .debug_selector(|| "dismiss-worktree-removal".into())
+                .track_focus(&self.confirm_focus)
+                .h(rpx(FORM_ACTION_H))
+                .w_auto()
+                .min_w(rpx(FORM_SECONDARY_MIN_W))
+                .px(rpx(SPACE_3XL))
+                .rounded(rpx(RADIUS_PANEL))
+                .bg(c::FG())
+                .text_color(c::BG())
+                .child(if success { "Done" } else { "Dismiss" }),
+            );
+        } else if stage == Some(WorktreeRemovalStage::RunningScript) {
+            actions = actions.child(
+                self.control(
+                    "skip-worktree-script",
+                    "Skip script",
+                    Action::SkipWorktreeTeardown,
+                    cx,
+                )
+                .debug_selector(|| "skip-worktree-script".into())
+                .track_focus(&self.confirm_focus)
+                .h(rpx(FORM_ACTION_H))
+                .w_auto()
+                .min_w(rpx(FORM_SECONDARY_MIN_W))
+                .px(rpx(SPACE_3XL))
+                .rounded(rpx(RADIUS_PANEL))
+                .bg(c::FIELD_FILL())
+                .child("Skip script"),
+            );
+        }
+        let stage_label = match stage {
+            Some(WorktreeRemovalStage::RunningScript) => Some("Running teardown script"),
+            Some(WorktreeRemovalStage::Removing) => Some("Removing worktree folder"),
+            Some(WorktreeRemovalStage::Finished) => Some(if success {
+                "Finished"
+            } else {
+                "Removal failed"
+            }),
+            None if removal.started && !finished => Some("Preparing removal"),
+            _ => None,
+        };
+        div()
+            .id("worktree-removal-scroll")
+            .debug_selector(|| "worktree-removal-scroll".into())
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .min_h_full()
+                    .p(rpx(SPACE_3XL))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .id("worktree-removal-decision")
+                            .debug_selector(|| "worktree-removal-decision".into())
+                            .role(gpui::Role::Dialog)
+                            .aria_label(title.clone())
+                            .tab_index(0)
+                            .track_focus(&self.worktree_removal_focus)
+                            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                                if !this.worktree_removal_focus.is_focused(window) { return; }
+                                if event.keystroke.key == "enter" {
+                                    if this.pending_worktree_removal.as_ref().is_some_and(|r| !r.started) {
+                                        this.act(Action::ConfirmWorktreeRemoval, window, cx);
+                                    } else if this.pending_worktree_removal.as_ref().is_some_and(|r| {
+                                        r.error.is_some() || this.runtime.read(cx).projects.read(cx)
+                                            .worktree_removal_status(&r.path)
+                                            .is_some_and(|status| status.stage == WorktreeRemovalStage::Finished)
+                                    }) {
+                                        this.act(Action::DismissWorktreeRemoval, window, cx);
+                                    }
+                                    cx.stop_propagation();
+                                }
+                            }))
+                            .w_full()
+                            .max_w(rpx(MODAL_W_LG))
+                            .min_w_0()
+                            .p(rpx(SPACE_3XL))
+                            .flex()
+                            .flex_col()
+                            .gap(rpx(SPACE_2XL))
+                            .rounded(rpx(RADIUS_PANEL))
+                            .bg(c::SURFACE_RAISED())
+                            .border_1()
+                            .border_color(c::BORDER_SOFT())
+                            .child(
+                                div()
+                                    .text_size(rpx(TEXT_DISPLAY))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(title),
+                            )
+                            .child(div().text_color(c::FG_DIM()).child(description))
+                            .child(
+                                project_field_well(false, false)
+                                    .id("worktree-removal-path")
+                                    .debug_selector(|| "worktree-removal-path".into())
+                                    .w_full()
+                                    .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Worktree folder"))
+                                    .child(div().id("worktree-removal-path-value").debug_selector(|| "worktree-removal-path-value".into()).min_w_0().truncate().child(removal.path.replace('/', "/\u{200b}"))),
+                            )
+                            .when(!removal.started, |panel| {
+                                panel.child(
+                                    div()
+                                        .p(rpx(SPACE_2XL))
+                                        .rounded(rpx(RADIUS_CONTROL))
+                                        .bg(c::RED_WASH())
+                                        .text_color(c::RED())
+                                        .child("This deletes the additional worktree folder. The main project folder is protected."),
+                                )
+                            })
+                            .when_some(stage_label, |panel, label| {
+                                panel.child(
+                                    div()
+                                        .id("worktree-removal-status")
+                                        .debug_selector(|| "worktree-removal-status".into())
+                                        .role(gpui::Role::Status)
+                                        .text_color(c::FG_DIM())
+                                        .flex()
+                                        .flex_col()
+                                        .gap(rpx(SPACE_LG))
+                                        .child(label)
+                                        .when(!finished, |status| {
+                                            status.child(
+                                                div()
+                                                    .w_full()
+                                                    .h(rpx(SPACE_SM))
+                                                    .rounded(rpx(RADIUS_FULL))
+                                                    .bg(c::FIELD_FILL())
+                                                    .child(
+                                                        div()
+                                                            .h_full()
+                                                            .when(
+                                                                stage == Some(WorktreeRemovalStage::RunningScript),
+                                                                gpui::Styled::w_1_2,
+                                                            )
+                                                            .when(
+                                                                stage != Some(WorktreeRemovalStage::RunningScript),
+                                                                gpui::Styled::w_full,
+                                                            )
+                                                            .rounded(rpx(RADIUS_FULL))
+                                                            .bg(c::FG_DIM()),
+                                                    ),
+                                            )
+                                        }),
+                                )
+                            })
+                            .when_some(error, |panel, error| {
+                                panel.child(
+                                    div()
+                                        .id("worktree-removal-error")
+                                        .debug_selector(|| "worktree-removal-error".into())
+                                        .role(gpui::Role::Alert)
+                                        .p(rpx(SPACE_2XL))
+                                        .rounded(rpx(RADIUS_CONTROL))
+                                        .bg(c::RED_WASH())
+                                        .text_color(c::RED())
+                                        .child(error),
+                                )
+                            })
+                            .child(actions),
+                    ),
+            )
+            .into_any_element()
+    }
     pub(super) fn begin_worktree(
         &mut self,
         idx: usize,
@@ -699,6 +954,9 @@ impl Sidebar {
         }
         if let Some(panel) = &self.project_panel {
             return panel.clone().into_any_element();
+        }
+        if let Some(removal) = &self.pending_worktree_removal {
+            return self.render_worktree_removal(removal, cx);
         }
         if self.pending_new_worktree.is_some() {
             let errors = validate_worktree_fields(

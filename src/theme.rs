@@ -93,7 +93,7 @@ fn base_fg() -> Rgba {
 }
 
 pub fn BG() -> Hsla {
-    chrome(0x000000, 0xffffff)
+    chrome(0x1a1a1a, 0xffffff)
 }
 
 pub fn BG_RAIL() -> Hsla {
@@ -101,7 +101,7 @@ pub fn BG_RAIL() -> Hsla {
 }
 
 pub fn BG_STRIP() -> Hsla {
-    chrome(0x000000, 0xf7f7f8)
+    chrome(0x1a1a1a, 0xf7f7f8)
 }
 
 pub fn BG_HOVER() -> Hsla {
@@ -533,7 +533,7 @@ mod tests {
         });
         let _restore = ActiveThemeGuard::capture();
         set_chrome_light(false);
-        assert_eq!(rgb_bytes(BG()), [0, 0, 0]);
+        assert_eq!(rgb_bytes(BG()), [0x1a, 0x1a, 0x1a]);
         assert_eq!(rgb_bytes(FG()), [0xf7, 0xf7, 0xf8]);
     }
 
@@ -623,7 +623,7 @@ mod tests {
             (
                 false,
                 [
-                    0x000000, 0x242424, 0x000000, 0x333337, 0xf7f7f8, 0xaaaab2, 0x707078, 0x34343a,
+                    0x1a1a1a, 0x242424, 0x1a1a1a, 0x333337, 0xf7f7f8, 0xaaaab2, 0x707078, 0x34343a,
                     0x515158,
                 ],
             ),

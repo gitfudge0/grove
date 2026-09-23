@@ -1,6 +1,9 @@
 //! Project operations formerly owned by modal views. No rendered UI is required.
 
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use gpui::{AppContext as _, Context, Entity, EventEmitter, Task};
 use grove_core::{git, storage};
@@ -16,6 +19,7 @@ pub enum ProjectEvent {
     TreeInvalidated,
     WorktreeAdded { path: String },
     WorktreeRemoved { result: Result<(), String> },
+    WorktreeRemovalChanged { path: String },
     ProjectRemoved { errors: Vec<String> },
     ProjectRemovalChanged { path: String },
 }
@@ -40,6 +44,21 @@ impl ProjectRemoval {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorktreeRemovalStage {
+    RunningScript,
+    Removing,
+    Finished,
+}
+
+#[derive(Clone, Debug)]
+pub struct WorktreeRemoval {
+    pub stage: WorktreeRemovalStage,
+    pub error: Option<String>,
+    project_path: String,
+    canonical_path: PathBuf,
+}
+
 pub struct ProjectService {
     registry: Entity<SessionRegistry>,
     state: Entity<WorkspaceState>,
@@ -47,6 +66,7 @@ pub struct ProjectService {
     teardown_poll: Option<Task<()>>,
     teardown_target: Option<(String, String)>,
     removals: BTreeMap<String, ProjectRemoval>,
+    worktree_removals: BTreeMap<String, WorktreeRemoval>,
 }
 
 impl EventEmitter<ProjectEvent> for ProjectService {}
@@ -60,6 +80,7 @@ impl ProjectService {
             teardown_poll: None,
             teardown_target: None,
             removals: BTreeMap::new(),
+            worktree_removals: BTreeMap::new(),
         }
     }
 
@@ -82,6 +103,25 @@ impl ProjectService {
     ) -> Result<usize, String> {
         let store = &cx.global::<SettingsState>().store;
         let project = validated_registration(store, &name, &path, workspace)?;
+        if self.is_worktree_removing(&project.path) {
+            return Err(
+                "Wait for the worktree removal to finish before registering this project.".into(),
+            );
+        }
+        if self.removals.values().any(|removal| {
+            !removal.finished
+                && removal.current_target.as_deref().is_some_and(|target| {
+                    path_within_worktree(
+                        &project.path,
+                        target,
+                        Path::new(target).canonicalize().ok().as_deref(),
+                    )
+                })
+        }) {
+            return Err(
+                "Wait for the worktree removal to finish before registering this project.".into(),
+            );
+        }
         let idx = store.projects.len();
         let ((), saved) = SettingsState::update_and_flush_checked(cx, |store| {
             store
@@ -185,9 +225,24 @@ impl ProjectService {
             .is_some_and(|operation| !operation.finished)
     }
 
+    pub fn is_worktree_removing(&self, path: &str) -> bool {
+        self.worktree_removals.iter().any(|(target, operation)| {
+            operation.stage != WorktreeRemovalStage::Finished
+                && path_within_worktree(path, target, Some(&operation.canonical_path))
+        })
+    }
+
+    pub fn worktree_removal_status(&self, wt_path: &str) -> Option<&WorktreeRemoval> {
+        self.worktree_removals.get(wt_path)
+    }
+
     fn ensure_not_removing(&self, path: &str) -> Result<(), String> {
         if self.is_removing(path) {
             Err("This project is already being removed.".into())
+        } else if self.worktree_removals.values().any(|operation| {
+            operation.project_path == path && operation.stage != WorktreeRemovalStage::Finished
+        }) {
+            Err("Wait for the worktree removal to finish before changing this project.".into())
         } else {
             Ok(())
         }
@@ -200,6 +255,7 @@ impl ProjectService {
         base: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Result<String, String> {
+        self.ensure_not_removing(&project.path)?;
         match git::add_worktree(&project.path, project.worktree_dir(), name, base) {
             Ok(path) => {
                 if let Err(e) = git::copy_worktree_includes(&project.path, &path) {
@@ -224,6 +280,7 @@ impl ProjectService {
         base: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Result<String, String> {
+        self.ensure_not_removing(&project.path)?;
         match git::add_worktree_with_branch(
             &project.path,
             project.worktree_dir(),
@@ -488,14 +545,34 @@ impl ProjectService {
                     }
                     this.removal_changed(&path, cx);
                 });
-                let repository = project.path.clone();
-                let result = cx
-                    .background_executor()
-                    .spawn(async move {
-                        git::remove_worktree(&repository, &target)
-                            .map_err(|error| format!("{target}: {error}"))
-                    })
-                    .await;
+                let protected = this.update(cx, |_, cx| {
+                    let canonical = Path::new(&target)
+                        .canonicalize()
+                        .map_err(|error| format!("Could not resolve worktree path: {error}"))?;
+                    Ok::<_, String>(registered_project_at_path(
+                        &cx.global::<SettingsState>().store.projects,
+                        &target,
+                        &canonical,
+                    )
+                    .map(|project| project.name.clone()))
+                });
+                let result = match protected {
+                    Ok(Ok(Some(name))) => Err(format!(
+                        "{target}: contains registered project '{name}'; remove that registration before deleting this worktree"
+                    )),
+                    Ok(Err(error)) => Err(format!("{target}: {error}")),
+                    Err(_) => return,
+                    Ok(Ok(None)) => {
+                        let repository = project.path.clone();
+                        let target_path = target.clone();
+                        cx.background_executor()
+                            .spawn(async move {
+                                git::remove_worktree(&repository, &target_path)
+                                    .map_err(|error| format!("{target_path}: {error}"))
+                            })
+                            .await
+                    }
+                };
                 let _ = this.update(cx, |this, cx| {
                     if let Some(operation) = this.removals.get_mut(&path) {
                         operation.complete_target(result);
@@ -548,57 +625,162 @@ impl ProjectService {
         self.removal_changed(path, cx);
     }
 
-    /// Own the script PTY independently of any terminal view, then remove on exit.
-    pub fn start_teardown(
+    /// Validate against Git's checked inventory before touching any registered session.
+    pub fn remove_worktree_by_path(
         &mut self,
-        project: &storage::Project,
-        path: String,
+        project_path: &str,
+        wt_path: &str,
         cx: &mut Context<Self>,
-    ) {
-        self.kill_sessions(|m| m.wt_path == path, cx);
-        self.teardown_poll = None;
-        self.teardown_session = None;
-        self.teardown_target = Some((project.path.clone(), path.clone()));
+    ) -> Result<(), String> {
+        self.ensure_not_removing(project_path)?;
+        if self.teardown_target.is_some()
+            || self
+                .worktree_removals
+                .values()
+                .any(|operation| operation.stage != WorktreeRemovalStage::Finished)
+        {
+            return Err("Another worktree is already being removed.".into());
+        }
+        let project = cx
+            .global::<SettingsState>()
+            .store
+            .projects
+            .iter()
+            .find(|project| project.path == project_path)
+            .cloned()
+            .ok_or_else(|| "Project no longer exists.".to_string())?;
+        let worktrees = git::list_worktrees_checked(project_path)
+            .map_err(|error| format!("Could not list worktrees: {error}"))?;
+        let target = worktrees
+            .iter()
+            .find(|worktree| worktree.path == wt_path)
+            .ok_or_else(|| "Worktree is no longer listed by Git.".to_string())?;
+        if !removable_worktree(project_path, &target.path, target.is_main) {
+            return Err("The main project checkout cannot be removed.".into());
+        }
+        let canonical_path = Path::new(&target.path)
+            .canonicalize()
+            .map_err(|error| format!("Could not resolve worktree path: {error}"))?;
+        if let Some(registered) = registered_project_at_path(
+            &cx.global::<SettingsState>().store.projects,
+            &target.path,
+            &canonical_path,
+        ) {
+            return Err(format!(
+                "This worktree contains registered project '{}'. Remove that project registration before deleting its folder.",
+                registered.name
+            ));
+        }
+        self.worktree_removals.insert(
+            wt_path.to_string(),
+            WorktreeRemoval {
+                stage: WorktreeRemovalStage::RunningScript,
+                error: None,
+                project_path: project_path.to_string(),
+                canonical_path,
+            },
+        );
+        self.kill_sessions_touching_worktree(wt_path, cx);
+        self.teardown_target = Some((project_path.to_string(), wt_path.to_string()));
+        self.worktree_removal_changed(wt_path, cx);
+
         let Some(script) = project
             .scripts
             .teardown
             .as_deref()
             .map(str::trim)
-            .filter(|s| !s.is_empty())
+            .filter(|script| !script.is_empty())
         else {
-            self.skip_teardown_script(cx);
-            return;
+            self.skip_worktree_teardown(cx);
+            return Ok(());
         };
-        let session = cx.new(|cx| TerminalSession::spawn_script(script, &path, cx));
+        let session = cx.new(|cx| TerminalSession::spawn_script(script, wt_path, cx));
+        if let Some(error) = session.read(cx).spawn_error() {
+            if let Some(operation) = self.worktree_removals.get_mut(wt_path) {
+                operation.error = Some(format!("Teardown could not start: {error}"));
+            }
+            self.worktree_removal_changed(wt_path, cx);
+            return Ok(());
+        }
         self.teardown_session = Some(session.clone());
+        // TerminalSession exposes liveness but not an exit code; a script that starts and then
+        // exits nonzero is treated as complete. Spawn failures stay visible for explicit skip.
         self.teardown_poll = Some(cx.spawn(async move |this, cx| loop {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(120))
                 .await;
-            if session.update(cx, |s, _| s.alive()) {
+            if session.update(cx, |session, _| session.alive()) {
                 continue;
             }
-            let _ = this.update(cx, ProjectService::skip_teardown_script);
+            let _ = this.update(cx, ProjectService::skip_worktree_teardown);
             return;
         }));
+        Ok(())
     }
 
-    pub fn skip_teardown_script(&mut self, cx: &mut Context<Self>) {
-        let Some((project_path, wt)) = self.teardown_target.take() else {
+    fn kill_sessions_touching_worktree(&mut self, path: &str, cx: &mut Context<Self>) {
+        let canonical_path = self
+            .worktree_removals
+            .get(path)
+            .map(|operation| operation.canonical_path.clone())
+            .or_else(|| Path::new(path).canonicalize().ok());
+        self.kill_sessions(
+            |meta| {
+                path_within_worktree(&meta.wt_path, path, canonical_path.as_deref())
+                    || meta.context_roots.iter().any(|root| {
+                        path_within_worktree(&root.wt_path, path, canonical_path.as_deref())
+                    })
+            },
+            cx,
+        );
+    }
+
+    fn worktree_removal_changed(&self, path: &str, cx: &mut Context<Self>) {
+        cx.emit(ProjectEvent::WorktreeRemovalChanged {
+            path: path.to_string(),
+        });
+        cx.notify();
+    }
+
+    /// Skipping cancels the owned script PTY, then proceeds with Git removal once.
+    pub fn skip_worktree_teardown(&mut self, cx: &mut Context<Self>) {
+        let Some((project_path, wt_path)) = self.teardown_target.take() else {
             return;
         };
         self.teardown_poll = None;
         self.teardown_session = None;
+        if let Some(operation) = self.worktree_removals.get_mut(&wt_path) {
+            operation.stage = WorktreeRemovalStage::Removing;
+            // An explicit skip acknowledges a script start failure; only Git removal errors
+            // determine whether the finished operation failed.
+            operation.error = None;
+        }
+        self.worktree_removal_changed(&wt_path, cx);
+        self.kill_sessions_touching_worktree(&wt_path, cx);
         cx.spawn(async move |this, cx| {
+            let project = project_path.clone();
+            let target = wt_path.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    git::remove_worktree(&project_path, &wt).map_err(|e| e.to_string())
+                    git::remove_worktree(&project, &target)
+                        .map_err(|error| format!("{target}: {error}"))
                 })
                 .await;
-            let _ = this.update(cx, |_, cx| {
+            let _ = this.update(cx, |this, cx| {
+                this.kill_sessions_touching_worktree(&wt_path, cx);
+                if let Some(operation) = this.worktree_removals.get_mut(&wt_path) {
+                    operation.stage = WorktreeRemovalStage::Finished;
+                    if let Err(error) = &result {
+                        operation.error = Some(match operation.error.take() {
+                            Some(previous) => format!("{previous}; {error}"),
+                            None => error.clone(),
+                        });
+                    }
+                }
                 cx.emit(ProjectEvent::TreeInvalidated);
                 cx.emit(ProjectEvent::WorktreeRemoved { result });
+                this.worktree_removal_changed(&wt_path, cx);
             });
         })
         .detach();
@@ -728,6 +910,25 @@ fn apply_project_update(
     project.scripts = scripts;
 }
 
+fn path_within_worktree(path: &str, target: &str, canonical_target: Option<&Path>) -> bool {
+    Path::new(path).starts_with(target)
+        || canonical_target.is_some_and(|target| {
+            Path::new(path)
+                .canonicalize()
+                .is_ok_and(|path| path.starts_with(target))
+        })
+}
+
+fn registered_project_at_path<'a>(
+    projects: &'a [storage::Project],
+    target: &str,
+    canonical_target: &Path,
+) -> Option<&'a storage::Project> {
+    projects
+        .iter()
+        .find(|project| path_within_worktree(&project.path, target, Some(canonical_target)))
+}
+
 fn removable_worktree(repository: &str, target: &str, is_main: bool) -> bool {
     !is_main
         && Path::new(repository) != Path::new(target)
@@ -743,6 +944,16 @@ fn removable_worktree(repository: &str, target: &str, is_main: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fs_err as fs;
+    use std::{path::PathBuf, process::Command, time::SystemTime};
+
+    struct GitFixture(PathBuf);
+
+    impl Drop for GitFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn project(name: &str, path: &str) -> storage::Project {
         storage::Project {
@@ -752,6 +963,63 @@ mod tests {
             archived: false,
             worktree_dir: None,
         }
+    }
+
+    fn git_fixture() -> Option<(GitFixture, String, String)> {
+        if !Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+        {
+            return None;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "grove-worktree-removal-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let repo = root.join("repo");
+        let wt = root.join("feature");
+        fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let repo_path = repo.to_str().unwrap();
+        let wt_path = wt.to_str().unwrap();
+        git(&["-C", repo_path, "init", "-q"]);
+        fs::write(repo.join("README.md"), "fixture").unwrap();
+        git(&["-C", repo_path, "add", "."]);
+        git(&[
+            "-C",
+            repo_path,
+            "-c",
+            "user.name=grove-test",
+            "-c",
+            "user.email=grove-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "fixture",
+        ]);
+        git(&["-C", repo_path, "worktree", "add", "--detach", wt_path]);
+        Some((GitFixture(root), repo_path.to_string(), wt_path.to_string()))
     }
 
     #[test]
@@ -874,6 +1142,403 @@ mod tests {
         assert!(!removable_worktree(path, &format!("{path}/."), false));
         assert!(!removable_worktree(path, "/some-worktree", true));
         assert!(removable_worktree(path, "/some-worktree", false));
+    }
+
+    #[gpui::test]
+    fn worktree_removal_validates_then_sweeps_all_roots_and_blocks_launches(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let Some((fixture, repo, wt)) = git_fixture() else {
+            return;
+        };
+        let alias = fixture.0.join("worktree-alias");
+        std::os::unix::fs::symlink(&wt, &alias).unwrap();
+        let alias = alias.to_str().unwrap().to_string();
+        let service = cx.update(|cx| {
+            cx.set_global(SettingsState::new(storage::Store {
+                projects: vec![project("fixture", &repo)],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            let service = runtime.read(cx).projects.clone();
+            let registry = runtime.read(cx).registry.clone();
+            let (primary, context, alias_primary, alias_context, main) =
+                registry.update(cx, |registry, _| {
+                    let primary = registry.insert_meta(
+                        "fixture".into(),
+                        wt.clone(),
+                        grove_core::agent::Agent::Terminal,
+                    );
+                    let context = registry.insert_meta_with_context(
+                        "fixture".into(),
+                        repo.clone(),
+                        grove_core::agent::Agent::Codex,
+                        vec![grove_core::session_meta::ContextRoot {
+                            project: "fixture".into(),
+                            wt_path: wt.clone(),
+                        }],
+                        None,
+                    );
+                    let alias_primary = registry.insert_meta(
+                        "fixture".into(),
+                        alias.clone(),
+                        grove_core::agent::Agent::Terminal,
+                    );
+                    let alias_context = registry.insert_meta_with_context(
+                        "fixture".into(),
+                        repo.clone(),
+                        grove_core::agent::Agent::Codex,
+                        vec![grove_core::session_meta::ContextRoot {
+                            project: "fixture".into(),
+                            wt_path: alias.clone(),
+                        }],
+                        None,
+                    );
+                    let main = registry.insert_meta(
+                        "fixture".into(),
+                        repo.clone(),
+                        grove_core::agent::Agent::Terminal,
+                    );
+                    (primary, context, alias_primary, alias_context, main)
+                });
+            service.update(cx, |service, cx| {
+                assert!(service.remove_worktree_by_path(&repo, &repo, cx).is_err());
+                assert!(service
+                    .remove_worktree_by_path(&repo, &format!("{repo}/."), cx)
+                    .is_err());
+                assert!(service
+                    .remove_worktree_by_path(&repo, &format!("{wt}/."), cx)
+                    .is_err());
+                assert!(service
+                    .remove_worktree_by_path(&repo, "/unlisted-worktree", cx)
+                    .is_err());
+            });
+            assert!(registry.read(cx).meta(primary).is_some());
+            assert!(registry.read(cx).meta(context).is_some());
+            assert!(registry.read(cx).meta(alias_primary).is_some());
+            assert!(registry.read(cx).meta(alias_context).is_some());
+            service.update(cx, |service, cx| {
+                service.remove_worktree_by_path(&repo, &wt, cx).unwrap();
+                assert_eq!(
+                    service.worktree_removal_status(&wt).unwrap().stage,
+                    WorktreeRemovalStage::Removing,
+                );
+                assert!(service.remove_worktree_by_path(&repo, &wt, cx).is_err());
+                assert!(service.archive_project_by_path(&repo, cx).is_err());
+                assert!(service
+                    .register_project("late registration".into(), alias.clone(), cx)
+                    .is_err());
+            });
+            assert!(registry.read(cx).meta(primary).is_none());
+            assert!(registry.read(cx).meta(context).is_none());
+            assert!(registry.read(cx).meta(alias_primary).is_none());
+            assert!(registry.read(cx).meta(alias_context).is_none());
+            assert!(registry.read(cx).meta(main).is_some());
+            let blocked_primary = runtime.update(cx, |runtime, cx| {
+                runtime.spawn_session_in_with_args(
+                    "fixture".into(),
+                    wt.clone(),
+                    grove_core::agent::Agent::Terminal,
+                    Vec::new(),
+                    cx,
+                )
+            });
+            assert!(!blocked_primary);
+            let blocked_context = runtime.update(cx, |runtime, cx| {
+                runtime.spawn_session_in_with_context(
+                    "fixture".into(),
+                    repo.clone(),
+                    grove_core::agent::Agent::Codex,
+                    Vec::new(),
+                    vec![grove_core::session_meta::ContextRoot {
+                        project: "fixture".into(),
+                        wt_path: wt.clone(),
+                    }],
+                    None,
+                    cx,
+                )
+            });
+            assert!(!blocked_context);
+            service
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let status = service.read(cx).worktree_removal_status(&wt).unwrap();
+            assert_eq!(status.stage, WorktreeRemovalStage::Finished);
+            assert!(status.error.is_none(), "{:?}", status.error);
+            assert!(!git::list_worktrees_checked(&repo)
+                .unwrap()
+                .iter()
+                .any(|w| w.path == wt));
+            assert!(!Path::new(&wt).exists());
+        });
+    }
+
+    #[gpui::test]
+    fn worktree_removal_refuses_another_registered_project_root(cx: &mut gpui::TestAppContext) {
+        let Some((fixture, repo, wt)) = git_fixture() else {
+            return;
+        };
+        let alias = fixture.0.join("registered-project-alias");
+        std::os::unix::fs::symlink(&wt, &alias).unwrap();
+        let alias = alias.to_str().unwrap().to_string();
+        cx.update(|cx| {
+            let mut other = project("other project", &alias);
+            other.archived = true;
+            cx.set_global(SettingsState::new(storage::Store {
+                projects: vec![project("source", &repo), other],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            let service = runtime.read(cx).projects.clone();
+            let registry = runtime.read(cx).registry.clone();
+            let id = registry.update(cx, |registry, _| {
+                registry.insert_meta(
+                    "other project".into(),
+                    wt.clone(),
+                    grove_core::agent::Agent::Terminal,
+                )
+            });
+            let error = service.update(cx, |service, cx| {
+                service.remove_worktree_by_path(&repo, &wt, cx).unwrap_err()
+            });
+            assert!(error.contains("other project"), "{error}");
+            assert!(service.read(cx).worktree_removal_status(&wt).is_none());
+            assert!(registry.read(cx).meta(id).is_some());
+            assert!(Path::new(&wt).exists());
+            assert!(git::list_worktrees_checked(&repo)
+                .unwrap()
+                .iter()
+                .any(|entry| entry.path == wt));
+        });
+    }
+
+    #[gpui::test]
+    fn worktree_removal_refuses_active_project_nested_inside_target(cx: &mut gpui::TestAppContext) {
+        let Some((_fixture, repo, wt)) = git_fixture() else {
+            return;
+        };
+        let nested = Path::new(&wt).join("subproject");
+        fs::create_dir_all(&nested).unwrap();
+        let nested = nested.to_str().unwrap().to_string();
+        cx.update(|cx| {
+            cx.set_global(SettingsState::new(storage::Store {
+                projects: vec![project("source", &repo), project("nested", &nested)],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            let service = runtime.read(cx).projects.clone();
+            let registry = runtime.read(cx).registry.clone();
+            let id = registry.update(cx, |registry, _| {
+                registry.insert_meta(
+                    "nested".into(),
+                    nested.clone(),
+                    grove_core::agent::Agent::Terminal,
+                )
+            });
+            let error = service.update(cx, |service, cx| {
+                service.remove_worktree_by_path(&repo, &wt, cx).unwrap_err()
+            });
+            assert!(error.contains("nested"), "{error}");
+            assert!(service.read(cx).worktree_removal_status(&wt).is_none());
+            assert!(registry.read(cx).meta(id).is_some());
+            assert!(Path::new(&nested).exists());
+            assert!(Path::new(&wt).exists());
+        });
+    }
+
+    #[gpui::test]
+    fn bulk_project_removal_preserves_registered_worktree_and_continues(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        // Project removal persists settings, so isolate its config in a child process.
+        if std::env::var_os("GROVE_BULK_REMOVAL_TEST_CHILD").is_none() {
+            let config = std::env::temp_dir().join(format!(
+                "grove-bulk-removal-test-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&config).unwrap();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "project_service::tests::bulk_project_removal_preserves_registered_worktree_and_continues",
+                    "--nocapture",
+                ])
+                .env("GROVE_BULK_REMOVAL_TEST_CHILD", "1")
+                .env("GROVE_CONFIG_DIR", &config)
+                .output()
+                .unwrap();
+            let _ = fs::remove_dir_all(&config);
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let Some((fixture, repo, protected)) = git_fixture() else {
+            return;
+        };
+        let safe = fixture.0.join("ordinary-worktree");
+        let safe = safe.to_str().unwrap().to_string();
+        let output = Command::new("git")
+            .args(["-C", &repo, "worktree", "add", "--detach", &safe])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let nested = Path::new(&protected).join("archived-subproject");
+        fs::create_dir_all(&nested).unwrap();
+        let alias = fixture.0.join("registered-project-alias");
+        std::os::unix::fs::symlink(&nested, &alias).unwrap();
+        let mut other = project("other project", alias.to_str().unwrap());
+        other.archived = true;
+        let service = cx.update(|cx| {
+            cx.set_global(SettingsState::new(storage::Store {
+                projects: vec![project("source", &repo), other],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            let service = runtime.read(cx).projects.clone();
+            service.update(cx, |service, cx| {
+                service.remove_project_by_path(&repo, true, cx).unwrap();
+            });
+            service
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let operation = service.read(cx).removal_status(&repo).unwrap();
+            assert!(operation.finished && operation.unregistered);
+            assert_eq!((operation.completed, operation.total), (2, 2));
+            assert_eq!(operation.errors.len(), 1, "{:?}", operation.errors);
+            assert!(operation.errors[0].contains("other project"));
+            assert!(operation.errors[0].contains(&protected));
+            let remaining = &cx.global::<SettingsState>().store.projects;
+            assert_eq!(remaining.len(), 1);
+            assert_eq!(remaining[0].name, "other project");
+            assert!(remaining[0].archived);
+            assert!(Path::new(&protected).exists());
+            assert!(nested.exists());
+            assert!(!Path::new(&safe).exists());
+            let listed = git::list_worktrees_checked(&repo).unwrap();
+            assert!(listed.iter().any(|entry| entry.path == protected));
+            assert!(!listed.iter().any(|entry| entry.path == safe));
+        });
+    }
+
+    #[gpui::test]
+    fn worktree_teardown_spawn_failure_can_be_skipped_once(cx: &mut gpui::TestAppContext) {
+        let Some((fixture, repo, wt)) = git_fixture() else {
+            return;
+        };
+        let alias = fixture.0.join("late-session-alias");
+        std::os::unix::fs::symlink(&wt, &alias).unwrap();
+        let alias = alias.to_str().unwrap().to_string();
+        let service = cx.update(|cx| {
+            let mut configured = project("fixture", &repo);
+            configured.scripts.teardown = Some("\0".into());
+            cx.set_global(SettingsState::new(storage::Store {
+                projects: vec![configured],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            let service = runtime.read(cx).projects.clone();
+            let registry = runtime.read(cx).registry.clone();
+            service.update(cx, |service, cx| {
+                service.remove_worktree_by_path(&repo, &wt, cx).unwrap();
+                assert_eq!(
+                    service.worktree_removal_status(&wt).unwrap().stage,
+                    WorktreeRemovalStage::RunningScript,
+                );
+                assert!(service
+                    .worktree_removal_status(&wt)
+                    .unwrap()
+                    .error
+                    .is_some());
+                let (late_primary, late_context) = registry.update(cx, |registry, _| {
+                    let primary = registry.insert_meta(
+                        "fixture".into(),
+                        alias.clone(),
+                        grove_core::agent::Agent::Terminal,
+                    );
+                    let context = registry.insert_meta_with_context(
+                        "fixture".into(),
+                        repo.clone(),
+                        grove_core::agent::Agent::Codex,
+                        vec![grove_core::session_meta::ContextRoot {
+                            project: "fixture".into(),
+                            wt_path: alias.clone(),
+                        }],
+                        None,
+                    );
+                    (primary, context)
+                });
+                service.skip_worktree_teardown(cx);
+                service.skip_worktree_teardown(cx);
+                assert!(registry.read(cx).meta(late_primary).is_none());
+                assert!(registry.read(cx).meta(late_context).is_none());
+                assert_eq!(
+                    service.worktree_removal_status(&wt).unwrap().stage,
+                    WorktreeRemovalStage::Removing,
+                );
+            });
+            service
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let status = service.read(cx).worktree_removal_status(&wt).unwrap();
+            assert_eq!(status.stage, WorktreeRemovalStage::Finished);
+            assert!(status.error.is_none());
+            assert!(!Path::new(&wt).exists());
+        });
+    }
+
+    #[gpui::test]
+    fn failed_worktree_removal_keeps_inspectable_error(cx: &mut gpui::TestAppContext) {
+        let Some((_fixture, repo, wt)) = git_fixture() else {
+            return;
+        };
+        let locked = Command::new("git")
+            .args(["-C", &repo, "worktree", "lock", &wt])
+            .status()
+            .unwrap();
+        assert!(locked.success());
+        let service = cx.update(|cx| {
+            cx.set_global(SettingsState::new(storage::Store {
+                projects: vec![project("fixture", &repo)],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            let service = runtime.read(cx).projects.clone();
+            service.update(cx, |service, cx| {
+                service.remove_worktree_by_path(&repo, &wt, cx).unwrap();
+            });
+            service
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let status = service.read(cx).worktree_removal_status(&wt).unwrap();
+            assert_eq!(status.stage, WorktreeRemovalStage::Finished);
+            assert!(status
+                .error
+                .as_ref()
+                .is_some_and(|error| error.contains("lock")));
+            assert!(Path::new(&wt).exists());
+        });
     }
     #[gpui::test]
     fn removal_blocks_runtime_launch_and_sweeps_late_metadata(cx: &mut gpui::TestAppContext) {

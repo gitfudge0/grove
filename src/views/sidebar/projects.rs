@@ -302,7 +302,7 @@ fn project_action(
 }
 fn panel_section(label: &'static str) -> impl IntoElement {
     div()
-        .mt(rpx(SPACE_3XL))
+        .mt(rpx(SPACE_20))
         .mb(rpx(SPACE_LG))
         .text_size(rpx(TEXT_SMALL))
         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -373,7 +373,7 @@ fn script_field(
                 .focus_bordered(false)
                 .h(rpx(96.))
                 .font_family(crate::fonts::MONO_FAMILY)
-                .text_size(rpx(TEXT_BODY))
+                .text_size(rpx(TEXT_CODE))
                 .text_color(c::FG())
                 .p_0(),
         )

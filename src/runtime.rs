@@ -217,6 +217,9 @@ impl Runtime {
                     Ok(project) if self.projects.read(cx).is_removing(&project.path) => Some(
                         "Cannot launch a session while this project is being removed.".to_string(),
                     ),
+                    Ok(_) if self.projects.read(cx).is_worktree_removing(wt) => Some(
+                        "Cannot launch a session while this worktree is being removed.".to_string(),
+                    ),
                     Ok(_) => None,
                     Err(error) => Some(error),
                 },

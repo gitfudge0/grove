@@ -92,16 +92,18 @@ System sans is the target UI family, including paths and branches inside forms. 
 
 | Token | px / rem | Line height | Default weight | Rust / GPUI mapping |
 |---|---:|---:|---:|---|
-| text-10 | 10 / .625rem | 13px | 500 | verified: `.text_size(rpx(TEXT_MICRO))` — Existing size matches; ui()/mono() do not set explicit line height. |
-| text-11 | 11 / .6875rem | 15px | 400 | verified: `.text_size(rpx(TEXT_SMALL))` — Existing size matches; ui()/mono() do not set explicit line height. |
-| text-12 | 12 / .75rem | 17px | 400 | verified: `.text_size(rpx(TEXT_BODY))` — Existing size matches; ui()/mono() do not set explicit line height. |
-| text-13 | 13 / .8125rem | 19px | 400 | verified: `.text_size(rpx(TEXT_TITLE))` — Existing size matches; ui()/mono() do not set explicit line height. |
+| text-10 | 10 / .625rem | 13px | 500 | adapt: `.text_size(rpx(TEXT_MICRO))` — Grove TEXT_MICRO is 11px; reference CSS token is 10px. ui()/mono() do not set explicit line height. |
+| text-11 | 11 / .6875rem | 15px | 400 | adapt: `.text_size(rpx(TEXT_SMALL))` — Grove TEXT_SMALL is 12px; reference CSS token is 11px. ui()/mono() do not set explicit line height. |
+| text-12 | 12 / .75rem | 17px | 400 | adapt: `.text_size(rpx(TEXT_BODY))` — Grove TEXT_BODY is 13px; reference CSS token is 12px. ui()/mono() do not set explicit line height. |
+| text-13 | 13 / .8125rem | 19px | 400 | adapt: `.text_size(rpx(TEXT_TITLE))` — Grove TEXT_TITLE is 14px; reference CSS token is 13px. ui()/mono() do not set explicit line height. |
 | text-14 | 14 / .875rem | 20px | 400 | add: `.text_size(rpx(TEXT_14))` — Add TEXT_14 = 14.0; TEXT_DISPLAY is 20, not 24. Set line height separately. |
 | text-16 | 16 / 1rem | 22px | 400 | add: `.text_size(rpx(TEXT_16))` — Add TEXT_16 = 16.0; TEXT_DISPLAY is 20, not 24. Set line height separately. |
 | text-15 | 15 / .9375rem | 20px | 600 | add: `.text_size(rpx(TEXT_15))` — Add TEXT_15 = 15.0; TEXT_DISPLAY is 20, not 24. Set line height separately. |
 | text-18 | 18 / 1.125rem | 23px | 600 | add: `.text_size(rpx(TEXT_18))` — Add TEXT_18 = 18.0; TEXT_DISPLAY is 20, not 24. Set line height separately. |
 | text-24 | 24 / 1.5rem | 29px | 700 | add: `.text_size(rpx(TEXT_24))` — Add TEXT_24 = 24.0; TEXT_DISPLAY is 20, not 24. Set line height separately. |
-| text-32 | 32 / 2rem | 36px | 700 | verified: `.text_size(rpx(TEXT_DISPLAY_LG))` — Existing size matches; ui()/mono() do not set explicit line height. |
+| text-32 | 32 / 2rem | 36px | 700 | verified: `.text_size(rpx(TEXT_DISPLAY_LG))` — Existing display size matches; ui()/mono() do not set explicit line height. |
+
+Grove’s shared UI roles now use 11px micro, 12px small, 13px body, and 14px title text. These role sizes intentionally sit one step above the reference CSS type tokens below; terminal and editable script/code metrics stay fixed. Related labels and metadata use 2–4px gaps, while separate project and panel sections use 12–20px spacing.
 
 Embedded labels use `line-field-label = 16px` with `text-12`, regular weight. Values use `line-field-value = 22px` with `text-16`. Both line-height aliases are targets pending source migration.
 
@@ -141,7 +143,7 @@ Grove forms use flat filled controls on black or white surfaces. Each field is 6
 | Attached validation | invalid field joins a local message below with a shared border and error-wash backing | single and multiple errors | Target (pending): error text and border use `c::RED()`; light error is `#b6384c` |
 | Grouped switches | quiet outlined 16px group; 48×28 track, 22px white thumb, 3px inset | on, off, disabled | Target (pending): `SWITCH_*`, `c::SWITCH_ON()`, `c::SWITCH_THUMB()` |
 | Selection tiles | min 42×44, 12px radius, neutral 2px total selected outline | single or multiple, selected/unselected | Target (pending): `TILE_*`, `c::SEL_RING()`; blue category dot pairs with visible text |
-| Form buttons | 44px height, 12px radius, leading semantic icon | normal, focus, disabled, pending | Target (pending): `FORM_BUTTON_H`; dense chrome remains target `CONTROL_H = 24` (current value: 22) |
+| Form buttons | 44px height, 12px radius, leading semantic icon | normal, focus, disabled, pending | Target (pending): `FORM_BUTTON_H`; dense chrome uses `CONTROL_H = 24` |
 
 Use 14px horizontal inset, 8px label top inset, and a 27px value top inset. Rows and split fields use a 12px rhythm. Textareas start at 130px and grow vertically. Input focus uses a neutral hover fill and visible caret with a stable border; never add a white or foreground-colored border or outline. Preserve validation error borders and accessible labels. Fields and cards use no bevel, inset shadow, or default elevation.
 
@@ -198,7 +200,7 @@ Geometry is part of the spacing contract.
 | header-h | 36px | add: `rpx(HEADER_H)` — Add HEADER_H = 36.0; geometry constant absent. |
 | status-h | 26px | add: `rpx(STATUS_H)` — Add STATUS_H = 26.0; geometry constant absent. |
 | row-h | 28px | add: `rpx(ROW_H)` — Add ROW_H = 28.0; geometry constant absent. |
-| control-h | 24px | adapt: `rpx(CONTROL_H)` — Current CONTROL_H = 22.0; target 24px. Audit all dependent geometry. |
+| control-h | 24px | adapt: `rpx(CONTROL_H)` — CONTROL_H is 24px; dependent row and card geometry follows the shared token. |
 
 Workspace switching is appbar content and owns no separate width token.
 
@@ -434,10 +436,10 @@ No CSS z-index, outline, blur, easing or accessibility attribute should be trans
 | --shadow-lg | 0 16px 48px rgba(0,0,0,.50) | 0 16px 48px rgba(13,13,15,.18) | `gpui::BoxShadow { color: c::SHADOW_LG(), offset: gpui::point(gpui::px(0.), rpx(SHADOW_LG_Y).to_pixels(window.rem_size())), blur_radius: rpx(SHADOW_LG_BLUR).to_pixels(window.rem_size()), spread_radius: gpui::px(0.), inset: false }` | add | src/views/components.rs; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs | Add SHADOW_SM_Y = 1.0, SHADOW_SM_BLUR = 2.0 and theme alpha accessor. BoxShadow requires Pixels, so convert rem-scaled design dimensions with current rem_size. Hairlines remain unscaled logical px. Do not reuse PANEL_SHADOW. |
 | --font-ui | -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif | -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif | `gpui::Font::default()` | adapt | src/fonts.rs; src/views/mod.rs | System UI target: current ui() uses IBM Plex Sans. Update root font and ui(), retaining bold/medium weights. CSS fallback stack is platform-specific. |
 | --font-mono | "BlexMono Nerd Font Mono", "IBM Plex Mono", monospace | "BlexMono Nerd Font Mono", "IBM Plex Mono", monospace | `gpui::font(crate::fonts::MONO_FAMILY)` | verified | src/fonts.rs; src/views/mod.rs | BlexMono primary family is bundled. CSS fallback stack is not reproduced automatically. PTY remains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17. |
-| --text-10 | .625rem | .625rem | `.text_size(rpx(TEXT_MICRO))` | verified | src/views/tokens.rs | Existing size matches; ui()/mono() do not set explicit line height. |
-| --text-11 | .6875rem | .6875rem | `.text_size(rpx(TEXT_SMALL))` | verified | src/views/tokens.rs | Existing size matches; ui()/mono() do not set explicit line height. |
-| --text-12 | .75rem | .75rem | `.text_size(rpx(TEXT_BODY))` | verified | src/views/tokens.rs | Existing size matches; ui()/mono() do not set explicit line height. |
-| --text-13 | .8125rem | .8125rem | `.text_size(rpx(TEXT_TITLE))` | verified | src/views/tokens.rs | Existing size matches; ui()/mono() do not set explicit line height. |
+| --text-10 | .625rem | .625rem | `.text_size(rpx(TEXT_MICRO))` | adapt | src/views/tokens.rs | Grove TEXT_MICRO is 11px; reference CSS token is 10px. ui()/mono() do not set explicit line height. |
+| --text-11 | .6875rem | .6875rem | `.text_size(rpx(TEXT_SMALL))` | adapt | src/views/tokens.rs | Grove TEXT_SMALL is 12px; reference CSS token is 11px. ui()/mono() do not set explicit line height. |
+| --text-12 | .75rem | .75rem | `.text_size(rpx(TEXT_BODY))` | adapt | src/views/tokens.rs | Grove TEXT_BODY is 13px; reference CSS token is 12px. ui()/mono() do not set explicit line height. |
+| --text-13 | .8125rem | .8125rem | `.text_size(rpx(TEXT_TITLE))` | adapt | src/views/tokens.rs | Grove TEXT_TITLE is 14px; reference CSS token is 13px. ui()/mono() do not set explicit line height. |
 | --text-14 | .875rem | .875rem | `.text_size(rpx(TEXT_14))` | add | src/views/tokens.rs | Add TEXT_14 = 14.0; TEXT_DISPLAY is 20, not 24. Set line height separately. |
 | --text-16 | 1rem | 1rem | `.text_size(rpx(TEXT_16))` | add | src/views/tokens.rs | Add TEXT_16 = 16.0; TEXT_DISPLAY is 20, not 24. Set line height separately. |
 | --line-14 | 1.429 | 1.429 | `.line_height(rpx(LINE_14))` | add | GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; src/views/mod.rs | Add LINE_14 = 14.0 * 1.429 in src/views/tokens.rs. Preserve exact CSS fractional multiplier. ui()/mono() set no line height; PTY is excluded. |
@@ -518,7 +520,7 @@ No CSS z-index, outline, blur, easing or accessibility attribute should be trans
 | --header-h | 36px | 36px | `rpx(HEADER_H)` | add | src/views/tokens.rs | Add HEADER_H = 36.0; geometry constant absent. |
 | --status-h | 26px | 26px | `rpx(STATUS_H)` | add | src/views/tokens.rs | Add STATUS_H = 26.0; geometry constant absent. |
 | --row-h | 28px | 28px | `rpx(ROW_H)` | add | src/views/tokens.rs | Add ROW_H = 28.0; geometry constant absent. |
-| --control-h | 24px | 24px | `rpx(CONTROL_H)` | adapt | src/views/tokens.rs | Current CONTROL_H = 22.0; target 24px. Audit all dependent geometry. |
+| --control-h | 24px | 24px | `rpx(CONTROL_H)` | adapt | src/views/tokens.rs | CONTROL_H is 24px; dependent row and card geometry follows the shared token. |
 | --field-h | 60px | 60px | `rpx(FIELD_H)` | add | src/views/tokens.rs | Add FIELD_H = 60.0; geometry constant absent. |
 | --form-button-h | 44px | 44px | `rpx(FORM_BUTTON_H)` | add | src/views/tokens.rs | Add FORM_BUTTON_H = 44.0; geometry constant absent. |
 | --field-inset-x | 14px | 14px | `rpx(FIELD_INSET_X)` | add | src/views/tokens.rs | Add FIELD_INSET_X = 14.0; geometry constant absent. |

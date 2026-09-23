@@ -192,6 +192,7 @@ impl WorkspaceManager {
                     .min_w_0()
                     .flex()
                     .flex_col()
+                    .gap(rpx(SPACE_XS))
                     .child(
                         div()
                             .text_size(rpx(TEXT_BODY))

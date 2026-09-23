@@ -11,6 +11,7 @@ use crate::{
         workspace_state::TreeSnapshot,
     },
     icons::icon,
+    project_service::{ProjectEvent, WorktreeRemovalStage},
     runtime::Runtime,
     settings::SettingsState,
     theme as c,
@@ -23,7 +24,7 @@ use gpui_component::input::InputState;
 use grove_core::agent::Agent;
 use std::collections::{HashMap, HashSet};
 
-const SIDEBAR_W: f32 = 300.0;
+const SIDEBAR_W: f32 = 260.0;
 const SIDEBAR_COMPACT_THRESHOLD: f32 = 236.0;
 const SIDEBAR_MAX_VIEWPORT_FRACTION: f32 = 0.4;
 /// Below this width, a setup editor temporarily owns the full canvas.
@@ -69,6 +70,10 @@ enum Action {
     Reveal(String),
     RemoveProject(String),
     ConfirmRemove(usize),
+    RemoveWorktree(usize, String),
+    ConfirmWorktreeRemoval,
+    SkipWorktreeTeardown,
+    DismissWorktreeRemoval,
     Launch(usize, String, Agent),
     Close(SessionId),
     ConfirmClose(SessionId),
@@ -78,6 +83,15 @@ enum Action {
     CloseHome(SessionId),
     ConfirmHome(SessionId),
     Cancel,
+}
+
+#[derive(Clone)]
+struct PendingWorktreeRemoval {
+    project_path: String,
+    path: String,
+    name: String,
+    started: bool,
+    error: Option<String>,
 }
 
 pub struct Sidebar {
@@ -113,6 +127,10 @@ pub struct Sidebar {
     pending_close: Option<SessionId>,
     pending_home_close: Option<SessionId>,
     pending_remove: Option<usize>,
+    pending_worktree_removal: Option<PendingWorktreeRemoval>,
+    worktree_removal_focus: FocusHandle,
+    worktree_delete_focus: HashMap<String, FocusHandle>,
+    worktree_removal_return_focus: Option<FocusHandle>,
     pending_new_worktree: Option<usize>,
     worktree_name: Entity<InputState>,
     worktree_errors: [Option<String>; 3],
@@ -147,8 +165,12 @@ impl Sidebar {
     }
     pub fn new(runtime: Entity<Runtime>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let rt = runtime.read(cx);
-        let (registry, activity, tree) =
-            (rt.registry.clone(), rt.activity.clone(), rt.tree.clone());
+        let (registry, activity, tree, projects) = (
+            rt.registry.clone(),
+            rt.activity.clone(),
+            rt.tree.clone(),
+            rt.projects.clone(),
+        );
         let worktree_name = cx.new(|cx| InputState::new(window, cx).placeholder("billing-retry"));
         let worktree_branch =
             cx.new(|cx| InputState::new(window, cx).placeholder("feat/billing-retry"));
@@ -158,6 +180,11 @@ impl Sidebar {
             cx.observe(&registry, |_, _, cx| cx.notify()),
             cx.observe(&activity, |_, _, cx| cx.notify()),
             cx.observe(&tree, |_, _, cx| cx.notify()),
+            cx.subscribe(&projects, |this, _, event, cx| {
+                if let ProjectEvent::WorktreeRemovalChanged { path } = event {
+                    this.worktree_removal_changed(path, cx);
+                }
+            }),
             cx.observe_global::<SettingsState>(|_, cx| cx.notify()),
         ];
         for (index, input) in [&worktree_name, &worktree_branch, &worktree_base]
@@ -206,6 +233,10 @@ impl Sidebar {
             pending_close: None,
             pending_home_close: None,
             pending_remove: None,
+            pending_worktree_removal: None,
+            worktree_removal_focus: cx.focus_handle(),
+            worktree_delete_focus: HashMap::new(),
+            worktree_removal_return_focus: None,
             pending_new_worktree: None,
             worktree_name,
             worktree_errors: [None, None, None],
@@ -378,6 +409,16 @@ impl Sidebar {
                     .push(cx.on_focus_out(&handle, window, |_, _, _, cx| cx.notify()));
                 self.worktree_focus.insert(path, handle);
             }
+        }
+        for path in self.snapshot.projects.iter().flat_map(|p| {
+            p.worktrees
+                .iter()
+                .filter(|worktree| !worktree.is_main)
+                .map(|worktree| worktree.path.clone())
+        }) {
+            self.worktree_delete_focus
+                .entry(path)
+                .or_insert_with(|| cx.focus_handle());
         }
         let registry = self.runtime.read(cx).registry.read(cx);
         let live: HashSet<_> = registry
@@ -555,6 +596,7 @@ impl Sidebar {
             || self.pending_close.is_some()
             || self.pending_home_close.is_some()
             || self.pending_remove.is_some()
+            || self.pending_worktree_removal.is_some()
     }
     fn close_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
@@ -639,6 +681,8 @@ impl Sidebar {
     ) -> Stateful<Div> {
         let label = label.into();
         let click = action.clone();
+        let danger = matches!(action, Action::ConfirmWorktreeRemoval);
+        let primary = matches!(action, Action::DismissWorktreeRemoval);
         let confirm = matches!(
             action,
             Action::ConfirmClose(_) | Action::ConfirmHome(_) | Action::ConfirmRemove(_)
@@ -647,12 +691,16 @@ impl Sidebar {
         let confirming = self.project_decision
             || self.pending_close.is_some()
             || self.pending_home_close.is_some()
-            || self.pending_remove.is_some();
+            || self.pending_remove.is_some()
+            || self.pending_worktree_removal.is_some();
         let decision = matches!(
             action,
             Action::ConfirmClose(_)
                 | Action::ConfirmHome(_)
                 | Action::ConfirmRemove(_)
+                | Action::ConfirmWorktreeRemoval
+                | Action::SkipWorktreeTeardown
+                | Action::DismissWorktreeRemoval
                 | Action::Cancel
         );
         div()
@@ -668,8 +716,24 @@ impl Sidebar {
             .items_center()
             .justify_center()
             .rounded(rpx(RADIUS_CONTROL))
-            .hover(|s| s.bg(c::BG_HOVER()))
-            .focus_visible(|s| s.bg(c::BG_HOVER()))
+            .hover(move |s| {
+                if danger {
+                    s.bg(c::RED_WASH()).text_color(c::RED())
+                } else if primary {
+                    s.bg(c::FG_DIM()).text_color(c::BG())
+                } else {
+                    s.bg(c::BG_HOVER())
+                }
+            })
+            .focus_visible(move |s| {
+                if danger {
+                    s.bg(c::RED_WASH()).text_color(c::RED())
+                } else if primary {
+                    s.bg(c::FG_DIM()).text_color(c::BG())
+                } else {
+                    s.bg(c::BG_HOVER())
+                }
+            })
             .tooltip(move |window, cx| {
                 gpui_component::tooltip::Tooltip::new(label.clone()).build(window, cx)
             })
@@ -750,6 +814,26 @@ impl Sidebar {
         cx.notify();
     }
     fn act(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(removal) = &self.pending_worktree_removal {
+            let finished = removal.started
+                && (removal.error.is_some()
+                    || self
+                        .runtime
+                        .read(cx)
+                        .projects
+                        .read(cx)
+                        .worktree_removal_status(&removal.path)
+                        .is_some_and(|status| status.stage == WorktreeRemovalStage::Finished));
+            let allowed = match action {
+                Action::ConfirmWorktreeRemoval => !removal.started,
+                Action::SkipWorktreeTeardown => removal.started && !finished,
+                Action::DismissWorktreeRemoval | Action::Cancel => !removal.started || finished,
+                _ => false,
+            };
+            if !allowed {
+                return;
+            }
+        }
         if (self.project_decision
             || self.pending_close.is_some()
             || self.pending_home_close.is_some()
@@ -848,6 +932,83 @@ impl Sidebar {
                     .clone()
                     .update(cx, |p, cx| p.remove_project(i, false, cx));
                 self.pending_remove = None;
+            }
+            Action::RemoveWorktree(idx, path) => {
+                let Some(project) = self.snapshot.projects.iter().find(|p| p.idx == idx) else {
+                    return;
+                };
+                let Some(worktree) = project
+                    .worktrees
+                    .iter()
+                    .find(|worktree| worktree.path == path && !worktree.is_main)
+                else {
+                    return;
+                };
+                let project_path = cx
+                    .global::<SettingsState>()
+                    .store
+                    .projects
+                    .get(idx)
+                    .map(|project| project.path.clone());
+                let Some(project_path) = project_path else {
+                    return;
+                };
+                self.pending_worktree_removal = Some(PendingWorktreeRemoval {
+                    project_path,
+                    path: path.clone(),
+                    name: worktree.name.clone(),
+                    started: false,
+                    error: None,
+                });
+                self.worktree_removal_return_focus = self.worktree_delete_focus.get(&path).cloned();
+                self.mode = ViewMode::Project;
+                self.menu = None;
+                self.worktree_removal_focus.focus(window, cx);
+            }
+            Action::ConfirmWorktreeRemoval => {
+                let Some(removal) = self.pending_worktree_removal.as_mut() else {
+                    return;
+                };
+                if removal.started {
+                    return;
+                }
+                removal.started = true;
+                let (project_path, path) = (removal.project_path.clone(), removal.path.clone());
+                let service = self.runtime.read(cx).projects.clone();
+                if let Err(error) = service.update(cx, |service, cx| {
+                    service.remove_worktree_by_path(&project_path, &path, cx)
+                }) {
+                    if let Some(removal) = self.pending_worktree_removal.as_mut() {
+                        removal.error = Some(error);
+                    }
+                }
+                self.worktree_removal_focus.focus(window, cx);
+            }
+            Action::SkipWorktreeTeardown => {
+                if let Some(removal) = &self.pending_worktree_removal {
+                    if self
+                        .runtime
+                        .read(cx)
+                        .projects
+                        .read(cx)
+                        .worktree_removal_status(&removal.path)
+                        .is_some_and(|status| status.stage == WorktreeRemovalStage::RunningScript)
+                    {
+                        self.runtime.read(cx).projects.clone().update(
+                            cx,
+                            crate::project_service::ProjectService::skip_worktree_teardown,
+                        );
+                        self.worktree_removal_focus.focus(window, cx);
+                    }
+                }
+            }
+            Action::DismissWorktreeRemoval => {
+                self.pending_worktree_removal = None;
+                if let Some(focus) = self.worktree_removal_return_focus.take() {
+                    focus.focus(window, cx);
+                } else {
+                    self.focus.focus(window, cx);
+                }
             }
             Action::Launch(i, path, agent) => self.launch(i, path, agent, cx),
             Action::Close(id) => {
@@ -963,6 +1124,15 @@ impl Sidebar {
                 }
             }
             Action::Cancel => {
+                if self.pending_worktree_removal.take().is_some() {
+                    if let Some(focus) = self.worktree_removal_return_focus.take() {
+                        focus.focus(window, cx);
+                    } else {
+                        self.focus.focus(window, cx);
+                    }
+                    cx.notify();
+                    return;
+                }
                 self.canvas_close_anchor = None;
                 if self.pending_new_worktree.take().is_some() {
                     self.content_error = None;
@@ -982,6 +1152,31 @@ impl Sidebar {
                 self.pending_remove = None;
                 self.menu = None;
             }
+        }
+        cx.notify();
+    }
+    fn worktree_removal_changed(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(removal) = &self.pending_worktree_removal else {
+            return;
+        };
+        if removal.path != path {
+            return;
+        }
+        let project_path = removal.project_path.clone();
+        let finished_ok = self
+            .runtime
+            .read(cx)
+            .projects
+            .read(cx)
+            .worktree_removal_status(path)
+            .is_some_and(|status| {
+                status.stage == WorktreeRemovalStage::Finished && status.error.is_none()
+            });
+        if finished_ok {
+            if self.project_path_is_active(&project_path, cx) {
+                self.select_project_path(&project_path, cx);
+            }
+            self.worktree_removal_return_focus = None;
         }
         cx.notify();
     }
@@ -1128,7 +1323,7 @@ impl Sidebar {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(rpx(SPACE_MD))
+                    .gap(rpx(ROW_LINE_GAP))
                     .child(
                         div()
                             .flex()
@@ -1345,7 +1540,7 @@ impl Sidebar {
     }
     fn tree(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let mut body = div().flex().flex_col().gap(rpx(SPACE_XS));
-        for project in &self.snapshot.projects {
+        for (project_position, project) in self.snapshot.projects.iter().enumerate() {
             let idx = project.idx;
             let closed = self.collapsed_projects.contains(&idx);
             let rollup = closed
@@ -1368,6 +1563,7 @@ impl Sidebar {
                     Action::Select(Selection::Project(idx)),
                     cx,
                 )
+                .when(project_position > 0, |row| row.mt(rpx(SPACE_2XL)))
                 .px(rpx(SPACE_LG))
                 .gap(rpx(SPACE_LG))
                 .text_size(rpx(TEXT_TITLE))
@@ -1561,6 +1757,25 @@ impl Sidebar {
                         )),
                     );
                 }
+                if !worktree.is_main {
+                    launches = launches.child(
+                        self.control(
+                            SharedString::from(format!("delete-worktree-{path}")),
+                            format!("Delete worktree {}", worktree.name),
+                            Action::RemoveWorktree(idx, path.clone()),
+                            cx,
+                        )
+                        .debug_selector({
+                            let path = path.clone();
+                            move || format!("delete-worktree-{path}")
+                        })
+                        .when_some(
+                            self.worktree_delete_focus.get(&path),
+                            gpui::InteractiveElement::track_focus,
+                        )
+                        .child(icon("trash", ICON_SM, c::FG_DIM())),
+                    );
+                }
                 body = body.child(
                     self.row(
                         format!("worktree-{path}"),
@@ -1612,7 +1827,9 @@ impl Sidebar {
                     .child(
                         div()
                             .relative()
-                            .w(rpx(CHROME_CONTROL_H * 3.0))
+                            .w(rpx(
+                                CHROME_CONTROL_H * if worktree.is_main { 3.0 } else { 4.0 }
+                            ))
                             .when(self.compact_rail, |d| d.absolute().right_0())
                             .h(rpx(CHROME_CONTROL_H))
                             .flex_shrink_0()
@@ -1962,6 +2179,7 @@ impl Render for Sidebar {
             )
             .child(terminals);
         let hide_editor_navigation = (self.pending_new_worktree.is_some()
+            || self.pending_worktree_removal.is_some()
             || self.project_panel.is_some()
             || self.project_setup.is_some())
             && logical_width < EDITOR_FULL_WIDTH_BREAKPOINT;
@@ -1978,8 +2196,51 @@ impl Render for Sidebar {
             .text_size(rpx(TEXT_BODY))
             .text_color(c::FG())
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.confirmation_open()
+                if let (Some(removal), "tab") = (
+                    this.pending_worktree_removal.as_ref(),
+                    event.keystroke.key.as_str(),
+                ) {
+                    let status = this
+                        .runtime
+                        .read(cx)
+                        .projects
+                        .read(cx)
+                        .worktree_removal_status(&removal.path)
+                        .cloned();
+                    let finished = removal.started
+                        && (removal.error.is_some()
+                            || status
+                                .as_ref()
+                                .is_some_and(|s| s.stage == WorktreeRemovalStage::Finished));
+                    let handles: Vec<FocusHandle> = if !removal.started {
+                        vec![this.cancel_focus.clone(), this.confirm_focus.clone()]
+                    } else if finished
+                        || status
+                            .as_ref()
+                            .is_some_and(|s| s.stage == WorktreeRemovalStage::RunningScript)
+                    {
+                        vec![this.confirm_focus.clone()]
+                    } else {
+                        Vec::new()
+                    };
+                    window.prevent_default();
+                    if handles.is_empty() {
+                        this.worktree_removal_focus.focus(window, cx);
+                    } else {
+                        let current = handles.iter().position(|focus| focus.is_focused(window));
+                        let shift = event.keystroke.modifiers.shift;
+                        let next = match current {
+                            Some(index) if shift => (index + handles.len() - 1) % handles.len(),
+                            Some(index) => (index + 1) % handles.len(),
+                            None if shift => handles.len() - 1,
+                            None => 0,
+                        };
+                        handles[next].focus(window, cx);
+                    }
+                    cx.stop_propagation();
+                } else if this.confirmation_open()
                     && !this.project_decision
+                    && this.pending_worktree_removal.is_none()
                     && event.keystroke.key == "tab"
                 {
                     window.prevent_default();
@@ -2003,7 +2264,7 @@ impl Render for Sidebar {
                 self.mode != ViewMode::Grid && !hide_editor_navigation,
                 |d| {
                     d.child(div().relative().h_full().child(rail).when(
-                        self.project_decision,
+                        self.project_decision || self.pending_worktree_removal.is_some(),
                         |d| {
                             d.child(
                                 div()
@@ -2175,6 +2436,202 @@ mod tests {
                 project_activity_rollup(states.into_iter().map(|state| (state, ()))),
                 Some((expected, ()))
             );
+        }
+    }
+
+    #[gpui::test]
+    fn worktree_removal_rejects_main_and_keeps_failure_until_dismissed(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let project_path = "/grove-worktree-removal-ui-test";
+        let worktree_path = "/grove-worktree-removal-ui-test-feature";
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "demo".into(),
+                    path: project_path.into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        draw(cx);
+        assert!(cx
+            .debug_bounds("delete-worktree-/grove-worktree-removal-ui-test")
+            .is_none());
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.snapshot.projects =
+                    vec![crate::entities::workspace_state::SnapshotProject {
+                        idx: 0,
+                        name: "demo".into(),
+                        is_git: true,
+                        has_run: false,
+                        worktrees: vec![
+                            crate::entities::workspace_state::SnapshotWorktree {
+                                path: project_path.into(),
+                                name: "demo".into(),
+                                is_main: true,
+                                ..Default::default()
+                            },
+                            crate::entities::workspace_state::SnapshotWorktree {
+                                path: worktree_path.into(),
+                                name: "feature".into(),
+                                is_main: false,
+                                ..Default::default()
+                            },
+                        ],
+                        sessions: Vec::new(),
+                    }];
+                sidebar.act(Action::RemoveWorktree(0, project_path.into()), window, cx);
+                assert!(sidebar.pending_worktree_removal.is_none());
+                sidebar
+                    .worktree_delete_focus
+                    .insert(worktree_path.into(), cx.focus_handle());
+                sidebar.act(Action::RemoveWorktree(0, worktree_path.into()), window, cx);
+                assert!(sidebar.confirmation_open());
+                assert!(!sidebar.pending_worktree_removal.as_ref().unwrap().started);
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("worktree-removal-decision").is_some());
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, cx| assert!(sidebar.read(cx).cancel_focus.is_focused(window)));
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, cx| assert!(sidebar.read(cx).confirm_focus.is_focused(window)));
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.pending_worktree_removal.is_none()));
+        cx.update(|window, cx| {
+            assert!(sidebar.read(cx).worktree_delete_focus[worktree_path].is_focused(window));
+        });
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.snapshot.projects[0].worktrees.push(
+                    crate::entities::workspace_state::SnapshotWorktree {
+                        path: worktree_path.into(),
+                        name: "feature".into(),
+                        is_main: false,
+                        ..Default::default()
+                    },
+                );
+                sidebar.act(Action::RemoveWorktree(0, worktree_path.into()), window, cx);
+                sidebar.act(Action::ConfirmWorktreeRemoval, window, cx);
+                let error = sidebar
+                    .pending_worktree_removal
+                    .as_ref()
+                    .unwrap()
+                    .error
+                    .clone();
+                assert!(error.is_some());
+                sidebar.act(Action::ConfirmWorktreeRemoval, window, cx);
+                assert_eq!(
+                    sidebar.pending_worktree_removal.as_ref().unwrap().error,
+                    error
+                );
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("worktree-removal-error").is_some());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.pending_worktree_removal.is_none()));
+    }
+
+    #[gpui::test]
+    fn worktree_removal_decision_fits_desktop_and_narrow_canvas(cx: &mut gpui::TestAppContext) {
+        let project_path = "/grove-worktree-removal-geometry";
+        let worktree_path = "/grove-worktree-removal-geometry/feature-with-a-long-folder-name";
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "demo".into(),
+                    path: project_path.into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.pending_worktree_removal = Some(PendingWorktreeRemoval {
+                project_path: project_path.into(),
+                path: worktree_path.into(),
+                name: "feature-with-a-long-folder-name".into(),
+                started: false,
+                error: None,
+            });
+            sidebar
+        });
+        for width in [1280.0, 768.0] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(640.0)));
+            draw(cx);
+            let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
+            let dialog = cx.debug_bounds("worktree-removal-decision").unwrap();
+            assert!(dialog.left() >= canvas.left() && dialog.right() <= canvas.right());
+            assert!(dialog.top() >= canvas.top() && dialog.bottom() <= canvas.bottom());
+            for id in [
+                "worktree-removal-path",
+                "worktree-removal-path-value",
+                "cancel-worktree-removal",
+                "confirm-worktree-removal",
+            ] {
+                let item = cx.debug_bounds(id).unwrap();
+                assert!(
+                    item.left() >= dialog.left() && item.right() <= dialog.right(),
+                    "{id} clips horizontally at {width}px"
+                );
+                assert!(
+                    item.top() >= dialog.top() && item.bottom() <= dialog.bottom(),
+                    "{id} clips vertically at {width}px"
+                );
+            }
+        }
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let removal = sidebar.pending_worktree_removal.as_mut().unwrap();
+                removal.started = true;
+                cx.notify();
+            });
+        });
+        draw(cx);
+        let dialog = cx.debug_bounds("worktree-removal-decision").unwrap();
+        let status = cx.debug_bounds("worktree-removal-status").unwrap();
+        assert!(status.left() >= dialog.left() && status.right() <= dialog.right());
+        assert!(status.bottom() <= dialog.bottom());
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.pending_worktree_removal.as_mut().unwrap().error = Some(
+                    "Git could not remove the worktree because the folder still contains local changes. Review the worktree and try again.".into(),
+                );
+                cx.notify();
+            });
+        });
+        draw(cx);
+        let dialog = cx.debug_bounds("worktree-removal-decision").unwrap();
+        let error = cx.debug_bounds("worktree-removal-error").unwrap();
+        let dismiss = cx.debug_bounds("dismiss-worktree-removal").unwrap();
+        let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
+        assert!(dialog.left() >= canvas.left() && dialog.right() <= canvas.right());
+        assert!(dialog.top() >= canvas.top() && dialog.bottom() <= canvas.bottom());
+        for item in [error, dismiss] {
+            assert!(item.left() >= dialog.left() && item.right() <= dialog.right());
+            assert!(item.top() >= dialog.top() && item.bottom() <= dialog.bottom());
         }
     }
 

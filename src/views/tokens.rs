@@ -9,11 +9,15 @@ pub const SPACE_LG: f32 = 8.0;
 pub const SPACE_XL: f32 = 10.0;
 pub const SPACE_2XL: f32 = 12.0;
 pub const SPACE_3XL: f32 = 16.0;
+pub const SPACE_20: f32 = 20.0;
 
-pub const TEXT_MICRO: f32 = 10.0;
-pub const TEXT_SMALL: f32 = 11.0;
-pub const TEXT_BODY: f32 = 12.0;
-pub const TEXT_TITLE: f32 = 13.0;
+pub const TEXT_MICRO: f32 = 11.0;
+pub const TEXT_SMALL: f32 = 12.0;
+pub const TEXT_BODY: f32 = 13.0;
+pub const TEXT_TITLE: f32 = 14.0;
+/// Editable script and diff code remain at their existing density.
+pub const TEXT_CODE: f32 = 12.0;
+pub const TEXT_CODE_SMALL: f32 = 11.0;
 /// Empty-state / onboarding display type only — never app chrome.
 pub const TEXT_DISPLAY: f32 = 20.0;
 pub const TEXT_DISPLAY_LG: f32 = 32.0;
@@ -65,14 +69,14 @@ pub const PANEL_SHADOW_Y_LIGHT: f32 = 6.0;
 pub const PANEL_SHADOW_BLUR_LIGHT: f32 = 24.0;
 
 /// Flat icon/text buttons and tile headers.
-pub const CONTROL_H: f32 = 22.0;
+pub const CONTROL_H: f32 = 24.0;
 
 /// A settings row's horizontal padding, both edges.
 pub const ROW_PX: f32 = SPACE_2XL;
 /// A settings row's vertical padding, top and bottom.
 pub const ROW_PY: f32 = SPACE_LG;
 /// Gap between a row's label and sublabel line.
-pub const ROW_LINE_GAP: f32 = SPACE_MD;
+pub const ROW_LINE_GAP: f32 = SPACE_SM;
 /// Floor only (`min_h`, never `h()`) — a row's real height grows from its content.
 pub const ROW_MIN_H: f32 = CONTROL_H + ROW_PY * 2.0;
 
@@ -98,7 +102,7 @@ pub const DIFF_GUTTER_W: f32 = 44.0;
 pub const DIFF_SPLIT_MIN_W: f32 = 900.0;
 
 /// A diff body line's fixed height, so split-mode fillers and unified rows/headers stay uniform for `uniform_list`.
-pub const DIFF_BODY_LINE_H: f32 = TEXT_SMALL + SPACE_SM;
+pub const DIFF_BODY_LINE_H: f32 = TEXT_CODE_SMALL + SPACE_SM;
 
 /// The settings-row label column's fixed width, wide enough for the longest label ("Teardown").
 pub const FIELD_LABEL_COL_W: f32 = 92.0;
@@ -119,7 +123,7 @@ pub const ATTENTION_BAR_W: f32 = 3.0;
 /// A session card's headline line; carries a control, so it takes [`CONTROL_H`].
 pub const CARD_LINE_H: f32 = CONTROL_H;
 /// A session card's secondary line height (worktree/status, and meta line).
-pub const CARD_LINE_SM_H: f32 = TEXT_SMALL + SPACE_SM;
+pub const CARD_LINE_SM_H: f32 = TEXT_SMALL + SPACE_MD;
 /// Number of [`CARD_LINE_SM_H`] lines under the headline.
 pub const CARD_SM_LINES: f32 = 2.0;
 /// A session card's rendered height, arithmetic on its real parts — this is what `TreeRow::height` returns.

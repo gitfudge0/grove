@@ -66,6 +66,7 @@ pub fn form_field(
                 .flex()
                 .flex_col()
                 .justify_center()
+                .gap(rpx(SPACE_XS))
                 .rounded(rpx(RADIUS_PANEL))
                 .bg(fill)
                 .border_1()
@@ -116,6 +117,7 @@ pub fn project_field_well(focused: bool, error: bool) -> Div {
         .flex()
         .flex_col()
         .justify_center()
+        .gap(rpx(SPACE_XS))
         .rounded(rpx(RADIUS_PANEL))
         .bg(if focused {
             c::BG_HOVER()
