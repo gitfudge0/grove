@@ -15,8 +15,8 @@
 | COMPLETE | Project → worktree → session hierarchy and individual expand/collapse are present. | `src/views/sidebar.rs`, `src/entities/project_tree.rs` | Nested selection, collapse, keyboard reachability. |
 | IN PROGRESS (native visual check pending) | Global cycle now steps expanded → sessions-only → collapsed → expanded while retaining selection and per-workspace state. | `src/views/sidebar.rs` tree header control and snapshot-based collapse state. | Three-state grouping, hidden-session selection/process identity, manual toggles, workspace restore and control visibility pass targeted tests; native visual check pending while macOS is locked. |
 | COMPLETE | Projects / Sessions / Grid switching is present. | Sidebar mode state; `src/views/sidebar/grid.rs` | Same selected session/process survives switching. |
-| TODO (partial) | Session grouping exists; original priority ordering and rich cards are missing. | Sidebar session rendering and activity data; see Sessions below. | Mixed activity ordering and compact/narrow cards. |
-| TODO | Draggable persisted sidebar width and double-click reset are missing. | Shell/sidebar sizing boundary; persist width. | Drag limits, restart retention, reset, narrow window. |
+| IN PROGRESS (native visual check pending) | Sessions view now has four priority sections (Needs you, Review, Working, Idle), stable activity-clock ordering with idle dwell, and compact inset cards. Failed/Starting keep their lifecycle labels and priority. | `src/views/sidebar.rs` session list grouping and cards; see Sessions below for age, multi-root and diff details. | Four targeted ordering/layout tests pass, including 320px geometry; native visual check pending because the desktop window could not be inspected. |
+| IN PROGRESS (native visual check pending) | Sidebar width now drags live, persists on release, and resets to the redesign's 260px default on double-click. Narrow windows temporarily cap the displayed width without changing the saved preference. | `src/views/sidebar.rs` divider/width state and `src/views/shell.rs` header alignment; existing `sidebar_width` setting. | Shell interaction tests cover limits, release/reconstruction, reset, zoom, narrow windows, mode switches and header alignment; native visual check pending while macOS is locked. |
 | COMPLETE | Per-workspace navigation state is present. | Sidebar workspace state and `src/settings.rs` | Switch workspaces and return to prior mode/selection. |
 
 ## Projects — completed phase
@@ -97,6 +97,10 @@ Implementation: inspect original settings UI, `src/settings.rs`, core persisted 
 - Native visual inspection: restored workflows, desktop/narrow windows, all three modes, keyboard/focus behavior, subtle grid borders and terminal padding. Record evidence/results before claiming completion.
 
 ### Latest gate evidence (2026-09-23)
+
+- Sidebar width (2026-09-23): focused Shell tests passed (9), including drag limits, persistence, reconstruction, double-click reset, zoom and narrow layout; `cargo fmt -p grove -p grove-core -- --check` and `git diff --check` passed. Workspace Nextest passed (902 tests, 2 skipped); both workspace Clippy gates passed. `./install.sh` built, signed, and installed `/Applications/Grove.app`. Native visual inspection remains pending because macOS is locked and automatic unlock failed.
+
+- Sessions list priority/cards (2026-09-23): `cargo test --locked views::sidebar::tests::sessions_list_` passed (4 tests); `cargo fmt -p grove -p grove-core -- --check` and `git diff --check` passed. Workspace Nextest passed (899 tests, 2 skipped); both workspace Clippy gates passed. `./install.sh` built, signed, and installed `/Applications/Grove.app`. Native visual inspection remains pending: the Grove desktop window timed out through computer use.
 
 - Tree expansion cycle (2026-09-23): targeted `cargo test --locked tree_expand -- --nocapture` passed (7 tests). `cargo fmt -p grove -p grove-core -- --check` and `git diff --check` passed. Workspace Nextest passed (895 tests, 2 skipped); both workspace Clippy gates passed. `./install.sh` built, signed, and installed `/Applications/Grove.app`. Native visual inspection remains pending because macOS is locked and automatic unlock failed.
 

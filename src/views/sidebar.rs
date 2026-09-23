@@ -8,7 +8,7 @@ use crate::{
     activity::ActivityState,
     entities::{
         session_registry::{SessionId, SessionMeta},
-        workspace_state::TreeSnapshot,
+        workspace_state::{clamp_sidebar_width, TreeSnapshot},
     },
     icons::icon,
     project_service::{ProjectEvent, WorktreeRemovalStage},
@@ -17,16 +17,19 @@ use crate::{
     theme as c,
 };
 use gpui::{
-    div, prelude::*, AnyElement, App, Context, Div, Entity, FocusHandle, Focusable, ScrollHandle,
-    SharedString, Stateful, Window,
+    div, prelude::*, AnyElement, App, Context, CursorStyle, Div, Entity, FocusHandle, Focusable,
+    MouseButton, MouseMoveEvent, ScrollHandle, SharedString, Stateful, Window,
 };
 use gpui_component::input::InputState;
 use grove_core::agent::Agent;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 const SIDEBAR_W: f32 = 260.0;
 const SIDEBAR_COMPACT_THRESHOLD: f32 = 236.0;
 const SIDEBAR_MAX_VIEWPORT_FRACTION: f32 = 0.4;
+const SIDEBAR_NARROW_BREAKPOINT: f32 = SIDEBAR_W / SIDEBAR_MAX_VIEWPORT_FRACTION;
+const SIDEBAR_DRAG_EPSILON: f32 = 1.0;
 /// Below this width, a setup editor temporarily owns the full canvas.
 const EDITOR_FULL_WIDTH_BREAKPOINT: f32 = 640.0;
 const HEAD_H: f32 = 36.0;
@@ -107,6 +110,65 @@ fn apply_tree_expand(
         }
     }
 }
+
+#[derive(Clone, Copy)]
+struct SessionListEntry {
+    id: SessionId,
+    state: ActivityState,
+    status: &'static str,
+    since: Option<Instant>,
+    active: Option<Instant>,
+}
+
+/// Sort workspace-scoped sessions by attention, then by the clock relevant to
+/// each section. Indices retain the matching metadata and process identity.
+fn group_sessions_for_list(
+    entries: &[SessionListEntry],
+    now: Instant,
+) -> Vec<(&'static str, Vec<usize>)> {
+    let mut groups: [Vec<usize>; 4] = std::array::from_fn(|_| Vec::new());
+    for (index, entry) in entries.iter().enumerate() {
+        let section = if entry.status == "Failed"
+            || (entry.status != "Starting" && entry.state == ActivityState::WaitingForInput)
+        {
+            0
+        } else if entry.status != "Starting" && entry.state == ActivityState::Done {
+            1
+        } else if entry.status == "Starting"
+            || entry.state == ActivityState::Working
+            || (entry.state != ActivityState::Exited
+                && entry.active.is_some_and(|active| {
+                    now.saturating_duration_since(active) < crate::activity::IDLE_DWELL
+                }))
+        {
+            2
+        } else {
+            3
+        };
+        groups[section].push(index);
+    }
+    for group in &mut groups[..2] {
+        group.sort_by(|a, b| {
+            entries[*a]
+                .since
+                .cmp(&entries[*b].since)
+                .then_with(|| entries[*a].id.cmp(&entries[*b].id))
+        });
+    }
+    for group in &mut groups[2..] {
+        group.sort_by(|a, b| {
+            (entries[*a].state == ActivityState::Exited)
+                .cmp(&(entries[*b].state == ActivityState::Exited))
+                .then_with(|| entries[*b].active.cmp(&entries[*a].active))
+                .then_with(|| entries[*b].id.cmp(&entries[*a].id))
+        });
+    }
+    ["NEEDS YOU", "REVIEW", "WORKING", "IDLE"]
+        .into_iter()
+        .zip(groups)
+        .filter(|(_, group)| !group.is_empty())
+        .collect()
+}
 #[derive(Default)]
 struct Navigation {
     selection: Option<Selection>,
@@ -155,6 +217,33 @@ struct PendingWorktreeRemoval {
     name: String,
     started: bool,
     error: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+struct SidebarDrag {
+    start_width: f32,
+    width: f32,
+    grab_offset: f32,
+}
+
+/// Keep a temporary narrow-window cap out of the saved, app-wide preference.
+fn effective_rail_width(preferred: f32, logical_width: f32) -> f32 {
+    let preferred = if preferred.is_finite() {
+        preferred
+    } else {
+        SIDEBAR_W
+    };
+    let logical_width = if logical_width.is_finite() {
+        logical_width.max(0.0)
+    } else {
+        SIDEBAR_W / SIDEBAR_MAX_VIEWPORT_FRACTION
+    };
+    let width = clamp_sidebar_width(preferred, logical_width);
+    if logical_width < SIDEBAR_NARROW_BREAKPOINT {
+        width.min(logical_width * SIDEBAR_MAX_VIEWPORT_FRACTION)
+    } else {
+        width
+    }
 }
 
 pub struct Sidebar {
@@ -209,6 +298,7 @@ pub struct Sidebar {
     worktree_focus: HashMap<String, FocusHandle>,
     cache_warm: Option<(u64, u64)>,
     compact_rail: bool,
+    drag: Option<SidebarDrag>,
     grid_layouts: HashMap<u64, grid::WorkspaceGrid>,
     grid_drag: Option<grid::GridDrag>,
     grid_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
@@ -316,6 +406,7 @@ impl Sidebar {
             worktree_focus: HashMap::new(),
             cache_warm: None,
             compact_rail: false,
+            drag: None,
             grid_layouts: HashMap::new(),
             grid_drag: None,
             grid_bounds: std::rc::Rc::default(),
@@ -672,10 +763,72 @@ impl Sidebar {
         }
         cx.notify();
     }
-    pub(crate) fn rail_width(window: &Window) -> f32 {
-        let logical_width = f32::from(window.viewport_size().width)
-            / (f32::from(window.rem_size()) / crate::zoom::REM_BASE);
-        SIDEBAR_W.min(logical_width * SIDEBAR_MAX_VIEWPORT_FRACTION)
+    fn logical_window_width(window: &Window) -> f32 {
+        f32::from(window.viewport_size().width)
+            / (f32::from(window.rem_size()) / crate::zoom::REM_BASE)
+    }
+    pub(crate) fn rail_width(&self, window: &Window, cx: &App) -> f32 {
+        let preferred = self.drag.map_or_else(
+            || {
+                cx.global::<SettingsState>()
+                    .store
+                    .sidebar_width
+                    .unwrap_or(SIDEBAR_W)
+            },
+            |drag| drag.width,
+        );
+        effective_rail_width(preferred, Self::logical_window_width(window))
+    }
+    fn divider_press(
+        &mut self,
+        event: &gpui::MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.prevent_default();
+        cx.stop_propagation();
+        if event.click_count == 2 {
+            self.drag = None;
+            SettingsState::update(cx, |store| store.sidebar_width = Some(SIDEBAR_W));
+            cx.notify();
+            return;
+        }
+        let width = self.rail_width(window, cx);
+        let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
+        self.drag = Some(SidebarDrag {
+            start_width: width,
+            width,
+            grab_offset: width - f32::from(event.position.x) / scale,
+        });
+    }
+    fn divider_move(&mut self, event: &MouseMoveEvent, window: &Window, cx: &mut Context<Self>) {
+        let Some(drag) = self.drag.as_mut() else {
+            return;
+        };
+        if !event.dragging() {
+            self.drag = None;
+            return;
+        }
+        let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
+        let cursor = f32::from(event.position.x) / scale;
+        let width = effective_rail_width(
+            cursor + drag.grab_offset,
+            Self::logical_window_width(window),
+        );
+        if (drag.width - width).abs() > f32::EPSILON {
+            drag.width = width;
+            cx.notify();
+        }
+        cx.stop_propagation();
+    }
+    fn divider_release(&mut self, cx: &mut Context<Self>) {
+        let Some(drag) = self.drag.take() else {
+            return;
+        };
+        if (drag.width - drag.start_width).abs() >= SIDEBAR_DRAG_EPSILON {
+            SettingsState::update(cx, |store| store.sidebar_width = Some(drag.width));
+        }
+        cx.notify();
     }
     pub fn is_grid(&self) -> bool {
         self.mode == ViewMode::Grid
@@ -703,6 +856,7 @@ impl Sidebar {
                     Action::Mode(target),
                     cx,
                 )
+                .debug_selector(|| "sidebar-view".into())
                 .child(icon(
                     if target == ViewMode::List {
                         "list"
@@ -1337,6 +1491,8 @@ impl Sidebar {
             meta.label.clone()
         };
         let row = if list {
+            let selected = self.selection == Some(Selection::Session(id));
+            let attention = matches!(status, "Needs you" | "Failed");
             let worktree = self
                 .snapshot
                 .projects
@@ -1377,13 +1533,29 @@ impl Sidebar {
             self.row(
                 format!("session-{}", id.raw()),
                 format!("{title} · {name} · {context} · {status}"),
-                self.selection == Some(Selection::Session(id)),
+                selected,
                 Action::Select(Selection::Session(id)),
                 cx,
             )
             .h_auto()
             .min_h(rpx(ROW_H))
-            .p(rpx(SPACE_2XL))
+            .p(rpx(SPACE_LG))
+            .rounded(rpx(RADIUS_GROUP))
+            .border_1()
+            .border_color(if selected {
+                c::SEL_RING()
+            } else if attention {
+                c::AMBER()
+            } else {
+                c::BORDER()
+            })
+            .bg(if selected {
+                c::SEL_TINT_SOFT()
+            } else if attention {
+                c::AMBER_ROW_TINT()
+            } else {
+                c::SURFACE_RAISED()
+            })
             .items_start()
             .child(
                 div()
@@ -1405,7 +1577,14 @@ impl Sidebar {
                             .flex()
                             .items_center()
                             .min_w_0()
-                            .child(div().flex_1().min_w_0().truncate().child(title))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .child(title),
+                            )
                             .child(
                                 self.control(
                                     ("close-session", id.raw()),
@@ -1413,6 +1592,7 @@ impl Sidebar {
                                     Action::Close(id),
                                     cx,
                                 )
+                                .debug_selector(move || format!("close-session-{}", id.raw()))
                                 .child(icon(
                                     "close",
                                     ICON_XS,
@@ -1482,7 +1662,7 @@ impl Sidebar {
                 .child(icon("close", ICON_XS, c::FG_DIM())),
             )
         };
-        let mut result = div().child(row);
+        let mut result = div().when(list, |d| d.px(rpx(SPACE_LG))).child(row);
         if status == "Failed" {
             result = result.child(
                 self.control(
@@ -1994,23 +2174,19 @@ impl Sidebar {
             })
             .cloned()
             .collect();
+        let activity = self.runtime.read(cx).activity.read(cx);
+        let entries: Vec<_> = metas
+            .iter()
+            .map(|meta| SessionListEntry {
+                id: meta.id,
+                state: activity.state_of(meta.id),
+                status: self.status(meta, cx).0,
+                since: activity.since_of(meta.id),
+                active: activity.active_of(meta.id),
+            })
+            .collect();
         let mut body = div().flex().flex_col().gap(rpx(SPACE_SM));
-        for group in [
-            "Needs you",
-            "Working",
-            "Starting",
-            "Failed",
-            "Done",
-            "Idle",
-            "Exited",
-        ] {
-            let items: Vec<_> = metas
-                .iter()
-                .filter(|m| self.status(m, cx).0 == group)
-                .collect();
-            if items.is_empty() {
-                continue;
-            }
+        for (group, items) in group_sessions_for_list(&entries, Instant::now()) {
             body = body.child(
                 div()
                     .px(rpx(SPACE_LG))
@@ -2020,8 +2196,8 @@ impl Sidebar {
                     .text_color(c::FG_DIM())
                     .child(format!("{group} · {}", items.len())),
             );
-            for meta in items {
-                body = body.child(self.session_row(meta, true, cx));
+            for index in items {
+                body = body.child(self.session_row(&metas[index], true, cx));
             }
         }
         if metas.is_empty() {
@@ -2150,9 +2326,8 @@ impl Focusable for Sidebar {
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync(window, cx);
-        let logical_width = f32::from(window.viewport_size().width)
-            / (f32::from(window.rem_size()) / crate::zoom::REM_BASE);
-        let rail_width = Self::rail_width(window);
+        let logical_width = Self::logical_window_width(window);
+        let rail_width = self.rail_width(window, cx);
         self.compact_rail = rail_width < SIDEBAR_COMPACT_THRESHOLD;
         let navigation = if self.mode == ViewMode::List {
             self.list(cx)
@@ -2279,6 +2454,21 @@ impl Render for Sidebar {
             .track_focus(&self.focus)
             .text_size(rpx(TEXT_BODY))
             .text_color(c::FG())
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                this.divider_move(event, window, cx);
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.divider_release(cx);
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.divider_release(cx);
+                }),
+            )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if let (Some(removal), "tab") = (
                     this.pending_worktree_removal.as_ref(),
@@ -2347,21 +2537,44 @@ impl Render for Sidebar {
             .when(
                 self.mode != ViewMode::Grid && !hide_editor_navigation,
                 |d| {
-                    d.child(div().relative().h_full().child(rail).when(
-                        self.project_decision || self.pending_worktree_removal.is_some(),
-                        |d| {
-                            d.child(
+                    d.child(
+                        div()
+                            .relative()
+                            .h_full()
+                            .child(rail)
+                            .child(
                                 div()
+                                    .id("sidebar-divider")
+                                    .debug_selector(|| "sidebar-divider".into())
                                     .absolute()
-                                    .inset_0()
-                                    .occlude()
-                                    .bg(c::alpha(c::BG(), 0.4))
-                                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation();
-                                    }),
+                                    .top_0()
+                                    .right(rpx(-DIVIDER_DRAG_HIT_W / 2.0))
+                                    .w(rpx(DIVIDER_DRAG_HIT_W))
+                                    .h_full()
+                                    .cursor(CursorStyle::ResizeLeftRight)
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, event, window, cx| {
+                                            this.divider_press(event, window, cx);
+                                        }),
+                                    ),
                             )
-                        },
-                    ))
+                            .when(
+                                self.project_decision || self.pending_worktree_removal.is_some(),
+                                |d| {
+                                    d.child(
+                                        div()
+                                            .absolute()
+                                            .inset_0()
+                                            .occlude()
+                                            .bg(c::alpha(c::BG(), 0.4))
+                                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                                cx.stop_propagation();
+                                            }),
+                                    )
+                                },
+                            ),
+                    )
                 },
             )
             .child(
@@ -2458,6 +2671,227 @@ fn change_mode(mode: &mut ViewMode, last: &mut ViewMode, next: ViewMode) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn effective_width_clamps_desktop_and_temporarily_caps_narrow_windows() {
+        assert_eq!(effective_rail_width(260.0, 1280.0), 260.0);
+        assert_eq!(effective_rail_width(10.0, 1280.0), 220.0);
+        assert_eq!(effective_rail_width(900.0, 1280.0), 640.0);
+        assert_eq!(effective_rail_width(900.0, 800.0), 400.0);
+        assert_eq!(effective_rail_width(260.0, 500.0), 200.0);
+        assert_eq!(effective_rail_width(f32::NAN, 1280.0), SIDEBAR_W);
+        assert_eq!(effective_rail_width(f32::INFINITY, 1280.0), SIDEBAR_W);
+        assert_eq!(effective_rail_width(SIDEBAR_W, 1280.0), SIDEBAR_W);
+    }
+
+    #[test]
+    fn sessions_list_orders_mixed_attention_and_activity_by_the_right_clocks() {
+        let now = Instant::now();
+        let row = |id, state, status, since_secs, active_secs| SessionListEntry {
+            id: SessionId::from_raw(id),
+            state,
+            status,
+            since: Some(
+                now.checked_sub(Duration::from_secs(since_secs))
+                    .expect("fixture clock supports elapsed seconds"),
+            ),
+            active: Some(
+                now.checked_sub(Duration::from_secs(active_secs))
+                    .expect("fixture clock supports elapsed seconds"),
+            ),
+        };
+        let rows = [
+            row(1, ActivityState::Idle, "Idle", 1, 80),
+            row(2, ActivityState::Working, "Working", 1, 7),
+            row(3, ActivityState::Done, "Done", 40, 2),
+            row(4, ActivityState::WaitingForInput, "Needs you", 20, 1),
+            row(5, ActivityState::WaitingForInput, "Needs you", 90, 1),
+            row(6, ActivityState::Done, "Done", 70, 1),
+            row(7, ActivityState::Idle, "Idle", 1, 3),
+            row(8, ActivityState::Working, "Working", 1, 1),
+            row(9, ActivityState::Exited, "Exited", 1, 1),
+        ];
+        assert_eq!(
+            group_sessions_for_list(&rows, now),
+            vec![
+                ("NEEDS YOU", vec![4, 3]),
+                ("REVIEW", vec![5, 2]),
+                ("WORKING", vec![7, 6, 1]),
+                ("IDLE", vec![0, 8]),
+            ]
+        );
+    }
+
+    #[test]
+    fn sessions_list_ties_and_idle_dwell_have_stable_boundaries() {
+        let now = Instant::now();
+        let rows = [
+            SessionListEntry {
+                id: SessionId::from_raw(4),
+                state: ActivityState::WaitingForInput,
+                status: "Needs you",
+                since: None,
+                active: None,
+            },
+            SessionListEntry {
+                id: SessionId::from_raw(2),
+                state: ActivityState::WaitingForInput,
+                status: "Needs you",
+                since: None,
+                active: None,
+            },
+            SessionListEntry {
+                id: SessionId::from_raw(5),
+                state: ActivityState::Idle,
+                status: "Idle",
+                since: None,
+                active: Some(
+                    now.checked_sub(crate::activity::IDLE_DWELL)
+                        .expect("fixture clock supports idle dwell")
+                        + Duration::from_nanos(1),
+                ),
+            },
+            SessionListEntry {
+                id: SessionId::from_raw(7),
+                state: ActivityState::Idle,
+                status: "Idle",
+                since: None,
+                active: Some(
+                    now.checked_sub(crate::activity::IDLE_DWELL)
+                        .expect("fixture clock supports idle dwell"),
+                ),
+            },
+            SessionListEntry {
+                id: SessionId::from_raw(3),
+                state: ActivityState::Working,
+                status: "Working",
+                since: None,
+                active: None,
+            },
+            SessionListEntry {
+                id: SessionId::from_raw(9),
+                state: ActivityState::Exited,
+                status: "Exited",
+                since: None,
+                active: Some(now),
+            },
+        ];
+        assert_eq!(
+            group_sessions_for_list(&rows, now),
+            vec![
+                ("NEEDS YOU", vec![1, 0]),
+                ("WORKING", vec![2, 4]),
+                ("IDLE", vec![3, 5]),
+            ]
+        );
+    }
+
+    #[test]
+    fn sessions_list_lifecycle_overrides_activity_without_changing_status() {
+        let now = Instant::now();
+        let rows = [
+            SessionListEntry {
+                id: SessionId::from_raw(1),
+                state: ActivityState::Working,
+                status: "Failed",
+                since: None,
+                active: None,
+            },
+            SessionListEntry {
+                id: SessionId::from_raw(2),
+                state: ActivityState::Done,
+                status: "Starting",
+                since: None,
+                active: None,
+            },
+        ];
+        assert_eq!(
+            group_sessions_for_list(&rows, now),
+            vec![("NEEDS YOU", vec![0]), ("WORKING", vec![1]),]
+        );
+        assert_eq!(rows[0].status, "Failed");
+        assert_eq!(rows[1].status, "Starting");
+    }
+
+    #[gpui::test]
+    fn sessions_list_cards_keep_inset_and_controls_inside_narrow_rail(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::entities::workspace_state::{SnapshotProject, SnapshotWorktree};
+
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "demo".into(),
+                    path: "/grove-session-card-test".into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let registry = runtime.read(cx).registry.clone();
+            let ids = (0..2)
+                .map(|_| {
+                    registry.update(cx, |registry, _| {
+                        registry.insert_meta(
+                            "demo".into(),
+                            "/grove-session-card-test".into(),
+                            Agent::Codex,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.mode = ViewMode::List;
+            sidebar.snapshot = TreeSnapshot {
+                projects: vec![SnapshotProject {
+                    idx: 0,
+                    name: "demo".into(),
+                    sessions: ids.clone(),
+                    worktrees: vec![SnapshotWorktree {
+                        path: "/grove-session-card-test".into(),
+                        name: "demo".into(),
+                        branch: "feature/session-cards".into(),
+                        sessions: ids.clone(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                total_projects: 1,
+            };
+            sidebar.select(Selection::Session(ids[1]), cx);
+            sidebar
+        });
+        for width in [1280.0, 320.0] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(700.0)));
+            draw(cx);
+            let rail = cx.debug_bounds("sidebar-rail").unwrap();
+            for (card_id, close_id) in [
+                ("session-1", "close-session-1"),
+                ("session-2", "close-session-2"),
+            ] {
+                let card = cx.debug_bounds(card_id).unwrap();
+                let close = cx.debug_bounds(close_id).unwrap();
+                assert!(card.left() >= rail.left() + gpui::px(SPACE_LG - 1.0));
+                assert!(card.right() <= rail.right() - gpui::px(SPACE_LG - 1.0));
+                assert!(card.size.height >= gpui::px(ROW_H));
+                assert!(close.left() >= card.left() && close.right() <= card.right());
+                assert!(close.top() >= card.top() && close.bottom() <= card.bottom());
+            }
+            assert_eq!(
+                sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
+                Some(Selection::Session(SessionId::from_raw(2)))
+            );
+        }
+    }
     fn draw(cx: &mut gpui::VisualTestContext) {
         cx.run_until_parked();
         cx.update(|window, cx| {

@@ -114,7 +114,7 @@ impl Shell {
                     .flex_shrink_0()
                     .when(!self.sidebar.read(cx).is_grid(), |segment| {
                         segment
-                            .w(rpx(super::sidebar::Sidebar::rail_width(window)))
+                            .w(rpx(self.sidebar.read(cx).rail_width(window, cx)))
                             .bg(c::BG_RAIL())
                             .border_r_1()
                             .border_color(c::BORDER())
@@ -260,7 +260,7 @@ impl Render for Shell {
                             .absolute()
                             .top_0()
                             .left_0()
-                            .w(rpx(super::sidebar::Sidebar::rail_width(window)))
+                            .w(rpx(self.sidebar.read(cx).rail_width(window, cx)))
                             .h(rpx(APPBAR_H))
                     })
                     .child(self.header(window, cx))
@@ -318,6 +318,165 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
+    }
+
+    fn assert_rail_alignment(cx: &mut gpui::VisualTestContext, expected: f32) {
+        let rail = cx.debug_bounds("sidebar-rail").expect("sidebar rail");
+        let divider = cx.debug_bounds("sidebar-divider").expect("resize hit zone");
+        let header = cx
+            .debug_bounds("header-rail-segment")
+            .expect("header rail segment");
+        let canvas = cx.debug_bounds("sidebar-canvas").expect("canvas");
+        assert!((f32::from(rail.size.width) - expected).abs() <= 1.0);
+        assert_eq!(header.right(), rail.right());
+        assert_eq!(canvas.left(), rail.right());
+        assert!((f32::from(divider.center().x - rail.right())).abs() <= 1.0);
+    }
+
+    #[gpui::test]
+    fn sidebar_drag_clamps_persists_on_release_and_survives_reconstruction(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(init);
+        let (_, cx) = cx.add_window_view(Shell::new);
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        draw(cx);
+        assert_rail_alignment(cx, 260.0);
+        let edge = cx.debug_bounds("sidebar-divider").unwrap().center();
+        cx.simulate_mouse_down(edge, MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(edge, MouseButton::Left, gpui::Modifiers::default());
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .sidebar_width,
+                None
+            );
+        });
+
+        cx.simulate_mouse_down(edge, MouseButton::Left, gpui::Modifiers::default());
+        let far_right = gpui::point(gpui::px(1100.0), edge.y);
+        cx.simulate_mouse_move(far_right, MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        assert_rail_alignment(cx, 640.0);
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .sidebar_width,
+                None
+            );
+        });
+        cx.simulate_mouse_up(far_right, MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .sidebar_width,
+                Some(640.0)
+            );
+        });
+
+        let edge = cx.debug_bounds("sidebar-divider").unwrap().center();
+        cx.simulate_mouse_down(edge, MouseButton::Left, gpui::Modifiers::default());
+        let far_left = gpui::point(gpui::px(30.0), edge.y);
+        cx.simulate_mouse_move(far_left, MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        assert_rail_alignment(cx, 220.0);
+        cx.simulate_mouse_up(far_left, MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .sidebar_width,
+                Some(220.0)
+            );
+        });
+
+        let (_, cx) = cx.add_window_view(Shell::new);
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        draw(cx);
+        assert_rail_alignment(cx, 220.0);
+        let list = cx.debug_bounds("sidebar-view").unwrap().center();
+        cx.simulate_mouse_down(list, MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(list, MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        assert_rail_alignment(cx, 220.0);
+        let grid = cx.debug_bounds("sidebar-grid").unwrap().center();
+        cx.simulate_mouse_down(grid, MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(grid, MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("sidebar-divider").is_none());
+        assert!(cx.debug_bounds("sidebar-rail").is_none());
+        assert_eq!(
+            cx.debug_bounds("sidebar-canvas").unwrap().left(),
+            gpui::px(0.0)
+        );
+        let grid = cx.debug_bounds("sidebar-grid").unwrap().center();
+        cx.simulate_mouse_down(grid, MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(grid, MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        assert_rail_alignment(cx, 220.0);
+    }
+
+    #[gpui::test]
+    fn sidebar_narrow_cap_and_double_click_reset_keep_saved_preference(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(init);
+        cx.update(|cx| {
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .sidebar_width = Some(500.0);
+        });
+        let (_, cx) = cx.add_window_view(Shell::new);
+        cx.simulate_resize(gpui::size(gpui::px(500.0), gpui::px(800.0)));
+        draw(cx);
+        assert_rail_alignment(cx, 200.0);
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .sidebar_width,
+                Some(500.0)
+            );
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        draw(cx);
+        assert_rail_alignment(cx, 500.0);
+
+        cx.update(|_, cx| cx.global_mut::<crate::zoom::ZoomState>().zoom = 1.5);
+        cx.simulate_resize(gpui::size(gpui::px(1500.0), gpui::px(800.0)));
+        draw(cx);
+        assert_rail_alignment(cx, 750.0);
+        let edge = cx.debug_bounds("sidebar-divider").unwrap().center();
+        cx.simulate_mouse_down(edge, MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(edge, MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_event(gpui::MouseDownEvent {
+            position: edge,
+            modifiers: gpui::Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(gpui::MouseUpEvent {
+            position: edge,
+            modifiers: gpui::Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 2,
+        });
+        draw(cx);
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .sidebar_width,
+                Some(260.0)
+            );
+        });
+        assert_rail_alignment(cx, 390.0);
     }
 
     #[gpui::test]
