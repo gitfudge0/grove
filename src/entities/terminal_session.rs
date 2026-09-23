@@ -37,6 +37,8 @@ pub enum Backend {
 
 pub struct TerminalSession {
     term: GroveTerm,
+    /// Launch directory only; the shell may change directory after startup.
+    initial_cwd: Option<String>,
     /// `None` only when no PTY could be spawned at all; the grid still renders empty rather than taking the window down.
     pty: Option<PtyHandle>,
     backend: Backend,
@@ -123,6 +125,7 @@ impl TerminalSession {
         };
         Self {
             term: GroveTerm::new(rows, cols),
+            initial_cwd: Some(cwd),
             pty,
             backend,
             rows,
@@ -151,6 +154,7 @@ impl TerminalSession {
         let cols = cols.max(1);
         Self {
             term: GroveTerm::new(rows, cols),
+            initial_cwd: None,
             pty: None,
             backend: Backend::Tmux {
                 name: name.to_string(),
@@ -228,6 +232,7 @@ impl TerminalSession {
         let rx = pty.as_mut().and_then(PtyHandle::take_receiver);
         Self {
             term: GroveTerm::new(INIT_ROWS, INIT_COLS),
+            initial_cwd: Some(cwd.to_string()),
             pty,
             backend: Backend::Native,
             rows: INIT_ROWS,
@@ -510,6 +515,17 @@ impl TerminalSession {
         self.term.title()
     }
 
+    /// The directory passed to the spawned process, not its current directory.
+    pub fn initial_cwd(&self) -> Option<&str> {
+        self.initial_cwd.as_deref()
+    }
+
+    /// Last local directory the program reported through OSC 7. Absent until
+    /// reported; it can lag if the shell does not emit OSC 7 after `cd`.
+    pub fn current_cwd(&self) -> Option<&str> {
+        self.term.current_cwd()
+    }
+
     /// Cumulative BEL count (`term.rs:231`); the classifier diffs against what it has consumed.
     pub fn bell_count(&self) -> usize {
         self.term.bell_count()
@@ -701,6 +717,36 @@ mod tests {
         session.update(cx, super::TerminalSession::reader_closed);
         cx.run_until_parked();
         assert!(session.read_with(cx, |session, _| session.has_exited()));
+        assert!(notified.get());
+    }
+
+    #[gpui::test]
+    fn osc7_updates_live_cwd_without_changing_launch_cwd(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let session = cx.new(|cx| super::TerminalSession::spawn_script("\0", "/", cx));
+        assert_eq!(
+            session.read_with(cx, |session, _| session.initial_cwd().map(str::to_owned)),
+            Some("/".to_string())
+        );
+        assert_eq!(
+            session.read_with(cx, |session, _| session.current_cwd().map(str::to_owned)),
+            None
+        );
+        let notified = std::rc::Rc::new(std::cell::Cell::new(false));
+        let seen = notified.clone();
+        let _observer = cx.update(|cx| cx.observe(&session, move |_, _| seen.set(true)));
+        session.update(cx, |session, cx| {
+            session.ingest(&[b"\x1b]7;file:///tmp/reported\x07".to_vec()], cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            session.read_with(cx, |session, _| session.current_cwd().map(str::to_owned)),
+            Some("/tmp/reported".to_string())
+        );
+        assert_eq!(
+            session.read_with(cx, |session, _| session.initial_cwd().map(str::to_owned)),
+            Some("/".to_string())
+        );
         assert!(notified.get());
     }
 

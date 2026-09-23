@@ -11,6 +11,7 @@ description = "Grove's headless terminal model — an alacritty_terminal wrapper
 [dependencies]
 alacritty_terminal.workspace = true
 portable-pty.workspace = true
+sysinfo = "0.31.4"
 
 [dev-dependencies]
 serde_json.workspace = true

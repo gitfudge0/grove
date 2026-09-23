@@ -2813,6 +2813,7 @@ dependencies = [
  "fs-err",
  "portable-pty",
  "serde_json",
+ "sysinfo",
 ]
 
 [[package]]

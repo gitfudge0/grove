@@ -1,7 +1,8 @@
 //! Grove's app-owned header and the empty canvas for the UI rebuild.
 use super::components::header_control;
+use super::settings_panel::{SettingsPanel, SettingsPanelEvent};
 use super::{rpx, tokens::*};
-use crate::{icons::icon, theme as c};
+use crate::{icons::icon, keymap as k, theme as c};
 use crate::{runtime::Runtime, theme::ThemeState};
 use gpui::{
     actions, div, prelude::*, App, Context, Entity, FocusHandle, Focusable, MouseButton, Window,
@@ -39,6 +40,13 @@ pub struct Shell {
     workspaces: Entity<super::workspace_manager::WorkspaceManager>,
     sidebar: Entity<super::sidebar::Sidebar>,
     statusbar: Entity<super::statusbar::Statusbar>,
+    launcher: Entity<super::worktree_launcher::WorktreeLauncher>,
+    settings: Entity<SettingsPanel>,
+    _settings_events: gpui::Subscription,
+    _sidebar_events: gpui::Subscription,
+    switcher_open: bool,
+    switcher_index: usize,
+    switcher_return_focus: Option<FocusHandle>,
     window_observers: Option<Vec<gpui::Subscription>>,
 }
 
@@ -53,8 +61,44 @@ impl Shell {
         cx.observe(&sidebar, |_, _, cx| cx.notify()).detach();
         let statusbar =
             cx.new(|cx| super::statusbar::Statusbar::new(runtime.clone(), sidebar.clone(), cx));
+        let launcher = cx.new(|cx| {
+            super::worktree_launcher::WorktreeLauncher::new(
+                runtime.clone(),
+                sidebar.clone(),
+                window,
+                cx,
+            )
+        });
+        let settings = cx.new(|cx| SettingsPanel::new(runtime.clone(), cx));
+        let settings_events =
+            cx.subscribe_in(
+                &settings,
+                window,
+                |this, _, event, window, cx| match event {
+                    SettingsPanelEvent::Closed => cx.notify(),
+                    SettingsPanelEvent::OpenArchivedProjects => {
+                        this.sidebar.update(cx, |sidebar, cx| {
+                            sidebar.open_archived_projects(window, cx);
+                        });
+                    }
+                },
+            );
+        let sidebar_events =
+            cx.subscribe_in(&sidebar, window, |this, _, event, window, cx| match event {
+                super::sidebar::SidebarEvent::SettingsRequested => {
+                    this.settings
+                        .update(cx, |settings, cx| settings.open(window, cx));
+                }
+            });
         Self {
             statusbar,
+            launcher,
+            settings,
+            _settings_events: settings_events,
+            _sidebar_events: sidebar_events,
+            switcher_open: false,
+            switcher_index: 0,
+            switcher_return_focus: None,
             sidebar,
             focus: cx.focus_handle(),
             runtime,
@@ -185,10 +229,179 @@ impl Shell {
                         .update(cx, |sidebar, cx| sidebar.view_controls(cx)),
                 )
             })
+            .when(!self.sidebar.read(cx).is_grid(), |header| {
+                header.child(
+                    div()
+                        .id("header-main-drag-region")
+                        .flex_1()
+                        .h_full()
+                        .on_mouse_down(MouseButton::Left, |event, window, _| {
+                            if event.click_count == 2 {
+                                window.titlebar_double_click();
+                            } else {
+                                window.start_window_move();
+                            }
+                        }),
+                )
+            })
+            .child(
+                header_control("header-new-session", "New session")
+                    .debug_selector(|| "header-new-session".into())
+                    .when(!self.sidebar.read(cx).is_grid(), |control| {
+                        control.mr(rpx(SPACE_2XL))
+                    })
+                    .tab_index(0)
+                    .focus_visible(|style| style.bg(c::BG_HOVER()))
+                    .child(icon("plus", ICON_MD, c::FG()))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.launcher
+                            .update(cx, |launcher, cx| launcher.open(window, cx));
+                    })),
+            )
     }
 
     fn flush(&self, cx: &mut Context<Self>) {
         self.runtime.update(cx, Runtime::shutdown);
+    }
+
+    fn set_zoom(&self, delta: f32, cx: &mut Context<Self>) {
+        if self.shortcut_blocked(cx) {
+            return;
+        }
+        let current = cx.global::<crate::zoom::ZoomState>().zoom;
+        let next = if delta == 0.0 {
+            crate::zoom::ZOOM_DEFAULT
+        } else {
+            crate::zoom::snap(current + delta)
+        };
+        if next == current {
+            return;
+        }
+        let ((), saved) = crate::settings::SettingsState::update_and_flush_checked(cx, |store| {
+            store.ui_zoom = Some(next);
+        });
+        if saved.is_ok() {
+            cx.update_global::<crate::zoom::ZoomState, _>(|zoom, _| zoom.zoom = next);
+            cx.refresh_windows();
+        }
+    }
+
+    fn shortcut_blocked(&self, cx: &App) -> bool {
+        self.launcher.read(cx).is_open()
+            || self.settings.read(cx).is_open()
+            || self.switcher_open
+            || self.sidebar.read(cx).confirmation_open()
+    }
+
+    fn open_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shortcut_blocked(cx) {
+            return;
+        }
+        self.switcher_return_focus = window.focused(cx);
+        self.switcher_index = 0;
+        self.switcher_open = true;
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn close_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.switcher_open = false;
+        if let Some(focus) = self.switcher_return_focus.take() {
+            focus.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn select_switcher_row(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((id, _)) = self
+            .sidebar
+            .read(cx)
+            .visible_session_targets(cx)
+            .get(index)
+            .cloned()
+        else {
+            return;
+        };
+        self.close_switcher(window, cx);
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.select_session_id(id, window, cx));
+    }
+
+    fn switcher_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.sidebar.read(cx).visible_session_targets(cx).len();
+        match event.keystroke.key.as_str() {
+            "escape" => self.close_switcher(window, cx),
+            "up" if count > 0 => {
+                self.switcher_index = (self.switcher_index + count - 1) % count;
+                cx.notify();
+            }
+            "down" if count > 0 => {
+                self.switcher_index = (self.switcher_index + 1) % count;
+                cx.notify();
+            }
+            "enter" => self.select_switcher_row(self.switcher_index, window, cx),
+            _ => return,
+        }
+        window.prevent_default();
+        cx.stop_propagation();
+    }
+
+    fn session_switcher(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let targets = self.sidebar.read(cx).visible_session_targets(cx);
+        div()
+            .id("session-switcher-overlay")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(c::SCRIM())
+            .flex()
+            .items_center()
+            .justify_center()
+            .capture_key_down(cx.listener(Self::switcher_key))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.close_switcher(window, cx)),
+            )
+            .child(
+                div()
+                    .id("session-switcher")
+                    .debug_selector(|| "session-switcher".into())
+                    .w(rpx(420.0))
+                    .max_w_full()
+                    .max_h(rpx(420.0))
+                    .overflow_y_scroll()
+                    .rounded(rpx(RADIUS_PANEL))
+                    .border_1()
+                    .border_color(c::BORDER())
+                    .bg(c::BG())
+                    .p(rpx(SPACE_LG))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .px(rpx(SPACE_LG))
+                            .py(rpx(SPACE_MD))
+                            .child("Switch session"),
+                    )
+                    .children(targets.into_iter().enumerate().map(|(index, (id, label))| {
+                        let selected = index == self.switcher_index;
+                        div()
+                            .id(("session-switcher-row", id.raw()))
+                            .debug_selector(move || format!("session-switcher-row-{index}"))
+                            .px(rpx(SPACE_LG))
+                            .py(rpx(SPACE_MD))
+                            .rounded(rpx(RADIUS_CONTROL))
+                            .when(selected, |row| row.bg(c::BG_HOVER()))
+                            .child(label)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_switcher_row(index, window, cx);
+                            }))
+                    })),
+            )
     }
 }
 
@@ -210,6 +423,12 @@ impl Render for Shell {
             self.window_observers = Some(vec![
                 cx.observe_window_appearance(window, |_, window, cx| {
                     ThemeState::set_system_mode(cx, window.appearance());
+                    if cx.global::<ThemeState>().follow_system {
+                        c::set_chrome_light(matches!(
+                            window.appearance(),
+                            gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight
+                        ));
+                    }
                     cx.notify();
                 }),
                 cx.observe_window_activation(window, move |_, window, cx| {
@@ -237,6 +456,11 @@ impl Render for Shell {
             .id("grove-shell")
             .track_focus(&self.focus)
             .on_key_down(traverse_unhandled_tab)
+            .on_key_down(cx.listener(|this, event, window, cx| {
+                if this.switcher_open {
+                    this.switcher_key(event, window, cx);
+                }
+            }))
             .size_full()
             .relative()
             .flex()
@@ -250,18 +474,106 @@ impl Render for Shell {
                 this.flush(cx);
                 window.remove_window();
             }))
+            .on_action(cx.listener(|this, _: &k::NewSession, window, cx| {
+                if !this.shortcut_blocked(cx) {
+                    this.launcher
+                        .update(cx, |launcher, cx| launcher.open(window, cx));
+                }
+            }))
+            .on_action(
+                cx.listener(|this, _: &k::NewSessionInWorktree, window, cx| {
+                    if !this.shortcut_blocked(cx) {
+                        if let Some((project, path)) = this.sidebar.read(cx).selected_worktree() {
+                            this.launcher.update(cx, |launcher, cx| {
+                                launcher.open_for_worktree(project, &path, window, cx);
+                            });
+                        }
+                    }
+                }),
+            )
+            .on_action(cx.listener(|this, _: &k::SwitchSession, window, cx| {
+                this.open_switcher(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &k::NextSession, window, cx| {
+                if !this.shortcut_blocked(cx) {
+                    this.sidebar
+                        .update(cx, |sidebar, cx| sidebar.select_next_session(window, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &k::PrevSession, window, cx| {
+                if !this.shortcut_blocked(cx) {
+                    this.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.select_previous_session(window, cx);
+                    });
+                }
+            }))
+            .on_action(cx.listener(|this, action: &k::SelectSession, window, cx| {
+                if !this.shortcut_blocked(cx) {
+                    this.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.select_numbered_session(action.index, window, cx);
+                    });
+                }
+            }))
+            .on_action(
+                cx.listener(|this, _: &k::JumpToWaitingSession, window, cx| {
+                    if !this.shortcut_blocked(cx) {
+                        this.sidebar
+                            .update(cx, |sidebar, cx| sidebar.select_waiting_session(window, cx));
+                    }
+                }),
+            )
+            .on_action(cx.listener(|this, _: &k::ToggleRailMode, window, cx| {
+                if !this.shortcut_blocked(cx) {
+                    this.sidebar
+                        .update(cx, |sidebar, cx| sidebar.toggle_tree_list(window, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &k::ToggleGrid, window, cx| {
+                if !this.shortcut_blocked(cx) {
+                    this.sidebar
+                        .update(cx, |sidebar, cx| sidebar.toggle_grid(window, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &k::NewHomeTerminal, window, cx| {
+                if !this.shortcut_blocked(cx) {
+                    this.sidebar
+                        .update(cx, |sidebar, cx| sidebar.add_terminal(window, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &k::CloseFocusedSession, window, cx| {
+                if !this.shortcut_blocked(cx) {
+                    this.sidebar
+                        .update(cx, |sidebar, cx| sidebar.request_close_focused(window, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &k::Settings, window, cx| {
+                if !this.shortcut_blocked(cx) {
+                    this.settings
+                        .update(cx, |settings, cx| settings.open(window, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &k::ShortcutOverlay, window, cx| {
+                if !this.shortcut_blocked(cx) {
+                    this.settings
+                        .update(cx, |settings, cx| settings.open_shortcuts(window, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &k::ZoomIn, _, cx| {
+                this.set_zoom(crate::zoom::ZOOM_STEP, cx);
+            }))
+            .on_action(cx.listener(|this, _: &k::ZoomOut, _, cx| {
+                this.set_zoom(-crate::zoom::ZOOM_STEP, cx);
+            }))
+            .on_action(cx.listener(|this, _: &k::ZoomReset, _, cx| {
+                this.set_zoom(0.0, cx);
+            }))
             .child({
                 let grid = self.sidebar.read(cx).is_grid();
                 let header = div()
                     .relative()
                     .flex_shrink_0()
                     .when(!grid, |header| {
-                        header
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .w(rpx(self.sidebar.read(cx).rail_width(window, cx)))
-                            .h(rpx(APPBAR_H))
+                        header.absolute().top_0().left_0().w_full().h(rpx(APPBAR_H))
                     })
                     .child(self.header(window, cx))
                     .when(self.sidebar.read(cx).confirmation_open(), |header| {
@@ -282,6 +594,15 @@ impl Render for Shell {
             })
             .child(div().flex_1().min_h_0().child(self.sidebar.clone()))
             .child(self.statusbar.clone())
+            .when(self.launcher.read(cx).is_open(), |root| {
+                root.child(gpui::deferred(self.launcher.clone()))
+            })
+            .when(self.settings.read(cx).is_open(), |root| {
+                root.child(gpui::deferred(self.settings.clone()))
+            })
+            .when(self.switcher_open, |root| {
+                root.child(gpui::deferred(self.session_switcher(cx)))
+            })
     }
 }
 
@@ -794,5 +1115,231 @@ mod tests {
                 "Ctrl+C reached TerminalSession::send"
             );
         });
+    }
+
+    #[gpui::test]
+    fn header_launcher_opens_palette_and_selected_canvas_stays_aligned(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(init);
+        let path = env!("CARGO_MANIFEST_DIR").to_string();
+        cx.update(|cx| {
+            let store = &mut cx.global_mut::<crate::settings::SettingsState>().store;
+            store.projects[0].name = "navigation".into();
+            store.projects[0].path = path.clone();
+            store.recent_launches = vec![grove_core::storage::RecentLaunch {
+                project: "navigation".into(),
+                wt_path: path.clone(),
+                agent: grove_core::agent::Agent::Terminal,
+            }];
+        });
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        for width in [1280.0, 320.0] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(640.0)));
+            draw(cx);
+            let control = cx
+                .debug_bounds("header-new-session")
+                .expect("new session control");
+            let header = cx.debug_bounds("app-header").expect("header");
+            assert_eq!(control.right() + gpui::px(SPACE_2XL), header.right());
+            assert!(control.left() >= cx.debug_bounds("sidebar-rail").expect("rail").right());
+        }
+        let control = cx.debug_bounds("header-new-session").unwrap().center();
+        cx.simulate_mouse_down(control, MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(control, MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| assert!(shell.read(cx).launcher.read(cx).is_open()));
+        assert!(cx.debug_bounds("launcher-row-0").is_some());
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(cx.debug_bounds("launcher-agent-0").is_some());
+        cx.simulate_keystrokes("escape escape");
+        draw(cx);
+        cx.update(|_, cx| assert!(!shell.read(cx).launcher.read(cx).is_open()));
+
+        // Exercise the selected canvas with a registered session whose invalid
+        // script cannot start a PTY reader. A live reader wakes GPUI's test
+        // scheduler from another thread and makes this visual test nondeterministic.
+        let selected = cx.update(|window, cx| {
+            let session = cx.new(|cx| {
+                crate::entities::terminal_session::TerminalSession::spawn_script("\0", &path, cx)
+            });
+            let registry = shell.read(cx).runtime.read(cx).registry.clone();
+            let selected = registry.update(cx, |registry, cx| {
+                let id = registry.insert_meta(
+                    "navigation".into(),
+                    path.clone(),
+                    grove_core::agent::Agent::Terminal,
+                );
+                registry.attach(id, session, None);
+                cx.notify();
+                id
+            });
+            let sidebar = shell.read(cx).sidebar.clone();
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.select_session_id(selected, window, cx);
+            });
+            selected
+        });
+        draw(cx);
+        cx.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert_eq!(shell.sidebar.read(cx).selected_session(), Some(selected));
+            assert_eq!(
+                shell.runtime.read(cx).state.read(cx).active_session(),
+                Some(selected)
+            );
+        });
+        let selector: &'static str =
+            Box::leak(format!("terminal-header-{}", selected.raw()).into_boxed_str());
+        let terminal_header = cx.debug_bounds(selector).expect("selected canvas header");
+        let canvas = cx.debug_bounds("sidebar-canvas").expect("canvas");
+        assert_eq!(terminal_header.left(), canvas.left());
+        assert_eq!(terminal_header.right(), canvas.right());
+    }
+
+    #[gpui::test]
+    fn settings_shortcut_opens_panel_and_escape_restores_focus(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        cx.update(|cx| cx.bind_keys(k::shell_bindings()));
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        let prior = cx.update(|window, cx| {
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+            focus
+        });
+        cx.simulate_keystrokes(&format!("{},", k::platform_mod_prefix()));
+        draw(cx);
+        assert!(cx.debug_bounds("settings-panel").is_some());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(prior.is_focused(window));
+            assert!(!shell.read(cx).settings.read(cx).is_open());
+        });
+    }
+
+    #[gpui::test]
+    fn switch_session_shows_scoped_picker_and_escape_restores_focus(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        let prior = cx.update(|window, cx| {
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+            focus
+        });
+        cx.update(|window, cx| window.dispatch_action(Box::new(crate::keymap::SwitchSession), cx));
+        draw(cx);
+        assert!(cx.debug_bounds("session-switcher").is_some());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(prior.is_focused(window));
+            assert!(!shell.read(cx).switcher_open);
+        });
+    }
+
+    #[gpui::test]
+    fn switch_session_uses_visible_order_and_selects_existing_process(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        let (first, second) = cx.update(|_, cx| {
+            let registry = shell.read(cx).runtime.read(cx).registry.clone();
+            registry.update(cx, |registry, cx| {
+                let first = registry.insert_meta(
+                    "navigation".into(),
+                    "/grove-shell-navigation-test".into(),
+                    grove_core::agent::Agent::Terminal,
+                );
+                let second = registry.insert_meta(
+                    "navigation".into(),
+                    "/grove-shell-navigation-test".into(),
+                    grove_core::agent::Agent::Terminal,
+                );
+                cx.notify();
+                (first, second)
+            })
+        });
+        draw(cx);
+        let targets =
+            cx.update(|_, cx| shell.read(cx).sidebar.read(cx).visible_session_targets(cx));
+        assert_eq!(targets.len(), 2);
+        assert!(targets.iter().any(|(id, _)| *id == first));
+        assert!(targets.iter().any(|(id, _)| *id == second));
+        cx.update(|window, cx| {
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+            window.dispatch_action(Box::new(k::SwitchSession), cx);
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("session-switcher-row-1").is_some());
+        cx.simulate_keystrokes("down enter");
+        draw(cx);
+        cx.update(|_, cx| {
+            assert_eq!(
+                shell.read(cx).sidebar.read(cx).selected_session(),
+                Some(targets[1].0)
+            );
+            assert!(!shell.read(cx).switcher_open);
+            assert_eq!(shell.read(cx).runtime.read(cx).registry.read(cx).len(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn settings_control_opens_panel(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        let point = cx.debug_bounds("sidebar-settings").unwrap().center();
+        cx.simulate_mouse_down(point, MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(point, MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| assert!(shell.read(cx).settings.read(cx).is_open()));
+    }
+
+    #[gpui::test]
+    fn zoom_shortcut_persists_the_same_value_as_the_settings_panel(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        cx.update(|window, cx| {
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+            window.dispatch_action(Box::new(k::ZoomIn), cx);
+        });
+        cx.update(|_, cx| {
+            let zoom = cx.global::<crate::zoom::ZoomState>().zoom;
+            assert_eq!(zoom, 1.1);
+            assert_eq!(
+                cx.global::<crate::settings::SettingsState>().store.ui_zoom,
+                Some(zoom)
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn settings_archived_event_opens_sidebar_project_panel(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        cx.update(|window, cx| {
+            let settings = shell.read(cx).settings.clone();
+            settings.update(cx, |settings, cx| settings.open(window, cx));
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            let settings = shell.read(cx).settings.clone();
+            settings.update(cx, |settings, cx| {
+                settings.close(window, cx);
+                cx.emit(SettingsPanelEvent::OpenArchivedProjects);
+            });
+        });
+        draw(cx);
+        cx.update(|_, cx| assert!(!shell.read(cx).settings.read(cx).is_open()));
+        assert!(cx.debug_bounds("project-panel").is_some());
     }
 }

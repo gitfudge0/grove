@@ -788,10 +788,99 @@ pub fn bindings() -> Vec<KeyBinding> {
     out
 }
 
+/// Only bind actions the replacement shell can currently perform. Contextual
+/// grid and terminal shortcuts stay with the PTY until their views handle them.
+pub fn shell_bindings() -> Vec<KeyBinding> {
+    use GlobalShortcut as S;
+    let supported = |action| {
+        matches!(
+            action,
+            S::NewSession
+                | S::NewSessionInWorktree
+                | S::SwitchSession
+                | S::NextSession
+                | S::PrevSession
+                | S::ToggleGrid
+                | S::Settings
+                | S::ZoomIn
+                | S::ZoomOut
+                | S::ZoomReset
+                | S::ShortcutOverlay
+                | S::CloseFocusedSession
+                | S::ToggleRailMode
+                | S::NewHomeTerminal
+                | S::JumpToWaitingSession
+        )
+    };
+    let mut out = Vec::new();
+    for def in SHORTCUTS {
+        let Some(action) = def.action.filter(|action| supported(*action)) else {
+            continue;
+        };
+        for context in contexts_for(def) {
+            for chord in keystrokes_for(def) {
+                if let Some(binding) = binding_for(&chord, action, context) {
+                    out.push(binding);
+                }
+            }
+        }
+    }
+    out.extend(select_session_bindings());
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn shell_bindings_cover_live_actions_without_claiming_pty_keys() {
+        let bindings = shell_bindings();
+        let names: HashSet<_> = bindings
+            .iter()
+            .map(|binding| binding.action().name())
+            .collect();
+        for name in [
+            "NewSession",
+            "NewSessionInWorktree",
+            "SwitchSession",
+            "NextSession",
+            "PrevSession",
+            "SelectSession",
+            "JumpToWaitingSession",
+            "ToggleRailMode",
+            "ToggleGrid",
+            "NewHomeTerminal",
+            "Settings",
+            "ShortcutOverlay",
+            "CloseFocusedSession",
+            "ZoomIn",
+            "ZoomOut",
+            "ZoomReset",
+        ] {
+            assert!(
+                names.iter().any(|bound| bound.ends_with(name)),
+                "{name} is unbound"
+            );
+        }
+        let chords: Vec<_> = bindings
+            .iter()
+            .map(|binding| {
+                binding
+                    .keystrokes()
+                    .iter()
+                    .map(gpui::KeybindingKeystroke::unparse)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        assert!(!chords
+            .iter()
+            .any(|chord| chord == "tab" || chord == "ctrl-c"));
+        assert!(chords.contains(&format!("{}w", platform_mod_prefix())));
+        assert!(!names.iter().any(|bound| bound.ends_with("ToggleTermPanel")));
+    }
 
     #[test]
     fn every_actionable_row_produces_a_binding() {

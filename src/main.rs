@@ -78,6 +78,7 @@ fn main() {
         .with_assets(Assets)
         .run(|cx: &mut gpui::App| {
             app::boot(cx);
+            cx.bind_keys(keymap::shell_bindings());
             cx.bind_keys([
                 gpui::KeyBinding::new(
                     &format!("{}q", keymap::platform_mod_prefix()),
@@ -85,7 +86,11 @@ fn main() {
                     None,
                 ),
                 gpui::KeyBinding::new(
-                    &format!("{}w", keymap::platform_mod_prefix()),
+                    if cfg!(target_os = "macos") {
+                        "cmd-shift-w"
+                    } else {
+                        "ctrl-alt-shift-w"
+                    },
                     views::shell::CloseWindow,
                     None,
                 ),

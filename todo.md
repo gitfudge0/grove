@@ -3,10 +3,11 @@
 ## Status legend and baseline
 
 - **COMPLETE**: present in the redesign; retain and regression-check when touched.
-- **IN PROGRESS**: missing or partial Projects behavior in the next authorized phase; implementation/checks remain outstanding unless evidence is recorded.
+- **IN PROGRESS**: implementation exists, but a stated check remains outstanding.
 - **TODO**: approved restoration inventory, not yet implemented.
 - Baseline original: `main` at `31e9c00`. Redesign baseline: `b592a01`.
-- This inventory records the approved comparison, not a claim that new restoration work has passed tests. Consult the original commit for behavioral details; retain the approved redesign appearance.
+- This inventory tracks restoration against the original commit while retaining the approved redesign appearance. Check evidence is recorded below; native checks remain open where marked.
+- Latest native check attempt: CUA `getApp` timed out both by app name and by `/Applications/Grove.app`; the installed build could not be inspected, so all affected rows remain IN PROGRESS.
 
 ## Navigation and views
 
@@ -37,47 +38,47 @@
 |---|---|---|---|
 | COMPLETE | Create with name, branch and base is present. | `src/views/sidebar/content.rs`, project service. | Validation, errors, Tab traversal, narrow form. |
 | IN PROGRESS (native visual check pending) | Delete non-main worktree now has a guarded sidebar action, main-canvas confirmation, teardown/removal progress, skip, and retained errors. | `src/project_service.rs`, `src/runtime.rs`, `src/views/sidebar.rs`, `src/views/sidebar/content.rs`. | Checked Git inventory protects main/unlisted paths and registered project roots inside targets; 16 service tests and 10 sidebar tests cover deletion, aliases/context-root sessions, blocked launches, cancel/focus, duplicate submit, partial errors, and desktop/narrow geometry. Native visual check is pending because macOS locked during inspection. |
-| TODO (partial) | Codex/Claude/Terminal launch exists; restore full original launch behavior and all installed backends including OpenCode. | Sidebar launch action, `src/launcher.rs`, core agent definitions. | Installed/missing backend states, correct path and backend invocation. |
-| TODO | Configured run-script launch missing. | Project scripts and launcher. | Empty script, correct cwd, output/failure. |
-| TODO | Collapsed-worktree activity rollup missing. | Project tree and activity store. | Aggregate status updates while collapsed. |
-| TODO | Searchable worktree launcher with recents, agent choice and keyboard navigation missing. | Restore launcher UI and command routing. | Filtering, recents persistence, keyboard selection, cancel focus. |
-| TODO | Multi-worktree multi-root session launch missing. | Core multi-root domain and launcher. | Root inventory, correct cwd/context, close lifecycle. |
+| IN PROGRESS (native visual check pending) | Worktree actions now offer Codex, Claude, OpenCode and Terminal. Missing backends are inert and omitted from Tab order; stale worktree paths and failed launches preserve selection. | `src/views/sidebar.rs` launch controls/target guard; existing runtime and core agent invocation. | Sidebar interaction test covers four controls, missing backend, OpenCode path/backend routing, stale path and runtime rejection; core invocation tests pass. Native visual check pending because the Grove window timed out through computer use. |
+| IN PROGRESS (native visual check pending) | Configured nonblank run scripts launch from worktree actions as normal selectable sessions. Repeated runs remain separately accessible and visible to close/removal lifecycle. | `src/runtime.rs` validates the project/worktree, runs the script in the worktree cwd, and registers each native session with a distinct ID; `src/views/sidebar.rs` exposes and selects it. | Runtime and sidebar tests cover blank scripts, cwd/output, spawn failure, repeated IDs, session close and retained focus. Native visual check pending. |
+| IN PROGRESS (native visual check pending) | Collapsed worktrees show the highest-urgency session activity. | `src/views/sidebar.rs` rolls up live activity in the collapsed row. | Priority test and GPUI test cover status changes, collapse/expand and title/count alignment. Native visual check pending. |
+| IN PROGRESS (native visual check pending) | Searchable workspace worktree launcher includes recents, agent choice and keyboard navigation. | `src/views/worktree_launcher.rs`, `src/launcher.rs`, `src/views/shell.rs` and `src/runtime.rs` route selected targets through validated launch and recent-launch persistence. | Launcher tests cover workspace scope, filtering, stale recents/targets, keyboard selection, cancel focus, successful launch, 320x200 layout and alignment with worktree actions. Native visual check pending. |
+| IN PROGRESS (native visual check pending) | The launcher now selects multiple worktrees for a supported agent and starts one session in the primary worktree with the remaining roots in its launch context. It preserves the root inventory for retry/close and rejects unsupported or stale selections. | `src/views/worktree_launcher.rs`, `src/runtime.rs`, core multi-root launch arguments and session registry. | Targeted multi-root, cwd/context, stale target and lifecycle tests pass. Native launcher and launched-session inspection is pending because CUA could not reach the installed app. |
 
 ## Sessions
 
 | Status | Original behavior / current state | Implementation handoff | Targeted tests / visual checks |
 |---|---|---|---|
 | COMPLETE | Select/display terminal, lifecycle status, confirmed close and failed-session retry are present. | Sidebar, content canvas, runtime/session registry. | Selection identity, close cancel/confirm, retry, process lifecycle. |
-| TODO (partial) | Title/project/worktree/branch/status identity exists but needs original richness restored. | Sidebar session rows; preserve readable-title fallback. | Long/UUID titles, metadata updates, narrow truncation. |
-| TODO | Activity age, multi-root inventory, needs-you/review priority, stable working/idle order and git +/- are missing. | Activity store, registry, project tree and session rendering. | Deterministic ordering, live age/status/counters, multi-root detail. |
-| TODO | Diff viewer launched from counters missing. | `src/entities/diff_viewer.rs`; reconnect counter action. | Empty/changed diff, correct repo, close/focus restoration. |
+| IN PROGRESS (native visual check pending) | Session rows show a readable OSC title with a label fallback for blank/UUID titles, plus project, worktree, branch and lifecycle/activity status. The Sessions view retains its four priority sections and stable activity-clock order. | `src/views/sidebar.rs` session rows and shared Sessions ordering; registry and activity store. | Title fallback, narrow card geometry and priority/order tests pass. Native title truncation and status presentation remain uninspected. |
+| IN PROGRESS (native visual check pending) | Sessions cards show age since the last activity-state change, every selected context root with path fallback when snapshot data is stale, and polled Git +/− counts or a clean/changed state. | `src/views/sidebar.rs`, `src/entities/activity_store.rs`, `src/entities/project_tree.rs`. | Age scale, stale-root inventory, Git state and card geometry tests pass. Live age/counter appearance remains uninspected. |
+| IN PROGRESS (native visual check pending) | Changed-file counts open a native diff for the session's own repository, with file selection, refresh, empty/binary/oversize states, Escape/Close and focus return. | `src/views/sidebar/session_diff.rs` and `src/entities/diff_viewer.rs`. | Diff status and repository identity/focus tests pass. Native file/patch layout and changing-file flow remain uninspected. |
 
 ## Standalone terminals
 
 | Status | Original behavior / current state | Implementation handoff | Targeted tests / visual checks |
 |---|---|---|---|
 | COMPLETE | Add/select/collapse/confirmed close are present. | Sidebar home-terminal actions and registry. | Workspace scope, selection and close cancellation. |
-| TODO | Live shell title/cwd and running state need restoration. | Terminal session lifecycle/title data → sidebar rows. | Cwd/title changes, exit, no fabricated running state. |
-| TODO | Auto-create a fresh shell after final terminal closes missing. | Home-terminal close lifecycle. | Final close creates exactly one shell in correct workspace; other closes do not. |
+| IN PROGRESS (native visual check pending) | Standalone terminal rows show the live shell title and actual Starting/Running/Exited/Failed state. Current cwd is shown only when the shell emits a valid local OSC7; otherwise the row explicitly labels the launch directory. | Terminal session title/OSC7/lifecycle data and `src/views/sidebar.rs` home rows. | OSC7 validation, title/status and launch-directory fallback tests pass. Native shell title/cwd changes and exit presentation remain uninspected. |
+| IN PROGRESS (native visual check pending) | Closing the final standalone terminal creates exactly one replacement shell in the same workspace; closing other terminals leaves the remaining shells selected as appropriate. | `src/runtime.rs` home-terminal close lifecycle and sidebar selection. | Final/nonfinal close and workspace identity tests pass. Native close/replace interaction remains uninspected. |
 
 ## Sidebar-related commands/keyboard
 
-All below are **TODO** restoration items. Inspect original bindings and commands at `31e9c00`; preserve PTY Tab/Ctrl+C and modal focus behavior in the redesign.
+The commands below are implemented and covered by targeted tests. Native keyboard/focus inspection is still pending, so each remains **IN PROGRESS**. PTY Tab/Ctrl+C and modal focus routing are preserved.
 
 | Original behavior / current gap | Implementation handoff | Targeted tests / visual checks |
 |---|---|---|
-| New-session launcher; scoped worktree launcher. | Launcher + shell/sidebar action registration. | Correct scope, invocation, Escape/focus return. |
-| Switch, next, previous and direct session selection. | Shared visible-order navigation. | Boundaries, deleted session, workspace scope. |
-| Jump to waiting session. | Activity priority and selection command. | Waiting preserved on focus; deterministic next target. |
-| Toggle tree/sessions and Grid. | Existing modes exposed through restored commands. | Toggle return mode and selected process identity. |
-| Add terminal command. | Existing terminal action exposed via shortcut. | One creation, correct workspace, terminal focus. |
-| Numbered shortcuts aligned with visible order. | One shared ordering source for rows and shortcuts. | Filtering/grouping/collapse changes; every visible number matches target. |
+| New-session launcher and scoped worktree launcher shortcuts. | `src/views/shell.rs` actions open the shared worktree launcher. | Scope, launch, Escape and focus-return tests pass; native check pending. |
+| Switch, next, previous, and direct session selection. | Shell actions call sidebar navigation over workspace-visible session order. | Boundaries, removed sessions and workspace scope tests pass; native check pending. |
+| Jump to waiting session. | Activity waiting queue and sidebar navigation select a workspace member. | Target and focus tests pass; native check pending. |
+| Toggle tree/Sessions and Grid. | Shell actions call sidebar mode toggles with last-mode restoration. | Toggle/selection tests pass; native check pending. |
+| Add standalone terminal and close focused session. | Shell actions call sidebar creation/close requests. | Workspace/focus and confirmation tests pass; native check pending. |
+| Direct session numbers 1–9 match badges in the currently visible Project tree or priority-ordered Sessions list. Collapsed/filtered rows are skipped and out-of-range numbers do nothing. | Sidebar shares `visible_session_order` between badge rendering and numbered selection. | Ordering, collapse, workspace and direct-number tests pass; native badge/shortcut check pending. |
 
 ## Relocated settings
 
-**TODO**: replace the disabled settings icon with access to the original settings functions in the new layout. Restore each: one app-wide theme, zoom, backend, permissions, default agent, browser integration, telemetry, archived projects, updates, and shortcuts. Project and workspace theme overrides are intentionally removed.
+**IN PROGRESS (native visual check pending)**: the sidebar settings control and Settings/Shortcuts commands open the new panel. It exposes one app-wide theme with system/light/dark choices, zoom, backend, permissions, default agent, Claude in Chrome, telemetry, archived projects, updates, and handled shortcuts. Project and workspace theme overrides remain removed.
 
-Implementation: inspect original settings UI, `src/settings.rs`, core persisted settings and shell/sidebar entry point. Reuse existing services; do not invent new settings semantics. Check save/cancel/persistence and disabled/error states for each setting, keyboard access/focus return, narrow layouts, and archived-project flows above.
+Implementation: `src/views/settings_panel.rs`, `src/views/shell.rs`, `src/views/sidebar.rs`, `src/settings.rs` and existing services. Targeted panel/shell tests cover persistence, disabled/error states, narrow layout, keyboard focus return and archived-project handoff. Native settings flows still need inspection.
 
 ## Agent continuation protocol
 
@@ -89,14 +90,21 @@ Implementation: inspect original settings UI, `src/settings.rs`, core persisted 
 
 ## Final repository gates — root-owned
 
-- `cargo fmt -p grove -p grove-core -- --check`
-- `cargo nextest run --workspace --locked --profile ci`
+- `cargo fmt -p grove -p grove-core -p grove-terminal -- --check`
+- `git diff --check`
+- `cargo nextest run --workspace --locked --profile ci --status-level fail --retries 0`
 - `cargo clippy --workspace --all-targets -- -D warnings -A clippy::unwrap_used -A clippy::expect_used`
 - `cargo clippy --workspace -- -D warnings`
 - `./install.sh`
 - Native visual inspection: restored workflows, desktop/narrow windows, all three modes, keyboard/focus behavior, subtle grid borders and terminal padding. Record evidence/results before claiming completion.
 
 ### Latest gate evidence (2026-09-23)
+
+- Restoration items 1–4 (2026-09-23): root `cargo fmt -p grove -p grove-core -p grove-terminal -- --check` and `git diff --check` passed. `cargo nextest run --workspace --locked --profile ci --status-level fail --retries 0` finished with 954 passed and 2 skipped. Both workspace Clippy gates listed above passed. `./install.sh` built, signed and installed `/Applications/Grove.app`. Native visual verification is pending: CUA `getApp` timed out when called by name and by `/Applications/Grove.app`.
+
+- Worktrees next three items (2026-09-23): root `cargo fmt -p grove -p grove-core -- --check` and `git diff --check` passed; `cargo nextest run --workspace --locked --profile ci --status-level fail` finished with 917 passed and 2 skipped; both listed Clippy gates passed. `./install.sh` built, signed and installed `/Applications/Grove.app`. Native visual check remains pending because CUA `getApp` timed out twice.
+
+- Worktree backend launch (2026-09-23): focused interaction test passed; `cargo fmt -p grove -p grove-core -- --check` and `git diff --check` passed. Workspace Nextest passed (903 tests, 2 skipped); both workspace Clippy gates passed after a format-string fix. `./install.sh` built, signed, and installed `/Applications/Grove.app`. Native visual inspection remains pending because the Grove window timed out through computer use.
 
 - Sidebar width (2026-09-23): focused Shell tests passed (9), including drag limits, persistence, reconstruction, double-click reset, zoom and narrow layout; `cargo fmt -p grove -p grove-core -- --check` and `git diff --check` passed. Workspace Nextest passed (902 tests, 2 skipped); both workspace Clippy gates passed. `./install.sh` built, signed, and installed `/Applications/Grove.app`. Native visual inspection remains pending because macOS is locked and automatic unlock failed.
 
