@@ -46,6 +46,67 @@ pub(super) enum ViewMode {
     List,
     Grid,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum TreeExpand {
+    #[default]
+    All,
+    SessionsOnly,
+    Collapsed,
+}
+impl TreeExpand {
+    fn next(self) -> Self {
+        match self {
+            Self::All => Self::SessionsOnly,
+            Self::SessionsOnly => Self::Collapsed,
+            Self::Collapsed => Self::All,
+        }
+    }
+
+    fn next_control(self) -> (&'static str, &'static str) {
+        match self.next() {
+            Self::SessionsOnly => (
+                "expand-sessions",
+                "Show projects and worktrees with sessions",
+            ),
+            Self::Collapsed => ("collapse-all", "Collapse all projects"),
+            Self::All => ("expand-all", "Expand all projects and worktrees"),
+        }
+    }
+}
+
+fn apply_tree_expand(
+    mode: TreeExpand,
+    snapshot: &TreeSnapshot,
+    collapsed_projects: &mut HashSet<usize>,
+    collapsed_worktrees: &mut HashSet<String>,
+) {
+    collapsed_projects.clear();
+    collapsed_worktrees.clear();
+    match mode {
+        TreeExpand::All => {}
+        TreeExpand::Collapsed => {
+            collapsed_projects.extend(snapshot.projects.iter().map(|project| project.idx));
+        }
+        TreeExpand::SessionsOnly => {
+            for project in &snapshot.projects {
+                if !project
+                    .worktrees
+                    .iter()
+                    .any(|worktree| !worktree.sessions.is_empty())
+                {
+                    collapsed_projects.insert(project.idx);
+                }
+                collapsed_worktrees.extend(
+                    project
+                        .worktrees
+                        .iter()
+                        .filter(|worktree| worktree.sessions.is_empty())
+                        .map(|worktree| worktree.path.clone()),
+                );
+            }
+        }
+    }
+}
 #[derive(Default)]
 struct Navigation {
     selection: Option<Selection>,
@@ -53,6 +114,7 @@ struct Navigation {
     last_mode: ViewMode,
     collapsed_projects: HashSet<usize>,
     collapsed_worktrees: HashSet<String>,
+    tree_expand: TreeExpand,
     scroll: ScrollHandle,
     terminals_collapsed: bool,
 }
@@ -61,6 +123,7 @@ enum Action {
     Select(Selection),
     Project(usize),
     Worktree(String),
+    CycleTreeExpand,
     Mode(ViewMode),
     Menu(usize),
     NewWorktree(String),
@@ -111,6 +174,7 @@ pub struct Sidebar {
     saved: HashMap<u64, Navigation>,
     collapsed_projects: HashSet<usize>,
     collapsed_worktrees: HashSet<String>,
+    tree_expand: TreeExpand,
     scroll: ScrollHandle,
     terminal_owners: HashMap<SessionId, u64>,
     terminals_collapsed: bool,
@@ -217,6 +281,7 @@ impl Sidebar {
             saved: HashMap::new(),
             collapsed_projects: HashSet::new(),
             collapsed_worktrees: HashSet::new(),
+            tree_expand: TreeExpand::All,
             scroll: ScrollHandle::new(),
             terminal_owners: HashMap::new(),
             terminals_collapsed: false,
@@ -331,6 +396,7 @@ impl Sidebar {
                     last_mode: self.last_mode,
                     collapsed_projects: std::mem::take(&mut self.collapsed_projects),
                     collapsed_worktrees: std::mem::take(&mut self.collapsed_worktrees),
+                    tree_expand: self.tree_expand,
                     scroll: self.scroll.clone(),
                     terminals_collapsed: self.terminals_collapsed,
                 },
@@ -341,6 +407,7 @@ impl Sidebar {
             self.last_mode = next.last_mode;
             self.collapsed_projects = next.collapsed_projects;
             self.collapsed_worktrees = next.collapsed_worktrees;
+            self.tree_expand = next.tree_expand;
             self.scroll = next.scroll;
             self.terminals_collapsed = next.terminals_collapsed;
             self.active_workspace = active;
@@ -883,6 +950,15 @@ impl Sidebar {
                 if !self.collapsed_worktrees.remove(&path) {
                     self.collapsed_worktrees.insert(path);
                 }
+            }
+            Action::CycleTreeExpand => {
+                self.tree_expand = self.tree_expand.next();
+                apply_tree_expand(
+                    self.tree_expand,
+                    &self.snapshot,
+                    &mut self.collapsed_projects,
+                    &mut self.collapsed_worktrees,
+                );
             }
             Action::Menu(i) => {
                 if self.menu == Some(i) {
@@ -2138,6 +2214,14 @@ impl Render for Sidebar {
                     } else {
                         "Projects"
                     }))
+                    .when(self.mode == ViewMode::Project, |header| {
+                        let (glyph, label) = self.tree_expand.next_control();
+                        header.child(
+                            self.control("tree-expand-cycle", label, Action::CycleTreeExpand, cx)
+                                .debug_selector(|| "tree-expand-cycle".into())
+                                .child(icon(glyph, ICON_SM, c::FG_DIM())),
+                        )
+                    })
                     .child(
                         self.control(
                             "projects-archive",
@@ -2379,6 +2463,198 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
+    }
+    fn tree_expand_fixture() -> TreeSnapshot {
+        use crate::entities::workspace_state::{SnapshotProject, SnapshotWorktree};
+
+        TreeSnapshot {
+            projects: vec![
+                SnapshotProject {
+                    idx: 0,
+                    worktrees: vec![
+                        SnapshotWorktree {
+                            path: "/active".into(),
+                            sessions: vec![SessionId::from_raw(1)],
+                            ..Default::default()
+                        },
+                        SnapshotWorktree {
+                            path: "/empty".into(),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+                SnapshotProject {
+                    idx: 2,
+                    worktrees: vec![SnapshotWorktree {
+                        path: "/sessionless".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                SnapshotProject {
+                    idx: 4,
+                    worktrees: vec![SnapshotWorktree {
+                        path: "/also-active".into(),
+                        sessions: vec![SessionId::from_raw(2)],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            total_projects: 5,
+        }
+    }
+
+    #[test]
+    fn tree_expand_cycles_through_all_three_states_and_groups_by_sessions() {
+        let snapshot = tree_expand_fixture();
+        let mut mode = TreeExpand::All;
+        let mut projects = HashSet::new();
+        let mut worktrees = HashSet::new();
+
+        assert_eq!(
+            mode.next_control(),
+            (
+                "expand-sessions",
+                "Show projects and worktrees with sessions"
+            )
+        );
+        mode = mode.next();
+        apply_tree_expand(mode, &snapshot, &mut projects, &mut worktrees);
+        assert_eq!(mode, TreeExpand::SessionsOnly);
+        assert_eq!(projects, HashSet::from([2]));
+        assert_eq!(
+            worktrees,
+            HashSet::from(["/empty".into(), "/sessionless".into()])
+        );
+
+        assert_eq!(
+            mode.next_control(),
+            ("collapse-all", "Collapse all projects")
+        );
+        mode = mode.next();
+        apply_tree_expand(mode, &snapshot, &mut projects, &mut worktrees);
+        assert_eq!(mode, TreeExpand::Collapsed);
+        assert_eq!(projects, HashSet::from([0, 2, 4]));
+        assert!(worktrees.is_empty());
+
+        assert_eq!(
+            mode.next_control(),
+            ("expand-all", "Expand all projects and worktrees")
+        );
+        mode = mode.next();
+        apply_tree_expand(mode, &snapshot, &mut projects, &mut worktrees);
+        assert_eq!(mode, TreeExpand::All);
+        assert!(projects.is_empty());
+        assert!(worktrees.is_empty());
+    }
+
+    #[gpui::test]
+    fn tree_expand_keeps_selection_and_restores_each_workspaces_mode(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "demo".into(),
+                    path: "/grove-tree-expand-test".into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let registry = sidebar.runtime.read(cx).registry.clone();
+                let id = registry.update(cx, |registry, _| {
+                    registry.insert_meta(
+                        "demo".into(),
+                        "/grove-tree-expand-test".into(),
+                        Agent::Codex,
+                    )
+                });
+                sidebar.sync(window, cx);
+                sidebar.select(Selection::Session(id), cx);
+                sidebar.act(Action::CycleTreeExpand, window, cx);
+                assert_eq!(sidebar.tree_expand, TreeExpand::SessionsOnly);
+                assert_eq!(sidebar.selection, Some(Selection::Session(id)));
+                assert_eq!(
+                    sidebar.runtime.read(cx).state.read(cx).active_session(),
+                    Some(id)
+                );
+
+                sidebar.act(Action::CycleTreeExpand, window, cx);
+                assert_eq!(sidebar.tree_expand, TreeExpand::Collapsed);
+                assert!(sidebar.collapsed_projects.contains(&0));
+                assert_eq!(sidebar.selection, Some(Selection::Session(id)));
+                assert_eq!(
+                    sidebar.runtime.read(cx).state.read(cx).active_session(),
+                    Some(id)
+                );
+                sidebar.act(Action::CycleTreeExpand, window, cx);
+                sidebar.act(Action::CycleTreeExpand, window, cx);
+                assert_eq!(sidebar.tree_expand, TreeExpand::SessionsOnly);
+
+                sidebar.act(Action::Worktree("/active".into()), window, cx);
+                assert!(sidebar.collapsed_worktrees.contains("/active"));
+                cx.global_mut::<SettingsState>()
+                    .store
+                    .workspaces
+                    .create("Other")
+                    .unwrap();
+                sidebar.sync(window, cx);
+                assert_eq!(sidebar.tree_expand, TreeExpand::All);
+                assert!(sidebar.collapsed_projects.is_empty());
+                assert!(sidebar.collapsed_worktrees.is_empty());
+                assert_eq!(sidebar.saved[&1].tree_expand, TreeExpand::SessionsOnly);
+
+                sidebar.act(Action::CycleTreeExpand, window, cx);
+                sidebar.act(Action::CycleTreeExpand, window, cx);
+                assert_eq!(sidebar.tree_expand, TreeExpand::Collapsed);
+                cx.global_mut::<SettingsState>().store.workspaces.select(1);
+                sidebar.sync(window, cx);
+                assert_eq!(sidebar.tree_expand, TreeExpand::SessionsOnly);
+                assert_eq!(sidebar.selection, Some(Selection::Session(id)));
+                assert!(!sidebar.collapsed_projects.contains(&0));
+                assert!(sidebar.collapsed_worktrees.contains("/active"));
+                assert_eq!(
+                    sidebar.runtime.read(cx).state.read(cx).active_session(),
+                    Some(id)
+                );
+                assert_eq!(sidebar.saved[&2].tree_expand, TreeExpand::Collapsed);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn tree_expand_control_is_only_in_project_view(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("tree-expand-cycle").is_some());
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.act(Action::Mode(ViewMode::List), window, cx);
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("tree-expand-cycle").is_none());
     }
     #[test]
     fn display_titles_remove_only_transient_braille_prefixes() {

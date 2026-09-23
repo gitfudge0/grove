@@ -13,7 +13,7 @@
 | Status | Original behavior / current state | Implementation handoff | Targeted tests / visual checks |
 |---|---|---|---|
 | COMPLETE | Project → worktree → session hierarchy and individual expand/collapse are present. | `src/views/sidebar.rs`, `src/entities/project_tree.rs` | Nested selection, collapse, keyboard reachability. |
-| TODO | Global cycle through expanded / sessions-only / collapsed is missing. | Restore tree expansion command/state in sidebar. | Cycle all three states without losing selection. |
+| IN PROGRESS (native visual check pending) | Global cycle now steps expanded → sessions-only → collapsed → expanded while retaining selection and per-workspace state. | `src/views/sidebar.rs` tree header control and snapshot-based collapse state. | Three-state grouping, hidden-session selection/process identity, manual toggles, workspace restore and control visibility pass targeted tests; native visual check pending while macOS is locked. |
 | COMPLETE | Projects / Sessions / Grid switching is present. | Sidebar mode state; `src/views/sidebar/grid.rs` | Same selected session/process survives switching. |
 | TODO (partial) | Session grouping exists; original priority ordering and rich cards are missing. | Sidebar session rendering and activity data; see Sessions below. | Mixed activity ordering and compact/narrow cards. |
 | TODO | Draggable persisted sidebar width and double-click reset are missing. | Shell/sidebar sizing boundary; persist width. | Drag limits, restart retention, reset, narrow window. |
@@ -97,6 +97,8 @@ Implementation: inspect original settings UI, `src/settings.rs`, core persisted 
 - Native visual inspection: restored workflows, desktop/narrow windows, all three modes, keyboard/focus behavior, subtle grid borders and terminal padding. Record evidence/results before claiming completion.
 
 ### Latest gate evidence (2026-09-23)
+
+- Tree expansion cycle (2026-09-23): targeted `cargo test --locked tree_expand -- --nocapture` passed (7 tests). `cargo fmt -p grove -p grove-core -- --check` and `git diff --check` passed. Workspace Nextest passed (895 tests, 2 skipped); both workspace Clippy gates passed. `./install.sh` built, signed, and installed `/Applications/Grove.app`. Native visual inspection remains pending because macOS is locked and automatic unlock failed.
 
 - One app theme now applies to app chrome and every terminal. Project/workspace theme controls, saved project pins, and their settings toggle were removed; legacy config keys are accepted on load and omitted on re-save.
 
