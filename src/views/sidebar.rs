@@ -228,6 +228,26 @@ fn home_terminal_status(failed: bool, pending: bool, alive: bool) -> &'static st
     }
 }
 
+fn managed_session_status(
+    failed: bool,
+    pending_attach: bool,
+    activity: ActivityState,
+) -> (&'static str, gpui::Hsla) {
+    if failed {
+        return ("Failed", c::RED());
+    }
+    if pending_attach {
+        return ("Idle", c::FG_DIM());
+    }
+    match activity {
+        ActivityState::WaitingForInput => ("Needs you", c::YELLOW()),
+        ActivityState::Working => ("Working", c::GREEN()),
+        ActivityState::Done => ("Done", c::FG_DIM()),
+        ActivityState::Idle => ("Idle", c::FG_DIM()),
+        ActivityState::Exited => ("Exited", c::FG_DIM()),
+    }
+}
+
 fn terminal_directory_label(
     current: Option<&str>,
     initial: Option<&str>,
@@ -2079,25 +2099,17 @@ impl Sidebar {
     fn status(&self, meta: &SessionMeta, cx: &App) -> (&'static str, gpui::Hsla) {
         let runtime = self.runtime.read(cx);
         let registry = runtime.registry.read(cx);
-        if registry
+        let failed = registry
             .session(meta.id)
-            .is_some_and(|t| t.read(cx).spawn_error().is_some())
-        {
-            return ("Failed", c::RED());
-        }
-        if registry
+            .is_some_and(|t| t.read(cx).spawn_error().is_some());
+        let pending_attach = registry
             .session(meta.id)
-            .is_some_and(|t| t.read(cx).is_pending_attach())
-        {
-            return ("Starting", c::FG_DIM());
-        }
-        match runtime.activity.read(cx).state_of(meta.id) {
-            ActivityState::WaitingForInput => ("Needs you", c::YELLOW()),
-            ActivityState::Working => ("Working", c::GREEN()),
-            ActivityState::Done => ("Done", c::FG_DIM()),
-            ActivityState::Idle => ("Idle", c::FG_DIM()),
-            ActivityState::Exited => ("Exited", c::FG_DIM()),
-        }
+            .is_some_and(|t| t.read(cx).is_pending_attach());
+        managed_session_status(
+            failed,
+            pending_attach,
+            runtime.activity.read(cx).state_of(meta.id),
+        )
     }
     fn confirmation(&self, label: &str, action: Action, cx: &mut Context<Self>) -> AnyElement {
         let verb = match &action {
@@ -3760,6 +3772,22 @@ mod tests {
             Some(("home-launch-cwd", "Launched in /repo".into()))
         );
         assert_eq!(terminal_directory_label(None, None), None);
+    }
+
+    #[test]
+    fn unpainted_reattached_session_is_idle_in_sidebar() {
+        assert_eq!(
+            managed_session_status(false, true, ActivityState::Idle).0,
+            "Idle"
+        );
+        assert_eq!(
+            managed_session_status(true, true, ActivityState::Idle).0,
+            "Failed"
+        );
+        assert_eq!(
+            managed_session_status(false, false, ActivityState::Working).0,
+            "Working"
+        );
     }
 
     #[gpui::test]

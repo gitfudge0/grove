@@ -38,6 +38,9 @@ pub struct SessionMeta {
     pub project: String,
     pub label: String,
     pub agent: Agent,
+    /// Explicitly identifies a managed worktree Terminal. Older Terminal sidecars were home/panel shells.
+    #[serde(default)]
+    pub managed_worktree_terminal: bool,
     /// Ordered roots for a multi-worktree session. Older sidecars deserialize as empty.
     #[serde(default)]
     pub context_roots: Vec<ContextRoot>,
@@ -354,12 +357,31 @@ mod tests {
             project: "testproject".into(),
             label: "test-label".into(),
             agent: Agent::Claude,
+            managed_worktree_terminal: false,
             context_roots: vec![ContextRoot {
                 project: "testproject".into(),
                 wt_path: "/tmp/test-wt".into(),
             }],
             temp_bundle_path: None,
         }
+    }
+
+    #[test]
+    fn legacy_sidecar_defaults_to_unmanaged_terminal() {
+        let legacy = serde_json::json!({
+            "wt_path": "/worktree",
+            "project": "project",
+            "label": "Terminal 1",
+            "agent": "Terminal"
+        });
+        let meta: SessionMeta = serde_json::from_value(legacy).unwrap();
+        assert!(!meta.managed_worktree_terminal);
+        let mut managed = meta;
+        managed.managed_worktree_terminal = true;
+        let encoded = serde_json::to_value(&managed).unwrap();
+        assert_eq!(encoded["managed_worktree_terminal"], true);
+        let decoded: SessionMeta = serde_json::from_value(encoded).unwrap();
+        assert!(decoded.managed_worktree_terminal);
     }
 
     #[test]
@@ -506,6 +528,7 @@ mod tests {
             project: project.into(),
             label: "test-label".into(),
             agent: Agent::Claude,
+            managed_worktree_terminal: false,
             context_roots: Vec::new(),
             temp_bundle_path: None,
         }

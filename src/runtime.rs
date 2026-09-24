@@ -17,6 +17,18 @@ use gpui::{prelude::*, App, Context, Entity};
 use grove_core::agent::Agent;
 use std::{collections::HashMap, time::Instant};
 
+fn saved_tmux_preference_enabled(preference: Option<bool>) -> bool {
+    preference == Some(true)
+}
+
+fn managed_session_uses_tmux(preference: Option<bool>) -> bool {
+    !cfg!(test) && saved_tmux_preference_enabled(preference)
+}
+
+fn tmux_discovery_enabled() -> bool {
+    !cfg!(test)
+}
+
 fn resolve_multi_root_worktrees(
     selected_paths: &[String],
     projects: &[grove_core::storage::Project],
@@ -236,6 +248,7 @@ impl Runtime {
             s.set_open_agent_menu(None);
             cx.notify();
         });
+        let use_tmux = managed_session_uses_tmux(cx.global::<SettingsState>().store.tmux_enabled);
         let (id, extra_args, state_file, target) = self.registry.update(cx, |r, cx| {
             let id = r.insert_meta_with_context(
                 name.clone(),
@@ -260,7 +273,7 @@ impl Runtime {
                     args,
                     context_roots,
                     temp_bundle_path: temp_bundle_path.clone(),
-                    use_tmux: true,
+                    use_tmux,
                 },
             )
         });
@@ -487,6 +500,9 @@ impl Runtime {
     }
 
     pub fn discover_tmux_sessions(&mut self, cx: &mut Context<Self>) {
+        if !tmux_discovery_enabled() {
+            return;
+        }
         if !grove_core::tmux::available() {
             return;
         }
@@ -803,6 +819,19 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_launch_requires_explicit_tmux_preference() {
+        assert!(!saved_tmux_preference_enabled(None));
+        assert!(!saved_tmux_preference_enabled(Some(false)));
+        assert!(saved_tmux_preference_enabled(Some(true)));
+    }
+
+    #[test]
+    fn root_binary_tests_cannot_use_production_tmux() {
+        assert!(!managed_session_uses_tmux(Some(true)));
+        assert!(!tmux_discovery_enabled());
+    }
 
     use std::{
         path::Path,

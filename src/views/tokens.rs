@@ -30,6 +30,8 @@ pub const ICON_SM: f32 = 12.0;
 pub const ICON_MD: f32 = 14.0;
 /// Largest chrome glyph and the ceiling for anything clickable.
 pub const ICON_LG: f32 = 16.0;
+/// Decorative leading glyph for the two-line command palette row; clickable chrome remains capped at [`ICON_LG`].
+pub const ICON_20: f32 = 20.0;
 /// Empty-state / onboarding display glyph only — never app chrome.
 pub const ICON_DISPLAY: f32 = 32.0;
 

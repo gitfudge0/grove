@@ -761,79 +761,26 @@ impl Render for WorktreeLauncher {
                             }))
                             .child(
                                 div()
+                                    .id("worktree-launcher-search")
+                                    .debug_selector(|| "worktree-launcher-search".into())
+                                    .h(rpx(if compact {
+                                        ICON_BTN_W + SPACE_SM
+                                    } else {
+                                        APPBAR_H
+                                    }))
+                                    .px(rpx(SPACE_2XL))
+                                    .rounded(rpx(RADIUS_PANEL))
+                                    .bg(c::FIELD_FILL())
                                     .flex()
                                     .items_center()
-                                    .gap(rpx(SPACE_LG))
                                     .child(
-                                        div()
-                                            .id("worktree-launcher-search")
-                                            .debug_selector(|| "worktree-launcher-search".into())
-                                            .flex_1()
-                                            .min_w_0()
-                                            .h(rpx(if compact { ICON_BTN_W + SPACE_SM } else { APPBAR_H }))
-                                            .px(rpx(SPACE_2XL))
-                                            .rounded(rpx(RADIUS_PANEL))
-                                            .bg(c::FIELD_FILL())
-                                            .flex()
-                                            .items_center()
-                                            .child(
-                                                Input::new(&self.input)
-                                                    .appearance(false)
-                                                    .bordered(false)
-                                                    .focus_bordered(false)
-                                                    .text_size(rpx(TEXT_BODY))
-                                                    .text_color(c::FG())
-                                                    .p_0(),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("launcher-agent-selector")
-                                            .flex()
-                                            .items_center()
-                                            .gap(rpx(SPACE_XS))
-                                            .children(Agent::ALL.into_iter().enumerate().map(|(index, agent)| {
-                                                let selected = self.agent_selected == index;
-                                                let available = agent.available();
-                                                let label = if available {
-                                                    agent.label().to_string()
-                                                } else {
-                                                    format!("{} (not installed)", agent.label())
-                                                };
-                                                let icon_name = match agent {
-                                                    Agent::Claude => "claude",
-                                                    Agent::Codex => "codex",
-                                                    Agent::OpenCode => "opencode",
-                                                    Agent::Terminal => "terminal",
-                                                };
-                                                div()
-                                                    .id(gpui::SharedString::from(format!("launcher-agent-{index}")))
-                                                    .debug_selector(move || format!("launcher-agent-{index}"))
-                                                    .role(gpui::Role::Button)
-                                                    .aria_label(label.clone())
-                                                    .size(rpx(ICON_BTN_W))
-                                                    .rounded(rpx(RADIUS_CONTROL))
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .when(selected, |button| button.bg(c::BG_HL()))
-                                                    .when(selected && self.agent_focus, |button| button.border_1().border_color(c::SEL_RING()))
-                                                    .hover(|button| button.bg(c::BG_HOVER()))
-                                                    .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(label.clone()).build(window, cx))
-                                                    .child(icon(icon_name, ICON_MD, if available { c::MAGENTA() } else { c::FG_MUTE() }))
-                                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                                        if available {
-                                                            this.agent_selected = index;
-                                                            this.agent_touched = true;
-                                                            this.agent_focus = true;
-                                                            this.error = None;
-                                                            this.focus.focus(window, cx);
-                                                        } else {
-                                                            this.error = Some(format!("{} is not installed.", agent.label()));
-                                                        }
-                                                        cx.notify();
-                                                    }))
-                                            })),
+                                        Input::new(&self.input)
+                                            .appearance(false)
+                                            .bordered(false)
+                                            .focus_bordered(false)
+                                            .text_size(rpx(TEXT_BODY))
+                                            .text_color(c::FG())
+                                            .p_0(),
                                     ),
                             ),
                     )
@@ -871,6 +818,8 @@ impl Render for WorktreeLauncher {
                                     PaletteRow::ReloadThemes => ("Reload themes".into(), "Refresh installed themes".into(), "restart", String::new()),
                                 };
                                 let identity = launcher::row_identity(&row);
+                                let show_agent_selector =
+                                    self.agent_focus && index == self.selected;
                                 let checked = self.mode == PaletteMode::Multi && match &row {
                                     PaletteRow::Recent { wt_path, .. } | PaletteRow::Combo { wt_path, .. } => fs_err::canonicalize(wt_path)
                                         .ok().is_some_and(|path| self.selected_worktrees.contains(&path.to_string_lossy())),
@@ -892,13 +841,72 @@ impl Render for WorktreeLauncher {
                                     .hover(|row| row.bg(c::BG_HOVER()))
                                     .when(checked, |row| row.border_l_2().border_color(c::SEL_RING()))
                                     .child(
-                                        div().flex().items_center().gap(rpx(SPACE_LG)).min_w_0()
-                                            .child(icon(icon_name, ICON_MD, c::FG_DIM()))
+                                        div().flex().items_start().gap(rpx(SPACE_2XL)).min_w_0()
+                                            .child(
+                                                div()
+                                                    .size(rpx(CONTROL_H))
+                                                    .flex_shrink_0()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(icon(icon_name, ICON_20, c::FG_DIM())),
+                                            )
                                             .child(div().flex().flex_col().min_w_0().gap(rpx(SPACE_XS))
-                                                .child(div().text_size(rpx(TEXT_BODY)).text_color(c::FG()).truncate().child(label))
-                                                .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_MUTE()).truncate().child(detail)))
+                                                .child(div().line_height(rpx(SPACE_3XL)).text_size(rpx(TEXT_BODY)).text_color(c::FG()).truncate().child(label))
+                                                .child(div().line_height(rpx(SPACE_3XL)).text_size(rpx(TEXT_SMALL)).text_color(c::FG_MUTE()).truncate().child(detail)))
                                     )
-                                    .when(!suffix.is_empty() || checked, |row| row.child(
+                                    .when(show_agent_selector, |row| row.child(
+                                        div()
+                                            .id("launcher-agent-selector")
+                                            .flex_shrink_0()
+                                            .flex()
+                                            .items_center()
+                                            .gap(rpx(SPACE_XS))
+                                            .children(Agent::ALL.into_iter().enumerate().map(|(agent_index, agent)| {
+                                                let selected = self.agent_selected == agent_index;
+                                                let available = agent.available();
+                                                let label = if available {
+                                                    agent.label().to_string()
+                                                } else {
+                                                    format!("{} (not installed)", agent.label())
+                                                };
+                                                let icon_name = match agent {
+                                                    Agent::Claude => "claude",
+                                                    Agent::Codex => "codex",
+                                                    Agent::OpenCode => "opencode",
+                                                    Agent::Terminal => "terminal",
+                                                };
+                                                div()
+                                                    .id(gpui::SharedString::from(format!("launcher-agent-{agent_index}")))
+                                                    .debug_selector(move || format!("launcher-agent-{agent_index}"))
+                                                    .role(gpui::Role::Button)
+                                                    .aria_label(label.clone())
+                                                    .size(rpx(ICON_BTN_W))
+                                                    .rounded(rpx(RADIUS_CONTROL))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .when(selected, |button| button.bg(c::BG_HL()))
+                                                    .when(selected, |button| button.border_1().border_color(c::SEL_RING()))
+                                                    .hover(|button| button.bg(c::BG_HOVER()))
+                                                    .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(label.clone()).build(window, cx))
+                                                    .child(icon(icon_name, ICON_MD, if available { c::MAGENTA() } else { c::FG_MUTE() }))
+                                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                                        cx.stop_propagation();
+                                                        if available {
+                                                            this.agent_selected = agent_index;
+                                                            this.agent_touched = true;
+                                                            this.agent_focus = true;
+                                                            this.error = None;
+                                                            this.focus.focus(window, cx);
+                                                        } else {
+                                                            this.error = Some(format!("{} is not installed.", agent.label()));
+                                                        }
+                                                        cx.notify();
+                                                    }))
+                                            })),
+                                    ))
+                                    .when(!show_agent_selector && (!suffix.is_empty() || checked), |row| row.child(
                                         div().flex_shrink_0().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
                                             .child(if checked { "Selected".to_string() } else { suffix })
                                     ))
@@ -1514,7 +1522,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn tool_icons_share_search_row_and_keyboard_cycles_available_tools(
+    fn tool_icons_follow_tab_focus_and_keyboard_cycles_available_tools(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(setup);
@@ -1526,19 +1534,29 @@ mod tests {
         });
         cx.update(|window, cx| launcher.update(cx, |launcher, cx| launcher.open(window, cx)));
         draw(cx);
-        let search = cx.debug_bounds("worktree-launcher-search").expect("search");
-        for name in [
+        let icon_names = [
             "launcher-agent-0",
             "launcher-agent-1",
             "launcher-agent-2",
             "launcher-agent-3",
-        ] {
-            let bounds = cx.debug_bounds(name).expect("tool icon");
-            assert!(bounds.top() < search.bottom() && bounds.bottom() > search.top());
+        ];
+        for name in icon_names {
+            assert!(
+                cx.debug_bounds(name).is_none(),
+                "tool icon should be hidden while search has focus"
+            );
         }
         let before = cx.update(|_, cx| launcher.read(cx).agent_selected);
         cx.simulate_keystrokes("tab right");
         draw(cx);
+        let selected_row = cx.debug_bounds("launcher-row-0").expect("selected row");
+        for name in icon_names {
+            let bounds = cx.debug_bounds(name).expect("focused tool icon");
+            assert!(
+                selected_row.contains(&bounds.center()),
+                "tool icon should be inline in the selected row"
+            );
+        }
         cx.update(|_, cx| {
             let view = launcher.read(cx);
             let available = available_agents();
@@ -1551,6 +1569,34 @@ mod tests {
             assert_eq!(Agent::ALL[view.agent_selected], expected);
             assert!(view.agent_focus);
             assert!(view.agent_touched);
+        });
+        let selected_agent = cx.update(|_, cx| launcher.read(cx).agent_selected);
+        let selected_icon = cx
+            .debug_bounds(icon_names[selected_agent])
+            .expect("selected tool icon");
+        cx.simulate_click(selected_icon.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| {
+            let view = launcher.read(cx);
+            assert!(
+                view.is_open(),
+                "tool click should not activate the parent row"
+            );
+            assert_eq!(view.selected, 0);
+            assert_eq!(view.agent_selected, selected_agent);
+        });
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        for name in icon_names {
+            assert!(
+                cx.debug_bounds(name).is_none(),
+                "tool icon should hide when Tab returns focus to search"
+            );
+        }
+        cx.update(|window, cx| {
+            let view = launcher.read(cx);
+            assert!(!view.agent_focus);
+            assert!(view.input.focus_handle(cx).is_focused(window));
         });
     }
 

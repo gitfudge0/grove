@@ -22,6 +22,16 @@ use portable_pty::CommandBuilder;
 const INIT_ROWS: u16 = 24;
 const INIT_COLS: u16 = 80;
 
+fn tmux_side_effects_enabled() -> bool {
+    !cfg!(test)
+}
+
+fn managed_worktree_terminal_sidecar(target: &SpawnTarget) -> bool {
+    target.use_tmux
+        && target.agent == grove_core::agent::Agent::Terminal
+        && !target.project.is_empty()
+}
+
 fn output_age_at(last_output_at: Option<Instant>, now: Instant) -> Duration {
     last_output_at.map_or(Duration::MAX, |last_output_at| {
         now.saturating_duration_since(last_output_at)
@@ -87,7 +97,7 @@ impl TerminalSession {
             .as_ref()
             .and_then(|path| grove_core::multi_root::SymlinkBundle::from_path(path.into()));
         let mut spawn_error = None;
-        let spawned = if target.use_tmux {
+        let spawned = if target.use_tmux && tmux_side_effects_enabled() {
             match spawn_tmux(&cwd, target, extra_args, state_file, rows, cols) {
                 Ok(v) => Some(v),
                 Err(e) => {
@@ -179,6 +189,9 @@ impl TerminalSession {
 
     /// Performs the deferred tmux attach at the caller's real dims; idempotent since the name is taken out of `pending_attach`.
     pub fn attach_now(&mut self, cx: &mut Context<Self>) {
+        if !tmux_side_effects_enabled() {
+            return;
+        }
         let Some(name) = self.pending_attach.take() else {
             return;
         };
@@ -323,7 +336,9 @@ impl TerminalSession {
         self.tmux_display_offset = 0;
         if self.tmux_copy_mode {
             if let Backend::Tmux { name } = &self.backend {
-                tmux::cancel_copy_mode(name);
+                if tmux_side_effects_enabled() {
+                    tmux::cancel_copy_mode(name);
+                }
             }
             self.tmux_copy_mode = false;
         }
@@ -398,8 +413,10 @@ impl TerminalSession {
             Backend::Tmux { name } => {
                 // Grove's own scrollback is empty for tmux; drive copy-mode instead.
                 let name = name.clone();
-                if let Some(offset) = tmux::scroll(&name, up, lines) {
-                    self.tmux_display_offset = offset;
+                if tmux_side_effects_enabled() {
+                    if let Some(offset) = tmux::scroll(&name, up, lines) {
+                        self.tmux_display_offset = offset;
+                    }
                 }
                 if up {
                     self.tmux_copy_mode = true;
@@ -452,12 +469,13 @@ impl TerminalSession {
     /// only leaves the current viewport in GroveTerm.
     pub fn selection_text(&mut self, a: AbsCell, head: AbsCell) -> Option<String> {
         match &self.backend {
-            Backend::Tmux { name } => tmux::selection_text(
+            Backend::Tmux { name } if tmux_side_effects_enabled() => tmux::selection_text(
                 name,
                 (a.a_row, a.col),
                 (head.a_row, head.col),
                 self.tmux_display_offset,
             ),
+            Backend::Tmux { .. } => None,
             Backend::Native => self
                 .term
                 .selection_text((a.a_row, a.col), (head.a_row, head.col)),
@@ -629,6 +647,7 @@ fn spawn_tmux(
             project: target.project.clone(),
             label: target.label.clone(),
             agent,
+            managed_worktree_terminal: managed_worktree_terminal_sidecar(target),
             context_roots: target.context_roots.clone(),
             temp_bundle_path: target.temp_bundle_path.clone(),
         },
@@ -702,9 +721,37 @@ fn spawn_native(
 mod tests {
     use std::time::{Duration, Instant};
 
+    use gpui::AppContext as _;
     use grove_core::agent::Agent;
 
     use super::output_age_at;
+
+    #[test]
+    fn root_binary_tests_do_not_contact_tmux_from_terminal_sessions() {
+        assert!(!super::tmux_side_effects_enabled());
+    }
+
+    #[test]
+    fn managed_worktree_terminal_sidecar_marker_is_explicit() {
+        let mut target = crate::entities::session_registry::SpawnTarget::home("Terminal 1".into());
+        target.project = "project".into();
+        target.use_tmux = true;
+        assert!(super::managed_worktree_terminal_sidecar(&target));
+        target.agent = Agent::Claude;
+        assert!(!super::managed_worktree_terminal_sidecar(&target));
+        target.agent = Agent::Terminal;
+        target.use_tmux = false;
+        assert!(!super::managed_worktree_terminal_sidecar(&target));
+    }
+
+    #[gpui::test]
+    fn pending_test_reattach_stays_pending_without_contacting_tmux(cx: &mut gpui::TestAppContext) {
+        let session = cx
+            .new(|cx| super::TerminalSession::attach_existing("grove__unpainted_test", 24, 80, cx));
+        session.update(cx, super::TerminalSession::attach_now);
+        assert!(session.read_with(cx, |session, _| session.is_pending_attach()));
+        assert!(session.read_with(cx, |session, _| session.spawn_error().is_none()));
+    }
 
     #[gpui::test]
     fn reader_eof_latches_exit_and_notifies_observers(cx: &mut gpui::TestAppContext) {

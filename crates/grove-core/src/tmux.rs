@@ -386,6 +386,31 @@ pub struct DiscoveredSession {
     pub temp_bundle_path: Option<String>,
 }
 
+fn discovery_records(
+    sidecars: impl IntoIterator<Item = (String, session_meta::SessionMeta)>,
+) -> (Vec<DiscoveredSession>, Vec<std::path::PathBuf>) {
+    let mut sessions = Vec::new();
+    let mut active_bundles = Vec::new();
+    for (name, meta) in sidecars {
+        if let Some(path) = meta.temp_bundle_path.as_ref() {
+            active_bundles.push(std::path::PathBuf::from(path));
+        }
+        if meta.agent == Agent::Terminal && !meta.managed_worktree_terminal {
+            continue;
+        }
+        sessions.push(DiscoveredSession {
+            name,
+            wt_path: meta.wt_path,
+            project: meta.project,
+            label: meta.label,
+            agent: meta.agent,
+            context_roots: meta.context_roots,
+            temp_bundle_path: meta.temp_bundle_path,
+        });
+    }
+    (sessions, active_bundles)
+}
+
 pub fn live_grove_session_names() -> Vec<String> {
     tracing::debug!(
         args = "list-sessions -F #{session_name}",
@@ -411,26 +436,11 @@ pub fn live_grove_session_names() -> Vec<String> {
 pub fn list_grove_sessions() -> Vec<DiscoveredSession> {
     let live = live_grove_session_names();
     session_meta::prune(&live);
-    let sessions = live
+    let sidecars = live
         .into_iter()
-        .filter_map(|name| {
-            let meta = session_meta::read(&name)?;
-            Some(DiscoveredSession {
-                name,
-                wt_path: meta.wt_path,
-                project: meta.project,
-                label: meta.label,
-                agent: meta.agent,
-                context_roots: meta.context_roots,
-                temp_bundle_path: meta.temp_bundle_path,
-            })
-        })
+        .filter_map(|name| session_meta::read(&name).map(|meta| (name, meta)))
         .collect::<Vec<_>>();
-    let active_bundles = sessions
-        .iter()
-        .filter_map(|session| session.temp_bundle_path.as_ref())
-        .map(std::path::PathBuf::from)
-        .collect::<Vec<_>>();
+    let (sessions, active_bundles) = discovery_records(sidecars);
     crate::multi_root::cleanup_orphaned(&active_bundles);
     sessions
 }
@@ -475,6 +485,51 @@ mod tests {
 
     use super::*;
     use crate::agent::Agent;
+
+    fn sidecar(
+        agent: Agent,
+        managed_worktree_terminal: bool,
+        bundle: Option<&str>,
+    ) -> session_meta::SessionMeta {
+        session_meta::SessionMeta {
+            wt_path: "/worktree".into(),
+            project: "project".into(),
+            label: "Terminal 1".into(),
+            agent,
+            managed_worktree_terminal,
+            context_roots: Vec::new(),
+            temp_bundle_path: bundle.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn legacy_terminal_sidecars_do_not_reattach_or_lose_live_bundles() {
+        let (sessions, bundles) = discovery_records([
+            (
+                "legacy-terminal".into(),
+                sidecar(Agent::Terminal, false, Some("/bundle/legacy")),
+            ),
+            (
+                "managed-terminal".into(),
+                sidecar(Agent::Terminal, true, Some("/bundle/managed")),
+            ),
+            ("legacy-agent".into(), sidecar(Agent::Claude, false, None)),
+        ]);
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["managed-terminal", "legacy-agent"]
+        );
+        assert_eq!(
+            bundles,
+            vec![
+                std::path::PathBuf::from("/bundle/legacy"),
+                std::path::PathBuf::from("/bundle/managed")
+            ]
+        );
+    }
 
     #[test]
     fn cache_is_fresh_respects_ttl_boundary() {

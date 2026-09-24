@@ -14,6 +14,10 @@ use grove_core::tmux;
 
 use crate::entities::terminal_session::TerminalSession;
 
+fn tmux_teardown_enabled() -> bool {
+    !cfg!(test)
+}
+
 /// Opaque, stable, monotonic session key. Never reused within a run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(u64);
@@ -240,7 +244,11 @@ impl SessionRegistry {
             grove_core::multi_root::cleanup_path(std::path::Path::new(path));
         }
         // Without this the tmux session outlives grove and gets reattached on the next launch (`crates/grove-core/src/session.rs:522-534`); unlike iced, native children are not killpg'd here.
-        if let Some(name) = meta.tmux_name.as_deref() {
+        if let Some(name) = meta
+            .tmux_name
+            .as_deref()
+            .filter(|_| tmux_teardown_enabled())
+        {
             tmux::kill_session(name);
             session_meta::delete(name);
         }
@@ -533,6 +541,31 @@ impl SessionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_binary_tests_do_not_kill_production_tmux_from_registry() {
+        assert!(!tmux_teardown_enabled());
+    }
+
+    #[test]
+    fn removing_test_reattach_keeps_registry_semantics_without_tmux_teardown() {
+        let discovered = tmux::DiscoveredSession {
+            name: "grove__registry_test_only".into(),
+            wt_path: "/unused".into(),
+            project: "unused".into(),
+            label: "Terminal 1".into(),
+            agent: Agent::Terminal,
+            context_roots: Vec::new(),
+            temp_bundle_path: None,
+        };
+        let mut registry = SessionRegistry::new();
+        let id = registry.insert_reattached(0, &discovered);
+        assert_eq!(
+            registry.remove(id).and_then(|meta| meta.tmux_name),
+            Some(discovered.name)
+        );
+        assert!(registry.meta(id).is_none());
+    }
 
     #[test]
     fn ids_are_monotonic_and_stable_across_removals() {

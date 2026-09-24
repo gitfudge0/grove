@@ -6,11 +6,16 @@ use super::{rpx, tokens::*};
 use crate::{icons::icon, keymap as k, launcher::PaletteRow, theme as c};
 use crate::{runtime::Runtime, theme::ThemeState};
 use gpui::{
-    actions, div, prelude::*, App, Context, Entity, FocusHandle, Focusable, MouseButton, Window,
+    actions, div, prelude::*, App, Context, Entity, FocusHandle, Focusable, FontWeight,
+    MouseButton, Window,
 };
 
 const TRAFFIC_LIGHT_D: f32 = 12.0;
 const TRAFFIC_CONTROL_W: f32 = 18.0;
+
+fn needs_backend_choice(preference: Option<bool>, tmux_available: impl FnOnce() -> bool) -> bool {
+    preference.is_none() && tmux_available()
+}
 
 actions!(shell, [Quit, CloseWindow]);
 
@@ -49,12 +54,25 @@ pub struct Shell {
     switcher_open: bool,
     switcher_index: usize,
     switcher_return_focus: Option<FocusHandle>,
+    backend_choice_open: bool,
+    backend_choice_focus: FocusHandle,
+    backend_choice_return_focus: Option<FocusHandle>,
+    backend_choice_index: usize,
+    backend_choice_error: Option<String>,
     window_observers: Option<Vec<gpui::Subscription>>,
 }
 
 impl Shell {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let runtime = cx.new(Runtime::new);
+        #[cfg(not(test))]
+        runtime.update(cx, Runtime::discover_tmux_sessions);
+        let backend_choice_open = needs_backend_choice(
+            cx.global::<crate::settings::SettingsState>()
+                .store
+                .tmux_enabled,
+            grove_core::tmux::available,
+        );
         let workspaces = cx.new(|cx| super::workspace_manager::WorkspaceManager::new(window, cx));
         let sidebar = cx.new(|cx| super::sidebar::Sidebar::new(runtime.clone(), window, cx));
         sidebar.update(cx, |sidebar, _| {
@@ -96,6 +114,11 @@ impl Shell {
                         .update(cx, |settings, cx| settings.open(window, cx));
                 }
             });
+        let backend_choice_return_focus = backend_choice_open.then(|| window.focused(cx)).flatten();
+        let backend_choice_focus = cx.focus_handle();
+        if backend_choice_open {
+            backend_choice_focus.focus(window, cx);
+        }
         Self {
             statusbar,
             launcher,
@@ -106,6 +129,11 @@ impl Shell {
             switcher_open: false,
             switcher_index: 0,
             switcher_return_focus: None,
+            backend_choice_open,
+            backend_choice_focus,
+            backend_choice_return_focus,
+            backend_choice_index: 1,
+            backend_choice_error: None,
             sidebar,
             focus: cx.focus_handle(),
             runtime,
@@ -350,7 +378,8 @@ impl Shell {
     }
 
     fn shortcut_blocked(&self, cx: &App) -> bool {
-        self.launcher.read(cx).is_open()
+        self.backend_choice_open
+            || self.launcher.read(cx).is_open()
             || self.settings.read(cx).is_open()
             || self.switcher_open
             || self.sidebar.read(cx).confirmation_open()
@@ -414,6 +443,151 @@ impl Shell {
         cx.stop_propagation();
     }
 
+    fn choose_backend(&mut self, tmux: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let ((), saved) = crate::settings::SettingsState::update_and_flush_checked(cx, |store| {
+            store.tmux_enabled = Some(tmux);
+        });
+        match saved {
+            Ok(()) => {
+                self.backend_choice_open = false;
+                self.backend_choice_error = None;
+                if let Some(focus) = self.backend_choice_return_focus.take() {
+                    focus.focus(window, cx);
+                } else {
+                    self.focus.focus(window, cx);
+                }
+            }
+            Err(error) => {
+                self.backend_choice_error = Some(format!("Could not save settings: {error}"));
+            }
+        }
+        cx.notify();
+    }
+
+    fn backend_choice_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event.keystroke.key.as_str() {
+            "left" | "up" => self.backend_choice_index = 0,
+            "right" | "down" => self.backend_choice_index = 1,
+            "tab" => self.backend_choice_index = (self.backend_choice_index + 1) % 2,
+            "enter" | "space" => {
+                self.choose_backend(self.backend_choice_index == 1, window, cx);
+            }
+            "escape" => {}
+            _ => return,
+        }
+        window.prevent_default();
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn backend_choice(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut choices = div().flex().flex_col().gap(rpx(SPACE_LG));
+        for (index, label, detail) in [
+            (0, "Native", "Sessions end when Grove closes."),
+            (1, "Tmux", "Sessions survive Grove restarts."),
+        ] {
+            choices = choices.child(
+                div()
+                    .id(("backend-choice-option", index))
+                    .debug_selector(move || format!("backend-choice-option-{index}"))
+                    .role(gpui::Role::Button)
+                    .aria_label(format!("{label}: {detail}"))
+                    .w_full()
+                    .min_w_0()
+                    .p(rpx(SPACE_2XL))
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_SM))
+                    .rounded(rpx(RADIUS_GROUP))
+                    .border_1()
+                    .border_color(c::BORDER())
+                    .bg(if self.backend_choice_index == index {
+                        c::BG_HOVER()
+                    } else {
+                        c::FIELD_FILL()
+                    })
+                    .hover(|style| style.bg(c::BG_HOVER()))
+                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    })
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_size(rpx(TEXT_BODY))
+                            .text_color(c::FG())
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(detail),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.choose_backend(index == 1, window, cx);
+                    })),
+            );
+        }
+        div()
+            .id("backend-choice-overlay")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(c::SCRIM())
+            .flex()
+            .items_center()
+            .justify_center()
+            .track_focus(&self.backend_choice_focus)
+            .capture_key_down(cx.listener(Self::backend_choice_key))
+            .child(
+                div()
+                    .id("backend-choice-dialog")
+                    .debug_selector(|| "backend-choice-dialog".into())
+                    .role(gpui::Role::Dialog)
+                    .aria_label("Choose a session backend")
+                    .w(rpx(MODAL_W_SM))
+                    .max_w_full()
+                    .p(rpx(SPACE_3XL))
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_2XL))
+                    .rounded(rpx(RADIUS_PANEL))
+                    .border_1()
+                    .border_color(c::BORDER())
+                    .bg(c::SURFACE_RAISED())
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_TITLE))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(c::FG())
+                            .child("Choose a session backend"),
+                    )
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_BODY))
+                            .text_color(c::FG_DIM())
+                            .child("Choose how new worktree sessions run. Existing sessions keep their backend."),
+                    )
+                    .child(choices)
+                    .when_some(self.backend_choice_error.as_ref(), |dialog, error| {
+                        dialog.child(
+                            div()
+                                .id("backend-choice-error")
+                                .role(gpui::Role::Alert)
+                                .text_size(rpx(TEXT_BODY))
+                                .text_color(c::RED())
+                                .child(error.clone()),
+                        )
+                    }),
+            )
+    }
+
     fn session_switcher(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let targets = self.sidebar.read(cx).visible_session_targets(cx);
         div()
@@ -470,7 +644,11 @@ impl Shell {
 
 impl Focusable for Shell {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus.clone()
+        if self.backend_choice_open {
+            self.backend_choice_focus.clone()
+        } else {
+            self.focus.clone()
+        }
     }
 }
 
@@ -666,12 +844,27 @@ impl Render for Shell {
             .when(self.switcher_open, |root| {
                 root.child(gpui::deferred(self.session_switcher(cx)))
             })
+            .when(self.backend_choice_open, |root| {
+                root.child(gpui::deferred(self.backend_choice(cx)))
+            })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_prompt_only_needs_tmux_for_an_undecided_preference() {
+        assert!(needs_backend_choice(None, || true));
+        assert!(!needs_backend_choice(None, || false));
+        assert!(!needs_backend_choice(Some(false), || panic!(
+            "must not probe tmux"
+        )));
+        assert!(!needs_backend_choice(Some(true), || panic!(
+            "must not probe tmux"
+        )));
+    }
 
     fn init(cx: &mut App) {
         gpui_component::init(cx);
@@ -685,6 +878,7 @@ mod tests {
         cx.set_global(crate::settings::SettingsState::new(
             grove_core::storage::Store {
                 projects: vec![project],
+                tmux_enabled: Some(false),
                 ..grove_core::storage::Store::default()
             },
         ));
@@ -701,6 +895,41 @@ mod tests {
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
+        });
+    }
+
+    #[gpui::test]
+    fn first_run_backend_choice_traps_escape_and_launch_shortcuts(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.backend_choice_open = true;
+                cx.notify();
+            });
+            // main.rs assigns focus after constructing Shell. That assignment
+            // must keep keyboard input inside the first-run choice.
+            let handle = shell.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+            assert_eq!(
+                window.focused(cx),
+                Some(shell.read(cx).backend_choice_focus.clone())
+            );
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("backend-choice-dialog").is_some());
+        assert!(cx.debug_bounds("backend-choice-option-0").is_some());
+        assert!(cx.debug_bounds("backend-choice-option-1").is_some());
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        cx.update(|_, cx| assert_eq!(shell.read(cx).backend_choice_index, 0));
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(shell.read(cx).backend_choice_open);
+            assert!(shell.read(cx).shortcut_blocked(cx));
+            window.dispatch_action(Box::new(k::NewSession), cx);
+            assert!(!shell.read(cx).launcher.read(cx).is_open());
         });
     }
 

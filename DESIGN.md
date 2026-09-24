@@ -267,7 +267,7 @@ GPUI has no CSS z-index property. These values are ordering semantics only.
 | icon-12 | 12px | verified: `crate::icons::icon(name, ICON_SM, color)` — Existing size matches; icon() applies rpx once. Verify sprite path independently. |
 | icon-14 | 14px | verified: `crate::icons::icon(name, ICON_MD, color)` — Existing size matches; icon() applies rpx once. Verify sprite path independently. |
 | icon-16 | 16px | verified: `crate::icons::icon(name, ICON_LG, color)` — Existing size matches; icon() applies rpx once. Verify sprite path independently. |
-| icon-20 | 20px | add: `crate::icons::icon(name, ICON_20, color)` — Add ICON_20 = 20.0; illustration only, not chrome. |
+| icon-20 | 20px | verified: `crate::icons::icon(name, ICON_20, color)` — Narrow non-clickable exception for the decorative leading glyph in the two-line command palette row; clickable chrome remains capped at ICON_LG. |
 | icon-24 | 24px | add: `crate::icons::icon(name, ICON_24, color)` — Add ICON_24 = 24.0; illustration only, not chrome. |
 | icon-32 | 32px | verified: `crate::icons::icon(name, ICON_DISPLAY, color)` — Existing size matches; icon() applies rpx once. Verify sprite path independently. |
 
@@ -503,7 +503,7 @@ No CSS z-index, outline, blur, easing or accessibility attribute should be trans
 | --icon-12 | 12px | 12px | `crate::icons::icon(name, ICON_SM, color)` | verified | src/views/tokens.rs; src/icons.rs | Existing size matches; icon() applies rpx once. Verify sprite path independently. |
 | --icon-14 | 14px | 14px | `crate::icons::icon(name, ICON_MD, color)` | verified | src/views/tokens.rs; src/icons.rs | Existing size matches; icon() applies rpx once. Verify sprite path independently. |
 | --icon-16 | 16px | 16px | `crate::icons::icon(name, ICON_LG, color)` | verified | src/views/tokens.rs; src/icons.rs | Existing size matches; icon() applies rpx once. Verify sprite path independently. |
-| --icon-20 | 20px | 20px | `crate::icons::icon(name, ICON_20, color)` | add | src/views/tokens.rs; src/icons.rs | Add ICON_20 = 20.0; illustration only, not chrome. |
+| --icon-20 | 20px | 20px | `crate::icons::icon(name, ICON_20, color)` | verified | src/views/tokens.rs; src/icons.rs | Narrow non-clickable exception for the decorative leading glyph in the two-line command palette row; clickable chrome remains capped at ICON_LG. |
 | --icon-24 | 24px | 24px | `crate::icons::icon(name, ICON_24, color)` | add | src/views/tokens.rs; src/icons.rs | Add ICON_24 = 24.0; illustration only, not chrome. |
 | --icon-32 | 32px | 32px | `crate::icons::icon(name, ICON_DISPLAY, color)` | verified | src/views/tokens.rs; src/icons.rs | Existing size matches; icon() applies rpx once. Verify sprite path independently. |
 | --opacity-disabled | .58 | .58 | `.opacity(.58)` | verified | GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs; color.rs; src/theme.rs | Element opacity composes the subtree and does not disable input. For one paint use color.opacity(factor); c::alpha replaces alpha. |
