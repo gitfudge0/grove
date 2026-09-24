@@ -1246,6 +1246,51 @@ mod tests {
     }
 
     #[test]
+    fn picker_search_uses_project_and_worktree_terms_without_merging_equal_branches() {
+        let combos = vec![
+            (
+                0,
+                "Grove".into(),
+                "/grove/feature-auth".into(),
+                Agent::Terminal,
+            ),
+            (1, "API".into(), "/api/feature-auth".into(), Agent::Terminal),
+            (1, "API".into(), "/api/main".into(), Agent::Terminal),
+        ];
+        let api = typed_rows(
+            "API feature-auth",
+            &combos,
+            &[],
+            false,
+            false,
+            PaletteScope::WorktreesOnly,
+        );
+        assert_eq!(
+            api,
+            vec![PaletteRow::Combo {
+                proj: 1,
+                wt_path: "/api/feature-auth".into(),
+                agent: Agent::Terminal,
+            }]
+        );
+        let shared_branch = typed_rows(
+            "feature-auth",
+            &combos,
+            &[],
+            false,
+            false,
+            PaletteScope::WorktreesOnly,
+        );
+        assert_eq!(shared_branch.len(), 2);
+        assert!(shared_branch.iter().any(|row| matches!(row,
+            PaletteRow::Combo { proj: 0, wt_path, .. } if wt_path == "/grove/feature-auth"
+        )));
+        assert!(shared_branch.iter().any(|row| matches!(row,
+            PaletteRow::Combo { proj: 1, wt_path, .. } if wt_path == "/api/feature-auth"
+        )));
+    }
+
+    #[test]
     fn the_unscoped_list_is_unaffected_by_the_scope_gate() {
         let combos = two_combos();
         for q in ["", "theme", "settings", "wt"] {

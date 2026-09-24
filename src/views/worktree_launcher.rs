@@ -14,7 +14,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use grove_core::agent::Agent;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// A palette row has an appbar-height body plus the design system's 8px row breathing room.
 const ROW_H: f32 = APPBAR_H + SPACE_LG;
@@ -27,6 +27,14 @@ pub enum WorktreeLauncherEvent {
     Command(PaletteRow),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PaletteMode {
+    #[default]
+    Root,
+    Single,
+    Multi,
+}
+
 impl EventEmitter<WorktreeLauncherEvent> for WorktreeLauncher {}
 
 pub struct WorktreeLauncher {
@@ -37,6 +45,7 @@ pub struct WorktreeLauncher {
     focus: FocusHandle,
     return_focus: Option<FocusHandle>,
     open: bool,
+    mode: PaletteMode,
     query: String,
     selected: usize,
     anchor: Option<RowIdentity>,
@@ -44,6 +53,11 @@ pub struct WorktreeLauncher {
     agent_touched: bool,
     agent_focus: bool,
     selected_worktrees: WorktreeSelection,
+    loading_worktrees: bool,
+    load_seq: u64,
+    /// Test-only capture after the real palette validation, before the live PTY dispatch.
+    #[cfg(test)]
+    launch_probe: Option<Vec<(Vec<String>, Agent)>>,
     error: Option<String>,
     scroll: ScrollHandle,
 }
@@ -71,6 +85,7 @@ impl WorktreeLauncher {
             focus: cx.focus_handle(),
             return_focus: None,
             open: false,
+            mode: PaletteMode::Root,
             query: String::new(),
             selected: 0,
             anchor: None,
@@ -78,6 +93,10 @@ impl WorktreeLauncher {
             agent_touched: false,
             agent_focus: false,
             selected_worktrees: WorktreeSelection::default(),
+            loading_worktrees: false,
+            load_seq: 0,
+            #[cfg(test)]
+            launch_probe: None,
             error: None,
             scroll: ScrollHandle::new(),
         }
@@ -99,7 +118,7 @@ impl WorktreeLauncher {
     }
 
     fn sync_agent_to_row(&mut self, rows: &[PaletteRow]) {
-        if self.agent_touched {
+        if self.agent_touched || self.mode != PaletteMode::Root {
             return;
         }
         if let Some(PaletteRow::Recent { agent, .. } | PaletteRow::Combo { agent, .. }) =
@@ -115,6 +134,7 @@ impl WorktreeLauncher {
         }
         self.return_focus = window.focused(cx);
         self.open = true;
+        self.mode = PaletteMode::Root;
         self.query.clear();
         self.selected = 0;
         self.anchor = None;
@@ -172,12 +192,107 @@ impl WorktreeLauncher {
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = false;
+        self.mode = PaletteMode::Root;
+        self.loading_worktrees = false;
+        self.load_seq = self.load_seq.wrapping_add(1);
         self.selected_worktrees.clear();
         self.error = None;
         if let Some(focus) = self.return_focus.take() {
             focus.focus(window, cx);
         }
         cx.notify();
+    }
+
+    /// Fill cold workspace caches off the UI thread; the picker can accept search text while loading.
+    fn load_workspace_worktrees(&mut self, cx: &mut Context<Self>) {
+        let store = &cx.global::<SettingsState>().store;
+        let workspace = store.workspaces.active;
+        let projects: Vec<_> = store
+            .workspace_projects(workspace)
+            .map(|(idx, project)| (idx, project.path.clone()))
+            .collect();
+        let active_proj = self.runtime.read(cx).state.read(cx).proj_idx();
+        let tree = self.runtime.read(cx).tree.clone();
+        let (generation, targets) = {
+            let tree = tree.read(cx);
+            let targets = projects
+                .iter()
+                .filter(|(proj, _)| tree.worktrees_for_project(*proj, active_proj).is_empty())
+                .cloned()
+                .collect::<Vec<_>>();
+            (tree.generation(), targets)
+        };
+        self.load_seq = self.load_seq.wrapping_add(1);
+        let request = self.load_seq;
+        self.loading_worktrees = !targets.is_empty();
+        if targets.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+            let swept = cx
+                .background_executor()
+                .spawn(async move {
+                    let paths = targets
+                        .iter()
+                        .map(|(_, path)| path.clone())
+                        .collect::<Vec<_>>();
+                    targets
+                        .into_iter()
+                        .map(|(proj, _)| proj)
+                        .zip(grove_core::git::list_worktrees_many(&paths))
+                        .collect::<HashMap<_, _>>()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if !this.open || this.mode == PaletteMode::Root || this.load_seq != request {
+                    return;
+                }
+                let store = &cx.global::<SettingsState>().store;
+                let current_projects = store
+                    .workspace_projects(store.workspaces.active)
+                    .map(|(idx, project)| (idx, project.path.clone()))
+                    .collect::<Vec<_>>();
+                let current_active = this.runtime.read(cx).state.read(cx).proj_idx();
+                if store.workspaces.active != workspace
+                    || current_projects != projects
+                    || current_active != active_proj
+                {
+                    this.load_workspace_worktrees(cx);
+                    cx.notify();
+                    return;
+                }
+                let tree = this.runtime.read(cx).tree.clone();
+                let active_worktrees = swept.get(&active_proj).cloned();
+                let applied = tree.update(cx, |tree, cx| {
+                    if !tree.apply_sweep(generation, swept) {
+                        return false;
+                    }
+                    if tree
+                        .worktrees_for_project(active_proj, active_proj)
+                        .is_empty()
+                    {
+                        if let Some(worktrees) = active_worktrees {
+                            tree.set_active_worktrees(active_proj, worktrees);
+                        }
+                    }
+                    cx.notify();
+                    true
+                });
+                if !applied {
+                    this.load_workspace_worktrees(cx);
+                    cx.notify();
+                    return;
+                }
+                this.loading_worktrees = false;
+                let rows = this.rows(cx);
+                this.selected =
+                    launcher::resolve_row_by_identity(&rows, this.anchor.as_ref(), this.selected)
+                        .unwrap_or(0);
+                this.anchor = rows.get(this.selected).map(launcher::row_identity);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Cached worktrees for the active workspace, with a project root on a cold cache.
@@ -203,8 +318,21 @@ impl WorktreeLauncher {
     }
 
     fn rows(&self, cx: &App) -> Vec<PaletteRow> {
+        if self.mode != PaletteMode::Root && self.loading_worktrees {
+            return Vec::new();
+        }
         let store = &cx.global::<SettingsState>().store;
         let combos = self.combos(cx);
+        if self.mode != PaletteMode::Root {
+            return launcher::typed_rows(
+                &self.query,
+                &combos,
+                &[],
+                false,
+                false,
+                PaletteScope::WorktreesOnly,
+            );
+        }
         let mut recent = Vec::new();
         for item in &store.recent_launches {
             if !item.agent.available() {
@@ -367,6 +495,12 @@ impl WorktreeLauncher {
             cx.notify();
             return;
         }
+        #[cfg(test)]
+        if let Some(requests) = &mut self.launch_probe {
+            requests.push((paths, agent));
+            self.close(window, cx);
+            return;
+        }
         let active_before = self.runtime.read(cx).state.read(cx).active_session();
         let did_launch = self.runtime.update(cx, |runtime, cx| {
             runtime.launch_multi_root_session(&paths, agent, cx)
@@ -396,15 +530,13 @@ impl WorktreeLauncher {
     }
 
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode != PaletteMode::Root && self.loading_worktrees {
+            return;
+        }
         let Some(agent) = Agent::ALL.get(self.agent_selected).copied() else {
             return;
         };
-        let row = self.selected_row(cx);
-        if self.selected_worktrees.count() > 0
-            && row.as_ref().is_none_or(|row| {
-                matches!(row, PaletteRow::Recent { .. } | PaletteRow::Combo { .. })
-            })
-        {
+        if self.mode == PaletteMode::Multi {
             self.launch_roots(
                 self.selected_worktrees.selected_targets(),
                 agent,
@@ -413,6 +545,7 @@ impl WorktreeLauncher {
             );
             return;
         }
+        let row = self.selected_row(cx);
         let Some(row) = row else {
             return;
         };
@@ -421,26 +554,28 @@ impl WorktreeLauncher {
                 self.launch(launcher::row_identity(&row), agent, window, cx);
             }
             PaletteRow::NewSession | PaletteRow::NewMultiProjectSession => {
-                self.query.clear();
-                self.input
-                    .update(cx, |input, cx| input.set_value("", window, cx));
-                if let Some((index, row)) =
-                    self.rows(cx).into_iter().enumerate().find(|(_, row)| {
-                        matches!(row, PaletteRow::Recent { .. } | PaletteRow::Combo { .. })
-                    })
-                {
-                    self.selected = index;
-                    self.anchor = Some(launcher::row_identity(&row));
-                    let rows = self.rows(cx);
-                    self.sync_agent_to_row(&rows);
-                    if matches!(row, PaletteRow::Recent { .. } | PaletteRow::Combo { .. }) {
-                        self.agent_focus = true;
-                    }
-                    self.focus.focus(window, cx);
-                    cx.notify();
-                } else {
+                if self.combos(cx).is_empty() {
                     self.close(window, cx);
                     cx.emit(WorktreeLauncherEvent::Command(PaletteRow::AddProject));
+                } else {
+                    self.mode = if row == PaletteRow::NewSession {
+                        PaletteMode::Single
+                    } else {
+                        PaletteMode::Multi
+                    };
+                    self.load_workspace_worktrees(cx);
+                    self.selected_worktrees.clear();
+                    self.query.clear();
+                    self.selected = 0;
+                    self.anchor = self.rows(cx).first().map(launcher::row_identity);
+                    self.agent_focus = false;
+                    self.error = None;
+                    self.scroll.set_offset(gpui::Point::default());
+                    self.input.update(cx, |input, cx| {
+                        input.set_value("", window, cx);
+                        input.focus(window, cx);
+                    });
+                    cx.notify();
                 }
             }
             command => {
@@ -451,6 +586,9 @@ impl WorktreeLauncher {
     }
 
     fn toggle_selected_row(&mut self, cx: &mut Context<Self>) {
+        if self.mode != PaletteMode::Multi || self.loading_worktrees {
+            return;
+        }
         let Some(row) = self.selected_row(cx) else {
             self.error = Some("Select a worktree to add it.".into());
             cx.notify();
@@ -484,7 +622,29 @@ impl WorktreeLauncher {
         }
         let key = &event.keystroke;
         match key.key.as_str() {
-            "escape" => self.close(window, cx),
+            "escape" => {
+                if self.mode == PaletteMode::Root {
+                    self.close(window, cx);
+                } else {
+                    self.mode = PaletteMode::Root;
+                    self.loading_worktrees = false;
+                    self.load_seq = self.load_seq.wrapping_add(1);
+                    self.selected_worktrees.clear();
+                    self.query.clear();
+                    self.selected = 0;
+                    self.anchor = None;
+                    self.agent_focus = false;
+                    self.error = None;
+                    self.scroll.set_offset(gpui::Point::default());
+                    self.input.update(cx, |input, cx| {
+                        input.set_value("", window, cx);
+                        input.focus(window, cx);
+                    });
+                    let rows = self.rows(cx);
+                    self.sync_agent_to_row(&rows);
+                    cx.notify();
+                }
+            }
             "down" | "up" => {
                 self.selected = launcher::cycle(
                     self.selected,
@@ -524,11 +684,14 @@ impl WorktreeLauncher {
                 cx.notify();
             }
             "space" => {
-                let search_focused = self.input.read(cx).focus_handle(cx).is_focused(window);
-                if search_focused && !key.modifiers.shift {
+                if self.mode != PaletteMode::Multi || !key.modifiers.shift {
                     return;
                 }
+                let search_focused = self.input.read(cx).focus_handle(cx).is_focused(window);
                 self.toggle_selected_row(cx);
+                if search_focused {
+                    self.input.update(cx, |input, cx| input.focus(window, cx));
+                }
             }
             "enter" => self.activate(window, cx),
             _ => return,
@@ -586,12 +749,16 @@ impl Render for WorktreeLauncher {
                     .child(
                         div()
                             .px(rpx(SPACE_3XL))
-                            .pt(rpx(if compact { SPACE_2XL } else { SPACE_3XL }))
-                            .pb(rpx(if compact { SPACE_LG } else { SPACE_2XL }))
+                            .pt(rpx(if compact { SPACE_LG } else { SPACE_3XL }))
+                            .pb(rpx(if compact { SPACE_SM } else { SPACE_2XL }))
                             .flex()
                             .flex_col()
-                            .gap(rpx(SPACE_2XL))
-                            .child(div().text_size(rpx(TEXT_TITLE)).text_color(c::FG()).child("Command palette"))
+                            .gap(rpx(if compact { SPACE_SM } else { SPACE_2XL }))
+                            .child(div().text_size(rpx(TEXT_TITLE)).text_color(c::FG()).child(match self.mode {
+                                PaletteMode::Root => "Command palette",
+                                PaletteMode::Single => "New session",
+                                PaletteMode::Multi => "New multi-project session",
+                            }))
                             .child(
                                 div()
                                     .flex()
@@ -603,7 +770,7 @@ impl Render for WorktreeLauncher {
                                             .debug_selector(|| "worktree-launcher-search".into())
                                             .flex_1()
                                             .min_w_0()
-                                            .h(rpx(APPBAR_H))
+                                            .h(rpx(if compact { ICON_BTN_W + SPACE_SM } else { APPBAR_H }))
                                             .px(rpx(SPACE_2XL))
                                             .rounded(rpx(RADIUS_PANEL))
                                             .bg(c::FIELD_FILL())
@@ -679,9 +846,11 @@ impl Render for WorktreeLauncher {
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll)
                             .px(rpx(SPACE_LG))
-                            .pb(rpx(if compact { SPACE_XS } else { SPACE_LG }))
+                            .when(!compact, |list| list.pb(rpx(SPACE_LG)))
                             .when(rows.is_empty(), |list| list.child(
-                                div().p(rpx(SPACE_3XL)).text_color(c::FG_DIM()).text_size(rpx(TEXT_BODY)).child("No matching commands")
+                                div().p(rpx(SPACE_3XL)).text_color(c::FG_DIM()).text_size(rpx(TEXT_BODY)).child(
+                                    if self.mode == PaletteMode::Root { "No matching commands" } else if self.loading_worktrees { "Loading worktrees…" } else { "No matching worktrees" }
+                                )
                             ))
                             .children(rows.into_iter().enumerate().map(|(index, row)| {
                                 let (label, detail, icon_name, suffix) = match &row {
@@ -702,7 +871,7 @@ impl Render for WorktreeLauncher {
                                     PaletteRow::ReloadThemes => ("Reload themes".into(), "Refresh installed themes".into(), "restart", String::new()),
                                 };
                                 let identity = launcher::row_identity(&row);
-                                let checked = match &row {
+                                let checked = self.mode == PaletteMode::Multi && match &row {
                                     PaletteRow::Recent { wt_path, .. } | PaletteRow::Combo { wt_path, .. } => fs_err::canonicalize(wt_path)
                                         .ok().is_some_and(|path| self.selected_worktrees.contains(&path.to_string_lossy())),
                                     _ => false,
@@ -738,7 +907,7 @@ impl Render for WorktreeLauncher {
                                         if let Some(current) = launcher::resolve_row_by_identity(&rows, Some(&identity), index) {
                                             this.selected = current;
                                             this.anchor = Some(identity.clone());
-                                            if this.selected_worktrees.count() > 0 && matches!(identity, RowIdentity::Session { .. }) {
+                                            if this.mode == PaletteMode::Multi && matches!(identity, RowIdentity::Session { .. }) {
                                                 this.toggle_selected_row(cx);
                                             } else {
                                                 this.activate(window, cx);
@@ -747,8 +916,40 @@ impl Render for WorktreeLauncher {
                                     }))
                             })),
                     )
-                    .when_some(self.error.clone(), |panel, error| panel.child(
+                    .when_some(self.error.clone().filter(|_| !compact), |panel, error| panel.child(
                         div().px(rpx(SPACE_3XL)).pb(rpx(SPACE_LG)).text_size(rpx(TEXT_SMALL)).text_color(c::RED()).child(error)
+                    ))
+                    .when(self.mode == PaletteMode::Multi && !self.loading_worktrees, |panel| panel.child(
+                        div()
+                            .px(rpx(SPACE_3XL))
+                            .pb(rpx(if compact { SPACE_SM } else { SPACE_LG }))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(rpx(SPACE_LG))
+                            .child(div().debug_selector(|| "worktree-launcher-selected-count".into())
+                                .min_w_0().text_size(rpx(TEXT_SMALL)).text_color(c::FG_MUTE())
+                                .child(format!("{selected_count} selected")))
+                            .child(div()
+                                .id("worktree-launcher-launch-selected")
+                                .debug_selector(|| "worktree-launcher-launch-selected".into())
+                                .role(gpui::Role::Button)
+                                .aria_label(format!("Launch {selected_count} selected worktrees"))
+                                .tab_index(-1)
+                                .px(rpx(SPACE_2XL))
+                                .h(rpx(if compact { CONTROL_H } else { APPBAR_H }))
+                                .rounded(rpx(RADIUS_CONTROL))
+                                .bg(c::BG_HL())
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_SM))
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG())
+                                .hover(|button| button.bg(c::BG_HOVER()))
+                                .focus_visible(|button| button.border_1().border_color(c::FG()))
+                                .child(div().w(rpx(ICON_SM)).flex_shrink_0().child(icon("play", ICON_SM, c::FG())))
+                                .child("Launch selected")
+                                .on_click(cx.listener(|this, _, window, cx| this.activate(window, cx))))
                     ))
                     .child(
                         div()
@@ -757,16 +958,25 @@ impl Render for WorktreeLauncher {
                             .border_t_1()
                             .border_color(c::BORDER_SOFT())
                             .px(rpx(SPACE_3XL))
-                            .py(rpx(SPACE_LG))
+                            .py(rpx(if compact { SPACE_SM } else { SPACE_LG }))
                             .text_size(rpx(TEXT_SMALL))
                             .text_color(c::FG_MUTE())
-                            .child(if selected_count > 0 {
-                                format!("Shift+Space toggle  ·  Enter launch with selected tool  ·  {selected_count} selected  ·  Esc close")
-                            } else if compact {
-                                "↑↓ rows · Tab tools · ↵ activate · Esc close".to_string()
-                            } else {
-                                "↑↓ navigate  ·  Tab tools  ·  ←→ choose tool  ·  Shift+Space select  ·  Enter activate  ·  Esc close".to_string()
-                            }),
+                            .when_some(self.error.clone().filter(|_| compact), |footer, error| footer.child(
+                                div()
+                                    .debug_selector(|| "worktree-launcher-compact-error".into())
+                                    .text_color(c::RED())
+                                    .child(error)
+                            ))
+                            .when(!compact || self.error.is_none(), |footer| footer.child(match self.mode {
+                                PaletteMode::Root if compact => "↑↓ · Tab tools · Enter · Esc",
+                                _ if self.loading_worktrees && compact => "Loading worktrees… · Esc back",
+                                _ if self.loading_worktrees => "Loading worktrees… · Search is ready · Esc back",
+                                PaletteMode::Single if compact => "↑↓ · Tab tools · Enter start · Esc",
+                                PaletteMode::Multi if compact => "↑↓ · ⇧Space · Tab · Enter · Esc",
+                                PaletteMode::Root => "↑↓ rows · Tab tools · Enter activate · Esc close",
+                                PaletteMode::Single => "↑↓ worktrees · Tab tools · Enter start session · Esc back",
+                                PaletteMode::Multi => "↑↓ worktrees · Shift+Space select · Tab tools · Enter launch selected · Esc back",
+                            })),
                     ),
             )
     }
@@ -874,6 +1084,309 @@ mod tests {
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
+        });
+    }
+
+    fn enter_picker(
+        launcher: &mut WorktreeLauncher,
+        command: PaletteRow,
+        window: &mut Window,
+        cx: &mut Context<WorktreeLauncher>,
+    ) {
+        let rows = launcher.rows(cx);
+        let index = rows
+            .iter()
+            .position(|row| *row == command)
+            .expect("picker command");
+        launcher.selected = index;
+        launcher.anchor = Some(launcher::row_identity(&rows[index]));
+        launcher.activate(window, cx);
+    }
+
+    #[gpui::test]
+    fn picker_keeps_search_ready_and_waits_for_other_projects_cold_worktree_cache(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let temp = TempProjects(std::env::temp_dir().join(format!(
+            "grove-palette-cold-cache-{}-{unique}",
+            std::process::id()
+        )));
+        fs_err::create_dir(&temp.0).expect("temporary project parent");
+        let grove = temp.0.join("grove");
+        let api = temp.0.join("api");
+        let feature = temp.0.join("feature-auth");
+        for project in [&grove, &api] {
+            assert!(Command::new("git")
+                .args(["init", "-q"])
+                .arg(project)
+                .status()
+                .expect("git init")
+                .success());
+        }
+        assert!(Command::new("git")
+            .args(["-C"])
+            .arg(&api)
+            .args([
+                "-c",
+                "user.name=grove-test",
+                "-c",
+                "user.email=grove-test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "Initial commit",
+            ])
+            .status()
+            .expect("git commit")
+            .success());
+        assert!(Command::new("git")
+            .args(["-C"])
+            .arg(&api)
+            .args(["worktree", "add", "-q", "-b", "feature-auth"])
+            .arg(&feature)
+            .status()
+            .expect("git worktree add")
+            .success());
+        let grove = fs_err::canonicalize(grove)
+            .expect("Grove project")
+            .to_string_lossy()
+            .into_owned();
+        let api = fs_err::canonicalize(api)
+            .expect("API project")
+            .to_string_lossy()
+            .into_owned();
+        let feature = fs_err::canonicalize(feature)
+            .expect("API worktree")
+            .to_string_lossy()
+            .into_owned();
+
+        cx.update(|cx| {
+            setup(cx);
+            let store = &mut cx.global_mut::<SettingsState>().store;
+            store.projects = vec![project("Grove", &grove), project("API", &api)];
+            store.project_workspaces.clear();
+            store.assign_project_to_active_workspace(&grove);
+            store.assign_project_to_active_workspace(&api);
+        });
+        let (launcher, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar =
+                cx.new(|cx| super::super::sidebar::Sidebar::new(runtime.clone(), window, cx));
+            WorktreeLauncher::new(runtime, sidebar, window, cx)
+        });
+        cx.update(|window, cx| {
+            launcher.update(cx, |view, cx| {
+                let tree = view.runtime.read(cx).tree.clone();
+                assert!(tree.read(cx).worktrees_for_project(1, 0).is_empty());
+                view.launch_probe = Some(Vec::new());
+                view.open(window, cx);
+                enter_picker(view, PaletteRow::NewSession, window, cx);
+                assert!(view.loading_worktrees);
+                assert!(view.input.focus_handle(cx).is_focused(window));
+                assert!(view.rows(cx).is_empty());
+                assert!(view.selected_row(cx).is_none());
+                view.update_query("API feature-auth".into(), cx);
+                assert!(view.rows(cx).is_empty());
+                view.activate(window, cx);
+                assert!(view.is_open());
+                assert!(view.launch_probe.as_ref().is_some_and(Vec::is_empty));
+                tree.update(cx, |tree, _| tree.rebuild_wt_cache());
+            });
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            launcher.update(cx, |view, cx| {
+                assert!(!view.loading_worktrees);
+                assert!(view.input.focus_handle(cx).is_focused(window));
+                assert_eq!(view.rows(cx).len(), 1);
+                assert!(matches!(view.selected_row(cx),
+                    Some(PaletteRow::Combo { proj: 1, wt_path, .. }) if wt_path == feature
+                ));
+                view.close(window, cx);
+                view.open(window, cx);
+                enter_picker(view, PaletteRow::NewMultiProjectSession, window, cx);
+                assert!(!view.loading_worktrees);
+                assert!(view.rows(cx).iter().any(|row| matches!(row,
+                    PaletteRow::Combo { proj: 1, wt_path, .. } if wt_path == &feature
+                )));
+                view.update_query("API feature-auth".into(), cx);
+                assert_eq!(view.rows(cx).len(), 1);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn new_session_keystrokes_keep_search_focused_and_launch_other_project(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let temp = TempProjects(
+            std::env::temp_dir().join(format!("grove-palette-api-{}-{unique}", std::process::id())),
+        );
+        fs_err::create_dir(&temp.0).expect("temporary project parent");
+        let api = temp.0.join("feature-auth");
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .arg(&api)
+            .status()
+            .expect("git init")
+            .success());
+        let api = fs_err::canonicalize(&api)
+            .expect("API project")
+            .to_string_lossy()
+            .into_owned();
+        cx.update(|cx| {
+            setup(cx);
+            let store = &mut cx.global_mut::<SettingsState>().store;
+            store.projects.push(project("API", &api));
+            store.assign_project_to_active_workspace(&api);
+            store.default_agent = Some(Agent::Terminal);
+        });
+        let (launcher, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar =
+                cx.new(|cx| super::super::sidebar::Sidebar::new(runtime.clone(), window, cx));
+            WorktreeLauncher::new(runtime, sidebar, window, cx)
+        });
+        cx.update(|window, cx| {
+            launcher.update(cx, |view, cx| {
+                view.launch_probe = Some(Vec::new());
+                view.open(window, cx);
+            });
+        });
+        draw(cx);
+        cx.simulate_input("new session");
+        draw(cx);
+        cx.update(|_, cx| {
+            assert_eq!(
+                launcher.read(cx).selected_row(cx),
+                Some(PaletteRow::NewSession)
+            );
+        });
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        cx.update(|window, cx| {
+            let view = launcher.read(cx);
+            assert_eq!(view.mode, PaletteMode::Single);
+            assert!(view.input.focus_handle(cx).is_focused(window));
+        });
+        cx.simulate_input("API feature-auth");
+        draw(cx);
+        cx.update(|window, cx| {
+            let view = launcher.read(cx);
+            assert!(view.input.focus_handle(cx).is_focused(window));
+            assert!(matches!(view.selected_row(cx), Some(PaletteRow::Combo { wt_path, .. }) if wt_path == api));
+            assert_eq!(view.rows(cx).len(), 1);
+        });
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        cx.update(|_, cx| {
+            let view = launcher.read(cx);
+            assert!(!view.is_open());
+            assert_eq!(
+                view.launch_probe.as_deref(),
+                Some(&[(vec![api], Agent::Terminal)][..])
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn picker_escape_clears_multi_selection_before_single_launch(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        let (launcher, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar =
+                cx.new(|cx| super::super::sidebar::Sidebar::new(runtime.clone(), window, cx));
+            WorktreeLauncher::new(runtime, sidebar, window, cx)
+        });
+        let prior = cx.update(|window, cx| {
+            let prior = cx.focus_handle();
+            prior.focus(window, cx);
+            launcher.update(cx, |view, cx| {
+                view.launch_probe = Some(Vec::new());
+                view.open(window, cx);
+                enter_picker(view, PaletteRow::NewMultiProjectSession, window, cx);
+            });
+            prior
+        });
+        draw(cx);
+        cx.simulate_keystrokes("shift-space escape");
+        draw(cx);
+        cx.update(|window, cx| {
+            let view = launcher.read(cx);
+            assert_eq!(view.mode, PaletteMode::Root);
+            assert_eq!(view.selected_worktrees.count(), 0);
+            assert!(view.query.is_empty());
+            assert!(view.input.focus_handle(cx).is_focused(window));
+        });
+        let selected_path = cx.update(|window, cx| {
+            launcher.update(cx, |view, cx| {
+                enter_picker(view, PaletteRow::NewSession, window, cx);
+                assert_eq!(view.mode, PaletteMode::Single);
+                assert_eq!(view.selected_worktrees.count(), 0);
+                let RowIdentity::Session { wt_path, .. } =
+                    launcher::row_identity(&view.selected_row(cx).expect("highlighted worktree"))
+                else {
+                    panic!("picker must highlight a worktree");
+                };
+                view.agent_selected = launcher::agent_sel_for(&Agent::ALL, Agent::Terminal);
+                view.activate(window, cx);
+                wt_path
+            })
+        });
+        cx.update(|_, cx| {
+            let view = launcher.read(cx);
+            assert_eq!(
+                view.launch_probe.as_deref(),
+                Some(&[(vec![selected_path], Agent::Terminal)][..])
+            );
+        });
+        cx.update(|window, cx| launcher.update(cx, |view, cx| view.open(window, cx)));
+        cx.update(|_, cx| assert_eq!(launcher.read(cx).mode, PaletteMode::Root));
+        cx.simulate_keystrokes("escape");
+        cx.update(|window, _| assert!(prior.is_focused(window)));
+    }
+
+    #[gpui::test]
+    fn single_no_match_and_multi_empty_selection_do_not_launch(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        let (launcher, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar =
+                cx.new(|cx| super::super::sidebar::Sidebar::new(runtime.clone(), window, cx));
+            WorktreeLauncher::new(runtime, sidebar, window, cx)
+        });
+        cx.update(|window, cx| {
+            launcher.update(cx, |view, cx| {
+                view.open(window, cx);
+                enter_picker(view, PaletteRow::NewSession, window, cx);
+                view.update_query("no matching worktree".into(), cx);
+                assert!(view.rows(cx).is_empty());
+                view.activate(window, cx);
+                assert!(view.is_open());
+                assert!(view.runtime.read(cx).registry.read(cx).all().is_empty());
+                view.close(window, cx);
+                view.open(window, cx);
+                enter_picker(view, PaletteRow::NewMultiProjectSession, window, cx);
+            });
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            launcher.update(cx, |view, cx| {
+                view.activate(window, cx);
+                assert_eq!(view.error.as_deref(), Some("Select one or more worktrees."));
+                assert!(view.runtime.read(cx).registry.read(cx).all().is_empty());
+            });
         });
     }
 
@@ -1093,6 +1606,11 @@ mod tests {
             WorktreeLauncher::new(runtime, sidebar, window, cx)
         });
         cx.update(|window, cx| launcher.update(cx, |launcher, cx| launcher.open(window, cx)));
+        cx.update(|window, cx| {
+            launcher.update(cx, |launcher, cx| {
+                enter_picker(launcher, PaletteRow::NewMultiProjectSession, window, cx);
+            });
+        });
         draw(cx);
         cx.simulate_keystrokes("shift-space");
         draw(cx);
@@ -1156,9 +1674,15 @@ mod tests {
         cx.update(|window, cx| {
             launcher.update(cx, |launcher, cx| {
                 launcher.open(window, cx);
+                enter_picker(launcher, PaletteRow::NewMultiProjectSession, window, cx);
                 launcher
                     .selected_worktrees
                     .toggle("/grove-launcher-test-stale");
+            });
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            launcher.update(cx, |launcher, cx| {
                 launcher.activate(window, cx);
                 assert_eq!(
                     launcher.error.as_deref(),
@@ -1276,7 +1800,14 @@ mod tests {
         });
         cx.update(|window, cx| {
             launcher.update(cx, |launcher, cx| {
+                launcher.launch_probe = Some(Vec::new());
                 launcher.open(window, cx);
+                enter_picker(launcher, PaletteRow::NewMultiProjectSession, window, cx);
+            });
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            launcher.update(cx, |launcher, cx| {
                 let rows = launcher.rows(cx);
                 for target in [&second, &first] {
                     let index = rows
@@ -1292,11 +1823,10 @@ mod tests {
                 launcher.activate(window, cx);
                 assert!(!launcher.is_open());
             });
-            let runtime = launcher.read(cx).runtime.clone();
-            let registry = runtime.read(cx).registry.read(cx);
-            assert_eq!(registry.all().len(), 1);
-            let roots = &registry.all()[0].context_roots;
-            assert_eq!(roots.iter().map(|root| root.wt_path.as_str()).collect::<Vec<_>>(), vec![second.as_str(), first.as_str()]);
+            assert_eq!(
+                launcher.read(cx).launch_probe.as_deref(),
+                Some(&[(vec![second.clone(), first.clone()], Agent::Terminal)][..])
+            );
         });
     }
 
@@ -1346,7 +1876,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn successful_launch_records_recent_and_closes(cx: &mut gpui::TestAppContext) {
+    fn valid_recent_target_routes_once_and_invalid_retry_stays_open(cx: &mut gpui::TestAppContext) {
         cx.update(setup);
         let (launcher, cx) = cx.add_window_view(|window, cx| {
             let runtime = cx.new(Runtime::new);
@@ -1357,46 +1887,18 @@ mod tests {
         cx.update(|window, cx| {
             let path = env!("CARGO_MANIFEST_DIR").to_string();
             launcher.update(cx, |launcher, cx| {
+                launcher.launch_probe = Some(Vec::new());
                 launcher.open(window, cx);
-                launcher.launch(
-                    RowIdentity::Session {
-                        proj: 0,
-                        wt_path: path.clone(),
-                        agent: Agent::Terminal,
-                    },
-                    Agent::Terminal,
-                    window,
-                    cx,
-                );
+                assert!(matches!(
+                    launcher.selected_row(cx),
+                    Some(PaletteRow::Recent { proj: 0, .. })
+                ));
+                launcher.activate(window, cx);
                 assert!(!launcher.is_open());
             });
-            let recent = &cx.global::<SettingsState>().store.recent_launches;
-            assert_eq!(recent[0].project, "current");
-            assert_eq!(recent[0].wt_path, path);
-            assert_eq!(recent[0].agent, Agent::Terminal);
             assert_eq!(
-                recent
-                    .iter()
-                    .filter(|item| item.project == "current"
-                        && item.wt_path == path
-                        && item.agent == Agent::Terminal)
-                    .count(),
-                1
-            );
-            let sidebar = launcher.read(cx).sidebar.clone();
-            let selected = sidebar
-                .read(cx)
-                .selected_session()
-                .expect("new canvas selection");
-            assert_eq!(
-                launcher
-                    .read(cx)
-                    .runtime
-                    .read(cx)
-                    .state
-                    .read(cx)
-                    .active_session(),
-                Some(selected)
+                launcher.read(cx).launch_probe.as_deref(),
+                Some(&[(vec![path], Agent::Terminal)][..])
             );
             launcher.update(cx, |launcher, cx| {
                 launcher.open(window, cx);
@@ -1412,7 +1914,10 @@ mod tests {
                 );
                 assert!(launcher.is_open());
             });
-            assert_eq!(sidebar.read(cx).selected_session(), Some(selected));
+            assert_eq!(
+                launcher.read(cx).launch_probe.as_ref().map(Vec::len),
+                Some(1)
+            );
         });
     }
 
@@ -1495,6 +2000,96 @@ mod tests {
                     cx.notify();
                 });
             });
+        }
+    }
+
+    #[gpui::test]
+    fn picker_keeps_a_full_row_and_actions_visible_at_minimum_viewport(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(setup);
+        let (launcher, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar =
+                cx.new(|cx| super::super::sidebar::Sidebar::new(runtime.clone(), window, cx));
+            WorktreeLauncher::new(runtime, sidebar, window, cx)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(320.0), gpui::px(200.0)));
+        for command in [PaletteRow::NewSession, PaletteRow::NewMultiProjectSession] {
+            cx.update(|window, cx| {
+                launcher.update(cx, |launcher, cx| {
+                    launcher.close(window, cx);
+                    launcher.open(window, cx);
+                    enter_picker(launcher, command.clone(), window, cx);
+                });
+            });
+            draw(cx);
+            let panel = cx.debug_bounds("worktree-launcher-panel").expect("panel");
+            let search = cx.debug_bounds("worktree-launcher-search").expect("search");
+            let list = cx.debug_bounds("worktree-launcher-list").expect("list");
+            let row = cx.debug_bounds("launcher-row-0").expect("first worktree");
+            let footer = cx.debug_bounds("worktree-launcher-footer").expect("footer");
+            assert!(panel.top() >= gpui::px(0.0) && panel.bottom() <= gpui::px(200.0));
+            assert!(search.top() >= panel.top() && search.bottom() <= list.top());
+            assert!(
+                row.top() >= list.top() && row.bottom() <= list.bottom(),
+                "{command:?}: row {row:?}, list {list:?}"
+            );
+            assert!(list.bottom() <= footer.top() && footer.bottom() <= panel.bottom());
+            assert!(footer.left() >= panel.left() && footer.right() <= panel.right());
+            if command == PaletteRow::NewMultiProjectSession {
+                let action = cx
+                    .debug_bounds("worktree-launcher-launch-selected")
+                    .expect("launch action");
+                let count = cx
+                    .debug_bounds("worktree-launcher-selected-count")
+                    .expect("selected count");
+                assert!(action.top() >= row.bottom() && action.bottom() <= footer.top());
+                assert!(count.top() >= row.bottom() && count.bottom() <= footer.top());
+                assert!(count.right() <= action.left());
+                assert!(action.right() <= panel.right());
+
+                cx.update(|window, cx| {
+                    launcher.update(cx, |launcher, cx| launcher.activate(window, cx));
+                    assert_eq!(
+                        launcher.read(cx).error.as_deref(),
+                        Some("Select one or more worktrees.")
+                    );
+                });
+                draw(cx);
+                let panel = cx
+                    .debug_bounds("worktree-launcher-panel")
+                    .expect("error panel");
+                let search = cx
+                    .debug_bounds("worktree-launcher-search")
+                    .expect("error search");
+                let list = cx
+                    .debug_bounds("worktree-launcher-list")
+                    .expect("error list");
+                let row = cx
+                    .debug_bounds("launcher-row-0")
+                    .expect("error worktree row");
+                let count = cx
+                    .debug_bounds("worktree-launcher-selected-count")
+                    .expect("error count");
+                let action = cx
+                    .debug_bounds("worktree-launcher-launch-selected")
+                    .expect("error action");
+                let footer = cx
+                    .debug_bounds("worktree-launcher-footer")
+                    .expect("error footer");
+                let error = cx
+                    .debug_bounds("worktree-launcher-compact-error")
+                    .expect("specific error");
+                assert!(panel.top() >= gpui::px(0.0) && panel.bottom() <= gpui::px(200.0));
+                assert!(search.top() >= panel.top() && search.bottom() <= list.top());
+                assert!(row.top() >= list.top() && row.bottom() <= list.bottom());
+                assert!(count.top() >= row.bottom() && count.bottom() <= footer.top());
+                assert!(action.top() >= row.bottom() && action.bottom() <= footer.top());
+                assert!(footer.top() >= action.bottom() && footer.bottom() <= panel.bottom());
+                assert!(error.top() >= footer.top() && error.bottom() <= footer.bottom());
+                assert!(error.left() >= footer.left() && error.right() <= footer.right());
+            }
         }
     }
 }
