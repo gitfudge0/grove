@@ -250,7 +250,7 @@ GPUI implementation constraint: 24px leading/flexible identity/48px status/28px 
 | Used in frame refs | A1 A4 C4 D1 D6 E1 E2 E3 E4 F1 F4 F5 G3 |
 | Target framework | `worktree-row` · **adapt** · Adapted rows::render_row(TreeRow::Worktree, RowCtx). Source: `src/views/rows.rs`. |
 
-GPUI implementation constraint: Fixed slots and nonwrapping branch metadata; distinguish main/branch and zero sessions. Focus or hover reveals stable three-agent strip. Preserve SpawnAgent dispatch, and avoid clipping ring or shifting identity during reveal.
+GPUI implementation constraint: Fixed slots and nonwrapping branch metadata; distinguish main/branch and zero sessions. A collapsed row keeps the disclosure chevron clear, places its activity dot beside the right-aligned session count, and hides direct-start controls. An expanded row reveals the stable agent strip on hover or keyboard focus with backing matched to the row surface. Preserve SpawnAgent dispatch, and avoid clipping ring or shifting identity during reveal.
 
 ### Session row
 

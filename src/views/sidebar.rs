@@ -1074,6 +1074,11 @@ impl Sidebar {
     ) -> Stateful<Div> {
         let label = label.into();
         let click = action.clone();
+        let unselected_worktree_row = matches!(
+            &action,
+            Action::Select(selection @ Selection::Worktree(..))
+                if self.selection.as_ref() != Some(selection)
+        );
         let danger = matches!(action, Action::ConfirmWorktreeRemoval);
         let primary = matches!(action, Action::DismissWorktreeRemoval);
         let confirm = matches!(
@@ -1115,7 +1120,11 @@ impl Sidebar {
                 } else if primary {
                     s.bg(c::FG_DIM()).text_color(c::BG())
                 } else {
-                    s.bg(c::BG_HOVER())
+                    s.bg(if unselected_worktree_row {
+                        c::BG_RAIL()
+                    } else {
+                        c::BG_HOVER()
+                    })
                 }
             })
             .focus_visible(move |s| {
@@ -1124,7 +1133,11 @@ impl Sidebar {
                 } else if primary {
                     s.bg(c::FG_DIM()).text_color(c::BG())
                 } else {
-                    s.bg(c::BG_HOVER())
+                    s.bg(if unselected_worktree_row {
+                        c::BG_RAIL()
+                    } else {
+                        c::BG_HOVER()
+                    })
                 }
             })
             .tooltip(move |window, cx| {
@@ -2734,14 +2747,25 @@ impl Sidebar {
                     })
                     .flatten();
                 let selection = Selection::Worktree(idx, path.clone());
+                let selected = self.selection == Some(selection.clone());
                 let focused = self
                     .worktree_focus
                     .get(&path)
                     .is_some_and(|f| f.contains_focused(window, cx));
                 let mut launches = div()
+                    .absolute()
+                    .right_0()
+                    .w(rpx(
+                        CHROME_CONTROL_H * if worktree.is_main { 5.0 } else { 6.0 }
+                    ))
+                    .h(rpx(CHROME_CONTROL_H))
                     .flex()
                     .flex_shrink_0()
-                    .when(self.compact_rail, |d| d.bg(c::BG_RAIL()))
+                    .bg(if selected {
+                        c::BG_HOVER()
+                    } else {
+                        c::BG_RAIL()
+                    })
                     .opacity(if focused { 1.0 } else { 0.0 })
                     .group_hover("worktree-row", |s| s.opacity(1.0));
                 for (n, agent) in WORKTREE_LAUNCH_AGENTS.into_iter().enumerate() {
@@ -2824,7 +2848,7 @@ impl Sidebar {
                     self.row(
                         format!("worktree-{path}"),
                         format!("{} · {}", worktree.name, worktree.branch),
-                        self.selection == Some(selection.clone()),
+                        selected,
                         Action::Select(selection),
                         cx,
                     )
@@ -2836,6 +2860,7 @@ impl Sidebar {
                     )
                     .h(rpx(ROW_H))
                     .px(rpx(SPACE_LG))
+                    .pl(rpx(SPACE_LG + SPACE_2XL))
                     .gap(rpx(SPACE_LG))
                     .text_size(rpx(TEXT_BODY))
                     .text_color(c::alpha(c::FG(), 0.88))
@@ -2850,40 +2875,15 @@ impl Sidebar {
                             Action::Worktree(path.clone()),
                             cx,
                         )
-                        .child(
-                            div()
-                                .relative()
-                                .size(rpx(ICON_XS))
-                                .child(icon(
-                                    if collapsed { "chev-right" } else { "chev-down" },
-                                    ICON_XS,
-                                    c::FG_DIM(),
-                                ))
-                                .when_some(rollup, |fold, (status, color)| {
-                                    fold.child(
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "worktree-activity-{path}"
-                                            )))
-                                            .debug_selector({
-                                                let path = path.clone();
-                                                move || format!("worktree-activity-{path}")
-                                            })
-                                            .role(gpui::Role::Image)
-                                            .aria_label(format!("{}: {status}", worktree.name))
-                                            .tooltip(move |window, cx| {
-                                                gpui_component::tooltip::Tooltip::new(status)
-                                                    .build(window, cx)
-                                            })
-                                            .absolute()
-                                            .bottom_0()
-                                            .right_0()
-                                            .size(rpx(DOT_SM))
-                                            .rounded_full()
-                                            .bg(color),
-                                    )
-                                }),
-                        ),
+                        .debug_selector({
+                            let path = path.clone();
+                            move || format!("fold-{path}")
+                        })
+                        .child(div().size(rpx(ICON_XS)).child(icon(
+                            if collapsed { "chev-right" } else { "chev-down" },
+                            ICON_XS,
+                            c::FG_DIM(),
+                        ))),
                     )
                     .child(
                         div()
@@ -2906,11 +2906,32 @@ impl Sidebar {
                             })
                             .relative()
                             .w(rpx(
-                                CHROME_CONTROL_H * if worktree.is_main { 5.0 } else { 6.0 }
+                                CHROME_CONTROL_H * 2.0 + if collapsed { SPACE_20 } else { 0.0 }
                             ))
-                            .when(self.compact_rail, |d| d.absolute().right_0())
                             .h(rpx(CHROME_CONTROL_H))
                             .flex_shrink_0()
+                            .when_some(rollup, |actions, (status, color)| {
+                                actions.child(
+                                    div()
+                                        .id(SharedString::from(format!("worktree-activity-{path}")))
+                                        .debug_selector({
+                                            let path = path.clone();
+                                            move || format!("worktree-activity-{path}")
+                                        })
+                                        .role(gpui::Role::Image)
+                                        .aria_label(format!("{}: {status}", worktree.name))
+                                        .tooltip(move |window, cx| {
+                                            gpui_component::tooltip::Tooltip::new(status)
+                                                .build(window, cx)
+                                        })
+                                        .absolute()
+                                        .left_0()
+                                        .top(rpx((CHROME_CONTROL_H - DOT_SM) / 2.0))
+                                        .size(rpx(DOT_SM))
+                                        .rounded_full()
+                                        .bg(color),
+                                )
+                            })
                             .child(
                                 div()
                                     .absolute()
@@ -2921,12 +2942,14 @@ impl Sidebar {
                                     .pr(rpx(CHROME_CONTROL_H + SPACE_LG))
                                     .text_size(rpx(TEXT_SMALL))
                                     .text_color(c::FG_DIM())
-                                    .opacity(if focused || self.compact_rail {
+                                    .opacity(if !collapsed && (focused || self.compact_rail) {
                                         0.0
                                     } else {
                                         1.0
                                     })
-                                    .group_hover("worktree-row", |s| s.opacity(0.0))
+                                    .when(!collapsed, |count| {
+                                        count.group_hover("worktree-row", |s| s.opacity(0.0))
+                                    })
                                     .child(
                                         div()
                                             .id(SharedString::from(format!(
@@ -2937,13 +2960,14 @@ impl Sidebar {
                                                 move || format!("worktree-count-{path}")
                                             })
                                             .w(rpx(CHROME_CONTROL_H))
+                                            .flex_shrink_0()
                                             .font_family(crate::fonts::MONO_FAMILY)
                                             .font_weight(gpui::FontWeight::NORMAL)
                                             .text_right()
                                             .child(format!("{}", worktree.sessions.len())),
                                     ),
                             )
-                            .child(launches),
+                            .when(!collapsed, |actions| actions.child(launches)),
                     ),
                 );
                 if !collapsed {
@@ -2951,7 +2975,7 @@ impl Sidebar {
                         body = body.child(
                             div()
                                 .id(SharedString::from(format!("worktree-empty-{path}")))
-                                .pl(rpx(SPACE_LG + CHROME_CONTROL_H + SPACE_LG))
+                                .pl(rpx(SPACE_LG + SPACE_2XL + CHROME_CONTROL_H + SPACE_LG))
                                 .py(rpx(SPACE_SM))
                                 .text_size(rpx(TEXT_SMALL))
                                 .text_color(c::FG_DIM())
@@ -3227,10 +3251,10 @@ impl Render for Sidebar {
                 div()
                     .id("sidebar-workspace-header")
                     .debug_selector(|| "sidebar-workspace-header".into())
-                    .h(rpx(HEAD_H + SPACE_2XL))
+                    .h(rpx(HEAD_H))
                     .flex_shrink_0()
                     .pl(rpx(SPACE_SM))
-                    .pr(rpx(SPACE_2XL))
+                    .pr(rpx(SPACE_3XL))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -4635,7 +4659,7 @@ mod tests {
             Box::leak(format!("worktree-actions-{path}").into_boxed_str());
         assert_eq!(
             f32::from(cx.debug_bounds(actions_selector).unwrap().size.width),
-            CHROME_CONTROL_H * 5.0
+            CHROME_CONTROL_H * 2.0
         );
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
@@ -4834,7 +4858,7 @@ mod tests {
                     .size
                     .width
             ),
-            CHROME_CONTROL_H * 6.0
+            CHROME_CONTROL_H * 2.0
         );
         let opencode = cx.debug_bounds(launch_ids[2]).unwrap().center();
         cx.simulate_mouse_down(
@@ -5038,7 +5062,10 @@ mod tests {
         let marker_selector = "worktree-activity-/grove-worktree-rollup-ui-test";
         let title_selector = "worktree-title-/grove-worktree-rollup-ui-test";
         let count_selector = "worktree-count-/grove-worktree-rollup-ui-test";
+        let fold_selector = "fold-/grove-worktree-rollup-ui-test";
+        let launch_selector = "launch-/grove-worktree-rollup-ui-test-0";
         assert!(cx.debug_bounds(marker_selector).is_none());
+        assert!(cx.debug_bounds(launch_selector).is_some());
         let title = cx.debug_bounds(title_selector).unwrap();
         let count = cx.debug_bounds(count_selector).unwrap();
 
@@ -5051,6 +5078,15 @@ mod tests {
         let marker = cx
             .debug_bounds(marker_selector)
             .expect("collapsed activity");
+        let fold = cx.debug_bounds(fold_selector).unwrap();
+        let collapsed_count = cx.debug_bounds(count_selector).unwrap();
+        assert!(marker.left() > fold.right());
+        assert!(
+            marker.right() <= collapsed_count.left(),
+            "marker={marker:?} count={collapsed_count:?} actions={:?}",
+            cx.debug_bounds("worktree-actions-/grove-worktree-rollup-ui-test")
+        );
+        assert!(cx.debug_bounds(launch_selector).is_none());
         assert!(cx
             .debug_bounds("worktree-/grove-worktree-rollup-ui-test")
             .unwrap()
@@ -5063,6 +5099,13 @@ mod tests {
             cx.debug_bounds(count_selector).unwrap().right(),
             count.right()
         );
+        let row_center = cx
+            .debug_bounds("worktree-/grove-worktree-rollup-ui-test")
+            .unwrap()
+            .center();
+        cx.simulate_mouse_move(row_center, None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds(launch_selector).is_none());
 
         cx.update(|_, cx| {
             sidebar.update(cx, |sidebar, cx| {
@@ -5105,6 +5148,7 @@ mod tests {
         });
         draw(cx);
         assert!(cx.debug_bounds(marker_selector).is_none());
+        assert!(cx.debug_bounds(launch_selector).is_some());
     }
 
     #[gpui::test]
@@ -5538,8 +5582,12 @@ mod tests {
         let empty = cx
             .debug_bounds("worktree-empty-/grove-sidebar-test-one")
             .unwrap();
-        assert_eq!(project_title.left(), worktree_title.left());
+        assert_eq!(
+            f32::from(worktree_title.left() - project_title.left()),
+            SPACE_2XL
+        );
         assert_eq!(project_title.size.height, worktree_title.size.height);
+        assert!(f32::from(worktree_title.size.width) >= CHROME_CONTROL_H * 4.0);
         assert_eq!(empty.size.height, worktree_title.size.height);
         assert_eq!(f32::from(worktree_title.size.height), SPACE_3XL);
         assert_eq!(empty.left(), worktree_title.left());
@@ -5547,6 +5595,13 @@ mod tests {
         let worktree_count = cx
             .debug_bounds("worktree-count-/grove-sidebar-test-one")
             .unwrap();
+        let worktree_actions = cx
+            .debug_bounds("worktree-actions-/grove-sidebar-test-one")
+            .unwrap();
+        assert_eq!(
+            f32::from(worktree_actions.size.width),
+            CHROME_CONTROL_H * 2.0
+        );
         assert_eq!(project_count.right(), worktree_count.right());
         assert_eq!(project_count.size.width, worktree_count.size.width);
         assert!(cx.debug_bounds("project-activity-0").is_none());
