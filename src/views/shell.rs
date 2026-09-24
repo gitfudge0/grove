@@ -1,8 +1,9 @@
 //! Grove's app-owned header and the empty canvas for the UI rebuild.
 use super::components::header_control;
 use super::settings_panel::{SettingsPanel, SettingsPanelEvent};
+use super::worktree_launcher::WorktreeLauncherEvent;
 use super::{rpx, tokens::*};
-use crate::{icons::icon, keymap as k, theme as c};
+use crate::{icons::icon, keymap as k, launcher::PaletteRow, theme as c};
 use crate::{runtime::Runtime, theme::ThemeState};
 use gpui::{
     actions, div, prelude::*, App, Context, Entity, FocusHandle, Focusable, MouseButton, Window,
@@ -43,6 +44,7 @@ pub struct Shell {
     launcher: Entity<super::worktree_launcher::WorktreeLauncher>,
     settings: Entity<SettingsPanel>,
     _settings_events: gpui::Subscription,
+    _launcher_events: gpui::Subscription,
     _sidebar_events: gpui::Subscription,
     switcher_open: bool,
     switcher_index: usize,
@@ -70,6 +72,10 @@ impl Shell {
             )
         });
         let settings = cx.new(|cx| SettingsPanel::new(runtime.clone(), cx));
+        let launcher_events = cx.subscribe_in(&launcher, window, |this, _, event, window, cx| {
+            let WorktreeLauncherEvent::Command(row) = event;
+            this.activate_palette_command(row.clone(), window, cx);
+        });
         let settings_events =
             cx.subscribe_in(
                 &settings,
@@ -95,6 +101,7 @@ impl Shell {
             launcher,
             settings,
             _settings_events: settings_events,
+            _launcher_events: launcher_events,
             _sidebar_events: sidebar_events,
             switcher_open: false,
             switcher_index: 0,
@@ -262,6 +269,62 @@ impl Shell {
 
     fn flush(&self, cx: &mut Context<Self>) {
         self.runtime.update(cx, Runtime::shutdown);
+    }
+
+    fn activate_palette_command(
+        &mut self,
+        row: PaletteRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match row {
+            PaletteRow::TerminalHome => self
+                .sidebar
+                .update(cx, |sidebar, cx| sidebar.add_terminal(window, cx)),
+            PaletteRow::TerminalWt => self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.add_worktree_terminal_from_palette(cx);
+            }),
+            PaletteRow::AddProject => self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.add_project_from_palette(window, cx);
+            }),
+            PaletteRow::RunScript => self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.run_selected_script_from_palette(window, cx);
+            }),
+            PaletteRow::ViewDiff => self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.open_selected_diff_from_palette(window, cx);
+            }),
+            PaletteRow::SwitchToSession => self.open_switcher(window, cx),
+            PaletteRow::Settings | PaletteRow::Setting(_) => {
+                self.settings
+                    .update(cx, |settings, cx| settings.open(window, cx));
+            }
+            PaletteRow::ReloadThemes => {
+                let errors = grove_core::theme::load_custom();
+                if !errors.is_empty() {
+                    tracing::warn!(
+                        count = errors.len(),
+                        "some custom themes could not be loaded"
+                    );
+                }
+                let active = cx.global::<ThemeState>();
+                let name = if active.follow_system {
+                    active
+                        .resolve_system_theme_name(active.system_mode)
+                        .to_string()
+                } else {
+                    cx.global::<crate::settings::SettingsState>()
+                        .store
+                        .theme
+                        .clone()
+                        .unwrap_or_else(|| active.dark_name.clone())
+                };
+                ThemeState::set_by_name(cx, &name);
+            }
+            PaletteRow::Recent { .. }
+            | PaletteRow::Combo { .. }
+            | PaletteRow::NewSession
+            | PaletteRow::NewMultiProjectSession => {}
+        }
     }
 
     fn set_zoom(&self, delta: f32, cx: &mut Context<Self>) {
@@ -1153,7 +1216,7 @@ mod tests {
         cx.simulate_keystrokes("tab");
         draw(cx);
         assert!(cx.debug_bounds("launcher-agent-0").is_some());
-        cx.simulate_keystrokes("escape escape");
+        cx.simulate_keystrokes("escape");
         draw(cx);
         cx.update(|_, cx| assert!(!shell.read(cx).launcher.read(cx).is_open()));
 
@@ -1299,6 +1362,26 @@ mod tests {
         cx.simulate_mouse_up(point, MouseButton::Left, gpui::Modifiers::default());
         draw(cx);
         cx.update(|_, cx| assert!(shell.read(cx).settings.read(cx).is_open()));
+    }
+
+    #[gpui::test]
+    fn palette_setting_command_opens_settings_panel(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.update(|window, cx| {
+            let launcher = shell.read(cx).launcher.clone();
+            launcher.update(cx, |launcher, cx| launcher.open(window, cx));
+        });
+        draw(cx);
+        cx.simulate_input("app theme");
+        draw(cx);
+        assert!(cx.debug_bounds("launcher-row-0").is_some());
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        cx.update(|_, cx| {
+            assert!(!shell.read(cx).launcher.read(cx).is_open());
+            assert!(shell.read(cx).settings.read(cx).is_open());
+        });
     }
 
     #[gpui::test]

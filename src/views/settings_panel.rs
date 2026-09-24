@@ -343,6 +343,7 @@ impl SettingsPanel {
 
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event.keystroke.key.as_str() {
+            "escape" if self.page == Page::Shortcuts => self.close(window, cx),
             "escape" if self.page != Page::Settings => self.show(Page::Settings, cx),
             "escape" => self.close(window, cx),
             "tab" => {
@@ -1188,7 +1189,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn shortcuts_escape_and_narrow_layout_restore_focus(cx: &mut gpui::TestAppContext) {
+    fn shortcuts_escape_closes_overlay_and_restores_focus(cx: &mut gpui::TestAppContext) {
         cx.update(setup);
         let (panel, cx) = cx.add_window_view(|_, cx| {
             let runtime = cx.new(Runtime::new);
@@ -1207,14 +1208,31 @@ mod tests {
         assert!(f32::from(bounds.size.height) <= 200.0);
         cx.simulate_keystrokes("escape");
         draw(cx);
-        cx.update(|_, cx| {
-            assert_eq!(panel.read(cx).page, Page::Settings);
-            assert!(panel.read(cx).is_open());
-        });
-        cx.simulate_keystrokes("escape");
         cx.update(|window, cx| {
             assert!(!panel.read(cx).is_open());
             assert!(prior.is_focused(window));
+        });
+    }
+
+    #[gpui::test]
+    fn nested_settings_page_escape_returns_to_settings(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.open(window, cx);
+                panel.show(Page::Themes(ThemeKind::Dark), cx);
+            });
+        });
+        draw(cx);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|_, cx| {
+            assert!(panel.read(cx).is_open());
+            assert_eq!(panel.read(cx).page, Page::Settings);
         });
     }
 

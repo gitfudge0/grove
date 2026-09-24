@@ -201,7 +201,7 @@ impl SettingRow {
             SettingRow::Telemetry | SettingRow::Chrome => "check",
             SettingRow::Backend => "term",
             SettingRow::Permissions => "ring",
-            SettingRow::DefaultAgent => "sparkle",
+            SettingRow::DefaultAgent => "claude",
             SettingRow::CheckUpdates => "restart",
         }
     }
@@ -612,6 +612,16 @@ pub fn typed_rows(
     if scope == PaletteScope::WorktreesOnly {
         return rows;
     }
+    for (label, row) in [
+        ("new session", PaletteRow::NewSession),
+        ("terminal home", PaletteRow::TerminalHome),
+        ("terminal worktree", PaletteRow::TerminalWt),
+        ("switch to session", PaletteRow::SwitchToSession),
+    ] {
+        if !query.trim().is_empty() && fuzzy_match(query, label, "", "") {
+            rows.push(row);
+        }
+    }
     if !query.trim().is_empty()
         && fuzzy_match(
             query,
@@ -1016,6 +1026,21 @@ mod tests {
         for query in ["multi project", "multi repo", "multiple worktrees"] {
             assert!(typed_rows(query, &[], &[], false, false, PaletteScope::All)
                 .contains(&PaletteRow::NewMultiProjectSession));
+        }
+    }
+
+    #[test]
+    fn typed_action_search_restores_session_and_terminal_commands() {
+        for (query, expected) in [
+            ("new session", PaletteRow::NewSession),
+            ("terminal home", PaletteRow::TerminalHome),
+            ("terminal worktree", PaletteRow::TerminalWt),
+            ("switch to session", PaletteRow::SwitchToSession),
+        ] {
+            assert!(
+                typed_rows(query, &[], &[], false, false, PaletteScope::All).contains(&expected),
+                "missing {expected:?} for {query}"
+            );
         }
     }
 

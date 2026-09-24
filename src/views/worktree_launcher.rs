@@ -1,15 +1,16 @@
-//! Workspace-scoped worktree launcher. The fuzzy matcher and row identities live in `launcher`.
+//! Workspace-scoped command palette. The fuzzy matcher and row identities live in `launcher`.
 use super::{rpx, tokens::*};
 use crate::{
     entities::session_registry::SessionId,
+    icons::icon,
     launcher::{self, PaletteRow, PaletteScope, RowIdentity, WorktreeSelection},
     runtime::Runtime,
     settings::SettingsState,
     theme as c,
 };
 use gpui::{
-    div, prelude::*, App, Context, Entity, FocusHandle, Focusable, MouseButton, ScrollHandle,
-    Subscription, Window,
+    div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton,
+    ScrollHandle, Subscription, Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use grove_core::agent::Agent;
@@ -22,17 +23,11 @@ const PANEL_MAX_H: f32 = MODAL_SCROLL_MAX_H + APPBAR_H * 4.0;
 /// Keeps the title, search, one row, and footer readable at the minimum 320×200 window.
 const PANEL_MIN_H: f32 = APPBAR_H * 4.0 + SPACE_2XL * 2.0;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Step {
-    Worktrees,
-    Agents(LaunchTarget),
+pub enum WorktreeLauncherEvent {
+    Command(PaletteRow),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum LaunchTarget {
-    Single(RowIdentity),
-    Selected(Vec<String>),
-}
+impl EventEmitter<WorktreeLauncherEvent> for WorktreeLauncher {}
 
 pub struct WorktreeLauncher {
     runtime: Entity<Runtime>,
@@ -42,11 +37,12 @@ pub struct WorktreeLauncher {
     focus: FocusHandle,
     return_focus: Option<FocusHandle>,
     open: bool,
-    step: Step,
     query: String,
     selected: usize,
     anchor: Option<RowIdentity>,
     agent_selected: usize,
+    agent_touched: bool,
+    agent_focus: bool,
     selected_worktrees: WorktreeSelection,
     error: Option<String>,
     scroll: ScrollHandle,
@@ -75,11 +71,12 @@ impl WorktreeLauncher {
             focus: cx.focus_handle(),
             return_focus: None,
             open: false,
-            step: Step::Worktrees,
             query: String::new(),
             selected: 0,
             anchor: None,
             agent_selected: 0,
+            agent_touched: false,
+            agent_focus: false,
             selected_worktrees: WorktreeSelection::default(),
             error: None,
             scroll: ScrollHandle::new(),
@@ -96,8 +93,20 @@ impl WorktreeLauncher {
         self.selected =
             launcher::resolve_row_by_identity(&rows, self.anchor.as_ref(), 0).unwrap_or(0);
         self.anchor = rows.get(self.selected).map(launcher::row_identity);
+        self.sync_agent_to_row(&rows);
         self.error = None;
         cx.notify();
+    }
+
+    fn sync_agent_to_row(&mut self, rows: &[PaletteRow]) {
+        if self.agent_touched {
+            return;
+        }
+        if let Some(PaletteRow::Recent { agent, .. } | PaletteRow::Combo { agent, .. }) =
+            rows.get(self.selected)
+        {
+            self.agent_selected = launcher::agent_sel_for(&Agent::ALL, *agent);
+        }
     }
 
     pub fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -106,10 +115,15 @@ impl WorktreeLauncher {
         }
         self.return_focus = window.focused(cx);
         self.open = true;
-        self.step = Step::Worktrees;
         self.query.clear();
         self.selected = 0;
         self.anchor = None;
+        self.agent_selected = launcher::agent_sel_for(
+            &Agent::ALL,
+            preferred_agent(cx.global::<SettingsState>().store.default_agent),
+        );
+        self.agent_touched = false;
+        self.agent_focus = false;
         self.selected_worktrees.clear();
         self.error = None;
         self.scroll.set_offset(gpui::Point::default());
@@ -117,10 +131,12 @@ impl WorktreeLauncher {
             input.set_value("", window, cx);
             input.focus(window, cx);
         });
+        let rows = self.rows(cx);
+        self.sync_agent_to_row(&rows);
         cx.notify();
     }
 
-    /// Start the agent step for a worktree selected in the active workspace.
+    /// Focus the inline tool selector for a worktree selected in the active workspace.
     pub fn open_for_worktree(
         &mut self,
         project: usize,
@@ -132,6 +148,10 @@ impl WorktreeLauncher {
             return;
         }
         self.open(window, cx);
+        let target_query = worktree_name(path).to_string();
+        self.input
+            .update(cx, |input, cx| input.set_value(&target_query, window, cx));
+        self.update_query(target_query, cx);
         let Some((index, row)) = self.rows(cx).into_iter().enumerate().find(|(_, row)| {
             matches!(row, PaletteRow::Recent { proj, wt_path, .. } | PaletteRow::Combo { proj, wt_path, .. }
                 if *proj == project && wt_path == path)
@@ -142,12 +162,16 @@ impl WorktreeLauncher {
         };
         self.selected = index;
         self.anchor = Some(launcher::row_identity(&row));
-        self.choose_agent(window, cx);
+        if let PaletteRow::Recent { agent, .. } | PaletteRow::Combo { agent, .. } = row {
+            self.agent_selected = launcher::agent_sel_for(&Agent::ALL, agent);
+        }
+        self.agent_focus = true;
+        self.focus.focus(window, cx);
+        cx.notify();
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = false;
-        self.step = Step::Worktrees;
         self.selected_worktrees.clear();
         self.error = None;
         if let Some(focus) = self.return_focus.take() {
@@ -218,23 +242,59 @@ impl WorktreeLauncher {
                 seen.insert((*proj, path.clone()));
             }
         }
-        rows.extend(
-            launcher::typed_rows(
-                &self.query,
-                &combos,
-                &recent,
-                false,
-                false,
-                PaletteScope::WorktreesOnly,
-            )
-            .into_iter()
-            .filter(|row| match row {
-                PaletteRow::Combo { proj, wt_path, .. } => {
-                    !seen.contains(&(*proj, wt_path.clone()))
-                }
-                _ => false,
-            }),
-        );
+        let sidebar = self.sidebar.read(cx);
+        let has_script = sidebar.palette_has_run_script(cx);
+        let has_diff = sidebar.palette_has_diff(cx);
+        let has_worktree = sidebar.selected_worktree().is_some();
+        let has_session = !sidebar.visible_session_targets(cx).is_empty();
+        if self.query.trim().is_empty() {
+            if recent.is_empty() {
+                rows.extend(launcher::root_rows(
+                    &[],
+                    &combos
+                        .iter()
+                        .map(|(p, _, w, a)| (*p, w.clone(), *a))
+                        .collect::<Vec<_>>(),
+                    store.projects.len(),
+                    self.runtime.read(cx).state.read(cx).proj_idx(),
+                    has_script,
+                    has_diff,
+                ));
+            } else {
+                rows.truncate(launcher::MAX_ROOT_RECENTS);
+                rows.extend(
+                    launcher::root_rows(&[], &[], 0, 0, has_script, has_diff)
+                        .into_iter()
+                        .filter(|row| {
+                            !matches!(row, PaletteRow::Recent { .. } | PaletteRow::Combo { .. })
+                        }),
+                );
+            }
+            rows.dedup_by(|a, b| launcher::row_identity(a) == launcher::row_identity(b));
+        } else {
+            rows.extend(
+                launcher::typed_rows(
+                    &self.query,
+                    &combos,
+                    &recent,
+                    has_script,
+                    has_diff,
+                    PaletteScope::All,
+                )
+                .into_iter()
+                .filter(|row| match row {
+                    PaletteRow::Combo { proj, wt_path, .. } => {
+                        !seen.contains(&(*proj, wt_path.clone()))
+                    }
+                    _ => true,
+                }),
+            );
+        }
+        rows.retain(|row| match row {
+            PaletteRow::TerminalWt => has_worktree,
+            PaletteRow::SwitchToSession => has_session,
+            _ => true,
+        });
         rows
     }
 
@@ -242,34 +302,6 @@ impl WorktreeLauncher {
         let rows = self.rows(cx);
         let idx = launcher::resolve_row_by_identity(&rows, self.anchor.as_ref(), self.selected)?;
         rows.get(idx).cloned()
-    }
-
-    fn choose_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_worktrees.count() > 0 {
-            self.step = Step::Agents(LaunchTarget::Selected(
-                self.selected_worktrees.selected_targets(),
-            ));
-            self.agent_selected = launcher::agent_sel_for(
-                &available_agents(),
-                preferred_agent(cx.global::<SettingsState>().store.default_agent),
-            );
-            self.focus.focus(window, cx);
-            cx.notify();
-            return;
-        }
-        let Some(row) = self.selected_row(cx) else {
-            self.error = Some("Select one or more worktrees.".into());
-            cx.notify();
-            return;
-        };
-        let agent = match &row {
-            PaletteRow::Recent { agent, .. } | PaletteRow::Combo { agent, .. } => *agent,
-            _ => return,
-        };
-        self.step = Step::Agents(LaunchTarget::Single(launcher::row_identity(&row)));
-        self.agent_selected = launcher::agent_sel_for(&available_agents(), agent);
-        self.focus.focus(window, cx);
-        cx.notify();
     }
 
     fn launch(
@@ -364,35 +396,56 @@ impl WorktreeLauncher {
     }
 
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.step.clone() {
-            Step::Worktrees => {
-                if self.selected_worktrees.count() > 0 {
-                    self.choose_agent(window, cx);
-                    return;
-                }
-                if let Some(row) = self.selected_row(cx) {
-                    self.launch(
-                        launcher::row_identity(&row),
-                        match row {
-                            PaletteRow::Recent { agent, .. } | PaletteRow::Combo { agent, .. } => {
-                                agent
-                            }
-                            _ => return,
-                        },
-                        window,
-                        cx,
-                    );
+        let Some(agent) = Agent::ALL.get(self.agent_selected).copied() else {
+            return;
+        };
+        let row = self.selected_row(cx);
+        if self.selected_worktrees.count() > 0
+            && row.as_ref().is_none_or(|row| {
+                matches!(row, PaletteRow::Recent { .. } | PaletteRow::Combo { .. })
+            })
+        {
+            self.launch_roots(
+                self.selected_worktrees.selected_targets(),
+                agent,
+                window,
+                cx,
+            );
+            return;
+        }
+        let Some(row) = row else {
+            return;
+        };
+        match row {
+            PaletteRow::Recent { .. } | PaletteRow::Combo { .. } => {
+                self.launch(launcher::row_identity(&row), agent, window, cx);
+            }
+            PaletteRow::NewSession | PaletteRow::NewMultiProjectSession => {
+                self.query.clear();
+                self.input
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                if let Some((index, row)) =
+                    self.rows(cx).into_iter().enumerate().find(|(_, row)| {
+                        matches!(row, PaletteRow::Recent { .. } | PaletteRow::Combo { .. })
+                    })
+                {
+                    self.selected = index;
+                    self.anchor = Some(launcher::row_identity(&row));
+                    let rows = self.rows(cx);
+                    self.sync_agent_to_row(&rows);
+                    if matches!(row, PaletteRow::Recent { .. } | PaletteRow::Combo { .. }) {
+                        self.agent_focus = true;
+                    }
+                    self.focus.focus(window, cx);
+                    cx.notify();
+                } else {
+                    self.close(window, cx);
+                    cx.emit(WorktreeLauncherEvent::Command(PaletteRow::AddProject));
                 }
             }
-            Step::Agents(target) => {
-                if let Some(agent) = available_agents().get(self.agent_selected).copied() {
-                    match target {
-                        LaunchTarget::Single(identity) => self.launch(identity, agent, window, cx),
-                        LaunchTarget::Selected(paths) => {
-                            self.launch_roots(paths, agent, window, cx);
-                        }
-                    }
-                }
+            command => {
+                self.close(window, cx);
+                cx.emit(WorktreeLauncherEvent::Command(command));
             }
         }
     }
@@ -431,37 +484,46 @@ impl WorktreeLauncher {
         }
         let key = &event.keystroke;
         match key.key.as_str() {
-            "escape" => {
-                if matches!(self.step, Step::Agents(_)) {
-                    self.step = Step::Worktrees;
-                    self.input.update(cx, |input, cx| input.focus(window, cx));
-                    cx.notify();
-                } else {
-                    self.close(window, cx);
-                }
-            }
+            "escape" => self.close(window, cx),
             "down" | "up" => {
-                let (len, selected) = match self.step {
-                    Step::Worktrees => (self.rows(cx).len(), &mut self.selected),
-                    Step::Agents(_) => (available_agents().len(), &mut self.agent_selected),
-                };
-                *selected = launcher::cycle(*selected, if key.key == "down" { 1 } else { -1 }, len);
-                if matches!(self.step, Step::Worktrees) {
-                    self.anchor = self.rows(cx).get(self.selected).map(launcher::row_identity);
-                    self.scroll.scroll_to_item(self.selected);
-                }
+                self.selected = launcher::cycle(
+                    self.selected,
+                    if key.key == "down" { 1 } else { -1 },
+                    self.rows(cx).len(),
+                );
+                self.anchor = self.rows(cx).get(self.selected).map(launcher::row_identity);
+                let rows = self.rows(cx);
+                self.sync_agent_to_row(&rows);
+                self.scroll.scroll_to_item(self.selected);
                 cx.notify();
             }
             "tab" => {
-                if matches!(self.step, Step::Worktrees) {
-                    self.choose_agent(window, cx);
+                self.agent_focus = !self.agent_focus;
+                if self.agent_focus {
+                    self.focus.focus(window, cx);
                 } else {
-                    self.step = Step::Worktrees;
                     self.input.update(cx, |input, cx| input.focus(window, cx));
-                    cx.notify();
                 }
+                cx.notify();
             }
-            "space" if matches!(self.step, Step::Worktrees) => {
+            "left" | "right" if self.agent_focus => {
+                let available = available_agents();
+                let current = Agent::ALL
+                    .get(self.agent_selected)
+                    .copied()
+                    .unwrap_or(Agent::Terminal);
+                let index = launcher::agent_sel_for(&available, current);
+                if let Some(agent) = available.get(launcher::cycle(
+                    index,
+                    if key.key == "right" { 1 } else { -1 },
+                    available.len(),
+                )) {
+                    self.agent_selected = launcher::agent_sel_for(&Agent::ALL, *agent);
+                    self.agent_touched = true;
+                }
+                cx.notify();
+            }
+            "space" => {
                 let search_focused = self.input.read(cx).focus_handle(cx).is_focused(window);
                 if search_focused && !key.modifiers.shift {
                     return;
@@ -486,8 +548,6 @@ impl Render for WorktreeLauncher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let store = &cx.global::<SettingsState>().store;
         let rows = self.rows(cx);
-        let agents = available_agents();
-        let agent_step = matches!(self.step, Step::Agents(_));
         let selected_count = self.selected_worktrees.count();
         let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
         let viewport_w = f32::from(window.viewport_size().width) / scale;
@@ -508,10 +568,7 @@ impl Render for WorktreeLauncher {
             .justify_center()
             .pt(rpx(top))
             .capture_key_down(cx.listener(Self::key))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| this.close(window, cx)),
-            )
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.close(window, cx)))
             .child(
                 div()
                     .id("worktree-launcher-panel")
@@ -534,35 +591,84 @@ impl Render for WorktreeLauncher {
                             .flex()
                             .flex_col()
                             .gap(rpx(SPACE_2XL))
-                            .child(div().text_size(rpx(TEXT_TITLE)).text_color(c::FG()).child(
-                                if agent_step {
-                                    "Choose agent"
-                                } else {
-                                    "New session"
-                                },
-                            ))
-                            .when(!agent_step, |header| {
-                                header.child(
-                                    div()
-                                        .id("worktree-launcher-search")
-                                        .debug_selector(|| "worktree-launcher-search".into())
-                                        .h(rpx(APPBAR_H))
-                                        .px(rpx(SPACE_2XL))
-                                        .rounded(rpx(RADIUS_PANEL))
-                                        .bg(c::FIELD_FILL())
-                                        .flex()
-                                        .items_center()
-                                        .child(
-                                            Input::new(&self.input)
-                                                .appearance(false)
-                                                .bordered(false)
-                                                .focus_bordered(false)
-                                                .text_size(rpx(TEXT_BODY))
-                                                .text_color(c::FG())
-                                                .p_0(),
-                                        ),
-                                )
-                            }),
+                            .child(div().text_size(rpx(TEXT_TITLE)).text_color(c::FG()).child("Command palette"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(rpx(SPACE_LG))
+                                    .child(
+                                        div()
+                                            .id("worktree-launcher-search")
+                                            .debug_selector(|| "worktree-launcher-search".into())
+                                            .flex_1()
+                                            .min_w_0()
+                                            .h(rpx(APPBAR_H))
+                                            .px(rpx(SPACE_2XL))
+                                            .rounded(rpx(RADIUS_PANEL))
+                                            .bg(c::FIELD_FILL())
+                                            .flex()
+                                            .items_center()
+                                            .child(
+                                                Input::new(&self.input)
+                                                    .appearance(false)
+                                                    .bordered(false)
+                                                    .focus_bordered(false)
+                                                    .text_size(rpx(TEXT_BODY))
+                                                    .text_color(c::FG())
+                                                    .p_0(),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("launcher-agent-selector")
+                                            .flex()
+                                            .items_center()
+                                            .gap(rpx(SPACE_XS))
+                                            .children(Agent::ALL.into_iter().enumerate().map(|(index, agent)| {
+                                                let selected = self.agent_selected == index;
+                                                let available = agent.available();
+                                                let label = if available {
+                                                    agent.label().to_string()
+                                                } else {
+                                                    format!("{} (not installed)", agent.label())
+                                                };
+                                                let icon_name = match agent {
+                                                    Agent::Claude => "claude",
+                                                    Agent::Codex => "codex",
+                                                    Agent::OpenCode => "opencode",
+                                                    Agent::Terminal => "terminal",
+                                                };
+                                                div()
+                                                    .id(gpui::SharedString::from(format!("launcher-agent-{index}")))
+                                                    .debug_selector(move || format!("launcher-agent-{index}"))
+                                                    .role(gpui::Role::Button)
+                                                    .aria_label(label.clone())
+                                                    .size(rpx(ICON_BTN_W))
+                                                    .rounded(rpx(RADIUS_CONTROL))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .when(selected, |button| button.bg(c::BG_HL()))
+                                                    .when(selected && self.agent_focus, |button| button.border_1().border_color(c::SEL_RING()))
+                                                    .hover(|button| button.bg(c::BG_HOVER()))
+                                                    .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(label.clone()).build(window, cx))
+                                                    .child(icon(icon_name, ICON_MD, if available { c::MAGENTA() } else { c::FG_MUTE() }))
+                                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                                        if available {
+                                                            this.agent_selected = index;
+                                                            this.agent_touched = true;
+                                                            this.agent_focus = true;
+                                                            this.error = None;
+                                                            this.focus.focus(window, cx);
+                                                        } else {
+                                                            this.error = Some(format!("{} is not installed.", agent.label()));
+                                                        }
+                                                        cx.notify();
+                                                    }))
+                                            })),
+                                    ),
+                            ),
                     )
                     .child(
                         div()
@@ -574,168 +680,76 @@ impl Render for WorktreeLauncher {
                             .track_scroll(&self.scroll)
                             .px(rpx(SPACE_LG))
                             .pb(rpx(if compact { SPACE_XS } else { SPACE_LG }))
-                            .when(!agent_step && rows.is_empty(), |list| {
-                                list.child(
-                                    div()
-                                        .p(rpx(SPACE_3XL))
-                                        .text_color(c::FG_DIM())
-                                        .text_size(rpx(TEXT_BODY))
-                                        .child("No matching worktrees"),
-                                )
-                            })
-                            .when(!agent_step, |list| {
-                                list.children(rows.into_iter().enumerate().map(|(index, row)| {
-                                    let (proj, wt_path, agent, recent) = match row {
-                                        PaletteRow::Recent {
-                                            proj,
-                                            wt_path,
-                                            agent,
-                                        } => (proj, wt_path, agent, true),
-                                        PaletteRow::Combo {
-                                            proj,
-                                            wt_path,
-                                            agent,
-                                        } => (proj, wt_path, agent, false),
-                                        _ => unreachable!(),
-                                    };
-                                    let project = store
-                                        .projects
-                                        .get(proj)
-                                        .map_or("", |p| p.name.as_str())
-                                        .to_string();
-                                    let label =
-                                        format!("{} / {}", project, worktree_name(&wt_path));
-                                    let identity = RowIdentity::Session {
-                                        proj,
-                                        wt_path: wt_path.clone(),
-                                        agent,
-                                    };
-                                    let checked = fs_err::canonicalize(&wt_path)
-                                        .ok()
-                                        .is_some_and(|path| {
-                                            self.selected_worktrees.contains(&path.to_string_lossy())
-                                        });
-                                    div()
-                                        .id(gpui::SharedString::from(format!(
-                                            "launcher-row-{index}"
-                                        )))
-                                        .debug_selector(move || format!("launcher-row-{index}"))
-                                        .role(gpui::Role::Button)
-                                        .aria_label(if checked {
-                                            format!("Selected: {label}")
-                                        } else {
-                                            label.clone()
-                                        })
-                                        .h(rpx(ROW_H))
-                                        .px(rpx(SPACE_2XL))
-                                        .rounded(rpx(RADIUS_GROUP))
-                                        .flex()
-                                        .items_center()
-                                        .justify_between()
-                                        .gap(rpx(SPACE_LG))
-                                        .when(index == self.selected, |row| row.bg(c::BG_HL()))
-                                        .hover(|row| row.bg(c::BG_HOVER()))
-                                        .when(checked, |row| {
-                                            row.border_l_2().border_color(c::YELLOW())
-                                        })
-                                        .child(
-                                            div()
-                                                .min_w_0()
-                                                .flex()
-                                                .flex_col()
-                                                .gap(rpx(SPACE_XS))
-                                                .child(
-                                                    div()
-                                                        .text_size(rpx(TEXT_BODY))
-                                                        .text_color(c::FG())
-                                                        .truncate()
-                                                        .child(label),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_size(rpx(TEXT_SMALL))
-                                                        .text_color(c::FG_MUTE())
-                                                        .truncate()
-                                                        .child(wt_path.clone()),
-                                                ),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex_shrink_0()
-                                                .text_size(rpx(TEXT_SMALL))
-                                                .text_color(if checked { c::YELLOW() } else { c::FG_DIM() })
-                                                .child(if checked {
-                                                    "Selected".to_string()
-                                                } else if recent {
-                                                    format!("Recent · {}", agent.label())
-                                                } else {
-                                                    agent.label().to_string()
-                                                }),
-                                        )
-                                        .on_click(
-                                            cx.listener(move |this, _, window, cx| {
-                                                let rows = this.rows(cx);
-                                                if let Some(current) =
-                                                    launcher::resolve_row_by_identity(
-                                                        &rows,
-                                                        Some(&identity),
-                                                        index,
-                                                    )
-                                                {
-                                                    this.selected = current;
-                                                    this.anchor = Some(identity.clone());
-                                                    if this.selected_worktrees.count() > 0 {
-                                                        this.toggle_selected_row(cx);
-                                                    } else {
-                                                        this.activate(window, cx);
-                                                    }
-                                                }
-                                            }),
-                                        )
-                                }))
-                            })
-                            .when(agent_step, |list| {
-                                list.children(agents.into_iter().enumerate().map(
-                                    |(index, agent)| {
-                                        div()
-                                            .id(gpui::SharedString::from(format!(
-                                                "launcher-agent-{index}"
-                                            )))
-                                            .debug_selector(move || {
-                                                format!("launcher-agent-{index}")
-                                            })
-                                            .role(gpui::Role::Button)
-                                            .aria_label(agent.label())
-                                            .h(rpx(ROW_H))
-                                            .px(rpx(SPACE_2XL))
-                                            .rounded(rpx(RADIUS_GROUP))
-                                            .flex()
-                                            .items_center()
-                                            .text_size(rpx(TEXT_BODY))
-                                            .text_color(c::FG())
-                                            .when(index == self.agent_selected, |row| {
-                                                row.bg(c::BG_HL())
-                                            })
-                                            .hover(|row| row.bg(c::BG_HOVER()))
-                                            .child(agent.label())
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.agent_selected = index;
+                            .when(rows.is_empty(), |list| list.child(
+                                div().p(rpx(SPACE_3XL)).text_color(c::FG_DIM()).text_size(rpx(TEXT_BODY)).child("No matching commands")
+                            ))
+                            .children(rows.into_iter().enumerate().map(|(index, row)| {
+                                let (label, detail, icon_name, suffix) = match &row {
+                                    PaletteRow::Recent { proj, wt_path, agent } | PaletteRow::Combo { proj, wt_path, agent } => {
+                                        let project = store.projects.get(*proj).map_or("", |p| p.name.as_str());
+                                        (format!("{} / {}", project, worktree_name(wt_path)), wt_path.clone(), "git-branch", agent.label().to_string())
+                                    }
+                                    PaletteRow::NewSession => ("New session".into(), "Choose a worktree".into(), "plus", String::new()),
+                                    PaletteRow::NewMultiProjectSession => ("New multi-project session".into(), "Select multiple worktrees".into(), "plus", String::new()),
+                                    PaletteRow::TerminalHome => ("New home terminal".into(), "Open a terminal in the workspace".into(), "terminal", String::new()),
+                                    PaletteRow::TerminalWt => ("New worktree terminal".into(), "Open a terminal in the selected worktree".into(), "terminal", String::new()),
+                                    PaletteRow::AddProject => ("Add project".into(), "Add a local project to this workspace".into(), "plus", String::new()),
+                                    PaletteRow::RunScript => ("Run script".into(), "Run the selected worktree script".into(), "play", String::new()),
+                                    PaletteRow::ViewDiff => ("View diff".into(), "Open the selected session diff".into(), "git-branch", String::new()),
+                                    PaletteRow::SwitchToSession => ("Switch to session".into(), "Choose an open session".into(), "list", String::new()),
+                                    PaletteRow::Settings => ("Settings".into(), "App preferences".into(), "cog", String::new()),
+                                    PaletteRow::Setting(setting) => (setting.label().into(), setting.section().into(), setting.icon_name(), String::new()),
+                                    PaletteRow::ReloadThemes => ("Reload themes".into(), "Refresh installed themes".into(), "restart", String::new()),
+                                };
+                                let identity = launcher::row_identity(&row);
+                                let checked = match &row {
+                                    PaletteRow::Recent { wt_path, .. } | PaletteRow::Combo { wt_path, .. } => fs_err::canonicalize(wt_path)
+                                        .ok().is_some_and(|path| self.selected_worktrees.contains(&path.to_string_lossy())),
+                                    _ => false,
+                                };
+                                div()
+                                    .id(gpui::SharedString::from(format!("launcher-row-{index}")))
+                                    .debug_selector(move || format!("launcher-row-{index}"))
+                                    .role(gpui::Role::Button)
+                                    .aria_label(if checked { format!("Selected: {label}") } else { label.clone() })
+                                    .h(rpx(ROW_H))
+                                    .px(rpx(SPACE_2XL))
+                                    .rounded(rpx(RADIUS_GROUP))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(rpx(SPACE_LG))
+                                    .when(index == self.selected, |row| row.bg(c::BG_HL()))
+                                    .hover(|row| row.bg(c::BG_HOVER()))
+                                    .when(checked, |row| row.border_l_2().border_color(c::SEL_RING()))
+                                    .child(
+                                        div().flex().items_center().gap(rpx(SPACE_LG)).min_w_0()
+                                            .child(icon(icon_name, ICON_MD, c::FG_DIM()))
+                                            .child(div().flex().flex_col().min_w_0().gap(rpx(SPACE_XS))
+                                                .child(div().text_size(rpx(TEXT_BODY)).text_color(c::FG()).truncate().child(label))
+                                                .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_MUTE()).truncate().child(detail)))
+                                    )
+                                    .when(!suffix.is_empty() || checked, |row| row.child(
+                                        div().flex_shrink_0().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
+                                            .child(if checked { "Selected".to_string() } else { suffix })
+                                    ))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        let rows = this.rows(cx);
+                                        if let Some(current) = launcher::resolve_row_by_identity(&rows, Some(&identity), index) {
+                                            this.selected = current;
+                                            this.anchor = Some(identity.clone());
+                                            if this.selected_worktrees.count() > 0 && matches!(identity, RowIdentity::Session { .. }) {
+                                                this.toggle_selected_row(cx);
+                                            } else {
                                                 this.activate(window, cx);
-                                            }))
-                                    },
-                                ))
-                            }),
+                                            }
+                                        }
+                                    }))
+                            })),
                     )
-                    .when_some(self.error.clone(), |panel, error| {
-                        panel.child(
-                            div()
-                                .px(rpx(SPACE_3XL))
-                                .pb(rpx(SPACE_LG))
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::RED())
-                                .child(error),
-                        )
-                    })
+                    .when_some(self.error.clone(), |panel, error| panel.child(
+                        div().px(rpx(SPACE_3XL)).pb(rpx(SPACE_LG)).text_size(rpx(TEXT_SMALL)).text_color(c::RED()).child(error)
+                    ))
                     .child(
                         div()
                             .id("worktree-launcher-footer")
@@ -746,16 +760,12 @@ impl Render for WorktreeLauncher {
                             .py(rpx(SPACE_LG))
                             .text_size(rpx(TEXT_SMALL))
                             .text_color(c::FG_MUTE())
-                            .child(if agent_step && compact {
-                                "↑↓ choose · ↵ launch · Esc back".to_string()
-                            } else if agent_step {
-                                "↑↓ choose  ·  Enter launch  ·  Tab back  ·  Esc back".to_string()
-                            } else if selected_count > 0 {
-                                format!("Shift+Space toggle  ·  Enter choose agent  ·  {selected_count} selected  ·  Esc close")
+                            .child(if selected_count > 0 {
+                                format!("Shift+Space toggle  ·  Enter launch with selected tool  ·  {selected_count} selected  ·  Esc close")
                             } else if compact {
-                                "↑↓ move · ⇧ Space select · ↵ launch · Esc close".to_string()
+                                "↑↓ rows · Tab tools · ↵ activate · Esc close".to_string()
                             } else {
-                                "↑↓ navigate  ·  Shift+Space select  ·  Enter quick launch  ·  Tab choose agent  ·  Esc close".to_string()
+                                "↑↓ navigate  ·  Tab tools  ·  ←→ choose tool  ·  Shift+Space select  ·  Enter activate  ·  Esc close".to_string()
                             }),
                     ),
             )
@@ -885,13 +895,21 @@ mod tests {
             });
             let launcher = launcher.read(cx);
             assert!(launcher.is_open());
-            assert!(matches!(&launcher.step,
-                Step::Agents(LaunchTarget::Single(RowIdentity::Session { proj: 0, wt_path, .. }))
-                    if wt_path == &path));
+            assert!(matches!(&launcher.anchor,
+                Some(RowIdentity::Session { proj: 0, wt_path, .. }) if wt_path == &path));
+            assert!(launcher.agent_focus);
             assert!(launcher.focus.is_focused(window));
         });
         draw(cx);
         assert!(cx.debug_bounds("launcher-agent-0").is_some());
+        cx.update(|window, cx| {
+            launcher.update(cx, |launcher, cx| {
+                launcher.close(window, cx);
+                launcher.open_for_worktree(1, "/grove-launcher-test-missing", window, cx);
+                assert!(matches!(&launcher.anchor,
+                    Some(RowIdentity::Session { proj: 1, wt_path, .. }) if wt_path == "/grove-launcher-test-missing"));
+            });
+        });
     }
 
     #[gpui::test]
@@ -909,9 +927,8 @@ mod tests {
                 rows.first(),
                 Some(PaletteRow::Recent { proj: 0, .. })
             ));
-            assert!(rows
-                .iter()
-                .any(|row| matches!(row, PaletteRow::Combo { proj: 1, .. })));
+            assert!(rows.iter().any(|row| matches!(row, PaletteRow::Settings)));
+            assert!(rows.iter().any(|row| matches!(row, PaletteRow::AddProject)));
             assert!(!rows
                 .iter()
                 .any(|row| matches!(row, PaletteRow::Recent { proj: 1, .. })));
@@ -920,6 +937,7 @@ mod tests {
                 PaletteRow::Recent { proj: 2, .. } | PaletteRow::Combo { proj: 2, .. }
             )));
             launcher.update(cx, |launcher, cx| {
+                launcher.update_query("missing".into(), cx);
                 let initial = launcher.rows(cx);
                 let combo = initial
                     .iter()
@@ -946,6 +964,80 @@ mod tests {
                 launcher.update_query("absent query".into(), cx);
                 assert!(launcher.rows(cx).is_empty());
             });
+        });
+    }
+
+    #[gpui::test]
+    fn command_rows_and_setting_search_are_present(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        let (launcher, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar =
+                cx.new(|cx| super::super::sidebar::Sidebar::new(runtime.clone(), window, cx));
+            WorktreeLauncher::new(runtime, sidebar, window, cx)
+        });
+        cx.update(|_, cx| {
+            let rows = launcher.read(cx).rows(cx);
+            for action in [
+                PaletteRow::NewSession,
+                PaletteRow::NewMultiProjectSession,
+                PaletteRow::TerminalHome,
+                PaletteRow::AddProject,
+                PaletteRow::Settings,
+            ] {
+                assert!(rows.contains(&action), "missing {action:?}");
+            }
+            launcher.update(cx, |launcher, cx| {
+                launcher.update_query("app theme".into(), cx);
+                assert!(launcher
+                    .rows(cx)
+                    .contains(&PaletteRow::Setting(launcher::SettingRow::Theme)));
+                launcher.update_query("terminal home".into(), cx);
+                assert!(launcher.rows(cx).contains(&PaletteRow::TerminalHome));
+                launcher.update_query("reload themes".into(), cx);
+                assert!(launcher.rows(cx).contains(&PaletteRow::ReloadThemes));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn tool_icons_share_search_row_and_keyboard_cycles_available_tools(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(setup);
+        let (launcher, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar =
+                cx.new(|cx| super::super::sidebar::Sidebar::new(runtime.clone(), window, cx));
+            WorktreeLauncher::new(runtime, sidebar, window, cx)
+        });
+        cx.update(|window, cx| launcher.update(cx, |launcher, cx| launcher.open(window, cx)));
+        draw(cx);
+        let search = cx.debug_bounds("worktree-launcher-search").expect("search");
+        for name in [
+            "launcher-agent-0",
+            "launcher-agent-1",
+            "launcher-agent-2",
+            "launcher-agent-3",
+        ] {
+            let bounds = cx.debug_bounds(name).expect("tool icon");
+            assert!(bounds.top() < search.bottom() && bounds.bottom() > search.top());
+        }
+        let before = cx.update(|_, cx| launcher.read(cx).agent_selected);
+        cx.simulate_keystrokes("tab right");
+        draw(cx);
+        cx.update(|_, cx| {
+            let view = launcher.read(cx);
+            let available = available_agents();
+            let before_agent = Agent::ALL[before];
+            let expected = available[launcher::cycle(
+                launcher::agent_sel_for(&available, before_agent),
+                1,
+                available.len(),
+            )];
+            assert_eq!(Agent::ALL[view.agent_selected], expected);
+            assert!(view.agent_focus);
+            assert!(view.agent_touched);
         });
     }
 
@@ -979,10 +1071,10 @@ mod tests {
         });
         cx.simulate_keystrokes("tab");
         draw(cx);
-        cx.update(|_, cx| assert!(matches!(launcher.read(cx).step, Step::Agents(_))));
-        cx.simulate_keystrokes("escape");
-        draw(cx);
-        cx.update(|_, cx| assert_eq!(launcher.read(cx).step, Step::Worktrees));
+        cx.update(|window, cx| {
+            assert!(launcher.read(cx).agent_focus);
+            assert!(launcher.read(cx).focus.is_focused(window));
+        });
         cx.simulate_keystrokes("escape");
         draw(cx);
         cx.update(|window, cx| {
@@ -1016,20 +1108,13 @@ mod tests {
                 assert_eq!(launcher.selected_worktrees.count(), 1);
             });
         });
-        cx.simulate_keystrokes("enter");
-        draw(cx);
-        cx.update(|window, cx| {
-            let view = launcher.read(cx);
-            assert!(matches!(view.step, Step::Agents(LaunchTarget::Selected(_))));
-            assert!(view.focus.is_focused(window));
-        });
-        cx.simulate_keystrokes("escape");
+        cx.simulate_keystrokes("tab");
         draw(cx);
         cx.update(|window, cx| {
             let view = launcher.read(cx);
             assert_eq!(view.selected_worktrees.count(), 1);
-            assert_eq!(view.step, Step::Worktrees);
-            assert!(view.input.focus_handle(cx).is_focused(window));
+            assert!(view.agent_focus);
+            assert!(view.focus.is_focused(window));
         });
         cx.simulate_keystrokes("escape");
         draw(cx);
@@ -1074,11 +1159,6 @@ mod tests {
                 launcher
                     .selected_worktrees
                     .toggle("/grove-launcher-test-stale");
-                launcher.choose_agent(window, cx);
-                assert!(matches!(
-                    launcher.step,
-                    Step::Agents(LaunchTarget::Selected(_))
-                ));
                 launcher.activate(window, cx);
                 assert_eq!(
                     launcher.error.as_deref(),
@@ -1207,12 +1287,8 @@ mod tests {
                     launcher.anchor = Some(launcher::row_identity(&rows[index]));
                     launcher.toggle_selected_row(cx);
                 }
-                launcher.choose_agent(window, cx);
-                assert_eq!(
-                    launcher.step,
-                    Step::Agents(LaunchTarget::Selected(vec![second.clone(), first.clone()]))
-                );
-                launcher.agent_selected = launcher::agent_sel_for(&available_agents(), Agent::Terminal);
+                assert_eq!(launcher.selected_worktrees.selected_targets(), vec![second.clone(), first.clone()]);
+                launcher.agent_selected = launcher::agent_sel_for(&Agent::ALL, Agent::Terminal);
                 launcher.activate(window, cx);
                 assert!(!launcher.is_open());
             });
@@ -1391,7 +1467,11 @@ mod tests {
                 assert!(launcher.read(cx).input.focus_handle(cx).is_focused(window));
             });
             cx.update(|window, cx| {
-                launcher.update(cx, |launcher, cx| launcher.choose_agent(window, cx));
+                launcher.update(cx, |launcher, cx| {
+                    launcher.agent_focus = true;
+                    launcher.focus.focus(window, cx);
+                    cx.notify();
+                });
             });
             draw(cx);
             let panel = cx
@@ -1408,7 +1488,7 @@ mod tests {
             cx.update(|window, cx| {
                 assert!(launcher.read(cx).focus.is_focused(window));
                 launcher.update(cx, |launcher, cx| {
-                    launcher.step = Step::Worktrees;
+                    launcher.agent_focus = false;
                     launcher
                         .input
                         .update(cx, |input, cx| input.focus(window, cx));

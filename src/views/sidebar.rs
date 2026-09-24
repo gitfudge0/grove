@@ -346,12 +346,14 @@ pub struct Sidebar {
     terminal_owners: HashMap<SessionId, u64>,
     terminals_collapsed: bool,
     menu: Option<usize>,
+    menu_opened_by_hover: bool,
     menu_focus: FocusHandle,
     menu_index: usize,
     project_menu_focus: HashMap<usize, FocusHandle>,
     menu_return_focus: Option<FocusHandle>,
     project_menu_bounds: HashMap<usize, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
     menu_trigger_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    menu_popup_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     confirm_focus: FocusHandle,
     cancel_focus: FocusHandle,
     confirmation_return_focus: Option<FocusHandle>,
@@ -462,11 +464,13 @@ impl Sidebar {
             terminal_owners: HashMap::new(),
             terminals_collapsed: false,
             menu: None,
+            menu_opened_by_hover: false,
             menu_focus: cx.focus_handle(),
             menu_index: 0,
             project_menu_focus: HashMap::new(),
             menu_return_focus: None,
             menu_trigger_bounds: std::rc::Rc::default(),
+            menu_popup_bounds: std::rc::Rc::default(),
             project_menu_bounds: HashMap::new(),
             confirm_focus: cx.focus_handle(),
             cancel_focus: cx.focus_handle(),
@@ -903,10 +907,32 @@ impl Sidebar {
     }
     fn close_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
+        self.menu_opened_by_hover = false;
         if let Some(focus) = self.menu_return_focus.take() {
             cx.defer_in(window, move |_, window, cx| focus.focus(window, cx));
         }
         cx.notify();
+    }
+    fn open_menu_on_hover(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if self.menu == Some(idx) || self.confirmation_open() {
+            return;
+        }
+        self.menu = Some(idx);
+        self.menu_opened_by_hover = true;
+        self.menu_index = 0;
+        self.menu_return_focus = None;
+        if let Some(bounds) = self.project_menu_bounds.get(&idx) {
+            self.menu_trigger_bounds = bounds.clone();
+        }
+        cx.notify();
+    }
+    fn dismiss_project_panel_for_navigation(&mut self) {
+        if self.project_decision {
+            return;
+        }
+        self.project_panel = None;
+        self.project_return_focus = None;
+        self.project_return_path = None;
     }
     fn logical_window_width(window: &Window) -> f32 {
         f32::from(window.viewport_size().width)
@@ -1136,6 +1162,7 @@ impl Sidebar {
             .when(selected, |d| d.bg(c::BG_HOVER()).text_color(c::FG()))
     }
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
+        self.dismiss_project_panel_for_navigation();
         self.runtime
             .read(cx)
             .state
@@ -1432,6 +1459,76 @@ impl Sidebar {
         }
     }
 
+    pub(crate) fn add_project_from_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.navigation_available() {
+            self.act(Action::AddProject, window, cx);
+        }
+    }
+
+    pub(crate) fn palette_has_run_script(&self, cx: &App) -> bool {
+        self.selected_worktree().is_some_and(|(idx, _)| {
+            cx.global::<SettingsState>()
+                .store
+                .projects
+                .get(idx)
+                .is_some_and(|project| {
+                    !project.archived
+                        && project
+                            .scripts
+                            .run
+                            .as_deref()
+                            .is_some_and(|script| !script.trim().is_empty())
+                })
+        })
+    }
+
+    pub(crate) fn palette_has_diff(&self, cx: &App) -> bool {
+        matches!(self.selection, Some(Selection::Session(id)) if self.runtime.read(cx).registry.read(cx).meta(id).is_some())
+    }
+
+    pub(crate) fn run_selected_script_from_palette(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.navigation_available() || !self.palette_has_run_script(cx) {
+            return;
+        }
+        if let Some((idx, path)) = self.selected_worktree() {
+            if let Some(project_path) = cx
+                .global::<SettingsState>()
+                .store
+                .projects
+                .get(idx)
+                .map(|project| project.path.clone())
+            {
+                self.act(Action::RunScript(project_path, path), window, cx);
+            }
+        }
+    }
+
+    pub(crate) fn open_selected_diff_from_palette(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.navigation_available() && self.palette_has_diff(cx) {
+            if let Some(Selection::Session(id)) = self.selection {
+                self.act(Action::OpenDiff(id), window, cx);
+            }
+        }
+    }
+
+    pub(crate) fn add_worktree_terminal_from_palette(&mut self, cx: &mut Context<Self>) {
+        if !self.navigation_available() {
+            return;
+        }
+        if let Some((_, path)) = self.selected_worktree() {
+            self.runtime
+                .update(cx, |runtime, cx| runtime.spawn_wt_shell(&path, cx));
+        }
+    }
+
     pub(crate) fn open_archived_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.navigation_available() {
             self.act(Action::ArchivedProjects, window, cx);
@@ -1554,6 +1651,7 @@ impl Sidebar {
                 self.open_project_panel(projects::Page::Edit(path), window, cx);
             }
             Action::Select(s) => {
+                let leaving_project_panel = self.project_panel.is_some();
                 self.select(s.clone(), cx);
                 let view = match s {
                     Selection::Session(id) => self.terminal_views.get(&id),
@@ -1562,23 +1660,42 @@ impl Sidebar {
                 };
                 if let Some(view) = view {
                     view.focus_handle(cx).focus(window, cx);
+                } else if leaving_project_panel {
+                    self.focus.focus(window, cx);
                 }
             }
             Action::Mode(mode) => {
+                let leaving_project_panel = self.project_panel.is_some();
+                self.dismiss_project_panel_for_navigation();
                 change_mode(&mut self.mode, &mut self.last_mode, mode);
                 self.menu = None;
+                if leaving_project_panel {
+                    self.focus.focus(window, cx);
+                }
             }
             Action::Project(i) => {
+                if self.project_panel.is_some() {
+                    self.dismiss_project_panel_for_navigation();
+                    self.focus.focus(window, cx);
+                }
                 if !self.collapsed_projects.remove(&i) {
                     self.collapsed_projects.insert(i);
                 }
             }
             Action::Worktree(path) => {
+                if self.project_panel.is_some() {
+                    self.dismiss_project_panel_for_navigation();
+                    self.focus.focus(window, cx);
+                }
                 if !self.collapsed_worktrees.remove(&path) {
                     self.collapsed_worktrees.insert(path);
                 }
             }
             Action::CycleTreeExpand => {
+                if self.project_panel.is_some() {
+                    self.dismiss_project_panel_for_navigation();
+                    self.focus.focus(window, cx);
+                }
                 self.tree_expand = self.tree_expand.next();
                 apply_tree_expand(
                     self.tree_expand,
@@ -1589,9 +1706,16 @@ impl Sidebar {
             }
             Action::Menu(i) => {
                 if self.menu == Some(i) {
-                    self.close_menu(window, cx);
+                    if self.menu_opened_by_hover {
+                        self.menu_opened_by_hover = false;
+                        self.menu_return_focus = self.project_menu_focus.get(&i).cloned();
+                        self.menu_focus.focus(window, cx);
+                    } else {
+                        self.close_menu(window, cx);
+                    }
                 } else {
                     self.menu = Some(i);
+                    self.menu_opened_by_hover = false;
                     if let Some(bounds) = self.project_menu_bounds.get(&i) {
                         self.menu_trigger_bounds = bounds.clone();
                     }
@@ -2303,6 +2427,7 @@ impl Sidebar {
         let width = SIDEBAR_W.min(f32::from(window.viewport_size().width) / scale - SPACE_LG * 2.0);
         let mut panel = div()
             .text_color(c::FG())
+            .relative()
             .id("project-actions-popup")
             .debug_selector(|| "project-actions-popup".into())
             .role(gpui::Role::Menu)
@@ -2318,6 +2443,17 @@ impl Sidebar {
             .border_color(c::BORDER())
             .bg(c::SURFACE_RAISED())
             .occlude()
+            .child(
+                gpui::canvas(
+                    {
+                        let bounds = self.menu_popup_bounds.clone();
+                        move |rect, _, _| bounds.set(rect)
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down_out(
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
@@ -2537,6 +2673,11 @@ impl Sidebar {
                     )
                     .child(icon("more", ICON_SM, c::FG_DIM()))
                     .debug_selector(move || format!("project-menu-{idx}"))
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        if *hovered {
+                            this.open_menu_on_hover(idx, cx);
+                        }
+                    }))
                     .when_some(
                         self.project_menu_bounds.get(&idx).cloned(),
                         |button, bounds| {
@@ -3185,6 +3326,12 @@ impl Render for Sidebar {
             .text_color(c::FG())
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 this.divider_move(event, window, cx);
+                if this.menu_opened_by_hover
+                    && !this.menu_trigger_bounds.get().contains(&event.position)
+                    && !this.menu_popup_bounds.get().contains(&event.position)
+                {
+                    this.close_menu(window, cx);
+                }
             }))
             .on_mouse_up(
                 MouseButton::Left,
@@ -5217,6 +5364,104 @@ mod tests {
                 assert!((f32::from(row.top() - previous.bottom()) - SPACE_XS * 2.0).abs() <= 1.0);
             }
             previous = Some(row);
+        }
+    }
+
+    #[gpui::test]
+    fn project_menu_opens_on_hover_and_closes_after_pointer_leaves(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "one".into(),
+                    path: "/grove-sidebar-hover-test".into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        draw(cx);
+        let trigger = cx.debug_bounds("project-menu-0").unwrap();
+        cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.menu == Some(0)));
+        let popup = cx.debug_bounds("project-actions-popup").unwrap();
+        cx.simulate_mouse_move(popup.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.menu == Some(0)));
+        cx.simulate_mouse_move(
+            gpui::point(gpui::px(1.0), gpui::px(1.0)),
+            None,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.menu.is_none()));
+    }
+
+    #[gpui::test]
+    fn archived_panel_dismisses_on_sidebar_navigation(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "one".into(),
+                    path: "/grove-sidebar-archive-test".into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.act(Action::ArchivedProjects, window, cx);
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("project-panel").is_some());
+        let project = cx.debug_bounds("project-0").unwrap();
+        cx.simulate_click(project.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.project_panel.is_none()));
+        assert!(cx.debug_bounds("project-panel").is_none());
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.act(Action::ArchivedProjects, window, cx);
+                sidebar.act(Action::Mode(ViewMode::List), window, cx);
+                assert!(sidebar.project_panel.is_none());
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("project-panel").is_none());
+        for action in [
+            Action::Project(0),
+            Action::Worktree("/grove-sidebar-archive-test".into()),
+            Action::CycleTreeExpand,
+        ] {
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar.act(Action::ArchivedProjects, window, cx);
+                    assert!(sidebar.project_panel.is_some());
+                    sidebar.act(action.clone(), window, cx);
+                    assert!(sidebar.project_panel.is_none());
+                });
+            });
+            draw(cx);
+            assert!(cx.debug_bounds("project-panel").is_none());
         }
     }
 
