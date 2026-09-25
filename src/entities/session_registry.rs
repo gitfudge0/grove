@@ -48,6 +48,8 @@ pub struct SessionMeta {
     pub temp_bundle_path: Option<String>,
     /// Internal label (`claude 1`, …); stripped from the OSC title to make the context text (`src/gui/rows.rs:778`).
     pub label: String,
+    /// Tmux pane title captured during reattach discovery, available before the PTY emits OSC output.
+    pub restored_title: Option<String>,
     pub spawned_at: Instant,
     /// File name is `{our pid}-{our SessionId}.state`; the pid prefix, not the id, is what makes cross-run collision safe (`crates/grove-core/src/attention.rs:110-121`).
     pub attention: Option<AttentionFiles>,
@@ -163,6 +165,7 @@ impl SessionRegistry {
             context_roots,
             temp_bundle_path,
             label,
+            restored_title: None,
             spawned_at: Instant::now(),
             attention,
             tmux: false,
@@ -185,6 +188,7 @@ impl SessionRegistry {
                 context_roots: d.context_roots.clone(),
                 temp_bundle_path: d.temp_bundle_path.clone(),
                 label: d.label.clone(),
+                restored_title: d.pane_title.clone(),
                 spawned_at: Instant::now(),
                 attention: None,
                 tmux: true,
@@ -510,6 +514,7 @@ impl SessionRegistry {
                 context_roots: Vec::new(),
                 temp_bundle_path: None,
                 label,
+                restored_title: None,
                 spawned_at: Instant::now(),
                 attention: None,
                 tmux: false,
@@ -530,6 +535,7 @@ impl SessionRegistry {
             context_roots: Vec::new(),
             temp_bundle_path: None,
             label,
+            restored_title: None,
             spawned_at: Instant::now(),
             attention: None,
             tmux: false,
@@ -551,6 +557,7 @@ mod tests {
     fn removing_test_reattach_keeps_registry_semantics_without_tmux_teardown() {
         let discovered = tmux::DiscoveredSession {
             name: "grove__registry_test_only".into(),
+            pane_title: Some("Continue work".into()),
             wt_path: "/unused".into(),
             project: "unused".into(),
             label: "Terminal 1".into(),
@@ -560,6 +567,12 @@ mod tests {
         };
         let mut registry = SessionRegistry::new();
         let id = registry.insert_reattached(0, &discovered);
+        assert_eq!(
+            registry
+                .meta(id)
+                .and_then(|meta| meta.restored_title.as_deref()),
+            Some("Continue work")
+        );
         assert_eq!(
             registry.remove(id).and_then(|meta| meta.tmux_name),
             Some(discovered.name)
@@ -688,6 +701,7 @@ mod tests {
         ];
         let discovered = grove_core::tmux::DiscoveredSession {
             name: "grove-portfolio-claude-1".into(),
+            pane_title: None,
             wt_path: "/portfolio".into(),
             project: "portfolio".into(),
             label: "claude 1".into(),

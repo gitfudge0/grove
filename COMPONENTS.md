@@ -1,17 +1,17 @@
 # Grove component contract
 
-Grove is a native Rust and GPUI workspace for local Git projects, worktrees, AI coding sessions, and persistent PTYs. This document is the implementation contract. `COMPONENTS.html` is the live specimen sheet. `DESIGN.md` and `DESIGN.html` own every token; this handoff introduces no new visual values. `COMPONENTS.md`/`COMPONENTS.html` own component anatomy and states; `screens.html` owns the 45-frame flow and composition inventory.
+Grove is a native Rust and GPUI workspace for local Git projects, worktrees, AI coding sessions, and persistent PTYs. This document is the implementation contract. `COMPONENTS.html` is the live specimen sheet. `DESIGN.md` and `DESIGN.html` own every token; this handoff introduces no new visual values. `COMPONENTS.md` owns component anatomy and states; `screens.html` owns the 45-frame flow and composition inventory. The selected F mock sets the Project sidebar's visual direction; the interaction contract below includes project folder disclosure.
 
-The Rust/GPUI entries below distinguish existing integration points from proposed adaptations. All 34 catalog IDs have a mirrored implementation map below and in `COMPONENTS.html`. Source files identify existing owning modules; a proposed composition inside one of those modules is not an existing helper. This preparation changes reference documents only; it does not implement or compile the native overhaul.
+The Rust/GPUI entries below distinguish existing integration points from proposed adaptations. All 34 catalog IDs appear below and in `COMPONENTS.html`. Source files identify existing owning modules; a proposed composition inside one of those modules is not an existing helper. The selected Project sidebar direction is the F worktree-group mock at `.fudge/implement-grove-ui-overhaul/ui-mock/grouping-study.html`.
 
 ## Global rules
 
 - Form wells, regular form actions, and selection tiles use radius-12; grouped panels use radius-16; compact actions and menus use radius-8. Radius-full is reserved for switches, pills, and indicators.
 - Brand and focus are near-white in dark mode and near-black in light mode. Violet is agent identity, connection, and active port. Green is running, success, or an enabled switch; amber is needs-you or warning, red is destructive or error, and blue is tertiary information.
 - Use flat neutral surfaces and quiet borders with shadow-none.
-- Project and List preserve the 236px hierarchy sidebar. Grid removes it so active sessions own the canvas.
-- Worktree hover exposes three actual icon buttons for Codex, Claude Code, and Terminal. Each has an accessible name and matching tooltip.
-- Session creation exists only on worktree hover or keyboard focus through labeled Codex, Claude Code, and Terminal launch icons. Headers and empty states never expose New session.
+- Project and List preserve the sidebar. Grid removes it so active sessions own the canvas.
+- Worktree hover or keyboard focus exposes available direct-start agent actions without moving the worktree label. Each has an accessible name and matching tooltip; the current implementation supports Codex, Claude Code, OpenCode, and Terminal.
+- Session creation exists only through those worktree-local launch actions. Headers and empty states never expose New session.
 - Session filtering is unsupported. Data-bearing components use loading, nothing yet, partial, and error.
 - Frame references point to the 45-frame `screens.html` inventory. The older `workspace-hierarchy-wireframe.html` is historical context, not the current frame authority.
 - Every action button contains a semantic currentColor SVG from the DESIGN.md catalog. Text actions lead with the icon by default; disclosure and navigation may trail. Icon-only actions require an accessible name and tooltip. Switches and selection tiles express state directly and do not receive action icons.
@@ -48,19 +48,19 @@ GPUI implementation constraint: Keep semantic icon and progress in one reserved 
 
 GPUI implementation constraint: Fixed 24px action box, semantic SVG, accessible name and matching tooltip. Add role, focus and keyboard activation; retain nested-row propagation protection. Tooltip alone does not name the control.
 
-### Direct-start agent trio
+### Direct-start agent actions (`trio` specimen ID)
 
 | Row | Content |
 |---|---|
 | Purpose | Starts an agent directly in the hovered worktree. |
-| Anatomy | hover action strip → Codex icon button → Claude Code icon button → Terminal icon button |
+| Anatomy | hover/focus action strip → available Codex, Claude Code, OpenCode, and Terminal icon buttons |
 | Variants | concealed, revealed, revealed with tooltip |
 | States | default, hover, focus-visible, unavailable, starting, error |
 | Tokens | control-h, icon-14, gap-4, radius-8, color-text-muted, color-hover, color-accent, color-focus |
 | Used in frame refs | D6 E1 E2 |
-| Target framework | `trio` · **adapt** · Worktree-local Codex/Claude Code/Terminal actions via RowAction::SpawnAgent. Source: `src/views/rows.rs`. |
+| Target framework | `trio` · **adapt** · Worktree-local agent actions via SpawnAgent. Source: `src/views/sidebar.rs`. |
 
-GPUI implementation constraint: Reveal three fixed launch slots on hover OR keyboard focus without shifting labels; name each agent and worktree. Current available-agent loop also exposes Run/More/Delete; unavailable/starting/error states need explicit treatment.
+GPUI implementation constraint: Reveal the available launch slots on hover or keyboard focus without shifting labels; name each agent and worktree. Preserve existing secondary actions and explicit unavailable/starting/error states.
 
 ### Project/List/Grid switch
 
@@ -124,15 +124,15 @@ GPUI implementation constraint: Title and Create/Manage are siblings of a constr
 
 | Row | Content |
 |---|---|
-| Purpose | Shows the selected workspace as Project, Worktree, Session hierarchy or scoped List. |
-| Anatomy | 236px panel → two-button view control → hierarchy or status groups → worktree-local agent launch affordances |
-| Variants | Project tree, List groups, collapsed project |
-| States | loading, nothing yet, partial, error, selected, collapsed |
+| Purpose | Shows every project, worktree, and session in the selected workspace, or the scoped List view. |
+| Anatomy | sidebar panel → two-button view control → one scrollable Project hierarchy or List groups → worktree-local agent launch affordances |
+| Variants | Project hierarchy with independently collapsible projects, List groups |
+| States | loading, nothing yet, partial, error, selected, keyboard focus, project expanded/collapsed |
 | Tokens | sidebar-w, row-h, color-surface, color-border, color-selected, color-text-primary, color-text-muted |
 | Used in frame refs | A1-A5 B1-B7 C1-C5 D1-D6 E1-E7 F1-F2 F4-F5 G1-G8 |
 | Target framework | `sidebar` · **adapt** · Adapted Sidebar::render + rows::render_row. Source: `src/views/sidebar.rs`. |
 
-GPUI implementation constraint: Project and List retain 236px hierarchy sidebar with two view controls in side-head per screens.html; Grid omits sidebar and places controls in appbar. Preserve scroll/selection and collapsed semantics; reveal worktree launch on keyboard focus. No duplicate view controls or session filtering.
+GPUI implementation constraint: Project and List retain the sidebar and two view controls in side-head; Grid omits the sidebar and places controls in appbar. Projects start expanded in one scrollable hierarchy; each folder control can hide only that project's Worktrees heading, worktrees, and sessions. Keep a collapsed project's current canvas session active and remember collapse state across workspace switches during the run. Project row/name activation selects context without toggling, while visible sessions open in one click. Preserve scroll, selection, keyboard focus, and worktree-local launch on hover or focus. On startup or workspace return, focus the selected session's terminal when it is available; respect an explicit project/worktree selection or an open overlay. No duplicate view controls or session filtering. The F mock determines Project row spacing and alignment; List and Grid retain their separate contracts.
 
 ### Session header
 
@@ -210,63 +210,63 @@ Quick-create uses the black/white canvas surface so its filled field remains dis
 
 GPUI implementation constraint: Capture source bounds, attach shared edge and clamp to window; keep loading/error geometry stable. Raw anchored/deferred provides no focus or Escape logic. Vendored Popover appearance(false) also removes click-out dismissal.
 
-### Disclosure
+### Worktrees heading
 
 | Row | Content |
 |---|---|
-| Purpose | Expands or collapses project and worktree descendants. |
-| Anatomy | icon button → right/down chevron → row label |
-| Variants | project, worktree |
-| States | collapsed, expanded, hover, focus-visible, disabled |
-| Tokens | icon-12, control-h, color-text-muted, color-hover, color-focus |
+| Purpose | Labels an expanded project's worktree groups and shows their count. |
+| Anatomy | muted `Worktrees` label → right-aligned worktree count |
+| Variants | zero, one, multiple worktrees |
+| States | loading, nothing yet, partial, error |
+| Tokens | color-text-secondary, color-text-muted |
 | Used in frame refs | A1 A4 C4 D1 D6 E1 E4 F1 F4 F5 G3 |
-| Target framework | `disclosure` · **adapt** · Adapted rows::render_row disclosure control. Source: `src/views/rows.rs`. |
+| Target framework | `worktrees-heading` · **adapt** · Per-project count heading in Sidebar::tree. Source: `src/views/sidebar.rs`. |
 
-GPUI implementation constraint: Dedicated right/down chevron control retains expanded state and accessible name. Keyboard activation must expand/collapse without accidentally selecting or launching; preserve selection while descendants hide.
+GPUI implementation constraint: Show `Worktrees N` directly below each expanded project row, including `0` for a project with no worktrees. Keep the label muted and center its count in the same fixed 24px trailing column as the project menu ellipsis. Hide it with that project's worktrees and sessions on collapse; this heading is a static label, not the disclosure control.
 
 ### Project row
 
 | Row | Content |
 |---|---|
 | Purpose | Represents a local Git project and its rollup actions. |
-| Anatomy | 24px leading slot → flexible product-case project label and meta → fixed 48px status/count → fixed 28px trailing action |
-| Variants | expanded, collapsed, non-Git error |
-| States | loading, nothing yet, partial, error, hover, selected |
+| Anatomy | separate folder-open/folder disclosure button → flexible project name/selection target → separate project menu action |
+| Variants | expanded, collapsed, multiple worktrees, zero worktrees, non-Git error |
+| States | loading, nothing yet, partial, error, hover, focus-visible, expanded, collapsed; programmatic project selection uses text emphasis |
 | Tokens | row-h, color-text-primary, color-text-muted, color-running, color-destructive, color-hover |
 | Used in frame refs | A1 A4 C4 D1 D2 D6 E1 E4 F1 F4 F5 G3 |
-| Target framework | `project-row` · **adapt** · Adapted rows::render_row(TreeRow::Project, RowCtx). Source: `src/views/rows.rs`. |
+| Target framework | `project-row` · **adapt** · Adapted Project hierarchy row. Source: `src/views/sidebar.rs`. |
 
-GPUI implementation constraint: 24px leading/flexible identity/48px status/28px action slots, stable at long names. Expose selection/disclosure and named project action; loading/non-Git/partial/error are explicit and never color-only.
+GPUI implementation constraint: The Projects heading counts projects. Each project row shows a separate keyboard-operable disclosure button (folder-open when expanded, folder when collapsed) and a name without a session total; its `Worktrees N` subheading counts worktrees while expanded. Projects default expanded. The button exposes its expanded state and toggles only that project's descendants; clicking the name/row selects its context without toggling or replacing the active canvas session. Collapsing also leaves that session active and persists across workspace switches for the run. Center the independent named project menu ellipsis in the shared fixed 24px trailing column, revealed on hover or keyboard focus. Keep the icon/text columns aligned and truncate long names without moving actions. Separate projects with roughly 20px of vertical rhythm and a quiet divider; use text emphasis for programmatic selection and visible keyboard focus. Loading/non-Git/partial/error are explicit and never color-only.
 
 ### Worktree row
 
 | Row | Content |
 |---|---|
 | Purpose | Represents one checkout and reveals direct-start agents on hover. |
-| Anatomy | 24px leading slot → flexible product-case worktree label and branch meta → fixed 48px status/count → fixed 28px trailing action or direct-start reveal |
-| Variants | main, branch, zero sessions, expanded, hovered |
-| States | loading, nothing yet, partial, error, selected, hover |
+| Anatomy | aligned branch icon → flexible worktree name → empty trailing action space with launch controls on hover/focus |
+| Variants | main, branch, zero sessions, hovered, keyboard focused |
+| States | loading, nothing yet, partial, error, selected, hover, focus-visible |
 | Tokens | row-h, radius-8, color-text-secondary, color-text-muted, color-running, color-hover, gap-4 |
 | Used in frame refs | A1 A4 C4 D1 D6 E1 E2 E3 E4 F1 F4 F5 G3 |
-| Target framework | `worktree-row` · **adapt** · Adapted rows::render_row(TreeRow::Worktree, RowCtx). Source: `src/views/rows.rs`. |
+| Target framework | `worktree-row` · **adapt** · Adapted Project hierarchy row. Source: `src/views/sidebar.rs`. |
 
-GPUI implementation constraint: Fixed slots and nonwrapping branch metadata; distinguish main/branch and zero sessions. A collapsed row keeps the disclosure chevron clear, places its activity dot beside the right-aligned session count, and hides direct-start controls. An expanded row reveals the stable agent strip on hover or keyboard focus with backing matched to the row surface. Preserve SpawnAgent dispatch, and avoid clipping ring or shifting identity during reveal.
+GPUI implementation constraint: Worktree rows stay transparent in normal, hover, and focus states; use a visible focus treatment without a row fill. Show no numeric session total on a worktree row; preserve empty trailing space for hover/focus launch actions. Use roughly 12px between worktree groups and only a small gap before their sessions. Keep the name stable while direct-start actions reveal on hover or keyboard focus. Preserve all available SpawnAgent actions, keep zero-session worktrees visible and the `No sessions` empty state available, and avoid clipping focus or shifting identity.
 
 ### Session row
 
 | Row | Content |
 |---|---|
 | Purpose | Opens one session and states its process condition without relying on color. |
-| Anatomy | 24px leading status slot → flexible agent/task label and context meta → fixed 48px status → fixed 28px trailing action |
+| Anatomy | small aligned agent icon → flexible task title; second line has clickable worktree diff at left and process status at right → separate close action |
 | Variants | working, needs-you, done, idle, exited, starting |
-| States | loading, nothing yet, partial, error, hover, selected, pending close |
-| Tokens | row-h, color-selected, color-running, color-needs-you, color-destructive, color-text-muted, icon-14 |
+| States | loading, nothing yet, partial, error, hover, focus-visible, selected, pending close |
+| Tokens | color-selected, color-running, color-needs-you, color-destructive, color-text-muted, icon-12 |
 | Used in frame refs | A1 A4 E3 E4 E5 E6 E7 F1 F2 F4 F5 G3 G7 |
-| Target framework | `session-row` · **adapt** · Adapted rows::render_row(TreeRow::Session, RowCtx) + state_glyph. Source: `src/views/rows.rs`. |
+| Target framework | `session-row` · **adapt** · Adapted Project hierarchy row. Source: `src/views/sidebar.rs`. |
+
+GPUI implementation constraint: Project sessions are two-line rows with a roughly 12px Codex, Claude Code, OpenCode, or Terminal icon and a one-line ellipsized task title. Observe live task-title changes for background sessions without opening them; display a restored tmux pane title before that session is selected or attached, then use the live title when available. The second line shows a clickable checkout diff with git additions in green and removals in red (`+N −N`), or muted `clean`, with the explicit process status at the right. Diff values are worktree-level and therefore repeat across sibling sessions; the row must not imply a session-specific diff. Keep sibling sessions roughly 2px apart and align icon and text columns with project/worktree rows. Hover and keyboard focus highlight the entire session row, including while the diff action itself is hovered or focused; the diff action draws no isolated background. The selected session keeps the stronger neutral fill. Opening the row, viewing its worktree diff, and closing the session remain distinct keyboard actions; pending close remains attached to its source until confirmation succeeds.
 
 ## Sessions and terminal
-
-GPUI implementation constraint: 24/flexible/48/28 slots; visible process label and context accompany glyph. Selection and close are distinct keyboard actions; pending close remains attached to source and preserves session until confirmation succeeds.
 
 ### Full-canvas active-session grid
 
@@ -525,27 +525,27 @@ GPUI implementation constraint: Pills use radius-full, banners radius8; status w
 
 ## GPUI component implementation map
 
-The HTML `gpuiComponentMap` literal mirrors these exact IDs, targets and statuses. **verified** means an existing implementation matches; **adapt** means an existing behavior/seam needs geometry, state or semantic work; **add** means the composition/helper is missing; **reference** means component study only. No item is marked verified merely because a similarly named helper exists. Existing source paths are navigation anchors, not claims that proposed symbols already exist.
+The HTML `gpuiComponentMap` literal retains these catalog IDs; the rows below govern native implementation. **verified** means an existing implementation matches; **adapt** means an existing behavior/seam needs geometry, state or semantic work; **add** means the composition/helper is missing; **reference** means component study only. No item is marked verified merely because a similarly named helper exists. Existing source paths are navigation anchors, not claims that proposed symbols already exist.
 
 | ID | Target composition | Status | Source | Implementation contract |
 |---|---|---|---|---|
 | button | ModalBtn + adapted modal_action/modal_action_sized/body_action | adapt | src/views/components.rs | Keep semantic icon and progress in one reserved leading slot; regular actions 44px, compact 24px. Existing text-only mouse-down helpers need focus-visible, keyboard/on_click, disabled dispatch guards and stable loading geometry. |
 | icon | Adapted icon_btn/flat_icon_btn + hint_tooltip | adapt | src/views/components.rs | Fixed 24px action box, semantic SVG, accessible name and matching tooltip. Add role, focus and keyboard activation; retain nested-row propagation protection. Tooltip alone does not name the control. |
-| trio | Worktree-local Codex/Claude Code/Terminal actions via RowAction::SpawnAgent | adapt | src/views/rows.rs | Reveal three fixed launch slots on hover OR keyboard focus without shifting labels; name each agent and worktree. Current available-agent loop also exposes Run/More/Delete; unavailable/starting/error states need explicit treatment. |
+| trio | Worktree-local agent actions via SpawnAgent | adapt | src/views/sidebar.rs | Reveal the available Codex, Claude Code, OpenCode, and Terminal launch slots on hover or keyboard focus without shifting labels; name each agent and worktree. Preserve existing secondary actions and explicit unavailable/starting/error states. |
 | switch | Destination toggle + Grid, placed by screens composition | add | src/views/appbar.rs | Two separate borderless 24px buttons with 2px gap, labels/tooltips and Grid toggled state. screens.html places them in sidebar side-head for Project/List and appbar for Grid, never both. Preserve selection and remembered non-grid destination; joined seg_group is not the target. |
 | appbar | Adapted appbar::appbar with workspace trigger and Grid-mode view controls | adapt | src/views/appbar.rs | Stable full-width brand/workspace/tools bar. Follow screens.html placement: view controls live here only in Grid, and in sidebar side-head for Project/List. COMPONENTS appbar specimen differs; preserve its styling, not duplicate controls. Workspace loading/retry must not move unrelated navigation. |
 | trigger | Proposed workspace trigger inside appbar::appbar | add | src/views/appbar.rs | 24px leading slot, min-width-zero flexible label/meta, 28px chevron slot. Named keyboard-operable trigger exposes expanded state; keep source bounds and focus handle for dismissal return. |
 | workspace-menu | Proposed anchored workspace dropdown with pinned actions | add | src/views/appbar.rs | Title and Create/Manage are siblings of a constrained scrolling row region. Rows use 24/flexible/48/28 slots, named selected state, keyboard navigation and visible loading/empty/partial/error; Escape/outside click restores focus. |
-| sidebar | Adapted Sidebar::render + rows::render_row | adapt | src/views/sidebar.rs | Project and List retain 236px hierarchy sidebar with two view controls in side-head per screens.html; Grid omits sidebar and places controls in appbar. Preserve scroll/selection and collapsed semantics; reveal worktree launch on keyboard focus. No duplicate view controls or session filtering. |
+| sidebar | Adapted Sidebar::render | adapt | src/views/sidebar.rs | Project and List retain the sidebar and two view controls in side-head; Grid omits it and places controls in appbar. Projects default expanded; each folder button hides only its own descendants and remembers state across workspace switches during the run without changing the active canvas session. Preserve scroll, selection, keyboard focus, and worktree launch; focus the selected session terminal on startup/workspace return unless explicit project/worktree selection or an overlay takes precedence. No duplicate view controls or session filtering. |
 | session-header | Adapted session_header::session_header(SessionHeaderData, ToolCluster) | adapt | src/views/session_header.rs | Session identity and context precede diff and named icon tools. Reuse dispatch; apply header geometry and words/non-color cues for loading, running, needs-you, failed and branchless terminal. |
 | statusbar | Adapted statusbar::statusbar(StatusbarCtx) | adapt | src/views/statusbar.rs | Running group, backend/theme, existing toast slot, spacer, hints/version. Apply tokens and explicit status words; actionable retries need named keyboard-operable controls, while passive messages do not steal focus. |
 | scrim | Proposed neutral veil + source repaint + anchored tray in ModalLayer | adapt | src/views/modals/mod.rs | Current scrim centers content and is not final presentation. Paint low-opacity veil only, then crisp initiating row/tile and edge tray; block underlying PTY mouse/keyboard interaction, trap decision focus and restore it on Cancel/Escape. |
 | dialog | Proposed source-anchored quick-create/close tray and in-row delete | adapt | src/views/modals/mod.rs | Reuse modal state/events and stable ModalInput for B workspace quick-create, E7 close tray and G manager confirmation. C/D setup flows use compact-editor center-pane, not this dialog. Lock mutation while loading, retain errors and restore focus on cancel; source-attached geometry applies only to these B/E/G decisions. |
 | popover | Proposed deferred(anchored()) surface with explicit dismissal lifecycle | add | src/views/appbar.rs | Capture source bounds, attach shared edge and clamp to window; keep loading/error geometry stable. Raw anchored/deferred provides no focus or Escape logic. Vendored Popover appearance(false) also removes click-out dismissal. |
-| disclosure | Adapted rows::render_row disclosure control | adapt | src/views/rows.rs | Dedicated right/down chevron control retains expanded state and accessible name. Keyboard activation must expand/collapse without accidentally selecting or launching; preserve selection while descendants hide. |
-| project-row | Adapted rows::render_row(TreeRow::Project, RowCtx) | adapt | src/views/rows.rs | 24px leading/flexible identity/48px status/28px action slots, stable at long names. Expose selection/disclosure and named project action; loading/non-Git/partial/error are explicit and never color-only. |
-| worktree-row | Adapted rows::render_row(TreeRow::Worktree, RowCtx) | adapt | src/views/rows.rs | Fixed slots and nonwrapping branch metadata; distinguish main/branch and zero sessions. Focus or hover reveals stable three-agent strip. Preserve SpawnAgent dispatch, and avoid clipping ring or shifting identity during reveal. |
-| session-row | Adapted rows::render_row(TreeRow::Session, RowCtx) + state_glyph | adapt | src/views/rows.rs | 24/flexible/48/28 slots; visible process label and context accompany glyph. Selection and close are distinct keyboard actions; pending close remains attached to source and preserves session until confirmation succeeds. |
+| worktrees-heading | Sidebar::tree worktree count heading | adapt | src/views/sidebar.rs | Per-project `Worktrees N` heading labels groups while the project is expanded. Show zero explicitly and center the count in the common 24px trailing column; hide the heading with that project's descendants on collapse. |
+| project-row | Adapted Project hierarchy row | adapt | src/views/sidebar.rs | Separate keyboard-operable folder-open/folder button toggles only this project's descendants and exposes expanded state; projects default expanded and retain collapse state across workspace switches during the run. Name/row selects without toggling or replacing the canvas session. No session total; independent menu ellipsis centers in the 24px trailing column. Preserve focus and explicit error/loading states. |
+| worktree-row | Adapted Project hierarchy row | adapt | src/views/sidebar.rs | Transparent branch icon/name row with no numeric session count and reserved trailing action space. About 12px between worktree groups. Hover or focus reveals available agent actions without shifting text. Preserve SpawnAgent dispatch and `No sessions` empty state. |
+| session-row | Adapted Project hierarchy row | adapt | src/views/sidebar.rs | Two-line row with roughly 12px agent icon, live task title (including background changes and restored tmux title before selection/attachment), clickable worktree-level colored `+N −N` or muted `clean`, and explicit status at right. About 2px between siblings; hover/focus highlights the full row even on the diff action, which has no isolated background. Selected fill is stronger; open, diff, and close are distinct keyboard actions. |
 | grid | Adapted grid::grid(GridCtx) below persistent appbar | adapt | src/views/grid.rs | Remove Sidebar in Grid, reuse column/row resize and session-focus dispatch. Provide one/two/three-column layouts and visible empty/loading/partial/error; clipping must not hide focused header controls. |
 | tile | Adapted grid TileData composition with real terminal entity | adapt | src/views/grid.rs | Fixed agent glyph, min-width-zero identity/task, nowrap status, separate workspace/project/worktree path and clipped PTY. Preserve focus/resize behavior; attach close tray to tile and show state without color dependence. |
 | session-list | Adapted rows::flatten_sessions + TreeRow::SessionCard | adapt | src/views/rows.rs | Selected-workspace scope with Needs you/Working/Idle groups and retained selection. Cards use shrinking identity and fixed status/action slots; keyboard opens selected session, errors stay scoped and no filtering is added. |

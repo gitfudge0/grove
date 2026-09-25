@@ -300,6 +300,53 @@ p{color:var(--color-text-secondary)}
 .row-trailing .trio{position:absolute;right:0;z-index:var(--z-raised);padding:var(--space-2);border-radius:var(--radius-8);background:var(--color-surface-raised)}
 .tree-row.selected,.session-row.selected{background:var(--color-selected)}
 .project-row.hover{background:var(--color-hover)}
+.hierarchy{display:flex;flex-direction:column;gap:0;min-width:0}
+.hierarchy .project-group+.project-group{margin-top:var(--space-16);padding-top:var(--space-8);border-top:var(--border-thin) solid var(--color-divider-soft)}
+.hierarchy .project-group.is-collapsed>.worktrees-heading,.hierarchy .project-group.is-collapsed>.worktree-group,.hierarchy .project-group.is-collapsed>.session-row{display:none}
+.hierarchy .project-row,.hierarchy .worktree-row,.hierarchy .session-row{box-sizing:border-box;min-width:0;padding:0 var(--space-6);gap:var(--gap-6)}
+.hierarchy .project-row{height:35px;font-size:var(--text-15);font-weight:var(--weight-semibold)}
+.hierarchy .project-disclosure{height:24px;padding:0;border:0;background:transparent;color:var(--color-text-secondary);cursor:pointer}
+.hierarchy .project-disclosure:focus-visible,.hierarchy .project-row .row-label:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-offset:1px}
+.hierarchy .project-row .row-label{cursor:pointer}
+.hierarchy .project-row.demo-selected .row-title{font-weight:700}
+.hierarchy .worktrees-heading{height:27px;display:flex;align-items:center;gap:var(--gap-6);padding:0 var(--space-6);color:var(--color-text-secondary);font-size:var(--text-11);font-weight:var(--weight-semibold)}
+.hierarchy .worktrees-heading .row-count{margin-left:auto;color:var(--color-text-muted)}
+.hierarchy .count-cell,.hierarchy .project-menu-button,.hierarchy .worktree-trailing{width:24px;height:24px;display:inline-flex;flex:none;align-items:center;justify-content:center}
+.hierarchy .project-menu-button{padding:0;border:0;border-radius:var(--radius-8);background:transparent;color:var(--color-text-muted);opacity:0;cursor:pointer}
+.hierarchy .project-row:hover .project-menu-button,.hierarchy .project-row:focus-within .project-menu-button,.hierarchy .project-row.demo-focus .project-menu-button{opacity:1}
+.hierarchy .project-menu-button:focus-visible{opacity:1;outline:var(--focus-ring) solid var(--color-focus)}
+.hierarchy .worktree-group+.worktree-group{margin-top:var(--space-12)}
+.hierarchy .worktree-row{position:relative;height:30px;color:var(--color-text-secondary);font-size:var(--text-13);font-weight:var(--weight-semibold)}
+.hierarchy .project-row,.hierarchy .project-row:hover,.hierarchy .project-row:focus,.hierarchy .worktree-row,.hierarchy .worktree-row:hover,.hierarchy .worktree-row:focus,.hierarchy .worktree-row:focus-within{background:transparent}
+.hierarchy .row-leading{width:18px;justify-content:flex-start}
+.hierarchy .row-label{align-items:center}
+.hierarchy .row-count{flex:none;color:var(--color-text-muted);font:var(--weight-medium) var(--text-10)/var(--line-10) var(--font-mono);white-space:nowrap}
+.hierarchy .row-count.bad{color:var(--color-destructive)}
+.hierarchy .session-row{min-height:43px;align-items:stretch;flex-direction:column;justify-content:center;gap:var(--space-2);padding:var(--space-4) var(--space-6)}
+.hierarchy .session-row+.session-row{margin-top:var(--space-2)}
+.hierarchy .worktree-row+.session-row{margin-top:var(--space-2)}
+.hierarchy .session-top,.hierarchy .session-bottom{min-width:0;display:flex;align-items:center;gap:var(--gap-6)}
+.hierarchy .session-top{font-size:var(--text-12);line-height:17px}
+.hierarchy .session-bottom{padding-left:24px;font:var(--text-10)/14px var(--font-mono)}
+.hierarchy .session-title,.hierarchy .session-diff{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hierarchy .session-title{font-weight:var(--weight-semibold)}
+.hierarchy .session-diff{color:var(--color-text-muted)}
+.hierarchy .diff-add{color:var(--color-running)}
+.hierarchy .diff-remove{margin-left:var(--space-6);color:var(--color-destructive)}
+.hierarchy .session-status{flex:none;color:var(--color-text-muted);white-space:nowrap}
+.hierarchy .session-status.good{color:var(--color-running)}
+.hierarchy .session-status.warn{color:var(--color-needs-you)}
+.hierarchy .session-status.bad{color:var(--color-destructive)}
+.hierarchy .agent-icon .icon{width:12px;height:12px}
+.hierarchy .session-row:hover,.hierarchy .session-row:focus-within,.hierarchy .session-row.demo-hover{background:var(--color-hover)}
+.hierarchy .session-row.selected{background:var(--color-selected)}
+.hierarchy .row-trailing{width:auto}
+.hierarchy .worktree-actions{position:absolute;right:var(--space-4);top:var(--space-2);visibility:hidden}
+.hierarchy .worktree-actions .trio{gap:var(--gap-2)}
+.hierarchy .worktree-actions .icon-btn{width:24px;height:24px;border-color:transparent;background:var(--color-surface);color:var(--color-text-secondary)}
+.hierarchy .worktree-actions .icon-btn:hover,.hierarchy .worktree-actions .icon-btn:focus-visible{color:var(--color-text-primary)}
+.hierarchy .worktree-row:hover .worktree-actions,.hierarchy .worktree-row:focus-within .worktree-actions,.hierarchy .worktree-row.demo-focus .worktree-actions{visibility:visible}
+.hierarchy .worktree-row:focus-visible,.hierarchy .project-row:focus-visible,.hierarchy .session-row:focus-visible{outline:var(--focus-ring) solid var(--color-focus);outline-offset:0}
 .row-label .skeleton{width:100%}
 .indent{padding-left:var(--space-20)}
 .context{color:var(--color-text-muted);font-size:var(--text-10)}
@@ -363,7 +410,6 @@ textarea.field{height:var(--textarea-h);min-height:var(--textarea-h);resize:vert
 .progress{height:var(--space-4);border-radius:var(--radius-8);background:var(--color-selected);overflow:hidden}
 .progress span{display:block;width:66%;height:100%;background:var(--color-text-secondary)}
 .skeleton{height:var(--row-h);border-radius:var(--radius-8);background:var(--color-selected);opacity:var(--opacity-muted)}
-.disclosure{display:inline-grid;place-items:center;width:var(--control-h);height:var(--control-h)}
 .full-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--gap-4);min-height:calc(var(--space-48) * 5);padding:var(--space-8);background:var(--color-bg);border:var(--border-thin) solid var(--color-border)}
 .full-grid.two,.full-grid.wide{grid-template-columns:repeat(auto-fit,minmax(min(100%,var(--sidebar-w)),1fr))}
 .tile{min-width:0;border:var(--border-thin) solid var(--color-border);border-radius:var(--radius-8);overflow:hidden;background:var(--color-surface)}
@@ -402,7 +448,7 @@ textarea.field{height:var(--textarea-h);min-height:var(--textarea-h);resize:vert
 <header>
 <div class="eyebrow">Component reference</div>
 <h1>Grove component reference</h1>
-<p>Live, token-only specimens for the selected A4 workspace model. Project and List keep the hierarchy sidebar. Grid gives active sessions the full canvas.</p>
+<p>Live, token-only specimens for the selected A4 workspace model. Project keeps every project, worktree, and session visible in one sidebar. List retains its session groups; Grid gives active sessions the full canvas.</p>
 <p class="rule">The Markdown file is the contract. This sheet renders the variants and states. All values come from the verbatim design token blocks above.</p>
 </header>
 <div id="catalog"></div>
@@ -421,6 +467,8 @@ check:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 
 plus:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>',
 warning:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 14 13H2zM8 6v3.5M8 11.5h.01"/></svg>',
 folder:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h4l1.5 1.5h5.5v7h-11z"/></svg>'
+,folderOpen:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h4l1.5 2h5v2"/><path d="M4 8h10l-2 5H2z"/></svg>'
+,branch:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="3.5" r="1.5"/><circle cx="12" cy="5" r="1.5"/><circle cx="4" cy="12.5" r="1.5"/><path d="M4 5v6M12 6.5c0 3.5-8 0-8 4.5"/></svg>'
 ,running:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.25"/></svg>'
 ,error:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="m6 6 4 4M10 6l-4 4"/></svg>'
 ,list:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4h8M6 8h8M6 12h8M2 4h.01M2 8h.01M2 12h.01"/></svg>'
@@ -431,15 +479,21 @@ folder:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4
 ,sun:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5 13 13M13 3l-1.5 1.5M4.5 11.5 3 13"/></svg>'
 ,moon:'<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.5 10.5A5.5 5.5 0 0 1 5.5 3.5 5.5 5.5 0 1 0 12.5 10.5z"/></svg>'
 };
-function trio(tip){
-return '<div class="trio"><button class="icon-btn accent" type="button" aria-label="Start Codex in billing-retry" title="Start Codex in billing-retry">'+svg.codex+'</button><button class="icon-btn accent" type="button" aria-label="Start Claude Code in billing-retry" title="Start Claude Code in billing-retry">'+svg.claude+'</button><button class="icon-btn accent" type="button" aria-label="Start Terminal in billing-retry" title="Start Terminal in billing-retry">'+svg.terminal+'</button>'+(tip?'<span class="tooltip">Start with Codex</span>':'')+'</div>';
+function trio(tip,worktree){
+worktree=worktree||'billing-retry';
+return '<div class="trio"><button class="icon-btn accent" type="button" aria-label="Start Codex in '+worktree+'" title="Start Codex in '+worktree+'">'+svg.codex+'</button><button class="icon-btn accent" type="button" aria-label="Start Claude Code in '+worktree+'" title="Start Claude Code in '+worktree+'">'+svg.claude+'</button><button class="icon-btn accent" type="button" aria-label="Start Terminal in '+worktree+'" title="Start Terminal in '+worktree+'">'+svg.terminal+'</button>'+(tip?'<span class="tooltip">Start with Codex</span>':'')+'</div>';
 }
 function viewSwitch(active,remembered){remembered=remembered||'Project';var destination=active==='Project'?'List':active==='List'?'Project':remembered;var toggleIcon=destination==='List'?'list':'folder';return '<div class="view-switch" role="group" aria-label="Workspace view"><button class="view-btn" type="button" aria-label="Switch to '+destination.toLowerCase()+' view" title="Switch to '+destination.toLowerCase()+' view" aria-pressed="false">'+svg[toggleIcon]+'</button><button class="view-btn" type="button" aria-label="Open grid view" title="Open grid view" aria-pressed="'+(active==='Grid')+'">'+svg.grid+'</button></div>'}
 function pty(agent,state,line){
 return '<div class="pty"><span class="accent">'+agent+'</span> <span class="'+state[0]+'">'+state[1]+'</span><br><span class="context">Platform / platform-api / billing-retry</span><br><br>$ '+line+'<br>Running focused checks...<br>▌</div>';
 }
-function miniWorkspace(){return '<div class="mini-app" inert aria-hidden="true"><div class="mini-appbar"><b class="brand">GROVE</b><span>'+svg.folder+' Platform '+svg.chevDown+'</span><span>Project</span></div><div class="mini-body"><div class="mini-sidebar"><div class="tree-row">'+svg.chevDown+' platform-api</div><div class="tree-row indent">'+svg.chevDown+' billing-retry</div><div class="session-row selected">'+svg.codex+' Codex · Fix billing retry</div></div><div class="mini-canvas">Platform / platform-api / billing-retry<br><br>Focused PTY remains visible.</div></div></div>'}
-function workspaceStage(surface){return '<div class="workspace-stage"><div class="mini-appbar"><b class="brand">GROVE</b><button class="btn" aria-expanded="true">'+svg.folder+'<span>Platform</span>'+svg.chevDown+'</button><span>Project</span></div><div class="mini-body" inert aria-hidden="true"><div class="mini-sidebar">platform-api<br>billing-retry</div><div class="mini-canvas">Platform workspace</div></div><div class="workspace-anchor">'+surface+'</div></div>'}
+function projectRow(name,showMenu){return '<div class="project-row'+(showMenu?' demo-focus':'')+'"><button class="project-disclosure row-leading" type="button" data-project="'+name+'" aria-expanded="true" aria-label="Collapse '+name+' project" title="Collapse '+name+' project">'+svg.folderOpen+'</button><span class="row-label" role="button" tabindex="0" aria-label="Select '+name+' project"><b class="row-title">'+name+'</b></span><button class="project-menu-button" type="button" aria-label="Actions for '+name+'" title="Actions for '+name+'">'+svg.dots+'</button></div>'}
+function worktreesHeading(count){return '<div class="worktrees-heading"><span>Worktrees</span><span class="row-count count-cell">'+count+'</span></div>'}
+function worktreeRow(name,showActions){return '<div class="worktree-row'+(showActions?' demo-focus':'')+'" tabindex="0"><span class="row-leading">'+svg.branch+'</span><span class="row-label"><b class="row-title">'+name+'</b></span><span class="worktree-trailing" aria-hidden="true"></span><span class="worktree-actions">'+trio(false,name)+'</span></div>'}
+function hierarchySession(agent,title,diff,status,tone,selected,focus,hover){return '<div class="session-row'+(selected?' selected':'')+(focus?' focus-origin':'')+(hover?' demo-hover':'')+'"><div class="session-top"><span class="row-leading agent-icon" role="img" aria-label="'+agent+' session" title="'+agent+' session">'+svg[agent]+'</span><span class="session-title">'+title+'</span></div><div class="session-bottom"><span class="session-diff" title="Worktree changes">'+diff+'</span><span class="session-status '+(tone||'')+'">'+status+'</span></div></div>'}
+function diffCount(added,removed){return '<span class="diff-add">+'+added+'</span><span class="diff-remove">−'+removed+'</span>'}
+function miniWorkspace(){return '<div class="mini-app" inert aria-hidden="true"><div class="mini-appbar"><b class="brand">GROVE</b><span>'+svg.folder+' Platform '+svg.chevDown+'</span><span>Project</span></div><div class="mini-body"><div class="mini-sidebar"><div class="hierarchy"><section class="project-group">'+projectRow('platform-api')+worktreesHeading(2)+'<div class="worktree-group">'+worktreeRow('main')+'</div><div class="worktree-group">'+worktreeRow('billing-retry')+hierarchySession('codex','Fix billing retry',diffCount(11,7),'Working','good',true)+hierarchySession('terminal','Watch tests',diffCount(11,7),'Idle','',false)+'</div></section></div></div><div class="mini-canvas">Platform / platform-api / billing-retry<br><br>Focused PTY remains visible.</div></div></div>'}
+function workspaceStage(surface){return '<div class="workspace-stage"><div class="mini-appbar"><b class="brand">GROVE</b><button class="btn" aria-expanded="true">'+svg.folder+'<span>Platform</span>'+svg.chevDown+'</button><span>Project</span></div><div class="mini-body" inert aria-hidden="true"><div class="mini-sidebar"><div class="hierarchy"><section class="project-group">'+projectRow('platform-api')+worktreesHeading(1)+'<div class="worktree-group">'+worktreeRow('billing-retry')+hierarchySession('codex','Fix billing retry',diffCount(11,7),'Working','good',true)+'</div></section></div></div><div class="mini-canvas">Platform workspace</div></div><div class="workspace-anchor">'+surface+'</div></div>'}
 var gpuiComponentMap = [
   {
     "id": "button",
@@ -492,10 +546,10 @@ var gpuiComponentMap = [
   },
   {
     "id": "sidebar",
-    "target": "Adapted Sidebar::render + rows::render_row",
+    "target": "Sidebar::tree in Project view",
     "status": "adapt",
     "source": "src/views/sidebar.rs",
-    "note": "Project and List retain 236px hierarchy sidebar with two view controls in side-head per screens.html; Grid omits sidebar and places controls in appbar. Preserve scroll/selection and collapsed semantics; reveal worktree launch on keyboard focus. No duplicate view controls or session filtering."
+    "note": "Projects default expanded in one scrollable hierarchy. Each folder button hides only its own Worktrees heading, worktrees, and sessions; collapse state persists across workspace switches during the run while the canvas session stays active. The project name/row selects context without toggling. Align icon/name columns and the 24px project-menu and Worktrees-count column; worktree rows keep no session total or background. List and Grid retain their separate behavior."
   },
   {
     "id": "session-header",
@@ -533,32 +587,32 @@ var gpuiComponentMap = [
     "note": "Capture source bounds, attach shared edge and clamp to window; keep loading/error geometry stable. Raw anchored/deferred provides no focus or Escape logic. Vendored Popover appearance(false) also removes click-out dismissal."
   },
   {
-    "id": "disclosure",
-    "target": "Adapted rows::render_row disclosure control",
+    "id": "worktrees-heading",
+    "target": "Sidebar::tree worktree count heading",
     "status": "adapt",
-    "source": "src/views/rows.rs",
-    "note": "Dedicated right/down chevron control retains expanded state and accessible name. Keyboard activation must expand/collapse without accidentally selecting or launching; preserve selection while descendants hide."
+    "source": "src/views/sidebar.rs",
+    "note": "Per-project Worktrees N heading labels an expanded project's worktree groups. Center its count in the same 24px trailing column as the project menu, including zero; the folder button hides this heading with only its own descendants."
   },
   {
     "id": "project-row",
-    "target": "Adapted rows::render_row(TreeRow::Project, RowCtx)",
+    "target": "Sidebar::tree project row",
     "status": "adapt",
-    "source": "src/views/rows.rs",
-    "note": "24px leading/flexible identity/48px status/28px action slots, stable at long names. Expose selection/disclosure and named project action; loading/non-Git/partial/error are explicit and never color-only."
+    "source": "src/views/sidebar.rs",
+    "note": "Separate named folder button exposes expanded state: folder-open by default, folder when collapsed. Clicking it hides only this project's descendants and preserves the active canvas session; state survives workspace switches during the run. Name/row selection does not toggle. The independent menu ellipsis shares the 24px trailing column with Worktrees N; no project session total."
   },
   {
     "id": "worktree-row",
-    "target": "Adapted rows::render_row(TreeRow::Worktree, RowCtx)",
+    "target": "Sidebar::tree worktree row",
     "status": "adapt",
-    "source": "src/views/rows.rs",
-    "note": "Fixed slots and nonwrapping branch metadata; distinguish main/branch and zero sessions. Focus or hover reveals stable three-agent strip. Preserve SpawnAgent dispatch, and avoid clipping ring or shifting identity during reveal."
+    "source": "src/views/sidebar.rs",
+    "note": "Branch icon and name align with project and session rows. Worktree headings show no numeric session total and remain transparent at rest, hover, and focus; trailing space stays reserved for direct-start actions on hover or keyboard focus. The roughly 12px gap separates adjacent worktree groups. Keep zero-session worktrees visible and preserve the No sessions empty state."
   },
   {
     "id": "session-row",
-    "target": "Adapted rows::render_row(TreeRow::Session, RowCtx) + state_glyph",
+    "target": "Sidebar::session_row in Project view",
     "status": "adapt",
-    "source": "src/views/rows.rs",
-    "note": "24/flexible/48/28 slots; visible process label and context accompany glyph. Selection and close are distinct keyboard actions; pending close remains attached to source and preserves session until confirmation succeeds."
+    "source": "src/views/sidebar.rs",
+    "note": "Two-line row with a 12px agent icon and live task title, including background changes and restored tmux pane title before selection or attachment; then worktree-level diff (+N green, −N red, or muted clean) and status at right. Siblings sit roughly 2px apart; selected and hovered sessions fill the whole row, never the diff alone. Keep open, diff, and close as distinct keyboard actions."
   },
   {
     "id": "grid",
@@ -691,7 +745,7 @@ const groups=[
 ['appbar','Appbar',"Adapted appbar::appbar with workspace trigger and Grid-mode view controls"],
 ['trigger','Workspace trigger',"Proposed workspace trigger inside appbar::appbar"],
 ['workspace-menu','Workspace dropdown',"Proposed anchored workspace dropdown with pinned actions"],
-['sidebar','Project sidebar',"Adapted Sidebar::render + rows::render_row"],
+['sidebar','Project sidebar',"Sidebar::tree with independently collapsible project groups"],
 ['session-header','Session header',"Adapted session_header::session_header(SessionHeaderData, ToolCluster)"],
 ['statusbar','Statusbar',"Adapted statusbar::statusbar(StatusbarCtx)"]
 ]},
@@ -701,10 +755,10 @@ const groups=[
 ['popover','Anchored menu/popover',"Proposed deferred(anchored()) surface with explicit dismissal lifecycle"]
 ]},
 {name:'Workspace/project hierarchy',items:[
-['disclosure','Disclosure',"Adapted rows::render_row disclosure control"],
-['project-row','Project row',"Adapted rows::render_row(TreeRow::Project, RowCtx)"],
-['worktree-row','Worktree row',"Adapted rows::render_row(TreeRow::Worktree, RowCtx)"],
-['session-row','Session row',"Adapted rows::render_row(TreeRow::Session, RowCtx) + state_glyph"]
+['worktrees-heading','Worktrees heading',"Sidebar::tree per-project worktree count"],
+['project-row','Project row',"Sidebar::tree project identity and action"],
+['worktree-row','Worktree row',"Sidebar::tree branch identity and launch actions"],
+['session-row','Session row',"Sidebar::session_row task, diff, and status"]
 ]},
 {name:'Sessions and terminal',items:[
 ['grid','Full-canvas active-session grid',"Adapted grid::grid(GridCtx) below persistent appbar"],
@@ -749,16 +803,16 @@ case'switch':return '<div class="stack">'+viewSwitch('Project')+viewSwitch('List
 case'appbar':return '<div class="appbar-comparison wide"><div class="appbar-option"><div class="option-note"><b>Fixed workspace view control</b><span>Workspace selection stays independent from the Project/List destination toggle and Grid button.</span></div><div class="appbar"><b class="brand">GROVE</b><button class="btn trigger-state" aria-label="Switch workspace, Platform selected" title="Switch workspace">'+svg.folder+'<span class="row-label"><span class="label">Platform</span></span>'+svg.chevDown+'</button>'+viewSwitch('Project')+'<span class="spacer"></span><button class="icon-btn" aria-label="App actions" title="App actions">'+svg.dots+'</button></div></div><div class="trigger-states"><button class="btn trigger-state"><span class="row-leading">'+svg.folder+'</span><span class="row-label"><span class="label">Platform</span></span><span class="row-trailing">'+svg.chevDown+'</span></button><button class="btn trigger-state" aria-label="Infrastructure Platform workspace"><span class="row-leading">'+svg.folder+'</span><span class="row-label"><span class="label">Infrastructure Platform</span></span><span class="row-trailing">'+svg.chevDown+'</span></button><button class="btn trigger-state" disabled><span class="row-leading">'+svg.folder+'</span><span class="row-label"><span class="label">Loading CareConvoy...</span></span><span class="row-trailing">'+svg.chevDown+'</span></button><button class="btn trigger-state retry"><span class="row-leading">'+svg.warning+'</span><span class="row-label"><span class="label">Retry Orchard</span></span><span class="row-trailing">'+svg.chevDown+'</span></button></div></div>';
 case'trigger':return '<div class="trigger-states"><button class="btn trigger-state" aria-expanded="false"><span class="row-leading">'+svg.folder+'</span><span class="row-label"><span class="label">Grove</span></span><span class="row-trailing">'+svg.chevDown+'</span></button><button class="btn trigger-state" aria-expanded="true"><span class="row-leading">'+svg.folder+'</span><span class="row-label"><span class="label">Platform</span></span><span class="row-trailing">'+svg.chevDown+'</span></button><button class="btn trigger-state" aria-label="Switch workspace, Infrastructure Platform selected"><span class="row-leading">'+svg.folder+'</span><span class="row-label"><span class="label">Infrastructure Platform</span></span><span class="row-trailing">'+svg.chevDown+'</span></button><button class="btn trigger-state retry"><span class="row-leading">'+svg.warning+'</span><span class="row-label"><span class="label">Retry Orchard</span></span><span class="row-trailing">'+svg.chevDown+'</span></button></div>';
 case'workspace-menu':return '<div class="menu" role="menu" aria-label="Switch workspace"><div class="menu-title pinned">Switch workspace</div><div class="menu-scroll"><button class="menu-row selected" role="menuitem" aria-current="true"><span class="row-leading">'+svg.folder+'</span><span class="row-label"><span class="row-title">Grove</span><span class="row-meta">Current workspace</span></span><span class="row-status">Selected</span><span class="row-trailing">'+svg.check+'</span></button><button class="menu-row" role="menuitem"><span class="row-leading">'+svg.folder+'</span><span class="row-label"><span class="row-title">CareConvoy</span><span class="row-meta">care-web</span></span><span class="row-status warn">'+svg.running+' 2 waiting</span><span class="row-trailing"></span></button><button class="menu-row" role="menuitem"><span class="row-leading">'+svg.folder+'</span><span class="row-label"><span class="row-title">Infrastructure Platform</span><span class="row-meta bad">Orchard unavailable</span></span><span class="row-status bad">Error</span><span class="row-trailing"></span></button></div><div class="pinned"><div class="divider"></div><button class="menu-row" role="menuitem"><span class="row-leading">'+svg.plus+'</span><span class="row-label">Create workspace</span><span class="row-status"></span><span class="row-trailing"></span></button><button class="menu-row" role="menuitem"><span class="row-leading">'+svg.dots+'</span><span class="row-label">Manage workspaces</span><span class="row-status"></span><span class="row-trailing"></span></button></div></div>';
-case'sidebar':return '<div class="stack"><div class="shell"><aside class="sidebar"><div class="toolbar">'+viewSwitch('Project')+'<span class="spacer"></span></div><div class="tree-row"><span class="row-leading">'+svg.chevDown+'</span><b>platform-api</b></div><div class="tree-row indent"><span class="row-leading">'+svg.chevDown+'</span>billing-retry</div><div class="tree-row indent selected"><span class="row-leading accent">'+svg.codex+'</span>Codex · Fix billing retry</div></aside><div class="canvas">Selected PTY</div></div><div class="states"><span class="chip">Nothing yet</span><span class="chip info">Partial</span><span class="chip error">Error</span><span class="chip">Loading</span></div></div>';
+case'sidebar':return '<div class="stack"><div class="shell"><aside class="sidebar"><div class="toolbar">'+viewSwitch('Project')+'<span class="spacer"></span></div><div class="hierarchy"><section class="project-group">'+projectRow('grove')+worktreesHeading(2)+'<div class="worktree-group">'+worktreeRow('main')+hierarchySession('terminal','Session in main','clean','Idle','',false)+'</div><div class="worktree-group">'+worktreeRow('ui-overhaul')+hierarchySession('codex','Polish dropdown highlights',diffCount(18,5),'Working','good',true)+hierarchySession('terminal','Run UI checks',diffCount(18,5),'Idle','',false)+'</div></section><section class="project-group">'+projectRow('platform-api')+worktreesHeading(1)+'<div class="worktree-group">'+worktreeRow('billing-retry')+hierarchySession('claude','Approve schema',diffCount(3,1),'Needs you','warn',false)+'</div></section></div></aside><div class="canvas">Selected PTY</div></div><div class="states"><span class="chip">Nothing yet</span><span class="chip info">Partial</span><span class="chip error">Error</span><span class="chip">Loading</span></div></div>';
 case'session-header':return '<div class="stack"><div class="session-head"><span class="accent">'+svg.codex+'</span><b>Codex · Fix billing retry</b><span class="context">feat/billing-retry</span><span class="spacer"></span><span class="chip run">WORKING</span></div><div class="session-head"><span class="accent">'+svg.claude+'</span><b>Claude Code · Approve migration edit</b><span class="spacer"></span><span class="chip wait">NEEDS YOU</span></div><div class="session-head"><span class="bad">'+svg.terminal+'</span><b>Terminal · tests failed</b><span class="spacer"></span><span class="chip error">EXITED</span></div></div>';
 case'statusbar':return '<div class="stack"><div class="statusbar"><span class="good">'+svg.check+' 3 RUNNING</span><span>BACKEND local</span><span>THEME dark</span><span class="spacer"></span><span>v0.1.0</span></div><div class="statusbar"><span class="info">RESIZE tile 2</span><span class="spacer"></span><span>arrows / hjkl 5%</span></div><div class="statusbar"><span class="bad">'+svg.close+' Workspace switch failed</span><span class="spacer"></span><span>Retry available</span></div></div>';
-case'scrim':return '<div class="overlay-demo">'+miniWorkspace()+'<div class="neutral-veil" aria-hidden="true"></div><div class="source-anchor"><div class="session-row selected focus-origin">'+svg.codex+'<b>Codex · Fix billing retry</b></div><div class="confirmation-tray" role="alertdialog" aria-label="Close running session"><div class="tray-title bad">'+svg.warning+'<b>Close running session?</b></div><p class="tray-consequences"><b>Process</b> Stops now · <b>Worktree</b> Stays on disk</p><div class="tray-actions"><button class="btn ghost">'+svg.close+'<span>Cancel</span></button><button class="btn danger">'+svg.trash+'<span>Close session</span></button></div></div></div></div>';
+case'scrim':return '<div class="overlay-demo">'+miniWorkspace()+'<div class="neutral-veil" aria-hidden="true"></div><div class="source-anchor"><div class="hierarchy">'+hierarchySession('codex','Fix billing retry',diffCount(11,7),'Working','good',true,true)+'</div><div class="confirmation-tray" role="alertdialog" aria-label="Close running session"><div class="tray-title bad">'+svg.warning+'<b>Close running session?</b></div><p class="tray-consequences"><b>Process</b> Stops now · <b>Worktree</b> Stays on disk</p><div class="tray-actions"><button class="btn ghost">'+svg.close+'<span>Cancel</span></button><button class="btn danger">'+svg.trash+'<span>Close session</span></button></div></div></div></div>';
 case'dialog':return '<div class="stack wide">'+workspaceStage(workspaceQuickCreate('empty'))+workspaceStage(workspaceQuickCreate('loading'))+workspaceStage(workspaceQuickCreate('duplicate'))+workspaceStage('<div class="quick-create manager-panel" role="dialog" aria-label="Manage workspaces"><b>Manage workspaces</b><div class="menu-row"><span>'+svg.folder+'</span><span class="row-label">Orchard</span><button class="icon-btn danger" aria-label="Delete Orchard" title="Delete Orchard">'+svg.trash+'</button></div><div class="danger-confirm-row" role="alertdialog" aria-label="Confirm deletion of Orchard"><span><b>Orchard</b> is empty. Grove opens next.</span><div class="tray-actions"><button class="btn ghost">'+svg.close+'<span>Cancel</span></button><button class="btn danger">'+svg.trash+'<span>Delete workspace</span></button></div></div></div>')+'</div>';
 case'popover':return '<div class="states"><div class="menu"><div class="menu-title">platform-api</div><button class="menu-row">'+svg.plus+'<span>New worktree</span></button><button class="menu-row">'+svg.folder+'<span>Open in file manager</span></button><div class="divider"></div><button class="menu-row bad">'+svg.trash+'<span>Remove project</span></button></div><span class="tooltip">Start with Codex</span></div>';
-case'disclosure':return '<div class="states"><button class="icon-btn" aria-label="Expand project" title="Expand project">'+svg.chevRight+'</button><span>Collapsed platform-api</span><button class="icon-btn active" aria-label="Collapse project" title="Collapse project">'+svg.chevDown+'</button><span>Expanded platform-api</span><button class="icon-btn" disabled aria-label="Project disclosure unavailable" title="Project disclosure unavailable">'+svg.chevRight+'</button></div>';
-case'project-row':return '<div class="stack wide"><div class="project-row selected"><span class="row-leading">'+svg.chevDown+'</span><span class="row-label"><b class="row-title">platform-api</b><span class="row-meta">/Sandbox/platform-api</span></span><span class="row-status good">3</span><span class="row-trailing"><button class="icon-btn flat" aria-label="platform-api actions">'+svg.dots+'</button></span></div><div class="project-row hover"><span class="row-leading">'+svg.chevRight+'</span><span class="row-label"><b class="row-title">grove</b><span class="row-meta">Collapsed</span></span><span class="row-status">0</span><span class="row-trailing"><button class="icon-btn flat" aria-label="grove actions">'+svg.dots+'</button></span></div><div class="project-row bad"><span class="row-leading bad">'+svg.warning+'</span><span class="row-label"><b class="row-title">notes</b><span class="row-meta bad">Not a Git repository</span></span><span class="row-status bad">Error</span><span class="row-trailing"><button class="icon-btn flat" aria-label="notes actions">'+svg.dots+'</button></span></div><div class="project-row"><span class="row-leading"></span><span class="row-label"><span class="skeleton"></span></span><span class="row-status"></span><span class="row-trailing"></span></div></div>';
-case'worktree-row':return '<div class="stack"><div class="worktree-row"><span class="row-leading">'+svg.chevDown+'</span><span class="row-label"><b class="row-title">main</b><span class="row-meta">main</span></span><span class="row-status good">main</span><span class="row-trailing"></span></div><div class="worktree-row selected"><span class="row-leading">'+svg.chevDown+'</span><span class="row-label"><b class="row-title">billing-retry</b><span class="row-meta">feat/billing-retry</span></span><span class="row-status">0</span><span class="row-trailing">'+trio(false)+'</span></div><div class="worktree-row bad"><span class="row-leading bad">'+svg.warning+'</span><span class="row-label"><b class="row-title">billing-retry</b><span class="row-meta bad">Path unavailable</span></span><span class="row-status bad">Error</span><span class="row-trailing"></span></div></div>';
-case'session-row':return '<div class="stack"><div class="session-row selected"><span class="row-leading good">'+svg.running+'</span><span class="row-label"><b class="row-title">Codex · Fix billing retry</b><span class="row-meta">Platform / platform-api / billing-retry</span></span><span class="row-status good">WORKING</span><span class="row-trailing"><button class="icon-btn flat" aria-label="Session actions">'+svg.dots+'</button></span></div><div class="session-row"><span class="row-leading warn">'+svg.warning+'</span><span class="row-label"><b class="row-title">Claude Code · Approve migration edit</b><span class="row-meta">Platform / platform-api / billing-retry</span></span><span class="row-status warn">NEEDS YOU</span><span class="row-trailing"><button class="icon-btn flat" aria-label="Session actions">'+svg.dots+'</button></span></div><div class="session-row bad"><span class="row-leading bad">'+svg.error+'</span><span class="row-label"><b class="row-title">Codex · Session failed</b><span class="row-meta bad">Process exited with code 1</span></span><span class="row-status bad">ERROR</span><span class="row-trailing"><button class="icon-btn flat" aria-label="Retry session">'+svg.refresh+'</button></span></div></div>';
+case'worktrees-heading':return '<div class="hierarchy"><section class="project-group">'+projectRow('grove')+worktreesHeading(2)+'</section><section class="project-group">'+projectRow('care-web')+worktreesHeading(0)+'</section></div>';
+case'project-row':return '<div class="hierarchy"><section class="project-group">'+projectRow('platform-api',true)+worktreesHeading(2)+'</section><section class="project-group">'+projectRow('grove')+worktreesHeading(1)+'</section><section class="project-group"><div class="project-row"><button class="project-disclosure row-leading" type="button" data-project="notes" aria-expanded="true" aria-label="Collapse notes project" title="Collapse notes project">'+svg.folderOpen+'</button><span class="row-label" role="button" tabindex="0" aria-label="Select notes project"><b class="row-title">notes</b></span><span class="row-count bad">Git error</span></div><div class="context">Repository unavailable</div></section><section class="project-group"><div class="project-row"><button class="project-disclosure row-leading" type="button" disabled aria-label="Project loading" title="Project loading">'+svg.folderOpen+'</button><span class="row-label"><span class="skeleton"></span></span></div></section></div>';
+case'worktree-row':return '<div class="hierarchy"><div class="worktree-group">'+worktreeRow('main')+'</div><div class="worktree-group">'+worktreeRow('billing-retry',true)+hierarchySession('codex','Fix billing retry',diffCount(11,7),'Working','good',true)+hierarchySession('terminal','Watch tests',diffCount(11,7),'Idle','',false)+'</div><div class="worktree-group"><div class="worktree-row"><span class="row-leading">'+svg.branch+'</span><span class="row-label"><b class="row-title">migration</b></span><span class="row-count bad">Path unavailable</span></div></div></div>';
+case'session-row':return '<div class="hierarchy">'+hierarchySession('codex','Polish dropdown highlights',diffCount(18,5),'Working','good',true)+hierarchySession('claude','Approve migration edit',diffCount(18,5),'Needs you','warn',false,false,true)+hierarchySession('terminal','Session in main','clean','Idle','',false)+hierarchySession('codex','Session failed','clean','Error','bad',false)+'</div>';
 case'grid':return '<div class="stack wide"><div class="appbar"><b class="brand">GROVE</b><button class="btn trigger-state"><span class="row-leading">'+svg.folder+'</span><span class="row-label"><span class="label">Platform</span></span><span class="row-trailing">'+svg.chevDown+'</span></button>'+viewSwitch('Grid')+'</div><div class="full-grid wide">'+tile('Codex','WORKING','good','Fix billing retry','$ codex resume','focus')+tile('Claude Code','NEEDS YOU','warn','Approve migration edit','$ claude continue','')+tile('Terminal','RUNNING','good','billing-retry logs','$ pnpm test','')+'</div><div class="statusbar"><span class="good">'+svg.running+' 3 ACTIVE</span><span class="spacer"></span><span>Platform only</span></div></div>';
 case'tile':return '<div class="stack wide"><div class="full-grid"><span class="context">One-column fallback</span>'+tile('Codex','WORKING','good','Fix billing retry','$ codex resume','focus')+'</div><div class="full-grid two">'+tile('Codex','WORKING','good','Fix billing retry','$ codex resume','')+tile('Claude Code','NEEDS YOU','warn','Approve migration edit','$ claude continue','')+'</div><div class="full-grid wide">'+tile('Codex','WORKING','good','Fix billing retry','$ codex resume','focus')+tile('Claude Code','NEEDS YOU','warn','Approve migration edit','$ claude continue','')+tile('Terminal','RUNNING','good','billing-retry logs','$ pnpm test','')+'</div><div class="full-grid">'+tile('Codex','ERROR','bad','Restore failed session','$ process exited','')+'</div></div>';
 case'session-list':return '<div class="stack"><div class="group-head warn">NEEDS YOU <span class="chip wait">1</span></div><div class="session-row"><b>Claude Code · Approve migration edit</b></div><div class="group-head good">WORKING <span class="chip run">1</span></div><div class="session-row selected"><b>Codex · Fix billing retry</b></div><div class="group-head">IDLE <span class="chip">1</span></div><div class="session-row"><b>Terminal · billing-retry shell</b></div><div class="states"><span class="chip">Loading</span><span class="chip">Nothing yet</span><span class="chip info">Partial</span><span class="chip error">Error</span></div></div>';
@@ -786,6 +840,11 @@ document.getElementById('catalog').innerHTML=groups.map(function(group){return '
 function buttonIcon(label){var s=label.trim().toLowerCase();if(s.includes('delete')||s.includes('remove')||s.includes('close session'))return svg.trash;if(s.includes('retry')||s.includes('loading')||s.includes('creating'))return svg.refresh;if(s.includes('cancel')||s.includes('close'))return svg.close;if(s.includes('approve')||s.includes('confirm')||s.includes('save'))return svg.check;if(s.includes('start'))return svg.play;if(s.includes('new')||s.includes('add')||s.includes('create'))return svg.plus;if(s.includes('manage')||s.includes('actions'))return svg.dots;if(s.includes('open in file')||s==='project')return svg.folder;if(s==='list')return svg.list;if(s==='grid')return svg.grid;if(s.includes('workspace')||s.includes('platform')||s.includes('grove')||s.includes('careconvoy')||s.includes('orchard'))return svg.folder;return svg.check}
 function enforceButtonIcons(){document.querySelectorAll('button').forEach(function(button){if(button.matches('.switch,.choice'))return;if(!button.querySelector('svg'))button.insertAdjacentHTML('afterbegin',buttonIcon(button.textContent));if(!button.textContent.trim()){var name=button.getAttribute('aria-label')||'Action';button.setAttribute('aria-label',name);button.setAttribute('title',button.getAttribute('title')||name)}})}
 enforceButtonIcons();
+const projectCollapseState=new Map();
+function setProjectCollapsed(name,collapsed){projectCollapseState.set(name,collapsed);document.querySelectorAll('.project-disclosure').forEach(function(button){if(button.dataset.project!==name)return;var group=button.closest('.project-group');if(group)group.classList.toggle('is-collapsed',collapsed);button.setAttribute('aria-expanded',String(!collapsed));var action=(collapsed?'Expand ':'Collapse ')+name+' project';button.setAttribute('aria-label',action);button.setAttribute('title',action);button.innerHTML=collapsed?svg.folder:svg.folderOpen})}
+document.querySelectorAll('.project-disclosure').forEach(function(button){button.addEventListener('click',function(event){event.stopPropagation();setProjectCollapsed(button.dataset.project,button.getAttribute('aria-expanded')==='true')})});
+function selectProjectRow(row){document.querySelectorAll('.project-row.demo-selected').forEach(function(selected){selected.classList.remove('demo-selected');var label=selected.querySelector('.row-label[role="button"]');if(label)label.removeAttribute('aria-current')});row.classList.add('demo-selected');var label=row.querySelector('.row-label[role="button"]');if(label)label.setAttribute('aria-current','true')}
+document.querySelectorAll('.project-row').forEach(function(row){row.addEventListener('click',function(event){if(event.target.closest('button'))return;selectProjectRow(row)});var label=row.querySelector('.row-label[role="button"]');if(label)label.addEventListener('keydown',function(event){if(event.key==='Enter'||event.key===' '){event.preventDefault();selectProjectRow(row)}})});
 document.querySelectorAll('.quick-create .field.error').forEach(function(field,i){field.setAttribute('aria-invalid','true');var message=field.closest('.quick-create').querySelector('.inline-error');if(message){message.id='quick-create-error-'+i;field.setAttribute('aria-describedby',message.id)}});
 document.querySelector('.eyebrow').textContent='Component reference · '+index+' components · '+groups.length+' groups';
 document.querySelectorAll('.switch').forEach(function(button){button.addEventListener('click',function(){button.setAttribute('aria-checked',String(button.getAttribute('aria-checked')!=='true'))})});

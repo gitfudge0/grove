@@ -34,6 +34,7 @@ pub(crate) fn spawn_wt_script(
         context_roots: Vec::new(),
         temp_bundle_path: None,
         label,
+        restored_title: None,
         spawned_at: std::time::Instant::now(),
         attention: None,
         tmux: false,

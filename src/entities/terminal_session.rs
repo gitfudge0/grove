@@ -38,6 +38,15 @@ fn output_age_at(last_output_at: Option<Instant>, now: Instant) -> Duration {
     })
 }
 
+fn output_needs_notify(
+    last_damage_gen: u64,
+    damage_gen: u64,
+    previous_title: Option<&str>,
+    title: Option<&str>,
+) -> bool {
+    damage_gen != last_damage_gen || title != previous_title
+}
+
 /// Tmux keeps its scrollback in copy-mode on the alternate screen, so grove's own scrollback is empty for it (`session.rs:667-705`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Backend {
@@ -307,9 +316,10 @@ impl TerminalSession {
             )
     }
 
-    /// Feeds chunks into the model and repaints only if the grid actually moved (damage-generation compare, not a redraw-every-chunk).
+    /// Feeds chunks into the model and notifies when the grid or OSC title changes.
     fn ingest(&mut self, chunks: &[Vec<u8>], cx: &mut Context<Self>) {
         self.last_output_at = Some(Instant::now());
+        let previous_title = self.term.title();
         for chunk in chunks {
             self.term.process(chunk);
         }
@@ -323,10 +333,21 @@ impl TerminalSession {
             }
         }
         let generation = self.term.damage_generation();
-        if generation != self.last_damage_gen {
+        let title = self.term.title();
+        if output_needs_notify(
+            self.last_damage_gen,
+            generation,
+            previous_title.as_deref(),
+            title.as_deref(),
+        ) {
             self.last_damage_gen = generation;
             cx.notify();
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ingest_for_test(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        self.ingest(&[bytes.to_vec()], cx);
     }
 
     /// Order is load-bearing: snap to live and leave copy-mode before the bytes go out (`session.rs:604-625`).
@@ -724,7 +745,7 @@ mod tests {
     use gpui::AppContext as _;
     use grove_core::agent::Agent;
 
-    use super::output_age_at;
+    use super::{output_age_at, output_needs_notify};
 
     #[test]
     fn root_binary_tests_do_not_contact_tmux_from_terminal_sessions() {
@@ -795,6 +816,43 @@ mod tests {
             Some("/".to_string())
         );
         assert!(notified.get());
+    }
+
+    #[gpui::test]
+    fn osc_title_change_notifies_observers(cx: &mut gpui::TestAppContext) {
+        let session = cx.new(|cx| super::TerminalSession::spawn_script("\0", "/", cx));
+        // Consume the terminal's initial full damage before observing title-only output.
+        session.update(cx, |session, cx| session.ingest(&[Vec::new()], cx));
+        let notifications = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen = notifications.clone();
+        let _observer = cx.update(|cx| cx.observe(&session, move |_, _| seen.set(seen.get() + 1)));
+        session.update(cx, |session, cx| {
+            session.ingest(&[b"\x1b]2;Fix build\x07".to_vec()], cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 1);
+        assert_eq!(
+            session.read_with(cx, |session, _| session.title()),
+            Some("Fix build".into())
+        );
+    }
+
+    #[test]
+    fn title_only_change_requires_notification_without_grid_damage() {
+        assert!(output_needs_notify(7, 7, None, Some("Fix build")));
+        assert!(output_needs_notify(
+            7,
+            7,
+            Some("Fix build"),
+            Some("Fix tests")
+        ));
+        assert!(!output_needs_notify(
+            7,
+            7,
+            Some("Fix build"),
+            Some("Fix build")
+        ));
+        assert!(!output_needs_notify(7, 7, None, None));
     }
 
     #[test]

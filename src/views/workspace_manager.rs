@@ -15,8 +15,10 @@ const FIELD_H: f32 = 60.0;
 const FIELD_VALUE: f32 = 16.0;
 const FIELD_INSET: f32 = 14.0;
 const SELECTOR_H: f32 = 32.0;
-const MENU_ROW_H: f32 = 40.0;
-const MENU_ROW_RADIUS: f32 = 8.0;
+const MENU_ROW_H: f32 = 28.0;
+const MENU_LEADING_W: f32 = 24.0;
+const MENU_STATUS_W: f32 = 48.0;
+const MENU_TRAILING_W: f32 = 28.0;
 
 use crate::settings::SettingsState;
 use grove_core::storage::Workspaces;
@@ -37,6 +39,7 @@ pub struct WorkspaceManager {
     focus: FocusHandle,
     input: Entity<InputState>,
     selected: usize,
+    keyboard_navigation: bool,
     error: Option<String>,
     _subscription: Subscription,
     _settings_subscription: Subscription,
@@ -45,6 +48,10 @@ pub struct WorkspaceManager {
     popup_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
 }
 impl WorkspaceManager {
+    pub(crate) fn is_open(&self) -> bool {
+        self.panel != Panel::Closed
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. Platform"));
         let subscription = cx.subscribe_in(
@@ -72,6 +79,7 @@ impl WorkspaceManager {
             focus: cx.focus_handle().tab_stop(true),
             input,
             selected: 0,
+            keyboard_navigation: false,
             error: None,
             _subscription: subscription,
             _settings_subscription: settings_subscription,
@@ -104,6 +112,15 @@ impl WorkspaceManager {
     fn open(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
         self.panel = panel;
         self.error = None;
+        if panel == Panel::Menu {
+            self.selected = self
+                .state
+                .rows
+                .iter()
+                .position(|row| row.id == self.state.active)
+                .unwrap_or(0);
+            self.keyboard_navigation = false;
+        }
         let value = match panel {
             Panel::Rename(id) => self.state.name(id).to_string(),
             _ => String::new(),
@@ -272,11 +289,11 @@ impl WorkspaceManager {
             .max_h(rpx(max_height))
             .flex()
             .flex_col()
-            .p(rpx(SPACE_2XL))
+            .p(rpx(if menu { SPACE_MD } else { SPACE_2XL }))
             .when(!menu, |el| el.gap(rpx(SPACE_LG)))
             .border_1()
             .border_color(c::BORDER())
-            .rounded(rpx(RADIUS_PANEL))
+            .rounded(rpx(if menu { RADIUS_CHROME } else { RADIUS_PANEL }))
             .bg(if menu { c::SURFACE_RAISED() } else { c::BG() })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
         panel = panel.child(
@@ -289,6 +306,16 @@ impl WorkspaceManager {
         );
         if menu {
             panel = panel.role(gpui::Role::Menu).aria_label("Switch workspace");
+            panel = panel.child(
+                div()
+                    .flex_shrink_0()
+                    .px(rpx(SPACE_LG))
+                    .pt(rpx(SPACE_MD))
+                    .pb(rpx(SPACE_LG))
+                    .text_size(rpx(TEXT_MICRO))
+                    .text_color(c::FG_MUTE())
+                    .child("Switch workspace"),
+            );
             let mut rows = div()
                 .id("workspace-menu-list")
                 .min_h_0()
@@ -301,22 +328,53 @@ impl WorkspaceManager {
                         .id(("workspace", id))
                         .role(gpui::Role::MenuItem)
                         .aria_label(row.name.clone())
-                        .min_h(rpx(MENU_ROW_H))
-                        .py(rpx(SPACE_LG))
-                        .text_size(rpx(TEXT_TITLE))
+                        .aria_selected(self.state.active == id)
+                        .h(rpx(MENU_ROW_H))
+                        .flex_shrink_0()
+                        .text_size(rpx(TEXT_BODY))
                         .font_weight(FontWeight::MEDIUM)
-                        .px(rpx(SPACE_2XL))
+                        .px(rpx(SPACE_LG))
                         .flex()
                         .items_center()
                         .gap(rpx(SPACE_LG))
-                        .rounded(rpx(MENU_ROW_RADIUS))
-                        .when(self.selected == index, |el| el.bg(c::BG_HOVER()))
-                        .hover(|s| s.bg(c::BG_HOVER()))
-                        .child(icon("folder", ICON_SM, c::FG_DIM()))
-                        .child(div().flex_1().truncate().child(row.name.clone()))
-                        .when(self.state.active == id, |el| {
-                            el.child(icon("check", ICON_SM, c::FG()))
+                        .rounded(rpx(RADIUS_CHROME))
+                        .when(self.keyboard_navigation && self.selected == index, |el| {
+                            el.bg(c::MENU_HOVER())
                         })
+                        .when(!self.keyboard_navigation, |el| {
+                            el.hover(|s| s.bg(c::MENU_HOVER()))
+                        })
+                        .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                            if this.panel == Panel::Menu
+                                && (this.keyboard_navigation || this.selected != index)
+                            {
+                                this.keyboard_navigation = false;
+                                this.selected = index;
+                                cx.notify();
+                            }
+                        }))
+                        .child(
+                            div()
+                                .w(rpx(MENU_LEADING_W))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("folder", ICON_SM, c::FG_DIM())),
+                        )
+                        .child(div().flex_1().min_w_0().truncate().child(row.name.clone()))
+                        .child(div().w(rpx(MENU_STATUS_W)).flex_shrink_0())
+                        .child(
+                            div()
+                                .w(rpx(MENU_TRAILING_W))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .when(self.state.active == id, |el| {
+                                    el.child(icon("check", ICON_SM, c::FG()))
+                                }),
+                        )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.state.select(id);
                             if !this.persist(cx) {
@@ -331,7 +389,7 @@ impl WorkspaceManager {
                     .flex_shrink_0()
                     .my(rpx(SPACE_SM))
                     .border_t_1()
-                    .border_color(c::BORDER()),
+                    .border_color(c::BORDER_SOFT()),
             );
             let mut actions = div().flex().flex_col().flex_shrink_0();
             for (offset, (label, glyph, destination)) in [
@@ -347,22 +405,43 @@ impl WorkspaceManager {
                         .debug_selector(move || format!("workspace-action-{offset}"))
                         .role(gpui::Role::MenuItem)
                         .aria_label(label)
-                        .min_h(rpx(MENU_ROW_H))
-                        .py(rpx(SPACE_LG))
-                        .text_size(rpx(TEXT_TITLE))
+                        .h(rpx(MENU_ROW_H))
+                        .text_size(rpx(TEXT_BODY))
                         .font_weight(FontWeight::MEDIUM)
                         .flex_shrink_0()
-                        .px(rpx(SPACE_2XL))
+                        .px(rpx(SPACE_LG))
                         .flex()
                         .items_center()
                         .gap(rpx(SPACE_LG))
-                        .rounded(rpx(MENU_ROW_RADIUS))
-                        .when(self.selected == self.state.rows.len() + offset, |el| {
-                            el.bg(c::BG_HOVER())
+                        .rounded(rpx(RADIUS_CHROME))
+                        .when(
+                            self.keyboard_navigation
+                                && self.selected == self.state.rows.len() + offset,
+                            |el| el.bg(c::MENU_HOVER()),
+                        )
+                        .when(!self.keyboard_navigation, |el| {
+                            el.hover(|s| s.bg(c::MENU_HOVER()))
                         })
-                        .hover(|s| s.bg(c::BG_HOVER()))
-                        .child(icon(glyph, ICON_SM, c::FG_DIM()))
-                        .child(label)
+                        .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                            let index = this.state.rows.len() + offset;
+                            if this.panel == Panel::Menu
+                                && (this.keyboard_navigation || this.selected != index)
+                            {
+                                this.keyboard_navigation = false;
+                                this.selected = index;
+                                cx.notify();
+                            }
+                        }))
+                        .child(
+                            div()
+                                .w(rpx(MENU_LEADING_W))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon(glyph, ICON_SM, c::FG_DIM())),
+                        )
+                        .child(div().flex_1().min_w_0().truncate().child(label))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open(destination, window, cx);
                         })),
@@ -593,6 +672,7 @@ impl Render for WorkspaceManager {
                     }
                     "down" | "up" if this.panel == Panel::Menu => {
                         let count = this.state.rows.len() + 2;
+                        this.keyboard_navigation = true;
                         this.selected = if event.keystroke.key == "down" {
                             (this.selected + 1) % count
                         } else {
@@ -664,12 +744,6 @@ impl Render for WorkspaceManager {
                     .child(icon("chev-down", ICON_SM, c::FG_DIM()))
                     .on_click(cx.listener(|this, _, window, cx| {
                         if this.panel == Panel::Closed {
-                            this.selected = this
-                                .state
-                                .rows
-                                .iter()
-                                .position(|row| row.id == this.state.active)
-                                .unwrap_or(0);
                             this.open(Panel::Menu, window, cx);
                         } else {
                             this.close(window, cx);
@@ -775,6 +849,76 @@ mod tests {
             draw(cx);
         }
     }
+    #[gpui::test]
+    fn arrow_navigation_highlights_then_activates_workspace(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let (manager, cx) = cx.add_window_view(WorkspaceManager::new);
+        cx.update(|window, cx| {
+            manager.update(cx, |manager, cx| {
+                manager.state.create("Second").unwrap();
+                manager.open(Panel::Menu, window, cx);
+                assert_eq!(manager.selected, 1);
+                assert!(!manager.keyboard_navigation);
+            });
+        });
+        draw(cx);
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse("up").unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        draw(cx);
+        manager.read_with(cx, |manager, _| {
+            assert_eq!(manager.selected, 0);
+            assert!(manager.keyboard_navigation);
+        });
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        draw(cx);
+        manager.read_with(cx, |manager, _| {
+            assert_eq!(manager.state.name(manager.state.active), "Grove");
+            assert_eq!(manager.panel, Panel::Closed);
+        });
+    }
+    #[gpui::test]
+    fn pointer_move_takes_over_keyboard_menu_selection(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let (manager, cx) = cx.add_window_view(WorkspaceManager::new);
+        cx.update(|window, cx| {
+            manager.update(cx, |manager, cx| manager.open(Panel::Menu, window, cx));
+        });
+        draw(cx);
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse("down").unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        draw(cx);
+        manager.read_with(cx, |manager, _| {
+            assert_eq!(manager.selected, manager.state.rows.len());
+            assert!(manager.keyboard_navigation);
+        });
+        let manage = cx.debug_bounds("workspace-action-1").unwrap();
+        cx.simulate_mouse_move(manage.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        manager.read_with(cx, |manager, _| {
+            assert_eq!(manager.selected, manager.state.rows.len() + 1);
+            assert!(!manager.keyboard_navigation);
+        });
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        draw(cx);
+        assert_eq!(
+            manager.read_with(cx, |manager, _| manager.panel),
+            Panel::Manage
+        );
+    }
     struct HeaderFixture {
         manager: Entity<WorkspaceManager>,
     }
@@ -813,9 +957,13 @@ mod tests {
         draw(cx);
         let popup = cx.debug_bounds("workspace-popup").unwrap();
         let create = cx.debug_bounds("workspace-action-0").unwrap();
+        let manage = cx.debug_bounds("workspace-action-1").unwrap();
         assert!(f32::from(popup.size.height) > APPBAR_H);
         assert!(f32::from(popup.top()) >= APPBAR_H);
         assert!(popup.contains(&create.center()));
+        assert_eq!(f32::from(create.size.height), MENU_ROW_H);
+        assert_eq!(f32::from(manage.size.height), MENU_ROW_H);
+        assert_eq!(create.bottom(), manage.top());
         cx.simulate_mouse_down(
             create.center(),
             MouseButton::Left,

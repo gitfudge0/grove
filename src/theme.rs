@@ -108,6 +108,11 @@ pub fn BG_HOVER() -> Hsla {
     chrome(0x333337, 0xededee)
 }
 
+/// Neutral fill for dense menu hover and keyboard navigation.
+pub fn MENU_HOVER() -> Hsla {
+    chrome(0x232327, 0xededee)
+}
+
 pub fn BG_HL() -> Hsla {
     theme::with_current(|t| ic(t.bg_highlight)).into()
 }

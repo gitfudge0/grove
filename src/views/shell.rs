@@ -75,8 +75,10 @@ impl Shell {
         );
         let workspaces = cx.new(|cx| super::workspace_manager::WorkspaceManager::new(window, cx));
         let sidebar = cx.new(|cx| super::sidebar::Sidebar::new(runtime.clone(), window, cx));
+        let focus = cx.focus_handle();
         sidebar.update(cx, |sidebar, _| {
             sidebar.set_workspace_selector(workspaces.clone());
+            sidebar.set_shell_focus(focus.clone());
         });
         cx.observe(&sidebar, |_, _, cx| cx.notify()).detach();
         let statusbar =
@@ -135,7 +137,7 @@ impl Shell {
             backend_choice_index: 1,
             backend_choice_error: None,
             sidebar,
-            focus: cx.focus_handle(),
+            focus,
             runtime,
             workspaces,
             window_observers: None,

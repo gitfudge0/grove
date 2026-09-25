@@ -100,6 +100,7 @@ mod tests {
     fn discovered(name: &str, project: &str, wt: &str) -> DiscoveredSession {
         DiscoveredSession {
             name: name.to_string(),
+            pane_title: None,
             wt_path: wt.to_string(),
             project: project.to_string(),
             label: "claude 1".to_string(),
@@ -118,6 +119,7 @@ mod tests {
             context_roots: Vec::new(),
             temp_bundle_path: None,
             label: "claude 1".to_string(),
+            restored_title: None,
             spawned_at: std::time::Instant::now(),
             attention: None,
             tmux: tmux_name.is_some(),

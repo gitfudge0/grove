@@ -1,5 +1,7 @@
 //! Main canvas driven by the sidebar's stable selection.
-use super::{display_task_title, Action, Selection, Sidebar, ViewMode};
+#[cfg(test)]
+use super::display_task_title;
+use super::{session_display_title, Action, Selection, Sidebar, ViewMode};
 use crate::{
     activity::ActivityState,
     icons::icon,
@@ -553,11 +555,11 @@ impl Sidebar {
             session.is_none(),
             exited,
         );
-        let task = display_task_title(
+        let task = session_display_title(
+            &meta,
             session
                 .as_ref()
                 .and_then(|session| session.read(cx).title()),
-            &meta.label,
         );
         let agent = agent_name(meta.agent);
         let grid = self.mode == ViewMode::Grid;
@@ -600,11 +602,12 @@ impl Sidebar {
                     );
                 })
             });
-            if newly_created
-                && !grid
+            if (newly_created || self.pending_canvas_focus == Some(id))
+                && self.canvas_focus_allowed(window, cx)
                 && matches!(self.selection,Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id)
             {
                 terminal.focus_handle(cx).focus(window, cx);
+                self.pending_canvas_focus = None;
             }
             view = Some(terminal);
         }
@@ -1075,14 +1078,22 @@ impl Sidebar {
                 _ => {}
             }
         }
-        let selected = match self.selection.clone() {
-            _ if self.mode == ViewMode::Grid => None,
-            Some(Selection::Project(idx) | Selection::Worktree(idx, _)) => Some(idx),
+        let selected_worktree = match (&self.mode, &self.selection) {
+            (ViewMode::Grid, _) => None,
+            (_, Some(Selection::Worktree(idx, path))) => self
+                .snapshot
+                .projects
+                .iter()
+                .find(|project| project.idx == *idx)
+                .and_then(|project| {
+                    project
+                        .worktrees
+                        .iter()
+                        .find(|worktree| worktree.path == *path)
+                        .map(|worktree| (project.clone(), worktree.clone()))
+                }),
             _ => None,
         };
-        let project = selected
-            .and_then(|idx| self.snapshot.projects.iter().find(|p| p.idx == idx))
-            .cloned();
         let workspace = &cx.global::<SettingsState>().store.workspaces;
         let workspace_name = workspace.name(workspace.active).to_string();
         let empty_grid = self.mode == ViewMode::Grid;
@@ -1095,34 +1106,14 @@ impl Sidebar {
             .min_h_0()
             .flex()
             .flex_col();
-        if let Some(project) = project {
-            let selected_worktree = match &self.selection {
-                Some(Selection::Worktree(_, path)) => project
-                    .worktrees
-                    .iter()
-                    .find(|worktree| worktree.path == *path),
-                _ => None,
-            };
-            let title = selected_worktree
-                .map_or_else(|| project.name.clone(), |worktree| worktree.name.clone());
-            let details = selected_worktree.map_or_else(
-                || {
-                    format!(
-                        "{workspace_name} / {} · {} worktrees · {} sessions",
-                        project.name,
-                        project.worktrees.len(),
-                        project.sessions.len()
-                    )
-                },
-                |worktree| {
-                    format!(
-                        "{workspace_name} / {} / {} · {} · {} sessions",
-                        project.name,
-                        worktree.name,
-                        worktree.branch,
-                        worktree.sessions.len()
-                    )
-                },
+        if let Some((project, selected_worktree)) = selected_worktree {
+            let title = selected_worktree.name.clone();
+            let details = format!(
+                "{workspace_name} / {} / {} · {} · {} sessions",
+                project.name,
+                selected_worktree.name,
+                selected_worktree.branch,
+                selected_worktree.sessions.len()
             );
             section=section.child(canvas_section_header(title)).child(div().id("worktree-prompt-scroll").flex_1().min_h_0().overflow_y_scroll().p(rpx(SPACE_3XL))
                 .child(div().w_full().min_w_0().max_w(rpx(MODAL_W_XL)).mx_auto().mt(rpx(PROMPT_INSET-SPACE_3XL)).p(rpx(EMPTY_CARD_PAD)).border_1().border_dashed().border_color(c::BORDER_STRONG()).rounded(rpx(RADIUS_CHROME)).flex().flex_col().gap(rpx(SPACE_LG)).text_size(rpx(TEXT_BODY)).text_color(c::FG_DIM())

@@ -378,6 +378,8 @@ pub fn pane_pid(name: &str) -> Option<u32> {
 #[derive(Debug, Clone)]
 pub struct DiscoveredSession {
     pub name: String,
+    /// Active pane title captured during discovery, before any PTY is attached.
+    pub pane_title: Option<String>,
     pub wt_path: String,
     pub project: String,
     pub label: String,
@@ -387,11 +389,11 @@ pub struct DiscoveredSession {
 }
 
 fn discovery_records(
-    sidecars: impl IntoIterator<Item = (String, session_meta::SessionMeta)>,
+    sidecars: impl IntoIterator<Item = (String, Option<String>, session_meta::SessionMeta)>,
 ) -> (Vec<DiscoveredSession>, Vec<std::path::PathBuf>) {
     let mut sessions = Vec::new();
     let mut active_bundles = Vec::new();
-    for (name, meta) in sidecars {
+    for (name, pane_title, meta) in sidecars {
         if let Some(path) = meta.temp_bundle_path.as_ref() {
             active_bundles.push(std::path::PathBuf::from(path));
         }
@@ -400,6 +402,7 @@ fn discovery_records(
         }
         sessions.push(DiscoveredSession {
             name,
+            pane_title,
             wt_path: meta.wt_path,
             project: meta.project,
             label: meta.label,
@@ -411,13 +414,25 @@ fn discovery_records(
     (sessions, active_bundles)
 }
 
-pub fn live_grove_session_names() -> Vec<String> {
+fn parse_live_session(line: &str) -> Option<(String, Option<String>)> {
+    let (name, title) = line.split_once('\t')?;
+    if !name.starts_with(NAME_PREFIX) {
+        return None;
+    }
+    let title = title.trim();
+    Some((
+        name.to_string(),
+        (!title.is_empty()).then(|| title.to_string()),
+    ))
+}
+
+fn live_grove_sessions() -> Vec<(String, Option<String>)> {
     tracing::debug!(
-        args = "list-sessions -F #{session_name}",
+        args = "list-sessions -F #{session_name}\\t#{pane_title}",
         "running tmux command"
     );
     let out = tmux()
-        .args(["list-sessions", "-F", "#{session_name}"])
+        .args(["list-sessions", "-F", "#{session_name}\t#{pane_title}"])
         .stderr(Stdio::null())
         .output();
     let Ok(out) = out else { return vec![] };
@@ -427,18 +442,30 @@ pub fn live_grove_session_names() -> Vec<String> {
     }
     String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter(|n| n.starts_with(NAME_PREFIX))
-        .map(std::string::ToString::to_string)
+        .filter_map(parse_live_session)
+        .collect()
+}
+
+pub fn live_grove_session_names() -> Vec<String> {
+    live_grove_sessions()
+        .into_iter()
+        .map(|(name, _)| name)
         .collect()
 }
 
 /// Intersects live tmux sessions with sidecar metadata files; sidecars without a live session are pruned.
 pub fn list_grove_sessions() -> Vec<DiscoveredSession> {
-    let live = live_grove_session_names();
-    session_meta::prune(&live);
+    let live = live_grove_sessions();
+    let names = live
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    session_meta::prune(&names);
     let sidecars = live
         .into_iter()
-        .filter_map(|name| session_meta::read(&name).map(|meta| (name, meta)))
+        .filter_map(|(name, pane_title)| {
+            session_meta::read(&name).map(|meta| (name, pane_title, meta))
+        })
         .collect::<Vec<_>>();
     let (sessions, active_bundles) = discovery_records(sidecars);
     crate::multi_root::cleanup_orphaned(&active_bundles);
@@ -507,13 +534,19 @@ mod tests {
         let (sessions, bundles) = discovery_records([
             (
                 "legacy-terminal".into(),
+                None,
                 sidecar(Agent::Terminal, false, Some("/bundle/legacy")),
             ),
             (
                 "managed-terminal".into(),
+                Some("Fix build".into()),
                 sidecar(Agent::Terminal, true, Some("/bundle/managed")),
             ),
-            ("legacy-agent".into(), sidecar(Agent::Claude, false, None)),
+            (
+                "legacy-agent".into(),
+                None,
+                sidecar(Agent::Claude, false, None),
+            ),
         ]);
         assert_eq!(
             sessions
@@ -529,6 +562,48 @@ mod tests {
                 std::path::PathBuf::from("/bundle/managed")
             ]
         );
+        assert_eq!(sessions[0].pane_title.as_deref(), Some("Fix build"));
+        assert_eq!(sessions[1].pane_title, None);
+    }
+
+    #[test]
+    fn live_session_line_extracts_pane_title_and_ignores_other_sessions() {
+        assert_eq!(
+            parse_live_session("grove__abc\t  Fix build  "),
+            Some(("grove__abc".into(), Some("Fix build".into())))
+        );
+        assert_eq!(
+            parse_live_session("grove__abc\t"),
+            Some(("grove__abc".into(), None))
+        );
+        assert_eq!(parse_live_session("other\tignored"), None);
+        assert_eq!(parse_live_session("grove__missing-delimiter"), None);
+    }
+
+    #[test]
+    fn live_discovery_reads_title_without_attaching_a_client() {
+        if !available() {
+            eprintln!("skipping: tmux not on PATH");
+            return;
+        }
+        let name = "grove__selftest__title__0";
+        kill_session(name);
+        let mut create = tmux();
+        create.args(["new-session", "-d", "-s", name, "sleep 30"]);
+        assert!(run_silent(create).expect("spawn").success());
+        let mut title = tmux();
+        title.args(["select-pane", "-t", name, "-T", "Restore this title"]);
+        assert!(run_silent(title).expect("set pane title").success());
+
+        let discovered = live_grove_sessions();
+        assert_eq!(
+            discovered
+                .iter()
+                .find(|(session, _)| session == name)
+                .and_then(|(_, title)| title.as_deref()),
+            Some("Restore this title")
+        );
+        kill_session(name);
     }
 
     #[test]
