@@ -48,7 +48,7 @@ const HIERARCHY_GAP: f32 = 7.0;
 const HIERARCHY_ICON_SLOT: f32 = 18.0;
 const HIERARCHY_ICON: f32 = 15.0;
 const HIERARCHY_LABEL_INSET: f32 = HIERARCHY_INSET + HIERARCHY_ICON_SLOT + HIERARCHY_GAP;
-const HIERARCHY_META_TEXT: f32 = 10.0;
+const HIERARCHY_META_TEXT: f32 = TEXT_MICRO;
 const HIERARCHY_TRAILING_W: f32 = 24.0;
 const PROJECT_GROUP_GAP: f32 = 14.0;
 const PROJECT_ROW_H: f32 = 35.0;
@@ -1161,6 +1161,10 @@ impl Sidebar {
         );
         let project_session_row = self.mode == ViewMode::Project
             && matches!(&action, Action::Select(Selection::Session(_)));
+        let selected_session_row = matches!(
+            &action,
+            Action::Select(Selection::Session(id)) if self.selection == Some(Selection::Session(*id))
+        );
         let project_diff_button =
             self.mode == ViewMode::Project && matches!(&action, Action::OpenDiff(_));
         let danger = matches!(action, Action::ConfirmWorktreeRemoval);
@@ -1202,7 +1206,11 @@ impl Sidebar {
                 if hierarchy_row {
                     s.text_color(c::FG())
                 } else if project_session_row {
-                    s.bg(c::BG_HOVER())
+                    s.bg(if selected_session_row {
+                        c::alpha(c::FG(), 0.14)
+                    } else {
+                        c::BG_HOVER()
+                    })
                 } else if project_diff_button {
                     s
                 } else if danger {
@@ -1217,7 +1225,13 @@ impl Sidebar {
                 if hierarchy_row {
                     s.border_1().border_color(c::FG())
                 } else if project_session_row {
-                    s.bg(c::BG_HOVER()).border_1().border_color(c::FG())
+                    s.bg(if selected_session_row {
+                        c::alpha(c::FG(), 0.14)
+                    } else {
+                        c::BG_HOVER()
+                    })
+                    .border_1()
+                    .border_color(c::FG())
                 } else if project_diff_button {
                     s.border_1().border_color(c::FG())
                 } else if danger {
@@ -1260,7 +1274,9 @@ impl Sidebar {
             .px(rpx(SPACE_SM))
             .gap(rpx(SPACE_MD))
             .rounded(rpx(RADIUS_CHROME))
-            .when(selected, |d| d.bg(c::BG_HOVER()).text_color(c::FG()))
+            .when(selected, |d| {
+                d.bg(c::alpha(c::FG(), 0.14)).text_color(c::FG())
+            })
     }
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
         self.initial_selection_pending = false;
@@ -2327,15 +2343,15 @@ impl Sidebar {
             .p(rpx(SPACE_LG))
             .rounded(rpx(RADIUS_GROUP))
             .border_1()
-            .border_color(if selected {
-                c::SEL_RING()
-            } else if attention {
+            .border_color(if attention {
                 c::AMBER()
+            } else if selected {
+                c::BORDER_STRONG()
             } else {
                 c::BORDER()
             })
             .bg(if selected {
-                c::SEL_TINT_SOFT()
+                c::alpha(c::FG(), 0.14)
             } else if attention {
                 c::AMBER_ROW_TINT()
             } else {
@@ -2529,7 +2545,7 @@ impl Sidebar {
                 Action::Select(Selection::Session(id)),
                 cx,
             )
-            .when(diff_focused, |row| row.bg(c::BG_HOVER()))
+            .when(diff_focused && !selected, |row| row.bg(c::BG_HOVER()))
             .relative()
             .group("session-row")
             .h_auto()
@@ -2570,7 +2586,11 @@ impl Sidebar {
                             .min_w_0()
                             .pr(rpx(SPACE_20))
                             .truncate()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .font_weight(if selected {
+                                gpui::FontWeight::SEMIBOLD
+                            } else {
+                                gpui::FontWeight::MEDIUM
+                            })
                             .text_size(rpx(TEXT_SMALL))
                             .line_height(rpx(SESSION_TITLE_LINE_H))
                             .child(title),
@@ -2909,6 +2929,8 @@ impl Sidebar {
             }
             group = group.child(
                 div()
+                    .id(("worktrees-heading", idx))
+                    .debug_selector(move || format!("worktrees-heading-{idx}"))
                     .h(rpx(WORKTREES_LABEL_H))
                     .px(rpx(HIERARCHY_INSET))
                     .flex()
@@ -2916,25 +2938,7 @@ impl Sidebar {
                     .text_size(rpx(TEXT_MICRO))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(c::FG_DIM())
-                    .child(div().flex_1().child("Worktrees"))
-                    .child(
-                        div()
-                            .id(("worktrees-count", idx))
-                            .debug_selector(move || format!("worktrees-count-{idx}"))
-                            .w(rpx(HIERARCHY_TRAILING_W))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .font_family(crate::fonts::MONO_FAMILY)
-                            .text_size(rpx(HIERARCHY_META_TEXT))
-                            .child(
-                                div()
-                                    .id(("worktrees-number", idx))
-                                    .debug_selector(move || format!("worktrees-number-{idx}"))
-                                    .child(project.worktrees.len().to_string()),
-                            ),
-                    ),
+                    .child("Worktrees"),
             );
             if project.worktrees.is_empty() {
                 group = group.child(
@@ -2969,7 +2973,7 @@ impl Sidebar {
                     .flex()
                     .flex_shrink_0()
                     .items_center()
-                    .bg(c::BG_RAIL())
+                    .bg(c::BG())
                     .opacity(if focused { 1.0 } else { 0.0 })
                     .group_hover("worktree-row", |s| s.opacity(1.0));
                 for (n, agent) in WORKTREE_LAUNCH_AGENTS.into_iter().enumerate() {
@@ -3074,15 +3078,23 @@ impl Sidebar {
                     .px(rpx(HIERARCHY_INSET))
                     .gap(rpx(HIERARCHY_GAP))
                     .text_size(rpx(TEXT_BODY))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(if selected { c::FG() } else { c::FG_DIM() })
+                    .font_weight(if selected {
+                        gpui::FontWeight::SEMIBOLD
+                    } else {
+                        gpui::FontWeight::MEDIUM
+                    })
+                    .text_color(c::FG())
                     .child(
                         div()
                             .size(rpx(HIERARCHY_ICON_SLOT))
                             .flex_shrink_0()
                             .flex()
                             .items_center()
-                            .child(icon("git-branch", HIERARCHY_ICON, c::FG_DIM())),
+                            .child(icon(
+                                "git-branch",
+                                HIERARCHY_ICON,
+                                if selected { c::FG() } else { c::FG_DIM() },
+                            )),
                     )
                     .child(
                         div()
@@ -3394,7 +3406,7 @@ impl Render for Sidebar {
             .flex_col()
             .border_r_1()
             .border_color(c::BORDER())
-            .bg(c::BG_RAIL())
+            .bg(c::BG())
             .text_size(rpx(TEXT_BODY))
             .line_height(rpx(SPACE_3XL))
             .font_weight(gpui::FontWeight::NORMAL)
@@ -4771,8 +4783,8 @@ mod tests {
             Sidebar::new(runtime, window, cx)
         });
         draw(cx);
-        assert!(cx.debug_bounds("worktrees-count-0").is_some());
-        assert!(cx.debug_bounds("worktrees-count-1").is_some());
+        assert!(cx.debug_bounds("worktrees-heading-0").is_some());
+        assert!(cx.debug_bounds("worktrees-heading-1").is_some());
         assert!(cx.debug_bounds("session-1").is_some());
         assert!(cx.debug_bounds("session-2").is_some());
         let initial = sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone());
@@ -4789,13 +4801,13 @@ mod tests {
             assert!(sidebar.menu.is_none());
         });
         assert!(cx.debug_bounds("project-0").is_some());
-        assert!(cx.debug_bounds("worktrees-count-0").is_none());
+        assert!(cx.debug_bounds("worktrees-heading-0").is_none());
         assert!(cx
             .debug_bounds("worktree-/grove-folder-toggle-one")
             .is_none());
         assert!(cx.debug_bounds("session-1").is_none());
         assert!(cx.debug_bounds("terminal-header-1").is_some());
-        assert!(cx.debug_bounds("worktrees-count-1").is_some());
+        assert!(cx.debug_bounds("worktrees-heading-1").is_some());
         assert!(cx.debug_bounds("session-2").is_some());
         let title = cx.debug_bounds("project-title-0").unwrap().center();
         cx.simulate_click(title, gpui::Modifiers::default());
@@ -4809,14 +4821,14 @@ mod tests {
         assert!(cx.debug_bounds("project-0").is_none());
         cx.update(|_, cx| cx.global_mut::<SettingsState>().store.workspaces.select(1));
         draw(cx);
-        assert!(cx.debug_bounds("worktrees-count-0").is_none());
+        assert!(cx.debug_bounds("worktrees-heading-0").is_none());
         cx.update(|window, cx| {
             let handle = sidebar.read(cx).project_toggle_focus[paths[0]].clone();
             handle.focus(window, cx);
         });
         cx.simulate_keystrokes("enter");
         draw(cx);
-        assert!(cx.debug_bounds("worktrees-count-0").is_some());
+        assert!(cx.debug_bounds("worktrees-heading-0").is_some());
         assert!(cx.debug_bounds("session-1").is_some());
         assert_eq!(
             sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
@@ -4824,7 +4836,7 @@ mod tests {
         );
         cx.simulate_keystrokes("space");
         draw(cx);
-        assert!(cx.debug_bounds("worktrees-count-0").is_none());
+        assert!(cx.debug_bounds("worktrees-heading-0").is_none());
         cx.update(|_, cx| {
             sidebar.update(cx, |sidebar, _| sidebar.selection = None);
             cx.global_mut::<SettingsState>().store.workspaces.select(2);
@@ -5585,7 +5597,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn project_hierarchy_header_counts_align_with_blank_worktree_slot(
+    fn project_hierarchy_trailing_actions_align_with_blank_worktree_slot(
         cx: &mut gpui::TestAppContext,
     ) {
         let path = "/grove-sidebar-trailing-alignment";
@@ -5610,10 +5622,11 @@ mod tests {
         draw(cx);
         let centers = [
             "project-menu-glyph-0",
-            "worktrees-number-0",
             "worktree-actions-/grove-sidebar-trailing-alignment",
         ]
         .map(|selector| f32::from(cx.debug_bounds(selector).unwrap().center().x));
+        assert!(cx.debug_bounds("worktrees-heading-0").is_some());
+        assert!(cx.debug_bounds("worktrees-count-0").is_none());
         assert!(cx
             .debug_bounds("worktree-count-/grove-sidebar-trailing-alignment")
             .is_none());

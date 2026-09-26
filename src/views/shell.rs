@@ -196,7 +196,7 @@ impl Shell {
                     .when(!self.sidebar.read(cx).is_grid(), |segment| {
                         segment
                             .w(rpx(self.sidebar.read(cx).rail_width(window, cx)))
-                            .bg(c::BG_RAIL())
+                            .bg(c::BG())
                             .border_r_1()
                             .border_color(c::BORDER())
                     })
