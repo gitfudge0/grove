@@ -64,23 +64,6 @@ fn sample_modal(kind: ModalKind) -> Modal {
             sel: 0,
         },
         ModalKind::SessionLauncher => Modal::SessionLauncher(Box::default()),
-        ModalKind::ThemePicker => Modal::ThemePicker {
-            sel_dark: 0,
-            sel_light: 0,
-            dark_tab: true,
-            original: "tokyonight-storm".into(),
-            follow_system: false,
-            scope: ThemePickerScope::App,
-            project_use_default: false,
-            return_to: ThemePickerReturn::Close,
-        },
-        ModalKind::ThemeManager => Modal::ThemeManager {
-            selected: 0,
-            rename: None,
-            rename_error: None,
-            pending_delete: None,
-            editor: None,
-        },
         ModalKind::Settings => Modal::Settings,
         ModalKind::ShortcutOverlay => Modal::ShortcutOverlay,
         ModalKind::Teardown => Modal::Teardown {

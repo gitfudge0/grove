@@ -92,6 +92,10 @@ impl Shell {
             )
         });
         let settings = cx.new(|cx| SettingsPanel::new(runtime.clone(), cx));
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_settings_panel(settings.clone(), cx);
+        });
+        cx.observe(&settings, |_, _, cx| cx.notify()).detach();
         let launcher_events = cx.subscribe_in(&launcher, window, |this, _, event, window, cx| {
             let WorktreeLauncherEvent::Command(row) = event;
             this.activate_palette_command(row.clone(), window, cx);
@@ -174,6 +178,7 @@ impl Shell {
                         ),
                 )
         };
+        let grid = self.sidebar.read(cx).is_grid() && !self.settings.read(cx).is_open();
         div()
             .id("app-header")
             .debug_selector(|| "app-header".into())
@@ -181,9 +186,7 @@ impl Shell {
             .items_center()
             .flex_shrink_0()
             .h(rpx(APPBAR_H))
-            .when(self.sidebar.read(cx).is_grid(), |header| {
-                header.pr(rpx(SPACE_2XL))
-            })
+            .when(grid, |header| header.pr(rpx(SPACE_2XL)))
             .bg(c::BG_STRIP())
             .child(
                 div()
@@ -193,7 +196,7 @@ impl Shell {
                     .h_full()
                     .px(rpx(SPACE_2XL))
                     .flex_shrink_0()
-                    .when(!self.sidebar.read(cx).is_grid(), |segment| {
+                    .when(!grid, |segment| {
                         segment
                             .w(rpx(self.sidebar.read(cx).rail_width(window, cx)))
                             .bg(c::BG())
@@ -242,10 +245,10 @@ impl Shell {
                         }),
                     ),
             )
-            .when(self.sidebar.read(cx).is_grid(), |header| {
+            .when(grid, |header| {
                 header.child(div().ml(rpx(SPACE_2XL)).child(self.workspaces.clone()))
             })
-            .when(self.sidebar.read(cx).is_grid(), |header| {
+            .when(grid, |header| {
                 header.child(
                     div()
                         .id("header-empty-drag-region")
@@ -260,13 +263,13 @@ impl Shell {
                         }),
                 )
             })
-            .when(self.sidebar.read(cx).is_grid(), |header| {
+            .when(grid, |header| {
                 header.child(
                     self.sidebar
                         .update(cx, |sidebar, cx| sidebar.view_controls(cx)),
                 )
             })
-            .when(!self.sidebar.read(cx).is_grid(), |header| {
+            .when(!grid, |header| {
                 header.child(
                     div()
                         .id("header-main-drag-region")
@@ -284,9 +287,7 @@ impl Shell {
             .child(
                 header_control("header-new-session", "New session")
                     .debug_selector(|| "header-new-session".into())
-                    .when(!self.sidebar.read(cx).is_grid(), |control| {
-                        control.mr(rpx(SPACE_2XL))
-                    })
+                    .when(!grid, |control| control.mr(rpx(SPACE_2XL)))
                     .tab_index(0)
                     .focus_visible(|style| style.bg(c::BG_HOVER()))
                     .child(icon("plus", ICON_MD, c::FG()))
@@ -327,28 +328,6 @@ impl Shell {
             PaletteRow::Settings | PaletteRow::Setting(_) => {
                 self.settings
                     .update(cx, |settings, cx| settings.open(window, cx));
-            }
-            PaletteRow::ReloadThemes => {
-                let errors = grove_core::theme::load_custom();
-                if !errors.is_empty() {
-                    tracing::warn!(
-                        count = errors.len(),
-                        "some custom themes could not be loaded"
-                    );
-                }
-                let active = cx.global::<ThemeState>();
-                let name = if active.follow_system {
-                    active
-                        .resolve_system_theme_name(active.system_mode)
-                        .to_string()
-                } else {
-                    cx.global::<crate::settings::SettingsState>()
-                        .store
-                        .theme
-                        .clone()
-                        .unwrap_or_else(|| active.dark_name.clone())
-                };
-                ThemeState::set_by_name(cx, &name);
             }
             PaletteRow::Recent { .. }
             | PaletteRow::Combo { .. }
@@ -777,6 +756,12 @@ impl Render for Shell {
                         .update(cx, |sidebar, cx| sidebar.toggle_grid(window, cx));
                 }
             }))
+            .on_action(cx.listener(|this, _: &k::ToggleZen, window, cx| {
+                if !this.shortcut_blocked(cx) {
+                    this.sidebar
+                        .update(cx, |sidebar, cx| sidebar.toggle_zen(window, cx));
+                }
+            }))
             .on_action(cx.listener(|this, _: &k::NewHomeTerminal, window, cx| {
                 if !this.shortcut_blocked(cx) {
                     this.sidebar
@@ -810,38 +795,46 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &k::ZoomReset, _, cx| {
                 this.set_zoom(0.0, cx);
             }))
-            .child({
-                let grid = self.sidebar.read(cx).is_grid();
-                let header = div()
-                    .relative()
-                    .flex_shrink_0()
-                    .when(!grid, |header| {
-                        header.absolute().top_0().left_0().w_full().h(rpx(APPBAR_H))
+            .when(
+                !self.sidebar.read(cx).is_zen() || self.settings.read(cx).is_open(),
+                |root| {
+                    root.child({
+                        let grid =
+                            self.sidebar.read(cx).is_grid() && !self.settings.read(cx).is_open();
+                        let header = div()
+                            .relative()
+                            .flex_shrink_0()
+                            .when(!grid, |header| {
+                                header.absolute().top_0().left_0().w_full().h(rpx(APPBAR_H))
+                            })
+                            .child(self.header(window, cx))
+                            .when(self.sidebar.read(cx).confirmation_open(), |header| {
+                                header.child(
+                                    div()
+                                        .absolute()
+                                        .inset_0()
+                                        .occlude()
+                                        .bg(c::alpha(c::BG(), 0.4))
+                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                            cx.stop_propagation()
+                                        }),
+                                )
+                            });
+                        if grid {
+                            header.into_any_element()
+                        } else {
+                            gpui::deferred(header).into_any_element()
+                        }
                     })
-                    .child(self.header(window, cx))
-                    .when(self.sidebar.read(cx).confirmation_open(), |header| {
-                        header.child(
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .occlude()
-                                .bg(c::alpha(c::BG(), 0.4))
-                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
-                        )
-                    });
-                if grid {
-                    header.into_any_element()
-                } else {
-                    gpui::deferred(header).into_any_element()
-                }
-            })
+                },
+            )
             .child(div().flex_1().min_h_0().child(self.sidebar.clone()))
-            .child(self.statusbar.clone())
+            .when(
+                !self.sidebar.read(cx).is_zen() || self.settings.read(cx).is_open(),
+                |root| root.child(self.statusbar.clone()),
+            )
             .when(self.launcher.read(cx).is_open(), |root| {
                 root.child(gpui::deferred(self.launcher.clone()))
-            })
-            .when(self.settings.read(cx).is_open(), |root| {
-                root.child(gpui::deferred(self.settings.clone()))
             })
             .when(self.switcher_open, |root| {
                 root.child(gpui::deferred(self.session_switcher(cx)))
@@ -866,6 +859,123 @@ mod tests {
         assert!(!needs_backend_choice(Some(true), || panic!(
             "must not probe tmux"
         )));
+    }
+
+    #[gpui::test]
+    fn zen_shows_one_terminal_and_restores_the_previous_view(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        cx.update(|window, cx| {
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+            window.dispatch_action(Box::new(k::ToggleZen), cx);
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("app-header").is_none());
+        assert!(cx.debug_bounds("statusbar").is_none());
+        assert!(cx.debug_bounds("sidebar-rail").is_none());
+        assert!(cx.debug_bounds("canvas-overview").is_some());
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
+        draw(cx);
+        assert!(cx.debug_bounds("app-header").is_some());
+        assert!(cx.debug_bounds("statusbar").is_some());
+        assert!(cx.debug_bounds("sidebar-rail").is_some());
+        let id = cx.update(|_, cx| {
+            let registry = shell.read(cx).runtime.read(cx).registry.clone();
+            registry.update(cx, |registry, cx| {
+                let id = registry.insert_meta(
+                    "navigation".into(),
+                    "/grove-shell-navigation-test".into(),
+                    grove_core::agent::Agent::Terminal,
+                );
+                cx.notify();
+                id
+            })
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            let sidebar = shell.read(cx).sidebar.clone();
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.select_session_id(id, window, cx);
+            });
+            shell.update(cx, |shell, _| shell.backend_choice_open = true);
+            window.dispatch_action(Box::new(k::ToggleZen), cx);
+            assert!(!shell.read(cx).sidebar.read(cx).is_zen());
+        });
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.backend_choice_open = false;
+                cx.notify();
+            })
+        });
+        draw(cx);
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
+        draw(cx);
+        assert!(cx.debug_bounds("app-header").is_none());
+        assert!(cx.debug_bounds("sidebar-rail").is_none());
+        assert!(cx.debug_bounds("terminal-header-1").is_none());
+        assert!(cx.debug_bounds("terminal-pane-1").is_some());
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
+        draw(cx);
+        assert!(cx.debug_bounds("app-header").is_some());
+        assert!(cx.debug_bounds("sidebar-rail").is_some());
+        assert!(cx.debug_bounds("terminal-header-1").is_some());
+        cx.update(|window, cx| {
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+            window.dispatch_action(Box::new(k::ToggleGrid), cx);
+        });
+        draw(cx);
+        assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
+        draw(cx);
+        assert!(cx.debug_bounds("app-header").is_none());
+        assert!(cx.debug_bounds("sidebar-rail").is_none());
+        assert!(cx.debug_bounds("terminal-pane-1").is_some());
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
+        draw(cx);
+        assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
+        assert!(cx.debug_bounds("app-header").is_some());
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
+        draw(cx);
+        cx.update(|_, cx| {
+            let registry = shell.read(cx).runtime.read(cx).registry.clone();
+            registry.update(cx, |registry, cx| {
+                registry.remove(id);
+                cx.notify();
+            });
+        });
+        draw(cx);
+        assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_zen()));
+        assert!(cx.debug_bounds("session-grid").is_none());
+        assert!(cx.debug_bounds("canvas-overview").is_some());
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
+        draw(cx);
+        assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
+    }
+
+    #[gpui::test]
+    fn empty_grid_zen_shows_one_overview_and_returns_to_grid(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        cx.update(|window, cx| {
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+            window.dispatch_action(Box::new(k::ToggleGrid), cx);
+        });
+        draw(cx);
+        assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
+        draw(cx);
+        assert!(cx.debug_bounds("app-header").is_none());
+        assert!(cx.debug_bounds("canvas-overview").is_some());
+        assert!(cx.debug_bounds("session-grid").is_none());
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
+        draw(cx);
+        assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
+        assert!(cx.debug_bounds("app-header").is_some());
     }
 
     fn init(cx: &mut App) {
@@ -1506,12 +1616,62 @@ mod tests {
         cx.simulate_keystrokes(&format!("{},", k::platform_mod_prefix()));
         draw(cx);
         assert!(cx.debug_bounds("settings-panel").is_some());
+        let canvas = cx.debug_bounds("sidebar-canvas").expect("sidebar canvas");
+        let settings = cx.debug_bounds("settings-panel").expect("settings page");
+        assert_eq!(settings, canvas);
+        assert!(cx.debug_bounds("settings-overlay").is_none());
         cx.simulate_keystrokes("escape");
         draw(cx);
         cx.update(|window, cx| {
             assert!(prior.is_focused(window));
             assert!(!shell.read(cx).settings.read(cx).is_open());
         });
+    }
+
+    #[gpui::test]
+    fn settings_uses_canvas_from_grid_and_zen(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.update(|window, cx| {
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+            window.dispatch_action(Box::new(k::ToggleGrid), cx);
+        });
+        draw(cx);
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::Settings), cx));
+        draw(cx);
+        assert!(cx.debug_bounds("sidebar-rail").is_some());
+        assert_eq!(
+            cx.debug_bounds("settings-panel"),
+            cx.debug_bounds("sidebar-canvas")
+        );
+        cx.simulate_resize(gpui::size(gpui::px(500.0), gpui::px(640.0)));
+        draw(cx);
+        assert!(cx.debug_bounds("sidebar-rail").is_none());
+        assert_eq!(
+            cx.debug_bounds("settings-panel"),
+            cx.debug_bounds("sidebar-canvas")
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
+        cx.simulate_resize(gpui::size(gpui::px(1920.0), gpui::px(1080.0)));
+        draw(cx);
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
+        draw(cx);
+        assert!(cx.debug_bounds("app-header").is_none());
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::Settings), cx));
+        draw(cx);
+        assert!(cx.debug_bounds("app-header").is_some());
+        assert!(cx.debug_bounds("sidebar-rail").is_some());
+        assert_eq!(
+            cx.debug_bounds("settings-panel"),
+            cx.debug_bounds("sidebar-canvas")
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_zen()));
+        assert!(cx.debug_bounds("app-header").is_none());
     }
 
     #[gpui::test]
@@ -1604,7 +1764,7 @@ mod tests {
             launcher.update(cx, |launcher, cx| launcher.open(window, cx));
         });
         draw(cx);
-        cx.simulate_input("app theme");
+        cx.simulate_input("appearance");
         draw(cx);
         assert!(cx.debug_bounds("launcher-row-0").is_some());
         cx.simulate_keystrokes("enter");

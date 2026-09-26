@@ -10,7 +10,7 @@ Grove is a Rust/GPUI app. Read [DESIGN.md](../../../DESIGN.md) for the approved 
 ## Build from the existing system
 
 - Work in `src/views/`; use `src/views/tokens.rs` for dimensions, `src/theme.rs` for semantic colors, `src/views/components.rs` for shared controls, and `src/icons.rs` for icons. Add a shared role when a genuine repeated need is missing; avoid one-off visual variants that drift between screens.
-- Use one app-level light/dark theme across the UI. Workspace and project views do not choose their own themes.
+- Use one app-level System/Dark/Light appearance setting with fixed palettes. Workspace and project views do not choose colors.
 - Treat a screenshot or HTML mock as evidence of hierarchy, spacing, and behavior. Map it to GPUI structure and current user decisions; do not port CSS or stale framework code mechanically.
 
 ## Preserve visual discipline

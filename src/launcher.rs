@@ -158,7 +158,7 @@ pub fn fuzzy_match_indices(
 /// Variant order is the Settings drill-in's display order within its section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SettingRow {
-    Theme,
+    Appearance,
     AppSize,
     Backend,
     Permissions,
@@ -170,7 +170,7 @@ pub enum SettingRow {
 
 impl SettingRow {
     pub const ALL: [SettingRow; 8] = [
-        SettingRow::Theme,
+        SettingRow::Appearance,
         SettingRow::AppSize,
         SettingRow::Backend,
         SettingRow::Permissions,
@@ -182,7 +182,7 @@ impl SettingRow {
 
     pub fn label(self) -> &'static str {
         match self {
-            SettingRow::Theme => "App theme",
+            SettingRow::Appearance => "Appearance",
             SettingRow::AppSize => "App size",
             SettingRow::Backend => "Backend",
             SettingRow::Permissions => "Permissions",
@@ -196,7 +196,7 @@ impl SettingRow {
     /// `Telemetry`/`Chrome` render a checkbox glyph instead and never consult this.
     pub fn icon_name(self) -> &'static str {
         match self {
-            SettingRow::Theme => "contrast",
+            SettingRow::Appearance => "contrast",
             SettingRow::AppSize => "grid",
             SettingRow::Telemetry | SettingRow::Chrome => "check",
             SettingRow::Backend => "term",
@@ -208,7 +208,7 @@ impl SettingRow {
 
     pub fn section(self) -> &'static str {
         match self {
-            SettingRow::Theme | SettingRow::AppSize => "APPEARANCE",
+            SettingRow::Appearance | SettingRow::AppSize => "APPEARANCE",
             SettingRow::Backend
             | SettingRow::Permissions
             | SettingRow::Telemetry
@@ -248,7 +248,6 @@ pub enum PaletteRow {
     SwitchToSession,
     Settings,
     Setting(SettingRow),
-    ReloadThemes,
 }
 
 /// The content-based key activation resolves against, decoupled from a row's transient index.
@@ -269,7 +268,6 @@ pub enum RowIdentity {
     SwitchToSession,
     Settings,
     Setting(SettingRow),
-    ReloadThemes,
 }
 
 pub fn row_identity(row: &PaletteRow) -> RowIdentity {
@@ -298,7 +296,6 @@ pub fn row_identity(row: &PaletteRow) -> RowIdentity {
         PaletteRow::SwitchToSession => RowIdentity::SwitchToSession,
         PaletteRow::Settings => RowIdentity::Settings,
         PaletteRow::Setting(s) => RowIdentity::Setting(*s),
-        PaletteRow::ReloadThemes => RowIdentity::ReloadThemes,
     }
 }
 
@@ -354,28 +351,6 @@ pub fn root_project_order(n: usize, active: usize) -> Vec<usize> {
 
 pub fn agent_sel_for(available: &[Agent], agent: Agent) -> usize {
     available.iter().position(|a| *a == agent).unwrap_or(0)
-}
-
-// TODO(unwired): ported with its test but never given a key handler; the rebuilt Settings modal sets mode directly.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThemeMode {
-    Dark,
-    Light,
-    System,
-}
-
-/// Cycles Dark → Light → System → Dark; current mode is System whenever `follow_system` is set.
-// TODO(unwired): see `ThemeMode`.
-#[allow(dead_code)]
-pub fn next_theme_mode(dark: bool, follow_system: bool) -> ThemeMode {
-    if follow_system {
-        ThemeMode::Dark
-    } else if dark {
-        ThemeMode::Light
-    } else {
-        ThemeMode::System
-    }
 }
 
 // TODO(unwired): built and tested, but no view expands a strip when an update is known.
@@ -643,9 +618,6 @@ pub fn typed_rows(
     if !query.trim().is_empty() && fuzzy_match(query, "add project", "", "") {
         rows.push(PaletteRow::AddProject);
     }
-    if !query.trim().is_empty() && fuzzy_match(query, "reload themes", "", "") {
-        rows.push(PaletteRow::ReloadThemes);
-    }
     if has_run_script && !query.trim().is_empty() && fuzzy_match(query, "run script", "", "") {
         rows.push(PaletteRow::RunScript);
     }
@@ -880,7 +852,6 @@ mod tests {
             PaletteRow::RunScript,
             PaletteRow::SwitchToSession,
             PaletteRow::Settings,
-            PaletteRow::ReloadThemes,
         ];
         let ids: Vec<_> = rows.iter().map(row_identity).collect();
         for (i, a) in ids.iter().enumerate() {
@@ -1068,8 +1039,8 @@ mod tests {
 
     #[test]
     fn typing_settings_surfaces_the_settings_rows() {
-        let rows = typed_rows("theme", &[], &[], false, false, PaletteScope::All);
-        assert!(rows.contains(&PaletteRow::Setting(SettingRow::Theme)));
+        let rows = typed_rows("appearance", &[], &[], false, false, PaletteScope::All);
+        assert!(rows.contains(&PaletteRow::Setting(SettingRow::Appearance)));
     }
 
     #[test]
@@ -1077,7 +1048,6 @@ mod tests {
         // Browse-all lists combos only; a bare query must not inject settings.
         let rows = typed_rows("", &[], &[], true, false, PaletteScope::All);
         assert!(!rows.iter().any(|r| matches!(r, PaletteRow::Setting(_))));
-        assert!(!rows.contains(&PaletteRow::ReloadThemes));
         assert!(!rows.contains(&PaletteRow::AddProject));
         assert!(!rows.contains(&PaletteRow::RunScript));
     }
@@ -1144,13 +1114,7 @@ mod tests {
     #[test]
     fn the_scoped_list_never_surfaces_a_settings_or_action_row() {
         // Every query that adds a non-worktree row at `All` scope.
-        for q in [
-            "theme",
-            "settings",
-            "add project",
-            "reload themes",
-            "run script",
-        ] {
+        for q in ["appearance", "settings", "add project", "run script"] {
             let all = typed_rows(q, &[], &[], true, false, PaletteScope::All);
             assert!(
                 !all.is_empty(),
@@ -1377,14 +1341,6 @@ mod tests {
     fn check_updates_expands_the_strip_only_when_one_is_available() {
         assert!(check_updates_opens_strip(true));
         assert!(!check_updates_opens_strip(false));
-    }
-
-    #[test]
-    fn the_theme_mode_row_cycles_dark_light_system_dark() {
-        assert_eq!(next_theme_mode(true, false), ThemeMode::Light);
-        assert_eq!(next_theme_mode(false, false), ThemeMode::System);
-        assert_eq!(next_theme_mode(true, true), ThemeMode::Dark);
-        assert_eq!(next_theme_mode(false, true), ThemeMode::Dark);
     }
 
     #[test]

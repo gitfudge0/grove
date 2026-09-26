@@ -22,7 +22,7 @@ grove is a native desktop app for managing git worktrees across projects and run
 - [sessions](#sessions)
 - [keyboard](#keyboard)
 - [supported agents](#supported-agents)
-- [themes](#themes)
+- [appearance](#appearance)
 - [requirements](#requirements)
 - [telemetry](#telemetry)
 - [uninstall](#uninstall)
@@ -94,7 +94,7 @@ the desktop app has three sidebar views:
 
 from an active desktop session, the `term` control opens a right-docked shell for the same worktree. you can keep the agent on one side and run git, tests, or edits in the adjacent terminal panel.
 
-the `mod+n` launcher doubles as a command palette: recent worktrees first, plus settings, per-project themes, and each project's setup/run/teardown scripts as row actions.
+the `mod+n` launcher doubles as a command palette: recent worktrees first, plus settings, and each project's setup/run/teardown scripts as row actions.
 
 grove supports two session backends:
 
@@ -144,11 +144,9 @@ grid seams can also be dragged with the mouse. double-click one seam to reset on
 
 each agent must be installed and available on your `PATH`. grove does not bundle, update, or authenticate any agent; it spawns them.
 
-## themes
+## appearance
 
-grove ships with 31 curated themes (17 dark, 14 light). the default is tokyonight. use the settings button to open the theme picker; the selection persists across launches. you can also add your own: paste a theme (json or named hex lines) into the custom-theme manager in settings, and it joins the picker alongside the built-ins.
-
-themes are colorways, not chrome. every screen reads correctly across all of them, because grove paints by semantic role (`fg`, `bg`, `comment`, `green` for running state, `yellow` for keybinding letters, `red` for errors) rather than fixed hex values. see [DESIGN.md](DESIGN.md) for the role contract.
+grove uses fixed light and dark palettes. In settings, choose System to follow your OS, or select Dark or Light. The choice persists across launches.
 
 ## requirements
 
@@ -159,7 +157,7 @@ themes are colorways, not chrome. every screen reads correctly across all of the
 
 ## telemetry
 
-grove sends anonymous usage events: app launch (theme name, project count, tmux setting), an hourly heartbeat, session created/ended (agent type, native vs tmux, duration in minutes, open-session counts), worktree created, update applied/declined (version), error kinds (session spawn or worktree creation failed — the kind only, no details), UI feature pings (launcher/settings opened, zoom changed, grid tile moved), and panic messages — each tagged with app version and OS.
+grove sends anonymous usage events: app launch (project count, tmux setting), an hourly heartbeat, session created/ended (agent type, native vs tmux, duration in minutes, open-session counts), worktree created, update applied/declined (version), error kinds (session spawn or worktree creation failed — the kind only, no details), UI feature pings (launcher/settings opened, zoom changed, grid tile moved), and panic messages — each tagged with app version and OS.
 
 it never sends project names, file paths, git data, prompts, or session/terminal content.
 
@@ -171,7 +169,7 @@ to disable, toggle "share anonymous usage data" off in the settings modal, or se
 ./uninstall.sh
 ```
 
-removes the app bundle (or `.deb`/`~/.local` install on linux) that `install.sh` installed. your project registrations and theme settings live under `~/.config/grove` and are left in place; delete that directory if you want a clean slate.
+removes the app bundle (or `.deb`/`~/.local` install on linux) that `install.sh` installed. your project registrations and appearance setting live under `~/.config/grove` and are left in place; delete that directory if you want a clean slate.
 
 ## license
 

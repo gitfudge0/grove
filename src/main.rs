@@ -33,7 +33,7 @@ mod platform;
 // Reattachment is explicit until a terminal surface exists again.
 #[allow(dead_code)]
 mod reattach;
-// Settings and theme editing APIs are retained without settings controls.
+// Settings persist the app-wide appearance and other preferences.
 #[allow(dead_code)]
 mod settings;
 mod telemetry;

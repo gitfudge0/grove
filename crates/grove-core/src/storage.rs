@@ -62,6 +62,14 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppearancePreference {
+    System,
+    Dark,
+    Light,
+}
+
 impl Project {
     pub fn worktree_dir(&self) -> &str {
         self.worktree_dir.as_deref().unwrap_or(&self.name)
@@ -376,8 +384,10 @@ pub struct Store {
     pub projects: Vec<Project>,
     #[serde(default)]
     pub default_agent: Option<Agent>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub theme: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<AppearancePreference>,
     /// None means the user has not made the one-time tmux/native choice yet.
     #[serde(default)]
     pub tmux_enabled: Option<bool>,
@@ -408,11 +418,11 @@ pub struct Store {
     /// Keyed by `"{project}::{wt_path}"`; sessions absent here are appended after in current order.
     #[serde(default)]
     pub grid_order: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub theme_follow_system: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub theme_dark: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub theme_light: Option<String>,
     /// Most recent first, capped at 6 (see `push_recent_launch`).
     #[serde(default)]
@@ -422,6 +432,23 @@ pub struct Store {
 }
 
 impl Store {
+    /// A saved appearance takes precedence over legacy theme names.
+    pub fn appearance(&self) -> AppearancePreference {
+        if let Some(appearance) = self.appearance {
+            return appearance;
+        }
+        if self.theme_follow_system {
+            AppearancePreference::System
+        } else if self.theme.as_deref().is_some_and(|name| {
+            crate::theme::by_name(name)
+                .is_some_and(|theme| theme.kind == crate::theme::ThemeKind::Light)
+        }) {
+            AppearancePreference::Light
+        } else {
+            AppearancePreference::Dark
+        }
+    }
+
     /// Upgrade old flat project stores without moving or removing any repository.
     pub fn normalize_workspaces(&mut self) {
         if self.workspaces.rows.is_empty() {
@@ -550,6 +577,9 @@ pub fn load() -> Result<Store> {
     })?;
     match serde_json::from_str::<Store>(&s) {
         Ok(mut store) => {
+            if store.appearance.is_none() {
+                store.appearance = Some(store.appearance());
+            }
             store.normalize_workspaces();
             Ok(store)
         }
@@ -682,6 +712,7 @@ pub(crate) mod tests {
             ],
             default_agent: Some(Agent::Claude),
             theme: Some("dark".into()),
+            appearance: Some(AppearancePreference::System),
             tmux_enabled: Some(true),
             ui_zoom: Some(1.25),
             sidebar_width: Some(360.0),
@@ -719,15 +750,16 @@ pub(crate) mod tests {
         assert_eq!(recovered.projects[0].name, "myapp");
         assert_eq!(recovered.projects[1].path, "/tmp/other");
         assert_eq!(recovered.default_agent, Some(Agent::Claude));
-        assert_eq!(recovered.theme.as_deref(), Some("dark"));
+        assert!(recovered.theme.is_none());
+        assert_eq!(recovered.appearance, Some(AppearancePreference::System));
         assert_eq!(recovered.tmux_enabled, Some(true));
         assert!((recovered.ui_zoom.unwrap() - 1.25).abs() < f32::EPSILON);
         assert!((recovered.sidebar_width.unwrap() - 360.0).abs() < f32::EPSILON);
         assert!(recovered.onboarded);
         assert_eq!(recovered.dangerously_skip_permissions_enabled, Some(false));
-        assert!(recovered.theme_follow_system);
-        assert_eq!(recovered.theme_dark.as_deref(), Some("tokyonight"));
-        assert_eq!(recovered.theme_light.as_deref(), Some("tokyonight-day"));
+        assert!(!recovered.theme_follow_system);
+        assert!(recovered.theme_dark.is_none());
+        assert!(recovered.theme_light.is_none());
         assert_eq!(recovered.diff_mode, DiffMode::Split);
         assert!(
             !recovered.projects[0].archived,

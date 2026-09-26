@@ -54,7 +54,6 @@ const PROJECT_GROUP_GAP: f32 = 14.0;
 const PROJECT_ROW_H: f32 = 35.0;
 const PROJECT_TEXT: f32 = 15.0;
 const PROJECT_TITLE_LINE_H: f32 = 21.0;
-const WORKTREES_LABEL_H: f32 = 27.0;
 const WORKTREE_ROW_H: f32 = 30.0;
 const WORKTREE_ACTION_W: f32 = 22.0;
 const SESSION_ROW_H: f32 = 43.0;
@@ -63,6 +62,14 @@ const SESSION_META_LINE_H: f32 = 14.0;
 const SESSION_ROW_RADIUS: f32 = 7.0;
 const SESSION_FIRST_GAP: f32 = 3.0;
 const SESSION_AGE_REFRESH: Duration = Duration::from_secs(1);
+
+fn sidebar_worktree_name(name: &str, is_main: bool) -> &str {
+    if is_main {
+        "Main checkout"
+    } else {
+        name
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Selection {
@@ -167,6 +174,23 @@ fn step_session(
         None => 0,
     };
     Some(order[next])
+}
+
+fn zen_target(
+    mode: ViewMode,
+    selection: Option<&Selection>,
+    sessions: &[(SessionId, bool)],
+) -> Option<(SessionId, bool)> {
+    let selected = match selection {
+        Some(Selection::Session(id)) if sessions.contains(&(*id, false)) => Some((*id, false)),
+        Some(Selection::Home(id)) if sessions.contains(&(*id, true)) => Some((*id, true)),
+        _ => None,
+    };
+    if mode == ViewMode::Grid {
+        selected.or_else(|| sessions.first().copied())
+    } else {
+        selected
+    }
 }
 
 fn home_terminal_status(failed: bool, pending: bool, alive: bool) -> &'static str {
@@ -295,6 +319,7 @@ fn effective_rail_width(preferred: f32, logical_width: f32) -> f32 {
 pub struct Sidebar {
     project_panel: Option<Entity<projects::ProjectPanel>>,
     project_setup: Option<Entity<project_setup::ProjectSetup>>,
+    settings_panel: Option<Entity<super::settings_panel::SettingsPanel>>,
     project_decision: bool,
     project_return_focus: Option<FocusHandle>,
     project_return_path: Option<String>,
@@ -307,6 +332,7 @@ pub struct Sidebar {
     pending_canvas_focus: Option<SessionId>,
     mode: ViewMode,
     last_mode: ViewMode,
+    zen_return: Option<(ViewMode, Option<Selection>)>,
     snapshot: TreeSnapshot,
     active_workspace: u64,
     saved: HashMap<u64, Navigation>,
@@ -388,6 +414,16 @@ impl Sidebar {
     pub(crate) fn set_shell_focus(&mut self, focus: FocusHandle) {
         self.shell_focus = Some(focus);
     }
+    pub(crate) fn set_settings_panel(
+        &mut self,
+        panel: Entity<super::settings_panel::SettingsPanel>,
+        cx: &mut Context<Self>,
+    ) {
+        self.observers
+            .push(cx.observe(&panel, |_, _, cx| cx.notify()));
+        self.settings_panel = Some(panel);
+        cx.notify();
+    }
     pub fn new(runtime: Entity<Runtime>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let rt = runtime.read(cx);
         let (registry, activity, tree, projects) = (
@@ -428,6 +464,7 @@ impl Sidebar {
         Self {
             project_panel: None,
             project_setup: None,
+            settings_panel: None,
             project_decision: false,
             project_return_focus: None,
             project_return_path: None,
@@ -440,6 +477,7 @@ impl Sidebar {
             pending_canvas_focus: None,
             mode: ViewMode::Project,
             last_mode: ViewMode::Project,
+            zen_return: None,
             snapshot: TreeSnapshot::default(),
             active_workspace: cx.global::<SettingsState>().store.workspaces.active,
             saved: HashMap::new(),
@@ -564,6 +602,7 @@ impl Sidebar {
             self.focus.focus(window, cx);
         }
         if active != self.active_workspace {
+            self.zen_return = None;
             self.saved.insert(
                 self.active_workspace,
                 Navigation {
@@ -1085,6 +1124,56 @@ impl Sidebar {
     pub fn is_grid(&self) -> bool {
         self.mode == ViewMode::Grid
     }
+    pub(crate) fn is_zen(&self) -> bool {
+        self.zen_return.is_some()
+    }
+
+    pub(crate) fn toggle_zen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.navigation_available() {
+            return;
+        }
+        self.sync(window, cx);
+        if let Some((mode, selection)) = self.zen_return.take() {
+            self.mode = mode;
+            self.selection = selection;
+            let view = match self.selection {
+                Some(Selection::Session(id)) => self.terminal_views.get(&id),
+                Some(Selection::Home(id)) => self.home_terminal_views.get(&id),
+                _ => None,
+            };
+            if let Some(view) = view {
+                view.focus_handle(cx).focus(window, cx);
+            } else {
+                self.focus.focus(window, cx);
+            }
+            cx.notify();
+            return;
+        }
+        let sessions = self.active_canvas_sessions(cx);
+        let target = zen_target(self.mode, self.selection.as_ref(), &sessions);
+        self.zen_return = Some((self.mode, self.selection.clone()));
+        if let Some((id, home)) = target {
+            self.selection = Some(if home {
+                Selection::Home(id)
+            } else {
+                Selection::Session(id)
+            });
+            let view = if home {
+                self.home_terminal_views.get(&id)
+            } else {
+                self.terminal_views.get(&id)
+            };
+            if let Some(view) = view {
+                view.focus_handle(cx).focus(window, cx);
+            } else {
+                self.pending_canvas_focus = Some(id);
+                self.focus.focus(window, cx);
+            }
+        } else {
+            self.focus.focus(window, cx);
+        }
+        cx.notify();
+    }
     pub fn view_controls(&self, cx: &mut Context<Self>) -> AnyElement {
         let target = if self.mode == ViewMode::Grid {
             self.last_mode
@@ -1480,7 +1569,7 @@ impl Sidebar {
 
     fn canvas_focus_allowed(&self, window: &Window, cx: &App) -> bool {
         if !self.navigation_available()
-            || self.mode == ViewMode::Grid
+            || (self.mode == ViewMode::Grid && !self.is_zen())
             || self
                 .workspace_selector
                 .as_ref()
@@ -2927,19 +3016,6 @@ impl Sidebar {
                 body = body.child(group);
                 continue;
             }
-            group = group.child(
-                div()
-                    .id(("worktrees-heading", idx))
-                    .debug_selector(move || format!("worktrees-heading-{idx}"))
-                    .h(rpx(WORKTREES_LABEL_H))
-                    .px(rpx(HIERARCHY_INSET))
-                    .flex()
-                    .items_center()
-                    .text_size(rpx(TEXT_MICRO))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(c::FG_DIM())
-                    .child("Worktrees"),
-            );
             if project.worktrees.is_empty() {
                 group = group.child(
                     div()
@@ -2951,6 +3027,7 @@ impl Sidebar {
             }
             for (worktree_position, worktree) in project.worktrees.iter().enumerate() {
                 let path = worktree.path.clone();
+                let worktree_name = sidebar_worktree_name(&worktree.name, worktree.is_main);
                 let project_path = cx
                     .global::<SettingsState>()
                     .store
@@ -2986,7 +3063,7 @@ impl Sidebar {
                     let label = if self.available[n] {
                         format!(
                             "Start {} in {} · {}",
-                            agent_name, project.name, worktree.name
+                            agent_name, project.name, worktree_name
                         )
                     } else {
                         format!("{agent_name} is not installed")
@@ -3018,7 +3095,7 @@ impl Sidebar {
                         launches = launches.child(
                             self.control(
                                 SharedString::from(format!("run-script-{path}")),
-                                format!("Run script in {} · {}", project.name, worktree.name),
+                                format!("Run script in {} · {}", project.name, worktree_name),
                                 Action::RunScript(project_path, path.clone()),
                                 cx,
                             )
@@ -3058,7 +3135,7 @@ impl Sidebar {
                 group = group.child(
                     self.row(
                         format!("worktree-{path}"),
-                        format!("{} worktree, branch {}", worktree.name, worktree.branch),
+                        format!("{} worktree, branch {}", worktree_name, worktree.branch),
                         false,
                         Action::Select(selection),
                         cx,
@@ -3100,13 +3177,34 @@ impl Sidebar {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .truncate()
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_SM))
                             .id(SharedString::from(format!("worktree-title-{path}")))
                             .debug_selector({
                                 let path = path.clone();
                                 move || format!("worktree-title-{path}")
                             })
-                            .child(worktree.name.clone()),
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .when(worktree.is_main, |name| name.flex_shrink_0())
+                                    .when(!worktree.is_main, |name| name.flex_1())
+                                    .child(worktree_name.to_owned()),
+                            )
+                            .when(worktree.is_main && !worktree.branch.is_empty(), |title| {
+                                title.child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(rpx(HIERARCHY_META_TEXT))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(c::FG_DIM())
+                                        .child(worktree.branch.clone()),
+                                )
+                            }),
                     )
                     .child(
                         div()
@@ -3406,7 +3504,7 @@ impl Render for Sidebar {
             .flex_col()
             .border_r_1()
             .border_color(c::BORDER())
-            .bg(c::BG())
+            .bg(c::BG_RAIL())
             .text_size(rpx(TEXT_BODY))
             .line_height(rpx(SPACE_3XL))
             .font_weight(gpui::FontWeight::NORMAL)
@@ -3513,10 +3611,15 @@ impl Render for Sidebar {
                     .child(navigation),
             )
             .child(terminals);
+        let settings_open = self
+            .settings_panel
+            .as_ref()
+            .is_some_and(|panel| panel.read(cx).is_open());
         let hide_editor_navigation = (self.pending_new_worktree.is_some()
             || self.pending_worktree_removal.is_some()
             || self.project_panel.is_some()
-            || self.project_setup.is_some())
+            || self.project_setup.is_some()
+            || settings_open)
             && logical_width < EDITOR_FULL_WIDTH_BREAKPOINT;
         let content = self.render_content(window, cx);
         let confirming = self.project_decision
@@ -3625,7 +3728,8 @@ impl Render for Sidebar {
                 }
             }))
             .when(
-                self.mode != ViewMode::Grid && !hide_editor_navigation,
+                ((self.mode != ViewMode::Grid && !self.is_zen()) || settings_open)
+                    && !hide_editor_navigation,
                 |d| {
                     d.child(
                         div()
@@ -3823,6 +3927,24 @@ fn change_mode(mode: &mut ViewMode, last: &mut ViewMode, next: ViewMode) {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn zen_target_uses_selection_or_first_grid_session() {
+        let first = SessionId::from_raw(1);
+        let second = SessionId::from_raw(2);
+        let sessions = [(first, false), (second, true)];
+        assert_eq!(zen_target(ViewMode::Project, None, &sessions), None);
+        assert_eq!(zen_target(ViewMode::List, None, &sessions), None);
+        assert_eq!(
+            zen_target(ViewMode::Grid, None, &sessions),
+            Some((first, false))
+        );
+        assert_eq!(
+            zen_target(ViewMode::Grid, Some(&Selection::Home(second)), &sessions),
+            Some((second, true))
+        );
+        assert_eq!(zen_target(ViewMode::Grid, None, &[]), None);
+    }
 
     struct ChangedGitRepo(std::path::PathBuf);
 
@@ -4783,8 +4905,12 @@ mod tests {
             Sidebar::new(runtime, window, cx)
         });
         draw(cx);
-        assert!(cx.debug_bounds("worktrees-heading-0").is_some());
-        assert!(cx.debug_bounds("worktrees-heading-1").is_some());
+        assert!(cx
+            .debug_bounds("worktree-/grove-folder-toggle-one")
+            .is_some());
+        assert!(cx
+            .debug_bounds("worktree-/grove-folder-toggle-two")
+            .is_some());
         assert!(cx.debug_bounds("session-1").is_some());
         assert!(cx.debug_bounds("session-2").is_some());
         let initial = sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone());
@@ -4801,13 +4927,14 @@ mod tests {
             assert!(sidebar.menu.is_none());
         });
         assert!(cx.debug_bounds("project-0").is_some());
-        assert!(cx.debug_bounds("worktrees-heading-0").is_none());
         assert!(cx
             .debug_bounds("worktree-/grove-folder-toggle-one")
             .is_none());
         assert!(cx.debug_bounds("session-1").is_none());
         assert!(cx.debug_bounds("terminal-header-1").is_some());
-        assert!(cx.debug_bounds("worktrees-heading-1").is_some());
+        assert!(cx
+            .debug_bounds("worktree-/grove-folder-toggle-two")
+            .is_some());
         assert!(cx.debug_bounds("session-2").is_some());
         let title = cx.debug_bounds("project-title-0").unwrap().center();
         cx.simulate_click(title, gpui::Modifiers::default());
@@ -4821,14 +4948,18 @@ mod tests {
         assert!(cx.debug_bounds("project-0").is_none());
         cx.update(|_, cx| cx.global_mut::<SettingsState>().store.workspaces.select(1));
         draw(cx);
-        assert!(cx.debug_bounds("worktrees-heading-0").is_none());
+        assert!(cx
+            .debug_bounds("worktree-/grove-folder-toggle-one")
+            .is_none());
         cx.update(|window, cx| {
             let handle = sidebar.read(cx).project_toggle_focus[paths[0]].clone();
             handle.focus(window, cx);
         });
         cx.simulate_keystrokes("enter");
         draw(cx);
-        assert!(cx.debug_bounds("worktrees-heading-0").is_some());
+        assert!(cx
+            .debug_bounds("worktree-/grove-folder-toggle-one")
+            .is_some());
         assert!(cx.debug_bounds("session-1").is_some());
         assert_eq!(
             sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
@@ -4836,7 +4967,9 @@ mod tests {
         );
         cx.simulate_keystrokes("space");
         draw(cx);
-        assert!(cx.debug_bounds("worktrees-heading-0").is_none());
+        assert!(cx
+            .debug_bounds("worktree-/grove-folder-toggle-one")
+            .is_none());
         cx.update(|_, cx| {
             sidebar.update(cx, |sidebar, _| sidebar.selection = None);
             cx.global_mut::<SettingsState>().store.workspaces.select(2);
@@ -4906,7 +5039,7 @@ mod tests {
             }));
             cx.set_global(crate::zoom::CurrentPtyDims::default());
         });
-        let (_, cx) = cx.add_window_view(|window, cx| {
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
             let runtime = cx.new(Runtime::new);
             let registry = runtime.read(cx).registry.clone();
             registry.update(cx, |registry, _| {
@@ -4940,6 +5073,20 @@ mod tests {
             Sidebar::new(runtime, window, cx)
         });
         draw(cx);
+        let labels = sidebar.read_with(cx, |sidebar, _| {
+            sidebar.snapshot.projects[0]
+                .worktrees
+                .iter()
+                .map(|worktree| sidebar_worktree_name(&worktree.name, worktree.is_main).to_owned())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(labels, ["Main checkout", "grove-spacing-feature"]);
+        assert!(cx
+            .debug_bounds("worktree-title-/grove-spacing-main")
+            .is_some());
+        assert!(cx
+            .debug_bounds("worktree-title-/grove-spacing-feature")
+            .is_some());
         let first = cx.debug_bounds("session-1").unwrap();
         let second = cx.debug_bounds("session-2").unwrap();
         let next_worktree = cx.debug_bounds("worktree-/grove-spacing-feature").unwrap();
@@ -5625,7 +5772,9 @@ mod tests {
             "worktree-actions-/grove-sidebar-trailing-alignment",
         ]
         .map(|selector| f32::from(cx.debug_bounds(selector).unwrap().center().x));
-        assert!(cx.debug_bounds("worktrees-heading-0").is_some());
+        assert!(cx
+            .debug_bounds("worktree-/grove-sidebar-trailing-alignment")
+            .is_some());
         assert!(cx.debug_bounds("worktrees-count-0").is_none());
         assert!(cx
             .debug_bounds("worktree-count-/grove-sidebar-trailing-alignment")

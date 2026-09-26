@@ -22,5 +22,5 @@
   buttons do not retain a clicked highlight after release. Keep hover,
   `focus_visible` for keyboard use, intentional selected/open states, input
   carets, labels, and validation error borders.
-- The app has one light/dark theme setting. Workspaces and projects do not override it.
+- The app has one System/Dark/Light appearance setting with fixed palettes. Workspaces and projects do not override it.
 - Placeholders contain meaningful example values, never repeated labels or titles (Workspace: `e.g. Platform`). Destructive confirmations start empty and show the exact target name only as the placeholder.

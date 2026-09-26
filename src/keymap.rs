@@ -801,6 +801,7 @@ pub fn shell_bindings() -> Vec<KeyBinding> {
                 | S::NextSession
                 | S::PrevSession
                 | S::ToggleGrid
+                | S::ToggleZen
                 | S::Settings
                 | S::ZoomIn
                 | S::ZoomOut
@@ -851,6 +852,7 @@ mod tests {
             "JumpToWaitingSession",
             "ToggleRailMode",
             "ToggleGrid",
+            "ToggleZen",
             "NewHomeTerminal",
             "Settings",
             "ShortcutOverlay",

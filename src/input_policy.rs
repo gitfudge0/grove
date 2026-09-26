@@ -15,8 +15,7 @@ pub struct InputPolicy {
 impl InputPolicy {
     /// The policy a given modal's field runs under, derived from the pure state machine so the two can never disagree.
     pub fn for_modal(kind: ModalKind) -> Self {
-        // ThemeManager's editor buffer is the only multi-line field left; ScriptsEditor's are all single-line now.
-        let multi_line = matches!(kind, ModalKind::ThemeManager);
+        let multi_line = false;
         Self {
             wants_arrows: kind.wants_arrows(),
             // A multiline buffer never claims Tab — see the module doc.
@@ -41,14 +40,6 @@ mod tests {
             let expected = matches!(kind, ModalKind::SessionLauncher | ModalKind::AddProject);
             assert_eq!(p.wants_arrows, expected, "{kind:?}");
         }
-    }
-
-    #[test]
-    fn multiline_modals_never_claim_tab_so_it_indents() {
-        let kind = ModalKind::ThemeManager;
-        let p = InputPolicy::for_modal(kind);
-        assert!(p.multi_line, "{kind:?}");
-        assert!(!p.wants_tab, "{kind:?} must let Tab indent");
     }
 
     #[test]

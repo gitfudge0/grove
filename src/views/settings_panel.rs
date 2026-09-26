@@ -1,4 +1,4 @@
-//! App-wide settings and shortcut reference, mounted by the shell as an overlay.
+//! App-wide settings and shortcut reference, mounted in the main canvas.
 use super::{rpx, tokens::*};
 use crate::{
     entities::upgrade_state::{ChangelogState, UpgradeState},
@@ -10,9 +10,9 @@ use crate::{
 };
 use gpui::{
     div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    MouseButton, ScrollHandle, Subscription, Window,
+    ScrollHandle, Subscription, Window,
 };
-use grove_core::{agent::Agent, storage::Store, theme::ThemeKind, upgrade::InstallMethod};
+use grove_core::{agent::Agent, storage::{AppearancePreference, Store}, upgrade::InstallMethod};
 use std::collections::HashSet;
 
 const FOCUS_SCAN_LIMIT: usize = 128;
@@ -29,7 +29,6 @@ enum Page {
     Settings,
     Shortcuts,
     Changelog,
-    Themes(ThemeKind),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,58 +39,10 @@ enum Appearance {
 }
 
 fn appearance(store: &Store) -> Appearance {
-    if store.theme_follow_system {
-        Appearance::FollowSystem
-    } else if store
-        .theme
-        .as_deref()
-        .and_then(grove_core::theme::by_name)
-        .is_some_and(|theme| theme.kind == ThemeKind::Light)
-    {
-        Appearance::Light
-    } else {
-        Appearance::Dark
-    }
-}
-
-fn theme_for(mode: Appearance, store: &Store) -> String {
-    match mode {
-        Appearance::FollowSystem | Appearance::Dark => store
-            .theme_dark
-            .clone()
-            .unwrap_or_else(|| DEFAULT_DARK_THEME.into()),
-        Appearance::Light => store
-            .theme_light
-            .clone()
-            .unwrap_or_else(|| DEFAULT_LIGHT_THEME.into()),
-    }
-}
-
-fn edited_theme_is_active(
-    store: &Store,
-    system_mode: gpui::WindowAppearance,
-    kind: ThemeKind,
-) -> bool {
-    if store.theme_follow_system {
-        let system_kind = match system_mode {
-            gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight => {
-                ThemeKind::Light
-            }
-            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark => ThemeKind::Dark,
-        };
-        kind == system_kind
-    } else {
-        (kind == ThemeKind::Light) == (appearance(store) == Appearance::Light)
-    }
-}
-
-fn save_named_theme(store: &mut Store, kind: ThemeKind, name: &str, active: bool) {
-    match kind {
-        ThemeKind::Dark => store.theme_dark = Some(name.into()),
-        ThemeKind::Light => store.theme_light = Some(name.into()),
-    }
-    if active && !store.theme_follow_system {
-        store.theme = Some(name.into());
+    match store.appearance() {
+        AppearancePreference::System => Appearance::FollowSystem,
+        AppearancePreference::Dark => Appearance::Dark,
+        AppearancePreference::Light => Appearance::Light,
     }
 }
 
@@ -117,10 +68,6 @@ fn handled_shortcuts() -> Vec<(usize, &'static keymap::ShortcutDef)> {
             None => false,
         })
         .collect()
-}
-
-fn panel_width(viewport: f32) -> f32 {
-    MODAL_W_XL.min((viewport - SPACE_LG * 2.0).max(0.0))
 }
 
 pub struct SettingsPanel {
@@ -206,17 +153,12 @@ impl SettingsPanel {
     }
 
     fn set_appearance(&mut self, mode: Appearance, cx: &mut Context<Self>) {
-        let name = theme_for(mode, &cx.global::<SettingsState>().store);
-        if grove_core::theme::by_name(&name).is_none() {
-            self.error = Some(format!("Theme {name} is unavailable."));
-            cx.notify();
-            return;
-        }
         if !self.save(cx, |store| {
-            store.theme_follow_system = mode == Appearance::FollowSystem;
-            if mode != Appearance::FollowSystem {
-                store.theme = Some(name.clone());
-            }
+            store.appearance = Some(match mode {
+                Appearance::FollowSystem => AppearancePreference::System,
+                Appearance::Dark => AppearancePreference::Dark,
+                Appearance::Light => AppearancePreference::Light,
+            });
         }) {
             return;
         }
@@ -232,43 +174,12 @@ impl SettingsPanel {
             ThemeState::apply_system_theme(cx);
         } else {
             c::set_chrome_light(mode == Appearance::Light);
-            ThemeState::set_by_name(cx, &name);
+            ThemeState::set_by_name(cx, if mode == Appearance::Light {
+                DEFAULT_LIGHT_THEME
+            } else {
+                DEFAULT_DARK_THEME
+            });
         }
-        cx.refresh_windows();
-    }
-
-    fn set_named_theme(&mut self, kind: ThemeKind, name: String, cx: &mut Context<Self>) {
-        if grove_core::theme::by_name(&name).is_none_or(|theme| theme.kind != kind) {
-            self.error = Some(format!("Theme {name} is unavailable."));
-            cx.notify();
-            return;
-        }
-        let store = &cx.global::<SettingsState>().store;
-        let follows_system = store.theme_follow_system;
-        let active = edited_theme_is_active(store, cx.global::<ThemeState>().system_mode, kind);
-        if !self.save(cx, |store| save_named_theme(store, kind, &name, active)) {
-            return;
-        }
-        cx.update_global::<ThemeState, _>(|state, _| match kind {
-            ThemeKind::Dark => state.dark_name.clone_from(&name),
-            ThemeKind::Light => state.light_name.clone_from(&name),
-        });
-        if !active {
-            self.page = Page::Settings;
-            cx.notify();
-            return;
-        }
-        if follows_system {
-            ThemeState::apply_system_theme(cx);
-            c::set_chrome_light(matches!(
-                cx.global::<ThemeState>().system_mode,
-                gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight
-            ));
-        } else {
-            c::set_chrome_light(kind == ThemeKind::Light);
-            ThemeState::set_by_name(cx, &name);
-        }
-        self.page = Page::Settings;
         cx.refresh_windows();
     }
 
@@ -458,13 +369,13 @@ impl SettingsPanel {
         let archived = store.archived_count();
         let mut body = div().flex().flex_col().gap(rpx(SPACE_3XL));
 
-        let themes = div()
+        let appearances = div()
             .flex()
             .flex_wrap()
             .gap(rpx(SPACE_SM))
             .child(
                 self.button(
-                    "settings-theme-system",
+                    "settings-appearance-system",
                     "System",
                     mode == Appearance::FollowSystem,
                     true,
@@ -476,7 +387,7 @@ impl SettingsPanel {
             )
             .child(
                 self.button(
-                    "settings-theme-dark",
+                    "settings-appearance-dark",
                     "Dark",
                     mode == Appearance::Dark,
                     true,
@@ -486,7 +397,7 @@ impl SettingsPanel {
             )
             .child(
                 self.button(
-                    "settings-theme-light",
+                    "settings-appearance-light",
                     "Light",
                     mode == Appearance::Light,
                     true,
@@ -528,27 +439,9 @@ impl SettingsPanel {
                 .gap(rpx(SPACE_LG))
                 .child(Self::section("APPEARANCE"))
                 .child(Self::setting_row(
-                    "App theme",
-                    "One theme across Grove and all terminals",
-                    themes,
-                ))
-                .child(Self::setting_row(
-                    "Dark palette",
-                    theme_for(Appearance::Dark, store),
-                    self.button("settings-dark-palette", "Choose dark theme", false, true)
-                        .child("Choose")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.show(Page::Themes(ThemeKind::Dark), cx);
-                        })),
-                ))
-                .child(Self::setting_row(
-                    "Light palette",
-                    theme_for(Appearance::Light, store),
-                    self.button("settings-light-palette", "Choose light theme", false, true)
-                        .child("Choose")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.show(Page::Themes(ThemeKind::Light), cx);
-                        })),
+                    "Appearance",
+                    "Follow your system or choose light or dark",
+                    appearances,
                 ))
                 .child(Self::setting_row(
                     "App size",
@@ -880,33 +773,7 @@ impl SettingsPanel {
         body.text_size(rpx(TEXT_BODY))
     }
 
-    fn themes_body(&self, kind: ThemeKind, cx: &mut Context<Self>) -> gpui::Div {
-        let selected = match kind {
-            ThemeKind::Dark => theme_for(Appearance::Dark, &cx.global::<SettingsState>().store),
-            ThemeKind::Light => theme_for(Appearance::Light, &cx.global::<SettingsState>().store),
-        };
-        let mut body = div().flex().flex_col().gap(rpx(SPACE_SM));
-        for (index, theme) in grove_core::theme::selectable_themes_of(kind)
-            .into_iter()
-            .enumerate()
-        {
-            let name = theme.name.to_string();
-            let is_selected = selected == name;
-            body = body.child(
-                self.button(
-                    format!("settings-theme-choice-{index}"),
-                    name.clone(),
-                    is_selected,
-                    true,
-                )
-                .child(name.clone())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_named_theme(kind, name.clone(), cx);
-                })),
-            );
-        }
-        body
-    }
+
 }
 
 impl Focusable for SettingsPanel {
@@ -916,67 +783,106 @@ impl Focusable for SettingsPanel {
 }
 
 impl Render for SettingsPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let scale = f32::from(window.rem_size()) / zoom::REM_BASE;
-        let viewport_w = f32::from(window.viewport_size().width) / scale;
-        let viewport_h = f32::from(window.viewport_size().height) / scale;
-        let width = panel_width(viewport_w);
-        let height = (viewport_h - SPACE_LG * 2.0).max(0.0);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = match self.page {
             Page::Settings => "Settings",
             Page::Shortcuts => "Shortcuts",
             Page::Changelog => "Changelog",
-            Page::Themes(ThemeKind::Dark) => "Dark theme",
-            Page::Themes(ThemeKind::Light) => "Light theme",
         };
         let body = match self.page {
             Page::Settings => self.settings_body(cx),
             Page::Shortcuts => self.shortcuts_body(cx),
             Page::Changelog => self.changelog_body(cx),
-            Page::Themes(kind) => self.themes_body(kind, cx),
         };
         div()
-            .id("settings-overlay")
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(c::SCRIM())
+            .id("settings-panel")
+            .debug_selector(|| "settings-panel".into())
+            .size_full()
+            .min_w_0()
+            .min_h_0()
             .flex()
-            .items_center()
-            .justify_center()
+            .flex_col()
+            .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::key))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| this.close(window, cx)),
+            .child(
+                div()
+                    .h(rpx(36.))
+                    .flex_shrink_0()
+                    .px(rpx(SPACE_3XL))
+                    .flex()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(c::BORDER_SOFT())
+                    .text_size(rpx(TEXT_BODY))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(title),
             )
             .child(
                 div()
-                    .id("settings-panel")
-                    .debug_selector(|| "settings-panel".into())
-                    .track_focus(&self.focus)
-                    .w(rpx(width))
-                    .max_h(rpx(height))
+                    .id("settings-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .px(rpx(SPACE_3XL))
+                    .py(rpx(36.))
                     .flex()
-                    .flex_col()
-                    .rounded(rpx(RADIUS_PANEL))
-                    .border_1()
-                    .border_color(c::BORDER())
-                    .bg(c::SURFACE_RAISED())
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .justify_center()
                     .child(
                         div()
                             .w_full()
+                            .max_w(rpx(620.))
+                            .min_w_0()
                             .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(rpx(SPACE_LG))
-                            .p(rpx(SPACE_3XL))
+                            .flex_col()
+                            .gap(rpx(SPACE_3XL))
                             .child(
                                 div()
-                                    .text_size(rpx(TEXT_TITLE))
+                                    .text_size(rpx(24.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(c::FG())
                                     .child(title),
+                            )
+                            .child(body),
+                    ),
+            )
+            .when_some(self.error.clone(), |panel, error| {
+                panel.child(
+                    div()
+                        .id("settings-error")
+                        .role(gpui::Role::Alert)
+                        .px(rpx(SPACE_3XL))
+                        .py(rpx(SPACE_LG))
+                        .text_size(rpx(TEXT_BODY))
+                        .text_color(c::FORM_ERROR())
+                        .child(error),
+                )
+            })
+            .child(
+                div()
+                    .id("settings-footer")
+                    .w_full()
+                    .border_t_1()
+                    .border_color(c::BORDER_SOFT())
+                    .px(rpx(SPACE_3XL))
+                    .py(rpx(SPACE_3XL))
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(rpx(620.))
+                            .min_w_0()
+                            .flex()
+                            .justify_between()
+                            .items_center()
+                            .gap(rpx(SPACE_2XL))
+                            .child(
+                                div()
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_DIM())
+                                    .child(
+                                        "Tab to move · Esc to close · Changes save automatically",
+                                    ),
                             )
                             .child(
                                 self.button(
@@ -1004,39 +910,6 @@ impl Render for SettingsPanel {
                                     },
                                 )),
                             ),
-                    )
-                    .child(
-                        div()
-                            .id("settings-scroll")
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll)
-                            .px(rpx(SPACE_3XL))
-                            .pb(rpx(SPACE_3XL))
-                            .child(body),
-                    )
-                    .when_some(self.error.clone(), |panel, error| {
-                        panel.child(
-                            div()
-                                .id("settings-error")
-                                .role(gpui::Role::Alert)
-                                .px(rpx(SPACE_3XL))
-                                .py(rpx(SPACE_LG))
-                                .text_size(rpx(TEXT_BODY))
-                                .text_color(c::FORM_ERROR())
-                                .child(error),
-                        )
-                    })
-                    .child(
-                        div()
-                            .border_t_1()
-                            .border_color(c::BORDER_SOFT())
-                            .px(rpx(SPACE_3XL))
-                            .py(rpx(SPACE_LG))
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child("Tab to move · Esc to close · Changes save automatically"),
                     ),
             )
     }
@@ -1088,81 +961,20 @@ mod tests {
     }
 
     #[test]
-    fn appearance_uses_one_app_theme_and_preserves_mode_names() {
+    fn appearance_prefers_saved_mode_over_legacy_theme() {
         let mut store = Store {
-            theme_dark: Some("tokyonight-storm".into()),
-            theme_light: Some("tokyonight-day".into()),
-            theme_follow_system: true,
+            theme: Some("catppuccin-latte".into()),
             ..Store::default()
         };
-        assert_eq!(appearance(&store), Appearance::FollowSystem);
-        assert_eq!(theme_for(Appearance::Dark, &store), "tokyonight-storm");
-        assert_eq!(theme_for(Appearance::Light, &store), "tokyonight-day");
-        store.theme_follow_system = false;
-        store.theme = Some("tokyonight-day".into());
         assert_eq!(appearance(&store), Appearance::Light);
-    }
-
-    #[test]
-    fn editing_inactive_palette_preserves_current_appearance() {
-        let mut store = Store {
-            theme: Some(DEFAULT_DARK_THEME.into()),
-            theme_dark: Some(DEFAULT_DARK_THEME.into()),
-            theme_light: Some(DEFAULT_LIGHT_THEME.into()),
-            ..Store::default()
-        };
-        assert!(!edited_theme_is_active(
-            &store,
-            gpui::WindowAppearance::Dark,
-            ThemeKind::Light
-        ));
-        save_named_theme(&mut store, ThemeKind::Light, "catppuccin-latte", false);
-        assert_eq!(store.theme.as_deref(), Some(DEFAULT_DARK_THEME));
-        assert_eq!(store.theme_light.as_deref(), Some("catppuccin-latte"));
+        store.appearance = Some(AppearancePreference::Dark);
         assert_eq!(appearance(&store), Appearance::Dark);
-
-        assert!(edited_theme_is_active(
-            &store,
-            gpui::WindowAppearance::Dark,
-            ThemeKind::Dark
-        ));
-        save_named_theme(&mut store, ThemeKind::Dark, "tokyonight", true);
-        assert_eq!(store.theme.as_deref(), Some("tokyonight"));
-        assert_eq!(store.theme_dark.as_deref(), Some("tokyonight"));
-    }
-
-    #[test]
-    fn follow_system_edits_only_active_palette_without_changing_explicit_theme() {
-        let mut store = Store {
-            theme_follow_system: true,
-            theme: Some(DEFAULT_DARK_THEME.into()),
-            ..Store::default()
-        };
-        assert!(edited_theme_is_active(
-            &store,
-            gpui::WindowAppearance::Light,
-            ThemeKind::Light
-        ));
-        assert!(!edited_theme_is_active(
-            &store,
-            gpui::WindowAppearance::Light,
-            ThemeKind::Dark
-        ));
-        save_named_theme(&mut store, ThemeKind::Light, DEFAULT_LIGHT_THEME, true);
-        save_named_theme(&mut store, ThemeKind::Dark, DEFAULT_DARK_THEME, false);
-        assert_eq!(store.theme.as_deref(), Some(DEFAULT_DARK_THEME));
-        assert_eq!(store.theme_light.as_deref(), Some(DEFAULT_LIGHT_THEME));
-        assert_eq!(store.theme_dark.as_deref(), Some(DEFAULT_DARK_THEME));
+        store.appearance = Some(AppearancePreference::System);
         assert_eq!(appearance(&store), Appearance::FollowSystem);
-        assert!(edited_theme_is_active(
-            &store,
-            gpui::WindowAppearance::Dark,
-            ThemeKind::Dark
-        ));
     }
 
     #[test]
-    fn shortcut_reference_excludes_unhandled_grid_and_zen_actions() {
+    fn shortcut_reference_includes_zen_but_excludes_unhandled_grid_actions() {
         let visible = handled_shortcuts();
         assert!(visible
             .iter()
@@ -1173,7 +985,7 @@ mod tests {
         assert!(!visible
             .iter()
             .any(|(_, def)| def.description == "Resize grid"));
-        assert!(!visible
+        assert!(visible
             .iter()
             .any(|(_, def)| def.description == "Toggle zen mode"));
         assert!(!visible
@@ -1181,15 +993,8 @@ mod tests {
             .any(|(_, def)| def.description == "Move focus in grid"));
     }
 
-    #[test]
-    fn narrow_panel_stays_inside_320px_viewport() {
-        assert_eq!(panel_width(320.0), 304.0);
-        assert_eq!(panel_width(100.0), 84.0);
-        assert_eq!(panel_width(1000.0), MODAL_W_XL);
-    }
-
     #[gpui::test]
-    fn shortcuts_escape_closes_overlay_and_restores_focus(cx: &mut gpui::TestAppContext) {
+    fn shortcuts_escape_closes_page_and_restores_focus(cx: &mut gpui::TestAppContext) {
         cx.update(setup);
         let (panel, cx) = cx.add_window_view(|_, cx| {
             let runtime = cx.new(Runtime::new);
@@ -1204,8 +1009,9 @@ mod tests {
         cx.simulate_resize(gpui::size(gpui::px(320.0), gpui::px(200.0)));
         draw(cx);
         let bounds = cx.debug_bounds("settings-panel").expect("settings panel");
-        assert!(f32::from(bounds.size.width) <= 320.0);
-        assert!(f32::from(bounds.size.height) <= 200.0);
+        assert_eq!(f32::from(bounds.size.width), 320.0);
+        assert_eq!(f32::from(bounds.size.height), 200.0);
+        assert!(cx.debug_bounds("settings-overlay").is_none());
         cx.simulate_keystrokes("escape");
         draw(cx);
         cx.update(|window, cx| {
@@ -1224,7 +1030,7 @@ mod tests {
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
                 panel.open(window, cx);
-                panel.show(Page::Themes(ThemeKind::Dark), cx);
+                panel.show(Page::Changelog, cx);
             });
         });
         draw(cx);
@@ -1258,7 +1064,7 @@ mod tests {
             cx.simulate_keystrokes(chord);
             draw(cx);
             cx.update(|window, cx| {
-                assert!(!behind.is_focused(window), "{chord} escaped the overlay");
+                assert!(!behind.is_focused(window), "{chord} escaped the page");
                 assert!(panel.read(cx).focus.contains_focused(window, cx));
             });
         }

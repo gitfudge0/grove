@@ -15,7 +15,6 @@ use crate::{
 pub(super) const STATUS_H: f32 = 26.0;
 const BACKEND_MIN_W: f32 = 620.0;
 const VERSION_MIN_W: f32 = 840.0;
-const THEME_MIN_W: f32 = 1080.0;
 const WORKSPACE_MAX_W: f32 = 160.0;
 const COMPACT_WORKSPACE_MAX_W: f32 = 88.0;
 
@@ -250,13 +249,6 @@ impl Render for Statusbar {
             );
         } else {
             bar = bar.child(div().flex_1().min_w_0());
-            if width >= THEME_MIN_W {
-                bar = bar.child(
-                    div()
-                        .text_color(c::FG_MUTE())
-                        .child(grove_core::theme::current().name.to_string()),
-                );
-            }
             if width >= VERSION_MIN_W {
                 bar = bar.child(
                     div()

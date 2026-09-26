@@ -350,7 +350,7 @@ impl WorktreeLauncher {
             {
                 if !recent
                     .iter()
-                    .any(|(p, w, a)| *p == idx && w == &item.wt_path && *a == item.agent)
+                    .any(|(p, w, _)| *p == idx && w == &item.wt_path)
                 {
                     recent.push((idx, item.wt_path.clone(), item.agent));
                 }
@@ -815,7 +815,6 @@ impl Render for WorktreeLauncher {
                                     PaletteRow::SwitchToSession => ("Switch to session".into(), "Choose an open session".into(), "list", String::new()),
                                     PaletteRow::Settings => ("Settings".into(), "App preferences".into(), "cog", String::new()),
                                     PaletteRow::Setting(setting) => (setting.label().into(), setting.section().into(), setting.icon_name(), String::new()),
-                                    PaletteRow::ReloadThemes => ("Reload themes".into(), "Refresh installed themes".into(), "restart", String::new()),
                                 };
                                 let identity = launcher::row_identity(&row);
                                 let show_agent_selector =
@@ -1480,10 +1479,64 @@ mod tests {
                         .map(launcher::row_identity),
                     identity
                 );
-                launcher.update_query("ui-overhaul".into(), cx);
-                assert_eq!(launcher.rows(cx).len(), 1);
                 launcher.update_query("absent query".into(), cx);
                 assert!(launcher.rows(cx).is_empty());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn recent_worktree_has_one_row_with_most_recent_agent(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            setup(cx);
+            let store = &mut cx.global_mut::<SettingsState>().store;
+            let path = env!("CARGO_MANIFEST_DIR").to_string();
+            let newest_agent = Agent::ALL
+                .into_iter()
+                .find(|agent| *agent != Agent::Terminal && agent.available())
+                .unwrap_or(Agent::Terminal);
+            store.recent_launches = vec![
+                RecentLaunch {
+                    project: "current".into(),
+                    wt_path: path.clone(),
+                    agent: newest_agent,
+                },
+                RecentLaunch {
+                    project: "current".into(),
+                    wt_path: path,
+                    agent: Agent::Terminal,
+                },
+            ];
+        });
+        let (launcher, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar =
+                cx.new(|cx| super::super::sidebar::Sidebar::new(runtime.clone(), window, cx));
+            WorktreeLauncher::new(runtime, sidebar, window, cx)
+        });
+        cx.update(|window, cx| {
+            launcher.update(cx, |launcher, cx| {
+                launcher.open(window, cx);
+                let expected = cx.global::<SettingsState>().store.recent_launches[0].agent;
+                let rows = launcher.rows(cx);
+                assert_eq!(
+                    rows.iter()
+                        .filter(|row| matches!(row, PaletteRow::Recent { proj: 0, .. }))
+                        .count(),
+                    1
+                );
+                assert!(matches!(rows.first(), Some(PaletteRow::Recent { agent, .. }) if *agent == expected));
+                assert_eq!(Agent::ALL[launcher.agent_selected], expected);
+
+                launcher.update_query("current".into(), cx);
+                assert_eq!(
+                    launcher
+                        .rows(cx)
+                        .iter()
+                        .filter(|row| matches!(row, PaletteRow::Recent { proj: 0, .. } | PaletteRow::Combo { proj: 0, .. }))
+                        .count(),
+                    1
+                );
             });
         });
     }
@@ -1509,14 +1562,12 @@ mod tests {
                 assert!(rows.contains(&action), "missing {action:?}");
             }
             launcher.update(cx, |launcher, cx| {
-                launcher.update_query("app theme".into(), cx);
+                launcher.update_query("appearance".into(), cx);
                 assert!(launcher
                     .rows(cx)
-                    .contains(&PaletteRow::Setting(launcher::SettingRow::Theme)));
+                    .contains(&PaletteRow::Setting(launcher::SettingRow::Appearance)));
                 launcher.update_query("terminal home".into(), cx);
                 assert!(launcher.rows(cx).contains(&PaletteRow::TerminalHome));
-                launcher.update_query("reload themes".into(), cx);
-                assert!(launcher.rows(cx).contains(&PaletteRow::ReloadThemes));
             });
         });
     }

@@ -755,6 +755,7 @@ impl Sidebar {
                 "terminal-pane-{}",
                 id.raw()
             )))
+            .debug_selector(move || format!("terminal-pane-{}", id.raw()))
             .role(gpui::Role::Group)
             .aria_label(accessible_label)
             .relative()
@@ -777,7 +778,7 @@ impl Sidebar {
                     );
                 }),
             )
-            .child(header);
+            .when(!self.is_zen(), |pane| pane.child(header));
         if let Some(message) = state.message(error.as_deref()) {
             let mut banner = div()
                 .id(gpui::SharedString::from(format!(
@@ -952,6 +953,11 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if let Some(settings) = &self.settings_panel {
+            if settings.read(cx).is_open() {
+                return settings.clone().into_any_element();
+            }
+        }
         if let Some(setup) = &self.project_setup {
             return setup.clone().into_any_element();
         }
@@ -1054,7 +1060,22 @@ impl Sidebar {
                 )
                 .into_any_element();
         }
-        if self.mode == ViewMode::Grid {
+        if self.is_zen() {
+            match self.selection.clone() {
+                Some(Selection::Session(id)) => {
+                    if let Some(el) = self.terminal_content(id, false, window, cx) {
+                        return el;
+                    }
+                }
+                Some(Selection::Home(id)) => {
+                    if let Some(el) = self.terminal_content(id, true, window, cx) {
+                        return el;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if self.mode == ViewMode::Grid && !self.is_zen() {
             let ids = self.active_canvas_sessions(cx);
             if !ids.is_empty() {
                 let tiles: Vec<_> = ids
@@ -1096,7 +1117,7 @@ impl Sidebar {
         };
         let workspace = &cx.global::<SettingsState>().store.workspaces;
         let workspace_name = workspace.name(workspace.active).to_string();
-        let empty_grid = self.mode == ViewMode::Grid;
+        let empty_grid = self.mode == ViewMode::Grid && self.active_canvas_sessions(cx).is_empty();
         let no_projects = self.snapshot.projects.is_empty() && !empty_grid;
         let mut section = div()
             .id("canvas-overview")

@@ -276,14 +276,7 @@ impl OnboardStep {
     }
 }
 
-/// Keyed by project **name** (`src/app/theme_picker.rs:17-23`) — indices shift under add/remove.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ThemePickerScope {
-    App,
-    Project(String),
-}
-
-/// Pure `String`s so they survive the ScriptsEditor → ThemePicker → ScriptsEditor round trip (`modals.rs:660-668`).
+/// Script values and rename state for the project editor.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScriptsEditorState {
     pub project_path: String,
@@ -292,14 +285,6 @@ pub struct ScriptsEditorState {
     pub run: String,
     pub teardown: String,
     pub renaming: bool,
-}
-
-/// Where a `ThemePicker` goes when it closes (`src/app/modal.rs:79-82` plus the ScriptsEditor round trip).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ThemePickerReturn {
-    Close,
-    Settings,
-    ScriptsEditor(Box<ScriptsEditorState>),
 }
 
 /// Unlike iced's `Modal`, child state lives inline here so replacing the slot drops old state automatically (carried decision 4).
@@ -346,23 +331,6 @@ pub enum Modal {
         sel: usize,
     },
     SessionLauncher(Box<LauncherSlotState>),
-    ThemePicker {
-        sel_dark: usize,
-        sel_light: usize,
-        dark_tab: bool,
-        original: String,
-        follow_system: bool,
-        scope: ThemePickerScope,
-        project_use_default: bool,
-        return_to: ThemePickerReturn,
-    },
-    ThemeManager {
-        selected: usize,
-        rename: Option<(String, String)>,
-        rename_error: Option<String>,
-        pending_delete: Option<String>,
-        editor: Option<String>,
-    },
     Settings,
     ShortcutOverlay,
     Teardown {
@@ -467,8 +435,6 @@ pub enum ModalKind {
     TmuxChoice,
     AgentPicker,
     SessionLauncher,
-    ThemePicker,
-    ThemeManager,
     Settings,
     ShortcutOverlay,
     Teardown,
@@ -480,7 +446,7 @@ pub enum ModalKind {
 }
 
 impl ModalKind {
-    pub const ALL: [ModalKind; 20] = [
+    pub const ALL: [ModalKind; 18] = [
         ModalKind::Input,
         ModalKind::Confirm,
         ModalKind::AddProject,
@@ -491,8 +457,6 @@ impl ModalKind {
         ModalKind::TmuxChoice,
         ModalKind::AgentPicker,
         ModalKind::SessionLauncher,
-        ModalKind::ThemePicker,
-        ModalKind::ThemeManager,
         ModalKind::Settings,
         ModalKind::ShortcutOverlay,
         ModalKind::Teardown,
@@ -516,8 +480,6 @@ impl ModalKind {
             ModalKind::TmuxChoice => "ModalTmuxChoice",
             ModalKind::AgentPicker => "ModalAgentPicker",
             ModalKind::SessionLauncher => "ModalSessionLauncher",
-            ModalKind::ThemePicker => "ModalThemePicker",
-            ModalKind::ThemeManager => "ModalThemeManager",
             ModalKind::Settings => "ModalSettings",
             ModalKind::ShortcutOverlay => "ModalShortcutOverlay",
             ModalKind::Teardown => "ModalTeardown",
@@ -546,7 +508,7 @@ impl ModalKind {
     pub fn wants_tab(self) -> bool {
         matches!(
             self,
-            ModalKind::Onboarding | ModalKind::AddProject | ModalKind::ThemePicker
+            ModalKind::Onboarding | ModalKind::AddProject
         )
     }
 }
@@ -564,8 +526,6 @@ impl Modal {
             Modal::TmuxChoice => ModalKind::TmuxChoice,
             Modal::AgentPicker { .. } => ModalKind::AgentPicker,
             Modal::SessionLauncher(_) => ModalKind::SessionLauncher,
-            Modal::ThemePicker { .. } => ModalKind::ThemePicker,
-            Modal::ThemeManager { .. } => ModalKind::ThemeManager,
             Modal::Settings => ModalKind::Settings,
             Modal::ShortcutOverlay => ModalKind::ShortcutOverlay,
             Modal::Teardown { .. } => ModalKind::Teardown,
@@ -687,12 +647,6 @@ pub enum ModalAction {
     /// An explicit pick, which is the only thing that persists.
     ChooseTmux(bool),
     ToggleDefaultAgent,
-    ThemePickerSubmit,
-    ThemePickerSwitchTab,
-    ThemeManagerDeleteConfirm,
-    ThemeManagerDeleteCancel,
-    ThemeManagerRenameSubmit,
-    ThemeManagerRenameCancel,
     // TODO(unwired): keyboard half of ScriptsRenameStart — ModalClick fires it but key_verdict never produces this action.
     #[allow(dead_code)]
     ScriptsRenameStart,
@@ -774,22 +728,6 @@ impl ModalSlot {
             }) => {
                 self.modal = Some(Modal::Settings);
                 CancelOutcome::ReturnedTo(ModalKind::Settings)
-            }
-            Some(Modal::ThemePicker { return_to, .. }) => {
-                match std::mem::replace(return_to, ThemePickerReturn::Close) {
-                    ThemePickerReturn::Close => {
-                        self.modal = None;
-                        CancelOutcome::Closed
-                    }
-                    ThemePickerReturn::Settings => {
-                        self.modal = Some(Modal::Settings);
-                        CancelOutcome::ReturnedTo(ModalKind::Settings)
-                    }
-                    ThemePickerReturn::ScriptsEditor(state) => {
-                        self.modal = Some(Modal::ScriptsEditor(state));
-                        CancelOutcome::ReturnedTo(ModalKind::ScriptsEditor)
-                    }
-                }
             }
             Some(_) => {
                 self.modal = None;
@@ -904,47 +842,6 @@ pub fn key_verdict(modal: &Modal, key: ModalKey, mods: ModalMods, ctx: KeyCtx) -
             (K::Up, _) | (_, Some('k')) => V::Move(-1),
             _ => V::Ignore,
         },
-
-        Modal::ThemePicker { .. } => match (key, ch(key)) {
-            (K::Escape, _) => V::Close,
-            (K::Enter, _) => V::Custom(A::ThemePickerSubmit),
-            (K::Down, _) | (_, Some('j')) => V::Move(1),
-            (K::Up, _) | (_, Some('k')) => V::Move(-1),
-            (K::Tab, _) | (_, Some('h' | 'l')) => V::Custom(A::ThemePickerSwitchTab),
-            _ => V::Ignore,
-        },
-
-        // Precedence: editor sub-view, then delete confirm, then inline rename, then the plain list.
-        Modal::ThemeManager {
-            rename,
-            pending_delete,
-            editor,
-            ..
-        } => {
-            if editor.is_some() {
-                V::FallThrough
-            } else if pending_delete.is_some() {
-                // Enter works here too (unlike confirm_modal); this dialog has no other use for it.
-                match (key, ch(key)) {
-                    (K::Enter, _) | (_, Some('y')) => V::Custom(A::ThemeManagerDeleteConfirm),
-                    (K::Escape, _) | (_, Some('n')) => V::Custom(A::ThemeManagerDeleteCancel),
-                    _ => V::Ignore,
-                }
-            } else if rename.is_some() {
-                match key {
-                    K::Enter => V::Custom(A::ThemeManagerRenameSubmit),
-                    K::Escape => V::Custom(A::ThemeManagerRenameCancel),
-                    _ => V::FallThrough,
-                }
-            } else {
-                match key {
-                    K::Escape => V::Close,
-                    K::Down => V::Move(1),
-                    K::Up => V::Move(-1),
-                    _ => V::Ignore,
-                }
-            }
-        }
 
         Modal::SessionLauncher(_) => V::FallThrough,
 
@@ -1066,19 +963,6 @@ mod tests {
         }
     }
 
-    fn theme_picker(return_to: ThemePickerReturn) -> Modal {
-        Modal::ThemePicker {
-            sel_dark: 0,
-            sel_light: 0,
-            dark_tab: true,
-            original: "tokyonight-storm".into(),
-            follow_system: false,
-            scope: ThemePickerScope::App,
-            project_use_default: false,
-            return_to,
-        }
-    }
-
     fn teardown(stage: TeardownStage) -> Modal {
         Modal::Teardown {
             wt_path: "/w".into(),
@@ -1100,20 +984,6 @@ mod tests {
             done: 0,
             current: String::new(),
             errors: vec![],
-        }
-    }
-
-    fn theme_manager(
-        rename: Option<(String, String)>,
-        pending_delete: Option<String>,
-        editor: Option<String>,
-    ) -> Modal {
-        Modal::ThemeManager {
-            selected: 0,
-            rename,
-            rename_error: None,
-            pending_delete,
-            editor,
         }
     }
 
@@ -1190,40 +1060,6 @@ mod tests {
             CancelOutcome::ReturnedTo(ModalKind::Settings)
         );
         assert_eq!(slot.kind(), Some(ModalKind::Settings));
-    }
-
-    #[test]
-    fn theme_picker_return_to_settings_round_trip() {
-        let mut slot = ModalSlot::new();
-        slot.open(theme_picker(ThemePickerReturn::Settings));
-        assert_eq!(
-            slot.cancel(),
-            CancelOutcome::ReturnedTo(ModalKind::Settings)
-        );
-        assert_eq!(slot.kind(), Some(ModalKind::Settings));
-
-        slot.open(theme_picker(ThemePickerReturn::Close));
-        assert_eq!(slot.cancel(), CancelOutcome::Closed);
-        assert_eq!(slot.kind(), None);
-    }
-
-    #[test]
-    fn scripts_editor_to_theme_picker_and_back_preserves_the_buffers() {
-        let mut slot = ModalSlot::new();
-        slot.open(Modal::ScriptsEditor(Box::new(scripts("cargo build"))));
-        let Some(Modal::ScriptsEditor(state)) = slot.get() else {
-            unreachable!()
-        };
-        let carried = state.clone();
-        slot.open(theme_picker(ThemePickerReturn::ScriptsEditor(carried)));
-        assert_eq!(
-            slot.cancel(),
-            CancelOutcome::ReturnedTo(ModalKind::ScriptsEditor)
-        );
-        let Some(Modal::ScriptsEditor(state)) = slot.get() else {
-            unreachable!()
-        };
-        assert_eq!(state.setup, "cargo build");
     }
 
     fn v(modal: &Modal, key: ModalKey) -> ModalKeyVerdict {
@@ -1324,69 +1160,6 @@ mod tests {
         );
         // Escape records NO backend, so the choice is re-asked next launch.
         assert_eq!(v(&m, ModalKey::Escape), ModalKeyVerdict::Close);
-    }
-
-    #[test]
-    fn theme_picker_arrows_jk_and_tab_hl() {
-        let m = theme_picker(ThemePickerReturn::Close);
-        assert_eq!(v(&m, ModalKey::Down), ModalKeyVerdict::Move(1));
-        assert_eq!(v(&m, ModalKey::Char('j')), ModalKeyVerdict::Move(1));
-        assert_eq!(v(&m, ModalKey::Up), ModalKeyVerdict::Move(-1));
-        assert_eq!(v(&m, ModalKey::Char('k')), ModalKeyVerdict::Move(-1));
-        for k in [ModalKey::Tab, ModalKey::Char('h'), ModalKey::Char('l')] {
-            assert_eq!(
-                v(&m, k),
-                ModalKeyVerdict::Custom(ModalAction::ThemePickerSwitchTab),
-                "{k:?}"
-            );
-        }
-        assert_eq!(
-            v(&m, ModalKey::Enter),
-            ModalKeyVerdict::Custom(ModalAction::ThemePickerSubmit)
-        );
-        assert_eq!(v(&m, ModalKey::Escape), ModalKeyVerdict::Close);
-    }
-
-    #[test]
-    fn theme_manager_has_three_nested_sub_states() {
-        // Editor open wins over everything and delegates.
-        let m = theme_manager(None, None, Some(String::new()));
-        assert_eq!(v(&m, ModalKey::Escape), ModalKeyVerdict::FallThrough);
-
-        // pending_delete outranks rename.
-        let m = theme_manager(Some(("a".into(), "b".into())), Some("a".into()), None);
-        assert_eq!(
-            v(&m, ModalKey::Char('y')),
-            ModalKeyVerdict::Custom(ModalAction::ThemeManagerDeleteConfirm)
-        );
-        assert_eq!(
-            v(&m, ModalKey::Enter),
-            ModalKeyVerdict::Custom(ModalAction::ThemeManagerDeleteConfirm)
-        );
-        assert_eq!(
-            v(&m, ModalKey::Char('n')),
-            ModalKeyVerdict::Custom(ModalAction::ThemeManagerDeleteCancel)
-        );
-        assert_eq!(
-            v(&m, ModalKey::Escape),
-            ModalKeyVerdict::Custom(ModalAction::ThemeManagerDeleteCancel)
-        );
-
-        let m = theme_manager(Some(("a".into(), "b".into())), None, None);
-        assert_eq!(
-            v(&m, ModalKey::Enter),
-            ModalKeyVerdict::Custom(ModalAction::ThemeManagerRenameSubmit)
-        );
-        assert_eq!(
-            v(&m, ModalKey::Escape),
-            ModalKeyVerdict::Custom(ModalAction::ThemeManagerRenameCancel)
-        );
-        assert_eq!(v(&m, ModalKey::Char('x')), ModalKeyVerdict::FallThrough);
-
-        let m = theme_manager(None, None, None);
-        assert_eq!(v(&m, ModalKey::Escape), ModalKeyVerdict::Close);
-        assert_eq!(v(&m, ModalKey::Down), ModalKeyVerdict::Move(1));
-        assert_eq!(v(&m, ModalKey::Up), ModalKeyVerdict::Move(-1));
     }
 
     #[test]
@@ -1665,8 +1438,6 @@ mod tests {
                 sel: 0,
             },
             ModalKind::SessionLauncher => Modal::SessionLauncher(Box::default()),
-            ModalKind::ThemePicker => theme_picker(ThemePickerReturn::Close),
-            ModalKind::ThemeManager => theme_manager(None, None, None),
             ModalKind::Settings => Modal::Settings,
             ModalKind::ShortcutOverlay => Modal::ShortcutOverlay,
             ModalKind::Teardown => teardown(TeardownStage::RunningScript),
