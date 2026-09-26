@@ -190,11 +190,19 @@ impl Sidebar {
                             .w(rpx(DIFF_FILE_LIST_W))
                             .max_w(rpx(DIFF_FILE_LIST_W))
                             .h_full()
-                            .border_r_1()
-                            .border_color(c::BORDER())
                             .child(files),
                     )
                     .child(body),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(rpx(DIFF_FILE_LIST_W))
+                    .w(rpx(SPACE_XS))
+                    .border_l_1()
+                    .border_color(c::BORDER()),
             )
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .into_any_element()

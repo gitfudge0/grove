@@ -3051,7 +3051,7 @@ impl Sidebar {
                     .flex()
                     .flex_shrink_0()
                     .items_center()
-                    .bg(c::BG())
+                    .bg(c::BG_RAIL())
                     .opacity(if focused { 1.0 } else { 0.0 })
                     .group_hover("worktree-row", |s| s.opacity(1.0));
                 for (n, agent) in WORKTREE_LAUNCH_AGENTS.into_iter().enumerate() {
@@ -3794,7 +3794,7 @@ impl Render for Sidebar {
                     }),
             )
             .when(self.diff_viewer.is_some(), |d| {
-                d.child(self.render_diff(cx))
+                d.child(gpui::deferred(self.render_diff(cx)))
             })
     }
 }
