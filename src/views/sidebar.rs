@@ -602,6 +602,7 @@ impl Sidebar {
             self.focus.focus(window, cx);
         }
         if active != self.active_workspace {
+            let retain_grid = self.mode == ViewMode::Grid;
             self.zen_return = None;
             self.saved.insert(
                 self.active_workspace,
@@ -615,7 +616,7 @@ impl Sidebar {
             );
             let next = self.saved.remove(&active).unwrap_or_default();
             self.selection = next.selection;
-            self.mode = next.mode;
+            self.mode = if retain_grid { ViewMode::Grid } else { next.mode };
             self.last_mode = next.last_mode;
             self.scroll = next.scroll;
             self.terminals_collapsed = next.terminals_collapsed;
