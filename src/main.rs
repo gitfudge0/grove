@@ -55,7 +55,10 @@ mod scripts;
 #[allow(dead_code)]
 mod zoom;
 
-use gpui::{prelude::*, px, size, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
+use gpui::{
+    prelude::*, px, size, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
+    WindowOptions,
+};
 
 use assets::Assets;
 use views::shell::Shell;
@@ -78,6 +81,12 @@ fn main() {
         .with_assets(Assets)
         .run(|cx: &mut gpui::App| {
             app::boot(cx);
+            let reduce_motion = cx
+                .global::<settings::SettingsState>()
+                .store
+                .reduce_motion
+                .unwrap_or(false);
+            cx.set_reduce_motion(reduce_motion);
             cx.bind_keys(keymap::shell_bindings());
             cx.bind_keys([
                 gpui::KeyBinding::new(
@@ -110,9 +119,21 @@ fn main() {
             }
 
             let bounds = Bounds::centered(None, size(px(WINDOW_W), px(WINDOW_H)), cx);
+            let sidebar_appearance = cx
+                .global::<settings::SettingsState>()
+                .store
+                .sidebar_appearance;
             let opts = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(WINDOW_MIN_W), px(WINDOW_MIN_H))),
+                window_background: match sidebar_appearance {
+                    grove_core::storage::SidebarAppearance::Frosted => {
+                        WindowBackgroundAppearance::Blurred
+                    }
+                    grove_core::storage::SidebarAppearance::Solid => {
+                        WindowBackgroundAppearance::Opaque
+                    }
+                },
                 app_owns_titlebar_drag: true,
                 titlebar: Some(TitlebarOptions {
                     title: None,

@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use gpui::{AppContext as _, Context, Entity, EventEmitter, Task};
@@ -69,9 +70,41 @@ pub struct ProjectService {
     worktree_removals: BTreeMap<String, WorktreeRemoval>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorktreeReadiness {
+    Ready,
+    NeedsGit,
+    NeedsCommit,
+}
+
+/// A second checkout needs a Git repository with a resolvable starting commit.
+pub(crate) fn worktree_readiness(path: &str) -> WorktreeReadiness {
+    if !git::is_repo(path) {
+        return WorktreeReadiness::NeedsGit;
+    }
+    let head = Command::new("git")
+        .args(["-C", path, "rev-parse", "--verify", "HEAD"])
+        .output();
+    if !head.is_ok_and(|output| output.status.success()) {
+        return WorktreeReadiness::NeedsCommit;
+    }
+    WorktreeReadiness::Ready
+}
+
+pub(crate) fn worktree_prerequisite(path: &str) -> Result<(), &'static str> {
+    match worktree_readiness(path) {
+        WorktreeReadiness::Ready => Ok(()),
+        WorktreeReadiness::NeedsGit => Err("Initialize Git before creating a worktree. Sessions in this folder still work."),
+        WorktreeReadiness::NeedsCommit => Err("Make the first commit before creating a worktree. Sessions in the main checkout still work."),
+    }
+}
+
 impl EventEmitter<ProjectEvent> for ProjectService {}
 
 impl ProjectService {
+    pub(crate) fn project_git_initialized(&mut self, cx: &mut Context<Self>) {
+        cx.emit(ProjectEvent::TreeInvalidated);
+    }
     pub fn new(registry: Entity<SessionRegistry>, state: Entity<WorkspaceState>) -> Self {
         Self {
             registry,
@@ -946,6 +979,53 @@ mod tests {
     use super::*;
     use fs_err as fs;
     use std::{path::PathBuf, process::Command, time::SystemTime};
+
+    #[test]
+    fn worktree_requires_git_and_first_commit() {
+        if !Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+        {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "grove-onboarding-git-{}-{:?}",
+            std::process::id(),
+            SystemTime::now()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _fixture = GitFixture(root.clone());
+        let path = root.to_string_lossy();
+        assert!(worktree_prerequisite(&path)
+            .unwrap_err()
+            .contains("Initialize Git"));
+        git::init_if_needed(&path).unwrap();
+        assert!(worktree_prerequisite(&path)
+            .unwrap_err()
+            .contains("first commit"));
+        let commit = Command::new("git")
+            .args([
+                "-C",
+                &path,
+                "-c",
+                "user.name=Grove Test",
+                "-c",
+                "user.email=grove@example.test",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial commit",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            commit.status.success(),
+            "{}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+        assert!(worktree_prerequisite(&path).is_ok());
+    }
 
     struct GitFixture(PathBuf);
 

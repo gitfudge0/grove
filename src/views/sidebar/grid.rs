@@ -1,12 +1,16 @@
 //! Adaptive session grid. Proportions belong to the workspace, never to a PTY.
 use super::{rpx, Sidebar};
 use crate::{
+    entities::session_registry::SessionId,
     grid::{
         equal_weights, minimum_weight, normalize_weights, transfer_pair, GridAxis, GridBoundary,
     },
     theme as c,
 };
-use gpui::{div, prelude::*, AnyElement, Context, Div, FocusHandle, MouseButton, Stateful, Window};
+use gpui::{
+    div, prelude::*, AnyElement, Context, Div, FocusHandle, Focusable, MouseButton, Stateful,
+    Window,
+};
 use std::collections::HashMap;
 
 const GRID_PADDING: f32 = 0.0;
@@ -22,6 +26,7 @@ pub(super) struct WorkspaceGrid {
     shapes: HashMap<Vec<usize>, GridWeights>,
     current: Vec<usize>,
     focus: HashMap<(usize, Option<usize>), FocusHandle>,
+    pub(super) order: Vec<(SessionId, bool)>,
 }
 #[derive(Clone)]
 struct GridWeights {
@@ -45,6 +50,49 @@ fn shape(count: usize, columns: usize) -> Vec<usize> {
     (0..columns)
         .map(|column| (column..count).step_by(columns).count())
         .collect()
+}
+
+pub(super) fn ordered_sessions(
+    live: Vec<(SessionId, bool)>,
+    preferred: &[(SessionId, bool)],
+) -> Vec<(SessionId, bool)> {
+    let mut result = Vec::with_capacity(live.len());
+    for tile in preferred {
+        if live.contains(tile) && !result.contains(tile) {
+            result.push(*tile);
+        }
+    }
+    for tile in live {
+        if !result.contains(&tile) {
+            result.push(tile);
+        }
+    }
+    result
+}
+
+fn neighbor(index: usize, count: usize, columns: usize, dx: i32, dy: i32) -> Option<usize> {
+    if count == 0 || columns == 0 || index >= count {
+        return None;
+    }
+    let row = index / columns;
+    let column = index % columns;
+    let target_column = column.checked_add_signed(dx as isize)?;
+    if target_column >= columns {
+        return None;
+    }
+    let mut target_row = row.checked_add_signed(dy as isize)?;
+    loop {
+        let target = target_row
+            .checked_mul(columns)?
+            .checked_add(target_column)?;
+        if target < count {
+            return Some(target);
+        }
+        if dx == 0 {
+            return None;
+        }
+        target_row = target_row.checked_sub(1)?;
+    }
 }
 fn constrain_weights(weights: &mut [f32], minimum: f32) {
     if weights.is_empty() {
@@ -109,6 +157,103 @@ impl WorkspaceGrid {
     }
 }
 impl Sidebar {
+    fn grid_target(
+        &self,
+        index: usize,
+        count: usize,
+        dx: i32,
+        dy: i32,
+        window: &Window,
+    ) -> Option<usize> {
+        let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
+        let width = f32::from(window.viewport_size().width) / scale;
+        neighbor(index, count, columns(count, width), dx, dy)
+    }
+
+    pub(crate) fn grid_move(
+        &mut self,
+        dx: i32,
+        dy: i32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode != super::ViewMode::Grid || self.is_zen() || !self.navigation_available() {
+            return;
+        }
+        self.sync(window, cx);
+        let sessions = self.active_canvas_sessions(cx);
+        let selected = self
+            .selection
+            .as_ref()
+            .and_then(|selection| match selection {
+                super::Selection::Session(id) => Some((*id, false)),
+                super::Selection::Home(id) => Some((*id, true)),
+                _ => None,
+            });
+        let current =
+            selected.and_then(|selected| sessions.iter().position(|tile| *tile == selected));
+        let target = current
+            .and_then(|index| self.grid_target(index, sessions.len(), dx, dy, window))
+            .or_else(|| current.is_none().then_some(0));
+        if let Some((id, home)) = target.and_then(|index| sessions.get(index)).copied() {
+            self.select(
+                if home {
+                    super::Selection::Home(id)
+                } else {
+                    super::Selection::Session(id)
+                },
+                cx,
+            );
+            let view = if home {
+                self.home_terminal_views.get(&id)
+            } else {
+                self.terminal_views.get(&id)
+            };
+            if let Some(view) = view {
+                view.focus_handle(cx).focus(window, cx);
+            } else {
+                self.pending_canvas_focus = Some(id);
+                self.pending_grid_workspace_focus = Some(id);
+                self.focus.focus(window, cx);
+            }
+        }
+    }
+
+    pub(crate) fn grid_swap(
+        &mut self,
+        dx: i32,
+        dy: i32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode != super::ViewMode::Grid || self.is_zen() || !self.navigation_available() {
+            return;
+        }
+        self.sync(window, cx);
+        let mut sessions = self.active_canvas_sessions(cx);
+        let selected = self
+            .selection
+            .as_ref()
+            .and_then(|selection| match selection {
+                super::Selection::Session(id) => Some((*id, false)),
+                super::Selection::Home(id) => Some((*id, true)),
+                _ => None,
+            });
+        let Some(index) =
+            selected.and_then(|selected| sessions.iter().position(|tile| *tile == selected))
+        else {
+            return;
+        };
+        let Some(target) = self.grid_target(index, sessions.len(), dx, dy, window) else {
+            return;
+        };
+        sessions.swap(index, target);
+        self.grid_layouts
+            .entry(self.active_workspace)
+            .or_default()
+            .order = sessions;
+        cx.notify();
+    }
     fn grid_resize(
         &mut self,
         boundary: GridBoundary,
@@ -435,6 +580,28 @@ mod tests {
         zoom::{CurrentPtyDims, ZoomState},
     };
     use gpui::{Entity, Render};
+
+    #[test]
+    fn keyboard_neighbors_follow_responsive_columns_and_ragged_rows() {
+        assert_eq!(neighbor(0, 5, 3, 1, 0), Some(1));
+        assert_eq!(neighbor(1, 5, 3, 0, 1), Some(4));
+        assert_eq!(neighbor(2, 5, 3, 0, 1), None);
+        assert_eq!(neighbor(4, 5, 3, 1, 0), Some(2));
+        assert_eq!(neighbor(3, 5, 3, -1, 0), None);
+        assert_eq!(neighbor(0, 5, 1, 0, 1), Some(1));
+    }
+
+    #[test]
+    fn swap_order_keeps_live_tiles_and_appends_new_ones() {
+        let tile = |id| (SessionId::from_raw(id), false);
+        assert_eq!(
+            ordered_sessions(
+                vec![tile(1), tile(3), tile(4)],
+                &[tile(3), tile(2), tile(1)]
+            ),
+            vec![tile(3), tile(1), tile(4)]
+        );
+    }
     struct GridHarness {
         sidebar: Entity<Sidebar>,
         count: usize,

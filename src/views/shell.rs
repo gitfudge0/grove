@@ -1,20 +1,56 @@
 //! Grove's app-owned header and the empty canvas for the UI rebuild.
-use super::components::header_control;
+use super::components::{form_action, header_control};
+use super::motion;
 use super::settings_panel::{SettingsPanel, SettingsPanelEvent};
 use super::worktree_launcher::WorktreeLauncherEvent;
 use super::{rpx, tokens::*};
+use crate::{
+    activity::ActivityState,
+    entities::session_registry::SessionId,
+    runtime::{Runtime, RuntimeEvent},
+    theme::ThemeState,
+};
 use crate::{icons::icon, keymap as k, launcher::PaletteRow, theme as c};
-use crate::{runtime::Runtime, theme::ThemeState};
 use gpui::{
     actions, div, prelude::*, App, Context, Entity, FocusHandle, Focusable, FontWeight,
     MouseButton, Window,
 };
+use gpui_component::input::{Input, InputEvent, InputState};
+use grove_core::agent::Agent;
+use grove_core::storage::SidebarAppearance;
 
 const TRAFFIC_LIGHT_D: f32 = 12.0;
 const TRAFFIC_CONTROL_W: f32 = 18.0;
+const SWITCHER_TOP: f32 = APPBAR_H + SPACE_3XL * 2.0;
+const SWITCHER_MIN_H: f32 = APPBAR_H * 3.0 + SPACE_2XL;
+const SWITCHER_MAX_H: f32 = MODAL_SCROLL_MAX_H + APPBAR_H * 3.0;
 
-fn needs_backend_choice(preference: Option<bool>, tmux_available: impl FnOnce() -> bool) -> bool {
-    preference.is_none() && tmux_available()
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SwitchTarget {
+    Workspace(u64),
+    Session(SessionId),
+}
+
+struct SwitcherRow {
+    target: SwitchTarget,
+    title: String,
+    context: Option<String>,
+    icon: &'static str,
+    status: Option<(&'static str, gpui::Hsla)>,
+    current: bool,
+}
+
+fn switcher_default_index(rows: &[SwitcherRow]) -> usize {
+    rows.iter()
+        .position(|row| matches!(row.target, SwitchTarget::Session(_)))
+        .unwrap_or(0)
+}
+
+fn switcher_matches(query: &str, title: &str, context: Option<&str>) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || title.to_lowercase().contains(&query)
+        || context.is_some_and(|context| context.to_lowercase().contains(&query))
 }
 
 actions!(shell, [Quit, CloseWindow]);
@@ -49,15 +85,23 @@ pub struct Shell {
     launcher: Entity<super::worktree_launcher::WorktreeLauncher>,
     settings: Entity<SettingsPanel>,
     _settings_events: gpui::Subscription,
+    _runtime_events: gpui::Subscription,
     _launcher_events: gpui::Subscription,
     _sidebar_events: gpui::Subscription,
     switcher_open: bool,
     switcher_index: usize,
     switcher_return_focus: Option<FocusHandle>,
+    switcher_new_session_focus: FocusHandle,
+    switcher_input: Entity<InputState>,
+    _switcher_input_events: gpui::Subscription,
+    switcher_query: String,
+    switcher_error: Option<String>,
+    switcher_scroll: gpui::ScrollHandle,
     backend_choice_open: bool,
     backend_choice_focus: FocusHandle,
     backend_choice_return_focus: Option<FocusHandle>,
     backend_choice_index: usize,
+    backend_selected_tmux: bool,
     backend_choice_error: Option<String>,
     window_observers: Option<Vec<gpui::Subscription>>,
 }
@@ -67,13 +111,19 @@ impl Shell {
         let runtime = cx.new(Runtime::new);
         #[cfg(not(test))]
         runtime.update(cx, Runtime::discover_tmux_sessions);
-        let backend_choice_open = needs_backend_choice(
-            cx.global::<crate::settings::SettingsState>()
-                .store
-                .tmux_enabled,
-            grove_core::tmux::available,
-        );
         let workspaces = cx.new(|cx| super::workspace_manager::WorkspaceManager::new(window, cx));
+        let switcher_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Find a workspace or session"));
+        let switcher_input_events =
+            cx.subscribe_in(&switcher_input, window, |this, _, event, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.switcher_query = this.switcher_input.read(cx).value().to_string();
+                    this.switcher_index = switcher_default_index(&this.switcher_rows(cx));
+                    this.switcher_scroll.set_offset(gpui::Point::default());
+                    this.switcher_error = None;
+                    cx.notify();
+                }
+            });
         let sidebar = cx.new(|cx| super::sidebar::Sidebar::new(runtime.clone(), window, cx));
         let focus = cx.focus_handle();
         sidebar.update(cx, |sidebar, _| {
@@ -120,25 +170,41 @@ impl Shell {
                         .update(cx, |settings, cx| settings.open(window, cx));
                 }
             });
-        let backend_choice_return_focus = backend_choice_open.then(|| window.focused(cx)).flatten();
+        let runtime_events =
+            cx.subscribe_in(&runtime, window, |this, _, event, window, cx| match event {
+                RuntimeEvent::BackendChoiceRequested => {
+                    this.backend_choice_return_focus = window.focused(cx);
+                    this.backend_choice_open = true;
+                    this.backend_choice_index = 0;
+                    this.backend_selected_tmux = false;
+                    this.backend_choice_error = None;
+                    this.backend_choice_focus.focus(window, cx);
+                    cx.notify();
+                }
+            });
         let backend_choice_focus = cx.focus_handle();
-        if backend_choice_open {
-            backend_choice_focus.focus(window, cx);
-        }
         Self {
             statusbar,
             launcher,
             settings,
             _settings_events: settings_events,
+            _runtime_events: runtime_events,
             _launcher_events: launcher_events,
             _sidebar_events: sidebar_events,
             switcher_open: false,
             switcher_index: 0,
             switcher_return_focus: None,
-            backend_choice_open,
+            switcher_new_session_focus: cx.focus_handle(),
+            switcher_input,
+            _switcher_input_events: switcher_input_events,
+            switcher_query: String::new(),
+            switcher_error: None,
+            switcher_scroll: gpui::ScrollHandle::new(),
+            backend_choice_open: false,
             backend_choice_focus,
-            backend_choice_return_focus,
-            backend_choice_index: 1,
+            backend_choice_return_focus: None,
+            backend_choice_index: 0,
+            backend_selected_tmux: false,
             backend_choice_error: None,
             sidebar,
             focus,
@@ -179,7 +245,12 @@ impl Shell {
                 )
         };
         let grid = self.sidebar.read(cx).is_grid() && !self.settings.read(cx).is_open();
-        div()
+        let solid_sidebar = cx
+            .global::<crate::settings::SettingsState>()
+            .store
+            .sidebar_appearance
+            == SidebarAppearance::Solid;
+        let header = div()
             .id("app-header")
             .debug_selector(|| "app-header".into())
             .flex()
@@ -187,7 +258,7 @@ impl Shell {
             .flex_shrink_0()
             .h(rpx(APPBAR_H))
             .when(grid, |header| header.pr(rpx(SPACE_2XL)))
-            .bg(c::BG_STRIP())
+            .when(grid, |header| header.bg(c::BG_STRIP()))
             .child(
                 div()
                     .id("header-rail-segment")
@@ -199,9 +270,9 @@ impl Shell {
                     .when(!grid, |segment| {
                         segment
                             .w(rpx(self.sidebar.read(cx).rail_width(window, cx)))
-                            .bg(c::BG_RAIL())
                             .border_r_1()
                             .border_color(c::BORDER())
+                            .when(solid_sidebar, |segment| segment.bg(c::BG_RAIL()))
                     })
                     .on_mouse_down(MouseButton::Left, |event, window, _| {
                         if event.click_count == 2 {
@@ -245,57 +316,66 @@ impl Shell {
                         }),
                     ),
             )
-            .when(grid, |header| {
-                header.child(div().ml(rpx(SPACE_2XL)).child(self.workspaces.clone()))
-            })
-            .when(grid, |header| {
-                header.child(
-                    div()
-                        .id("header-empty-drag-region")
-                        .flex_1()
-                        .h_full()
-                        .on_mouse_down(MouseButton::Left, |event, window, _| {
-                            if event.click_count == 2 {
-                                window.titlebar_double_click();
-                            } else {
-                                window.start_window_move();
-                            }
-                        }),
-                )
-            })
-            .when(grid, |header| {
-                header.child(
-                    self.sidebar
-                        .update(cx, |sidebar, cx| sidebar.view_controls(cx)),
-                )
-            })
-            .when(!grid, |header| {
-                header.child(
-                    div()
-                        .id("header-main-drag-region")
-                        .flex_1()
-                        .h_full()
-                        .on_mouse_down(MouseButton::Left, |event, window, _| {
-                            if event.click_count == 2 {
-                                window.titlebar_double_click();
-                            } else {
-                                window.start_window_move();
-                            }
-                        }),
-                )
-            })
             .child(
-                header_control("header-new-session", "New session")
-                    .debug_selector(|| "header-new-session".into())
-                    .when(!grid, |control| control.mr(rpx(SPACE_2XL)))
-                    .tab_index(0)
-                    .focus_visible(|style| style.bg(c::BG_HOVER()))
-                    .child(icon("plus", ICON_MD, c::FG()))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.launcher
-                            .update(cx, |launcher, cx| launcher.open(window, cx));
-                    })),
-            )
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_1()
+                    .h_full()
+                    .bg(c::BG_STRIP())
+                    .when(grid, |header| {
+                        header.child(div().ml(rpx(SPACE_2XL)).child(self.workspaces.clone()))
+                    })
+                    .when(grid, |header| {
+                        header.child(
+                            div()
+                                .id("header-empty-drag-region")
+                                .flex_1()
+                                .h_full()
+                                .on_mouse_down(MouseButton::Left, |event, window, _| {
+                                    if event.click_count == 2 {
+                                        window.titlebar_double_click();
+                                    } else {
+                                        window.start_window_move();
+                                    }
+                                }),
+                        )
+                    })
+                    .when(grid, |header| {
+                        header.child(
+                            self.sidebar
+                                .update(cx, |sidebar, cx| sidebar.view_controls(cx)),
+                        )
+                    })
+                    .when(!grid, |header| {
+                        header.child(
+                            div()
+                                .id("header-main-drag-region")
+                                .flex_1()
+                                .h_full()
+                                .on_mouse_down(MouseButton::Left, |event, window, _| {
+                                    if event.click_count == 2 {
+                                        window.titlebar_double_click();
+                                    } else {
+                                        window.start_window_move();
+                                    }
+                                }),
+                        )
+                    })
+                    .child(
+                        header_control("header-new-session", "New session")
+                            .debug_selector(|| "header-new-session".into())
+                            .when(!grid, |control| control.mr(rpx(SPACE_2XL)))
+                            .tab_index(0)
+                            .focus_visible(|style| style.bg(c::BG_HOVER()))
+                            .child(icon("plus", ICON_MD, c::FG()))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.launcher
+                                    .update(cx, |launcher, cx| launcher.open(window, cx));
+                            })),
+                    ),
+            );
+        motion::base(header, format!("app-header-grid-{grid}"), cx)
     }
 
     fn flush(&self, cx: &mut Context<Self>) {
@@ -363,7 +443,90 @@ impl Shell {
             || self.launcher.read(cx).is_open()
             || self.settings.read(cx).is_open()
             || self.switcher_open
+            || self.workspaces.read(cx).is_open()
             || self.sidebar.read(cx).confirmation_open()
+    }
+
+    fn switcher_rows(&self, cx: &App) -> Vec<SwitcherRow> {
+        let workspaces = &cx
+            .global::<crate::settings::SettingsState>()
+            .store
+            .workspaces;
+        let mut rows: Vec<_> = workspaces
+            .rows
+            .iter()
+            .filter(|workspace| switcher_matches(&self.switcher_query, &workspace.name, None))
+            .map(|workspace| SwitcherRow {
+                target: SwitchTarget::Workspace(workspace.id),
+                title: workspace.name.clone(),
+                context: None,
+                icon: "folder",
+                status: None,
+                current: workspace.id == workspaces.active,
+            })
+            .collect();
+        let targets = self.sidebar.read(cx).visible_session_targets(cx);
+        let runtime = self.runtime.read(cx);
+        let registry = runtime.registry.read(cx);
+        let activity = runtime.activity.read(cx);
+        for (id, label) in targets {
+            let Some(meta) = registry.meta(id) else {
+                continue;
+            };
+            let (title, _) = label.rsplit_once(" · ").unwrap_or((&label, ""));
+            let worktree = std::path::Path::new(&meta.wt_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(&meta.wt_path);
+            let context = format!("{} / {worktree}", meta.project);
+            if !switcher_matches(&self.switcher_query, title, Some(&context)) {
+                continue;
+            }
+            let status = if registry
+                .session(id)
+                .is_some_and(|session| session.read(cx).spawn_error().is_some())
+            {
+                ("Failed", c::RED())
+            } else if registry.session(id).is_none() {
+                ("Starting", c::FG_DIM())
+            } else if registry
+                .session(id)
+                .is_some_and(|session| session.read(cx).is_pending_attach())
+            {
+                ("Starting", c::FG_DIM())
+            } else if registry
+                .session(id)
+                .is_some_and(|session| session.read(cx).has_exited())
+                || activity.state_of(id) == ActivityState::Exited
+            {
+                ("Exited", c::FG_DIM())
+            } else if meta.agent == Agent::Terminal {
+                ("Running", c::GREEN())
+            } else {
+                match activity.state_of(id) {
+                    ActivityState::Working => ("Working", c::GREEN()),
+                    ActivityState::WaitingForInput => ("Needs you", c::AMBER()),
+                    ActivityState::Done => ("Done", c::FG_DIM()),
+                    ActivityState::Idle => ("Idle", c::FG_DIM()),
+                    ActivityState::Exited => ("Exited", c::FG_DIM()),
+                }
+            };
+            let icon = match meta.agent {
+                Agent::Claude => "claude",
+                Agent::Codex => "codex",
+                Agent::OpenCode => "opencode",
+                Agent::Terminal => "terminal",
+            };
+            rows.push(SwitcherRow {
+                target: SwitchTarget::Session(id),
+                title: title.to_string(),
+                context: Some(context),
+                icon,
+                status: Some(status),
+                current: false,
+            });
+        }
+        rows
     }
 
     fn open_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -371,9 +534,15 @@ impl Shell {
             return;
         }
         self.switcher_return_focus = window.focused(cx);
-        self.switcher_index = 0;
+        self.switcher_query.clear();
+        self.switcher_input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.focus(window, cx);
+        });
+        self.switcher_index = switcher_default_index(&self.switcher_rows(cx));
+        self.switcher_scroll.set_offset(gpui::Point::default());
+        self.switcher_error = None;
         self.switcher_open = true;
-        self.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -386,18 +555,65 @@ impl Shell {
     }
 
     fn select_switcher_row(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((id, _)) = self
-            .sidebar
-            .read(cx)
-            .visible_session_targets(cx)
-            .get(index)
-            .cloned()
-        else {
+        let Some(target) = self.switcher_rows(cx).get(index).map(|row| row.target) else {
             return;
         };
+        match target {
+            SwitchTarget::Workspace(id) => {
+                let workspaces = &cx
+                    .global::<crate::settings::SettingsState>()
+                    .store
+                    .workspaces;
+                if !workspaces.rows.iter().any(|row| row.id == id) {
+                    self.switcher_error = Some("Workspace is no longer available.".into());
+                    self.switcher_index = switcher_default_index(&self.switcher_rows(cx));
+                    cx.notify();
+                    return;
+                }
+                let current = workspaces.active;
+                if id != current {
+                    let ((), saved) =
+                        crate::settings::SettingsState::update_and_flush_checked(cx, |store| {
+                            store.workspaces.select(id)
+                        });
+                    if let Err(error) = saved {
+                        self.switcher_error = Some(format!("Could not save workspace: {error}"));
+                        cx.notify();
+                        return;
+                    }
+                }
+                self.close_switcher(window, cx);
+                if id != current {
+                    self.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.focus_grid_workspace_after_switch(window, cx)
+                    });
+                }
+            }
+            SwitchTarget::Session(id) => {
+                if !self
+                    .sidebar
+                    .read(cx)
+                    .visible_session_targets(cx)
+                    .iter()
+                    .any(|(visible, _)| *visible == id)
+                {
+                    self.switcher_error =
+                        Some("Session is no longer available in this workspace.".into());
+                    self.switcher_index = switcher_default_index(&self.switcher_rows(cx));
+                    cx.notify();
+                    return;
+                }
+                self.close_switcher(window, cx);
+                self.sidebar
+                    .update(cx, |sidebar, cx| sidebar.select_session_id(id, window, cx));
+            }
+        }
+    }
+
+    fn new_session_from_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_switcher(window, cx);
-        self.sidebar
-            .update(cx, |sidebar, cx| sidebar.select_session_id(id, window, cx));
+        self.launcher
+            .update(cx, |launcher, cx| launcher.open(window, cx));
     }
 
     fn switcher_key(
@@ -406,16 +622,38 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let count = self.sidebar.read(cx).visible_session_targets(cx).len();
+        let rows = self.switcher_rows(cx);
+        let count = rows.len();
+        let heading_offset = usize::from(
+            rows.iter()
+                .any(|row| matches!(row.target, SwitchTarget::Workspace(_))),
+        );
         match event.keystroke.key.as_str() {
             "escape" => self.close_switcher(window, cx),
             "up" if count > 0 => {
                 self.switcher_index = (self.switcher_index + count - 1) % count;
+                self.switcher_scroll
+                    .scroll_to_item(self.switcher_index + heading_offset);
                 cx.notify();
             }
             "down" if count > 0 => {
                 self.switcher_index = (self.switcher_index + 1) % count;
+                self.switcher_scroll
+                    .scroll_to_item(self.switcher_index + heading_offset);
                 cx.notify();
+            }
+            "tab" => {
+                let has_new_session = self.switcher_query.trim().is_empty()
+                    && self.sidebar.read(cx).visible_session_targets(cx).is_empty();
+                if has_new_session && !self.switcher_new_session_focus.is_focused(window) {
+                    self.switcher_new_session_focus.focus(window, cx);
+                } else {
+                    self.switcher_input
+                        .update(cx, |input, cx| input.focus(window, cx));
+                }
+            }
+            "enter" if self.switcher_new_session_focus.is_focused(window) => {
+                self.new_session_from_switcher(window, cx)
             }
             "enter" => self.select_switcher_row(self.switcher_index, window, cx),
             _ => return,
@@ -425,6 +663,9 @@ impl Shell {
     }
 
     fn choose_backend(&mut self, tmux: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.backend_choice_open || !self.runtime.read(cx).has_pending_managed_launch() {
+            return;
+        }
         let ((), saved) = crate::settings::SettingsState::update_and_flush_checked(cx, |store| {
             store.tmux_enabled = Some(tmux);
         });
@@ -432,15 +673,47 @@ impl Shell {
             Ok(()) => {
                 self.backend_choice_open = false;
                 self.backend_choice_error = None;
+                let launched = self
+                    .runtime
+                    .update(cx, |runtime, cx| runtime.resume_pending_managed_launch(cx));
+                if launched {
+                    self.launcher.update(cx, |launcher, cx| {
+                        launcher.close_after_deferred_launch(window, cx);
+                    });
+                    self.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.select_active_session(cx);
+                        sidebar.focus_active_session_after_palette(window, cx);
+                    });
+                }
                 if let Some(focus) = self.backend_choice_return_focus.take() {
-                    focus.focus(window, cx);
-                } else {
-                    self.focus.focus(window, cx);
+                    if !launched {
+                        focus.focus(window, cx);
+                    }
                 }
             }
             Err(error) => {
                 self.backend_choice_error = Some(format!("Could not save settings: {error}"));
             }
+        }
+        cx.notify();
+    }
+
+    fn select_backend(&mut self, tmux: bool, cx: &mut Context<Self>) {
+        self.backend_selected_tmux = tmux;
+        self.backend_choice_index = usize::from(tmux);
+        self.backend_choice_error = None;
+        cx.notify();
+    }
+
+    fn cancel_backend_choice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.runtime
+            .update(cx, |runtime, _| runtime.cancel_pending_managed_launch());
+        self.backend_choice_open = false;
+        self.backend_choice_error = None;
+        if let Some(focus) = self.backend_choice_return_focus.take() {
+            focus.focus(window, cx);
+        } else {
+            self.focus.focus(window, cx);
         }
         cx.notify();
     }
@@ -452,13 +725,15 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         match event.keystroke.key.as_str() {
-            "left" | "up" => self.backend_choice_index = 0,
-            "right" | "down" => self.backend_choice_index = 1,
-            "tab" => self.backend_choice_index = (self.backend_choice_index + 1) % 2,
-            "enter" | "space" => {
-                self.choose_backend(self.backend_choice_index == 1, window, cx);
-            }
-            "escape" => {}
+            "left" | "up" => self.select_backend(false, cx),
+            "right" | "down" => self.select_backend(true, cx),
+            "tab" => self.backend_choice_index = (self.backend_choice_index + 1) % 4,
+            "enter" | "space" => match self.backend_choice_index {
+                0 | 1 => self.select_backend(self.backend_choice_index == 1, cx),
+                2 => self.cancel_backend_choice(window, cx),
+                _ => self.choose_backend(self.backend_selected_tmux, window, cx),
+            },
+            "escape" => self.cancel_backend_choice(window, cx),
             _ => return,
         }
         window.prevent_default();
@@ -466,18 +741,25 @@ impl Shell {
         cx.notify();
     }
 
-    fn backend_choice(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn backend_choice(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut choices = div().flex().flex_col().gap(rpx(SPACE_LG));
         for (index, label, detail) in [
-            (0, "Native", "Sessions end when Grove closes."),
-            (1, "Tmux", "Sessions survive Grove restarts."),
+            (0usize, "Native", "Sessions end when Grove closes."),
+            (1usize, "Tmux", "Sessions survive Grove restarts."),
         ] {
             choices = choices.child(
                 div()
                     .id(("backend-choice-option", index))
                     .debug_selector(move || format!("backend-choice-option-{index}"))
                     .role(gpui::Role::Button)
-                    .aria_label(format!("{label}: {detail}"))
+                    .aria_label(format!(
+                        "{label}: {detail}{}",
+                        if self.backend_selected_tmux == (index == 1) {
+                            " Selected."
+                        } else {
+                            ""
+                        }
+                    ))
                     .w_full()
                     .min_w_0()
                     .p(rpx(SPACE_2XL))
@@ -486,8 +768,12 @@ impl Shell {
                     .gap(rpx(SPACE_SM))
                     .rounded(rpx(RADIUS_GROUP))
                     .border_1()
-                    .border_color(c::BORDER())
-                    .bg(if self.backend_choice_index == index {
+                    .border_color(if self.backend_choice_index == index {
+                        c::SEL_RING()
+                    } else {
+                        c::BORDER()
+                    })
+                    .bg(if self.backend_selected_tmux == (index == 1) {
                         c::BG_HOVER()
                     } else {
                         c::FIELD_FILL()
@@ -511,11 +797,12 @@ impl Shell {
                             .child(detail),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.choose_backend(index == 1, window, cx);
+                        let _ = window;
+                        this.select_backend(index == 1, cx);
                     })),
             );
         }
-        div()
+        let overlay = div()
             .id("backend-choice-overlay")
             .absolute()
             .inset_0()
@@ -547,15 +834,48 @@ impl Shell {
                             .text_size(rpx(TEXT_TITLE))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(c::FG())
-                            .child("Choose a session backend"),
+                    .child("How should sessions run?"),
                     )
                     .child(
                         div()
                             .text_size(rpx(TEXT_BODY))
                             .text_color(c::FG_DIM())
-                            .child("Choose how new worktree sessions run. Existing sessions keep their backend."),
+                            .child("Choose before starting this session. You can change this later in Settings. Existing sessions keep their backend."),
                     )
                     .child(choices)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(rpx(SPACE_LG))
+                            .child(
+                                div()
+                                    .rounded(rpx(RADIUS_PANEL))
+                                    .border_1()
+                                    .border_color(if self.backend_choice_index == 2 { c::SEL_RING() } else { c::SURFACE_RAISED() })
+                                    .child(
+                                        form_action("backend-choice-back", "Back", false, window, cx)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.cancel_backend_choice(window, cx);
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("backend-choice-start")
+                                    .debug_selector(|| "backend-choice-start".into())
+                                    .rounded(rpx(RADIUS_PANEL))
+                                    .border_1()
+                                    .border_color(if self.backend_choice_index == 3 { c::SEL_RING() } else { c::SURFACE_RAISED() })
+                                    .child(
+                                        form_action("backend-choice-start-action", "Start session", true, window, cx)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.choose_backend(this.backend_selected_tmux, window, cx);
+                                            })),
+                                    ),
+                            ),
+                    )
                     .when_some(self.backend_choice_error.as_ref(), |dialog, error| {
                         dialog.child(
                             div()
@@ -566,60 +886,343 @@ impl Shell {
                                 .child(error.clone()),
                         )
                     }),
-            )
+            );
+        motion::base(overlay, "backend-choice-enter", cx)
     }
 
-    fn session_switcher(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let targets = self.sidebar.read(cx).visible_session_targets(cx);
-        div()
+    fn switcher_row(
+        &self,
+        index: usize,
+        row: SwitcherRow,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let selected = index == self.switcher_index;
+        let debug_id = format!("session-switcher-row-{index}");
+        let target = row.target;
+        let status = row.status;
+        let overlay = div()
+            .id(("session-switcher-row", index))
+            .debug_selector(move || debug_id.clone().into())
+            .role(gpui::Role::Button)
+            .aria_label(row.title.clone())
+            .min_w_0()
+            .px(rpx(ROW_PX))
+            .py(rpx(ROW_PY))
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_2XL))
+            .rounded(rpx(RADIUS_GROUP))
+            .text_color(c::FG())
+            .when(selected, |item| item.bg(c::BG_HL()))
+            .hover(|item| item.bg(c::BG_HOVER()))
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.select_switcher_row(index, window, cx)),
+            );
+        let row = overlay
+            .child(icon(
+                row.icon,
+                ICON_MD,
+                if matches!(row.target, SwitchTarget::Workspace(_)) {
+                    c::FG_DIM()
+                } else {
+                    c::MAGENTA()
+                },
+            ))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_XS))
+                    .child(div().truncate().text_size(rpx(TEXT_BODY)).child(row.title))
+                    .when_some(row.context, |body, context| {
+                        body.child(
+                            div()
+                                .truncate()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child(context),
+                        )
+                    }),
+            )
+            .when(row.current, |item| {
+                item.child(
+                    div()
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_SM))
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(icon("check", ICON_SM, c::FG_DIM()))
+                        .child("Current"),
+                )
+            })
+            .when_some(status, |item, (label, color)| {
+                item.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(color)
+                        .child(label),
+                )
+            });
+        let idle_fill = c::alpha(c::BG(), 0.0);
+        let selected_fill = c::BG_HL();
+        motion::background(
+            row,
+            format!("session-switcher-row-selection-{target:?}-{selected}"),
+            if selected { idle_fill } else { selected_fill },
+            if selected { selected_fill } else { idle_fill },
+            std::time::Duration::from_millis(MOTION_FAST_MS),
+            cx,
+        )
+    }
+
+    fn session_switcher(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let rows = self.switcher_rows(cx);
+        let workspace_name = cx
+            .global::<crate::settings::SettingsState>()
+            .store
+            .workspaces
+            .name(
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .workspaces
+                    .active,
+            )
+            .to_string();
+        let workspace_count = rows
+            .iter()
+            .filter(|row| matches!(row.target, SwitchTarget::Workspace(_)))
+            .count();
+        let session_count = rows.len() - workspace_count;
+        let has_any_sessions = !self.sidebar.read(cx).visible_session_targets(cx).is_empty();
+        let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
+        let viewport_w = f32::from(window.viewport_size().width) / scale;
+        let viewport_h = f32::from(window.viewport_size().height) / scale;
+        let panel_w = MODAL_W_LG.min((viewport_w - SPACE_LG * 2.0).max(0.0));
+        let top = SWITCHER_TOP.min((viewport_h - SWITCHER_MIN_H - SPACE_LG).max(SPACE_LG));
+        let panel_h = SWITCHER_MAX_H.min((viewport_h - top - SPACE_LG).max(0.0));
+        let compact = panel_h < SWITCHER_MIN_H + APPBAR_H;
+        let empty_state = div()
+            .pt(rpx(SPACE_3XL))
+            .child(
+                div()
+                    .px(rpx(ROW_PX))
+                    .pb(rpx(SPACE_LG))
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_MUTE())
+                    .child(format!("Sessions in {workspace_name}")),
+            )
+            .child(
+                div()
+                    .px(rpx(ROW_PX))
+                    .py(rpx(ROW_PY))
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_2XL))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap(rpx(SPACE_XS))
+                            .child(
+                                div()
+                                    .text_color(c::FG())
+                                    .text_size(rpx(TEXT_BODY))
+                                    .child(format!("No sessions in {workspace_name}")),
+                            )
+                            .child(
+                                div()
+                                    .text_color(c::FG_DIM())
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .child("Open another workspace or start a session here."),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("session-switcher-new-session")
+                            .debug_selector(|| "session-switcher-new-session".into())
+                            .role(gpui::Role::Button)
+                            .track_focus(&self.switcher_new_session_focus)
+                            .tab_index(0)
+                            .focus_visible(|style| style.bg(c::BG_HOVER()))
+                            .px(rpx(SPACE_2XL))
+                            .py(rpx(SPACE_LG))
+                            .rounded(rpx(RADIUS_GROUP))
+                            .border_1()
+                            .border_color(c::BORDER_STRONG())
+                            .text_color(c::FG())
+                            .text_size(rpx(TEXT_SMALL))
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_SM))
+                            .child(icon("plus", ICON_SM, c::FG()))
+                            .child("New session")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.new_session_from_switcher(window, cx)
+                            })),
+                    ),
+            );
+        let overlay = div()
             .id("session-switcher-overlay")
             .absolute()
             .inset_0()
             .occlude()
             .bg(c::SCRIM())
             .flex()
-            .items_center()
+            .items_start()
             .justify_center()
+            .pt(rpx(top))
             .capture_key_down(cx.listener(Self::switcher_key))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| this.close_switcher(window, cx)),
-            )
-            .child(
-                div()
-                    .id("session-switcher")
-                    .debug_selector(|| "session-switcher".into())
-                    .w(rpx(420.0))
-                    .max_w_full()
-                    .max_h(rpx(420.0))
-                    .overflow_y_scroll()
-                    .rounded(rpx(RADIUS_PANEL))
-                    .border_1()
-                    .border_color(c::BORDER())
-                    .bg(c::BG())
-                    .p(rpx(SPACE_LG))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(
+            );
+        let overlay = overlay.child(
+            div()
+                .id("session-switcher")
+                .debug_selector(|| "session-switcher".into())
+                .w(rpx(panel_w))
+                .max_h(rpx(panel_h))
+                .flex()
+                .flex_col()
+                .rounded(rpx(RADIUS_PANEL))
+                .border_1()
+                .border_color(c::BORDER())
+                .bg(c::SURFACE_RAISED())
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .px(rpx(SPACE_3XL))
+                        .pt(rpx(if compact { SPACE_LG } else { SPACE_3XL }))
+                        .pb(rpx(if compact { SPACE_SM } else { SPACE_2XL }))
+                        .flex()
+                        .flex_col()
+                        .gap(rpx(SPACE_2XL))
+                        .child(
+                            div()
+                                .text_size(rpx(TEXT_TITLE))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(c::FG())
+                                .child("Switch to"),
+                        )
+                        .child(
+                            div()
+                                .id("session-switcher-search")
+                                .h(rpx(APPBAR_H))
+                                .px(rpx(SPACE_2XL))
+                                .rounded(rpx(RADIUS_GROUP))
+                                .bg(
+                                    if self
+                                        .switcher_input
+                                        .read(cx)
+                                        .focus_handle(cx)
+                                        .is_focused(window)
+                                    {
+                                        c::BG_HOVER()
+                                    } else {
+                                        c::FIELD_FILL()
+                                    },
+                                )
+                                .border_1()
+                                .border_color(c::BORDER())
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_LG))
+                                .child(icon("search", ICON_MD, c::FG_DIM()))
+                                .child(
+                                    Input::new(&self.switcher_input)
+                                        .aria_label("Find a workspace or session")
+                                        .appearance(false)
+                                        .bordered(false)
+                                        .focus_bordered(false)
+                                        .text_size(rpx(TEXT_BODY))
+                                        .text_color(c::FG())
+                                        .p_0(),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("session-switcher-list")
+                        .debug_selector(|| "session-switcher-list".into())
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.switcher_scroll)
+                        .px(rpx(SPACE_LG))
+                        .pb(rpx(SPACE_LG))
+                        .when(workspace_count > 0, |list| {
+                            list.child(
+                                div()
+                                    .py(rpx(SPACE_LG))
+                                    .px(rpx(ROW_PX))
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_MUTE())
+                                    .child("Workspaces"),
+                            )
+                        })
+                        .children(rows.into_iter().enumerate().map(|(index, row)| {
+                            let is_session = matches!(row.target, SwitchTarget::Session(_));
+                            div()
+                                .when(is_session && index == workspace_count, |item| {
+                                    item.child(
+                                        div()
+                                            .pt(rpx(SPACE_3XL))
+                                            .pb(rpx(SPACE_LG))
+                                            .px(rpx(ROW_PX))
+                                            .text_size(rpx(TEXT_SMALL))
+                                            .text_color(c::FG_MUTE())
+                                            .child(format!("Sessions in {workspace_name}")),
+                                    )
+                                })
+                                .child(self.switcher_row(index, row, cx))
+                        }))
+                        .when(
+                            !has_any_sessions && self.switcher_query.trim().is_empty(),
+                            |list| list.child(empty_state),
+                        )
+                        .when(workspace_count + session_count == 0, |list| {
+                            list.child(
+                                div()
+                                    .p(rpx(SPACE_3XL))
+                                    .text_size(rpx(TEXT_BODY))
+                                    .text_color(c::FG_DIM())
+                                    .child("No matching workspaces or sessions"),
+                            )
+                        }),
+                )
+                .when_some(self.switcher_error.as_ref(), |panel, error| {
+                    panel.child(
                         div()
-                            .px(rpx(SPACE_LG))
-                            .py(rpx(SPACE_MD))
-                            .child("Switch session"),
+                            .id("session-switcher-error")
+                            .role(gpui::Role::Alert)
+                            .px(rpx(SPACE_3XL))
+                            .py(rpx(SPACE_LG))
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::RED())
+                            .child(error.clone()),
                     )
-                    .children(targets.into_iter().enumerate().map(|(index, (id, label))| {
-                        let selected = index == self.switcher_index;
-                        div()
-                            .id(("session-switcher-row", id.raw()))
-                            .debug_selector(move || format!("session-switcher-row-{index}"))
-                            .px(rpx(SPACE_LG))
-                            .py(rpx(SPACE_MD))
-                            .rounded(rpx(RADIUS_CONTROL))
-                            .when(selected, |row| row.bg(c::BG_HOVER()))
-                            .child(label)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select_switcher_row(index, window, cx);
-                            }))
-                    })),
-            )
+                })
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .px(rpx(SPACE_3XL))
+                        .py(rpx(SPACE_2XL))
+                        .border_t_1()
+                        .border_color(c::BORDER_SOFT())
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_MUTE())
+                        .child("↑ ↓ navigate    Enter open    Esc close"),
+                ),
+        );
+        motion::slow(overlay, "session-switcher-enter", cx)
     }
 }
 
@@ -635,6 +1238,9 @@ impl Focusable for Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.backend_choice_open && !self.backend_choice_focus.is_focused(window) {
+            self.backend_choice_focus.focus(window, cx);
+        }
         if self.window_observers.is_none() {
             let runtime = self.runtime.clone();
             window.on_window_should_close(cx, move |_, cx| {
@@ -676,7 +1282,14 @@ impl Render for Shell {
         window.set_rem_size(gpui::px(cx.global::<crate::zoom::ZoomState>().rem_size()));
         div()
             .id("grove-shell")
+            .font_family(crate::fonts::UI_FAMILY)
             .track_focus(&self.focus)
+            .when(
+                self.sidebar.read(cx).is_grid()
+                    && !self.sidebar.read(cx).is_zen()
+                    && !self.shortcut_blocked(cx),
+                |shell| shell.key_context(k::Screen::Grid.key_context()),
+            )
             .on_key_down(traverse_unhandled_tab)
             .on_key_down(cx.listener(|this, event, window, cx| {
                 if this.switcher_open {
@@ -687,7 +1300,6 @@ impl Render for Shell {
             .relative()
             .flex()
             .flex_col()
-            .bg(crate::theme::BG())
             .on_action(cx.listener(|this, _: &Quit, _, cx| {
                 this.flush(cx);
                 cx.quit();
@@ -726,6 +1338,20 @@ impl Render for Shell {
                 if !this.shortcut_blocked(cx) {
                     this.sidebar.update(cx, |sidebar, cx| {
                         sidebar.select_previous_session(window, cx);
+                    });
+                }
+            }))
+            .on_action(cx.listener(|this, action: &k::GridMove, window, cx| {
+                if !this.shortcut_blocked(cx) {
+                    this.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.grid_move(action.dx, action.dy, window, cx);
+                    });
+                }
+            }))
+            .on_action(cx.listener(|this, action: &k::GridSwap, window, cx| {
+                if !this.shortcut_blocked(cx) {
+                    this.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.grid_swap(action.dx, action.dy, window, cx);
                     });
                 }
             }))
@@ -837,10 +1463,10 @@ impl Render for Shell {
                 root.child(gpui::deferred(self.launcher.clone()))
             })
             .when(self.switcher_open, |root| {
-                root.child(gpui::deferred(self.session_switcher(cx)))
+                root.child(gpui::deferred(self.session_switcher(window, cx)))
             })
             .when(self.backend_choice_open, |root| {
-                root.child(gpui::deferred(self.backend_choice(cx)))
+                root.child(gpui::deferred(self.backend_choice(window, cx)))
             })
     }
 }
@@ -848,18 +1474,6 @@ impl Render for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn backend_prompt_only_needs_tmux_for_an_undecided_preference() {
-        assert!(needs_backend_choice(None, || true));
-        assert!(!needs_backend_choice(None, || false));
-        assert!(!needs_backend_choice(Some(false), || panic!(
-            "must not probe tmux"
-        )));
-        assert!(!needs_backend_choice(Some(true), || panic!(
-            "must not probe tmux"
-        )));
-    }
 
     #[gpui::test]
     fn zen_shows_one_terminal_and_restores_the_previous_view(cx: &mut gpui::TestAppContext) {
@@ -903,10 +1517,9 @@ mod tests {
             window.dispatch_action(Box::new(k::ToggleZen), cx);
             assert!(!shell.read(cx).sidebar.read(cx).is_zen());
         });
-        cx.update(|_, cx| {
+        cx.update(|window, cx| {
             shell.update(cx, |shell, cx| {
-                shell.backend_choice_open = false;
-                cx.notify();
+                shell.cancel_backend_choice(window, cx);
             })
         });
         draw(cx);
@@ -1011,16 +1624,21 @@ mod tests {
     }
 
     #[gpui::test]
-    fn first_run_backend_choice_traps_escape_and_launch_shortcuts(cx: &mut gpui::TestAppContext) {
-        cx.update(init);
+    fn backend_choice_waits_for_launch_then_back_restores_shortcuts(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            init(cx);
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .tmux_enabled = None;
+        });
         let (shell, cx) = cx.add_window_view(Shell::new);
+        assert!(!cx.update(|_, cx| shell.read(cx).backend_choice_open));
         cx.update(|window, cx| {
             shell.update(cx, |shell, cx| {
                 shell.backend_choice_open = true;
                 cx.notify();
             });
-            // main.rs assigns focus after constructing Shell. That assignment
-            // must keep keyboard input inside the first-run choice.
+            // A requested choice keeps keyboard input inside the dialog.
             let handle = shell.read(cx).focus_handle(cx);
             window.focus(&handle, cx);
             assert_eq!(
@@ -1034,14 +1652,54 @@ mod tests {
         assert!(cx.debug_bounds("backend-choice-option-1").is_some());
         cx.simulate_keystrokes("tab");
         draw(cx);
-        cx.update(|_, cx| assert_eq!(shell.read(cx).backend_choice_index, 0));
-        cx.simulate_keystrokes("escape");
-        draw(cx);
+        cx.update(|_, cx| assert_eq!(shell.read(cx).backend_choice_index, 1));
         cx.update(|window, cx| {
             assert!(shell.read(cx).backend_choice_open);
             assert!(shell.read(cx).shortcut_blocked(cx));
             window.dispatch_action(Box::new(k::NewSession), cx);
             assert!(!shell.read(cx).launcher.read(cx).is_open());
+        });
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|_, cx| {
+            assert!(!shell.read(cx).backend_choice_open);
+            assert!(!shell.read(cx).shortcut_blocked(cx));
+        });
+    }
+
+    #[gpui::test]
+    fn selecting_backend_does_not_start_or_save_before_confirmation(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            init(cx);
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .tmux_enabled = None;
+        });
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.backend_choice_open = true;
+                shell.backend_choice_focus.focus(window, cx);
+                cx.notify();
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("backend-choice-start").is_some());
+        let tmux = cx.debug_bounds("backend-choice-option-1").unwrap().center();
+        cx.simulate_mouse_down(tmux, MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(tmux, MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert!(shell.backend_choice_open);
+            assert!(shell.backend_selected_tmux);
+            assert_eq!(
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .tmux_enabled,
+                None
+            );
+            assert!(shell.runtime.read(cx).registry.read(cx).is_empty());
         });
     }
 
@@ -1319,7 +1977,13 @@ mod tests {
 
     #[gpui::test]
     fn worktree_inputs_tab_in_order_then_reach_cancel(cx: &mut gpui::TestAppContext) {
-        cx.update(init);
+        cx.update(|cx| {
+            init(cx);
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .projects[0]
+                .path = env!("CARGO_MANIFEST_DIR").into();
+        });
         let (_, cx) = cx.add_window_view(Shell::new);
         draw(cx);
         let menu = cx
@@ -1741,6 +2405,347 @@ mod tests {
             assert!(!shell.read(cx).switcher_open);
             assert_eq!(shell.read(cx).runtime.read(cx).registry.read(cx).len(), 2);
         });
+    }
+
+    #[gpui::test]
+    fn switcher_groups_workspaces_and_current_workspace_sessions(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.update(|_, cx| {
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .workspaces
+                .create("Other")
+                .unwrap();
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .workspaces
+                .select(1);
+        });
+        let session = cx.update(|_, cx| {
+            let registry = shell.read(cx).runtime.read(cx).registry.clone();
+            registry.update(cx, |registry, cx| {
+                let id = registry.insert_meta(
+                    "navigation".into(),
+                    "/grove-shell-navigation-test".into(),
+                    Agent::Terminal,
+                );
+                cx.notify();
+                id
+            })
+        });
+        draw(cx);
+        cx.update(|_, cx| {
+            let shell = shell.read(cx);
+            let rows = shell.switcher_rows(cx);
+            assert_eq!(rows.len(), 3);
+            assert_eq!(rows[0].target, SwitchTarget::Workspace(1));
+            assert!(rows[0].current);
+            assert_eq!(rows[1].target, SwitchTarget::Workspace(2));
+            assert!(!rows[1].current);
+            assert_eq!(rows[2].target, SwitchTarget::Session(session));
+            assert_eq!(switcher_default_index(&rows), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn switcher_search_matches_names_and_session_context_case_insensitively(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.update(|_, cx| {
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .workspaces
+                .create("Other")
+                .unwrap();
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .workspaces
+                .select(1);
+        });
+        cx.update(|_, cx| {
+            let registry = shell.read(cx).runtime.read(cx).registry.clone();
+            registry.update(cx, |registry, cx| {
+                registry.insert_meta(
+                    "navigation".into(),
+                    "/grove-shell-navigation-test".into(),
+                    Agent::Terminal,
+                );
+                cx.notify();
+            });
+        });
+        draw(cx);
+        cx.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.switcher_query = "OTHER".into();
+                let rows = shell.switcher_rows(cx);
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].target, SwitchTarget::Workspace(2));
+                assert_eq!(switcher_default_index(&rows), 0);
+                shell.switcher_query = "navigation-test".into();
+                let rows = shell.switcher_rows(cx);
+                assert_eq!(rows.len(), 1);
+                assert!(matches!(rows[0].target, SwitchTarget::Session(_)));
+                shell.switcher_query = "unmatched".into();
+                assert!(shell.switcher_rows(cx).is_empty());
+            })
+        });
+    }
+
+    #[gpui::test]
+    fn switcher_search_enter_activates_workspace(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.update(|_, cx| {
+            let workspaces = &mut cx
+                .global_mut::<crate::settings::SettingsState>()
+                .store
+                .workspaces;
+            workspaces.create("Other").unwrap();
+            workspaces.select(1);
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+            window.dispatch_action(Box::new(k::SwitchSession), cx);
+        });
+        draw(cx);
+        cx.simulate_input("Other");
+        draw(cx);
+        cx.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert_eq!(shell.switcher_query, "Other");
+            assert_eq!(shell.switcher_rows(cx).len(), 1);
+            assert_eq!(
+                shell.switcher_rows(cx)[0].target,
+                SwitchTarget::Workspace(2)
+            );
+        });
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .workspaces
+                    .active,
+                2,
+                "error={:?}",
+                shell.read(cx).switcher_error
+            );
+            assert!(!shell.read(cx).switcher_open);
+        });
+    }
+
+    #[gpui::test]
+    fn grid_workspace_switch_focuses_first_destination_tile(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        let destination_path = "/grove-shell-grid-destination".to_string();
+        cx.update(|_, cx| {
+            let store = &mut cx.global_mut::<crate::settings::SettingsState>().store;
+            store.projects.push(grove_core::storage::Project {
+                name: "destination".into(),
+                path: destination_path.clone(),
+                scripts: grove_core::storage::ProjectScripts::default(),
+                archived: false,
+                worktree_dir: None,
+            });
+            store.workspaces.create("Other").unwrap();
+            store.assign_project_to_active_workspace(&destination_path);
+            store.workspaces.select(1);
+        });
+        let (prior, first, second) = cx.update(|_, cx| {
+            let registry = shell.read(cx).runtime.read(cx).registry.clone();
+            let prior_session = cx.new(|cx| {
+                crate::entities::terminal_session::TerminalSession::spawn_script(
+                    "\0",
+                    "/grove-shell-navigation-test",
+                    cx,
+                )
+            });
+            let first_session = cx.new(|cx| {
+                crate::entities::terminal_session::TerminalSession::spawn_script(
+                    "\0",
+                    &destination_path,
+                    cx,
+                )
+            });
+            let second_session = cx.new(|cx| {
+                crate::entities::terminal_session::TerminalSession::spawn_script(
+                    "\0",
+                    &destination_path,
+                    cx,
+                )
+            });
+            registry.update(cx, |registry, cx| {
+                let prior = registry.insert_meta(
+                    "navigation".into(),
+                    "/grove-shell-navigation-test".into(),
+                    Agent::Terminal,
+                );
+                registry.attach(prior, prior_session, None);
+                let first = registry.insert_meta(
+                    "destination".into(),
+                    destination_path.clone(),
+                    Agent::Terminal,
+                );
+                registry.attach(first, first_session, None);
+                let second = registry.insert_meta(
+                    "destination".into(),
+                    destination_path.clone(),
+                    Agent::Terminal,
+                );
+                registry.attach(second, second_session, None);
+                cx.notify();
+                (prior, first, second)
+            })
+        });
+        cx.update(|window, cx| {
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+            window.dispatch_action(Box::new(k::ToggleGrid), cx);
+        });
+        draw(cx);
+        let prior_focus = cx.update(|_, cx| {
+            shell
+                .read(cx)
+                .sidebar
+                .read(cx)
+                .canvas_terminal_focus(prior, false, cx)
+                .expect("prior tile")
+        });
+        cx.update(|window, cx| prior_focus.focus(window, cx));
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::SwitchSession), cx));
+        draw(cx);
+        cx.simulate_input("Other");
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        let first_focus = cx.update(|window, cx| {
+            let sidebar = shell.read(cx).sidebar.clone();
+            let sidebar = sidebar.read(cx);
+            assert!(sidebar.is_grid());
+            assert_eq!(
+                sidebar.active_canvas_sessions(cx),
+                vec![(first, false), (second, false)]
+            );
+            let first_focus = sidebar
+                .canvas_terminal_focus(first, false, cx)
+                .expect("first destination tile");
+            assert!(first_focus.is_focused(window));
+            assert!(!prior_focus.is_focused(window));
+            first_focus
+        });
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::SwitchSession), cx));
+        draw(cx);
+        cx.simulate_input("Grove");
+        draw(cx);
+        cx.simulate_keystrokes("up enter");
+        draw(cx);
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .workspaces
+                    .active,
+                1
+            );
+        });
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::SwitchSession), cx));
+        draw(cx);
+        cx.simulate_input("Other");
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        cx.update(|window, _| {
+            assert!(
+                first_focus.is_focused(window),
+                "mounted first tile must regain focus"
+            );
+        });
+        cx.update(|window, cx| {
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .workspaces
+                .select(1);
+        });
+        draw(cx);
+        cx.update(|window, _| {
+            assert!(
+                prior_focus.is_focused(window),
+                "Grid focus should also follow workspace changes outside the picker"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn empty_switcher_keeps_workspace_and_new_session_action_visible(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.update(|window, cx| {
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+            window.dispatch_action(Box::new(k::SwitchSession), cx);
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("session-switcher-row-0").is_some());
+        cx.update(|_, cx| {
+            assert!(shell
+                .read(cx)
+                .sidebar
+                .read(cx)
+                .visible_session_targets(cx)
+                .is_empty())
+        });
+        assert!(cx.debug_bounds("session-switcher-new-session").is_some());
+        cx.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert_eq!(shell.switcher_rows(cx).len(), 1);
+            assert_eq!(shell.switcher_index, 0);
+        });
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, cx| {
+            assert!(shell.read(cx).switcher_new_session_focus.is_focused(window))
+        });
+        cx.simulate_keystrokes("shift-tab");
+        cx.update(|window, cx| {
+            let input = shell.read(cx).switcher_input.clone();
+            assert!(input.read(cx).focus_handle(cx).is_focused(window));
+        });
+        cx.simulate_keystrokes("tab");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        cx.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert!(!shell.switcher_open);
+            assert!(shell.launcher.read(cx).is_open());
+        });
+    }
+
+    #[gpui::test]
+    fn switcher_panel_fits_small_window(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.simulate_resize(gpui::size(gpui::px(320.0), gpui::px(200.0)));
+        cx.update(|window, cx| {
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+            window.dispatch_action(Box::new(k::SwitchSession), cx);
+        });
+        draw(cx);
+        let panel = cx.debug_bounds("session-switcher").expect("switcher panel");
+        assert!(f32::from(panel.left()) >= 0.0);
+        assert!(f32::from(panel.right()) <= 320.0);
+        assert!(f32::from(panel.bottom()) <= 200.0);
+        assert!(cx.debug_bounds("session-switcher-list").is_some());
     }
 
     #[gpui::test]

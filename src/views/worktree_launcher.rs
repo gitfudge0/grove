@@ -1,5 +1,5 @@
 //! Workspace-scoped command palette. The fuzzy matcher and row identities live in `launcher`.
-use super::{rpx, tokens::*};
+use super::{motion, rpx, tokens::*};
 use crate::{
     entities::session_registry::SessionId,
     icons::icon,
@@ -203,6 +203,16 @@ impl WorktreeLauncher {
         cx.notify();
     }
 
+    pub(crate) fn close_after_deferred_launch(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open {
+            self.close(window, cx);
+        }
+    }
+
     /// Fill cold workspace caches off the UI thread; the picker can accept search text while loading.
     fn load_workspace_worktrees(&mut self, cx: &mut Context<Self>) {
         let store = &cx.global::<SettingsState>().store;
@@ -374,7 +384,6 @@ impl WorktreeLauncher {
         let has_script = sidebar.palette_has_run_script(cx);
         let has_diff = sidebar.palette_has_diff(cx);
         let has_worktree = sidebar.selected_worktree().is_some();
-        let has_session = !sidebar.visible_session_targets(cx).is_empty();
         if self.query.trim().is_empty() {
             if recent.is_empty() {
                 rows.extend(launcher::root_rows(
@@ -420,7 +429,6 @@ impl WorktreeLauncher {
         }
         rows.retain(|row| match row {
             PaletteRow::TerminalWt => has_worktree,
-            PaletteRow::SwitchToSession => has_session,
             _ => true,
         });
         rows
@@ -516,12 +524,15 @@ impl WorktreeLauncher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.runtime.read(cx).has_pending_managed_launch() {
+            return;
+        }
         let active_after = self.runtime.read(cx).state.read(cx).active_session();
         if did_launch || active_after.is_some_and(|id| Some(id) != active_before) {
-            self.sidebar.update(cx, |sidebar, cx| {
-                sidebar.select_active_session(cx);
-            });
             self.close(window, cx);
+            self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.focus_active_session_after_palette(window, cx);
+            });
         } else {
             self.error =
                 Some("Could not start this session. Check the notification for details.".into());
@@ -719,7 +730,7 @@ impl Render for WorktreeLauncher {
         let top = OVERLAY_TOP.min((viewport_h - PANEL_MIN_H - SPACE_LG).max(SPACE_LG));
         let panel_h = PANEL_MAX_H.min((viewport_h - top - SPACE_LG).max(0.0));
         let compact = panel_h < PANEL_MIN_H + APPBAR_H;
-        div()
+        let overlay = div()
             .id("worktree-launcher-overlay")
             .debug_selector(|| "worktree-launcher-overlay".into())
             .absolute()
@@ -812,7 +823,7 @@ impl Render for WorktreeLauncher {
                                     PaletteRow::AddProject => ("Add project".into(), "Add a local project to this workspace".into(), "plus", String::new()),
                                     PaletteRow::RunScript => ("Run script".into(), "Run the selected worktree script".into(), "play", String::new()),
                                     PaletteRow::ViewDiff => ("View diff".into(), "Open the selected session diff".into(), "git-branch", String::new()),
-                                    PaletteRow::SwitchToSession => ("Switch to session".into(), "Choose an open session".into(), "list", String::new()),
+                                    PaletteRow::SwitchToSession => ("Switch workspace or session".into(), "Choose a workspace or a session in this workspace".into(), "list", String::new()),
                                     PaletteRow::Settings => ("Settings".into(), "App preferences".into(), "cog", String::new()),
                                     PaletteRow::Setting(setting) => (setting.label().into(), setting.section().into(), setting.icon_name(), String::new()),
                                 };
@@ -924,7 +935,11 @@ impl Render for WorktreeLauncher {
                             })),
                     )
                     .when_some(self.error.clone().filter(|_| !compact), |panel, error| panel.child(
-                        div().px(rpx(SPACE_3XL)).pb(rpx(SPACE_LG)).text_size(rpx(TEXT_SMALL)).text_color(c::RED()).child(error)
+                        motion::fast(
+                            div().px(rpx(SPACE_3XL)).pb(rpx(SPACE_LG)).text_size(rpx(TEXT_SMALL)).text_color(c::RED()).child(error.clone()),
+                            format!("worktree-launcher-error-{error}"),
+                            cx,
+                        )
                     ))
                     .when(self.mode == PaletteMode::Multi && !self.loading_worktrees, |panel| panel.child(
                         div()
@@ -969,10 +984,13 @@ impl Render for WorktreeLauncher {
                             .text_size(rpx(TEXT_SMALL))
                             .text_color(c::FG_MUTE())
                             .when_some(self.error.clone().filter(|_| compact), |footer, error| footer.child(
-                                div()
+                                motion::fast(div()
                                     .debug_selector(|| "worktree-launcher-compact-error".into())
                                     .text_color(c::RED())
-                                    .child(error)
+                                    .child(error.clone()),
+                                    format!("worktree-launcher-compact-error-{error}"),
+                                    cx,
+                                )
                             ))
                             .when(!compact || self.error.is_none(), |footer| footer.child(match self.mode {
                                 PaletteMode::Root if compact => "↑↓ · Tab tools · Enter · Esc",
@@ -985,7 +1003,8 @@ impl Render for WorktreeLauncher {
                                 PaletteMode::Multi => "↑↓ worktrees · Shift+Space select · Tab tools · Enter launch selected · Esc back",
                             })),
                     ),
-            )
+            );
+        motion::slow(overlay, "worktree-launcher-enter", cx)
     }
 }
 
@@ -1442,6 +1461,12 @@ mod tests {
             WorktreeLauncher::new(runtime, sidebar, window, cx)
         });
         cx.update(|_, cx| {
+            assert!(launcher
+                .read(cx)
+                .sidebar
+                .read(cx)
+                .visible_session_targets(cx)
+                .is_empty());
             let rows = launcher.read(cx).rows(cx);
             assert!(matches!(
                 rows.first(),
@@ -1449,6 +1474,9 @@ mod tests {
             ));
             assert!(rows.iter().any(|row| matches!(row, PaletteRow::Settings)));
             assert!(rows.iter().any(|row| matches!(row, PaletteRow::AddProject)));
+            assert!(rows
+                .iter()
+                .any(|row| matches!(row, PaletteRow::SwitchToSession)));
             assert!(!rows
                 .iter()
                 .any(|row| matches!(row, PaletteRow::Recent { proj: 1, .. })));
@@ -1802,7 +1830,10 @@ mod tests {
     fn registered_failed_session_closes_palette_and_selects_retry_row(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(setup);
+        cx.update(|cx| {
+            setup(cx);
+            cx.global_mut::<SettingsState>().store.tmux_enabled = Some(false);
+        });
         let (launcher, cx) = cx.add_window_view(|window, cx| {
             let runtime = cx.new(Runtime::new);
             let sidebar =
@@ -1811,6 +1842,8 @@ mod tests {
         });
         cx.update(|window, cx| {
             launcher.update(cx, |launcher, cx| {
+                let prior_focus = cx.focus_handle();
+                prior_focus.focus(window, cx);
                 launcher.open(window, cx);
                 let runtime = launcher.runtime.clone();
                 let before = runtime.read(cx).state.read(cx).active_session();
@@ -1848,6 +1881,7 @@ mod tests {
                     launcher.sidebar.read(cx).selected_session(),
                     Some(failed_id)
                 );
+                assert!(launcher.sidebar.focus_handle(cx).is_focused(window));
             });
         });
     }

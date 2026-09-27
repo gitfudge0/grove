@@ -4,7 +4,7 @@ use super::{Action, Sidebar, ROW_H};
 use crate::{
     entities::diff_viewer::DiffViewerState,
     theme as c,
-    views::{rpx, tokens::*},
+    views::{motion, rpx, tokens::*},
 };
 use gpui::{div, prelude::*, AnyElement, Context, MouseButton};
 use grove_core::{
@@ -147,64 +147,72 @@ impl Sidebar {
             body = body.child(div().p(rpx(SPACE_2XL)).child("Select a changed file"));
         }
 
-        div()
-            .id("session-diff-viewer")
-            .debug_selector(|| "session-diff-viewer".into())
-            .role(gpui::Role::Dialog)
-            .aria_label(format!("Changes in {wt_path}"))
-            .track_focus(&self.diff_focus)
-            .absolute()
-            .inset_0()
-            .bg(c::BG())
-            .text_color(c::FG())
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(rpx(SPACE_LG))
-                    .p(rpx(SPACE_LG))
-                    .border_b_1()
-                    .border_color(c::BORDER())
-                    .child(div().flex_1().min_w_0().truncate().child(format!(
-                        "Changes · {}",
-                        branch.as_deref().unwrap_or(&wt_path)
-                    )))
-                    .child(
-                        self.control("diff-refresh", "Refresh changes", Action::RefreshDiff, cx)
+        motion::slow(
+            div()
+                .id("session-diff-viewer")
+                .debug_selector(|| "session-diff-viewer".into())
+                .role(gpui::Role::Dialog)
+                .aria_label(format!("Changes in {wt_path}"))
+                .track_focus(&self.diff_focus)
+                .absolute()
+                .inset_0()
+                .bg(c::BG())
+                .text_color(c::FG())
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_LG))
+                        .p(rpx(SPACE_LG))
+                        .border_b_1()
+                        .border_color(c::BORDER())
+                        .child(div().flex_1().min_w_0().truncate().child(format!(
+                            "Changes · {}",
+                            branch.as_deref().unwrap_or(&wt_path)
+                        )))
+                        .child(
+                            self.control(
+                                "diff-refresh",
+                                "Refresh changes",
+                                Action::RefreshDiff,
+                                cx,
+                            )
                             .child("Refresh"),
-                    )
-                    .child(
-                        self.control("diff-close", "Close changes", Action::CloseDiff, cx)
-                            .child("Close"),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(
-                        div()
-                            .w(rpx(DIFF_FILE_LIST_W))
-                            .max_w(rpx(DIFF_FILE_LIST_W))
-                            .h_full()
-                            .child(files),
-                    )
-                    .child(body),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(rpx(DIFF_FILE_LIST_W))
-                    .w(rpx(SPACE_XS))
-                    .border_l_1()
-                    .border_color(c::BORDER()),
-            )
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .into_any_element()
+                        )
+                        .child(
+                            self.control("diff-close", "Close changes", Action::CloseDiff, cx)
+                                .child("Close"),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .min_h_0()
+                        .child(
+                            div()
+                                .w(rpx(DIFF_FILE_LIST_W))
+                                .max_w(rpx(DIFF_FILE_LIST_W))
+                                .h_full()
+                                .child(files),
+                        )
+                        .child(body),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(rpx(DIFF_FILE_LIST_W))
+                        .w(rpx(SPACE_XS))
+                        .border_l_1()
+                        .border_color(c::BORDER()),
+                )
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
+            format!("session-diff-enter-{wt_path}"),
+            cx,
+        )
     }
 }

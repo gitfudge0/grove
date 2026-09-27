@@ -74,9 +74,9 @@ grove                       # launch the desktop app
 
 then:
 
-1. add a project by pointing grove at a git repository.
-2. select a worktree, or create a new one from that project.
-3. start `claude`, `codex`, `opencode`, or a terminal session in that worktree.
+1. add a project by choosing a local folder. grove can use an existing git repository, initialize git, or use the folder without git.
+2. start in the main checkout, or create a separate worktree for an existing git repository with at least one commit. a newly initialized repository needs its first commit before you can create another worktree. folders without git can still run sessions, but cannot create worktrees.
+3. start `claude`, `codex`, `opencode`, or a terminal session in the chosen checkout. if an agent CLI is missing, you can still start a terminal.
 
 the app exposes common actions as row controls, toolbar buttons, and keyboard shortcuts. there is no separate `grove tui` mode.
 
@@ -103,7 +103,7 @@ grove supports two session backends:
 | **tmux** | recommended when `tmux` is installed | sessions survive grove exits and are rediscovered on next launch |
 | **native** | no tmux dependency | sessions end when grove exits |
 
-on first launch with `tmux` installed, grove asks which backend to use. use the `native` / `tmux` controls in the app chrome to choose the backend for new sessions. existing sessions keep the backend they were started with.
+when you start your first managed project session with `tmux` installed, grove asks which backend to use. use the `native` / `tmux` controls in the app chrome to choose the backend for new sessions. existing sessions keep the backend they were started with.
 
 ## keyboard
 
@@ -113,7 +113,9 @@ on first launch with `tmux` installed, grove asks which backend to use. use the 
 |---|---|
 | `mod+n` | open the launcher / command palette |
 | `cmd+alt+n` (macOS) / `ctrl+alt+n` | new session in the current worktree — note: no shift, so this is not `mod+alt+n` |
-| `mod+j` / `mod+k` | next / previous session (visible order) |
+| `mod+j` / `mod+k` | next / previous session outside grid view |
+| `mod+←↓↑→` / `mod+h j k l` | move focus to an adjacent grid tile |
+| `mod+alt+←↓↑→` / `mod+alt+h j k l` | swap the focused grid tile with its neighbor (`mod+shift` also works on macOS) |
 | `mod+1`..`mod+9` | select the nth session |
 | `mod+g` | toggle the grid (agent view) |
 | `mod+r` | enter grid resize mode while the grid is open |
@@ -123,7 +125,7 @@ on first launch with `tmux` installed, grove asks which backend to use. use the 
 | `mod+enter` | toggle zen mode |
 | `mod+,` | open settings |
 | `mod+=` / `mod+-` / `mod+0` | zoom in / out / reset |
-| `mod+w` | close the focused session (press twice to confirm) |
+| `mod+w` | request to close the focused session (confirm in the prompt) |
 | `mod+c` / `mod+v` | copy selection / paste into the focused session |
 | `ctrl+shift+←` / `ctrl+shift+→` | resize the terminal panel (workspace view only) |
 | `mod+/` | show the shortcut overlay |

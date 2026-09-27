@@ -591,11 +591,16 @@ pub fn typed_rows(
         ("new session", PaletteRow::NewSession),
         ("terminal home", PaletteRow::TerminalHome),
         ("terminal worktree", PaletteRow::TerminalWt),
-        ("switch to session", PaletteRow::SwitchToSession),
     ] {
         if !query.trim().is_empty() && fuzzy_match(query, label, "", "") {
             rows.push(row);
         }
+    }
+    if !query.trim().is_empty()
+        && (fuzzy_match(query, "switch workspace or session", "", "")
+            || fuzzy_match(query, "switch to session", "", ""))
+    {
+        rows.push(PaletteRow::SwitchToSession);
     }
     if !query.trim().is_empty()
         && fuzzy_match(
@@ -1006,6 +1011,8 @@ mod tests {
             ("new session", PaletteRow::NewSession),
             ("terminal home", PaletteRow::TerminalHome),
             ("terminal worktree", PaletteRow::TerminalWt),
+            ("switch workspace or session", PaletteRow::SwitchToSession),
+            ("switch workspace", PaletteRow::SwitchToSession),
             ("switch to session", PaletteRow::SwitchToSession),
         ] {
             assert!(

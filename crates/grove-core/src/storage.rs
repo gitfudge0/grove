@@ -70,6 +70,14 @@ pub enum AppearancePreference {
     Light,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarAppearance {
+    #[default]
+    Frosted,
+    Solid,
+}
+
 impl Project {
     pub fn worktree_dir(&self) -> &str {
         self.worktree_dir.as_deref().unwrap_or(&self.name)
@@ -388,6 +396,8 @@ pub struct Store {
     pub theme: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<AppearancePreference>,
+    #[serde(default)]
+    pub sidebar_appearance: SidebarAppearance,
     /// None means the user has not made the one-time tmux/native choice yet.
     #[serde(default)]
     pub tmux_enabled: Option<bool>,
@@ -415,6 +425,9 @@ pub struct Store {
     /// None is treated as `true` (opt-out model).
     #[serde(default)]
     pub telemetry_enabled: Option<bool>,
+    /// Whether Grove should skip decorative transitions. Missing means off for existing stores.
+    #[serde(default)]
+    pub reduce_motion: Option<bool>,
     /// Keyed by `"{project}::{wt_path}"`; sessions absent here are appended after in current order.
     #[serde(default)]
     pub grid_order: Vec<String>,
@@ -713,6 +726,7 @@ pub(crate) mod tests {
             default_agent: Some(Agent::Claude),
             theme: Some("dark".into()),
             appearance: Some(AppearancePreference::System),
+            sidebar_appearance: SidebarAppearance::Solid,
             tmux_enabled: Some(true),
             ui_zoom: Some(1.25),
             sidebar_width: Some(360.0),
@@ -752,6 +766,7 @@ pub(crate) mod tests {
         assert_eq!(recovered.default_agent, Some(Agent::Claude));
         assert!(recovered.theme.is_none());
         assert_eq!(recovered.appearance, Some(AppearancePreference::System));
+        assert_eq!(recovered.sidebar_appearance, SidebarAppearance::Solid);
         assert_eq!(recovered.tmux_enabled, Some(true));
         assert!((recovered.ui_zoom.unwrap() - 1.25).abs() < f32::EPSILON);
         assert!((recovered.sidebar_width.unwrap() - 360.0).abs() < f32::EPSILON);
@@ -770,6 +785,16 @@ pub(crate) mod tests {
             "archived project must round-trip as archived"
         );
         assert_eq!(recovered.recent_launches, original.recent_launches);
+    }
+
+    #[test]
+    fn sidebar_appearance_defaults_to_frosted_for_existing_settings() {
+        let store: Store = serde_json::from_str(r#"{"projects":[]}"#).expect("legacy store");
+        assert_eq!(store.sidebar_appearance, SidebarAppearance::Frosted);
+        assert_eq!(
+            Store::default().sidebar_appearance,
+            SidebarAppearance::Frosted
+        );
     }
 
     #[test]

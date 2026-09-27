@@ -42,6 +42,8 @@ pub const DOT_MD: f32 = 7.0;
 
 /// Confirmations and single-question modals.
 pub const MODAL_W_SM: f32 = 420.0;
+/// Maximum width of a session-close confirmation tray.
+pub const SESSION_CLOSE_W: f32 = 360.0;
 /// The default: a form or short list of rows.
 pub const MODAL_W_MD: f32 = 480.0;
 /// Rows with a secondary column (path, hint, trailing control).
@@ -144,3 +146,12 @@ pub const CHROME_CONTROL_H: f32 = 24.0;
 pub const TEXT_BRAND: f32 = 15.0;
 pub const RADIUS_CHROME: f32 = 8.0;
 pub const OPACITY_DISABLED: f32 = 0.58;
+
+/// Short feedback and disclosure transitions, matching DESIGN.md Motion.
+pub const MOTION_FAST_MS: u64 = 80;
+/// Default panel and selection transitions, matching DESIGN.md Motion.
+pub const MOTION_BASE_MS: u64 = 140;
+/// Larger view and modal entrances, matching DESIGN.md Motion.
+pub const MOTION_SLOW_MS: u64 = 220;
+/// The reveal begins near the endpoint so controls and content remain legible immediately.
+pub const MOTION_FADE_FROM: f32 = 0.72;

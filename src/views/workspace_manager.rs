@@ -1,5 +1,5 @@
 //! Persistent workspace selection and management.
-use super::{components::header_control, rpx, tokens::*};
+use super::{components::header_control, motion, rpx, tokens::*};
 use crate::{icons::icon, theme as c};
 use gpui::{
     div, prelude::*, App, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton,
@@ -625,7 +625,11 @@ impl WorkspaceManager {
                 self.trigger_bounds.get().bottom() + gpui::px(SPACE_MD * scale),
             ))
             .snap_to_window_with_margin(gpui::px(SPACE_LG * scale))
-            .child(panel)
+            .child(motion::base(
+                panel,
+                format!("workspace-popup-{:?}", self.panel),
+                cx,
+            ))
     }
 }
 impl Focusable for WorkspaceManager {
@@ -732,7 +736,7 @@ impl Render for WorkspaceManager {
                         .left_0()
                         .size_full(),
                     )
-                    .child(
+                    .child(motion::fast(
                         div()
                             .min_w_0()
                             .truncate()
@@ -740,7 +744,9 @@ impl Render for WorkspaceManager {
                             .line_height(rpx(CHROME_CONTROL_H))
                             .font_weight(FontWeight::MEDIUM)
                             .child(self.state.name(self.state.active).to_string()),
-                    )
+                        format!("workspace-current-name-{}", self.state.active),
+                        cx,
+                    ))
                     .child(icon("chev-down", ICON_SM, c::FG_DIM()))
                     .on_click(cx.listener(|this, _, window, cx| {
                         if this.panel == Panel::Closed {

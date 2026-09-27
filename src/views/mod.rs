@@ -12,6 +12,7 @@ pub fn rpx(v: f32) -> Rems {
     rems(v / crate::zoom::REM_BASE)
 }
 
+pub mod motion;
 pub mod settings_panel;
 pub mod shell;
 pub mod tokens;

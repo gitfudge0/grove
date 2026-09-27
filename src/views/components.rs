@@ -1,5 +1,5 @@
 //! Shared header control geometry and accessible naming.
-use super::{rpx, tokens::*};
+use super::{motion, rpx, tokens::*};
 use crate::theme as c;
 use gpui::{div, prelude::*, Div, MouseButton, Stateful};
 
@@ -96,14 +96,16 @@ pub fn form_field(
                 ),
         )
         .when_some(error, |el, error| {
-            el.child(
+            el.child(motion::fast(
                 div()
                     .id(gpui::SharedString::from(format!("{id}-error")))
                     .role(gpui::Role::Alert)
                     .text_size(rpx(TEXT_BODY))
                     .text_color(c::FORM_ERROR())
                     .child(error.to_string()),
-            )
+                format!("form-error-{id}-{error}"),
+                cx,
+            ))
         })
 }
 
@@ -182,14 +184,16 @@ pub fn project_form_field(
                 ),
         )
         .when_some(error, |field, message| {
-            field.child(
+            field.child(motion::fast(
                 div()
                     .id(gpui::SharedString::from(format!("{id}-error")))
                     .role(gpui::Role::Alert)
                     .text_size(rpx(TEXT_SMALL))
                     .text_color(c::FORM_ERROR())
                     .child(message.to_string()),
-            )
+                format!("project-form-error-{id}-{message}"),
+                cx,
+            ))
         })
 }
 

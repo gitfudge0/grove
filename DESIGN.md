@@ -4,6 +4,8 @@ Status: approved dark-first target specification for the native Rust and GPUI ap
 
 One semantic scheme drives both appearances. Dark is the product default; light is its derived counterpart, not a separate theme family.
 
+The saved Sidebar appearance setting offers Frosted and Solid. Frosted is the default for existing settings: the sidebar rail and its appbar segment use a translucent theme tint over the window's blurred background. Solid uses the opaque rail color. The main canvas and the rest of the appbar remain opaque. Platform compositor support determines whether Frosted is blurred or simply translucent.
+
 `DESIGN.html` CSS tokens drive its rendered catalog; this Markdown mirrors the specification. Changed and new Rust mappings are targets pending source migration.
 
 ## Primitives
@@ -81,10 +83,10 @@ Components use semantic accessors only. Neutral selection never becomes violet. 
 
 | Token | CSS family | Use | Rust / GPUI mapping |
 |---|---|---|---|
-| font-ui | `-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif` | system UI and all form values | adapt: `gpui::Font::default()` — System UI target: current ui() uses IBM Plex Sans. Update root font and ui(), retaining bold/medium weights. CSS fallback stack is platform-specific. |
-| font-mono | `"BlexMono Nerd Font Mono", "IBM Plex Mono", monospace` | terminal, code metadata, keycap, status | verified: `gpui::font(crate::fonts::MONO_FAMILY)` — BlexMono primary family is bundled. CSS fallback stack is not reproduced automatically. PTY remains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17. |
+| font-ui | `"IBM Plex Sans"` | app UI and all form values | verified: `.font_family(crate::fonts::UI_FAMILY)` on the `grove-shell` root — IBM Plex Sans is bundled and registered in `src/fonts.rs`; retain existing bold/medium weights. |
+| font-mono | `"BlexMono Nerd Font Mono"` | terminal, code metadata, keycap, status | verified: `gpui::font(crate::fonts::MONO_FAMILY)` — BlexMono is bundled. PTY remains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17. |
 
-System sans is the target UI family, including paths and branches inside forms. Blex Mono remains for terminal and code metadata. Existing bundled UI font usage requires source migration.
+IBM Plex Sans is the bundled UI family, including paths and branches inside forms. Blex Mono remains for terminal and code metadata; its PTY metrics remain fixed at FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17.
 
 ### Scale
 
@@ -134,12 +136,12 @@ Embedded labels use `line-field-label = 16px` with `text-12`, regular weight. Va
 
 ## Forms and inputs
 
-Grove forms use flat filled controls on black or white surfaces. Each field is 60px tall with a 12px regular label above a 16px value; label and value line heights are 16px and 22px. Labels use `text-secondary`, never the quiet metadata token. All form values use system sans, including paths and branches.
+Grove forms use flat filled controls on black or white surfaces. Each field is 60px tall with a 12px regular label above a 16px value; label and value line heights are 16px and 22px. Labels use `text-secondary`, never the quiet metadata token. All form values use bundled IBM Plex Sans, including paths and branches.
 
 | Pattern | Anatomy | States | GPUI mapping |
 |---|---|---|---|
 | Embedded-label field | 60px field-fill well, 12px radius, label above value | empty, filled, focused, invalid, disabled, readonly | Target (pending): `FIELD_H`, `RADIUS_12`, `c::FIELD_FILL()` |
-| Compound field | optional semantic icon, input/select/textarea, trailing action | native select, split values, textarea, date/time | Target (pending): form geometry and system UI value role; keep catalog icons |
+| Compound field | optional semantic icon, input/select/textarea, trailing action | native select, split values, textarea, date/time | Target (pending): form geometry; value text uses bundled IBM Plex Sans; keep catalog icons |
 | Attached validation | invalid field joins a local message below with a shared border and error-wash backing | single and multiple errors | Target (pending): error text and border use `c::RED()`; light error is `#b6384c` |
 | Grouped switches | quiet outlined 16px group; 48×28 track, 22px white thumb, 3px inset | on, off, disabled | Target (pending): `SWITCH_*`, `c::SWITCH_ON()`, `c::SWITCH_THUMB()` |
 | Selection tiles | min 42×44, 12px radius, neutral 2px total selected outline | single or multiple, selected/unselected | Target (pending): `TILE_*`, `c::SEL_RING()`; blue category dot pairs with visible text |
@@ -238,14 +240,14 @@ Fields and cards default to shadow-none. No bevels or inset shadows. Surface ste
 
 | Token | Value | Rust / GPUI mapping |
 |---|---|---|
-| duration-fast | 80ms | verified: `std::time::Duration::from_millis(80)` — Duration API exists; add shared motion tokens and reduced-motion policy. Duration::ZERO alone does not skip every animation path. |
-| duration-base | 140ms | verified: `std::time::Duration::from_millis(140)` — Duration API exists; add shared motion tokens and reduced-motion policy. Duration::ZERO alone does not skip every animation path. |
-| duration-slow | 220ms | verified: `std::time::Duration::from_millis(220)` — Duration API exists; add shared motion tokens and reduced-motion policy. Duration::ZERO alone does not skip every animation path. |
-| ease-standard | `cubic-bezier(.2,.8,.2,1)` | add: `Add CSS bezier solver for cubic-bezier(.2,.8,.2,1); pass closure to gpui::Animation::with_easing` — gpui_component::animation::cubic_bezier in vendor/gpui-component/ui/src/animation.rs ignores computed x and returns y(progress). Exact CSS requires solving x(u)=progress before y(u); add an inverse-x solver. |
+| duration-fast | 80ms | `MOTION_FAST_MS` in `src/views/tokens.rs`; `motion::fast` maps to `gpui::Animation::new(Duration::from_millis(...))` in `src/views/motion.rs`. |
+| duration-base | 140ms | `MOTION_BASE_MS` in `src/views/tokens.rs`; `motion::base` maps to `gpui::Animation::new(Duration::from_millis(...))` in `src/views/motion.rs`. |
+| duration-slow | 220ms | `MOTION_SLOW_MS` in `src/views/tokens.rs`; `motion::slow` maps to `gpui::Animation::new(Duration::from_millis(...))` in `src/views/motion.rs`. |
+| ease-standard | `cubic-bezier(.2,.8,.2,1)` | implemented by `motion::ease_standard` in `src/views/motion.rs`; solves the cubic x coordinate before evaluating y. |
 | ease-decelerate | `cubic-bezier(.16,1,.3,1)` | add: `Add CSS bezier solver for cubic-bezier(.16,1,.3,1); pass closure to gpui::Animation::with_easing` — gpui_component::animation::cubic_bezier in vendor/gpui-component/ui/src/animation.rs ignores computed x and returns y(progress). Exact CSS requires solving x(u)=progress before y(u); add an inverse-x solver. |
 | ease-accelerate | `cubic-bezier(.4,0,1,1)` | add: `Add CSS bezier solver for cubic-bezier(.4,0,1,1); pass closure to gpui::Animation::with_easing` — gpui_component::animation::cubic_bezier in vendor/gpui-component/ui/src/animation.rs ignores computed x and returns y(progress). Exact CSS requires solving x(u)=progress before y(u); add an inverse-x solver. |
 
-Reduced motion uses `Duration::ZERO` and skips transform-based transitions. Do not animate a transform when the reduced-motion preference is active.
+The persisted Reduce motion setting drives `App::set_reduce_motion`. When enabled, `src/views/motion.rs` renders each transition's endpoint directly and does not create animation state or schedule frames. Keep focus, keyboard actions, and PTY output immediate; do not animate layout or pointer-driven resizing.
 
 ## Z-index
 
@@ -339,7 +341,7 @@ Forms use 60px flat filled wells, 12px embedded labels, and attached validation 
 |---|---|---|
 | Source | The approved form moodboard sets surfaces, focus, typography, radius, and form geometry. Existing dense workspace chrome retains its dimensions. | `DESIGN.html` CSS tokens drive rendered tables; this Markdown mirrors them. |
 | Themes | Dark received primary design scrutiny. Light is a derived white counterpart. | Both resolve through the same `c::*()` semantic names. |
-| Fonts | System sans is the target UI family; Blex Mono remains for terminal and code metadata. | Composition target; combine audited family, size, explicit line-height, weight and semantic color rows. PTY uses existing cell metrics. |
+| Fonts | IBM Plex Sans is the bundled UI family; Blex Mono remains for terminal and code metadata. | Composition target; combine family, size, explicit line-height, weight and semantic color rows. PTY retains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17. |
 | Units | 1rem is 16 design px. Layout values pass through `rpx()`; hairlines use `px(1.)`. | Do not place bare layout numbers in components. |
 | Regularization | Spacing and radius are tidy scales rather than traced values. | Add or rename constants in `src/views/tokens.rs` before component work. |
 | New aliases | Changed values and new semantic names are target mappings pending source migration in `src/theme.rs` and token definitions. | Do not substitute component literals while aliases are pending. |
@@ -374,9 +376,9 @@ The exhaustive table below is mirrored from `var gpuiTokenMap` in `DESIGN.html`;
 
 `rpx(v) = rems(v / 16)` and Workspace sets rem size to `16 * zoom`. Layout and type measured in design pixels therefore scale once. `gpui::px` creates logical pixels, not device pixels. Hairlines remain unscaled; shadow geometry uses `rpx(value).to_pixels(window.rem_size())` to convert design dimensions into the Pixels required by BoxShadow. Never pass an already-scaled value to `icon()`. Exact CSS unitless line-height multipliers produce fractional values (for example 12 × 1.417 = 17.004); the older rounded px labels are explanatory only. Apply explicit line height to UI labels; do not feed these values into PTY metrics.
 
-Current `src/theme.rs` derives Tokyo Night colors. Existing names do not establish visual parity. `sync_component_theme` currently only synchronizes `muted_foreground`; the component library theme still requires a deliberate migration. Preserve PTY cell width/height/font metrics when changing the UI font to `Font::default()` system UI. Catalog icons below are adaptation seams: compare actual SVG paths with the HTML, including missing sprite keys; a function name does not prove glyph parity.
+Current `src/theme.rs` derives Tokyo Night colors. Existing names do not establish visual parity. `sync_component_theme` currently only synchronizes `muted_foreground`; the component library theme still requires a deliberate migration. The `grove-shell` root applies the bundled IBM Plex Sans UI family. Preserve Blex Mono PTY cell width/height/font metrics. Catalog icons below are adaptation seams: compare actual SVG paths with the HTML, including missing sprite keys; a function name does not prove glyph parity.
 
-No CSS z-index, outline, blur, easing or accessibility attribute should be translated by inventing an API. The table records composition work explicitly. Reduced-motion preference plumbing and immediate final-state behavior are still implementation work. Border rings, attached overlays, focus restoration and blocking input require component-level verification.
+No CSS z-index, outline, blur, easing or accessibility attribute should be translated by inventing an API. The table records composition work explicitly. Motion preference plumbing and static reduced-motion rendering are implemented in the app; border rings, attached overlays, focus restoration and blocking input require component-level verification.
 
 | Exact CSS token | Dark / default | Light | GPUI target | Status | Source | Constraint |
 |---|---|---|---|---|---|---|
@@ -434,8 +436,8 @@ No CSS z-index, outline, blur, easing or accessibility attribute should be trans
 | --shadow-sm | 0 1px 2px rgba(0,0,0,.36) | 0 1px 2px rgba(13,13,15,.10) | `gpui::BoxShadow { color: c::SHADOW_SM(), offset: gpui::point(gpui::px(0.), rpx(SHADOW_SM_Y).to_pixels(window.rem_size())), blur_radius: rpx(SHADOW_SM_BLUR).to_pixels(window.rem_size()), spread_radius: gpui::px(0.), inset: false }` | add | src/views/components.rs; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs | Add SHADOW_SM_Y = 1.0, SHADOW_SM_BLUR = 2.0 and theme alpha accessor. BoxShadow requires Pixels, so convert rem-scaled design dimensions with current rem_size. Hairlines remain unscaled logical px. Do not reuse PANEL_SHADOW. |
 | --shadow-md | 0 8px 24px rgba(0,0,0,.42) | 0 8px 24px rgba(13,13,15,.14) | `gpui::BoxShadow { color: c::SHADOW_MD(), offset: gpui::point(gpui::px(0.), rpx(SHADOW_MD_Y).to_pixels(window.rem_size())), blur_radius: rpx(SHADOW_MD_BLUR).to_pixels(window.rem_size()), spread_radius: gpui::px(0.), inset: false }` | add | src/views/components.rs; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs | Add SHADOW_SM_Y = 1.0, SHADOW_SM_BLUR = 2.0 and theme alpha accessor. BoxShadow requires Pixels, so convert rem-scaled design dimensions with current rem_size. Hairlines remain unscaled logical px. Do not reuse PANEL_SHADOW. |
 | --shadow-lg | 0 16px 48px rgba(0,0,0,.50) | 0 16px 48px rgba(13,13,15,.18) | `gpui::BoxShadow { color: c::SHADOW_LG(), offset: gpui::point(gpui::px(0.), rpx(SHADOW_LG_Y).to_pixels(window.rem_size())), blur_radius: rpx(SHADOW_LG_BLUR).to_pixels(window.rem_size()), spread_radius: gpui::px(0.), inset: false }` | add | src/views/components.rs; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs | Add SHADOW_SM_Y = 1.0, SHADOW_SM_BLUR = 2.0 and theme alpha accessor. BoxShadow requires Pixels, so convert rem-scaled design dimensions with current rem_size. Hairlines remain unscaled logical px. Do not reuse PANEL_SHADOW. |
-| --font-ui | -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif | -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif | `gpui::Font::default()` | adapt | src/fonts.rs; src/views/mod.rs | System UI target: current ui() uses IBM Plex Sans. Update root font and ui(), retaining bold/medium weights. CSS fallback stack is platform-specific. |
-| --font-mono | "BlexMono Nerd Font Mono", "IBM Plex Mono", monospace | "BlexMono Nerd Font Mono", "IBM Plex Mono", monospace | `gpui::font(crate::fonts::MONO_FAMILY)` | verified | src/fonts.rs; src/views/mod.rs | BlexMono primary family is bundled. CSS fallback stack is not reproduced automatically. PTY remains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17. |
+| --font-ui | "IBM Plex Sans" | "IBM Plex Sans" | `.font_family(crate::fonts::UI_FAMILY)` on `Shell` root | verified | assets/fonts/IBMPlexSans-Regular.ttf; src/fonts.rs; src/views/shell.rs | IBM Plex Sans is bundled and registered in `src/fonts.rs`; root family is inherited by app UI text. Retain bold/medium weights. |
+| --font-mono | "BlexMono Nerd Font Mono" | "BlexMono Nerd Font Mono" | `gpui::font(crate::fonts::MONO_FAMILY)` | verified | assets/fonts/BlexMonoNerdFontMono-Regular.ttf; src/fonts.rs | BlexMono remains for terminal and code metadata. PTY remains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17. |
 | --text-10 | .625rem | .625rem | `.text_size(rpx(TEXT_MICRO))` | adapt | src/views/tokens.rs | Grove TEXT_MICRO is 11px; reference CSS token is 10px. ui()/mono() do not set explicit line height. |
 | --text-11 | .6875rem | .6875rem | `.text_size(rpx(TEXT_SMALL))` | adapt | src/views/tokens.rs | Grove TEXT_SMALL is 12px; reference CSS token is 11px. ui()/mono() do not set explicit line height. |
 | --text-12 | .75rem | .75rem | `.text_size(rpx(TEXT_BODY))` | adapt | src/views/tokens.rs | Grove TEXT_BODY is 13px; reference CSS token is 12px. ui()/mono() do not set explicit line height. |
@@ -488,10 +490,10 @@ No CSS z-index, outline, blur, easing or accessibility attribute should be trans
 | --border-thin | 1px | 1px | `.border_1()` | verified | GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs | One unscaled logical pixel, not one device pixel. Apply semantic border color separately. |
 | --border-medium | 2px | 2px | `.border_2()` | verified | GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/styled.rs | Two unscaled logical pixels; CSS px border stays unscaled by app rem zoom. Apply semantic border color separately. |
 | --focus-ring | 2px | 2px | `Add shared focus-ring composition: 1 logical px border + 1 logical px outer ring` | add | src/views/components.rs | Do not substitute a 2px layout border: preserve outside ring and content geometry. Neutral c::SEL_RING also needs migration. |
-| --duration-fast | 80ms | 80ms | `std::time::Duration::from_millis(80)` | verified | Rust std::time::Duration; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/animation.rs | Duration API exists; add shared motion tokens and reduced-motion policy. Duration::ZERO alone does not skip every animation path. |
-| --duration-base | 140ms | 140ms | `std::time::Duration::from_millis(140)` | verified | Rust std::time::Duration; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/animation.rs | Duration API exists; add shared motion tokens and reduced-motion policy. Duration::ZERO alone does not skip every animation path. |
-| --duration-slow | 220ms | 220ms | `std::time::Duration::from_millis(220)` | verified | Rust std::time::Duration; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/animation.rs | Duration API exists; add shared motion tokens and reduced-motion policy. Duration::ZERO alone does not skip every animation path. |
-| --ease-standard | cubic-bezier(.2,.8,.2,1) | cubic-bezier(.2,.8,.2,1) | `Add CSS bezier solver for cubic-bezier(.2,.8,.2,1); pass closure to gpui::Animation::with_easing` | add | GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/animation.rs | gpui_component::animation::cubic_bezier in vendor/gpui-component/ui/src/animation.rs ignores computed x and returns y(progress). Exact CSS requires solving x(u)=progress before y(u); add an inverse-x solver. |
+| --duration-fast | 80ms | 80ms | `MOTION_FAST_MS` → `motion::fast` → `gpui::Animation::new` | verified | src/views/tokens.rs; src/views/motion.rs | Reduced motion returns the unwrapped endpoint element without scheduling animation frames. |
+| --duration-base | 140ms | 140ms | `MOTION_BASE_MS` → `motion::base` → `gpui::Animation::new` | verified | src/views/tokens.rs; src/views/motion.rs | Reduced motion returns the unwrapped endpoint element without scheduling animation frames. |
+| --duration-slow | 220ms | 220ms | `MOTION_SLOW_MS` → `motion::slow` → `gpui::Animation::new` | verified | src/views/tokens.rs; src/views/motion.rs | Reduced motion returns the unwrapped endpoint element without scheduling animation frames. |
+| --ease-standard | cubic-bezier(.2,.8,.2,1) | cubic-bezier(.2,.8,.2,1) | `motion::ease_standard` solves x(u)=progress before evaluating y(u) | verified | src/views/motion.rs | Do not substitute the vendored component helper, which returns y(progress) without solving x. |
 | --ease-decelerate | cubic-bezier(.16,1,.3,1) | cubic-bezier(.16,1,.3,1) | `Add CSS bezier solver for cubic-bezier(.16,1,.3,1); pass closure to gpui::Animation::with_easing` | add | GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/animation.rs | gpui_component::animation::cubic_bezier in vendor/gpui-component/ui/src/animation.rs ignores computed x and returns y(progress). Exact CSS requires solving x(u)=progress before y(u); add an inverse-x solver. |
 | --ease-accelerate | cubic-bezier(.4,0,1,1) | cubic-bezier(.4,0,1,1) | `Add CSS bezier solver for cubic-bezier(.4,0,1,1); pass closure to gpui::Animation::with_easing` | add | GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/animation.rs | gpui_component::animation::cubic_bezier in vendor/gpui-component/ui/src/animation.rs ignores computed x and returns y(progress). Exact CSS requires solving x(u)=progress before y(u); add an inverse-x solver. |
 | --z-base | 0 | 0 | `No numeric z-index equivalent; normal child paint order` | reference | GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/elements/deferred.rs; elements/anchored.rs | CSS number is an ordering role, not a GPUI depth or Stack/Overlay API. Verify hit testing and focus separately. |

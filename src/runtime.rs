@@ -13,7 +13,7 @@ use crate::{
     },
     settings::SettingsState,
 };
-use gpui::{prelude::*, App, Context, Entity};
+use gpui::{prelude::*, App, Context, Entity, EventEmitter};
 use grove_core::agent::Agent;
 use std::{collections::HashMap, time::Instant};
 
@@ -24,6 +24,26 @@ fn saved_tmux_preference_enabled(preference: Option<bool>) -> bool {
 fn managed_session_uses_tmux(preference: Option<bool>) -> bool {
     !cfg!(test) && saved_tmux_preference_enabled(preference)
 }
+
+fn should_choose_backend(preference: Option<bool>, tmux_available: impl FnOnce() -> bool) -> bool {
+    preference.is_none() && tmux_available()
+}
+
+struct PendingManagedLaunch {
+    name: String,
+    cwd: String,
+    agent: Agent,
+    args: Vec<String>,
+    context_roots: Vec<grove_core::session_meta::ContextRoot>,
+    temp_bundle_path: Option<String>,
+    record_recent: bool,
+}
+
+pub enum RuntimeEvent {
+    BackendChoiceRequested,
+}
+
+impl EventEmitter<RuntimeEvent> for Runtime {}
 
 fn tmux_discovery_enabled() -> bool {
     !cfg!(test)
@@ -69,6 +89,7 @@ pub struct Runtime {
     pub toast: Entity<ToastState>,
     pub projects: Entity<crate::project_service::ProjectService>,
     last_pty_dims: (u16, u16),
+    pending_managed_launch: Option<PendingManagedLaunch>,
     _observers: Vec<gpui::Subscription>,
 }
 
@@ -114,6 +135,7 @@ impl Runtime {
             toast,
             projects,
             last_pty_dims: (dims.rows, dims.cols),
+            pending_managed_launch: None,
             _observers: observers,
         }
     }
@@ -221,6 +243,12 @@ impl Runtime {
         temp_bundle_path: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.pending_managed_launch.is_some() {
+            if let Some(path) = temp_bundle_path.as_deref() {
+                grove_core::multi_root::cleanup_path(std::path::Path::new(path));
+            }
+            return false;
+        }
         let projects = &cx.global::<SettingsState>().store.projects;
         let launch_error = std::iter::once(cwd.as_str())
             .chain(context_roots.iter().map(|root| root.wt_path.as_str()))
@@ -242,6 +270,24 @@ impl Runtime {
             }
             self.toast
                 .update(cx, |toast, cx| toast.set_error(error, cx));
+            return false;
+        }
+        if should_choose_backend(
+            cx.global::<SettingsState>().store.tmux_enabled,
+            grove_core::tmux::available,
+        ) {
+            self.queue_backend_choice(
+                PendingManagedLaunch {
+                    name,
+                    cwd,
+                    agent,
+                    args,
+                    context_roots,
+                    temp_bundle_path,
+                    record_recent: false,
+                },
+                cx,
+            );
             return false;
         }
         self.state.update(cx, |s, cx| {
@@ -330,6 +376,50 @@ impl Runtime {
             cx.notify();
         });
         spawn_error.is_none()
+    }
+
+    pub fn has_pending_managed_launch(&self) -> bool {
+        self.pending_managed_launch.is_some()
+    }
+
+    fn queue_backend_choice(&mut self, launch: PendingManagedLaunch, cx: &mut Context<Self>) {
+        self.pending_managed_launch = Some(launch);
+        cx.emit(RuntimeEvent::BackendChoiceRequested);
+    }
+
+    pub fn cancel_pending_managed_launch(&mut self) {
+        if let Some(pending) = self.pending_managed_launch.take() {
+            if let Some(path) = pending.temp_bundle_path.as_deref() {
+                grove_core::multi_root::cleanup_path(std::path::Path::new(path));
+            }
+        }
+    }
+
+    /// The caller saves the backend preference first. Taking the request makes
+    /// repeated confirmation clicks harmless and preserves its original args.
+    pub fn resume_pending_managed_launch(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(pending) = self.pending_managed_launch.take() else {
+            return false;
+        };
+        let (name, cwd, agent, record_recent) = (
+            pending.name.clone(),
+            pending.cwd.clone(),
+            pending.agent,
+            pending.record_recent,
+        );
+        let launched = self.spawn_session_in_with_context(
+            pending.name,
+            pending.cwd,
+            pending.agent,
+            pending.args,
+            pending.context_roots,
+            pending.temp_bundle_path,
+            cx,
+        );
+        if launched && record_recent {
+            self.record_recent_launch(name, cwd, agent, cx);
+        }
+        launched
     }
 
     /// Leaves the grid first, or a terminal spawned behind the tiles would be invisible.
@@ -479,6 +569,7 @@ impl Runtime {
 
     /// The single flush every process-terminating path calls (carried decision 7; `src/gui/update/layout.rs:518-522`).
     pub(crate) fn shutdown(&mut self, cx: &mut Context<Self>) {
+        self.cancel_pending_managed_launch();
         self.persist_grid_order(cx);
         SettingsState::flush_now(cx);
     }
@@ -775,31 +866,37 @@ impl Runtime {
             cx,
         );
         if did_launch {
-            SettingsState::update(cx, {
-                let project = primary_project.clone();
-                let wt_path = primary_cwd.clone();
-                move |store| {
-                    store.recent_launches.retain(|recent| {
-                        !(recent.project == project
-                            && recent.wt_path == wt_path
-                            && recent.agent == agent)
-                    });
-                    store.recent_launches.insert(
-                        0,
-                        grove_core::storage::RecentLaunch {
-                            project,
-                            wt_path,
-                            agent,
-                        },
-                    );
-                    store.recent_launches.truncate(12);
-                }
-            });
-            self.toast
-                .clone()
-                .update(cx, |toast, cx| toast.set_toast("launched 1 session", cx));
+            self.record_recent_launch(primary_project, primary_cwd, agent, cx);
+        } else if let Some(pending) = &mut self.pending_managed_launch {
+            pending.record_recent = true;
         }
         did_launch
+    }
+
+    fn record_recent_launch(
+        &mut self,
+        project: String,
+        wt_path: String,
+        agent: Agent,
+        cx: &mut Context<Self>,
+    ) {
+        SettingsState::update(cx, move |store| {
+            store.recent_launches.retain(|recent| {
+                !(recent.project == project && recent.wt_path == wt_path && recent.agent == agent)
+            });
+            store.recent_launches.insert(
+                0,
+                grove_core::storage::RecentLaunch {
+                    project,
+                    wt_path,
+                    agent,
+                },
+            );
+            store.recent_launches.truncate(12);
+        });
+        self.toast
+            .clone()
+            .update(cx, |toast, cx| toast.set_toast("launched 1 session", cx));
     }
 
     pub fn kill_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
@@ -827,6 +924,18 @@ mod tests {
         assert!(!saved_tmux_preference_enabled(None));
         assert!(!saved_tmux_preference_enabled(Some(false)));
         assert!(saved_tmux_preference_enabled(Some(true)));
+    }
+
+    #[test]
+    fn backend_choice_only_on_first_managed_launch_with_tmux() {
+        assert!(should_choose_backend(None, || true));
+        assert!(!should_choose_backend(None, || false));
+        assert!(!should_choose_backend(Some(false), || panic!(
+            "must not probe tmux"
+        )));
+        assert!(!should_choose_backend(Some(true), || panic!(
+            "must not probe tmux"
+        )));
     }
 
     #[test]
@@ -897,6 +1006,67 @@ mod tests {
             .unwrap()
             .success());
         dir
+    }
+
+    fn pending_fixture(path: &str) -> PendingManagedLaunch {
+        PendingManagedLaunch {
+            name: "script fixture".into(),
+            cwd: path.into(),
+            agent: Agent::Terminal,
+            args: Vec::new(),
+            context_roots: Vec::new(),
+            temp_bundle_path: None,
+            record_recent: false,
+        }
+    }
+
+    #[gpui::test]
+    fn deferred_launch_does_not_spawn_and_cancel_discards_it(cx: &mut gpui::TestAppContext) {
+        let repo = git_fixture();
+        let path = repo
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        cx.update(|cx| {
+            let runtime = init_script_runtime(cx, script_project(&path, "true"));
+            runtime.update(cx, |runtime, cx| {
+                runtime.queue_backend_choice(pending_fixture(&path), cx);
+            });
+            assert!(runtime.read(cx).has_pending_managed_launch());
+            assert!(runtime.read(cx).registry.read(cx).is_empty());
+            runtime.update(cx, |runtime, _| runtime.cancel_pending_managed_launch());
+            assert!(!runtime.read(cx).has_pending_managed_launch());
+            assert!(!runtime.update(cx, Runtime::resume_pending_managed_launch));
+            assert!(runtime.read(cx).registry.read(cx).is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn deferred_launch_resumes_once_with_original_target(cx: &mut gpui::TestAppContext) {
+        let repo = git_fixture();
+        let path = repo
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        cx.update(|cx| {
+            let runtime = init_script_runtime(cx, script_project(&path, "true"));
+            runtime.update(cx, |runtime, cx| {
+                runtime.queue_backend_choice(pending_fixture(&path), cx);
+            });
+            assert!(runtime.read(cx).registry.read(cx).is_empty());
+            cx.global_mut::<SettingsState>().store.tmux_enabled = Some(false);
+            assert!(runtime.update(cx, Runtime::resume_pending_managed_launch));
+            assert!(!runtime.read(cx).has_pending_managed_launch());
+            assert!(!runtime.update(cx, Runtime::resume_pending_managed_launch));
+            let registry = runtime.read(cx).registry.read(cx);
+            assert_eq!(registry.len(), 1);
+            assert_eq!(registry.all()[0].wt_path, path);
+            assert_eq!(registry.all()[0].agent, Agent::Terminal);
+        });
     }
 
     #[gpui::test]

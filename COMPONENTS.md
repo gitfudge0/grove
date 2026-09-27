@@ -11,7 +11,7 @@ The Rust/GPUI entries below distinguish existing integration points from propose
 - Use flat neutral surfaces and quiet borders with shadow-none.
 - Project and List preserve the sidebar. Grid removes it so active sessions own the canvas.
 - Worktree hover or keyboard focus exposes available direct-start agent actions without moving the worktree label. Each has an accessible name and matching tooltip; the current implementation supports Codex, Claude Code, OpenCode, and Terminal.
-- Session creation exists only through those worktree-local launch actions. Headers and empty states never expose New session.
+- Session creation uses worktree-local launch actions, including the main checkout actions in the selected project's zero-session state. Headers and empty states never expose a generic New session action.
 - Session filtering is unsupported. Data-bearing components use loading, nothing yet, partial, and error.
 - Frame references point to the 45-frame `screens.html` inventory. The older `workspace-hierarchy-wireframe.html` is historical context, not the current frame authority.
 - Every action button contains a semantic currentColor SVG from the DESIGN.md catalog. Text actions lead with the icon by default; disclosure and navigation may trail. Icon-only actions require an accessible name and tooltip. Switches and selection tiles express state directly and do not receive action icons.
@@ -478,7 +478,7 @@ GPUI implementation constraint: Rehost AddProject and NewWorktree behavior in ce
 | Used in frame refs | A5 B6 C1 C4 D6 E1 F3 |
 | Target framework | `empty` · **adapt** · Adapted grid::empty_state / TreeRow::Empty. Source: `src/views/grid.rs`. |
 
-GPUI implementation constraint: Scoped title/explanation and valid setup action with leading icon. No New session outside worktree launch. Keyboard-operable setup action only when available; distinguish empty from loading/error/partial and retain navigation.
+GPUI implementation constraint: Scoped title/explanation and valid setup action with leading icon. The selected project's zero-session state exposes direct-start actions for its main checkout and explains when New worktree is available. Do not expose a generic New session action. Keyboard-operable setup action only when available; distinguish empty from loading/error/partial and retain navigation.
 
 ### Progress/skeleton
 

@@ -1,16 +1,19 @@
 //! Main canvas driven by the sidebar's stable selection.
 #[cfg(test)]
 use super::display_task_title;
-use super::{session_display_title, Action, Selection, Sidebar, ViewMode};
+use super::{
+    session_display_title, sidebar_worktree_name, Action, Selection, Sidebar, ViewMode,
+    WORKTREE_LAUNCH_AGENTS,
+};
 use crate::{
     activity::ActivityState,
     icons::icon,
-    project_service::WorktreeRemovalStage,
+    project_service::{WorktreeReadiness, WorktreeRemovalStage},
     settings::SettingsState,
     theme as c,
     views::{
         components::{form_action, form_field, project_field_well},
-        rpx,
+        motion, rpx,
         terminal_view::TerminalView,
         tokens::*,
     },
@@ -157,7 +160,7 @@ impl Sidebar {
             None if removal.started && !finished => Some("Preparing removal"),
             _ => None,
         };
-        div()
+        let panel = div()
             .id("worktree-removal-scroll")
             .debug_selector(|| "worktree-removal-scroll".into())
             .size_full()
@@ -240,7 +243,11 @@ impl Sidebar {
                                         .flex()
                                         .flex_col()
                                         .gap(rpx(SPACE_LG))
-                                        .child(label)
+                                        .child(motion::fast(
+                                            div().child(label),
+                                            format!("worktree-removal-stage-{label}"),
+                                            cx,
+                                        ))
                                         .when(!finished, |status| {
                                             status.child(
                                                 div()
@@ -276,13 +283,18 @@ impl Sidebar {
                                         .rounded(rpx(RADIUS_CONTROL))
                                         .bg(c::RED_WASH())
                                         .text_color(c::RED())
-                                        .child(error),
+                                        .child(motion::fast(
+                                            div().child(error.clone()),
+                                            format!("worktree-removal-error-{error}"),
+                                            cx,
+                                        )),
                                 )
                             })
                             .child(actions),
                     ),
             )
-            .into_any_element()
+            ;
+        motion::base(panel, "worktree-removal-enter", cx)
     }
     pub(super) fn begin_worktree(
         &mut self,
@@ -290,6 +302,20 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(path) = cx
+            .global::<SettingsState>()
+            .store
+            .projects
+            .get(idx)
+            .map(|p| p.path.clone())
+        else {
+            return;
+        };
+        if let Err(reason) = crate::project_service::worktree_prerequisite(&path) {
+            self.content_error = Some(reason.into());
+            cx.notify();
+            return;
+        }
         if self.worktree_return_focus.is_none() {
             self.worktree_return_focus = window.focused(cx);
         }
@@ -319,6 +345,12 @@ impl Sidebar {
         else {
             return;
         };
+        if let Err(reason) = crate::project_service::worktree_prerequisite(&project.path) {
+            self.pending_new_worktree = None;
+            self.content_error = Some(reason.into());
+            cx.notify();
+            return;
+        }
         let name = self.worktree_name.read(cx).value().trim().to_string();
         let branch = self.worktree_branch.read(cx).value().trim().to_string();
         let base = self.worktree_base.read(cx).value().trim().to_string();
@@ -602,12 +634,16 @@ impl Sidebar {
                     );
                 })
             });
-            if (newly_created || self.pending_canvas_focus == Some(id))
-                && self.canvas_focus_allowed(window, cx)
+            let grid_workspace_focus = self.pending_grid_workspace_focus == Some(id)
+                && self.grid_workspace_focus_allowed(window, cx);
+            if (grid_workspace_focus
+                || ((newly_created || self.pending_canvas_focus == Some(id))
+                    && self.canvas_focus_allowed(window, cx)))
                 && matches!(self.selection,Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id)
             {
                 terminal.focus_handle(cx).focus(window, cx);
                 self.pending_canvas_focus = None;
+                self.pending_grid_workspace_focus = None;
             }
             view = Some(terminal);
         }
@@ -652,6 +688,11 @@ impl Sidebar {
             .text_color(state.color())
             .whitespace_nowrap()
             .child(state.label());
+        let status = motion::fast(
+            status,
+            format!("canvas-session-status-{}-{}", id.raw(), state.label()),
+            cx,
+        );
         if grid {
             header = header
                 .child(agent_icon)
@@ -660,19 +701,25 @@ impl Sidebar {
                     div()
                         .min_w_0()
                         .flex_1()
-                        .truncate()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_size(rpx(TEXT_BODY))
-                        .child(task),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child(context.clone()),
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_MD))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_size(rpx(TEXT_BODY))
+                                .child(task),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child(format!("· {context}")),
+                        ),
                 )
                 .child(status)
                 .child(close);
@@ -750,6 +797,30 @@ impl Sidebar {
                         .child(close),
                 );
         }
+        let header = if grid {
+            let selected = matches!(
+                self.selection,
+                Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id
+            );
+            motion::background(
+                header,
+                format!("grid-terminal-header-{}-{selected}", id.raw()),
+                if selected {
+                    c::BG_STRIP()
+                } else {
+                    c::BG_HOVER()
+                },
+                if selected {
+                    c::BG_HOVER()
+                } else {
+                    c::BG_STRIP()
+                },
+                std::time::Duration::from_millis(MOTION_FAST_MS),
+                cx,
+            )
+        } else {
+            motion::fast(header, format!("terminal-header-enter-{}", id.raw()), cx)
+        };
         let mut pane = div()
             .id(gpui::SharedString::from(format!(
                 "terminal-pane-{}",
@@ -806,7 +877,11 @@ impl Sidebar {
                         .min_w_0()
                         .text_size(rpx(TEXT_SMALL))
                         .text_color(state.color())
-                        .child(message),
+                        .child(motion::fast(
+                            div().child(message),
+                            format!("canvas-session-message-{}-{}", id.raw(), state.label()),
+                            cx,
+                        )),
                 );
             if state == CanvasState::NeedsYou {
                 if let Some(terminal) = view.clone() {
@@ -948,6 +1023,200 @@ impl Sidebar {
             )
             .child(icon("close", ICON_SM, c::FG_DIM()))
     }
+    fn render_start_panel(
+        &self,
+        project_idx: usize,
+        project_name: &str,
+        path: &str,
+        main: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let project_path = cx
+            .global::<SettingsState>()
+            .store
+            .projects
+            .get(project_idx)
+            .map(|project| project.path.clone())
+            .unwrap_or_else(|| path.to_string());
+        let readiness = self
+            .worktree_readiness
+            .get(&project_path)
+            .and_then(|(_, value)| *value);
+        let guidance = if main {
+            match readiness {
+                Some(WorktreeReadiness::Ready) => "Create a separate worktree when you want an isolated branch.",
+                Some(WorktreeReadiness::NeedsGit) => "Initialize Git to create worktrees. Sessions in this folder still work.",
+                Some(WorktreeReadiness::NeedsCommit) => "Make the first commit before creating a worktree. Sessions in the main checkout still work.",
+                None => "Checking Git before offering another worktree…",
+            }
+        } else {
+            "Start a session in this worktree."
+        };
+        let mut actions = div().flex().flex_wrap().gap(rpx(SPACE_LG));
+        let codex_available = self.available[0];
+        for (id, label, agent, primary) in [
+            (
+                "start-terminal",
+                "Start Terminal",
+                Agent::Terminal,
+                !codex_available,
+            ),
+            ("start-codex", "Start Codex", Agent::Codex, codex_available),
+            ("start-claude", "Start Claude Code", Agent::Claude, false),
+            ("start-opencode", "Start OpenCode", Agent::OpenCode, false),
+        ] {
+            let target = path.to_string();
+            actions = actions.child(
+                form_action(id, label, primary, window, cx)
+                    .debug_selector(move || id.into())
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path(format!("icons/{}.svg", agent.icon_name())),
+                    )
+                    .h(rpx(FORM_ACTION_H))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.launch(project_idx, target.clone(), agent, cx);
+                    })),
+            );
+        }
+        let missing = WORKTREE_LAUNCH_AGENTS
+            .iter()
+            .zip(self.available)
+            .filter_map(|(agent, available)| {
+                (!available && *agent != Agent::Terminal).then_some(match agent {
+                    Agent::Codex => "Codex",
+                    Agent::Claude => "Claude Code",
+                    Agent::OpenCode => "OpenCode",
+                    Agent::Terminal => "Terminal",
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut card = div()
+            .id("project-start-card")
+            .debug_selector(|| "project-start-card".into())
+            .w_full()
+            .max_w(rpx(MODAL_W_XL))
+            .min_w_0()
+            .p(rpx(EMPTY_CARD_PAD))
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_2XL))
+            .child(
+                div()
+                    .text_size(rpx(TEXT_DISPLAY))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(if main {
+                        "Start in the main checkout"
+                    } else {
+                        "Start in this worktree"
+                    }),
+            )
+            .child(
+                div()
+                    .text_color(c::FG_DIM())
+                    .child(format!("{project_name} · {path}")),
+            )
+            .child(actions);
+        if !missing.is_empty() {
+            let noun = if missing.len() == 1 { "CLI" } else { "CLIs" };
+            card = card.child(div().id("missing-agent-guidance").role(gpui::Role::Status).text_size(rpx(TEXT_SMALL))
+                .text_color(c::FG_DIM())
+                .child(format!("{} {noun} unavailable. Install the CLI, check your PATH, then restart Grove. Terminal is ready now.", missing.join(", "))));
+        }
+        if main {
+            card = card.child(
+                div()
+                    .border_t_1()
+                    .border_color(c::BORDER_SOFT())
+                    .pt(rpx(SPACE_2XL))
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_LG))
+                    .child(div().font_weight(FontWeight::MEDIUM).child("New worktree"))
+                    .child(div().text_color(c::FG_DIM()).child(guidance))
+                    .when(readiness == Some(WorktreeReadiness::Ready), |row| {
+                        row.child(
+                            form_action("project-new-worktree", "New worktree", false, window, cx)
+                                .debug_selector(|| "project-new-worktree".into())
+                                .icon(gpui_component::Icon::default().path("icons/plus.svg"))
+                                .h(rpx(FORM_ACTION_H))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.act(Action::NewWorktree(project_path.clone()), window, cx);
+                                })),
+                        )
+                    })
+                    .when(readiness == Some(WorktreeReadiness::NeedsGit), |row| {
+                        let project_path = path.to_string();
+                        row.child(
+                            form_action(
+                                "project-initialize-git",
+                                "Initialize Git",
+                                false,
+                                window,
+                                cx,
+                            )
+                            .debug_selector(|| "project-initialize-git".into())
+                            .icon(gpui_component::Icon::default().path("icons/plus.svg"))
+                            .h(rpx(FORM_ACTION_H))
+                            .disabled(self.git_init_pending.is_some())
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.act(
+                                        Action::InitializeGit(project_path.clone()),
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            )),
+                        )
+                    })
+                    .when(readiness == Some(WorktreeReadiness::NeedsCommit), |row| {
+                        let project_path = path.to_string();
+                        row.child(
+                            div().text_color(c::FG_DIM()).child(
+                                "In the main checkout, stage changes and review the staged diff before committing:",
+                            ),
+                        )
+                        .child(
+                            div()
+                                .id("first-commit-commands")
+                                .debug_selector(|| "first-commit-commands".into())
+                                .p(rpx(SPACE_LG))
+                                .rounded(rpx(RADIUS_CONTROL))
+                                .bg(c::FIELD_FILL())
+                                .text_size(rpx(TEXT_SMALL))
+                                .font_family(crate::fonts::MONO_FAMILY)
+                                .flex()
+                                .flex_col()
+                                .gap(rpx(SPACE_SM))
+                                .child("git add .")
+                                .child("git diff --cached")
+                                .child("git commit -m \"Initial commit\""),
+                        )
+                        .child(
+                            form_action("check-first-commit", "Check again", false, window, cx)
+                                .debug_selector(|| "check-first-commit".into())
+                                .icon(gpui_component::Icon::default().path("icons/restart.svg"))
+                                .h(rpx(FORM_ACTION_H))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.act(Action::RefreshGit(project_path.clone()), window, cx);
+                                })),
+                        )
+                    }),
+            );
+        }
+        if self.git_init_pending.as_deref() == Some(path) {
+            card = card.child(
+                div()
+                    .id("git-init-status")
+                    .role(gpui::Role::Status)
+                    .text_color(c::FG_DIM())
+                    .child("Initializing Git…"),
+            );
+        }
+        card.into_any_element()
+    }
     pub(super) fn render_content(
         &mut self,
         window: &mut Window,
@@ -955,14 +1224,26 @@ impl Sidebar {
     ) -> AnyElement {
         if let Some(settings) = &self.settings_panel {
             if settings.read(cx).is_open() {
-                return settings.clone().into_any_element();
+                return motion::slow(
+                    div().size_full().child(settings.clone()),
+                    "settings-panel-enter",
+                    cx,
+                );
             }
         }
         if let Some(setup) = &self.project_setup {
-            return setup.clone().into_any_element();
+            return motion::slow(
+                div().size_full().child(setup.clone()),
+                "project-setup-enter",
+                cx,
+            );
         }
         if let Some(panel) = &self.project_panel {
-            return panel.clone().into_any_element();
+            return motion::slow(
+                div().size_full().child(panel.clone()),
+                "project-panel-enter",
+                cx,
+            );
         }
         if let Some(removal) = &self.pending_worktree_removal {
             return self.render_worktree_removal(removal, cx);
@@ -974,7 +1255,7 @@ impl Sidebar {
                 self.worktree_base.read(cx).value().as_ref(),
             );
             let enabled = errors.iter().all(Option::is_none);
-            return div()
+            let editor = div()
                 .id("worktree-editor-scroll")
                 .size_full()
                 .min_w_0()
@@ -1057,8 +1338,8 @@ impl Sidebar {
                                     ),
                             ),
                     ),
-                )
-                .into_any_element();
+                );
+            return motion::base(editor, "worktree-editor-enter", cx);
         }
         if self.is_zen() {
             match self.selection.clone() {
@@ -1115,6 +1396,16 @@ impl Sidebar {
                 }),
             _ => None,
         };
+        let selected_project = match (&self.mode, &self.selection) {
+            (ViewMode::Grid, _) => None,
+            (_, Some(Selection::Project(idx))) => self
+                .snapshot
+                .projects
+                .iter()
+                .find(|project| project.idx == *idx)
+                .cloned(),
+            _ => None,
+        };
         let workspace = &cx.global::<SettingsState>().store.workspaces;
         let workspace_name = workspace.name(workspace.active).to_string();
         let empty_grid = self.mode == ViewMode::Grid && self.active_canvas_sessions(cx).is_empty();
@@ -1127,19 +1418,71 @@ impl Sidebar {
             .min_h_0()
             .flex()
             .flex_col();
-        if let Some((project, selected_worktree)) = selected_worktree {
-            let title = selected_worktree.name.clone();
-            let details = format!(
-                "{workspace_name} / {} / {} · {} · {} sessions",
-                project.name,
-                selected_worktree.name,
-                selected_worktree.branch,
-                selected_worktree.sessions.len()
-            );
-            section=section.child(canvas_section_header(title)).child(div().id("worktree-prompt-scroll").flex_1().min_h_0().overflow_y_scroll().p(rpx(SPACE_3XL))
+        if let Some(project) = selected_project.filter(|project| project.sessions.is_empty()) {
+            let path = cx
+                .global::<SettingsState>()
+                .store
+                .projects
+                .get(project.idx)
+                .map(|project| project.path.clone());
+            if let Some(path) = path {
+                section = section
+                    .child(canvas_section_header(project.name.clone()))
+                    .child(
+                        div()
+                            .id("project-start-scroll")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .p(rpx(SPACE_3XL))
+                            .child(self.render_start_panel(
+                                project.idx,
+                                &project.name,
+                                &path,
+                                true,
+                                window,
+                                cx,
+                            )),
+                    );
+            }
+        } else if let Some((project, selected_worktree)) = selected_worktree {
+            if selected_worktree.sessions.is_empty() {
+                let path = selected_worktree.path.clone();
+                section = section
+                    .child(canvas_section_header(
+                        sidebar_worktree_name(&selected_worktree.name, selected_worktree.is_main)
+                            .into(),
+                    ))
+                    .child(
+                        div()
+                            .id("worktree-start-scroll")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .p(rpx(SPACE_3XL))
+                            .child(self.render_start_panel(
+                                project.idx,
+                                &project.name,
+                                &path,
+                                selected_worktree.is_main,
+                                window,
+                                cx,
+                            )),
+                    );
+            } else {
+                let title = selected_worktree.name.clone();
+                let details = format!(
+                    "{workspace_name} / {} / {} · {} · {} sessions",
+                    project.name,
+                    selected_worktree.name,
+                    selected_worktree.branch,
+                    selected_worktree.sessions.len()
+                );
+                section=section.child(canvas_section_header(title)).child(div().id("worktree-prompt-scroll").flex_1().min_h_0().overflow_y_scroll().p(rpx(SPACE_3XL))
                 .child(div().w_full().min_w_0().max_w(rpx(MODAL_W_XL)).mx_auto().mt(rpx(PROMPT_INSET-SPACE_3XL)).p(rpx(EMPTY_CARD_PAD)).border_1().border_dashed().border_color(c::BORDER_STRONG()).rounded(rpx(RADIUS_CHROME)).flex().flex_col().gap(rpx(SPACE_LG)).text_size(rpx(TEXT_BODY)).text_color(c::FG_DIM())
                     .child(details)
                     .child("Choose a session in the sidebar, or hover or focus a worktree to reveal Codex, Claude Code, and Terminal launch actions.")));
+            }
         } else {
             let (title, description) = if no_projects {
                 (
@@ -1644,9 +1987,19 @@ mod tests {
     }
     #[gpui::test]
     fn worktree_form_fields_stay_within_narrow_and_desktop_canvas(cx: &mut gpui::TestAppContext) {
+        let repo = super::super::tests::ChangedGitRepo::new();
         cx.update(|cx| {
             gpui_component::init(cx);
-            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "layout".into(),
+                    path: repo.path(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
             cx.set_global(crate::zoom::CurrentPtyDims::default());
         });
         let (sidebar, cx) = cx.add_window_view(|window, cx| {

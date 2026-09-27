@@ -133,7 +133,7 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::SwitchSession),
         triggers: &["s", "S"],
         display_keys: "s",
-        description: "Switch to session",
+        description: "Switch workspace or session",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -788,8 +788,8 @@ pub fn bindings() -> Vec<KeyBinding> {
     out
 }
 
-/// Only bind actions the replacement shell can currently perform. Contextual
-/// grid and terminal shortcuts stay with the PTY until their views handle them.
+/// Only bind actions the replacement shell can currently perform. Grid chords
+/// require its key context; unsupported terminal shortcuts stay with the PTY.
 pub fn shell_bindings() -> Vec<KeyBinding> {
     use GlobalShortcut as S;
     let supported = |action| {
@@ -827,6 +827,7 @@ pub fn shell_bindings() -> Vec<KeyBinding> {
         }
     }
     out.extend(select_session_bindings());
+    out.extend(grid_bindings());
     out
 }
 
@@ -860,6 +861,8 @@ mod tests {
             "ZoomIn",
             "ZoomOut",
             "ZoomReset",
+            "GridMove",
+            "GridSwap",
         ] {
             assert!(
                 names.iter().any(|bound| bound.ends_with(name)),
@@ -882,6 +885,37 @@ mod tests {
             .any(|chord| chord == "tab" || chord == "ctrl-c"));
         assert!(chords.contains(&format!("{}w", platform_mod_prefix())));
         assert!(!names.iter().any(|bound| bound.ends_with("ToggleTermPanel")));
+    }
+
+    #[test]
+    fn grid_context_shadows_global_session_navigation_only_in_grid() {
+        let keymap = gpui::Keymap::new(shell_bindings());
+        let grid = [gpui::KeyContext::try_from("Grid").unwrap()];
+        let winner = |chord: &str, contexts: &[gpui::KeyContext]| {
+            let key = gpui::Keystroke::parse(chord).unwrap();
+            let (bindings, _) = keymap.bindings_for_input(&[key], contexts);
+            bindings
+                .first()
+                .map(|binding| binding.action().name().to_string())
+        };
+        let prefix = platform_mod_prefix();
+        assert!(winner(&format!("{prefix}j"), &[])
+            .unwrap()
+            .ends_with("NextSession"));
+        assert!(winner(&format!("{prefix}k"), &[])
+            .unwrap()
+            .ends_with("PrevSession"));
+        for key in ["j", "k", "left", "right", "up", "down"] {
+            assert!(winner(&format!("{prefix}{key}"), &grid)
+                .unwrap()
+                .ends_with("GridMove"));
+        }
+        for swap_prefix in grid_swap_prefixes() {
+            assert!(winner(&format!("{swap_prefix}right"), &grid)
+                .unwrap()
+                .ends_with("GridSwap"));
+            assert!(winner(&format!("{swap_prefix}right"), &[]).is_none());
+        }
     }
 
     #[test]

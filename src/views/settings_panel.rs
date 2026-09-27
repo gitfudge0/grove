@@ -1,5 +1,5 @@
 //! App-wide settings and shortcut reference, mounted in the main canvas.
-use super::{rpx, tokens::*};
+use super::{motion, rpx, tokens::*};
 use crate::{
     entities::upgrade_state::{ChangelogState, UpgradeState},
     keymap::{self, Scope, SHORTCUTS},
@@ -10,9 +10,13 @@ use crate::{
 };
 use gpui::{
     div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    ScrollHandle, Subscription, Window,
+    ScrollHandle, Subscription, Window, WindowBackgroundAppearance,
 };
-use grove_core::{agent::Agent, storage::{AppearancePreference, Store}, upgrade::InstallMethod};
+use grove_core::{
+    agent::Agent,
+    storage::{AppearancePreference, SidebarAppearance, Store},
+    upgrade::InstallMethod,
+};
 use std::collections::HashSet;
 
 const FOCUS_SCAN_LIMIT: usize = 128;
@@ -174,13 +178,31 @@ impl SettingsPanel {
             ThemeState::apply_system_theme(cx);
         } else {
             c::set_chrome_light(mode == Appearance::Light);
-            ThemeState::set_by_name(cx, if mode == Appearance::Light {
-                DEFAULT_LIGHT_THEME
-            } else {
-                DEFAULT_DARK_THEME
-            });
+            ThemeState::set_by_name(
+                cx,
+                if mode == Appearance::Light {
+                    DEFAULT_LIGHT_THEME
+                } else {
+                    DEFAULT_DARK_THEME
+                },
+            );
         }
         cx.refresh_windows();
+    }
+
+    fn set_sidebar_appearance(
+        &mut self,
+        appearance: SidebarAppearance,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.save(cx, |store| store.sidebar_appearance = appearance) {
+            window.set_background_appearance(match appearance {
+                SidebarAppearance::Frosted => WindowBackgroundAppearance::Blurred,
+                SidebarAppearance::Solid => WindowBackgroundAppearance::Opaque,
+            });
+            cx.refresh_windows();
+        }
     }
 
     fn set_zoom(&mut self, delta: f32, cx: &mut Context<Self>) {
@@ -233,6 +255,17 @@ impl SettingsPanel {
         let enabled = !SettingsState::telemetry_enabled(&cx.global::<SettingsState>().store);
         if self.save(cx, |store| store.telemetry_enabled = Some(enabled)) {
             crate::telemetry::set_enabled(enabled);
+        }
+    }
+
+    fn toggle_reduce_motion(&mut self, cx: &mut Context<Self>) {
+        let enabled = !cx
+            .global::<SettingsState>()
+            .store
+            .reduce_motion
+            .unwrap_or(false);
+        if self.save(cx, |store| store.reduce_motion = Some(enabled)) {
+            cx.set_reduce_motion(enabled);
         }
     }
 
@@ -360,12 +393,14 @@ impl SettingsPanel {
     fn settings_body(&self, cx: &mut Context<Self>) -> gpui::Div {
         let store = &cx.global::<SettingsState>().store;
         let mode = appearance(store);
+        let sidebar_appearance = store.sidebar_appearance;
         let zoom = cx.global::<ZoomState>().zoom;
         let tmux_on = store.tmux_enabled.unwrap_or(false);
         let tmux_available = grove_core::tmux::available();
         let skip = store.dangerously_skip_permissions_enabled.unwrap_or(false);
         let chrome = store.chrome_enabled.unwrap_or(false);
         let telemetry = SettingsState::telemetry_enabled(store);
+        let reduce_motion = store.reduce_motion.unwrap_or(false);
         let archived = store.archived_count();
         let mut body = div().flex().flex_col().gap(rpx(SPACE_3XL));
 
@@ -405,6 +440,33 @@ impl SettingsPanel {
                 .child("Light")
                 .on_click(cx.listener(|this, _, _, cx| this.set_appearance(Appearance::Light, cx))),
             );
+        let sidebar_appearances = div()
+            .flex()
+            .gap(rpx(SPACE_SM))
+            .child(
+                self.button(
+                    "settings-sidebar-frosted",
+                    "Frosted sidebar",
+                    sidebar_appearance == SidebarAppearance::Frosted,
+                    true,
+                )
+                .child("Frosted")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.set_sidebar_appearance(SidebarAppearance::Frosted, window, cx)
+                })),
+            )
+            .child(
+                self.button(
+                    "settings-sidebar-solid",
+                    "Solid sidebar",
+                    sidebar_appearance == SidebarAppearance::Solid,
+                    true,
+                )
+                .child("Solid")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.set_sidebar_appearance(SidebarAppearance::Solid, window, cx)
+                })),
+            );
         let zoom_control = div()
             .flex()
             .gap(rpx(SPACE_SM))
@@ -432,6 +494,15 @@ impl SettingsPanel {
                         el.on_click(cx.listener(|this, _, _, cx| this.set_zoom(ZOOM_STEP, cx)))
                     }),
             );
+        let reduce_motion_control = self
+            .button(
+                "settings-reduce-motion",
+                "Toggle reduced motion",
+                reduce_motion,
+                true,
+            )
+            .child(if reduce_motion { "On" } else { "Off" })
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_reduce_motion(cx)));
         body = body.child(
             div()
                 .flex()
@@ -444,9 +515,19 @@ impl SettingsPanel {
                     appearances,
                 ))
                 .child(Self::setting_row(
+                    "Sidebar",
+                    "Blurred backdrop or solid color",
+                    sidebar_appearances,
+                ))
+                .child(Self::setting_row(
                     "App size",
                     "Scale the interface",
                     zoom_control,
+                ))
+                .child(Self::setting_row(
+                    "Reduce motion",
+                    "Skip decorative interface transitions",
+                    reduce_motion_control,
                 )),
         );
 
@@ -772,8 +853,6 @@ impl SettingsPanel {
         }
         body.text_size(rpx(TEXT_BODY))
     }
-
-
 }
 
 impl Focusable for SettingsPanel {
@@ -820,6 +899,7 @@ impl Render for SettingsPanel {
             .child(
                 div()
                     .id("settings-scroll")
+                    .debug_selector(|| "settings-scroll".into())
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -827,6 +907,7 @@ impl Render for SettingsPanel {
                     .px(rpx(SPACE_3XL))
                     .py(rpx(36.))
                     .flex()
+                    .items_start()
                     .justify_center()
                     .child(
                         div()
@@ -846,7 +927,7 @@ impl Render for SettingsPanel {
                     ),
             )
             .when_some(self.error.clone(), |panel, error| {
-                panel.child(
+                panel.child(motion::fast(
                     div()
                         .id("settings-error")
                         .role(gpui::Role::Alert)
@@ -854,12 +935,15 @@ impl Render for SettingsPanel {
                         .py(rpx(SPACE_LG))
                         .text_size(rpx(TEXT_BODY))
                         .text_color(c::FORM_ERROR())
-                        .child(error),
-                )
+                        .child(error.clone()),
+                    format!("settings-error-{error}"),
+                    cx,
+                ))
             })
             .child(
                 div()
                     .id("settings-footer")
+                    .debug_selector(|| "settings-footer".into())
                     .w_full()
                     .border_t_1()
                     .border_color(c::BORDER_SOFT())
@@ -1018,6 +1102,33 @@ mod tests {
             assert!(!panel.read(cx).is_open());
             assert!(prior.is_focused(window));
         });
+    }
+
+    #[gpui::test]
+    fn settings_body_scrolls_while_footer_stays_fixed(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.open(window, cx)));
+        cx.simulate_resize(gpui::size(gpui::px(320.0), gpui::px(200.0)));
+        draw(cx);
+
+        let scroll = cx.debug_bounds("settings-scroll").expect("scroll viewport");
+        let footer = cx.debug_bounds("settings-footer").expect("fixed footer");
+        assert_eq!(scroll.bottom(), footer.top());
+        assert!(panel.read_with(cx, |panel, _| panel.scroll.max_offset().y) > gpui::px(0.));
+
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: scroll.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-120.))),
+            modifiers: Default::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.scroll.offset().y) < gpui::px(0.));
+        assert_eq!(cx.debug_bounds("settings-footer"), Some(footer));
     }
 
     #[gpui::test]

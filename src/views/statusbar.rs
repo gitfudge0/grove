@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use gpui::{div, prelude::*, Context, Entity, Render, Subscription, Window};
 
-use super::{rpx, sidebar::Sidebar, tokens::*};
+use super::{motion, rpx, sidebar::Sidebar, tokens::*};
 use crate::{
     activity::ActivityState,
     entities::{session_registry::SessionId, terminal_session::Backend, toast::ToastKind},
@@ -209,7 +209,7 @@ impl Render for Statusbar {
                     .child(workspace),
             );
         }
-        bar = bar.child(
+        bar = bar.child(motion::fast(
             div()
                 .id("status-sessions")
                 .debug_selector(|| "status-sessions".into())
@@ -221,8 +221,10 @@ impl Render for Statusbar {
                 } else {
                     c::FG_DIM()
                 })
-                .child(label),
-        );
+                .child(label.clone()),
+            format!("status-session-summary-{label}"),
+            cx,
+        ));
         if !compact {
             bar = bar.child(div().flex_shrink_0().child(backend));
         }

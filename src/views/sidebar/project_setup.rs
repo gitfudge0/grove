@@ -8,7 +8,7 @@ use crate::{
     theme as c,
     views::{
         components::{form_action, project_form_field},
-        rpx,
+        motion, rpx,
         tokens::*,
     },
 };
@@ -148,7 +148,7 @@ impl ProjectSetup {
         match add_project::choose_typed(&mut self.state) {
             ChooseOutcome::Advanced(probe) => {
                 self.probe = probe;
-                self.state.init_git = false;
+                self.state.init_git = matches!(self.probe, GitProbe::NotRepo);
                 if self.state.name.trim().is_empty() {
                     self.state.name = add_project::path_basename(&self.state.path);
                 }
@@ -394,14 +394,17 @@ impl Render for ProjectSetup {
                 );
             fields = fields.child(path_field);
             if let Some(message) = error {
-                fields = fields.child(
+                let animation_id = format!("setup-path-error-{message}");
+                fields = fields.child(motion::fast(
                     div()
                         .id("setup-path-error")
                         .role(gpui::Role::Alert)
                         .text_size(rpx(TEXT_SMALL))
                         .text_color(c::FORM_ERROR())
-                        .child(message),
-                );
+                        .child(message.clone()),
+                    animation_id,
+                    cx,
+                ));
             } else {
                 fields = fields.child(
                     div()
@@ -568,7 +571,7 @@ impl Render for ProjectSetup {
                         .child(div().flex_1().min_w_0().flex().flex_col().gap(rpx(SPACE_SM))
                             .child(div().font_weight(FontWeight::MEDIUM).child("Initialize Git repository"))
                             .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
-                                .child("Create a repository in this folder when the project is added.")))
+                                .child("Start sessions in the main checkout now. Make the first commit before adding another worktree.")))
                         .child(div().w(rpx(SWITCH_W)).h(rpx(SWITCH_H)).flex_shrink_0()
                             .p(rpx(3.)).rounded(rpx(RADIUS_FULL)).flex().items_center()
                             .bg(if self.state.init_git { c::GREEN() } else { c::BORDER_STRONG() })
@@ -586,18 +589,20 @@ impl Render for ProjectSetup {
                             }
                         })))
                     .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_MUTE())
-                        .child("Leave this off to manage the folder without Git worktrees."));
+                        .child("Leave this off to start sessions in the folder without Git. Worktrees need Git."));
                 }
             }
             if self.busy {
-                fields = fields.child(
+                fields = fields.child(motion::fast(
                     div()
                         .id("setup-name-pending")
                         .role(gpui::Role::Status)
                         .aria_label("Adding project")
                         .text_color(c::FG_DIM())
                         .child("Checking the folder and saving to Grove…"),
-                );
+                    "project-setup-pending",
+                    cx,
+                ));
             }
         }
         let secondary = if source {
@@ -828,6 +833,7 @@ mod tests {
                     input.set_value(format!("{canonical}/."), window, cx);
                 });
                 setup.choose(window, cx);
+                setup.state.init_git = false;
                 setup.name_input.update(cx, |input, cx| {
                     input.set_value("Captured project", window, cx);
                 });
@@ -873,7 +879,7 @@ mod tests {
                 setup.choose(window, cx);
                 assert_eq!(setup.state.step, AddProjectStep::Details);
                 assert_eq!(setup.probe, GitProbe::NotRepo);
-                assert!(!setup.state.init_git);
+                assert!(setup.state.init_git);
                 setup
                     .name_input
                     .update(cx, |input, cx| input.set_value("retained-name", window, cx));
