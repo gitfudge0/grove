@@ -5670,6 +5670,8 @@ mod tests {
         assert!(cx.debug_bounds(run_selector).is_none());
         let actions_selector: &'static str =
             Box::leak(format!("worktree-actions-{path}").into_boxed_str());
+        let worktree_selector: &'static str =
+            Box::leak(format!("worktree-{path}").into_boxed_str());
         let count_selector: &'static str =
             Box::leak(format!("worktree-count-{path}").into_boxed_str());
         let actions_right = cx.debug_bounds(actions_selector).unwrap().right();
@@ -5708,7 +5710,7 @@ mod tests {
         );
         assert!(cx.debug_bounds(count_selector).is_none());
         assert!(cx
-            .debug_bounds(actions_selector)
+            .debug_bounds(worktree_selector)
             .unwrap()
             .contains(&cx.debug_bounds(run_selector).unwrap().center()));
         let run = cx.debug_bounds(run_selector).unwrap().center();
@@ -6749,7 +6751,12 @@ mod tests {
     #[gpui::test]
     fn project_popup_preserves_rows_and_restores_focus_on_dismiss(cx: &mut gpui::TestAppContext) {
         let repo = ChangedGitRepo::new();
-        let one_path = repo.path();
+        let one_path = repo
+            .0
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         cx.update(|cx| {
             gpui_component::init(cx);
             let projects = ["one", "two"]

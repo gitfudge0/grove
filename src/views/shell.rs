@@ -1872,9 +1872,16 @@ mod tests {
         let settings = cx
             .debug_bounds("sidebar-settings")
             .expect("settings indicator");
+        let workspace_header = cx
+            .debug_bounds("sidebar-workspace-header")
+            .expect("workspace header");
+        let workspace_picker = cx
+            .debug_bounds("workspace-picker")
+            .expect("workspace picker");
         assert_eq!(settings.size, grid.size);
-        assert!((f32::from(settings.left() - grid.right()) - SPACE_SM).abs() <= 1.0);
-        assert_eq!(settings.center().y, grid.center().y);
+        assert!(workspace_header.contains(&settings.center()));
+        assert_eq!(settings.center().y, workspace_picker.center().y);
+        assert!(settings.bottom() < grid.top());
         assert!(cx.debug_bounds("settings").is_none());
         cx.simulate_mouse_down(grid.center(), MouseButton::Left, gpui::Modifiers::default());
         cx.simulate_mouse_up(grid.center(), MouseButton::Left, gpui::Modifiers::default());
@@ -1887,13 +1894,9 @@ mod tests {
         let grid = cx
             .debug_bounds("sidebar-grid")
             .expect("grid control in app header");
-        let settings = cx
-            .debug_bounds("sidebar-settings")
-            .expect("settings in app header");
-        assert_eq!(settings.size, grid.size);
-        assert!((f32::from(settings.left() - grid.right()) - SPACE_SM).abs() <= 1.0);
-        assert_eq!(settings.center().y, grid.center().y);
-        assert!(settings.top() < project.top());
+        assert!(header.contains(&grid.center()));
+        assert_eq!(grid.center().y, header.center().y);
+        assert!(cx.debug_bounds("sidebar-settings").is_none());
         assert!(cx.debug_bounds("settings").is_none());
     }
 
