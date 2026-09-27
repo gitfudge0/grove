@@ -3920,11 +3920,32 @@ impl Render for Sidebar {
                     .flex()
                     .items_center()
                     .child(motion::fast(
-                        div().flex_1().child(if self.mode == ViewMode::List {
-                            "Sessions"
-                        } else {
-                            "Projects"
-                        }),
+                        div().flex_1().child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_SM))
+                                .child(
+                                    div()
+                                        .debug_selector(|| "sidebar-heading-label".into())
+                                        .child(if self.mode == ViewMode::List {
+                                            "Sessions"
+                                        } else {
+                                            "Projects"
+                                        }),
+                                )
+                                .when(self.mode == ViewMode::Project, |heading| {
+                                    heading.child(
+                                        div()
+                                            .id("projects-count")
+                                            .debug_selector(|| "projects-count".into())
+                                            .flex_shrink_0()
+                                            .font_family(crate::fonts::MONO_FAMILY)
+                                            .font_weight(gpui::FontWeight::NORMAL)
+                                            .child(format!("({})", self.snapshot.projects.len())),
+                                    )
+                                }),
+                        ),
                         format!("sidebar-heading-{:?}", self.mode),
                         cx,
                     ))
@@ -3934,21 +3955,6 @@ impl Render for Sidebar {
                             .flex_shrink_0()
                             .items_center()
                             .gap(rpx(SPACE_LG))
-                            .when(self.mode == ViewMode::Project, |trailing| {
-                                trailing.child(
-                                    div()
-                                        .id("projects-count")
-                                        .debug_selector(|| "projects-count".into())
-                                        .size(rpx(CHROME_CONTROL_H))
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .font_family(crate::fonts::MONO_FAMILY)
-                                        .font_weight(gpui::FontWeight::NORMAL)
-                                        .child(self.snapshot.projects.len().to_string()),
-                                )
-                            })
                             .child(self.view_controls(cx))
                             .child(
                                 self.control(
@@ -5291,8 +5297,13 @@ mod tests {
             );
             assert!(title.top() >= row.top() && title.bottom() <= row.bottom());
             assert!((f32::from(row.size.height) - PROJECT_ROW_H * zoom).abs() <= 1.0);
+            let heading = cx.debug_bounds("sidebar-heading-label").unwrap();
+            let count = cx.debug_bounds("projects-count").unwrap();
+            assert!(
+                (f32::from(count.left() - heading.right()) - SPACE_SM * zoom).abs() <= 1.0,
+                "project count is not adjacent to its title at {zoom}x"
+            );
             let centers = [
-                "projects-count",
                 "sidebar-view",
                 "sidebar-grid",
                 "projects-archive",
@@ -5306,7 +5317,6 @@ mod tests {
                 );
             }
             for id in [
-                "projects-count",
                 "sidebar-view",
                 "sidebar-grid",
                 "projects-archive",
