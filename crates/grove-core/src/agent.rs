@@ -68,6 +68,7 @@ impl Agent {
                 }
             }
             Agent::Codex => {
+                args.push("--no-alt-screen".into());
                 args.push("-c".into());
                 args.push(r#"tui.terminal_title=["activity","thread-title"]"#.into());
                 if skip_permissions {
@@ -156,7 +157,7 @@ impl Agent {
             ];
             shell_args.extend(prefix_args);
             shell_args.extend(args.iter().cloned());
-            return (crate::env_path::login_shell(), shell_args);
+            (crate::env_path::login_shell(), shell_args)
         }
 
         #[cfg(windows)]
@@ -296,6 +297,7 @@ mod tests {
         assert_eq!(
             Agent::Codex.multi_root_launch_args(true, false, &roots),
             Some(vec![
+                "--no-alt-screen".into(),
                 "-c".into(),
                 r#"tui.terminal_title=["activity","thread-title"]"#.into(),
                 "--dangerously-bypass-approvals-and-sandbox".into(),
@@ -329,6 +331,7 @@ mod tests {
         assert_eq!(
             Agent::Codex.launch_args(false, true),
             vec![
+                "--no-alt-screen".to_string(),
                 "-c".to_string(),
                 r#"tui.terminal_title=["activity","thread-title"]"#.to_string(),
             ]
@@ -336,10 +339,11 @@ mod tests {
     }
 
     #[test]
-    fn codex_launch_requests_generated_thread_titles() {
+    fn codex_launch_preserves_scrollback_and_requests_generated_thread_titles() {
         assert_eq!(
             Agent::Codex.launch_args(false, false),
             vec![
+                "--no-alt-screen".to_string(),
                 "-c".to_string(),
                 r#"tui.terminal_title=["activity","thread-title"]"#.to_string(),
             ]
@@ -347,6 +351,7 @@ mod tests {
         assert_eq!(
             Agent::Codex.launch_args(true, false),
             vec![
+                "--no-alt-screen".to_string(),
                 "-c".to_string(),
                 r#"tui.terminal_title=["activity","thread-title"]"#.to_string(),
                 "--dangerously-bypass-approvals-and-sandbox".to_string(),

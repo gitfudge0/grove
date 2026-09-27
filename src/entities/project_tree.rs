@@ -16,7 +16,7 @@ use crate::entities::session_registry::{SessionId, SessionRegistry};
 use crate::entities::workspace_state::{
     RailMode, SnapshotProject, SnapshotWorktree, TreeSnapshot, WorkspaceState,
 };
-use crate::views::rows::{normalize_wt_path, path_basename};
+use crate::paths::{normalize_wt_path, path_basename};
 
 const IS_REPO_TTL: Duration = Duration::from_secs(5);
 
@@ -409,7 +409,6 @@ mod tests {
             name: name.to_string(),
             path: path.to_string(),
             scripts: grove_core::storage::ProjectScripts::default(),
-            theme: None,
             archived: false,
             worktree_dir: None,
         }

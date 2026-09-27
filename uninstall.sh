@@ -42,4 +42,4 @@ if command -v cargo >/dev/null 2>&1 && cargo install --list 2>/dev/null | grep -
 fi
 
 echo
-echo "Your project registrations and theme settings under ~/.config/grove were left in place."
+echo "Your project registrations and appearance setting under ~/.config/grove were left in place."

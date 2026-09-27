@@ -1,6 +1,7 @@
 //! `GroveTerm` — the headless terminal model: an `alacritty_terminal::Term` exposing Grove's *token space* only (no theme colors, no gpui types, no executor).
 //! Behavioral parity with the in-tree `vt100` parser is enforced by `tests/golden.rs`, which feeds recorded PTY streams to both and compares cell by cell.
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener};
@@ -90,11 +91,199 @@ impl EventListener for GroveListener {
     }
 }
 
+const MAX_OSC_CWD_BYTES: usize = 16 * 1024;
+
+#[derive(Clone, Copy, Default)]
+enum CwdEscapeState {
+    #[default]
+    Ground,
+    Escape,
+    Csi,
+    ControlString,
+    ControlStringEscape,
+    Osc,
+    OscEscape,
+    DiscardOsc,
+    DiscardOscEscape,
+}
+
+/// Watches OSC 7 alongside the emulator. The pinned vte parser discards OSC 7
+/// and its standard-feature OSC buffer has no size limit.
+struct CwdTracker {
+    state: CwdEscapeState,
+    osc: Vec<u8>,
+    local_host: Option<String>,
+    cwd: Option<String>,
+}
+
+impl CwdTracker {
+    fn new(local_host: Option<String>) -> Self {
+        Self {
+            state: CwdEscapeState::Ground,
+            osc: Vec::new(),
+            local_host,
+            cwd: None,
+        }
+    }
+
+    fn escape(&mut self, byte: u8) {
+        self.osc.clear();
+        self.state = match byte {
+            b']' => CwdEscapeState::Osc,
+            b'P' | b'X' | b'^' | b'_' => CwdEscapeState::ControlString,
+            b'[' => CwdEscapeState::Csi,
+            b'\x1b' => CwdEscapeState::Escape,
+            _ => CwdEscapeState::Ground,
+        };
+    }
+
+    fn finish_osc(&mut self) -> bool {
+        let next = self
+            .osc
+            .strip_prefix(b"7;")
+            .and_then(|url| parse_osc7_file_url(url, self.local_host.as_deref()));
+        self.osc.clear();
+        if let Some(next) = next {
+            if self.cwd.as_deref() != Some(next.as_str()) {
+                self.cwd = Some(next);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn process(&mut self, bytes: &[u8]) -> bool {
+        let mut changed = false;
+        for &byte in bytes {
+            match self.state {
+                CwdEscapeState::Ground => {
+                    if byte == b'\x1b' {
+                        self.state = CwdEscapeState::Escape;
+                    }
+                }
+                CwdEscapeState::Escape => self.escape(byte),
+                CwdEscapeState::Csi => {
+                    if byte == b'\x1b' {
+                        self.state = CwdEscapeState::Escape;
+                    } else if (0x40..=0x7e).contains(&byte) || matches!(byte, 0x18 | 0x1a) {
+                        self.state = CwdEscapeState::Ground;
+                    }
+                }
+                CwdEscapeState::ControlString => {
+                    if byte == b'\x1b' {
+                        self.state = CwdEscapeState::ControlStringEscape;
+                    } else if matches!(byte, 0x18 | 0x1a) {
+                        self.state = CwdEscapeState::Ground;
+                    }
+                }
+                CwdEscapeState::ControlStringEscape => {
+                    self.state = match byte {
+                        b'\\' => CwdEscapeState::Ground,
+                        b'\x1b' => CwdEscapeState::ControlStringEscape,
+                        _ => CwdEscapeState::ControlString,
+                    };
+                }
+                CwdEscapeState::Osc => match byte {
+                    b'\x07' => {
+                        changed |= self.finish_osc();
+                        self.state = CwdEscapeState::Ground;
+                    }
+                    b'\x1b' => self.state = CwdEscapeState::OscEscape,
+                    0x18 | 0x1a => {
+                        self.osc.clear();
+                        self.state = CwdEscapeState::Ground;
+                    }
+                    _ if self.osc.len() < MAX_OSC_CWD_BYTES => self.osc.push(byte),
+                    _ => {
+                        self.osc.clear();
+                        self.state = CwdEscapeState::DiscardOsc;
+                    }
+                },
+                CwdEscapeState::OscEscape => {
+                    if byte == b'\\' {
+                        changed |= self.finish_osc();
+                        self.state = CwdEscapeState::Ground;
+                    } else {
+                        self.escape(byte);
+                    }
+                }
+                CwdEscapeState::DiscardOsc => {
+                    self.state = match byte {
+                        b'\x07' | 0x18 | 0x1a => CwdEscapeState::Ground,
+                        b'\x1b' => CwdEscapeState::DiscardOscEscape,
+                        _ => CwdEscapeState::DiscardOsc,
+                    };
+                }
+                CwdEscapeState::DiscardOscEscape => {
+                    if byte == b'\\' {
+                        self.state = CwdEscapeState::Ground;
+                    } else {
+                        self.escape(byte);
+                    }
+                }
+            }
+        }
+        changed
+    }
+}
+
+fn parse_osc7_file_url(url: &[u8], local_host: Option<&str>) -> Option<String> {
+    let url = url.strip_prefix(b"file://")?;
+    let slash = url.iter().position(|&byte| byte == b'/')?;
+    let host = std::str::from_utf8(&url[..slash]).ok()?;
+    if !host.is_empty()
+        && !host.eq_ignore_ascii_case("localhost")
+        && !local_host.is_some_and(|local| host.eq_ignore_ascii_case(local))
+    {
+        return None;
+    }
+    let encoded_path = &url[slash..];
+    if encoded_path.is_empty() || encoded_path.len() > MAX_OSC_CWD_BYTES {
+        return None;
+    }
+    let mut decoded = Vec::with_capacity(encoded_path.len());
+    let mut i = 0;
+    while i < encoded_path.len() {
+        let byte = encoded_path[i];
+        if matches!(byte, b'?' | b'#') {
+            return None;
+        }
+        if byte == b'%' {
+            let hi = hex_value(*encoded_path.get(i + 1)?)?;
+            let lo = hex_value(*encoded_path.get(i + 2)?)?;
+            decoded.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            decoded.push(byte);
+            i += 1;
+        }
+    }
+    if decoded.iter().any(|byte| *byte < 0x20 || *byte == 0x7f) {
+        return None;
+    }
+    let path = String::from_utf8(decoded).ok()?;
+    Path::new(&path).is_absolute().then_some(path)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn local_hostname() -> Option<String> {
+    sysinfo::System::host_name().filter(|host| !host.is_empty())
+}
+
 pub struct GroveTerm {
     term: FairMutex<Term<GroveListener>>,
     processor: Processor<StdSyncHandler>,
     listener: GroveListener,
-    /// Bumped on damage; a cheap "did anything change" signal instead of diffing snapshots.
+    cwd_tracker: CwdTracker,
+    /// Bumped on screen damage or a new OSC 7 directory so views repaint.
     damage_gen: u64,
     rows: u16,
     cols: u16,
@@ -117,6 +306,7 @@ impl GroveTerm {
             term: FairMutex::new(Term::new(config, &size, listener.clone())),
             processor: Processor::<StdSyncHandler>::new(),
             listener,
+            cwd_tracker: CwdTracker::new(local_hostname()),
             damage_gen: 0,
             rows,
             cols,
@@ -125,6 +315,7 @@ impl GroveTerm {
 
     /// Chunk boundaries are irrelevant: `Processor` carries escape-sequence state across calls.
     pub fn process(&mut self, bytes: &[u8]) {
+        let cwd_changed = self.cwd_tracker.process(bytes);
         let mut term = self.term.lock();
         self.processor.advance(&mut *term, bytes);
         let damaged = match term.damage() {
@@ -133,7 +324,7 @@ impl GroveTerm {
         };
         term.reset_damage();
         drop(term);
-        if damaged {
+        if damaged || cwd_changed {
             self.damage_gen = self.damage_gen.wrapping_add(1);
         }
     }
@@ -196,6 +387,11 @@ impl GroveTerm {
         } else {
             Some(t)
         }
+    }
+
+    /// Last local absolute directory reported by OSC 7, if any.
+    pub fn current_cwd(&self) -> Option<&str> {
+        self.cwd_tracker.cwd.as_deref()
     }
 
     pub fn bell_count(&self) -> usize {
@@ -603,5 +799,61 @@ mod tests {
         t.process(&bytes);
         assert_eq!(t.mouse_mode(), MouseMode::None);
         assert_eq!(t.encoding(), MouseEncoding::Default);
+    }
+
+    #[test]
+    fn osc7_tracks_local_directory_across_chunks_and_repaints() {
+        let mut term = GroveTerm::new(24, 80);
+        assert_eq!(term.current_cwd(), None);
+        let before = term.damage_generation();
+        term.process(b"\x1b]7;file:///tmp/first%20dir\x07");
+        assert_eq!(term.current_cwd(), Some("/tmp/first dir"));
+        assert!(term.damage_generation() > before);
+
+        term.process(b"\x1b]7;file://localhost/tmp/next%3Bdir\x1b");
+        assert_eq!(term.current_cwd(), Some("/tmp/first dir"));
+        term.process(b"\\");
+        assert_eq!(term.current_cwd(), Some("/tmp/next;dir"));
+        term.process(b"\x1b]2;Shell title\x07");
+        assert_eq!(term.title().as_deref(), Some("Shell title"));
+        assert_eq!(term.current_cwd(), Some("/tmp/next;dir"));
+    }
+
+    #[test]
+    fn osc7_accepts_only_local_hosts_and_valid_absolute_file_paths() {
+        let mut tracker = CwdTracker::new(Some("dev-host.example".into()));
+        assert!(tracker.process(b"\x1b]7;file://dev-host.example/tmp/work\x07"));
+        assert_eq!(tracker.cwd.as_deref(), Some("/tmp/work"));
+
+        for invalid in [
+            &b"\x1b]7;file://remote.example/tmp/remote\x07"[..],
+            b"\x1b]7;https://dev-host.example/tmp/work\x07",
+            b"\x1b]7;file://dev-host.example\x07",
+            b"\x1b]7;file://dev-host.example/tmp/%GG\x07",
+            b"\x1b]7;file://dev-host.example/tmp/%00\x07",
+            b"\x1b]7;file://dev-host.example/tmp/%FF\x07",
+            b"\x1b]7;file://dev-host.example/tmp/?query\x07",
+            b"\x1b]7;file://dev-host.example/tmp/#fragment\x07",
+        ] {
+            assert!(!tracker.process(invalid), "invalid sequence: {invalid:?}");
+            assert_eq!(tracker.cwd.as_deref(), Some("/tmp/work"));
+        }
+    }
+
+    #[test]
+    fn osc7_ignores_decoys_and_oversized_payloads_then_recovers() {
+        let mut tracker = CwdTracker::new(None);
+        assert!(!tracker.process(b"\x1bP\x1b]7;file:///tmp/decoy\x07\x1b\\"));
+        assert_eq!(tracker.cwd, None);
+        let oversized = [
+            b"\x1b]7;file:///tmp/".as_slice(),
+            vec![b'a'; MAX_OSC_CWD_BYTES].as_slice(),
+        ]
+        .concat();
+        assert!(!tracker.process(&oversized));
+        assert!(tracker.osc.len() <= MAX_OSC_CWD_BYTES);
+        assert!(!tracker.process(b"\x07"));
+        assert!(tracker.process(b"\x1b]7;file:///tmp/recovered\x07"));
+        assert_eq!(tracker.cwd.as_deref(), Some("/tmp/recovered"));
     }
 }

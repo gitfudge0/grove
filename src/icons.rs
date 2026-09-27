@@ -79,6 +79,8 @@ fn svg_for(name: &str) -> String {
         "play" => r#"<path d="M4.5 3.5l8 4.5-8 4.5z" fill="currentColor" stroke="none"/>"#,
         "chev-down" => r#"<path d="M4 6l4 4 4-4"/>"#,
         "chev-right" => r#"<path d="M6 4l4 4-4 4"/>"#,
+        "arrow-left" => r#"<path d="M13 8H3M7 4 3 8l4 4"/>"#,
+        "arrow-right" => r#"<path d="M3 8h10M9 4l4 4-4 4"/>"#,
         // Chevron pointing into a vertical bar — "collapse panel to the right".
         "collapse-right" => r#"<path d="M6 4l4 4-4 4"/><path d="M13 3v10"/>"#,
         // Two stacked open chevrons + label hatches — "everything is open".
@@ -97,7 +99,7 @@ fn svg_for(name: &str) -> String {
         // Three stacked full-width bars — "show the flat session list".
         // Deliberately unlike `expand-*` (which pair chevrons with hatches):
         // the rail's content-mode button must not read as a cycle button.
-        "rail-sessions" => r#"<path d="M2.5 4h11M2.5 8h11M2.5 12h11"/>"#,
+        "list" | "rail-sessions" => r#"<path d="M2.5 4h11M2.5 8h11M2.5 12h11"/>"#,
         // A trunk with two indented branch stubs — "show the project tree".
         "rail-tree" => {
             r#"<path d="M4 2.5v9.5"/><path d="M4 6h4M4 11h4"/><path d="M10.5 6h3M10.5 11h3"/>"#
@@ -116,7 +118,7 @@ fn svg_for(name: &str) -> String {
         }
         "dot" => r#"<circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/>"#,
         "ring" => r#"<circle cx="8" cy="8" r="3.5"/>"#,
-        "term" => {
+        "terminal" | "term" => {
             r#"<rect x="1.5" y="3" width="13" height="10" rx="1.5"/><path d="M4.5 7l2 1.5-2 1.5M8 10h3.5"/>"#
         }
         "more" => {
@@ -142,6 +144,9 @@ fn svg_for(name: &str) -> String {
         // Distinct from `restart`, which spins the other way and reads as
         // "relaunch this session".
         "restore" => r#"<path d="M3.2 8a4.8 4.8 0 1 0 1.5-3.5"/><path d="M2.6 2.6v3.1h3.1"/>"#,
+        "archive" => {
+            r#"<rect x="2" y="2.5" width="12" height="3" rx=".6"/><path d="M3 5.5v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-7M6 8.5h4"/>"#
+        }
         "edit" => r#"<path d="M11.5 2.5l2 2L6 12l-2.5.5L4 10z"/>"#,
         // I-beam text cursor — "rename" (distinct from the "edit" pencil).
         "rename" => r#"<path d="M5 3h6M8 3v10M5 13h6"/>"#,
@@ -212,11 +217,13 @@ mod tests {
             "expand-all",
             "expand-sessions",
             "rail-sessions",
+            "list",
             "rail-tree",
             "git",
             "no-git",
             "play",
             "term",
+            "terminal",
             "more",
             "trash",
             "close",

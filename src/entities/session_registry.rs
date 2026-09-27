@@ -14,6 +14,10 @@ use grove_core::tmux;
 
 use crate::entities::terminal_session::TerminalSession;
 
+fn tmux_teardown_enabled() -> bool {
+    !cfg!(test)
+}
+
 /// Opaque, stable, monotonic session key. Never reused within a run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(u64);
@@ -44,6 +48,8 @@ pub struct SessionMeta {
     pub temp_bundle_path: Option<String>,
     /// Internal label (`claude 1`, …); stripped from the OSC title to make the context text (`src/gui/rows.rs:778`).
     pub label: String,
+    /// Tmux pane title captured during reattach discovery, available before the PTY emits OSC output.
+    pub restored_title: Option<String>,
     pub spawned_at: Instant,
     /// File name is `{our pid}-{our SessionId}.state`; the pid prefix, not the id, is what makes cross-run collision safe (`crates/grove-core/src/attention.rs:110-121`).
     pub attention: Option<AttentionFiles>,
@@ -159,6 +165,7 @@ impl SessionRegistry {
             context_roots,
             temp_bundle_path,
             label,
+            restored_title: None,
             spawned_at: Instant::now(),
             attention,
             tmux: false,
@@ -181,6 +188,7 @@ impl SessionRegistry {
                 context_roots: d.context_roots.clone(),
                 temp_bundle_path: d.temp_bundle_path.clone(),
                 label: d.label.clone(),
+                restored_title: d.pane_title.clone(),
                 spawned_at: Instant::now(),
                 attention: None,
                 tmux: true,
@@ -240,7 +248,11 @@ impl SessionRegistry {
             grove_core::multi_root::cleanup_path(std::path::Path::new(path));
         }
         // Without this the tmux session outlives grove and gets reattached on the next launch (`crates/grove-core/src/session.rs:522-534`); unlike iced, native children are not killpg'd here.
-        if let Some(name) = meta.tmux_name.as_deref() {
+        if let Some(name) = meta
+            .tmux_name
+            .as_deref()
+            .filter(|_| tmux_teardown_enabled())
+        {
             tmux::kill_session(name);
             session_meta::delete(name);
         }
@@ -316,6 +328,41 @@ impl SessionRegistry {
             }
         }
         count
+    }
+
+    /// Relabel independently only after all live primary/context paths resolve.
+    pub fn rename_project_by_path(
+        &mut self,
+        projects: &[grove_core::storage::Project],
+        path: &str,
+        to: &str,
+    ) -> Result<usize, String> {
+        for meta in &self.order {
+            grove_core::session_meta::project_owner(projects, &meta.wt_path)?;
+            for root in &meta.context_roots {
+                grove_core::session_meta::project_owner(projects, &root.wt_path)?;
+            }
+        }
+        let owns = |wt: &str| {
+            grove_core::session_meta::project_owner(projects, wt)
+                .is_ok_and(|project| project.path == path)
+        };
+        let mut count = 0;
+        for meta in &mut self.order {
+            let mut changed = false;
+            if owns(&meta.wt_path) && meta.project != to {
+                meta.project = to.to_string();
+                changed = true;
+            }
+            for root in &mut meta.context_roots {
+                if owns(&root.wt_path) && root.project != to {
+                    root.project = to.to_string();
+                    changed = true;
+                }
+            }
+            count += usize::from(changed);
+        }
+        Ok(count)
     }
 
     #[must_use]
@@ -467,6 +514,7 @@ impl SessionRegistry {
                 context_roots: Vec::new(),
                 temp_bundle_path: None,
                 label,
+                restored_title: None,
                 spawned_at: Instant::now(),
                 attention: None,
                 tmux: false,
@@ -487,6 +535,7 @@ impl SessionRegistry {
             context_roots: Vec::new(),
             temp_bundle_path: None,
             label,
+            restored_title: None,
             spawned_at: Instant::now(),
             attention: None,
             tmux: false,
@@ -498,6 +547,38 @@ impl SessionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_binary_tests_do_not_kill_production_tmux_from_registry() {
+        assert!(!tmux_teardown_enabled());
+    }
+
+    #[test]
+    fn removing_test_reattach_keeps_registry_semantics_without_tmux_teardown() {
+        let discovered = tmux::DiscoveredSession {
+            name: "grove__registry_test_only".into(),
+            pane_title: Some("Continue work".into()),
+            wt_path: "/unused".into(),
+            project: "unused".into(),
+            label: "Terminal 1".into(),
+            agent: Agent::Terminal,
+            context_roots: Vec::new(),
+            temp_bundle_path: None,
+        };
+        let mut registry = SessionRegistry::new();
+        let id = registry.insert_reattached(0, &discovered);
+        assert_eq!(
+            registry
+                .meta(id)
+                .and_then(|meta| meta.restored_title.as_deref()),
+            Some("Continue work")
+        );
+        assert_eq!(
+            registry.remove(id).and_then(|meta| meta.tmux_name),
+            Some(discovered.name)
+        );
+        assert!(registry.meta(id).is_none());
+    }
 
     #[test]
     fn ids_are_monotonic_and_stable_across_removals() {
@@ -620,6 +701,7 @@ mod tests {
         ];
         let discovered = grove_core::tmux::DiscoveredSession {
             name: "grove-portfolio-claude-1".into(),
+            pane_title: None,
             wt_path: "/portfolio".into(),
             project: "portfolio".into(),
             label: "claude 1".into(),

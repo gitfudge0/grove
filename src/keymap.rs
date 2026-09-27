@@ -133,7 +133,7 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::SwitchSession),
         triggers: &["s", "S"],
         display_keys: "s",
-        description: "Switch to session",
+        description: "Switch workspace or session",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -685,9 +685,9 @@ fn zen_focus_bindings() -> Vec<KeyBinding> {
     ]
 }
 
-/// Derived from [`crate::views::modals::input::InputPolicy`] so bindings and the field's own policy can't disagree.
+/// Derived from [`crate::input_policy::InputPolicy`] so bindings and the field's own policy can't disagree.
 pub fn modal_input_bindings() -> Vec<KeyBinding> {
-    use crate::views::modals::input::{InputPolicy, ModalInput};
+    use crate::input_policy::{override_context, InputPolicy};
 
     let mut out = Vec::new();
     for kind in crate::modal::ModalKind::ALL {
@@ -695,7 +695,7 @@ pub fn modal_input_bindings() -> Vec<KeyBinding> {
         if policy.multi_line {
             continue;
         }
-        let ctx = ModalInput::override_context(kind);
+        let ctx = override_context(kind);
         let ctx = Some(ctx.as_str());
         out.push(KeyBinding::new("up", ModalUp, ctx));
         out.push(KeyBinding::new("down", ModalDown, ctx));
@@ -788,10 +788,135 @@ pub fn bindings() -> Vec<KeyBinding> {
     out
 }
 
+/// Only bind actions the replacement shell can currently perform. Grid chords
+/// require its key context; unsupported terminal shortcuts stay with the PTY.
+pub fn shell_bindings() -> Vec<KeyBinding> {
+    use GlobalShortcut as S;
+    let supported = |action| {
+        matches!(
+            action,
+            S::NewSession
+                | S::NewSessionInWorktree
+                | S::SwitchSession
+                | S::NextSession
+                | S::PrevSession
+                | S::ToggleGrid
+                | S::ToggleZen
+                | S::Settings
+                | S::ZoomIn
+                | S::ZoomOut
+                | S::ZoomReset
+                | S::ShortcutOverlay
+                | S::CloseFocusedSession
+                | S::ToggleRailMode
+                | S::NewHomeTerminal
+                | S::JumpToWaitingSession
+        )
+    };
+    let mut out = Vec::new();
+    for def in SHORTCUTS {
+        let Some(action) = def.action.filter(|action| supported(*action)) else {
+            continue;
+        };
+        for context in contexts_for(def) {
+            for chord in keystrokes_for(def) {
+                if let Some(binding) = binding_for(&chord, action, context) {
+                    out.push(binding);
+                }
+            }
+        }
+    }
+    out.extend(select_session_bindings());
+    out.extend(grid_bindings());
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn shell_bindings_cover_live_actions_without_claiming_pty_keys() {
+        let bindings = shell_bindings();
+        let names: HashSet<_> = bindings
+            .iter()
+            .map(|binding| binding.action().name())
+            .collect();
+        for name in [
+            "NewSession",
+            "NewSessionInWorktree",
+            "SwitchSession",
+            "NextSession",
+            "PrevSession",
+            "SelectSession",
+            "JumpToWaitingSession",
+            "ToggleRailMode",
+            "ToggleGrid",
+            "ToggleZen",
+            "NewHomeTerminal",
+            "Settings",
+            "ShortcutOverlay",
+            "CloseFocusedSession",
+            "ZoomIn",
+            "ZoomOut",
+            "ZoomReset",
+            "GridMove",
+            "GridSwap",
+        ] {
+            assert!(
+                names.iter().any(|bound| bound.ends_with(name)),
+                "{name} is unbound"
+            );
+        }
+        let chords: Vec<_> = bindings
+            .iter()
+            .map(|binding| {
+                binding
+                    .keystrokes()
+                    .iter()
+                    .map(gpui::KeybindingKeystroke::unparse)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        assert!(!chords
+            .iter()
+            .any(|chord| chord == "tab" || chord == "ctrl-c"));
+        assert!(chords.contains(&format!("{}w", platform_mod_prefix())));
+        assert!(!names.iter().any(|bound| bound.ends_with("ToggleTermPanel")));
+    }
+
+    #[test]
+    fn grid_context_shadows_global_session_navigation_only_in_grid() {
+        let keymap = gpui::Keymap::new(shell_bindings());
+        let grid = [gpui::KeyContext::try_from("Grid").unwrap()];
+        let winner = |chord: &str, contexts: &[gpui::KeyContext]| {
+            let key = gpui::Keystroke::parse(chord).unwrap();
+            let (bindings, _) = keymap.bindings_for_input(&[key], contexts);
+            bindings
+                .first()
+                .map(|binding| binding.action().name().to_string())
+        };
+        let prefix = platform_mod_prefix();
+        assert!(winner(&format!("{prefix}j"), &[])
+            .unwrap()
+            .ends_with("NextSession"));
+        assert!(winner(&format!("{prefix}k"), &[])
+            .unwrap()
+            .ends_with("PrevSession"));
+        for key in ["j", "k", "left", "right", "up", "down"] {
+            assert!(winner(&format!("{prefix}{key}"), &grid)
+                .unwrap()
+                .ends_with("GridMove"));
+        }
+        for swap_prefix in grid_swap_prefixes() {
+            assert!(winner(&format!("{swap_prefix}right"), &grid)
+                .unwrap()
+                .ends_with("GridSwap"));
+            assert!(winner(&format!("{swap_prefix}right"), &[]).is_none());
+        }
+    }
 
     #[test]
     fn every_actionable_row_produces_a_binding() {

@@ -155,7 +155,7 @@ pub struct Tracker {
     pub was_working: bool,
     /// The terminal's bell count we've already consumed.
     pub bell_seen: usize,
-    /// A bell rang while the session was unfocused and hasn't been acked.
+    /// A bell rang and no subsequent work signal has cleared it.
     pub bell_pending: bool,
 }
 
@@ -174,7 +174,7 @@ impl Default for Tracker {
 
 impl Tracker {
     /// Acknowledge pending attention: called when the user focuses the
-    /// session. Bell clears, working-history resets, urgent states downgrade.
+    /// session. Completed work is acknowledged; an unanswered prompt stays waiting.
     ///
     /// Acknowledgment also stamps `last_active`: that clock means "last worked
     /// on **or** last interacted with", so the session the user just opened is
@@ -185,12 +185,12 @@ impl Tracker {
     /// the user is working in it right now.
     pub fn acknowledge(&mut self) {
         self.last_active = Instant::now();
+        if self.state == ActivityState::WaitingForInput {
+            return;
+        }
         self.bell_pending = false;
         self.was_working = false;
-        if matches!(
-            self.state,
-            ActivityState::WaitingForInput | ActivityState::Done
-        ) {
+        if self.state == ActivityState::Done {
             self.state = ActivityState::Idle;
         }
     }
@@ -212,7 +212,7 @@ pub fn classify(agent: Agent, tail: &str, sig: &Signals) -> ActivityState {
     // a working title on a long-quiet PTY means a hard-hung agent whose
     // animated title froze, not real work, so the title alone never asserts
     // Working past TITLE_STALE.
-    let waiting = !sig.focused && (sig.bell_pending || matches_waiting(agent, tail));
+    let waiting = sig.bell_pending || matches_waiting(agent, tail);
     let title = sig.title.as_deref();
     if !waiting && sig.output_age < TITLE_STALE && title.is_some_and(|t| title_working(agent, t)) {
         return ActivityState::Working;
@@ -450,16 +450,15 @@ mod tests {
         );
     }
 
-    /// The focused session never shows WaitingForInput.
+    /// Reading a prompt does not answer it.
     #[test]
-    fn focused_session_never_waiting() {
+    fn focused_session_preserves_waiting() {
         let s = classify(
             Agent::Claude,
             "Do you want to proceed?",
             &sig(true, 10, true, true, true),
         );
-        assert_ne!(s, ActivityState::WaitingForInput);
-        assert_eq!(s, ActivityState::Done); // was_working + quiet
+        assert_eq!(s, ActivityState::WaitingForInput);
     }
 
     // ── per-agent fixtures (captured screen snippets) ───────────────────────
@@ -483,7 +482,7 @@ mod tests {
 │   2. Yes, allow all edits during this session       │
 │   3. No, and tell Claude what to do differently     │";
         assert_eq!(
-            classify(Agent::Claude, tail, &sig(true, 10, false, true, false)),
+            classify(Agent::Claude, tail, &sig(true, 10, false, true, true)),
             ActivityState::WaitingForInput
         );
     }
@@ -643,7 +642,7 @@ mod tests {
     // ── tracker acknowledgment ──────────────────────────────────────────────
 
     #[test]
-    fn acknowledge_clears_bell_and_downgrades() {
+    fn acknowledge_preserves_unanswered_prompt() {
         let mut t = Tracker {
             state: ActivityState::WaitingForInput,
             state_since: Instant::now(),
@@ -653,9 +652,31 @@ mod tests {
             bell_pending: true,
         };
         t.acknowledge();
-        assert!(!t.bell_pending);
-        assert!(!t.was_working);
-        assert_eq!(t.state, ActivityState::Idle);
+        assert!(t.bell_pending);
+        assert!(t.was_working);
+        assert_eq!(t.state, ActivityState::WaitingForInput);
+        assert_eq!(
+            classify(
+                Agent::Claude,
+                "",
+                &sig(true, 0, t.bell_pending, t.was_working, true)
+            ),
+            ActivityState::Working
+        );
+    }
+
+    #[test]
+    fn acknowledge_still_clears_completed_work() {
+        let mut tracker = Tracker {
+            state: ActivityState::Done,
+            bell_pending: true,
+            was_working: true,
+            ..Tracker::default()
+        };
+        tracker.acknowledge();
+        assert_eq!(tracker.state, ActivityState::Idle);
+        assert!(!tracker.bell_pending);
+        assert!(!tracker.was_working);
     }
 
     #[test]

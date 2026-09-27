@@ -22,10 +22,29 @@ use portable_pty::CommandBuilder;
 const INIT_ROWS: u16 = 24;
 const INIT_COLS: u16 = 80;
 
+fn tmux_side_effects_enabled() -> bool {
+    !cfg!(test)
+}
+
+fn managed_worktree_terminal_sidecar(target: &SpawnTarget) -> bool {
+    target.use_tmux
+        && target.agent == grove_core::agent::Agent::Terminal
+        && !target.project.is_empty()
+}
+
 fn output_age_at(last_output_at: Option<Instant>, now: Instant) -> Duration {
     last_output_at.map_or(Duration::MAX, |last_output_at| {
         now.saturating_duration_since(last_output_at)
     })
+}
+
+fn output_needs_notify(
+    last_damage_gen: u64,
+    damage_gen: u64,
+    previous_title: Option<&str>,
+    title: Option<&str>,
+) -> bool {
+    damage_gen != last_damage_gen || title != previous_title
 }
 
 /// Tmux keeps its scrollback in copy-mode on the alternate screen, so grove's own scrollback is empty for it (`session.rs:667-705`).
@@ -37,6 +56,8 @@ pub enum Backend {
 
 pub struct TerminalSession {
     term: GroveTerm,
+    /// Launch directory only; the shell may change directory after startup.
+    initial_cwd: Option<String>,
     /// `None` only when no PTY could be spawned at all; the grid still renders empty rather than taking the window down.
     pty: Option<PtyHandle>,
     backend: Backend,
@@ -85,7 +106,7 @@ impl TerminalSession {
             .as_ref()
             .and_then(|path| grove_core::multi_root::SymlinkBundle::from_path(path.into()));
         let mut spawn_error = None;
-        let spawned = if target.use_tmux {
+        let spawned = if target.use_tmux && tmux_side_effects_enabled() {
             match spawn_tmux(&cwd, target, extra_args, state_file, rows, cols) {
                 Ok(v) => Some(v),
                 Err(e) => {
@@ -123,6 +144,7 @@ impl TerminalSession {
         };
         Self {
             term: GroveTerm::new(rows, cols),
+            initial_cwd: Some(cwd),
             pty,
             backend,
             rows,
@@ -151,6 +173,7 @@ impl TerminalSession {
         let cols = cols.max(1);
         Self {
             term: GroveTerm::new(rows, cols),
+            initial_cwd: None,
             pty: None,
             backend: Backend::Tmux {
                 name: name.to_string(),
@@ -175,6 +198,9 @@ impl TerminalSession {
 
     /// Performs the deferred tmux attach at the caller's real dims; idempotent since the name is taken out of `pending_attach`.
     pub fn attach_now(&mut self, cx: &mut Context<Self>) {
+        if !tmux_side_effects_enabled() {
+            return;
+        }
         let Some(name) = self.pending_attach.take() else {
             return;
         };
@@ -228,6 +254,7 @@ impl TerminalSession {
         let rx = pty.as_mut().and_then(PtyHandle::take_receiver);
         Self {
             term: GroveTerm::new(INIT_ROWS, INIT_COLS),
+            initial_cwd: Some(cwd.to_string()),
             pty,
             backend: Backend::Native,
             rows: INIT_ROWS,
@@ -283,14 +310,16 @@ impl TerminalSession {
                                 break;
                             }
                         }
+                        let _ = this.update(cx, Self::reader_closed);
                     })
                 },
             )
     }
 
-    /// Feeds chunks into the model and repaints only if the grid actually moved (damage-generation compare, not a redraw-every-chunk).
+    /// Feeds chunks into the model and notifies when the grid or OSC title changes.
     fn ingest(&mut self, chunks: &[Vec<u8>], cx: &mut Context<Self>) {
         self.last_output_at = Some(Instant::now());
+        let previous_title = self.term.title();
         for chunk in chunks {
             self.term.process(chunk);
         }
@@ -304,10 +333,21 @@ impl TerminalSession {
             }
         }
         let generation = self.term.damage_generation();
-        if generation != self.last_damage_gen {
+        let title = self.term.title();
+        if output_needs_notify(
+            self.last_damage_gen,
+            generation,
+            previous_title.as_deref(),
+            title.as_deref(),
+        ) {
             self.last_damage_gen = generation;
             cx.notify();
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ingest_for_test(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        self.ingest(&[bytes.to_vec()], cx);
     }
 
     /// Order is load-bearing: snap to live and leave copy-mode before the bytes go out (`session.rs:604-625`).
@@ -317,7 +357,9 @@ impl TerminalSession {
         self.tmux_display_offset = 0;
         if self.tmux_copy_mode {
             if let Backend::Tmux { name } = &self.backend {
-                tmux::cancel_copy_mode(name);
+                if tmux_side_effects_enabled() {
+                    tmux::cancel_copy_mode(name);
+                }
             }
             self.tmux_copy_mode = false;
         }
@@ -392,8 +434,10 @@ impl TerminalSession {
             Backend::Tmux { name } => {
                 // Grove's own scrollback is empty for tmux; drive copy-mode instead.
                 let name = name.clone();
-                if let Some(offset) = tmux::scroll(&name, up, lines) {
-                    self.tmux_display_offset = offset;
+                if tmux_side_effects_enabled() {
+                    if let Some(offset) = tmux::scroll(&name, up, lines) {
+                        self.tmux_display_offset = offset;
+                    }
                 }
                 if up {
                     self.tmux_copy_mode = true;
@@ -446,12 +490,13 @@ impl TerminalSession {
     /// only leaves the current viewport in GroveTerm.
     pub fn selection_text(&mut self, a: AbsCell, head: AbsCell) -> Option<String> {
         match &self.backend {
-            Backend::Tmux { name } => tmux::selection_text(
+            Backend::Tmux { name } if tmux_side_effects_enabled() => tmux::selection_text(
                 name,
                 (a.a_row, a.col),
                 (head.a_row, head.col),
                 self.tmux_display_offset,
             ),
+            Backend::Tmux { .. } => None,
             Backend::Native => self
                 .term
                 .selection_text((a.a_row, a.col), (head.a_row, head.col)),
@@ -509,6 +554,17 @@ impl TerminalSession {
         self.term.title()
     }
 
+    /// The directory passed to the spawned process, not its current directory.
+    pub fn initial_cwd(&self) -> Option<&str> {
+        self.initial_cwd.as_deref()
+    }
+
+    /// Last local directory the program reported through OSC 7. Absent until
+    /// reported; it can lag if the shell does not emit OSC 7 after `cd`.
+    pub fn current_cwd(&self) -> Option<&str> {
+        self.term.current_cwd()
+    }
+
     /// Cumulative BEL count (`term.rs:231`); the classifier diffs against what it has consumed.
     pub fn bell_count(&self) -> usize {
         self.term.bell_count()
@@ -526,6 +582,16 @@ impl TerminalSession {
     /// `Some` means no PTY at all; toast producers read this since spawn always returns a session, never a `Result`.
     pub fn spawn_error(&self) -> Option<&str> {
         self.spawn_error.as_deref()
+    }
+
+    /// Latched PTY exit, available to renderers without polling the child.
+    pub fn has_exited(&self) -> bool {
+        self.exited
+    }
+
+    fn reader_closed(&mut self, cx: &mut Context<Self>) {
+        self.exited = true;
+        cx.notify();
     }
 
     pub fn alive(&mut self) -> bool {
@@ -602,6 +668,7 @@ fn spawn_tmux(
             project: target.project.clone(),
             label: target.label.clone(),
             agent,
+            managed_worktree_terminal: managed_worktree_terminal_sidecar(target),
             context_roots: target.context_roots.clone(),
             temp_bundle_path: target.temp_bundle_path.clone(),
         },
@@ -675,18 +742,127 @@ fn spawn_native(
 mod tests {
     use std::time::{Duration, Instant};
 
+    use gpui::AppContext as _;
     use grove_core::agent::Agent;
 
-    use super::output_age_at;
+    use super::{output_age_at, output_needs_notify};
+
+    #[test]
+    fn root_binary_tests_do_not_contact_tmux_from_terminal_sessions() {
+        assert!(!super::tmux_side_effects_enabled());
+    }
+
+    #[test]
+    fn managed_worktree_terminal_sidecar_marker_is_explicit() {
+        let mut target = crate::entities::session_registry::SpawnTarget::home("Terminal 1".into());
+        target.project = "project".into();
+        target.use_tmux = true;
+        assert!(super::managed_worktree_terminal_sidecar(&target));
+        target.agent = Agent::Claude;
+        assert!(!super::managed_worktree_terminal_sidecar(&target));
+        target.agent = Agent::Terminal;
+        target.use_tmux = false;
+        assert!(!super::managed_worktree_terminal_sidecar(&target));
+    }
+
+    #[gpui::test]
+    fn pending_test_reattach_stays_pending_without_contacting_tmux(cx: &mut gpui::TestAppContext) {
+        let session = cx
+            .new(|cx| super::TerminalSession::attach_existing("grove__unpainted_test", 24, 80, cx));
+        session.update(cx, super::TerminalSession::attach_now);
+        assert!(session.read_with(cx, |session, _| session.is_pending_attach()));
+        assert!(session.read_with(cx, |session, _| session.spawn_error().is_none()));
+    }
+
+    #[gpui::test]
+    fn reader_eof_latches_exit_and_notifies_observers(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let session = cx.new(|cx| super::TerminalSession::spawn_script("\0", "/", cx));
+        assert!(!session.read_with(cx, |session, _| session.has_exited()));
+        let notified = std::rc::Rc::new(std::cell::Cell::new(false));
+        let seen = notified.clone();
+        let _observer = cx.update(|cx| cx.observe(&session, move |_, _| seen.set(true)));
+        session.update(cx, super::TerminalSession::reader_closed);
+        cx.run_until_parked();
+        assert!(session.read_with(cx, |session, _| session.has_exited()));
+        assert!(notified.get());
+    }
+
+    #[gpui::test]
+    fn osc7_updates_live_cwd_without_changing_launch_cwd(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let session = cx.new(|cx| super::TerminalSession::spawn_script("\0", "/", cx));
+        assert_eq!(
+            session.read_with(cx, |session, _| session.initial_cwd().map(str::to_owned)),
+            Some("/".to_string())
+        );
+        assert_eq!(
+            session.read_with(cx, |session, _| session.current_cwd().map(str::to_owned)),
+            None
+        );
+        let notified = std::rc::Rc::new(std::cell::Cell::new(false));
+        let seen = notified.clone();
+        let _observer = cx.update(|cx| cx.observe(&session, move |_, _| seen.set(true)));
+        session.update(cx, |session, cx| {
+            session.ingest(&[b"\x1b]7;file:///tmp/reported\x07".to_vec()], cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            session.read_with(cx, |session, _| session.current_cwd().map(str::to_owned)),
+            Some("/tmp/reported".to_string())
+        );
+        assert_eq!(
+            session.read_with(cx, |session, _| session.initial_cwd().map(str::to_owned)),
+            Some("/".to_string())
+        );
+        assert!(notified.get());
+    }
+
+    #[gpui::test]
+    fn osc_title_change_notifies_observers(cx: &mut gpui::TestAppContext) {
+        let session = cx.new(|cx| super::TerminalSession::spawn_script("\0", "/", cx));
+        // Consume the terminal's initial full damage before observing title-only output.
+        session.update(cx, |session, cx| session.ingest(&[Vec::new()], cx));
+        let notifications = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen = notifications.clone();
+        let _observer = cx.update(|cx| cx.observe(&session, move |_, _| seen.set(seen.get() + 1)));
+        session.update(cx, |session, cx| {
+            session.ingest(&[b"\x1b]2;Fix build\x07".to_vec()], cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 1);
+        assert_eq!(
+            session.read_with(cx, |session, _| session.title()),
+            Some("Fix build".into())
+        );
+    }
+
+    #[test]
+    fn title_only_change_requires_notification_without_grid_damage() {
+        assert!(output_needs_notify(7, 7, None, Some("Fix build")));
+        assert!(output_needs_notify(
+            7,
+            7,
+            Some("Fix build"),
+            Some("Fix tests")
+        ));
+        assert!(!output_needs_notify(
+            7,
+            7,
+            Some("Fix build"),
+            Some("Fix build")
+        ));
+        assert!(!output_needs_notify(7, 7, None, None));
+    }
 
     #[test]
     fn output_is_stale_until_the_pty_produces_bytes() {
         let now = Instant::now();
         assert_eq!(output_age_at(None, now), Duration::MAX);
-        assert_eq!(
-            output_age_at(Some(now - Duration::from_secs(2)), now),
-            Duration::from_secs(2)
-        );
+        let earlier = now
+            .checked_sub(Duration::from_secs(2))
+            .expect("test clock supports a two-second interval");
+        assert_eq!(output_age_at(Some(earlier), now), Duration::from_secs(2));
     }
 
     #[test]

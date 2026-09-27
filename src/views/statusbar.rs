@@ -1,204 +1,304 @@
-//! The bottom status bar: running count, backend/theme labels, the `bypass`
-//! chip, the toast slot, the palette/shortcuts hint chips and the version.
-//!
-//! Port of `src/gui/view/statusbar.rs:17-192`. Note the hairline is **above**
-//! this bar, where the appbar's is below.
-//!
-//! Free render function rather than a `Render` entity, for the same reason as
-//! [`crate::views::appbar`] — see its module docs.
+//! Passive, workspace-scoped status strip. Repaints follow existing entities.
+use std::collections::{HashMap, HashSet};
 
-use crate::views::rpx;
-use crate::views::tokens::*;
-use gpui::{div, prelude::*, AnyElement, MouseButton};
+use gpui::{div, prelude::*, Context, Entity, Render, Subscription, Window};
 
-use crate::entities::toast::{Toast, ToastKind};
-use crate::keymap::{platform_mod_label, GlobalShortcut};
-use crate::theme as c;
-use crate::views::appbar::{on_chrome, shortcut_key, ChromeAction, Dispatch};
-use crate::views::components::{divider_h, footer_hint_flat, keycap, mono, status_dot};
+use super::{motion, rpx, sidebar::Sidebar, tokens::*};
+use crate::{
+    activity::ActivityState,
+    entities::{session_registry::SessionId, terminal_session::Backend, toast::ToastKind},
+    runtime::Runtime,
+    settings::SettingsState,
+    theme as c,
+};
 
-/// Status bar height (`src/gui/metrics.rs:16`).
-pub const STATUS_H: f32 = 26.0;
+pub(super) const STATUS_H: f32 = 26.0;
+const BACKEND_MIN_W: f32 = 620.0;
+const VERSION_MIN_W: f32 = 840.0;
+const WORKSPACE_MAX_W: f32 = 160.0;
+const COMPACT_WORKSPACE_MAX_W: f32 = 88.0;
 
-pub struct StatusbarCtx {
-    pub running: usize,
-    /// `tmux` or `native` (`statusbar.rs:31-35`).
-    pub backend: &'static str,
-    pub theme_name: String,
-    pub skip_permissions: bool,
-    pub toast: Option<Toast>,
-    /// Present only while the transient grid-resize key context owns plain direction keys.
-    pub grid_resize_hint: Option<String>,
-    pub dispatch: Dispatch,
+#[derive(Default, Debug, PartialEq, Eq)]
+struct Summary {
+    active: usize,
+    working: usize,
+    waiting: usize,
+    local: usize,
+    tmux: usize,
 }
 
-pub fn statusbar(ctx: &StatusbarCtx) -> AnyElement {
-    let running_group = div()
-        .flex()
-        .items_center()
-        .gap(rpx(SPACE_MD))
-        .child(status_dot(
-            DOT_MD,
-            if ctx.running > 0 {
-                c::GREEN()
-            } else {
-                c::FG_MUTE()
-            },
-        ))
-        .child(mono(format!("{}", ctx.running), TEXT_MICRO, c::FG_DIM()))
-        .child(mono("RUNNING", TEXT_MICRO, c::FG_MUTE()));
-
-    let labelled = |label: &'static str, value: String| {
-        div()
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_MD))
-            .child(mono(label, TEXT_MICRO, c::FG_MUTE()))
-            .child(mono(value, TEXT_MICRO, c::FG_DIM()))
-    };
-
-    let mut left = div()
-        .flex()
-        .items_center()
-        .gap(rpx(SPACE_3XL))
-        .child(running_group)
-        .child(labelled("BACKEND", ctx.backend.to_string()))
-        .child(labelled("THEME", ctx.theme_name.clone()));
-    if ctx.skip_permissions {
-        left = left.child(keycap(mono("bypass", TEXT_MICRO, c::YELLOW())));
+impl Summary {
+    fn record(&mut self, alive: bool, state: ActivityState, backend: &Backend) {
+        if !alive || state == ActivityState::Exited {
+            return;
+        }
+        self.active += 1;
+        self.working += usize::from(state == ActivityState::Working);
+        self.waiting += usize::from(state == ActivityState::WaitingForInput);
+        match backend {
+            Backend::Native => self.local += 1,
+            Backend::Tmux { .. } => self.tmux += 1,
+        }
     }
 
-    // The third slot. No pulse, no overlay — recorded ambiguity 3.
-    //
-    // Kind is carried by a glyph as well as a colour (§2.3, §12): red-vs-green
-    // mono text in the same slot is otherwise indistinguishable to a viewer who
-    // cannot separate the two hues. The sprite table has no warning triangle, so
-    // Error takes `close` — the X mark, the nearest "this did not work" shape —
-    // and Info takes `check`, matching the Done glyph in §12's table.
-    let toast: AnyElement = match ctx.toast.as_ref() {
-        Some(t) => {
-            let (glyph, tint) = match t.kind {
-                ToastKind::Error => ("close", c::RED()),
-                ToastKind::Info => ("check", c::GREEN()),
-            };
-            div()
-                .flex()
-                .items_center()
-                .gap(rpx(SPACE_SM))
-                .child(crate::icons::icon(glyph, ICON_XS, tint))
-                .child(mono(t.message.clone(), TEXT_MICRO, tint))
-                .into_any_element()
+    fn backend(&self) -> &'static str {
+        match (self.local > 0, self.tmux > 0) {
+            (true, true) => "Mixed backend",
+            (true, false) => "Local backend",
+            (false, true) => "tmux backend",
+            (false, false) => "No active backend",
         }
-        None => div().into_any_element(),
-    };
+    }
 
-    let right = if let Some(target) = ctx.grid_resize_hint.as_ref() {
-        div()
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_3XL))
-            .child(mono("RESIZE", TEXT_MICRO, c::CYAN()))
-            .child(mono(target.clone(), TEXT_MICRO, c::FG_DIM()))
-            .child(footer_hint_flat("←↓↑→ / hjkl", "5%"))
-            .child(footer_hint_flat("shift", "1%"))
-            .child(footer_hint_flat("enter / esc", "done"))
-    } else {
-        div()
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_3XL))
-            .child(hint_chip(
-                "statusbar-palette",
-                shortcut_key(GlobalShortcut::NewSession, "p"),
-                "palette",
-                ChromeAction::OpenSessionLauncher,
-                &ctx.dispatch,
-            ))
-            .child(hint_chip(
-                "statusbar-shortcuts",
-                shortcut_key(GlobalShortcut::ShortcutOverlay, "/"),
-                "shortcuts",
-                ChromeAction::OpenShortcutOverlay,
-                &ctx.dispatch,
-            ))
-            .child(mono(
-                format!("v{}", env!("CARGO_PKG_VERSION")),
-                TEXT_MICRO,
-                c::FG_MUTE(),
-            ))
-    };
-
-    div()
-        .flex()
-        .flex_col()
-        .w_full()
-        .h(rpx(STATUS_H))
-        .child(divider_h())
-        .child(
-            div()
-                .flex()
-                .flex_1()
-                .items_center()
-                .w_full()
-                .px(rpx(SPACE_3XL))
-                .bg(c::BG_STRIP())
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(rpx(SPACE_3XL))
-                        .child(left)
-                        .child(toast),
-                )
-                .child(div().flex_1())
-                .child(right),
-        )
-        .into_any_element()
+    fn label(&self, compact: bool) -> String {
+        if self.active == 0 {
+            "No active sessions".into()
+        } else if compact {
+            if self.waiting > 0 {
+                format!("{} active · {} needs you", self.active, self.waiting)
+            } else {
+                format!("{} active · {} working", self.active, self.working)
+            }
+        } else {
+            format!(
+                "{} active · {} working · {} needs you",
+                self.active, self.working, self.waiting
+            )
+        }
+    }
 }
 
-/// A keycap chip (⌘+key icon on macOS, `"{mod}+{key}"` text elsewhere) plus a
-/// muted label, `FG()` on hover (`statusbar.rs:100-140`). Both chips dispatch
-/// to Plan 08 stubs.
-fn hint_chip(
-    id: &'static str,
-    key: &'static str,
-    label: &'static str,
-    action: ChromeAction,
-    dispatch: &Dispatch,
-) -> AnyElement {
-    let cap: AnyElement = if cfg!(target_os = "macos") {
-        div()
+pub struct Statusbar {
+    runtime: Entity<Runtime>,
+    sidebar: Entity<Sidebar>,
+    _observers: Vec<Subscription>,
+    session_observers: HashMap<SessionId, (gpui::EntityId, Subscription)>,
+}
+
+impl Statusbar {
+    pub fn new(runtime: Entity<Runtime>, sidebar: Entity<Sidebar>, cx: &mut Context<Self>) -> Self {
+        let rt = runtime.read(cx);
+        let (registry, activity, toast) =
+            (rt.registry.clone(), rt.activity.clone(), rt.toast.clone());
+        let observers = vec![
+            cx.observe(&runtime, |_, _, cx| cx.notify()),
+            cx.observe(&sidebar, |_, _, cx| cx.notify()),
+            cx.observe(&registry, |_, _, cx| cx.notify()),
+            cx.observe(&activity, |_, _, cx| cx.notify()),
+            cx.observe(&toast, |_, _, cx| cx.notify()),
+            cx.observe_global::<SettingsState>(|_, cx| cx.notify()),
+        ];
+        Self {
+            runtime,
+            sidebar,
+            _observers: observers,
+            session_observers: HashMap::new(),
+        }
+    }
+
+    fn summary(&mut self, cx: &mut Context<Self>) -> Summary {
+        let ids = self.sidebar.read(cx).active_canvas_sessions(cx);
+        let wanted: HashSet<_> = ids.iter().map(|(id, _)| *id).collect();
+        self.session_observers.retain(|id, _| wanted.contains(id));
+        let runtime = self.runtime.read(cx);
+        let (registry, activity) = (runtime.registry.clone(), runtime.activity.clone());
+        let mut summary = Summary::default();
+        for (id, home) in ids {
+            let registry = registry.read(cx);
+            let session = if home {
+                registry
+                    .home_terminals()
+                    .iter()
+                    .position(|meta| meta.id == id)
+                    .and_then(|index| registry.home_terminal(index))
+                    .cloned()
+            } else {
+                registry.session(id).cloned()
+            };
+            let Some(session) = session else { continue };
+            if self
+                .session_observers
+                .get(&id)
+                .is_some_and(|(entity, _)| *entity != session.entity_id())
+            {
+                self.session_observers.remove(&id);
+            }
+            self.session_observers.entry(id).or_insert_with(|| {
+                // Repaint only on lifecycle changes, never for every PTY output chunk.
+                let mut previous = {
+                    let term = session.read(cx);
+                    (
+                        term.has_exited(),
+                        term.is_pending_attach(),
+                        term.spawn_error().is_some(),
+                    )
+                };
+                let observer = cx.observe(&session, move |_, session, cx| {
+                    let term = session.read(cx);
+                    let next = (
+                        term.has_exited(),
+                        term.is_pending_attach(),
+                        term.spawn_error().is_some(),
+                    );
+                    if next != previous {
+                        previous = next;
+                        cx.notify();
+                    }
+                });
+                (session.entity_id(), observer)
+            });
+            let term = session.read(cx);
+            summary.record(
+                !term.has_exited() && !term.is_pending_attach() && term.spawn_error().is_none(),
+                if home {
+                    ActivityState::Idle
+                } else {
+                    activity.read(cx).state_of(id)
+                },
+                term.backend(),
+            );
+        }
+        summary
+    }
+}
+
+impl Render for Statusbar {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let summary = self.summary(cx);
+        let store = &cx.global::<SettingsState>().store;
+        let workspace = store.workspaces.name(store.workspaces.active).to_string();
+        let toast = self.runtime.read(cx).toast.read(cx).current().cloned();
+        let width = f32::from(window.viewport_size().width)
+            / (f32::from(window.rem_size()) / crate::zoom::REM_BASE);
+        let compact = width < BACKEND_MIN_W;
+        let backend = summary.backend();
+        let label = summary.label(compact);
+        let accessible = format!("{workspace}. {}. {backend}.", summary.label(false));
+        let mut bar = div()
+            .id("statusbar")
+            .debug_selector(|| "statusbar".into())
+            .role(gpui::Role::Status)
+            .aria_label(accessible)
+            .h(rpx(STATUS_H))
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
             .flex()
             .items_center()
-            .gap(rpx(SPACE_XS))
-            .child(crate::icons::icon("command", ICON_XS, c::FG_DIM()))
-            .child(mono(key, TEXT_MICRO, c::FG_DIM()))
-            .into_any_element()
-    } else {
-        mono(
-            format!("{}+{key}", platform_mod_label()),
-            TEXT_MICRO,
-            c::FG_DIM(),
-        )
-        .into_any_element()
-    };
-    div()
-        .id(id)
-        .flex()
-        .items_center()
-        .gap(rpx(SPACE_MD))
-        .text_color(c::FG_MUTE())
-        .hover(|s| s.text_color(c::FG()))
-        .cursor_pointer()
-        .child(keycap(cap))
-        .child(
-            // Deliberately *not* `mono`: the chip's hover recolor lives on the
-            // row, so this label must inherit its color rather than pin one.
+            .gap(rpx(SPACE_3XL))
+            .px(rpx(SPACE_2XL))
+            .overflow_hidden()
+            .border_t_1()
+            .border_color(c::BORDER())
+            .bg(c::BG_STRIP())
+            .text_color(c::FG_DIM())
+            .text_size(rpx(TEXT_MICRO))
+            .font_family(crate::fonts::MONO_FAMILY);
+        if !compact || toast.is_none() {
+            bar = bar.child(
+                div()
+                    .id("status-workspace")
+                    .debug_selector(|| "status-workspace".into())
+                    .min_w_0()
+                    .max_w(rpx(if compact {
+                        COMPACT_WORKSPACE_MAX_W
+                    } else {
+                        WORKSPACE_MAX_W
+                    }))
+                    .truncate()
+                    .child(workspace),
+            );
+        }
+        bar = bar.child(motion::fast(
             div()
-                .font(gpui::font(crate::fonts::MONO_FAMILY))
-                .text_size(rpx(TEXT_MICRO))
-                .child(label),
-        )
-        .on_mouse_down(MouseButton::Left, on_chrome(dispatch, action))
-        .into_any_element()
+                .id("status-sessions")
+                .debug_selector(|| "status-sessions".into())
+                .min_w_0()
+                .truncate()
+                .when(toast.is_none() && compact, gpui::Styled::flex_1)
+                .text_color(if summary.waiting > 0 {
+                    c::AMBER()
+                } else {
+                    c::FG_DIM()
+                })
+                .child(label.clone()),
+            format!("status-session-summary-{label}"),
+            cx,
+        ));
+        if !compact {
+            bar = bar.child(div().flex_shrink_0().child(backend));
+        }
+        if let Some(toast) = toast {
+            bar = bar.child(
+                div()
+                    .id("status-toast")
+                    .debug_selector(|| "status-toast".into())
+                    .role(if toast.kind == ToastKind::Error {
+                        gpui::Role::Alert
+                    } else {
+                        gpui::Role::Status
+                    })
+                    .aria_label(toast.message.clone())
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(if toast.kind == ToastKind::Error {
+                        c::FORM_ERROR()
+                    } else {
+                        c::FG()
+                    })
+                    .child(toast.message),
+            );
+        } else {
+            bar = bar.child(div().flex_1().min_w_0());
+            if width >= VERSION_MIN_W {
+                bar = bar.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_color(c::FG_MUTE())
+                        .child(concat!("v", env!("CARGO_PKG_VERSION"))),
+                );
+            }
+        }
+        bar
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_and_attention_counts_exclude_stopped_and_failed_sessions() {
+        let mut summary = Summary::default();
+        summary.record(true, ActivityState::Working, &Backend::Native);
+        summary.record(
+            true,
+            ActivityState::WaitingForInput,
+            &Backend::Tmux {
+                name: "agent".into(),
+            },
+        );
+        summary.record(false, ActivityState::Working, &Backend::Native);
+        summary.record(
+            true,
+            ActivityState::Exited,
+            &Backend::Tmux {
+                name: "stopped".into(),
+            },
+        );
+        assert_eq!(
+            (summary.active, summary.working, summary.waiting),
+            (2, 1, 1)
+        );
+        assert_eq!(summary.backend(), "Mixed backend");
+        assert_eq!(summary.label(true), "2 active · 1 needs you");
+    }
+
+    #[test]
+    fn empty_workspace_does_not_claim_local_or_running_sessions() {
+        let summary = Summary::default();
+        assert_eq!(summary.backend(), "No active backend");
+        assert_eq!(summary.label(false), "No active sessions");
+    }
 }

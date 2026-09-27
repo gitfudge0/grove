@@ -2,22 +2,22 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, DefiniteLength, Edges, EdgesRefinement, Entity, Hsla, InteractiveElement as _,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Rems, RenderOnce, Role,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window, div, px, relative,
+    div, px, relative, AnyElement, App, DefiniteLength, Edges, EdgesRefinement, Entity, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Rems,
+    RenderOnce, Role, StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window,
 };
 
 use crate::button::{Button, ButtonVariants as _};
 use crate::input::clear_button;
 use crate::native_menu::NativeMenu;
 use crate::spinner::Spinner;
-use crate::{ActiveTheme, Colorize, v_flex};
+use crate::{h_flex, Selectable, StyledExt};
+use crate::{v_flex, ActiveTheme, Colorize};
 use crate::{IconName, Size};
-use crate::{Selectable, StyledExt, h_flex};
 use crate::{Sizable, StyleSized};
 
 use super::{
-    InputContentType, InputState, content_type::sync_native_content_type, element::EditorScrollbar,
+    content_type::sync_native_content_type, element::EditorScrollbar, InputContentType, InputState,
 };
 
 /// Returns `(background, foreground)` colors for input-like components.
@@ -50,6 +50,8 @@ pub struct Input {
     selected: bool,
     content_type: Option<InputContentType>,
     role: Option<Role>,
+    aria_label: Option<gpui::SharedString>,
+    aria_description: Option<gpui::SharedString>,
 
     context_menu_builder: Option<Rc<dyn Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu>>,
 }
@@ -91,8 +93,22 @@ impl Input {
             selected: false,
             content_type: None,
             role: None,
+            aria_label: None,
+            aria_description: None,
             context_menu_builder: None,
         }
+    }
+
+    /// Accessible name for the editable input.
+    pub fn aria_label(mut self, label: impl Into<gpui::SharedString>) -> Self {
+        self.aria_label = Some(label.into());
+        self
+    }
+
+    /// Supplementary accessible guidance or validation error for the text field.
+    pub fn aria_description(mut self, description: impl Into<gpui::SharedString>) -> Self {
+        self.aria_description = Some(description.into());
+        self
     }
 
     pub fn prefix(mut self, prefix: impl IntoElement) -> Self {
@@ -376,6 +392,10 @@ impl RenderOnce for Input {
         div()
             .id(("input", self.state.entity_id()))
             .role(accessibility_role)
+            .when_some(self.aria_label, |input, label| input.aria_label(label))
+            .when_some(self.aria_description, |input, description| {
+                input.aria_description(description)
+            })
             .flex()
             .key_context(crate::input::CONTEXT)
             .track_focus(&state.focus_handle.clone())

@@ -158,9 +158,8 @@ pub fn fuzzy_match_indices(
 /// Variant order is the Settings drill-in's display order within its section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SettingRow {
-    Theme,
+    Appearance,
     AppSize,
-    ProjectThemes,
     Backend,
     Permissions,
     Telemetry,
@@ -170,10 +169,9 @@ pub enum SettingRow {
 }
 
 impl SettingRow {
-    pub const ALL: [SettingRow; 9] = [
-        SettingRow::Theme,
+    pub const ALL: [SettingRow; 8] = [
+        SettingRow::Appearance,
         SettingRow::AppSize,
-        SettingRow::ProjectThemes,
         SettingRow::Backend,
         SettingRow::Permissions,
         SettingRow::Telemetry,
@@ -184,9 +182,8 @@ impl SettingRow {
 
     pub fn label(self) -> &'static str {
         match self {
-            SettingRow::Theme => "App theme",
+            SettingRow::Appearance => "Appearance",
             SettingRow::AppSize => "App size",
-            SettingRow::ProjectThemes => "Project themes",
             SettingRow::Backend => "Backend",
             SettingRow::Permissions => "Permissions",
             SettingRow::Telemetry => "Telemetry",
@@ -196,22 +193,22 @@ impl SettingRow {
         }
     }
 
-    /// `ProjectThemes`/`Telemetry`/`Chrome` render a checkbox glyph instead and never consult this.
+    /// `Telemetry`/`Chrome` render a checkbox glyph instead and never consult this.
     pub fn icon_name(self) -> &'static str {
         match self {
-            SettingRow::Theme => "contrast",
+            SettingRow::Appearance => "contrast",
             SettingRow::AppSize => "grid",
-            SettingRow::ProjectThemes | SettingRow::Telemetry | SettingRow::Chrome => "check",
+            SettingRow::Telemetry | SettingRow::Chrome => "check",
             SettingRow::Backend => "term",
             SettingRow::Permissions => "ring",
-            SettingRow::DefaultAgent => "sparkle",
+            SettingRow::DefaultAgent => "claude",
             SettingRow::CheckUpdates => "restart",
         }
     }
 
     pub fn section(self) -> &'static str {
         match self {
-            SettingRow::Theme | SettingRow::AppSize | SettingRow::ProjectThemes => "APPEARANCE",
+            SettingRow::Appearance | SettingRow::AppSize => "APPEARANCE",
             SettingRow::Backend
             | SettingRow::Permissions
             | SettingRow::Telemetry
@@ -224,10 +221,7 @@ impl SettingRow {
     // Exercised only by tests; the rebuilt Settings modal decides toggle-vs-pane at its own call site.
     #[allow(dead_code)]
     pub fn is_toggle(self) -> bool {
-        matches!(
-            self,
-            SettingRow::ProjectThemes | SettingRow::Telemetry | SettingRow::Chrome
-        )
+        matches!(self, SettingRow::Telemetry | SettingRow::Chrome)
     }
 }
 
@@ -254,7 +248,6 @@ pub enum PaletteRow {
     SwitchToSession,
     Settings,
     Setting(SettingRow),
-    ReloadThemes,
 }
 
 /// The content-based key activation resolves against, decoupled from a row's transient index.
@@ -275,7 +268,6 @@ pub enum RowIdentity {
     SwitchToSession,
     Settings,
     Setting(SettingRow),
-    ReloadThemes,
 }
 
 pub fn row_identity(row: &PaletteRow) -> RowIdentity {
@@ -304,7 +296,6 @@ pub fn row_identity(row: &PaletteRow) -> RowIdentity {
         PaletteRow::SwitchToSession => RowIdentity::SwitchToSession,
         PaletteRow::Settings => RowIdentity::Settings,
         PaletteRow::Setting(s) => RowIdentity::Setting(*s),
-        PaletteRow::ReloadThemes => RowIdentity::ReloadThemes,
     }
 }
 
@@ -360,28 +351,6 @@ pub fn root_project_order(n: usize, active: usize) -> Vec<usize> {
 
 pub fn agent_sel_for(available: &[Agent], agent: Agent) -> usize {
     available.iter().position(|a| *a == agent).unwrap_or(0)
-}
-
-// TODO(unwired): ported with its test but never given a key handler; the rebuilt Settings modal sets mode directly.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThemeMode {
-    Dark,
-    Light,
-    System,
-}
-
-/// Cycles Dark → Light → System → Dark; current mode is System whenever `follow_system` is set.
-// TODO(unwired): see `ThemeMode`.
-#[allow(dead_code)]
-pub fn next_theme_mode(dark: bool, follow_system: bool) -> ThemeMode {
-    if follow_system {
-        ThemeMode::Dark
-    } else if dark {
-        ThemeMode::Light
-    } else {
-        ThemeMode::System
-    }
 }
 
 // TODO(unwired): built and tested, but no view expands a strip when an update is known.
@@ -618,6 +587,21 @@ pub fn typed_rows(
     if scope == PaletteScope::WorktreesOnly {
         return rows;
     }
+    for (label, row) in [
+        ("new session", PaletteRow::NewSession),
+        ("terminal home", PaletteRow::TerminalHome),
+        ("terminal worktree", PaletteRow::TerminalWt),
+    ] {
+        if !query.trim().is_empty() && fuzzy_match(query, label, "", "") {
+            rows.push(row);
+        }
+    }
+    if !query.trim().is_empty()
+        && (fuzzy_match(query, "switch workspace or session", "", "")
+            || fuzzy_match(query, "switch to session", "", ""))
+    {
+        rows.push(PaletteRow::SwitchToSession);
+    }
     if !query.trim().is_empty()
         && fuzzy_match(
             query,
@@ -638,9 +622,6 @@ pub fn typed_rows(
     }
     if !query.trim().is_empty() && fuzzy_match(query, "add project", "", "") {
         rows.push(PaletteRow::AddProject);
-    }
-    if !query.trim().is_empty() && fuzzy_match(query, "reload themes", "", "") {
-        rows.push(PaletteRow::ReloadThemes);
     }
     if has_run_script && !query.trim().is_empty() && fuzzy_match(query, "run script", "", "") {
         rows.push(PaletteRow::RunScript);
@@ -876,7 +857,6 @@ mod tests {
             PaletteRow::RunScript,
             PaletteRow::SwitchToSession,
             PaletteRow::Settings,
-            PaletteRow::ReloadThemes,
         ];
         let ids: Vec<_> = rows.iter().map(row_identity).collect();
         for (i, a) in ids.iter().enumerate() {
@@ -1026,6 +1006,23 @@ mod tests {
     }
 
     #[test]
+    fn typed_action_search_restores_session_and_terminal_commands() {
+        for (query, expected) in [
+            ("new session", PaletteRow::NewSession),
+            ("terminal home", PaletteRow::TerminalHome),
+            ("terminal worktree", PaletteRow::TerminalWt),
+            ("switch workspace or session", PaletteRow::SwitchToSession),
+            ("switch workspace", PaletteRow::SwitchToSession),
+            ("switch to session", PaletteRow::SwitchToSession),
+        ] {
+            assert!(
+                typed_rows(query, &[], &[], false, false, PaletteScope::All).contains(&expected),
+                "missing {expected:?} for {query}"
+            );
+        }
+    }
+
+    #[test]
     fn typing_filters_and_ranks_every_combo() {
         let combos = vec![
             (
@@ -1049,8 +1046,8 @@ mod tests {
 
     #[test]
     fn typing_settings_surfaces_the_settings_rows() {
-        let rows = typed_rows("theme", &[], &[], false, false, PaletteScope::All);
-        assert!(rows.contains(&PaletteRow::Setting(SettingRow::Theme)));
+        let rows = typed_rows("appearance", &[], &[], false, false, PaletteScope::All);
+        assert!(rows.contains(&PaletteRow::Setting(SettingRow::Appearance)));
     }
 
     #[test]
@@ -1058,7 +1055,6 @@ mod tests {
         // Browse-all lists combos only; a bare query must not inject settings.
         let rows = typed_rows("", &[], &[], true, false, PaletteScope::All);
         assert!(!rows.iter().any(|r| matches!(r, PaletteRow::Setting(_))));
-        assert!(!rows.contains(&PaletteRow::ReloadThemes));
         assert!(!rows.contains(&PaletteRow::AddProject));
         assert!(!rows.contains(&PaletteRow::RunScript));
     }
@@ -1125,13 +1121,7 @@ mod tests {
     #[test]
     fn the_scoped_list_never_surfaces_a_settings_or_action_row() {
         // Every query that adds a non-worktree row at `All` scope.
-        for q in [
-            "theme",
-            "settings",
-            "add project",
-            "reload themes",
-            "run script",
-        ] {
+        for q in ["appearance", "settings", "add project", "run script"] {
             let all = typed_rows(q, &[], &[], true, false, PaletteScope::All);
             assert!(
                 !all.is_empty(),
@@ -1227,6 +1217,51 @@ mod tests {
     }
 
     #[test]
+    fn picker_search_uses_project_and_worktree_terms_without_merging_equal_branches() {
+        let combos = vec![
+            (
+                0,
+                "Grove".into(),
+                "/grove/feature-auth".into(),
+                Agent::Terminal,
+            ),
+            (1, "API".into(), "/api/feature-auth".into(), Agent::Terminal),
+            (1, "API".into(), "/api/main".into(), Agent::Terminal),
+        ];
+        let api = typed_rows(
+            "API feature-auth",
+            &combos,
+            &[],
+            false,
+            false,
+            PaletteScope::WorktreesOnly,
+        );
+        assert_eq!(
+            api,
+            vec![PaletteRow::Combo {
+                proj: 1,
+                wt_path: "/api/feature-auth".into(),
+                agent: Agent::Terminal,
+            }]
+        );
+        let shared_branch = typed_rows(
+            "feature-auth",
+            &combos,
+            &[],
+            false,
+            false,
+            PaletteScope::WorktreesOnly,
+        );
+        assert_eq!(shared_branch.len(), 2);
+        assert!(shared_branch.iter().any(|row| matches!(row,
+            PaletteRow::Combo { proj: 0, wt_path, .. } if wt_path == "/grove/feature-auth"
+        )));
+        assert!(shared_branch.iter().any(|row| matches!(row,
+            PaletteRow::Combo { proj: 1, wt_path, .. } if wt_path == "/api/feature-auth"
+        )));
+    }
+
+    #[test]
     fn the_unscoped_list_is_unaffected_by_the_scope_gate() {
         let combos = two_combos();
         for q in ["", "theme", "settings", "wt"] {
@@ -1316,14 +1351,6 @@ mod tests {
     }
 
     #[test]
-    fn the_theme_mode_row_cycles_dark_light_system_dark() {
-        assert_eq!(next_theme_mode(true, false), ThemeMode::Light);
-        assert_eq!(next_theme_mode(false, false), ThemeMode::System);
-        assert_eq!(next_theme_mode(true, true), ThemeMode::Dark);
-        assert_eq!(next_theme_mode(false, true), ThemeMode::Dark);
-    }
-
-    #[test]
     fn setting_row_label_section_and_icon_are_total_and_nonempty() {
         for s in SettingRow::ALL {
             assert!(!s.label().is_empty());
@@ -1344,19 +1371,12 @@ mod tests {
     }
 
     #[test]
-    fn exactly_three_settings_rows_toggle_in_place() {
+    fn exactly_two_settings_rows_toggle_in_place() {
         let toggles: Vec<_> = SettingRow::ALL
             .into_iter()
             .filter(|s| s.is_toggle())
             .collect();
-        assert_eq!(
-            toggles,
-            vec![
-                SettingRow::ProjectThemes,
-                SettingRow::Telemetry,
-                SettingRow::Chrome
-            ]
-        );
+        assert_eq!(toggles, vec![SettingRow::Telemetry, SettingRow::Chrome]);
     }
 
     #[test]

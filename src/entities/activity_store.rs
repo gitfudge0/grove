@@ -90,6 +90,29 @@ fn resolve_done_hook(live: ActivityState) -> ActivityState {
     }
 }
 
+/// Native waiting is an agent request, independent of whether its tab is visible.
+fn resolve_native_status(status: NativeStatus, was_working: bool) -> ActivityState {
+    match status {
+        NativeStatus::Busy => ActivityState::Working,
+        NativeStatus::Waiting => ActivityState::WaitingForInput,
+        NativeStatus::Idle if was_working => ActivityState::Done,
+        NativeStatus::Idle => ActivityState::Idle,
+    }
+}
+
+fn resolve_hook_status(
+    alive: bool,
+    hook: Option<AttentionState>,
+    live: impl FnOnce() -> ActivityState,
+) -> ActivityState {
+    match (alive, hook) {
+        (true, Some(AttentionState::NeedsYou)) => ActivityState::WaitingForInput,
+        (true, Some(AttentionState::Working)) => ActivityState::Working,
+        (true, Some(AttentionState::Done)) => resolve_done_hook(live()),
+        _ => live(),
+    }
+}
+
 pub struct ActivityStore {
     trackers: HashMap<SessionId, Tracker>,
     /// Waiting sessions in `visible_session_order`, resolved once per pass.
@@ -221,18 +244,22 @@ impl ActivityStore {
         cx.notify();
     }
 
-    /// Both the tracker and the file (truncated, not deleted, so hooks keep appending) — always, or a stale `needs-you` resurfaces (`update/mod.rs:697-707`).
+    /// Focus acknowledges completed work, but never consumes an unanswered request.
     pub fn acknowledge(&mut self, id: SessionId, cx: &mut Context<Self>) {
         if let Some(t) = self.trackers.get_mut(&id) {
             t.acknowledge();
         }
-        self.waiting.retain(|&w| w != id);
+        if self.state_of(id) != ActivityState::WaitingForInput {
+            self.waiting.retain(|&w| w != id);
+        }
         if self.waiting.is_empty() {
             self.pulse_since = None;
         }
         if let Some(wiring) = self.wiring.as_ref() {
             if let Some(files) = wiring.registry.read(cx).attention_files(id) {
-                attention::acknowledge(&files.state_file);
+                if attention::read_state(&files.state_file) != Some(AttentionState::NeedsYou) {
+                    attention::acknowledge(&files.state_file);
+                }
             }
         }
     }
@@ -330,9 +357,7 @@ impl ActivityStore {
                 tracker.bell_seen = bells;
             } else if bells > tracker.bell_seen {
                 tracker.bell_seen = bells;
-                if !focused {
-                    tracker.bell_pending = true;
-                }
+                tracker.bell_pending = true;
             }
 
             let sig = Signals {
@@ -364,14 +389,7 @@ impl ActivityStore {
                 None
             };
             let new_state = if let Some(status) = native {
-                match status {
-                    NativeStatus::Busy => ActivityState::Working,
-                    // `Waiting` while focused is treated as already seen, mirroring the `NeedsYou` downgrade below.
-                    NativeStatus::Waiting if !focused => ActivityState::WaitingForInput,
-                    NativeStatus::Waiting => ActivityState::Working,
-                    NativeStatus::Idle if sig.was_working => ActivityState::Done,
-                    NativeStatus::Idle => ActivityState::Idle,
-                }
+                resolve_native_status(status, sig.was_working)
             } else {
                 // A dead process short-circuits to `classify` before the hook file, so a stale `working` reads `Exited`.
                 let hook = if alive {
@@ -379,18 +397,7 @@ impl ActivityStore {
                 } else {
                     None
                 };
-                match (alive, hook) {
-                    (true, Some(AttentionState::NeedsYou)) if !focused => {
-                        ActivityState::WaitingForInput
-                    }
-                    (true, Some(AttentionState::NeedsYou | AttentionState::Working)) => {
-                        ActivityState::Working
-                    }
-                    (true, Some(AttentionState::Done)) => {
-                        resolve_done_hook(classify(*agent, &scrape(), &sig))
-                    }
-                    _ => classify(*agent, &scrape(), &sig),
-                }
+                resolve_hook_status(alive, hook, || classify(*agent, &scrape(), &sig))
             };
 
             let tracker = self.trackers.entry(*id).or_default();
@@ -403,7 +410,7 @@ impl ActivityStore {
                 tracker.was_working = false;
                 tracker.bell_pending = false;
             }
-            if focused {
+            if new_state == ActivityState::Working {
                 tracker.bell_pending = false;
             }
             if new_state == ActivityState::WaitingForInput
@@ -461,6 +468,7 @@ impl ActivityStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::AppContext as _;
 
     fn approx(a: f32, b: f32) {
         assert!((a - b).abs() < 1e-3, "{a} != {b}");
@@ -526,6 +534,62 @@ mod tests {
             "never for an already-waiting one"
         );
         assert!(!should_bounce(false, true));
+    }
+
+    #[test]
+    fn native_and_hook_requests_persist_until_agent_signal_changes() {
+        assert_eq!(
+            resolve_native_status(NativeStatus::Waiting, true),
+            ActivityState::WaitingForInput
+        );
+        assert_eq!(
+            resolve_native_status(NativeStatus::Busy, true),
+            ActivityState::Working
+        );
+        assert_eq!(
+            resolve_native_status(NativeStatus::Idle, true),
+            ActivityState::Done
+        );
+        assert_eq!(
+            resolve_hook_status(true, Some(AttentionState::NeedsYou), || {
+                ActivityState::Working
+            }),
+            ActivityState::WaitingForInput
+        );
+        assert_eq!(
+            resolve_hook_status(true, Some(AttentionState::Working), || {
+                ActivityState::WaitingForInput
+            }),
+            ActivityState::Working
+        );
+        assert_eq!(
+            resolve_hook_status(false, Some(AttentionState::NeedsYou), || {
+                ActivityState::Exited
+            }),
+            ActivityState::Exited
+        );
+    }
+
+    #[gpui::test]
+    fn acknowledging_waiting_preserves_queue_and_pulse(cx: &mut gpui::TestAppContext) {
+        let store = cx.new(|_| ActivityStore::new());
+        store.update(cx, |store, cx| {
+            let id = SessionId::from_raw(1);
+            store.trackers.insert(
+                id,
+                Tracker {
+                    state: ActivityState::WaitingForInput,
+                    bell_pending: true,
+                    ..Tracker::default()
+                },
+            );
+            store.waiting.push(id);
+            store.pulse_since = Some(Instant::now());
+            store.acknowledge(id, cx);
+            assert_eq!(store.state_of(id), ActivityState::WaitingForInput);
+            assert_eq!(store.waiting_sessions(), &[id]);
+            assert!(store.pulse_since.is_some());
+        });
     }
 
     #[test]

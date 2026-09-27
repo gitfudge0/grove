@@ -41,27 +41,30 @@ pub struct Worktree {
 }
 
 pub fn list_worktrees(project_path: &str) -> Vec<Worktree> {
-    tracing::debug!(
-        args = "worktree list --porcelain",
-        cwd = %project_path,
-        "running git command"
-    );
+    list_worktrees_checked(project_path).unwrap_or_else(|error| {
+        tracing::warn!(%error, "worktree enumeration failed");
+        vec![root_worktree(project_path)]
+    })
+}
+
+/// Destructive callers must not mistake command failure for an empty worktree list.
+pub fn list_worktrees_checked(project_path: &str) -> Result<Vec<Worktree>> {
     let out = Command::new("git")
         .args(["-C", project_path, "worktree", "list", "--porcelain"])
-        .output();
-    // Not a git repo: surface a synthetic root worktree so the project still has a row.
-    let Ok(out) = out else {
-        return vec![root_worktree(project_path)];
-    };
+        .output()?;
     if !out.status.success() {
-        tracing::warn!(
-            status = ?out.status,
-            stderr = %String::from_utf8_lossy(&out.stderr),
-            "git command failed"
-        );
-        return vec![root_worktree(project_path)];
+        return Err(GitError::Command {
+            cmd: "worktree list --porcelain".into(),
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        });
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    Ok(parse_worktrees(
+        project_path,
+        &String::from_utf8_lossy(&out.stdout),
+    ))
+}
+
+fn parse_worktrees(project_path: &str, stdout: &str) -> Vec<Worktree> {
     let mut result = vec![];
     let mut cur_path: Option<String> = None;
     let mut cur_branch: String = String::new();
@@ -309,6 +312,46 @@ pub fn add_worktree(
     name: &str,
     base: Option<&str>,
 ) -> Result<String> {
+    add_worktree_impl(project_path, worktree_dir, name, name, base, false)
+}
+
+/// Create a new branch independently from the worktree directory name.
+pub fn add_worktree_with_branch(
+    project_path: &str,
+    worktree_dir: &str,
+    name: &str,
+    branch: &str,
+    base: Option<&str>,
+) -> Result<String> {
+    add_worktree_impl(project_path, worktree_dir, name, branch, base, true)
+}
+
+fn worktree_branch_error(message: String) -> GitError {
+    GitError::Command {
+        cmd: "worktree add".into(),
+        stderr: message,
+    }
+}
+
+fn add_worktree_impl(
+    project_path: &str,
+    worktree_dir: &str,
+    name: &str,
+    branch: &str,
+    base: Option<&str>,
+    require_new_branch: bool,
+) -> Result<String> {
+    if require_new_branch {
+        let valid = !branch.starts_with('-')
+            && Command::new("git")
+                .args(["check-ref-format", "--branch", branch])
+                .output()?
+                .status
+                .success();
+        if !valid {
+            return Err(worktree_branch_error("Enter a valid branch name.".into()));
+        }
+    }
     if !valid_worktree_name(name) {
         return Err(GitError::InvalidWorktreeName);
     }
@@ -316,6 +359,9 @@ pub fn add_worktree(
         return Err(GitError::InvalidProjectName);
     }
     if let Some(b) = base {
+        if b.is_empty() || b.starts_with('-') {
+            return Err(worktree_branch_error("Enter a valid base revision.".into()));
+        }
         tracing::debug!(
             args = format!("rev-parse --verify --quiet {b}"),
             cwd = %project_path,
@@ -340,7 +386,7 @@ pub fn add_worktree(
     let dest_str = dest.to_string_lossy().to_string();
 
     tracing::debug!(
-        args = format!("show-ref --verify --quiet refs/heads/{name}"),
+        args = format!("show-ref --verify --quiet refs/heads/{branch}"),
         cwd = %project_path,
         "running git command"
     );
@@ -351,7 +397,7 @@ pub fn add_worktree(
             "show-ref",
             "--verify",
             "--quiet",
-            &format!("refs/heads/{name}"),
+            &format!("refs/heads/{branch}"),
         ])
         .status();
     if let Ok(s) = &branch_exists_status {
@@ -361,16 +407,27 @@ pub fn add_worktree(
     }
     let branch_exists = branch_exists_status.is_ok_and(|s| s.success());
 
+    if require_new_branch && branch_exists {
+        return Err(worktree_branch_error(format!(
+            "Branch {branch} already exists."
+        )));
+    }
+    if require_new_branch && dest.exists() {
+        return Err(worktree_branch_error(format!(
+            "Worktree path {} already exists.",
+            dest.display()
+        )));
+    }
     let mut args = vec!["-C", project_path, "worktree", "add"];
     if !branch_exists {
-        args.extend(["-b", name]);
+        args.extend(["-b", branch]);
         args.push(&dest_str);
         if let Some(b) = base {
             args.push(b);
         }
     } else {
         args.push(&dest_str);
-        args.push(name);
+        args.push(branch);
     }
     tracing::debug!(args = ?args, cwd = %project_path, "running git command");
     let out = Command::new("git").args(&args).output()?;
@@ -599,6 +656,28 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn checked_worktree_enumeration_reports_failure_without_synthetic_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing");
+        assert!(matches!(
+            list_worktrees_checked(missing.to_str().unwrap()),
+            Err(GitError::Command { .. })
+        ));
+        assert!(list_worktrees_checked(directory.path().to_str().unwrap()).is_err());
+        assert_eq!(list_worktrees(missing.to_str().unwrap()).len(), 1);
+    }
+
+    #[test]
+    fn worktree_parser_preserves_main_branch_and_detached_identity() {
+        let parsed = parse_worktrees("/fixture/main", "worktree /fixture/main\nbranch refs/heads/main\n\nworktree /fixture/second\ndetached\n");
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed[0].is_main);
+        assert_eq!(parsed[0].branch, "main");
+        assert!(!parsed[1].is_main);
+        assert_eq!(parsed[1].branch, "(detached)");
+    }
 
     #[test]
     fn list_worktrees_many_short_circuits_on_len_le_1() {
@@ -1167,6 +1246,56 @@ mod branch_tests {
         let wt_head = rev_parse(Path::new(&path), "HEAD");
         assert_eq!(wt_head, existing_tip);
         cleanup(&path);
+    }
+
+    #[test]
+    fn named_worktree_uses_distinct_branch_and_base_and_rejects_conflicts() {
+        let repo = init_repo();
+        run(repo.path(), &["checkout", "-q", "-b", "base"]);
+        run(
+            repo.path(),
+            &["commit", "-q", "--allow-empty", "-m", "base-tip"],
+        );
+        let base_tip = head_sha(repo.path());
+        run(repo.path(), &["checkout", "-q", "main"]);
+        let repo_str = repo.path().to_string_lossy().into_owned();
+        let directory = unique_worktree_dir();
+        let path = add_worktree_with_branch(
+            &repo_str,
+            &directory,
+            "billing",
+            "feat/billing",
+            Some("base"),
+        )
+        .expect("create named worktree");
+        assert!(path.ends_with("/billing"));
+        assert_eq!(current_branch(&path), "feat/billing");
+        assert_eq!(head_sha(Path::new(&path)), base_tip);
+        let before = list_worktrees(&repo_str).len();
+        assert!(add_worktree_with_branch(
+            &repo_str,
+            &directory,
+            "other",
+            "feat/billing",
+            Some("main")
+        )
+        .is_err());
+        assert!(add_worktree_with_branch(
+            &repo_str,
+            &directory,
+            "billing",
+            "feat/other",
+            Some("main")
+        )
+        .is_err());
+        assert_eq!(list_worktrees(&repo_str).len(), before);
+        let absent = git_cmd(repo.path())
+            .args(["show-ref", "--verify", "refs/heads/feat/other"])
+            .output()
+            .expect("query branch");
+        assert!(!absent.status.success());
+        remove_worktree(&repo_str, &path).expect("remove test worktree");
+        let _ = fs::remove_dir(Path::new(&path).parent().expect("worktree parent"));
     }
 
     #[test]

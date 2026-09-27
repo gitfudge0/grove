@@ -4,7 +4,11 @@
 
 a worktree launchpad for ai coding agents
 
-![grove session view](screenshots/grove-hero.png)
+[![grove UI preview with Codex, Claude Code, and terminal sessions](assets/showcase/grove-launch.jpg)](assets/showcase/grove-launch.mp4)
+
+[Watch the 22-second Grove UI preview](assets/showcase/grove-launch.mp4)
+
+_Illustrated Grove UI with fictional project data. Music: [Happy Beats & Business Moves Vol. 12](https://ende.app/en/song/12881-happy-beats-business-moves-vol-12) by Sascha Ende ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/))._
 
 [![license: MIT](https://img.shields.io/badge/license-MIT-9ece6a?style=flat-square)](#license)
 [![platform: linux | macOS | Windows (alpha)](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20Windows%20(alpha)-7aa2f7?style=flat-square)](#requirements)
@@ -22,7 +26,7 @@ grove is a native desktop app for managing git worktrees across projects and run
 - [sessions](#sessions)
 - [keyboard](#keyboard)
 - [supported agents](#supported-agents)
-- [themes](#themes)
+- [appearance](#appearance)
 - [requirements](#requirements)
 - [telemetry](#telemetry)
 - [uninstall](#uninstall)
@@ -74,9 +78,9 @@ grove                       # launch the desktop app
 
 then:
 
-1. add a project by pointing grove at a git repository.
-2. select a worktree, or create a new one from that project.
-3. start `claude`, `codex`, `opencode`, or a terminal session in that worktree.
+1. add a project by choosing a local folder. grove can use an existing git repository, initialize git, or use the folder without git.
+2. start in the main checkout, or create a separate worktree for an existing git repository with at least one commit. a newly initialized repository needs its first commit before you can create another worktree. folders without git can still run sessions, but cannot create worktrees.
+3. start `claude`, `codex`, `opencode`, or a terminal session in the chosen checkout. if an agent CLI is missing, you can still start a terminal.
 
 the app exposes common actions as row controls, toolbar buttons, and keyboard shortcuts. there is no separate `grove tui` mode.
 
@@ -94,7 +98,7 @@ the desktop app has three sidebar views:
 
 from an active desktop session, the `term` control opens a right-docked shell for the same worktree. you can keep the agent on one side and run git, tests, or edits in the adjacent terminal panel.
 
-the `mod+n` launcher doubles as a command palette: recent worktrees first, plus settings, per-project themes, and each project's setup/run/teardown scripts as row actions.
+the `mod+n` launcher doubles as a command palette: recent worktrees first, plus settings, and each project's setup/run/teardown scripts as row actions.
 
 grove supports two session backends:
 
@@ -103,7 +107,7 @@ grove supports two session backends:
 | **tmux** | recommended when `tmux` is installed | sessions survive grove exits and are rediscovered on next launch |
 | **native** | no tmux dependency | sessions end when grove exits |
 
-on first launch with `tmux` installed, grove asks which backend to use. use the `native` / `tmux` controls in the app chrome to choose the backend for new sessions. existing sessions keep the backend they were started with.
+when you start your first managed project session with `tmux` installed, grove asks which backend to use. use the `native` / `tmux` controls in the app chrome to choose the backend for new sessions. existing sessions keep the backend they were started with.
 
 ## keyboard
 
@@ -113,7 +117,9 @@ on first launch with `tmux` installed, grove asks which backend to use. use the 
 |---|---|
 | `mod+n` | open the launcher / command palette |
 | `cmd+alt+n` (macOS) / `ctrl+alt+n` | new session in the current worktree — note: no shift, so this is not `mod+alt+n` |
-| `mod+j` / `mod+k` | next / previous session (visible order) |
+| `mod+j` / `mod+k` | next / previous session outside grid view |
+| `mod+←↓↑→` / `mod+h j k l` | move focus to an adjacent grid tile |
+| `mod+alt+←↓↑→` / `mod+alt+h j k l` | swap the focused grid tile with its neighbor (`mod+shift` also works on macOS) |
 | `mod+1`..`mod+9` | select the nth session |
 | `mod+g` | toggle the grid (agent view) |
 | `mod+r` | enter grid resize mode while the grid is open |
@@ -123,7 +129,7 @@ on first launch with `tmux` installed, grove asks which backend to use. use the 
 | `mod+enter` | toggle zen mode |
 | `mod+,` | open settings |
 | `mod+=` / `mod+-` / `mod+0` | zoom in / out / reset |
-| `mod+w` | close the focused session (press twice to confirm) |
+| `mod+w` | request to close the focused session (confirm in the prompt) |
 | `mod+c` / `mod+v` | copy selection / paste into the focused session |
 | `ctrl+shift+←` / `ctrl+shift+→` | resize the terminal panel (workspace view only) |
 | `mod+/` | show the shortcut overlay |
@@ -144,11 +150,9 @@ grid seams can also be dragged with the mouse. double-click one seam to reset on
 
 each agent must be installed and available on your `PATH`. grove does not bundle, update, or authenticate any agent; it spawns them.
 
-## themes
+## appearance
 
-grove ships with 31 curated themes (17 dark, 14 light). the default is tokyonight. use the settings button to open the theme picker; the selection persists across launches. you can also add your own: paste a theme (json or named hex lines) into the custom-theme manager in settings, and it joins the picker alongside the built-ins.
-
-themes are colorways, not chrome. every screen reads correctly across all of them, because grove paints by semantic role (`fg`, `bg`, `comment`, `green` for running state, `yellow` for keybinding letters, `red` for errors) rather than fixed hex values. see [DESIGN.md](DESIGN.md) for the role contract.
+grove uses fixed light and dark palettes. In settings, choose System to follow your OS, or select Dark or Light. The choice persists across launches.
 
 ## requirements
 
@@ -159,7 +163,7 @@ themes are colorways, not chrome. every screen reads correctly across all of the
 
 ## telemetry
 
-grove sends anonymous usage events: app launch (theme name, project count, tmux setting), an hourly heartbeat, session created/ended (agent type, native vs tmux, duration in minutes, open-session counts), worktree created, update applied/declined (version), error kinds (session spawn or worktree creation failed — the kind only, no details), UI feature pings (launcher/settings opened, zoom changed, grid tile moved), and panic messages — each tagged with app version and OS.
+grove sends anonymous usage events: app launch (project count, tmux setting), an hourly heartbeat, session created/ended (agent type, native vs tmux, duration in minutes, open-session counts), worktree created, update applied/declined (version), error kinds (session spawn or worktree creation failed — the kind only, no details), UI feature pings (launcher/settings opened, zoom changed, grid tile moved), and panic messages — each tagged with app version and OS.
 
 it never sends project names, file paths, git data, prompts, or session/terminal content.
 
@@ -171,7 +175,7 @@ to disable, toggle "share anonymous usage data" off in the settings modal, or se
 ./uninstall.sh
 ```
 
-removes the app bundle (or `.deb`/`~/.local` install on linux) that `install.sh` installed. your project registrations and theme settings live under `~/.config/grove` and are left in place; delete that directory if you want a clean slate.
+removes the app bundle (or `.deb`/`~/.local` install on linux) that `install.sh` installed. your project registrations and appearance setting live under `~/.config/grove` and are left in place; delete that directory if you want a clean slate.
 
 ## license
 

@@ -4,7 +4,6 @@
 //! Startup and the Settings tmux-toggle re-scan are the same call, as iced runs `discover_sessions` from both
 //! `App::new` (`src/app/mod.rs:219-224`) and `discover_tmux_sessions` (`:347-366`) — sound only because of rule 1 below.
 
-use grove_core::agent::Agent;
 use grove_core::tmux::DiscoveredSession;
 
 use crate::entities::session_registry::SessionMeta;
@@ -40,10 +39,7 @@ pub fn plan(
 
     let mut out = Vec::new();
     for d in discovered {
-        // Home terminals/panel shells are never tmux-backed; a discovery claiming to be one is a leaked pre-fix terminal.
-        if d.agent == Agent::Terminal {
-            continue;
-        }
+        // Native home and panel shells have no tmux sidecars. A Terminal sidecar here belongs to a managed worktree session.
         if live.contains(&d.name) || out.iter().any(|r: &Reattach| r.session.name == d.name) {
             continue;
         }
@@ -104,6 +100,7 @@ mod tests {
     fn discovered(name: &str, project: &str, wt: &str) -> DiscoveredSession {
         DiscoveredSession {
             name: name.to_string(),
+            pane_title: None,
             wt_path: wt.to_string(),
             project: project.to_string(),
             label: "claude 1".to_string(),
@@ -122,6 +119,7 @@ mod tests {
             context_roots: Vec::new(),
             temp_bundle_path: None,
             label: "claude 1".to_string(),
+            restored_title: None,
             spawned_at: std::time::Instant::now(),
             attention: None,
             tmux: tmux_name.is_some(),
@@ -162,6 +160,17 @@ mod tests {
             discovered("grove-x", "alpha", "/a/one"),
         ];
         assert_eq!(plan(&d, &[], &order_of).len(), 1);
+    }
+
+    #[test]
+    fn managed_terminal_sidecar_is_reattached() {
+        let mut terminal = discovered("grove-terminal", "alpha", "/a/two");
+        terminal.agent = Agent::Terminal;
+        let existing = [meta(1, "alpha", "/a/one", None)];
+        let got = plan(&[terminal], &existing, &order_of);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].at, 1);
+        assert_eq!(got[0].session.agent, Agent::Terminal);
     }
 
     #[test]

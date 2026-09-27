@@ -24,8 +24,6 @@ use crate::zoom::ZoomState;
 
 pub struct TerminalElement {
     session: gpui::Entity<TerminalSession>,
-    /// `None` for home terminals, which belong to no project.
-    project: Option<String>,
     selection: Option<(AbsCell, AbsCell)>,
     cursor_visible: bool,
     zoom: f32,
@@ -36,7 +34,6 @@ pub struct TerminalElement {
 impl TerminalElement {
     pub fn new(
         session: gpui::Entity<TerminalSession>,
-        project: Option<String>,
         selection: Option<(AbsCell, AbsCell)>,
         cursor_visible: bool,
         zoom: f32,
@@ -44,7 +41,6 @@ impl TerminalElement {
     ) -> Self {
         Self {
             session,
-            project,
             selection,
             cursor_visible,
             zoom,
@@ -56,7 +52,7 @@ impl TerminalElement {
 /// One row's drawing: merged background quads and shaped text runs, plus the hash of the raw cells that produced them.
 /// Origins are relative to the ROW's top-left, not the element's, so a row that scrolled to a different index is byte-identical and reusable.
 pub struct RowScene {
-    /// Hashes the raw cells, never resolved colors — a theme change already invalidates every row via [`GeomKey::theme`].
+    /// Hashes the raw cells, never resolved colors — a theme change already invalidates every row via [`GeomKey::theme_generation`].
     hash: u64,
     bg_quads: Vec<PaintQuad>,
     runs: Vec<(Point<Pixels>, ShapedLine)>,
@@ -77,6 +73,10 @@ pub struct GeomKey {
     pub zoom_bits: u32,
     /// Compared by name only; `Theme` is `Clone` but not `PartialEq`.
     pub theme: SharedString,
+    /// Invalidates rows when a theme is reloaded under the same name.
+    pub theme_generation: u64,
+    /// Default fill also affects inverse text; chrome changes must re-shape it.
+    pub background_bits: [u32; 4],
 }
 
 /// Split deliberately: an equal `geom` with a differing tail means rows are still individually valid, so `prepaint` can re-key by content hash.
@@ -94,6 +94,7 @@ pub struct PrepaintState {
     selection_quads: Vec<PaintQuad>,
     cursor: Option<PaintQuad>,
     line_height: Pixels,
+    background: Hsla,
 }
 
 impl IntoElement for TerminalElement {
@@ -161,28 +162,18 @@ impl Element for TerminalElement {
         let bold_font = gpui::font(fonts::MONO_FAMILY).bold();
         let font_size = px(zoom.font_size());
 
-        // App chrome always stays on the global theme; only a pinned project resolves content against a different one, here.
-        // Deliberately not memoized (unlike the old iced build): resolving is cheap, so toggling `project_themes_enabled` re-colors next frame with no bookkeeping.
-        let pinned = self.project.as_ref().and_then(|name| {
-            // `Some(None)` means "preview the global theme"; `None` means "no preview, use the persisted pin".
-            let preview = crate::views::modals::theme_picker::ThemePreview::for_project(cx, name);
-            project_theme_override(
-                &cx.global::<crate::settings::SettingsState>().store,
-                name,
-                preview,
-            )
-        });
-        // Keyed by theme name only, so the hit path never needs the resolved `Theme` (`Clone` but not `Eq`).
-        let theme_name: SharedString = match pinned.as_ref() {
-            Some(theme) => SharedString::from(theme.name.to_string()),
-            None => grove_core::theme::with_current(|t| SharedString::from(t.name.to_string())),
-        };
+        // Every terminal uses the app's active palette and surface.
+        let background = terminal_background();
+        let theme_name =
+            grove_core::theme::with_current(|t| SharedString::from(t.name.to_string()));
         let key = TermSceneKey {
             geom: GeomKey {
                 width_bits: f32::from(bounds.size.width).to_bits(),
                 height_bits: f32::from(bounds.size.height).to_bits(),
                 zoom_bits: self.zoom.to_bits(),
                 theme: theme_name,
+                theme_generation: cx.global::<c::ThemeState>().generation,
+                background_bits: background_bits(background),
             },
             damage_gen,
             display_offset: scrollback,
@@ -233,8 +224,13 @@ impl Element for TerminalElement {
                             let cell = snapshot.cell(r as u16, col as u16);
                             let (ch, fg, bg, bold) = match cell {
                                 Some(cell) => {
-                                    let (fg, bg) =
-                                        colors::resolve_pair(cell.fg, cell.bg, cell.inverse, theme);
+                                    let (fg, bg) = colors::resolve_pair(
+                                        cell.fg,
+                                        cell.bg,
+                                        cell.inverse,
+                                        theme,
+                                        background,
+                                    );
                                     (cell.c, fg, bg, cell.bold)
                                 }
                                 None => (' ', c::fg_of(theme).into(), None, false),
@@ -310,10 +306,7 @@ impl Element for TerminalElement {
                     }
                     out
                 };
-                let rows = match pinned.as_ref() {
-                    Some(theme) => render_grid(theme),
-                    None => grove_core::theme::with_current(render_grid),
-                };
+                let rows = grove_core::theme::with_current(render_grid);
                 let scene = Rc::new(TermScene { rows });
                 // Cache lives on the session, not gpui element state: element state is keyed by the ancestor id path, which embeds the tile slot — moving a tile would invalidate it.
                 self.session
@@ -368,7 +361,7 @@ impl Element for TerminalElement {
                     ),
                     size(px(cell_w), px(cell_h)),
                 ),
-                c::FG(),
+                Hsla::from(grove_core::theme::with_current(c::fg_of)),
             ))
         } else {
             None
@@ -379,6 +372,7 @@ impl Element for TerminalElement {
             selection_quads,
             cursor,
             line_height: px(cell_h),
+            background,
         }
     }
 
@@ -392,7 +386,7 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.paint_quad(fill(bounds, c::BG()));
+        window.paint_quad(fill(bounds, pre.background));
         // Scene is read by reference, not drained, since it's shared with the session's cache.
         // All backgrounds go down before any text — interleaving per row would let one row's background paint over the previous row's descenders.
         for (r, row) in pre.scene.rows.iter().enumerate() {
@@ -475,31 +469,23 @@ fn forced_width(run_text: &str, cell_w: f32) -> Option<Pixels> {
     Some(px(cells as f32 * cell_w))
 }
 
-/// The theme a PTY for `project_name` renders its content in, or `None` for the global theme. Ported from `theme_picker.rs:65-128`.
-/// `preview`'s shape is load-bearing: `Some(None)` means "preview the global theme", not `None` ("no preview"); the preview check runs before the toggle check.
-pub fn project_theme_override(
-    store: &grove_core::storage::Store,
-    project_name: &str,
-    preview: Option<Option<Theme>>,
-) -> Option<Theme> {
-    if let Some(preview) = preview {
-        return preview;
-    }
-    if !store.project_themes_enabled {
-        return None;
-    }
-    store
-        .projects
-        .iter()
-        .find(|p| p.name == project_name)
-        .and_then(|p| p.theme.as_deref())
-        .and_then(grove_core::theme::by_name)
+/// Default cells blend into the app surface under the active app theme.
+fn terminal_background() -> Hsla {
+    c::BG()
+}
+
+fn background_bits(background: Hsla) -> [u32; 4] {
+    [
+        background.h.to_bits(),
+        background.s.to_bits(),
+        background.l.to_bits(),
+        background.a.to_bits(),
+    ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use grove_core::storage::{Project, Store};
 
     use crate::fonts::CELL_W;
 
@@ -539,62 +525,38 @@ mod tests {
         assert!(!is_blank('a'));
     }
 
-    fn store_with(project_themes_enabled: bool, pin: Option<&str>) -> Store {
-        Store {
-            project_themes_enabled,
-            projects: vec![Project {
-                name: "alpha".to_string(),
-                path: "/a".to_string(),
-                scripts: grove_core::storage::ProjectScripts::default(),
-                theme: pin.map(ToString::to_string),
-                archived: false,
-                worktree_dir: None,
-            }],
-            ..Store::default()
-        }
+    #[test]
+    fn every_terminal_uses_the_app_surface() {
+        assert_eq!(terminal_background(), c::BG());
     }
 
-    fn a_theme() -> Theme {
-        let Some(t) = grove_core::theme::by_name("tokyonight-day") else {
-            unreachable!("a builtin theme must resolve")
+    #[test]
+    fn different_default_fills_invalidate_cached_inverse_text() {
+        let key = GeomKey {
+            width_bits: 0,
+            height_bits: 0,
+            zoom_bits: 0,
+            theme: "same-palette".into(),
+            theme_generation: 0,
+            background_bits: background_bits(terminal_background()),
         };
-        t
+        let mut changed = key.clone();
+        changed.background_bits = background_bits(gpui::rgb(0x101010).into());
+        assert!(key != changed);
     }
 
     #[test]
-    fn the_toggle_being_off_beats_a_pin() {
-        let store = store_with(false, Some("tokyonight-day"));
-        assert!(project_theme_override(&store, "alpha", None).is_none());
-    }
-
-    #[test]
-    fn a_pin_resolves_when_the_toggle_is_on() {
-        let store = store_with(true, Some("tokyonight-day"));
-        let Some(t) = project_theme_override(&store, "alpha", None) else {
-            unreachable!("a pinned project resolves its theme")
+    fn theme_reload_invalidates_cached_rows_even_when_palette_name_is_unchanged() {
+        let key = GeomKey {
+            width_bits: 0,
+            height_bits: 0,
+            zoom_bits: 0,
+            theme: "same-palette".into(),
+            theme_generation: 7,
+            background_bits: background_bits(terminal_background()),
         };
-        assert_eq!(t.name, a_theme().name);
-    }
-
-    #[test]
-    fn an_unresolvable_pin_falls_back_to_the_global_theme() {
-        let store = store_with(true, Some("no-such-theme"));
-        assert!(project_theme_override(&store, "alpha", None).is_none());
-        assert!(project_theme_override(&store, "nobody", None).is_none());
-    }
-
-    #[test]
-    fn a_preview_of_none_means_the_global_theme_even_with_a_pin() {
-        let store = store_with(true, Some("tokyonight-day"));
-        assert!(project_theme_override(&store, "alpha", Some(None)).is_none());
-    }
-
-    #[test]
-    fn a_preview_bypasses_the_toggle_entirely() {
-        let store = store_with(false, None);
-        let Some(t) = project_theme_override(&store, "alpha", Some(Some(a_theme()))) else {
-            unreachable!("the preview wins outright")
-        };
-        assert_eq!(t.name, a_theme().name);
+        let mut changed = key.clone();
+        changed.theme_generation += 1;
+        assert!(key != changed);
     }
 }

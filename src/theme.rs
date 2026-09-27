@@ -5,12 +5,46 @@
 // File-level: this module is the colour-role vocabulary — a role is declared because the palette defines it, not because a widget draws it today.
 #![allow(dead_code)]
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use gpui::{BorrowAppContext as _, Hsla, Rgba, WindowAppearance};
 use grove_core::theme;
 
-/// Grove's defaults when the store names no theme.
+/// Fixed terminal palettes for dark and light appearance.
 pub const DEFAULT_DARK_THEME: &str = "tokyonight-storm";
 pub const DEFAULT_LIGHT_THEME: &str = "tokyonight-day";
+
+// App chrome follows the reference palette independently from PTY themes.
+static CHROME_LIGHT: AtomicBool = AtomicBool::new(false);
+
+pub fn set_chrome_light(light: bool) {
+    CHROME_LIGHT.store(light, Ordering::Relaxed);
+}
+
+fn chrome(dark: u32, light: u32) -> Hsla {
+    gpui::rgb(if CHROME_LIGHT.load(Ordering::Relaxed) {
+        light
+    } else {
+        dark
+    })
+    .into()
+}
+
+pub fn BORDER_STRONG() -> Hsla {
+    chrome(0x515158, 0xc3c3c7)
+}
+pub fn WINDOW_CLOSE() -> Hsla {
+    gpui::rgb(0xff5f57).into()
+}
+pub fn WINDOW_MINIMIZE() -> Hsla {
+    gpui::rgb(0xfebc2e).into()
+}
+pub fn WINDOW_FULLSCREEN() -> Hsla {
+    gpui::rgb(0x28c840).into()
+}
+pub fn WINDOW_CONTROL_GLYPH() -> Hsla {
+    gpui::rgb(0x141416).into()
+}
 
 const BLACK: Rgba = Rgba {
     r: 0.0,
@@ -59,19 +93,36 @@ fn base_fg() -> Rgba {
 }
 
 pub fn BG() -> Hsla {
-    base_bg().into()
+    chrome(0x1a1a1a, 0xffffff)
 }
 
 pub fn BG_RAIL() -> Hsla {
-    theme::with_current(bg_rail_of).into()
+    chrome(0x242424, 0xf7f7f8)
+}
+
+/// Sidebar tint over the compositor's blurred window background.
+pub fn BG_RAIL_GLASS() -> Hsla {
+    alpha(
+        BG_RAIL(),
+        if CHROME_LIGHT.load(Ordering::Relaxed) {
+            0.84
+        } else {
+            0.80
+        },
+    )
 }
 
 pub fn BG_STRIP() -> Hsla {
-    theme::with_current(bg_strip_of).into()
+    chrome(0x1a1a1a, 0xf7f7f8)
 }
 
 pub fn BG_HOVER() -> Hsla {
-    theme::with_current(bg_hover_of).into()
+    chrome(0x333337, 0xededee)
+}
+
+/// Neutral fill for dense menu hover and keyboard navigation.
+pub fn MENU_HOVER() -> Hsla {
+    chrome(0x232327, 0xededee)
 }
 
 pub fn BG_HL() -> Hsla {
@@ -79,7 +130,7 @@ pub fn BG_HL() -> Hsla {
 }
 
 pub fn BORDER() -> Hsla {
-    theme::with_current(border_of).into()
+    chrome(0x34343a, 0xdedee0)
 }
 pub fn BORDER_SOFT() -> Hsla {
     theme::with_current(|t| mix(ic(t.bg), ic(t.fg), 0.07)).into()
@@ -107,13 +158,13 @@ pub fn is_dark() -> bool {
 }
 
 pub fn FG() -> Hsla {
-    base_fg().into()
+    chrome(0xf7f7f8, 0x141416)
 }
 pub fn FG_DIM() -> Hsla {
-    theme::with_current(|t| ic(t.fg_dark)).into()
+    chrome(0xaaaab2, 0x66666d)
 }
 pub fn FG_MUTE() -> Hsla {
-    theme::with_current(|t| ic(t.comment)).into()
+    chrome(0x707078, 0x707078)
 }
 
 pub fn BLUE() -> Hsla {
@@ -131,7 +182,7 @@ pub fn MAGENTA() -> Hsla {
 /// `Input` draws its placeholder in `cx.theme().muted_foreground` — gpui-component's
 /// palette, not Grove's — while a real value inherits `text_style.color` (`FG()`,
 /// set on `panel_surface`). Left unsynced, a placeholder would sit at a fixed
-/// third-party grey that ignores all 32 bundled themes, and the
+/// third-party grey that ignores Grove's fixed appearance palettes, and the
 /// placeholder-vs-value distinction §14 relies on would be whatever that grey
 /// happened to look like. Called at startup and on every theme change.
 pub fn sync_component_theme(cx: &mut gpui::App) {
@@ -216,7 +267,7 @@ pub fn SEL_RING() -> Hsla {
     alpha_rgba(cyan_rgba(), 0.5).into()
 }
 
-// Renders PTY content under a per-project theme override, decoupled from the global `theme::current()`. Return Rgba (not Hsla) since they're blend inputs to each other.
+// Palette helpers for PTY cells. Return Rgba (not Hsla) because these are blend inputs.
 fn is_dark_of(t: &theme::Theme) -> bool {
     matches!(t.kind, theme::ThemeKind::Dark)
 }
@@ -254,7 +305,7 @@ pub fn bg_rail_of(t: &theme::Theme) -> Rgba {
     mix(ic(t.bg), BLACK, d)
 }
 
-/// Used for ANSI color 0 inside PTY content rendered under a per-project override theme.
+/// Used for ANSI color 0 inside PTY content.
 pub fn bg_strip_of(t: &theme::Theme) -> Rgba {
     let bg = ic(t.bg);
     if is_dark_of(t) {
@@ -264,7 +315,7 @@ pub fn bg_strip_of(t: &theme::Theme) -> Rgba {
     }
 }
 
-/// Reserved, no consumer yet — exists so a per-project theme can tint selected/highlighted PTY regions later; not dead code. `bg_hover_of` does read it.
+/// Reserved for selected/highlighted PTY regions; `bg_hover_of` reads it.
 pub fn bg_hl_of(t: &theme::Theme) -> Rgba {
     ic(t.bg_highlight)
 }
@@ -274,7 +325,7 @@ pub fn bg_hover_of(t: &theme::Theme) -> Rgba {
 pub fn border_of(t: &theme::Theme) -> Rgba {
     mix(bg_of(t), fg_of(t), 0.16)
 }
-/// Reserved, no consumer yet — for a future PTY selection outline in the project's pinned theme; chrome selection uses `SEL_RING()`.
+/// Reserved for a future PTY selection outline; chrome selection uses `SEL_RING()`.
 pub fn sel_ring_of(t: &theme::Theme) -> Rgba {
     alpha_rgba(cyan_of(t), 0.5)
 }
@@ -285,7 +336,7 @@ pub struct ThemeState {
     pub dark_name: String,
     pub light_name: String,
     pub system_mode: WindowAppearance,
-    /// Bumped on every change; the terminal element uses it as a repaint/cache key.
+    /// Bumped on every change; the terminal element uses it to invalidate its row cache.
     pub generation: u64,
 }
 
@@ -332,81 +383,25 @@ impl ThemeState {
     /// Called once with the first frame's `appearance()` — seeding it there is why follow-system looks correct immediately.
     pub fn set_system_mode(cx: &mut gpui::App, mode: WindowAppearance) {
         cx.update_global::<Self, _>(|this, _| this.system_mode = mode);
+        if cx.global::<Self>().follow_system {
+            set_chrome_light(matches!(
+                mode,
+                WindowAppearance::Light | WindowAppearance::VibrantLight
+            ));
+        }
         Self::apply_system_theme(cx);
     }
 }
 
-// Every mutation goes through `grove_core::theme_file::save` then `load_custom`, so `theme::CUSTOM` and `themes.json` can never disagree.
-
-/// The paste-first editor's starting buffer.
-pub fn new_theme_template() -> String {
-    let base = theme::by_name(DEFAULT_DARK_THEME)
-        .or_else(|| theme::BUILTINS.first().cloned())
-        .unwrap_or_else(|| theme::BUILTINS[0].clone());
-    let mut draft = base;
-    draft.name = std::borrow::Cow::Owned("my theme".to_string());
-    grove_core::theme_file::to_named_lines(&draft)
+/// Reference form surface, independent of the terminal palette.
+pub fn FIELD_FILL() -> Hsla {
+    chrome(0x1b1b1b, 0xefefef)
 }
-
-fn persist_custom(themes: &[theme::Theme]) -> Result<(), String> {
-    grove_core::theme_file::save(themes).map_err(|e| e.to_string())?;
-    theme::load_custom();
-    Ok(())
+pub fn SURFACE_RAISED() -> Hsla {
+    chrome(0x1b1b1b, 0xefefef)
 }
-
-pub fn delete_custom_theme(name: &str) -> Result<(), String> {
-    let mut themes = theme::all_custom_themes();
-    themes.retain(|t| t.name != name);
-    persist_custom(&themes)
-}
-
-pub fn rename_custom_theme(from: &str, to: &str) -> Result<(), String> {
-    if to.trim().is_empty() {
-        return Err("name required".into());
-    }
-    let mut themes = theme::all_custom_themes();
-    let Some(t) = themes.iter_mut().find(|t| t.name == from) else {
-        return Err(format!("'{from}' not found"));
-    };
-    t.name = std::borrow::Cow::Owned(to.to_string());
-    persist_custom(&themes)
-}
-
-pub fn duplicate_custom_theme(name: &str) -> Result<(), String> {
-    let mut themes = theme::all_custom_themes();
-    let Some(src) = themes.iter().find(|t| t.name == name).cloned() else {
-        return Err(format!("'{name}' not found"));
-    };
-    let mut copy = src;
-    let mut candidate = format!("{name} copy");
-    let mut n = 2;
-    while themes.iter().any(|t| t.name == candidate) {
-        candidate = format!("{name} copy {n}");
-        n += 1;
-    }
-    copy.name = std::borrow::Cow::Owned(candidate);
-    themes.push(copy);
-    persist_custom(&themes)
-}
-
-/// The buffer is `to_named_lines`' output (or a pasted equivalent), round-tripped through `theme_file::parse_paste` onto a draft derived from the default theme.
-pub fn save_custom_theme_json(buffer: &str) -> Result<(), String> {
-    let parsed = grove_core::theme_file::parse_paste(buffer)?;
-    let base = theme::by_name(DEFAULT_DARK_THEME).unwrap_or_else(|| theme::BUILTINS[0].clone());
-    let mut draft = base;
-    grove_core::theme_file::apply_pasted_colors(&mut draft, &parsed);
-    let name = buffer
-        .lines()
-        .find_map(|l| l.strip_prefix("name:").map(|v| v.trim().to_string()))
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "my theme".to_string());
-    draft.name = std::borrow::Cow::Owned(name.clone());
-    let mut themes = theme::all_custom_themes();
-    match themes.iter_mut().find(|t| t.name == name) {
-        Some(existing) => *existing = draft,
-        None => themes.push(draft),
-    }
-    persist_custom(&themes)
+pub fn FORM_ERROR() -> Hsla {
+    chrome(0xef7d8e, 0xb6384c)
 }
 
 #[cfg(test)]
@@ -417,23 +412,20 @@ mod tests {
         0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
     }
 
-    fn lum(c: Hsla) -> f32 {
-        lum_rgba(c.into())
-    }
-
     /// Serializes tests that mutate the global active theme, so a swap can't race a concurrent default-reader.
     static ACTIVE_THEME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Restores the pre-test active theme, even on panic.
-    struct ActiveThemeGuard(theme::Theme);
+    struct ActiveThemeGuard(theme::Theme, bool);
     impl ActiveThemeGuard {
         fn capture() -> Self {
-            Self(theme::current())
+            Self(theme::current(), CHROME_LIGHT.load(Ordering::Relaxed))
         }
     }
     impl Drop for ActiveThemeGuard {
         fn drop(&mut self) {
             theme::set(self.0.clone());
+            set_chrome_light(self.1);
         }
     }
 
@@ -480,7 +472,7 @@ mod tests {
 
     /// The default active theme is TokyoNight dark (`crates/grove-core/src/theme.rs:695`).
     #[test]
-    fn default_theme_is_tokyonight_dark() {
+    fn default_terminal_theme_is_tokyonight_with_reference_dark_chrome() {
         let _lock = ACTIVE_THEME_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -489,10 +481,10 @@ mod tests {
             assert_eq!(t.bg, theme::Color::Rgb(0x1a, 0x1b, 0x26));
             assert!(is_dark_of(t));
         });
-        let bg: Rgba = BG().into();
-        assert_eq!((bg.r * 255.0).round() as u8, 0x1a);
-        assert_eq!((bg.g * 255.0).round() as u8, 0x1b);
-        assert_eq!((bg.b * 255.0).round() as u8, 0x26);
+        let _restore = ActiveThemeGuard::capture();
+        set_chrome_light(false);
+        assert_eq!(rgb_bytes(BG()), [0x1a, 0x1a, 0x1a]);
+        assert_eq!(rgb_bytes(FG()), [0xf7, 0xf7, 0xf8]);
     }
 
     /// AMBER is `mix(yellow, red, 0.25)`, checked against every bundled theme.
@@ -537,9 +529,9 @@ mod tests {
         assert!((a.r - want.r).abs() < 1e-6 && (a.g - want.g).abs() < 1e-6);
     }
 
-    /// Chrome stack: strip is darkest, then rail, then body — checked on every bundled theme, including light.
+    /// Legacy per-terminal surface helpers retain their bundled-theme behavior.
     #[test]
-    fn chrome_surfaces_get_progressively_darker() {
+    fn terminal_surface_helpers_get_progressively_darker() {
         // Reads the live accessors below, so it must serialize against the tests
         // that swap the active theme (pre-existing race; the lock is the file's
         // established guard).
@@ -564,8 +556,73 @@ mod tests {
                 t.name
             );
         }
-        assert!(lum(BG_STRIP()) < lum(BG_RAIL()));
-        assert!(lum(BG_RAIL()) < lum(BG()));
+    }
+
+    fn rgb_bytes(color: Hsla) -> [u8; 3] {
+        let color: Rgba = color.into();
+        [color.r, color.g, color.b].map(|channel| (channel * 255.0).round() as u8)
+    }
+
+    #[test]
+    fn reference_chrome_appearance_is_independent_of_terminal_theme() {
+        let _lock = ACTIVE_THEME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _restore = ActiveThemeGuard::capture();
+        for (light, expected) in [
+            (
+                false,
+                [
+                    0x1a1a1a, 0x242424, 0x1a1a1a, 0x333337, 0xf7f7f8, 0xaaaab2, 0x707078, 0x34343a,
+                    0x515158,
+                ],
+            ),
+            (
+                true,
+                [
+                    0xffffff, 0xf7f7f8, 0xf7f7f8, 0xededee, 0x141416, 0x66666d, 0x707078, 0xdedee0,
+                    0xc3c3c7,
+                ],
+            ),
+        ] {
+            set_chrome_light(light);
+            for terminal_theme in theme::BUILTINS {
+                theme::set(terminal_theme.clone());
+                assert_eq!(theme::current().bg, terminal_theme.bg);
+                let base = lum_rgba(BG().into());
+                let rail = lum_rgba(BG_RAIL().into());
+                let hover = lum_rgba(BG_HOVER().into());
+                if light {
+                    assert!(
+                        hover < rail && rail < base,
+                        "light hover must darken the rail, which darkens the base"
+                    );
+                } else {
+                    assert!(
+                        hover > rail && rail > base,
+                        "dark hover must lighten the rail, which lightens the base"
+                    );
+                }
+                let actual = [
+                    BG(),
+                    BG_RAIL(),
+                    BG_STRIP(),
+                    BG_HOVER(),
+                    FG(),
+                    FG_DIM(),
+                    FG_MUTE(),
+                    BORDER(),
+                    BORDER_STRONG(),
+                ]
+                .map(rgb_bytes);
+                let expected = expected.map(|rgb| rgb_bytes(gpui::rgb(rgb).into()));
+                assert_eq!(
+                    actual, expected,
+                    "reference light={light} changed under terminal theme {}",
+                    terminal_theme.name
+                );
+            }
+        }
     }
 
     /// PANEL_SHADOW's alpha and geometry (Y/BLUR) must both be strictly larger on dark, or a light panel inherits a dark-theme shadow.

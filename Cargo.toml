@@ -8,7 +8,14 @@ exclude = [
     "vendor/gpui-component/ui",
     "vendor/gpui-component/macros",
     "vendor/gpui-component/assets",
+    "vendor/sum_tree",
 ]
+
+# Zed's Apache-licensed sum_tree uses GPL-only ztracing for optional
+# instrumentation. This local copy removes that dependency while preserving
+# the exact Zed revision used by gpui. See vendor/sum_tree/README.md.
+[patch."https://github.com/zed-industries/zed"]
+sum_tree = { path = "vendor/sum_tree" }
 
 # `log` is declared by the vendored gpui-component crate and reached only
 # through macros cargo-machete's regex scan cannot see. The vendored manifests
@@ -17,7 +24,7 @@ exclude = [
 ignored = ["log"]
 
 [workspace.package]
-version = "0.54.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -174,6 +181,7 @@ workspace = true
 # macOS dock badge / attention bounce (`src/platform/dock.rs`).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
+raw-window-handle = "0.6"
 
 [dev-dependencies]
 # Tests construct a `grove_core::upgrade::Release`, whose `version` field is a

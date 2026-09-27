@@ -64,23 +64,6 @@ fn sample_modal(kind: ModalKind) -> Modal {
             sel: 0,
         },
         ModalKind::SessionLauncher => Modal::SessionLauncher(Box::default()),
-        ModalKind::ThemePicker => Modal::ThemePicker {
-            sel_dark: 0,
-            sel_light: 0,
-            dark_tab: true,
-            original: "tokyonight-storm".into(),
-            follow_system: false,
-            scope: ThemePickerScope::App,
-            project_use_default: false,
-            return_to: ThemePickerReturn::Close,
-        },
-        ModalKind::ThemeManager => Modal::ThemeManager {
-            selected: 0,
-            rename: None,
-            rename_error: None,
-            pending_delete: None,
-            editor: None,
-        },
         ModalKind::Settings => Modal::Settings,
         ModalKind::ShortcutOverlay => Modal::ShortcutOverlay,
         ModalKind::Teardown => Modal::Teardown {
@@ -500,7 +483,7 @@ fn every_registry_row_with_a_label_reaches_the_overlay() {
         }
         let shown = SCREENS
             .into_iter()
-            .any(|s| crate::views::modals::settings::scope_allows(def, s));
+            .any(|s| crate::keymap::scope_allows(def.scopes, s));
         assert!(shown, "{:?} is invisible on every screen", def.description);
     }
 }
@@ -583,7 +566,7 @@ fn winning_action(kind: ModalKind, key: &str) -> String {
 
 #[test]
 fn every_single_line_modal_binds_the_keys_its_field_would_swallow() {
-    use crate::views::modals::input::InputPolicy;
+    use crate::input_policy::InputPolicy;
 
     for kind in ModalKind::ALL {
         let policy = InputPolicy::for_modal(kind);

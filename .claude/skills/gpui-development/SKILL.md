@@ -9,6 +9,8 @@ description: Use when writing, reviewing, or planning gpui code (Zed's Rust UI f
 
 gpui is pre-1.0 with frequent breaking changes; the source IS the documentation. Rule zero: **never trust memory of the API — verify against the pinned rev.** Zed's repo (`crates/gpui/examples/`, `docs/key_dispatch.md`, `src/_ownership_and_data_flow.rs`, and production crates like `terminal_view`) is the reference.
 
+For Grove's visual design, screenshot-to-UI work, and native inspection, use [grove-ui](../grove-ui/SKILL.md). This skill covers GPUI mechanics, not Grove's visual roles. Grove's views live in `src/views/`.
+
 Verified code patterns with sources: see [patterns.md](patterns.md).
 
 ## Corrections to stale training-data knowledge (as of mid-2026)

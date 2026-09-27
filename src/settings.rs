@@ -12,6 +12,32 @@ use std::time::Duration;
 use gpui::{BorrowAppContext as _, Task};
 use grove_core::storage::{self, Store};
 
+#[cfg(test)]
+fn test_config_dir() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        if let Some(explicit) =
+            std::env::var_os(storage::CONFIG_DIR_ENV).filter(|dir| !dir.is_empty())
+        {
+            return explicit.into();
+        }
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        std::env::temp_dir().join(format!("grove-root-test-{}-{unique}", std::process::id()))
+    })
+}
+
+#[cfg(test)]
+fn ensure_test_config_dir() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let dir = test_config_dir();
+        fs_err::create_dir_all(dir).expect("create private test config directory");
+        std::env::set_var(storage::CONFIG_DIR_ENV, dir);
+    });
+}
+
 /// Quiet period a mutation must survive before it is written to disk. Long
 /// enough to outlast a wheel/keyboard burst, short enough that a crash right
 /// after a deliberate change rarely loses it.
@@ -32,7 +58,10 @@ pub struct SettingsState {
 impl gpui::Global for SettingsState {}
 
 impl SettingsState {
-    pub fn new(store: Store) -> Self {
+    pub fn new(mut store: Store) -> Self {
+        #[cfg(test)]
+        ensure_test_config_dir();
+        store.normalize_workspaces();
         Self {
             store,
             dirty: false,
@@ -73,6 +102,7 @@ impl SettingsState {
             let before = this.store.clone();
             let was_dirty = this.dirty;
             let result = f(&mut this.store);
+            this.store.normalize_workspaces();
             this.dirty = true;
             this.epoch += 1;
             let saved = storage::save(&this.store);
@@ -90,6 +120,7 @@ impl SettingsState {
     /// bookkeeping is testable without a gpui `App`.
     fn mark(&mut self, f: impl FnOnce(&mut Store)) -> u64 {
         f(&mut self.store);
+        self.store.normalize_workspaces();
         self.dirty = true;
         self.epoch += 1;
         self.epoch
@@ -125,20 +156,21 @@ impl SettingsState {
 mod tests {
     use super::*;
 
+    #[test]
+    fn every_settings_state_uses_a_private_test_config_dir() {
+        let _settings = SettingsState::new(Store::default());
+        let actual = std::env::var_os(storage::CONFIG_DIR_ENV).map(std::path::PathBuf::from);
+        assert_eq!(actual.as_deref(), Some(test_config_dir()));
+    }
+
     /// Points `grove_core::storage` at a private directory for this process
     /// so the tests below never touch the developer's real config.
     /// The returned guard also serializes the disk tests against each other:
     /// they share one config file, so they must not interleave.
     fn isolate_config_dir() -> std::sync::MutexGuard<'static, ()> {
-        use std::sync::{Mutex, Once, OnceLock};
-        static ONCE: Once = Once::new();
+        use std::sync::{Mutex, OnceLock};
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        ONCE.call_once(|| {
-            let dir =
-                std::env::temp_dir().join(format!("grove-gpui-settings-{}", std::process::id()));
-            let _ = fs_err::create_dir_all(&dir);
-            std::env::set_var("GROVE_CONFIG_DIR", &dir);
-        });
+        ensure_test_config_dir();
         LOCK.get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

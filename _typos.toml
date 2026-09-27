@@ -12,6 +12,8 @@ ba = "ba"
 caf = "caf"
 # "PNG"/"PNGs" split at the word boundary in prose about screenshots.
 PN = "PN"
+# Musician credited in the README launch video.
+Ende = "Ende"
 
 [files]
 # Recorded PTY byte streams and the dumps frozen from them. They are binary

@@ -17,19 +17,21 @@ pub fn resolve(color: TermColor, theme: &Theme) -> Option<Hsla> {
     }
 }
 
+/// `default_background` is the actual pane fill; explicit ANSI/RGB tokens keep their palette mapping.
 /// The one and only inverse swap in the pipeline — `Cell` carries `inverse` unswapped, so the painting layer owns it. Returns `(fg, bg)` where fg is always concrete and `bg == None` means "emit no quad".
 pub fn resolve_pair(
     fg: TermColor,
     bg: TermColor,
     inverse: bool,
     theme: &Theme,
+    default_background: Hsla,
 ) -> (Hsla, Option<Hsla>) {
     let mut fg = resolve(fg, theme);
     let mut bg = resolve(bg, theme);
     if inverse {
         std::mem::swap(&mut fg, &mut bg);
         if fg.is_none() {
-            fg = Some(c::bg_of(theme).into());
+            fg = Some(default_background);
         }
         if bg.is_none() {
             bg = Some(c::fg_of(theme).into());
@@ -160,7 +162,13 @@ mod tests {
     #[test]
     fn plain_pair_uses_the_default_fg_token_and_paints_no_bg() {
         let t = theme();
-        let (fg, bg) = resolve_pair(TermColor::Default, TermColor::Default, false, &t);
+        let (fg, bg) = resolve_pair(
+            TermColor::Default,
+            TermColor::Default,
+            false,
+            &t,
+            c::bg_of(&t).into(),
+        );
         assert_eq!(fg, c::fg_of(&t).into());
         assert_eq!(bg, None, "a default background must emit no quad");
     }
@@ -168,7 +176,13 @@ mod tests {
     #[test]
     fn inverse_swaps_exactly_once() {
         let t = theme();
-        let (fg, bg) = resolve_pair(TermColor::Ansi(1), TermColor::Default, true, &t);
+        let (fg, bg) = resolve_pair(
+            TermColor::Ansi(1),
+            TermColor::Default,
+            true,
+            &t,
+            c::bg_of(&t).into(),
+        );
         assert_eq!(
             fg,
             c::bg_of(&t).into(),
@@ -176,14 +190,26 @@ mod tests {
         );
         assert_eq!(bg, Some(c::red_of(&t).into()));
 
-        let plain = resolve_pair(TermColor::Ansi(1), TermColor::Default, false, &t);
+        let plain = resolve_pair(
+            TermColor::Ansi(1),
+            TermColor::Default,
+            false,
+            &t,
+            c::bg_of(&t).into(),
+        );
         assert_ne!((fg, bg), plain, "inverse must not round-trip to normal");
     }
 
     #[test]
     fn inverse_of_a_default_pair_fills_with_theme_defaults() {
         let t = theme();
-        let (fg, bg) = resolve_pair(TermColor::Default, TermColor::Default, true, &t);
+        let (fg, bg) = resolve_pair(
+            TermColor::Default,
+            TermColor::Default,
+            true,
+            &t,
+            c::bg_of(&t).into(),
+        );
         assert_eq!(fg, c::bg_of(&t).into());
         assert_eq!(bg, Some(c::fg_of(&t).into()));
     }
@@ -191,8 +217,40 @@ mod tests {
     #[test]
     fn inverse_of_a_fully_specified_pair_is_a_plain_swap() {
         let t = theme();
-        let (fg, bg) = resolve_pair(TermColor::Ansi(2), TermColor::Ansi(4), true, &t);
+        let (fg, bg) = resolve_pair(
+            TermColor::Ansi(2),
+            TermColor::Ansi(4),
+            true,
+            &t,
+            c::bg_of(&t).into(),
+        );
         assert_eq!(fg, c::blue_of(&t).into());
         assert_eq!(bg, Some(c::green_of(&t).into()));
+    }
+    #[test]
+    fn app_surface_only_replaces_default_background_and_inverse_default_foreground() {
+        let t = theme();
+        let surface = c::BG();
+        let (fg, bg) = resolve_pair(TermColor::Default, TermColor::Default, false, &t, surface);
+        assert_eq!(fg, c::fg_of(&t).into());
+        assert_eq!(bg, None);
+        for explicit in [
+            TermColor::Ansi(0),
+            TermColor::Ansi(4),
+            TermColor::Rgb(12, 34, 56),
+        ] {
+            let (_, bg) = resolve_pair(TermColor::Default, explicit, false, &t, surface);
+            assert_eq!(
+                bg,
+                resolve(explicit, &t),
+                "explicit application backgrounds must be preserved"
+            );
+        }
+        let (fg, bg) = resolve_pair(TermColor::Default, TermColor::Default, true, &t, surface);
+        assert_eq!(
+            fg, surface,
+            "inverse uses the same fill as the unpainted default cells"
+        );
+        assert_eq!(bg, Some(c::fg_of(&t).into()));
     }
 }

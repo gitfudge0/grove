@@ -25,7 +25,16 @@ pub const NAME_PREFIX: &str = "grove__";
 fn tmux() -> Command {
     let mut c = Command::new("tmux");
     // Grove launches from a macOS .app bundle with no LANG/LC_* — without -u/LC_ALL, tmux downgrades Unicode box-drawing to literal q/x.
-    c.args(["-u", "-L", SOCKET]);
+    c.args(["-u", "-L"]);
+    // Unit tests exercise real tmux history/copy mode. A live Grove client can
+    // resize panes on the production socket, invalidating fixed viewport
+    // fixtures and changing the user's paste buffer. Each test process gets
+    // its own server and default configuration instead.
+    #[cfg(test)]
+    c.arg(format!("grove-selftest-{}", std::process::id()))
+        .args(["-f", "/dev/null"]);
+    #[cfg(not(test))]
+    c.arg(SOCKET);
     c.env("LC_ALL", "en_US.UTF-8");
     c.stdin(Stdio::null());
     c
@@ -250,11 +259,26 @@ pub fn selection_text(
         (p2, p1)
     };
 
+    // tmux's vi selection includes its cursor cell; emacs excludes it.
+    // Grove endpoints always identify inclusive cells, matching GroveTerm.
+    let mode = tmux()
+        .args(["display-message", "-p", "-t", name, "#{mode-keys}"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !mode.status.success() {
+        return None;
+    }
+    let end_col = if String::from_utf8_lossy(&mode.stdout).trim() == "vi" {
+        end.1
+    } else {
+        end.1.saturating_add(1)
+    };
     let mut c = tmux();
     c.args(["copy-mode", "-e", "-t", name, ";"]);
-    push_copy_cursor(&mut c, name, start.0, start.1.saturating_add(1));
+    push_copy_cursor(&mut c, name, start.0, start.1);
     c.args(["send-keys", "-t", name, "-X", "begin-selection", ";"]);
-    push_copy_cursor(&mut c, name, end.0, end.1.saturating_add(1));
+    push_copy_cursor(&mut c, name, end.0, end_col);
     c.args(["send-keys", "-t", name, "-X", "copy-selection", ";"]);
     if restore_offset == 0 {
         c.args(["send-keys", "-t", name, "-X", "cancel", ";"]);
@@ -288,20 +312,7 @@ pub fn selection_text(
 }
 
 fn push_copy_cursor(c: &mut Command, name: &str, a_row: usize, col: usize) {
-    c.args([
-        "send-keys",
-        "-t",
-        name,
-        "-X",
-        "history-bottom",
-        ";",
-        "send-keys",
-        "-t",
-        name,
-        "-X",
-        "start-of-line",
-        ";",
-    ]);
+    c.args(["send-keys", "-t", name, "-X", "history-bottom", ";"]);
     if a_row > 0 {
         c.args([
             "send-keys",
@@ -314,6 +325,10 @@ fn push_copy_cursor(c: &mut Command, name: &str, a_row: usize, col: usize) {
             ";",
         ]);
     }
+    // Reset the horizontal goal on the target row. Doing this on the blank
+    // bottom row first lets tmux restore its preferred column during cursor-up,
+    // and cursor-right can then wrap onto the wrong row.
+    c.args(["send-keys", "-t", name, "-X", "start-of-line", ";"]);
     if col > 0 {
         c.args([
             "send-keys",
@@ -363,6 +378,8 @@ pub fn pane_pid(name: &str) -> Option<u32> {
 #[derive(Debug, Clone)]
 pub struct DiscoveredSession {
     pub name: String,
+    /// Active pane title captured during discovery, before any PTY is attached.
+    pub pane_title: Option<String>,
     pub wt_path: String,
     pub project: String,
     pub label: String,
@@ -371,13 +388,51 @@ pub struct DiscoveredSession {
     pub temp_bundle_path: Option<String>,
 }
 
-pub fn live_grove_session_names() -> Vec<String> {
+fn discovery_records(
+    sidecars: impl IntoIterator<Item = (String, Option<String>, session_meta::SessionMeta)>,
+) -> (Vec<DiscoveredSession>, Vec<std::path::PathBuf>) {
+    let mut sessions = Vec::new();
+    let mut active_bundles = Vec::new();
+    for (name, pane_title, meta) in sidecars {
+        if let Some(path) = meta.temp_bundle_path.as_ref() {
+            active_bundles.push(std::path::PathBuf::from(path));
+        }
+        if meta.agent == Agent::Terminal && !meta.managed_worktree_terminal {
+            continue;
+        }
+        sessions.push(DiscoveredSession {
+            name,
+            pane_title,
+            wt_path: meta.wt_path,
+            project: meta.project,
+            label: meta.label,
+            agent: meta.agent,
+            context_roots: meta.context_roots,
+            temp_bundle_path: meta.temp_bundle_path,
+        });
+    }
+    (sessions, active_bundles)
+}
+
+fn parse_live_session(line: &str) -> Option<(String, Option<String>)> {
+    let (name, title) = line.split_once('\t')?;
+    if !name.starts_with(NAME_PREFIX) {
+        return None;
+    }
+    let title = title.trim();
+    Some((
+        name.to_string(),
+        (!title.is_empty()).then(|| title.to_string()),
+    ))
+}
+
+fn live_grove_sessions() -> Vec<(String, Option<String>)> {
     tracing::debug!(
-        args = "list-sessions -F #{session_name}",
+        args = "list-sessions -F #{session_name}\\t#{pane_title}",
         "running tmux command"
     );
     let out = tmux()
-        .args(["list-sessions", "-F", "#{session_name}"])
+        .args(["list-sessions", "-F", "#{session_name}\t#{pane_title}"])
         .stderr(Stdio::null())
         .output();
     let Ok(out) = out else { return vec![] };
@@ -387,35 +442,32 @@ pub fn live_grove_session_names() -> Vec<String> {
     }
     String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter(|n| n.starts_with(NAME_PREFIX))
-        .map(std::string::ToString::to_string)
+        .filter_map(parse_live_session)
+        .collect()
+}
+
+pub fn live_grove_session_names() -> Vec<String> {
+    live_grove_sessions()
+        .into_iter()
+        .map(|(name, _)| name)
         .collect()
 }
 
 /// Intersects live tmux sessions with sidecar metadata files; sidecars without a live session are pruned.
 pub fn list_grove_sessions() -> Vec<DiscoveredSession> {
-    let live = live_grove_session_names();
-    session_meta::prune(&live);
-    let sessions = live
+    let live = live_grove_sessions();
+    let names = live
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    session_meta::prune(&names);
+    let sidecars = live
         .into_iter()
-        .filter_map(|name| {
-            let meta = session_meta::read(&name)?;
-            Some(DiscoveredSession {
-                name,
-                wt_path: meta.wt_path,
-                project: meta.project,
-                label: meta.label,
-                agent: meta.agent,
-                context_roots: meta.context_roots,
-                temp_bundle_path: meta.temp_bundle_path,
-            })
+        .filter_map(|(name, pane_title)| {
+            session_meta::read(&name).map(|meta| (name, pane_title, meta))
         })
         .collect::<Vec<_>>();
-    let active_bundles = sessions
-        .iter()
-        .filter_map(|session| session.temp_bundle_path.as_ref())
-        .map(std::path::PathBuf::from)
-        .collect::<Vec<_>>();
+    let (sessions, active_bundles) = discovery_records(sidecars);
     crate::multi_root::cleanup_orphaned(&active_bundles);
     sessions
 }
@@ -460,6 +512,99 @@ mod tests {
 
     use super::*;
     use crate::agent::Agent;
+
+    fn sidecar(
+        agent: Agent,
+        managed_worktree_terminal: bool,
+        bundle: Option<&str>,
+    ) -> session_meta::SessionMeta {
+        session_meta::SessionMeta {
+            wt_path: "/worktree".into(),
+            project: "project".into(),
+            label: "Terminal 1".into(),
+            agent,
+            managed_worktree_terminal,
+            context_roots: Vec::new(),
+            temp_bundle_path: bundle.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn legacy_terminal_sidecars_do_not_reattach_or_lose_live_bundles() {
+        let (sessions, bundles) = discovery_records([
+            (
+                "legacy-terminal".into(),
+                None,
+                sidecar(Agent::Terminal, false, Some("/bundle/legacy")),
+            ),
+            (
+                "managed-terminal".into(),
+                Some("Fix build".into()),
+                sidecar(Agent::Terminal, true, Some("/bundle/managed")),
+            ),
+            (
+                "legacy-agent".into(),
+                None,
+                sidecar(Agent::Claude, false, None),
+            ),
+        ]);
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["managed-terminal", "legacy-agent"]
+        );
+        assert_eq!(
+            bundles,
+            vec![
+                std::path::PathBuf::from("/bundle/legacy"),
+                std::path::PathBuf::from("/bundle/managed")
+            ]
+        );
+        assert_eq!(sessions[0].pane_title.as_deref(), Some("Fix build"));
+        assert_eq!(sessions[1].pane_title, None);
+    }
+
+    #[test]
+    fn live_session_line_extracts_pane_title_and_ignores_other_sessions() {
+        assert_eq!(
+            parse_live_session("grove__abc\t  Fix build  "),
+            Some(("grove__abc".into(), Some("Fix build".into())))
+        );
+        assert_eq!(
+            parse_live_session("grove__abc\t"),
+            Some(("grove__abc".into(), None))
+        );
+        assert_eq!(parse_live_session("other\tignored"), None);
+        assert_eq!(parse_live_session("grove__missing-delimiter"), None);
+    }
+
+    #[test]
+    fn live_discovery_reads_title_without_attaching_a_client() {
+        if !available() {
+            eprintln!("skipping: tmux not on PATH");
+            return;
+        }
+        let name = "grove__selftest__title__0";
+        kill_session(name);
+        let mut create = tmux();
+        create.args(["new-session", "-d", "-s", name, "sleep 30"]);
+        assert!(run_silent(create).expect("spawn").success());
+        let mut title = tmux();
+        title.args(["select-pane", "-t", name, "-T", "Restore this title"]);
+        assert!(run_silent(title).expect("set pane title").success());
+
+        let discovered = live_grove_sessions();
+        assert_eq!(
+            discovered
+                .iter()
+                .find(|(session, _)| session == name)
+                .and_then(|(_, title)| title.as_deref()),
+            Some("Restore this title")
+        );
+        kill_session(name);
+    }
 
     #[test]
     fn cache_is_fresh_respects_ttl_boundary() {
@@ -655,23 +800,45 @@ mod tests {
         );
         std::thread::sleep(std::time::Duration::from_millis(300));
 
-        // The six-row live viewport cannot contain this eleven-row span. Both
-        // endpoint orders must still copy the same text from tmux history.
-        let expected = "-abcdefghij\nline-06-abcdefghij\nline-07-abcdefghij\nline-08-abcdefghij\nline-09-abcdefghij\nline-10-abcdefghij\nline-11-abcdefghij\nline-12-abcdefghij\nline-13-abcdefghij\nline-14-abcdefghij\nline-";
         assert_eq!(
-            selection_text(name, (12, 7), (2, 5), 0).as_deref(),
-            Some(expected)
+            display(name, "#{pane_height}"),
+            "6",
+            "selection fixture viewport must stay fixed"
         );
-        let offset = scroll(name, true, 3).expect("scroll position");
-        assert_eq!(
-            selection_text(name, (2, 5), (12, 7), offset).as_deref(),
-            Some(expected)
-        );
-        assert_eq!(
-            display(name, "#{scroll_position}"),
-            offset.to_string(),
-            "copy should restore the drag viewport"
-        );
+
+        // Output ends in a newline: absolute row 0 is blank, row 1 is
+        // line-15, row 2 is line-14, and row 12 is line-04. Endpoint columns
+        // are zero-based and inclusive, exactly as GroveTerm::selection_text.
+        let expected = "-abcdefghij\nline-05-abcdefghij\nline-06-abcdefghij\nline-07-abcdefghij\nline-08-abcdefghij\nline-09-abcdefghij\nline-10-abcdefghij\nline-11-abcdefghij\nline-12-abcdefghij\nline-13-abcdefghij\nline-1";
+        for mode in ["emacs", "vi"] {
+            let mut set_mode = tmux();
+            set_mode.args(["set-window-option", "-t", name, "mode-keys", mode]);
+            assert!(run_silent(set_mode).expect("set mode").success());
+            assert_eq!(
+                selection_text(name, (12, 7), (2, 5), 0).as_deref(),
+                Some(expected),
+                "history selection with {mode} keys"
+            );
+            let offset = scroll(name, true, 3).expect("scroll position");
+            assert_eq!(
+                selection_text(name, (2, 5), (12, 7), offset).as_deref(),
+                Some(expected),
+                "reversed history selection with {mode} keys"
+            );
+            assert_eq!(
+                display(name, "#{scroll_position}"),
+                offset.to_string(),
+                "copy should restore the drag viewport"
+            );
+            assert_eq!(
+                selection_text(name, (2, 0), (2, 0), 0).as_deref(),
+                Some("l")
+            );
+            assert_eq!(
+                selection_text(name, (2, 5), (2, 7), 0).as_deref(),
+                Some("14-")
+            );
+        }
 
         kill_session(name);
     }
