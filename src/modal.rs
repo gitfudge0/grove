@@ -506,10 +506,7 @@ impl ModalKind {
 
     /// Multiline buffers leave Tab clear so it indents (carried decision 2).
     pub fn wants_tab(self) -> bool {
-        matches!(
-            self,
-            ModalKind::Onboarding | ModalKind::AddProject
-        )
+        matches!(self, ModalKind::Onboarding | ModalKind::AddProject)
     }
 }
 

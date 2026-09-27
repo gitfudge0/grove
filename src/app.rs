@@ -57,7 +57,11 @@ pub fn boot(cx: &mut gpui::App) {
     let appearance = store.appearance();
     let follow_system = appearance == AppearancePreference::System;
     let light = appearance == AppearancePreference::Light;
-    theme::set_by_name(if light { DEFAULT_LIGHT_THEME } else { DEFAULT_DARK_THEME });
+    theme::set_by_name(if light {
+        DEFAULT_LIGHT_THEME
+    } else {
+        DEFAULT_DARK_THEME
+    });
 
     // 7. Clamped so a hand-edited store.json can't make the chrome unusable.
     let zoom = resolve_zoom(&store);
@@ -113,5 +117,4 @@ mod tests {
         };
         assert_eq!(store.appearance(), AppearancePreference::Dark);
     }
-
 }

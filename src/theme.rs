@@ -384,7 +384,10 @@ impl ThemeState {
     pub fn set_system_mode(cx: &mut gpui::App, mode: WindowAppearance) {
         cx.update_global::<Self, _>(|this, _| this.system_mode = mode);
         if cx.global::<Self>().follow_system {
-            set_chrome_light(matches!(mode, WindowAppearance::Light | WindowAppearance::VibrantLight));
+            set_chrome_light(matches!(
+                mode,
+                WindowAppearance::Light | WindowAppearance::VibrantLight
+            ));
         }
         Self::apply_system_theme(cx);
     }
