@@ -487,11 +487,9 @@ impl Shell {
                 .is_some_and(|session| session.read(cx).spawn_error().is_some())
             {
                 ("Failed", c::RED())
-            } else if registry.session(id).is_none() {
-                ("Starting", c::FG_DIM())
             } else if registry
                 .session(id)
-                .is_some_and(|session| session.read(cx).is_pending_attach())
+                .is_none_or(|session| session.read(cx).is_pending_attach())
             {
                 ("Starting", c::FG_DIM())
             } else if registry
@@ -574,7 +572,7 @@ impl Shell {
                 if id != current {
                     let ((), saved) =
                         crate::settings::SettingsState::update_and_flush_checked(cx, |store| {
-                            store.workspaces.select(id)
+                            store.workspaces.select(id);
                         });
                     if let Err(error) = saved {
                         self.switcher_error = Some(format!("Could not save workspace: {error}"));
@@ -585,7 +583,7 @@ impl Shell {
                 self.close_switcher(window, cx);
                 if id != current {
                     self.sidebar.update(cx, |sidebar, cx| {
-                        sidebar.focus_grid_workspace_after_switch(window, cx)
+                        sidebar.focus_grid_workspace_after_switch(window, cx);
                     });
                 }
             }
@@ -653,7 +651,7 @@ impl Shell {
                 }
             }
             "enter" if self.switcher_new_session_focus.is_focused(window) => {
-                self.new_session_from_switcher(window, cx)
+                self.new_session_from_switcher(window, cx);
             }
             "enter" => self.select_switcher_row(self.switcher_index, window, cx),
             _ => return,
@@ -675,7 +673,7 @@ impl Shell {
                 self.backend_choice_error = None;
                 let launched = self
                     .runtime
-                    .update(cx, |runtime, cx| runtime.resume_pending_managed_launch(cx));
+                    .update(cx, Runtime::resume_pending_managed_launch);
                 if launched {
                     self.launcher.update(cx, |launcher, cx| {
                         launcher.close_after_deferred_launch(window, cx);
@@ -902,7 +900,7 @@ impl Shell {
         let status = row.status;
         let overlay = div()
             .id(("session-switcher-row", index))
-            .debug_selector(move || debug_id.clone().into())
+            .debug_selector(move || debug_id.clone())
             .role(gpui::Role::Button)
             .aria_label(row.title.clone())
             .min_w_0()
@@ -1064,7 +1062,7 @@ impl Shell {
                             .child(icon("plus", ICON_SM, c::FG()))
                             .child("New session")
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.new_session_from_switcher(window, cx)
+                                this.new_session_from_switcher(window, cx);
                             })),
                     ),
             );
@@ -1442,7 +1440,7 @@ impl Render for Shell {
                                         .occlude()
                                         .bg(c::alpha(c::BG(), 0.4))
                                         .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                            cx.stop_propagation()
+                                            cx.stop_propagation();
                                         }),
                                 )
                             });
@@ -1520,7 +1518,7 @@ mod tests {
         cx.update(|window, cx| {
             shell.update(cx, |shell, cx| {
                 shell.cancel_backend_choice(window, cx);
-            })
+            });
         });
         draw(cx);
         cx.update(|window, cx| window.dispatch_action(Box::new(k::ToggleZen), cx));
@@ -2490,7 +2488,7 @@ mod tests {
                 assert!(matches!(rows[0].target, SwitchTarget::Session(_)));
                 shell.switcher_query = "unmatched".into();
                 assert!(shell.switcher_rows(cx).is_empty());
-            })
+            });
         });
     }
 
@@ -2703,7 +2701,7 @@ mod tests {
                 .sidebar
                 .read(cx)
                 .visible_session_targets(cx)
-                .is_empty())
+                .is_empty());
         });
         assert!(cx.debug_bounds("session-switcher-new-session").is_some());
         cx.update(|_, cx| {
@@ -2713,7 +2711,7 @@ mod tests {
         });
         cx.simulate_keystrokes("tab");
         cx.update(|window, cx| {
-            assert!(shell.read(cx).switcher_new_session_focus.is_focused(window))
+            assert!(shell.read(cx).switcher_new_session_focus.is_focused(window));
         });
         cx.simulate_keystrokes("shift-tab");
         cx.update(|window, cx| {

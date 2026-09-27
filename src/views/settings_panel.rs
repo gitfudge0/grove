@@ -452,7 +452,7 @@ impl SettingsPanel {
                 )
                 .child("Frosted")
                 .on_click(cx.listener(|this, _, window, cx| {
-                    this.set_sidebar_appearance(SidebarAppearance::Frosted, window, cx)
+                    this.set_sidebar_appearance(SidebarAppearance::Frosted, window, cx);
                 })),
             )
             .child(
@@ -464,7 +464,7 @@ impl SettingsPanel {
                 )
                 .child("Solid")
                 .on_click(cx.listener(|this, _, window, cx| {
-                    this.set_sidebar_appearance(SidebarAppearance::Solid, window, cx)
+                    this.set_sidebar_appearance(SidebarAppearance::Solid, window, cx);
                 })),
             );
         let zoom_control = div()
@@ -1123,7 +1123,7 @@ mod tests {
         cx.simulate_event(gpui::ScrollWheelEvent {
             position: scroll.center(),
             delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-120.))),
-            modifiers: Default::default(),
+            modifiers: gpui::Modifiers::default(),
             touch_phase: gpui::TouchPhase::Moved,
         });
         draw(cx);

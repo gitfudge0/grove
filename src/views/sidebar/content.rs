@@ -1037,8 +1037,7 @@ impl Sidebar {
             .store
             .projects
             .get(project_idx)
-            .map(|project| project.path.clone())
-            .unwrap_or_else(|| path.to_string());
+            .map_or_else(|| path.to_string(), |project| project.path.clone());
         let readiness = self
             .worktree_readiness
             .get(&project_path)

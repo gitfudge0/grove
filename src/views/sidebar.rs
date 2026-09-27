@@ -1160,13 +1160,13 @@ impl Sidebar {
         let available_width =
             (f32::from(window.viewport_size().width) / scale - gutter * 2.0).max(0.0);
         let width = bounds
-            .map(|bounds| f32::from(bounds.size.width) / scale)
-            .unwrap_or(max_width)
+            .map_or(max_width, |bounds| f32::from(bounds.size.width) / scale)
             .clamp(SIDEBAR_W, max_width)
             .min(available_width);
-        let position = bounds
-            .map(|bounds| gpui::point(bounds.left(), bounds.bottom()))
-            .unwrap_or_else(|| gpui::point(gpui::px(gutter * scale), gpui::px(gutter * scale)));
+        let position = bounds.map_or_else(
+            || gpui::point(gpui::px(gutter * scale), gpui::px(gutter * scale)),
+            |bounds| gpui::point(bounds.left(), bounds.bottom()),
+        );
         Some(
             gpui::deferred(
                 gpui::anchored()
@@ -1484,9 +1484,7 @@ impl Sidebar {
                     } else {
                         c::BG_HOVER()
                     })
-                } else if project_diff_button {
-                    s
-                } else if quiet_launch_control {
+                } else if project_diff_button || quiet_launch_control {
                     s
                 } else if danger {
                     s.bg(c::RED_WASH()).text_color(c::RED())
@@ -1507,9 +1505,7 @@ impl Sidebar {
                     })
                     .border_1()
                     .border_color(c::FG())
-                } else if project_diff_button {
-                    s.border_1().border_color(c::FG())
-                } else if quiet_launch_control {
+                } else if project_diff_button || quiet_launch_control {
                     s.border_1().border_color(c::FG())
                 } else if danger {
                     s.bg(c::RED_WASH()).text_color(c::RED())
@@ -2269,7 +2265,7 @@ impl Sidebar {
                             }
                             Err(error) => {
                                 this.content_error =
-                                    Some(format!("Could not initialize Git: {error}"))
+                                    Some(format!("Could not initialize Git: {error}"));
                             }
                         }
                         cx.notify();
@@ -3562,8 +3558,8 @@ impl Sidebar {
                                 div()
                                     .min_w_0()
                                     .truncate()
-                                    .when(worktree.is_main, |name| name.flex_shrink_0())
-                                    .when(!worktree.is_main, |name| name.flex_1())
+                                    .when(worktree.is_main, gpui::Styled::flex_shrink_0)
+                                    .when(!worktree.is_main, gpui::Styled::flex_1)
                                     .child(worktree_name.to_owned()),
                             )
                             .when(worktree.is_main && !worktree.branch.is_empty(), |title| {
@@ -7118,7 +7114,7 @@ mod tests {
         draw(cx);
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
-                sidebar.act(Action::ConfirmClose(selected), window, cx)
+                sidebar.act(Action::ConfirmClose(selected), window, cx);
             });
         });
         assert!(sidebar.read_with(cx, |sidebar, cx| {
