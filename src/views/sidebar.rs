@@ -1366,7 +1366,7 @@ impl Sidebar {
         div()
             .flex()
             .items_center()
-            .gap(rpx(SPACE_SM))
+            .gap(rpx(SPACE_LG))
             .child(
                 self.control(
                     "sidebar-view",
@@ -1405,17 +1405,18 @@ impl Sidebar {
                 Duration::from_millis(MOTION_FAST_MS),
                 cx,
             ))
-            .child(
-                self.control(
-                    "sidebar-settings",
-                    "Open settings",
-                    Action::OpenSettings,
-                    cx,
-                )
-                .debug_selector(|| "sidebar-settings".into())
-                .child(icon("cog", ICON_MD, c::FG_DIM())),
-            )
             .into_any_element()
+    }
+    fn settings_control(&self, cx: &mut Context<Self>) -> AnyElement {
+        self.control(
+            "sidebar-settings",
+            "Open settings",
+            Action::OpenSettings,
+            cx,
+        )
+        .debug_selector(|| "sidebar-settings".into())
+        .child(icon("cog", ICON_MD, c::FG_DIM()))
+        .into_any_element()
     }
     fn control(
         &self,
@@ -1438,6 +1439,7 @@ impl Sidebar {
         );
         let project_diff_button =
             self.mode == ViewMode::Project && matches!(&action, Action::OpenDiff(_));
+        let quiet_launch_control = matches!(&action, Action::Launch(..) | Action::RunScript(..));
         let danger = matches!(action, Action::ConfirmWorktreeRemoval);
         let primary = matches!(action, Action::DismissWorktreeRemoval);
         let confirm = matches!(
@@ -1484,6 +1486,8 @@ impl Sidebar {
                     })
                 } else if project_diff_button {
                     s
+                } else if quiet_launch_control {
+                    s
                 } else if danger {
                     s.bg(c::RED_WASH()).text_color(c::RED())
                 } else if primary {
@@ -1504,6 +1508,8 @@ impl Sidebar {
                     .border_1()
                     .border_color(c::FG())
                 } else if project_diff_button {
+                    s.border_1().border_color(c::FG())
+                } else if quiet_launch_control {
                     s.border_1().border_color(c::FG())
                 } else if danger {
                     s.bg(c::RED_WASH()).text_color(c::RED())
@@ -3405,6 +3411,10 @@ impl Sidebar {
                     .projects
                     .get(idx)
                     .map(|project| project.path.clone());
+                let has_run_script = project.has_run && project_path.is_some();
+                let action_count = WORKTREE_LAUNCH_AGENTS.len()
+                    + has_run_script as usize
+                    + (!worktree.is_main) as usize;
                 let selection = Selection::Worktree(idx, path.clone());
                 let selected = self.selection == Some(selection.clone());
                 let focused = self
@@ -3414,9 +3424,7 @@ impl Sidebar {
                 let mut launches = div()
                     .absolute()
                     .right_0()
-                    .w(rpx(
-                        WORKTREE_ACTION_W * if worktree.is_main { 5.0 } else { 6.0 }
-                    ))
+                    .w(rpx(WORKTREE_ACTION_W * action_count as f32))
                     .h(rpx(CHROME_CONTROL_H))
                     .flex()
                     .flex_shrink_0()
@@ -3424,6 +3432,22 @@ impl Sidebar {
                     .bg(rail_background(cx))
                     .opacity(if focused { 1.0 } else { 0.0 })
                     .group_hover("worktree-row", |s| s.opacity(1.0));
+                if let Some(project_path) = project_path.filter(|_| has_run_script) {
+                    launches = launches.child(
+                        self.control(
+                            SharedString::from(format!("run-script-{path}")),
+                            format!("Run script in {} · {}", project.name, worktree_name),
+                            Action::RunScript(project_path, path.clone()),
+                            cx,
+                        )
+                        .size(rpx(WORKTREE_ACTION_W))
+                        .debug_selector({
+                            let path = path.clone();
+                            move || format!("run-script-{path}")
+                        })
+                        .child(icon("play", ICON_SM, c::FG_DIM())),
+                    );
+                }
                 for (n, agent) in WORKTREE_LAUNCH_AGENTS.into_iter().enumerate() {
                     let agent_name = match agent {
                         Agent::Codex => "Codex",
@@ -3460,28 +3484,6 @@ impl Sidebar {
                             c::FG_DIM(),
                         )),
                     );
-                }
-                if project.has_run {
-                    if let Some(project_path) = project_path {
-                        launches = launches.child(
-                            self.control(
-                                SharedString::from(format!("run-script-{path}")),
-                                format!("Run script in {} · {}", project.name, worktree_name),
-                                Action::RunScript(project_path, path.clone()),
-                                cx,
-                            )
-                            .size(rpx(WORKTREE_ACTION_W))
-                            .debug_selector({
-                                let path = path.clone();
-                                move || format!("run-script-{path}")
-                            })
-                            .child(icon("play", ICON_SM, c::FG_DIM())),
-                        );
-                    } else {
-                        launches = launches.child(div().size(rpx(WORKTREE_ACTION_W)));
-                    }
-                } else {
-                    launches = launches.child(div().size(rpx(WORKTREE_ACTION_W)));
                 }
                 if !worktree.is_main {
                     launches = launches.child(
@@ -3867,7 +3869,7 @@ impl Render for Sidebar {
         } else {
             self.tree(window, cx)
         };
-        let controls = self.view_controls(cx);
+        let settings_control = self.settings_control(cx);
         let terminals = self.terminals(cx);
         let empty = self.snapshot.projects.is_empty();
         let rail = div()
@@ -3906,7 +3908,7 @@ impl Render for Sidebar {
                                 row.child(selector)
                             }),
                     )
-                    .child(controls),
+                    .child(settings_control),
             )
             .child(
                 div()
@@ -3931,7 +3933,7 @@ impl Render for Sidebar {
                             .flex()
                             .flex_shrink_0()
                             .items_center()
-                            .gap(rpx(SPACE_SM))
+                            .gap(rpx(SPACE_LG))
                             .when(self.mode == ViewMode::Project, |trailing| {
                                 trailing.child(
                                     div()
@@ -3947,6 +3949,7 @@ impl Render for Sidebar {
                                         .child(self.snapshot.projects.len().to_string()),
                                 )
                             })
+                            .child(self.view_controls(cx))
                             .child(
                                 self.control(
                                     "projects-archive",
@@ -5288,15 +5291,27 @@ mod tests {
             );
             assert!(title.top() >= row.top() && title.bottom() <= row.bottom());
             assert!((f32::from(row.size.height) - PROJECT_ROW_H * zoom).abs() <= 1.0);
-            let centers = ["projects-count", "projects-archive", "projects-add"]
-                .map(|id| f32::from(cx.debug_bounds(id).unwrap().center().x));
+            let centers = [
+                "projects-count",
+                "sidebar-view",
+                "sidebar-grid",
+                "projects-archive",
+                "projects-add",
+            ]
+            .map(|id| f32::from(cx.debug_bounds(id).unwrap().center().x));
             for pair in centers.windows(2) {
                 assert!(
-                    (pair[1] - pair[0] - (CHROME_CONTROL_H + SPACE_SM) * zoom).abs() <= 1.0,
+                    (pair[1] - pair[0] - (CHROME_CONTROL_H + SPACE_LG) * zoom).abs() <= 1.0,
                     "header spacing differs at {zoom}x: {centers:?}"
                 );
             }
-            for id in ["projects-count", "projects-archive", "projects-add"] {
+            for id in [
+                "projects-count",
+                "sidebar-view",
+                "sidebar-grid",
+                "projects-archive",
+                "projects-add",
+            ] {
                 assert!(
                     (f32::from(cx.debug_bounds(id).unwrap().size.width) - CHROME_CONTROL_H * zoom)
                         .abs()
