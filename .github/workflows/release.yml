@@ -1,11 +1,11 @@
 name: Release bundles
 
-# Build native bundles and attach them to the GitHub Release whenever a release
-# is drafted (or published). Drafting a new release in the GitHub UI is enough
-# to kick this off; the job uploads the artifacts back onto that same release.
+# Draft releases do not trigger release events. Run this workflow from a draft's
+# tag to attach bundles while keeping it draft; published releases run normally.
 on:
+  workflow_dispatch:
   release:
-    types: [created, edited, prereleased, released, published]
+    types: [published]
 
 permissions:
   contents: write
@@ -17,6 +17,8 @@ env:
 
 jobs:
   bundle:
+    # Assets on publication mean the draft was already bundled from its tag.
+    if: github.ref_type == 'tag' && (github.event_name == 'workflow_dispatch' || github.event.release.assets[0] == null)
     name: Bundle (${{ matrix.os }}-${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -165,4 +167,6 @@ jobs:
       - name: Upload bundles to release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
           files: dist/*

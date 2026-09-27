@@ -4,7 +4,11 @@
 
 a worktree launchpad for ai coding agents
 
-![grove session view](screenshots/grove-hero.png)
+[![grove UI preview with Codex, Claude Code, and terminal sessions](assets/showcase/grove-launch.jpg)](assets/showcase/grove-launch.mp4)
+
+[Watch the 22-second Grove UI preview](assets/showcase/grove-launch.mp4)
+
+_Illustrated Grove UI with fictional project data. Music: [Happy Beats & Business Moves Vol. 12](https://ende.app/en/song/12881-happy-beats-business-moves-vol-12) by Sascha Ende ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/))._
 
 [![license: MIT](https://img.shields.io/badge/license-MIT-9ece6a?style=flat-square)](#license)
 [![platform: linux | macOS | Windows (alpha)](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20Windows%20(alpha)-7aa2f7?style=flat-square)](#requirements)
